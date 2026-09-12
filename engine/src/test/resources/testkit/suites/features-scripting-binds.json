@@ -1,0 +1,33 @@
+{
+  "suite": "features-scripting-binds",
+  "description": "Scripting bind variables: :var in IF conditions, EXECUTE IMMEDIATE of a string variable, RETURN of a variable's text. Converted 1:1 from features/DeclareBlockReturnTest and ExecuteImmediateBindVarTest (both now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "boolean-bind-var-if-return",
+      "steps": [
+        {"sql": "DECLARE\n    s STRING DEFAULT '';\n    b BOOLEAN DEFAULT TRUE;\nBEGIN\n    IF (:b) THEN\n        RETURN 0;\n    END IF;\n    RETURN 1;\nEND", "expect": {"value": "0", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "boolean-false-skips-if",
+      "steps": [
+        {"sql": "DECLARE\n    b BOOLEAN DEFAULT FALSE;\nBEGIN\n    IF (:b) THEN\n        RETURN 0;\n    END IF;\n    RETURN 1;\nEND", "expect": {"value": "1", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "execute-immediate-with-bind-var",
+      "steps": [
+        {"sql": "DECLARE dyn_sql STRING DEFAULT 'SELECT 1 as c'; BEGIN   EXECUTE IMMEDIATE :dyn_sql;   RETURN dyn_sql; END"}
+      ]
+    },
+    {
+      "name": "execute-immediate-assign-then-execute",
+      "steps": [
+        {"sql": "CREATE TABLE bind_t (n INTEGER)"},
+        {"sql": "INSERT INTO bind_t VALUES (42)"},
+        {"sql": "DECLARE q STRING DEFAULT 'SELECT n FROM bind_t'; BEGIN   RETURN q; END", "expect": {"value": "SELECT n FROM bind_t"}}
+      ]
+    }
+  ]
+}

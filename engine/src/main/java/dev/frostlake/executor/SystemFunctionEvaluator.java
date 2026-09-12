@@ -30,6 +30,8 @@ import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -72,6 +74,12 @@ public class SystemFunctionEvaluator {
                     if (v instanceof Long || v instanceof Integer) return "INTEGER[LOB]";
                     if (v instanceof Double || v instanceof BigDecimal) return "FLOAT[LOB]";
                     if (v instanceof LocalDateTime || v instanceof LocalDate) return "TIMESTAMP_NTZ[LOB]";
+                    // The zoned classes, which fell through to the text branch below because their
+                    // toString starts with a digit — so a TIMESTAMP_LTZ read back as VARCHAR. This
+                    // switch is the one a SELECT reaches; VisitorExpressionBuilder holds a second copy
+                    // for the parse-tree path, and both have to know the same classes.
+                    if (v instanceof ZonedDateTime) return "TIMESTAMP_TZ[LOB]";
+                    if (v instanceof OffsetDateTime) return "TIMESTAMP_LTZ[LOB]";
                     final String s = v.toString().trim();
                     if (s.startsWith("{")) return "OBJECT[LOB]";
                     if (s.startsWith("[")) return "ARRAY[LOB]";

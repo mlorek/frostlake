@@ -1,0 +1,52 @@
+{
+  "suite": "features-identifier-case-folding",
+  "description": "Snowflake folds an UNQUOTED identifier to UPPERCASE and preserves a double-quoted one. Frostlake resolves names case-insensitively, but the canonical (stored/displayed) name must fold so INFORMATION_SCHEMA, SHOW output and result-set column labels match Snowflake: lowercase-written schema/table/column names report upper-case in INFORMATION_SCHEMA.COLUMNS, select-list labels fold, quoted identifiers preserve case, and the idempotent-migration idiom (guard an ADD COLUMN with an upper-case INFORMATION_SCHEMA existence check inside a scripting block) is a no-op when the column exists. Runs in its own database (test/app) created and dropped per test. Converted 1:1 from features/IdentifierCaseFoldingTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "unquoted-names-fold-to-upper-case-in-information-schema", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test"},
+      {"sql": "USE DATABASE test"},
+      {"sql": "CREATE SCHEMA app"},
+      {"sql": "CREATE TABLE app.cfg (col_a VARCHAR, note VARCHAR)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'APP' AND TABLE_NAME = 'CFG' AND COLUMN_NAME = 'NOTE'",
+       "expect": {"value": "1"}},
+      {"sql": "DROP DATABASE IF EXISTS test"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"}
+    ]},
+    {"name": "select-column-label-folds", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test"},
+      {"sql": "USE DATABASE test"},
+      {"sql": "CREATE SCHEMA app"},
+      {"sql": "CREATE TABLE app.cfg (note VARCHAR)"},
+      {"sql": "INSERT INTO app.cfg VALUES ('x')"},
+      {"sql": "SELECT note FROM app.cfg", "expect": {"columns": ["NOTE"], "rows": [["x"]]}},
+      {"sql": "DROP DATABASE IF EXISTS test"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"}
+    ]},
+    {"name": "quoted-identifier-preserves-case", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test"},
+      {"sql": "USE DATABASE test"},
+      {"sql": "CREATE SCHEMA app"},
+      {"sql": "CREATE TABLE app.q (\"MixedCol\" INT)"},
+      {"sql": "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'Q'",
+       "expect": {"value": "MixedCol"}},
+      {"sql": "DROP DATABASE IF EXISTS test"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"}
+    ]},
+    {"name": "idempotent-column-migration-does-not-re-add-existing-column", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test"},
+      {"sql": "USE DATABASE test"},
+      {"sql": "CREATE SCHEMA app"},
+      {"sql": "CREATE TABLE app.cfg (col_a VARCHAR, note VARCHAR)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE\n    col_count INT;\nBEGIN\n    SELECT COUNT(*) INTO :col_count\n    FROM INFORMATION_SCHEMA.COLUMNS\n    WHERE TABLE_SCHEMA = 'APP' AND TABLE_NAME = 'CFG' AND COLUMN_NAME = 'NOTE';\n    IF (col_count = 0) THEN\n        ALTER TABLE app.cfg ADD COLUMN note VARCHAR;\n    END IF;\nEND;\n$$"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CFG'",
+       "expect": {"value": "2"}},
+      {"sql": "DROP DATABASE IF EXISTS test"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"}
+    ]}
+  ]
+}

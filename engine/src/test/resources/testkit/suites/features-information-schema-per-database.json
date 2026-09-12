@@ -1,0 +1,44 @@
+{
+  "suite": "features-information-schema-per-database",
+  "description": "INFORMATION_SCHEMA exists in EVERY database: each freshly created database carries it in SHOW SCHEMAS, its TABLES view shows that database's tables (catalog-filtered), a fully qualified db.INFORMATION_SCHEMA.TABLES is reachable from another database's context, DATABASES lists every database regardless of the current one, the schema cannot be dropped (and survives the attempt), and the schema is read-only (no CREATE TABLE inside it, no DROP VIEW of its system views). Converted 1:1 from features/InformationSchemaPerDatabaseTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "information-schema-exists-in-every-database", "steps": [
+      {"sql": "CREATE DATABASE db1"},
+      {"sql": "CREATE DATABASE db2"},
+      {"sql": "CREATE DATABASE db3"},
+      {"sql": "USE DATABASE db1"},
+      {"sql": "CREATE TABLE db1_table (id INTEGER)"},
+      {"sql": "SHOW SCHEMAS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'INFORMATION_SCHEMA') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT_IF(TABLE_NAME = 'DB1_TABLE') FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'DB1'", "expect": {"value": "1"}},
+      {"sql": "USE DATABASE db2"},
+      {"sql": "CREATE TABLE db2_table (id INTEGER)"},
+      {"sql": "SHOW SCHEMAS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'INFORMATION_SCHEMA') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT_IF(TABLE_NAME = 'DB2_TABLE') FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'DB2'", "expect": {"value": "1"}},
+      {"sql": "USE DATABASE db3"},
+      {"sql": "SELECT * FROM db1.INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'DB1_TABLE'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) >= 4 FROM INFORMATION_SCHEMA.DATABASES", "expect": {"value": "true"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS db1"},
+      {"sql": "DROP DATABASE IF EXISTS db2"},
+      {"sql": "DROP DATABASE IF EXISTS db3"}
+    ]},
+    {"name": "cannot-drop-information-schema", "steps": [
+      {"sql": "CREATE DATABASE test_drop_db"},
+      {"sql": "USE DATABASE test_drop_db"},
+      {"sql": "DROP SCHEMA INFORMATION_SCHEMA", "expect": {"error": {}}},
+      {"sql": "SHOW SCHEMAS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'INFORMATION_SCHEMA') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS test_drop_db"}
+    ]},
+    {"name": "information-schema-is-read-only", "steps": [
+      {"sql": "CREATE TABLE INFORMATION_SCHEMA.custom_table (id INTEGER)", "expect": {"error": {}}},
+      {"sql": "DROP VIEW INFORMATION_SCHEMA.TABLES", "expect": {"error": {}}}
+    ]}
+  ]
+}

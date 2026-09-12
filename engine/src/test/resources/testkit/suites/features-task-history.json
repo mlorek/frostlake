@@ -1,0 +1,29 @@
+{
+  "suite": "features-task-history",
+  "description": "TASK_HISTORY table function reads runs across schemas, including failed-run state. Converted 1:1 from features/TaskHistoryCrossSchemaTest.java (now retired). Skipped on snowflake like the original live assumption: EXECUTE TASK is asynchronous on a real account, so a terminal state is not readable synchronously.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "manual-run-in-another-schema-is-visible-from-current-schema",
+      "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK is asynchronous on a real account; the history row is not readable synchronously"},
+      "steps": [
+        {"sql": "CREATE SCHEMA task_home"},
+        {"sql": "CREATE TASK task_home.history_probe SCHEDULE = '1 MINUTE' AS SELECT 1"},
+        {"sql": "EXECUTE TASK task_home.history_probe"},
+        {"sql": "SELECT state, error_code, error_message\nFROM TABLE(information_schema.task_history(task_name=>'HISTORY_PROBE'))\nWHERE database_name = CURRENT_DATABASE()\nAND state NOT IN ('SCHEDULED', 'EXECUTING', 'SKIPPED')\nAND schema_name = 'TASK_HOME'\nORDER BY query_start_time DESC\nLIMIT 1",
+         "expect": {"rowCount": 1, "rows": [["SUCCEEDED", null, null]]}}
+      ]
+    },
+    {
+      "name": "failed-run-surfaces-its-state",
+      "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK is asynchronous on a real account; the history row is not readable synchronously"},
+      "steps": [
+        {"sql": "CREATE SCHEMA task_home2"},
+        {"sql": "CREATE TASK task_home2.broken_probe SCHEDULE = '1 MINUTE' AS INSERT INTO no_such_table VALUES (1)"},
+        {"sql": "EXECUTE TASK task_home2.broken_probe"},
+        {"sql": "SELECT state FROM TABLE(information_schema.task_history(task_name=>'BROKEN_PROBE'))\nWHERE schema_name = 'TASK_HOME2'",
+         "expect": {"value": "FAILED", "rowCount": 1}}
+      ]
+    }
+  ]
+}

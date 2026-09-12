@@ -1,0 +1,46 @@
+{
+  "suite": "scripting-dml-status-variables",
+  "description": "The Snowflake Scripting DML-status globals - SQLROWCOUNT, SQLFOUND, SQLNOTFOUND and ACTIVITY_COUNT - exercised with the documentation's own examples plus the boundary cells, every expectation live-verified. A DML statement sets all four: the trio from its AFFECTED total and ACTIVITY_COUNT to the same number. EVERY other completed statement resets the TRIO to NULL and sets ACTIVITY_COUNT to its OWN result's row count - a SELECT, a DDL (whose status line counts 1), and TRUNCATE TABLE too, which is the cell that catches an implementation treating TRUNCATE as DML. Scripting-internal statements - LET, assignments, control flow - touch none of them, which is what makes the doc examples read the value they expect several statements later. A zero-row UPDATE answers rc=0 with f=false and nf=true, and all four start NULL. Converted 1:1 from scripting/DmlStatusVariablesTest (now retired); the blocks are written on one line here, which the scripting parser reads identically.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "the-doc-example-for-sqlrowcount-after-an-insert", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE my_values (value NUMBER)"},
+      {"sql": "BEGIN LET sql_row_count_var INT := 0; INSERT INTO my_values VALUES (1), (2), (3); sql_row_count_var := SQLROWCOUNT; SELECT * from my_values; RETURN sql_row_count_var; END;",
+       "expect": {"value": 3}}
+    ]},
+    {"name": "the-doc-example-for-sqlfound-after-an-update", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE my_values (value NUMBER)"},
+      {"sql": "INSERT INTO my_values VALUES (1), (2), (3)"},
+      {"sql": "BEGIN LET sql_row_count_var INT := 0; LET sql_found_var BOOLEAN := NULL; LET sql_notfound_var BOOLEAN := NULL; IF ((SELECT MAX(value) FROM my_values) > 2) THEN UPDATE my_values SET value = 4 WHERE value < 3; sql_row_count_var := SQLROWCOUNT; sql_found_var := SQLFOUND; sql_notfound_var := SQLNOTFOUND; END IF; SELECT * from my_values; IF (sql_found_var = true) THEN RETURN 'Updated ' || sql_row_count_var || ' rows.'; ELSEIF (sql_notfound_var = true) THEN RETURN 'No rows updated.'; ELSE RETURN 'No DML statements executed.'; END IF; END;",
+       "expect": {"value": "Updated 2 rows."}}
+    ]},
+    {"name": "the-doc-example-for-activity-count", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE my_values (value NUMBER)"},
+      {"sql": "BEGIN INSERT INTO my_values VALUES (1), (2), (3); LET insert_count INT := ACTIVITY_COUNT; SELECT * FROM my_values WHERE value > 1; LET select_count INT := ACTIVITY_COUNT; RETURN 'Inserted ' || insert_count || ' rows, query returned ' || select_count || ' rows.'; END;",
+       "expect": {"value": "Inserted 3 rows, query returned 2 rows."}}
+    ]},
+    {"name": "a-non-dml-statement-resets-the-trio-to-null", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE my_values (value NUMBER)"},
+      {"sql": "BEGIN INSERT INTO my_values VALUES (7); SELECT 1; RETURN 'rc=' || COALESCE(SQLROWCOUNT::VARCHAR, '<null>') || ' f=' || COALESCE(SQLFOUND::VARCHAR, '<null>') || ' nf=' || COALESCE(SQLNOTFOUND::VARCHAR, '<null>'); END;",
+       "expect": {"value": "rc=<null> f=<null> nf=<null>"}}
+    ]},
+    {"name": "all-four-start-null", "steps": [
+      {"sql": "BEGIN RETURN 'rc=' || COALESCE(SQLROWCOUNT::VARCHAR, '<null>') || ' f=' || COALESCE(SQLFOUND::VARCHAR, '<null>') || ' nf=' || COALESCE(SQLNOTFOUND::VARCHAR, '<null>') || ' ac=' || COALESCE(ACTIVITY_COUNT::VARCHAR, '<null>'); END;",
+       "expect": {"value": "rc=<null> f=<null> nf=<null> ac=<null>"}}
+    ]},
+    {"name": "a-zero-row-update-answers-not-found", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE my_values (value NUMBER)"},
+      {"sql": "BEGIN UPDATE my_values SET value = 9 WHERE value = -1; RETURN 'rc=' || SQLROWCOUNT::VARCHAR || ' f=' || SQLFOUND::VARCHAR || ' nf=' || SQLNOTFOUND::VARCHAR; END;",
+       "expect": {"value": "rc=0 f=false nf=true"}}
+    ]},
+    {"name": "truncate-resets-the-trio-like-any-non-dml", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE my_values (value NUMBER)"},
+      {"sql": "BEGIN INSERT INTO my_values VALUES (1), (2); TRUNCATE TABLE my_values; RETURN 'rc=' || COALESCE(SQLROWCOUNT::VARCHAR, '<null>') || ' f=' || COALESCE(SQLFOUND::VARCHAR, '<null>') || ' nf=' || COALESCE(SQLNOTFOUND::VARCHAR, '<null>'); END;",
+       "expect": {"value": "rc=<null> f=<null> nf=<null>"}}
+    ]},
+    {"name": "activity-count-after-a-ddl-is-its-status-row", "steps": [
+      {"sql": "BEGIN LET before INT := ACTIVITY_COUNT; CREATE OR REPLACE TABLE act_probe (v INT); LET after_ddl INT := ACTIVITY_COUNT; RETURN 'before=' || COALESCE(before::VARCHAR, '<null>') || ' after_ddl=' || COALESCE(after_ddl::VARCHAR, '<null>'); END;",
+       "expect": {"value": "before=<null> after_ddl=1"}}
+    ]}
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "suite": "parser-trailing-token-shape",
+  "description": "Where a statement ends in a token that cannot finish it, the refusal names either '<EOF>' or the token itself, and which one is decided by a single question: can the grammar CONSUME that token there? A consumable one is taken and the input then runs out, giving '<EOF>' at the text's end; an unconsumable one is named where it stands. So 'SELECT a FROM kw LEFT JOIN' and 'SELECT a FROM kw .' both name '<EOF>' - JOIN opens a clause that wants a relation, the dot opens a qualified name - while ')' and 'THEN' are named in place. A trailing comma INSIDE parentheses is refused at the closing paren, which follows it. Both engines answer identically for every case here. They part company where Frostlake's grammar gives up on a token live's would have taken - a trailing comma in GROUP BY / ORDER BY, a trailing JOIN / LEFT / IN / OFFSET, and ON, where it is Frostlake that consumes and live that names; those cells are measured and deliberately not asserted, because matching them means giving this grammar live's exact follow sets at every list and clause boundary, which changes acceptance nowhere and risks a great deal. Converted 1:1 from parser/TrailingTokenShapeTest (now retired).",
+  "tags": ["parser", "converted"],
+  "tests": [
+    {"name": "an-opening-keyword-runs-to-end-of-input", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT a FROM kw LEFT JOIN", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 26 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw CROSS JOIN", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 27 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw INNER", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 22 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw UNION", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 22 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw QUALIFY", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 24 unexpected '<EOF>'."}}}
+    ]},
+    {"name": "an-unfinished-expression-runs-to-end-of-input", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT a FROM kw WHERE b = 1 AND", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 32 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw HAVING MAX(a) >", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 32 unexpected '<EOF>'."}}},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 38 unexpected '<EOF>'."}}},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY a ROWS", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 41 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw .", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 18 unexpected '<EOF>'."}}}
+    ]},
+    {"name": "an-unconsumable-token-is-named-where-it-stands", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT a FROM kw )", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 17 unexpected ')'."}}},
+      {"sql": "SELECT a FROM kw ]", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 17 unexpected ']'."}}},
+      {"sql": "SELECT a FROM kw =", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 17 unexpected '='."}}},
+      {"sql": "SELECT a FROM kw THEN", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 17 unexpected 'THEN'."}}},
+      {"sql": "SELECT a FROM kw ELSE", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 17 unexpected 'ELSE'."}}},
+      {"sql": "SELECT a FROM kw *", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 17 unexpected '*'."}}}
+    ]},
+    {"name": "a-trailing-comma-inside-parentheses-names-the-closer", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT MAX(a,) FROM kw", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 13 unexpected ')'."}}},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY a,) FROM kw", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 41 unexpected ')'."}}}
+    ]},
+    {"name": "the-tolerant-lists-stay-tolerant", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT a FROM kw,", "expect": {"rowCount": 0}},
+      {"sql": "SELECT a, FROM kw", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "suite": "functions-array-min",
+  "description": "ARRAY_MIN(array) - the smallest non-null element, returned as a VARIANT (live-verified). NULL elements are ignored, an all-null array answers NULL, and so does a NULL input. Converted 1:1 from functions/ArrayMinTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-smallest-numeric-element", "steps": [
+      {"sql": "SELECT ARRAY_MIN(ARRAY_CONSTRUCT(20, 0, 10))", "expect": {"value": "0"}}
+    ]},
+    {"name": "null-elements-are-ignored", "steps": [
+      {"sql": "SELECT ARRAY_MIN(ARRAY_CONSTRUCT(20, NULL, 0, 10))", "expect": {"value": "0"}}
+    ]},
+    {"name": "an-all-null-array-is-null", "steps": [
+      {"sql": "SELECT ARRAY_MIN(ARRAY_CONSTRUCT(NULL, NULL))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-null-input-is-null", "steps": [
+      {"sql": "SELECT ARRAY_MIN(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

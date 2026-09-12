@@ -1,0 +1,54 @@
+{
+  "suite": "functions-to-timestamp-ntz",
+  "description": "TO_TIMESTAMP_NTZ parsing and use: an ISO T-separated string, a space-separated string, a date-only string (which takes midnight), epoch seconds, and NULL passing through. It works in a WHERE clause comparing parsed strings, as an INSERT value into a TIMESTAMP_NTZ column, over a VARCHAR column, and in a direct comparison between two parsed timestamps; unparseable text is refused. Converted 1:1 from functions/ToTimestampNtzTest (now retired), which was a BaseJdbcTest whose assertions mostly branched on the JDBC runtime type - Timestamp or LocalDateTime - and then only checked non-null; the converted suite reads TO_VARCHAR and pins the parsed value instead, which is the claim those branches were circling. The epoch-seconds cell keeps the Java's weaker non-null assertion, since the class deliberately did not pin an interpretation for it.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "from-an-iso-string", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP_NTZ('2024-01-15T10:30:45')) AS ts",
+       "expect": {"value": "2024-01-15 10:30:45.000"}}
+    ]},
+    {"name": "from-a-space-separated-string", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP_NTZ('2024-01-15 10:30:45')) AS ts",
+       "expect": {"value": "2024-01-15 10:30:45.000"}}
+    ]},
+    {"name": "from-a-date-only-string", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP_NTZ('2024-01-15')) AS ts",
+       "expect": {"value": "2024-01-15 00:00:00.000"}}
+    ]},
+    {"name": "from-epoch-seconds", "steps": [
+      {"sql": "SELECT IFF(TO_TIMESTAMP_NTZ(1705315845) IS NULL, 'null', 'set') AS ts",
+       "expect": {"value": "set"}}
+    ]},
+    {"name": "with-null", "steps": [
+      {"sql": "SELECT TO_TIMESTAMP_NTZ(NULL) AS ts", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "in-a-where-clause", "steps": [
+      {"sql": "CREATE TABLE events (id INTEGER, event_time VARCHAR)"},
+      {"sql": "INSERT INTO events VALUES (1, '2024-01-15 10:30:45')"},
+      {"sql": "INSERT INTO events VALUES (2, '2024-01-16 11:45:30')"},
+      {"sql": "INSERT INTO events VALUES (3, '2024-01-14 09:15:20')"},
+      {"sql": "SELECT id FROM events WHERE TO_TIMESTAMP_NTZ(event_time) > TO_TIMESTAMP_NTZ('2024-01-15 00:00:00') ORDER BY id",
+       "expect": {"rowCount": 2, "rows": [["1"], ["2"]], "ordered": true}}
+    ]},
+    {"name": "as-an-insert-value", "steps": [
+      {"sql": "CREATE TABLE logs (id INTEGER, log_time TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO logs VALUES (1, TO_TIMESTAMP_NTZ('2024-01-15 10:30:45'))"},
+      {"sql": "SELECT TO_VARCHAR(log_time) FROM logs WHERE id = 1",
+       "expect": {"value": "2024-01-15 10:30:45.000"}}
+    ]},
+    {"name": "over-a-varchar-column", "steps": [
+      {"sql": "CREATE TABLE raw_data (id INTEGER, ts_string VARCHAR)"},
+      {"sql": "INSERT INTO raw_data VALUES (1, '2024-01-15T10:30:45')"},
+      {"sql": "INSERT INTO raw_data VALUES (2, '2024-01-16 11:45:30')"},
+      {"sql": "SELECT id, TO_VARCHAR(TO_TIMESTAMP_NTZ(ts_string)) AS parsed_ts FROM raw_data ORDER BY id",
+       "expect": {"rowCount": 2, "rows": [["1", "2024-01-15 10:30:45.000"], ["2", "2024-01-16 11:45:30.000"]], "ordered": true}}
+    ]},
+    {"name": "a-comparison-between-two-parsed-timestamps", "steps": [
+      {"sql": "SELECT TO_TIMESTAMP_NTZ('2024-01-15 10:30:45') < TO_TIMESTAMP_NTZ('2024-01-16 10:30:45') AS result",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "unparseable-text-is-refused", "steps": [
+      {"sql": "SELECT TO_TIMESTAMP_NTZ('invalid-timestamp')", "expect": {"error": {}}}
+    ]}
+  ]
+}

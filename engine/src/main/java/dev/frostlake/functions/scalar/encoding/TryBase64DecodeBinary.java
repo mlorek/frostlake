@@ -24,13 +24,14 @@ import java.util.List;
 
 /** TRY_BASE64_DECODE_BINARY(string) — BASE64_DECODE_BINARY that returns NULL instead of erroring. */
 public class TryBase64DecodeBinary extends BuiltInFunction {
-    public TryBase64DecodeBinary() { super("TRY_BASE64_DECODE_BINARY", BinaryType.VARBINARY); }
+    public TryBase64DecodeBinary() { super("TRY_BASE64_DECODE_BINARY", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         try {
-            return BinaryValue.fromBase64(args.get(0).toString());
+            return BinaryValue.fromBase64(Base64Options.toStandardAlphabet(
+                args.get(0).toString(), Base64Options.alphabetOf(args, 1)));
         } catch (final RuntimeException e) {
             return null;
         }
@@ -39,5 +40,5 @@ public class TryBase64DecodeBinary extends BuiltInFunction {
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

@@ -19,6 +19,7 @@ package dev.frostlake.executor.expressions;
 public class SessionVarExpression implements Expression {
 
     private final String varName;
+    private SourcePosition position;
 
     public SessionVarExpression(final String varName) {
         this.varName = varName;
@@ -26,6 +27,25 @@ public class SessionVarExpression implements Expression {
 
     public String getVarName() {
         return varName;
+    }
+
+    /**
+     * Where the reference was written, as an offset into the expression's own text — stamped by the
+     * builder, so a refusal that points AT the variable can resolve it back to the statement.
+     *
+     * @return the recorded position, or null when nothing stamped one
+     */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    /**
+     * Record where the reference was written.
+     *
+     * @param where its position within the expression's text
+     */
+    public void setPosition(final SourcePosition where) {
+        this.position = where;
     }
 
     @Override

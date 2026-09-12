@@ -1,0 +1,41 @@
+{
+  "suite": "expressions-negative-number",
+  "description": "Unary minus/plus on literals, table values and expressions. Converted 1:1 from expressions/NegativeNumberTest.java (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {
+      "name": "select-negative-integer",
+      "steps": [
+        {"sql": "SELECT -1", "expect": {"value": "-1"}}
+      ]
+    },
+    {
+      "name": "select-negative-float",
+      "steps": [
+        {"sql": "SELECT -2.5", "expect": {"value": "-2.5"}}
+      ]
+    },
+    {
+      "name": "select-negative-in-table",
+      "steps": [
+        {"sql": "CREATE TABLE test (id INTEGER, value INTEGER)"},
+        {"sql": "INSERT INTO test VALUES (-1, -100)"},
+        {"sql": "SELECT * FROM test", "expect": {"rows": [["-1", "-100"]]}}
+      ]
+    },
+    {
+      "name": "select-positive-with-unary-plus",
+      "steps": [
+        {"sql": "SELECT +5", "expect": {"value": "5"}}
+      ]
+    },
+    {
+      "name": "select-negative-expression",
+      "steps": [
+        {"sql": "CREATE TABLE test (value INTEGER)"},
+        {"sql": "INSERT INTO test VALUES (10)"},
+        {"sql": "SELECT -value FROM test", "expect": {"value": "-10"}}
+      ]
+    }
+  ]
+}

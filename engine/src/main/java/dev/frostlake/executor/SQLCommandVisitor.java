@@ -22,6 +22,7 @@ import dev.frostlake.executor.commands.ColumnDefinitionParser;
 import dev.frostlake.executor.commands.CommentCommandHandler;
 import dev.frostlake.executor.commands.DDLCommandHandler;
 import dev.frostlake.executor.commands.DMLCommandHandler;
+import dev.frostlake.executor.commands.DynamicTableProperties;
 import dev.frostlake.executor.commands.GrantRevokeHandler;
 import dev.frostlake.executor.commands.QueryCommandHandler;
 import dev.frostlake.executor.commands.ShowCommandHandler;
@@ -44,6 +45,7 @@ import dev.frostlake.executor.udf.JavaProcedureExecutor;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
@@ -51,6 +53,7 @@ import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.parser.EmptySchemaPartSyntax;
 import dev.frostlake.parser.FrostlakeBaseVisitor;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
@@ -77,8 +80,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 
@@ -153,8 +158,74 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitStatement(final FrostlakeParser.StatementContext ctx) {
-        rejectUnknownTagReferences(ctx);
-        return visitChildren(ctx);
+        // Every statement is named for the refusal a session with no current database gets.
+        final String enclosingKind = NoCurrentDatabaseRefusal.enter(StatementKindText.of(ctx));
+        try {
+            if (catalog != null && catalog.getCurrentDatabase() == null) {
+                rejectWithoutCurrentDatabase(ctx);
+            }
+            rejectUnknownTagReferences(ctx);
+            rejectUnsetSessionVariables(ctx);
+            return visitChildren(ctx);
+        } finally {
+            NoCurrentDatabaseRefusal.exit(enclosingKind);
+        }
+    }
+
+    /**
+     * A {@code $name} reference to a session variable no SET defined is refused while the statement
+     * compiles, before anything runs and whatever clause it sits in — the select list, a WHERE that can
+     * never be true, an UPDATE's SET, an INSERT's source, a CTAS, a view body — at the variable's own
+     * position, naming it upper-cased: "Session variable '$NOSUCH' does not exist" (live-verified). A
+     * variable SET to NULL exists and reads NULL; a session PARAMETER of the same name is not a variable.
+     * Checked once per statement, so a SET earlier in the same script counts.
+     */
+    private void rejectUnsetSessionVariables(final ParseTree node) {
+        if (node instanceof TerminalNode) {
+            final Token token = ((TerminalNode) node).getSymbol();
+            if (token.getType() == FrostlakeParser.SESSION_VAR_REF) {
+                final String name = token.getText().substring(1).toUpperCase();
+                if (!isDefinedSessionVariable(name)) {
+                    throw new RuntimeException(SqlCompilationError.at(token.getLine(), token.getCharPositionInLine(),
+                        "Session variable '$" + name + "' does not exist"));
+                }
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rejectUnsetSessionVariables(node.getChild(i));
+        }
+    }
+
+    /** Whether SET defined {@code name} (upper-cased) as a session variable. */
+    boolean isDefinedSessionVariable(final String name) {
+        final SecurityManager sm = queryExecutor.getSecurityManager();
+        if (sm != null && sm.getSessionContext() != null) {
+            return sm.getSessionContext().isSessionVariable(name);
+        }
+        return queryExecutor.getSessionVariables().containsKey(name);
+    }
+
+    /**
+     * A statement that creates, changes or drops an object of the current schema needs a current database.
+     * Without one, live refuses it before anything is looked up, whatever the object and IF [NOT] EXISTS
+     * notwithstanding. RENAME COLUMN and RENAME CONSTRAINT are the exception: they look a bare table name up,
+     * and miss it.
+     */
+    private void rejectWithoutCurrentDatabase(final FrostlakeParser.StatementContext ctx) {
+        final FrostlakeParser.QualifiedNameContext target = StatementKindText.underQualifiedTarget(ctx);
+        if (target == null) {
+            return;
+        }
+        if (target.namePart().isEmpty() && StatementKindText.renamesColumnOrConstraint(ctx)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table", qualifiedNameParts(target)[0]));
+        }
+        final FrostlakeParser.DdlStatementContext ddl = ctx.ddlStatement();
+        if (ddl != null && ddl.alterStatement() != null && ddl.alterStatement().dynamicTableAction() != null) {
+            // A property the account refuses outranks the missing database (live-verified).
+            DynamicTableProperties.rejectUntakeable(ddl.alterStatement().dynamicTableAction());
+        }
+        throw NoCurrentDatabaseRefusal.forStatement();
     }
 
     /**
@@ -606,13 +677,11 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
             logger.trace("Declared cursor: {}", cursorName);
         } else if (ctx.RESULTSET() != null) {
-            // ResultSet declaration
+            // ResultSet declaration — bare, or bound to a parenthesized SELECT, EXECUTE IMMEDIATE
+            // or CALL by either DEFAULT or := (live accepts every combination).
             final String resultSetName = getText(ctx.identifier());
-            String selectQuery = null;
-
-            if (ctx.selectStatement() != null) {
-                selectQuery = getOriginalText(ctx.selectStatement());
-            }
+            final String selectQuery = resultSetInitializerText(
+                ctx.selectStatement(), ctx.executeImmediateStatement(), ctx.callStatement());
 
             final DeclareResultSetStatement stmt = new DeclareResultSetStatement(resultSetName, selectQuery);
             proceduralExecutor.executeStatement(stmt);
@@ -628,7 +697,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             }
 
             final DeclareStatement stmt = new DeclareStatement(varName, defaultValue,
-                ctx.dataTypeName() != null ? parseDataType(ctx.dataTypeName(), ctx.typeParameters()) : null);
+                ctx.dataTypeName() != null ? parseDataType(ctx.dataTypeName(), ctx.typeParameters())
+                    : inferredDeclarationType(ctx.expression()));
+            if (ctx.expression() != null) {
+                stmt.setInitializerAt(ctx.expression().getStart().getLine(),
+                    ctx.expression().getStart().getCharPositionInLine());
+            }
             proceduralExecutor.executeStatement(stmt);
 
             logger.trace("Declared variable: {}", varName);
@@ -641,7 +715,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // A DECLARE-section item with the type omitted (`v := expr;`); the type is inferred from the value.
         final String varName = getText(ctx.identifier());
         final Object defaultValue = evaluateExpression(ctx.expression());
-        final DeclareStatement stmt = new DeclareStatement(varName, defaultValue, null);
+        final DeclareStatement stmt = new DeclareStatement(varName, defaultValue,
+            inferredDeclarationType(ctx.expression()));
+        stmt.setInitializerAt(ctx.expression().getStart().getLine(),
+            ctx.expression().getStart().getCharPositionInLine());
         proceduralExecutor.executeStatement(stmt);
         logger.trace("Declared variable (untyped): {}", varName);
         return null;
@@ -657,7 +734,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
 
         final DeclareStatement stmt = new DeclareStatement(varName, defaultValue,
-            ctx.dataTypeName() != null ? parseDataType(ctx.dataTypeName(), ctx.typeParameters()) : null);
+            ctx.dataTypeName() != null ? parseDataType(ctx.dataTypeName(), ctx.typeParameters())
+                : inferredDeclarationType(ctx.expression()));
+        if (ctx.expression() != null) {
+            stmt.setInitializerAt(ctx.expression().getStart().getLine(),
+                ctx.expression().getStart().getCharPositionInLine());
+        }
         proceduralExecutor.executeStatement(stmt);
 
         logger.trace("Declared variable: {}", varName);
@@ -676,19 +758,22 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return null;
     }
 
-    @Override
-    public Object visitResultSetDeclaration(final FrostlakeParser.ResultSetDeclarationContext ctx) {
-        final String resultSetName = getText(ctx.identifier());
-        String selectQuery = null;
-
-        if (ctx.selectStatement() != null) {
-            selectQuery = getOriginalText(ctx.selectStatement());
+    /**
+     * The stored query text of a RESULTSET initializer — the SELECT, EXECUTE IMMEDIATE or CALL inside
+     * the parentheses, whichever the declaration carries — or null for the bare spelling.
+     */
+    private String resultSetInitializerText(final FrostlakeParser.SelectStatementContext select,
+                                            final FrostlakeParser.ExecuteImmediateStatementContext executeImmediate,
+                                            final FrostlakeParser.CallStatementContext call) {
+        if (select != null) {
+            return getOriginalText(select);
         }
-
-        final DeclareResultSetStatement stmt = new DeclareResultSetStatement(resultSetName, selectQuery);
-        proceduralExecutor.executeStatement(stmt);
-
-        logger.trace("Declared resultset: {}", resultSetName);
+        if (executeImmediate != null) {
+            return getOriginalText(executeImmediate);
+        }
+        if (call != null) {
+            return getOriginalText(call);
+        }
         return null;
     }
 
@@ -755,7 +840,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     private void setSessionVar(final SecurityManager sm, final String name, final Object value) {
         if (sm != null) {
-            sm.getSessionContext().setSessionParameter(name, value);
+            sm.getSessionContext().setSessionVariable(name, value);
         } else {
             queryExecutor.getSessionVariables().put(name, value);
         }
@@ -775,7 +860,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         for (final String name : names) {
             if (sm != null) {
-                sm.getSessionContext().unsetSessionParameter(name);
+                sm.getSessionContext().unsetSessionVariable(name);
             } else {
                 queryExecutor.getSessionVariables().remove(name);
             }
@@ -797,10 +882,25 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             return null;
         }
 
+        // LET name RESULTSET [{:= | DEFAULT} ( <query> )] — declared exactly like DECLARE name
+        // RESULTSET: the query text (SELECT, EXECUTE IMMEDIATE or CALL) is stored and executed
+        // lazily on first use, and the bare spelling declares an unbound resultset.
+        if (ctx.RESULTSET() != null) {
+            final DeclareResultSetStatement rsStmt =
+                new DeclareResultSetStatement(varName, resultSetInitializerText(
+                    ctx.selectStatement(), ctx.executeImmediateStatement(), ctx.callStatement()));
+            proceduralExecutor.executeStatement(rsStmt);
+            logger.trace("Let resultset: {}", varName);
+            return null;
+        }
+
         // Regular LET with expression
         final Object defaultValue = evaluateExpression(ctx.expression());
         final DeclareStatement stmt = new DeclareStatement(varName, defaultValue,
-            ctx.dataTypeName() != null ? parseDataType(ctx.dataTypeName(), ctx.typeParameters()) : null);
+            ctx.dataTypeName() != null ? parseDataType(ctx.dataTypeName(), ctx.typeParameters())
+                : inferredDeclarationType(ctx.expression()));
+        stmt.setInitializerAt(ctx.expression().getStart().getLine(),
+            ctx.expression().getStart().getCharPositionInLine());
         proceduralExecutor.executeStatement(stmt);
 
         logger.trace("Let variable: {}", varName);
@@ -1045,6 +1145,38 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return null;
     }
 
+    /**
+     * A CALL result column's type: the declared RETURNS type when the executed RETURN converted its
+     * value to it, else the static type of the expression the RETURN names — a text or a binary one at
+     * the column's full width either way, as live declares it — else the nominal VARCHAR.
+     */
+    private DataType callResultColumnType() {
+        final DataType typed = proceduralExecutor.getReturnedResultType();
+        return typed == null ? StringType.VARCHAR : typed;
+    }
+
+    /**
+     * A CALL result column's type when no RETURN ran: the declared RETURNS type, a text or a binary one
+     * at the column's full width (live-verified: RETURNS NUMBER(5,2) answers a NULL NUMBER(5,2),
+     * RETURNS DATE a NULL DATE, RETURNS VARCHAR(10) a NULL VARCHAR(16777216) and RETURNS BINARY(10) a
+     * NULL BINARY(8388608)); the nominal VARCHAR for a procedure that returns a table.
+     */
+    private static DataType returnlessCallColumnType(final Procedure procedure) {
+        final DataType declared = procedure.getReturnColumns().isEmpty() ? procedure.getReturnType() : null;
+        return declared == null ? StringType.VARCHAR : AnonymousBlockResult.columnType(declared);
+    }
+
+    /** The type an untyped declaration takes from its initialiser, or null — the executor's rule. */
+    private DataType inferredDeclarationType(final FrostlakeParser.ExpressionContext initialiser) {
+        if (initialiser == null) {
+            return null;
+        }
+        final DataType direct = proceduralExecutor.inferUntypedDeclarationType(
+            expressionBuilder.buildExpression(initialiser));
+        return direct != null ? direct
+            : proceduralExecutor.typeOfSqlInitialiser(DeclarationTypes.sqlExpression(initialiser));
+    }
+
     @Override
     public Object visitReturnStatement(final FrostlakeParser.ReturnStatementContext ctx) {
         proceduralExecutor.executeStatement(proceduralBlockBuilder.buildReturnStatement(ctx));
@@ -1171,6 +1303,27 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitCallStatement(final FrostlakeParser.CallStatementContext ctx) {
+        CallArgumentTypes.enterCall();
+        try {
+            return executeCall(ctx);
+        } finally {
+            CallArgumentTypes.exitCall();
+        }
+    }
+
+    /**
+     * A missing procedure, in the unknown-FUNCTION vocabulary (live-verified): the bare name upper-cased
+     * with a full stop and no argument signature, and a qualified spelling reported as an unknown
+     * user-defined function.
+     */
+    private static RuntimeException unknownProcedure(final String qualifiedName, final int parts,
+                                                     final String procName) {
+        return new RuntimeException(SqlCompilationError.of(parts > 1
+            ? "Unknown user-defined function " + qualifiedName.toUpperCase() + "."
+            : "Unknown function " + procName + "."));
+    }
+
+    private Object executeCall(final FrostlakeParser.CallStatementContext ctx) {
         final String qualifiedName = getText(ctx.qualifiedName());
         final String[] parts = qualifiedNameParts(ctx.qualifiedName());
         final String procName = parts[parts.length - 1].toUpperCase();
@@ -1178,19 +1331,27 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final Schema schema;
         if (parts.length == 3) {
             schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
+        } else if (catalog.getCurrentDatabase() == null
+                || parts.length == 1 && catalog.getCurrentSchema() == null) {
+            // With no current database a name the session cannot place names no procedure at all, and
+            // misses in the same words as one that is simply absent (live-verified).
+            throw unknownProcedure(qualifiedName, parts.length, procName);
         } else if (parts.length == 2) {
-            final String dbName = catalog.getCurrentDatabase();
-            if (dbName == null) throw new RuntimeException("No database selected");
-            schema = catalog.getDatabase(dbName).getSchema(parts[0]);
+            schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
         } else {
             schema = resolveCurrentSchema();
         }
 
-        final Procedure procedure = schema.getProcedure(procName);
-
-        if (procedure == null) {
-            throw new RuntimeException("Procedure not found: " + qualifiedName);
+        final List<Procedure> overloads = schema.getProcedureOverloads(procName);
+        if (overloads.isEmpty()) {
+            throw unknownProcedure(qualifiedName, parts.length, procName);
         }
+        // An overloaded name runs the overload the arguments choose, as live chooses it.
+        final Procedure procedure = overloads.size() == 1 || ctx.callArguments() == null
+            ? schema.getProcedure(procName)
+            : CallArgumentTypes.chooseOverload(procName, overloads, ctx.callArguments().callArgument(),
+                new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog(),
+                    queryExecutor));
 
         // Evaluate call arguments — positional and/or named (name => value). Positional args bind to
         // parameters left-to-right; a named arg binds to the parameter whose name it matches; any
@@ -1219,6 +1380,16 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             if (sawNamed && sawPositional) {
                 throw new RuntimeException("SQL compilation error:\n"
                     + "illegal mixing of named and positional arguments for function " + procName);
+            }
+            // Each argument's TYPE is matched against its parameter before any is evaluated, as live
+            // matches them while the CALL compiles, for a CALL written at the top level only. One issued
+            // from a block or a procedure body arrives with its :binds already substituted into the text
+            // as literals, which erases the declared types live judges them by.
+            if (!CallArgumentTypes.isNested()
+                    && (proceduralExecutor == null || proceduralExecutor.getBlockDepth() == 0)) {
+                CallArgumentTypes.check(procName, params, ctx.callArguments().callArgument(), sawNamed,
+                    new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog(),
+                        queryExecutor));
             }
             for (final FrostlakeParser.CallArgumentContext argCtx : ctx.callArguments().callArgument()) {
                 if (argCtx.namedArgument() != null) {
@@ -1292,6 +1463,14 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             final String homeDb = parts.length == 3 ? parts[0] : savedDb;
             final String homeSchema = parts.length == 3 ? parts[1]
                 : parts.length == 2 ? parts[0] : savedSchema;
+            // The body runs under its declared RETURNS type (none for a table-returning one), so a
+            // RETURN written directly in it converts — see the executor's rule.
+            final Set<String> parameterNames = new HashSet<>();
+            for (final Parameter param : params) {
+                parameterNames.add(param.getName());
+            }
+            final DeclaredReturnFrame outerReturn = proceduralExecutor.pushDeclaredReturn(
+                procedure.getReturnColumns().isEmpty() ? procedure.getReturnType() : null, parameterNames);
             proceduralExecutor.enterScope();
             try {
                 if (homeDb != null) {
@@ -1304,7 +1483,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     proceduralExecutor.markDeclaredInCurrentScope(params.get(i).getName());
                     proceduralExecutor.declareVariableType(params.get(i).getName(),
                         params.get(i).getDataType());
-                    proceduralExecutor.setVariable(params.get(i).getName(), arguments.get(i));
+                    proceduralExecutor.setVariable(params.get(i).getName(),
+                        proceduralExecutor.coerceArgument(arguments.get(i), params.get(i).getDataType()));
                 }
 
                 final String body = procedure.getBody();
@@ -1330,12 +1510,20 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 try {
                 for (final FrostlakeParser.StatementContext stmtCtx : flattenedStatements(tree)) {
                     StatementClock.advance();
-                    bodyResult = visit(stmtCtx);
+                    final Object visited = visit(stmtCtx);
+                    // A statement's own result is never the call's — `$$ SELECT 1; $$` and
+                    // `$$ EXECUTE IMMEDIATE 'SELECT 1'; $$` are created and CALL answers NULL
+                    // (live-verified) — unless the statement is a BLOCK that RETURNED: that result is
+                    // the call's, and it ENDS the body, so a statement written after the block never
+                    // runs, as it never runs on the account.
+                    final boolean block = stmtCtx.proceduralStatement() != null
+                        && stmtCtx.proceduralStatement().beginEndBlock() != null;
+                    bodyResult = block ? visited : null;
                     // Per-statement autocommit, as inside BEGIN…END bodies (Snowflake procedures do
                     // not wrap their statements in one transaction).
                     queryExecutor.getTransactionManager().autocommitStatementEnd();
-                    if (proceduralExecutor.hasReturned()) {
-                        break; // a bare (non-BEGIN…END) RETURN statement stops the body
+                    if (proceduralExecutor.hasReturned() || (block && visited instanceof ResultSet)) {
+                        break; // a RETURN — bare, or surfaced by a block — stops the body
                     }
                 }
                 } finally {
@@ -1353,7 +1541,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     final ResultSet bodyRs = (ResultSet) bodyResult;
                     if (bodyRs.getColumns().size() == 1) {
                         final List<ResultSetColumn> renamed = new ArrayList<>();
-                        renamed.add(new ResultSetColumn(procName, StringType.VARCHAR, null));
+                        renamed.add(new ResultSetColumn(procName, callResultColumnType(), null));
                         return new ResultSet(renamed, bodyRs.getRows());
                     }
                     return bodyRs;
@@ -1370,7 +1558,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     }
                     final List<ResultSetColumn> resultColumns = new ArrayList<>();
                     // Snowflake names a CALL's result column after the procedure (e.g. CALL foo() → "FOO").
-                    resultColumns.add(new ResultSetColumn(procName, StringType.VARCHAR, null));
+                    resultColumns.add(new ResultSetColumn(procName, callResultColumnType(), null));
                     final List<Row> resultRows = new ArrayList<>();
                     resultRows.add(new Row(rv));
                     return new ResultSet(resultColumns, resultRows);
@@ -1379,8 +1567,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 // yields its one-row result set (column named after the procedure), never an empty
                 // result: JDBC executeQuery("CALL p()") must see a result set even for
                 // `BEGIN <dml>; END` bodies whose only RETURN sits in the EXCEPTION handler.
+                // No RETURN ran, so the NULL takes the declared RETURNS type, whatever an earlier RETURN
+                // typed.
                 final List<ResultSetColumn> implicitNullColumns = new ArrayList<>();
-                implicitNullColumns.add(new ResultSetColumn(procName, StringType.VARCHAR, null));
+                implicitNullColumns.add(new ResultSetColumn(procName, returnlessCallColumnType(procedure), null));
                 final List<Row> implicitNullRows = new ArrayList<>();
                 implicitNullRows.add(new Row((Object) null));
                 return new ResultSet(implicitNullColumns, implicitNullRows);
@@ -1389,6 +1579,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             } catch (final Exception e) {
                 throw StatementErrors.propagate(e);
             } finally {
+                proceduralExecutor.restoreDeclaredReturn(outerReturn);
                 proceduralExecutor.exitScope();
                 if (savedDb != null) {
                     // Restore the caller's context WITHOUT re-validating it: this runs while unwinding, so a
@@ -1457,6 +1648,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
             final FrostlakeParser.SqlScriptContext sqlScriptCtx = parser.sqlScript();
             errorListener.throwIfErrors();
+            EmptySchemaPartSyntax.requireWellFormed(sqlScriptCtx, tokens, sqlString);
 
             // If the inner SQL is a procedural block (BEGIN...END or DECLARE...), clear cursors/exceptions
             // from any prior invocation so they don't cause 'already declared' errors on re-execution.
@@ -1481,12 +1673,20 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
             // Execute each statement in the dynamic SQL
             Object lastResult = null;
+            FrostlakeParser.StatementContext lastStatement = null;
             for (final FrostlakeParser.StatementContext stmtCtx : flattenedStatements(sqlScriptCtx)) {
                 lastResult = visit(stmtCtx);
+                lastStatement = stmtCtx;
                 // Cache result sets so RESULT_SCAN(LAST_QUERY_ID()) works after SHOW / SELECT statements
                 if (lastResult instanceof ResultSet) {
                     queryExecutor.getResultCache().cacheResult(sqlString, (ResultSet) lastResult);
                 }
+            }
+            // A session-level EXECUTE IMMEDIATE of an anonymous block answers what the block answers run
+            // directly: one row, NULL when the block finished without a RETURN.
+            if (lastResult == null && !proceduralExecutor.isExecutingBlock()
+                    && AnonymousBlockResult.isBlock(lastStatement)) {
+                lastResult = AnonymousBlockResult.withoutReturn();
             }
 
             logger.trace("Executed EXECUTE IMMEDIATE: {}", sqlString.length() > 50 ? sqlString.substring(0, 50) + "..." : sqlString);
@@ -1778,36 +1978,30 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     public Schema resolveCurrentSchema() {
         if (catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null) {
-            throw new RuntimeException("No database or schema selected");
+            throw NoCurrentDatabaseRefusal.forStatement();
         }
         return catalog.getDatabase(catalog.getCurrentDatabase())
                      .getSchema(catalog.getCurrentSchema());
     }
 
     private String resolveFullyQualifiedName(final String qualifiedName) {
-        final String[] parts = QualifiedName.parse(qualifiedName).parts();
+        final String[] parts = catalog.withoutAccount(QualifiedName.parse(qualifiedName).parts(), 3);
 
         if (parts.length == 1) {
             // table name only - use current database and schema
             if (catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null) {
-                throw new RuntimeException("No database or schema selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
-            return catalog.getCurrentDatabase().toUpperCase() + "." +
-                   catalog.getCurrentSchema().toUpperCase() + "." +
-                   parts[0].toUpperCase();
+            return QualifiedName.key(catalog.getCurrentDatabase(), catalog.getCurrentSchema(), parts[0]);
         } else if (parts.length == 2) {
             // schema.table - use current database
             if (catalog.getCurrentDatabase() == null) {
-                throw new RuntimeException("No database selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
-            return catalog.getCurrentDatabase().toUpperCase() + "." +
-                   parts[0].toUpperCase() + "." +
-                   parts[1].toUpperCase();
+            return QualifiedName.key(catalog.getCurrentDatabase(), parts[0], parts[1]);
         } else if (parts.length == 3) {
             // database.schema.table - fully qualified
-            return parts[0].toUpperCase() + "." +
-                   parts[1].toUpperCase() + "." +
-                   parts[2].toUpperCase();
+            return QualifiedName.key(parts[0], parts[1], parts[2]);
         } else {
             throw new RuntimeException("Invalid qualified name: " + qualifiedName);
         }

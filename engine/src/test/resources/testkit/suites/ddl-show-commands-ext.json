@@ -1,0 +1,167 @@
+{
+  "suite": "ddl-show-commands-ext",
+  "description": "The extended SHOW family plus SHOW COLUMNS' unset-cell rules: SHOW PARAMETERS (bare, LIKE, IN SESSION/ACCOUNT, TIMEZONE and AUTOCOMMIT present), SHOW SESSIONS gone as on live (SESSIONS staying a name), SHOW OBJECTS membership (procedures excluded, IN SCHEMA), SHOW LOCKS (exact columns; a rewrite holds one PARTITIONS lock per transaction+table, INSERT holds none, COMMIT releases, IN ACCOUNT prepends session), SHOW TRANSACTIONS (exact columns; running/scope 0/UUID name/epoch-nano id; the lock references the same transaction id; ROLLBACK ends it), SHOW VARIABLES, SHOW ACCOUNTS and SHOW ORGANIZATION ACCOUNTS. Converted 1:1 from ddl/ShowCommandsExtTest and ShowColumnsUnsetCellsTest (both now retired; unset-cell tests: most unset text cells are the empty string but schema_evolution_record and write_default are genuinely NULL, and an IDENTITY column spells its generator in the autoincrement cell).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "show-parameters", "steps": [
+      {"sql": "SHOW PARAMETERS"},
+      {"sql": "SELECT COUNT(*) > 0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "show-parameters-contains-timezone", "steps": [
+      {"sql": "SHOW PARAMETERS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"key\") = 'TIMEZONE'", "expect": {"value": "1"}}
+    ]},
+    {"name": "show-parameters-contains-autocommit", "steps": [
+      {"sql": "SHOW PARAMETERS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"key\") = 'AUTOCOMMIT'", "expect": {"value": "1"}}
+    ]},
+    {"name": "show-parameters-like-filter", "steps": [
+      {"sql": "SHOW PARAMETERS LIKE 'TIMEZONE%'"},
+      {"sql": "SELECT COUNT_IF(NOT STARTSWITH(UPPER(\"key\"), 'TIMEZONE')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "show-parameters-in-session", "steps": [
+      {"sql": "SHOW PARAMETERS IN SESSION"}
+    ]},
+    {"name": "show-parameters-in-account", "steps": [
+      {"sql": "SHOW PARAMETERS IN ACCOUNT"},
+      {"sql": "SELECT COUNT(*) > 0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "show-sessions-is-not-a-statement", "steps": [
+      {"sql": "SHOW SESSIONS", "expect": {"error": {}}}
+    ]},
+    {"name": "sessions-is-still-a-usable-name", "steps": [
+      {"sql": "CREATE TABLE sessions (id INTEGER)"},
+      {"sql": "INSERT INTO sessions VALUES (1)"},
+      {"sql": "SELECT id FROM sessions", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "show-objects", "steps": [
+      {"sql": "CREATE TABLE t1 (id INTEGER)"},
+      {"sql": "CREATE VIEW v1 AS SELECT * FROM t1"},
+      {"sql": "SHOW OBJECTS", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "show-objects-contains-table", "steps": [
+      {"sql": "CREATE TABLE my_table (id INTEGER)"},
+      {"sql": "SHOW OBJECTS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MY_TABLE' AND CONTAINS(\"kind\", 'TABLE')",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "show-objects-contains-view", "steps": [
+      {"sql": "CREATE TABLE base (id INTEGER)"},
+      {"sql": "CREATE VIEW my_view AS SELECT * FROM base"},
+      {"sql": "SHOW OBJECTS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MY_VIEW' AND \"kind\" = 'VIEW'",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "show-objects-excludes-procedures", "steps": [
+      {"sql": "CREATE PROCEDURE my_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW OBJECTS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MY_PROC'",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "show-objects-in-schema", "steps": [
+      {"sql": "CREATE SCHEMA other_schema"},
+      {"sql": "USE SCHEMA other_schema"},
+      {"sql": "CREATE TABLE other_table (id INTEGER)"},
+      {"sql": "USE SCHEMA public"},
+      {"sql": "SHOW OBJECTS IN SCHEMA other_schema"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'OTHER_TABLE'",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "show-locks-empty", "steps": [
+      {"sql": "SHOW LOCKS",
+       "expect": {"rowCount": 0, "columns": ["resource", "type", "transaction", "transaction_started_on", "status", "acquired_on", "query_id"]}}
+    ]},
+    {"name": "show-locks-with-active-transaction", "steps": [
+      {"sql": "CREATE TABLE lock_test (id INTEGER)"},
+      {"sql": "CREATE TABLE lock_test2 (id INTEGER)"},
+      {"sql": "INSERT INTO lock_test2 VALUES (0)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO lock_test VALUES (1)"},
+      {"sql": "SHOW LOCKS", "expect": {"rowCount": 0}},
+      {"sql": "UPDATE lock_test2 SET id = 1"},
+      {"sql": "SHOW LOCKS", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"resource\", \"type\", \"status\", \"query_id\" IS NOT NULL, \"acquired_on\" IS NOT NULL FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["TEST_DB.TEST_SCHEMA.LOCK_TEST2", "PARTITIONS", "HOLDING", "true", "true"]]}},
+      {"sql": "UPDATE lock_test2 SET id = 9"},
+      {"sql": "SHOW LOCKS", "expect": {"rowCount": 1}},
+      {"sql": "DELETE FROM lock_test WHERE id = 1"},
+      {"sql": "SHOW LOCKS", "expect": {"rowCount": 2}},
+      {"sql": "SHOW LOCKS IN ACCOUNT", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"session\" IS NULL) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}},
+      {"sql": "COMMIT"},
+      {"sql": "SHOW LOCKS", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "show-locks-in-account-prepends-a-session-column", "steps": [
+      {"sql": "SHOW LOCKS IN ACCOUNT",
+       "expect": {"columns": ["session", "resource", "type", "transaction", "transaction_started_on", "status", "acquired_on", "query_id"]}}
+    ]},
+    {"name": "show-transactions-empty", "steps": [
+      {"sql": "SHOW TRANSACTIONS",
+       "expect": {"rowCount": 0, "columns": ["id", "user", "session", "name", "started_on", "state", "scope"]}}
+    ]},
+    {"name": "show-transactions-active", "steps": [
+      {"sql": "CREATE TABLE txn_test (id INTEGER)"},
+      {"sql": "INSERT INTO txn_test VALUES (0)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO txn_test VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"state\", \"scope\", LENGTH(\"name\"), \"id\" / 1000000 > 1500000000000 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["running", "0", "36", "true"]]}},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SET txid = (SELECT \"id\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "UPDATE txn_test SET id = 9 WHERE id = 0"},
+      {"sql": "SHOW LOCKS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"transaction\" = $txid",
+       "expect": {"value": "1"}},
+      {"sql": "ROLLBACK"},
+      {"sql": "SHOW TRANSACTIONS", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "show-variables-empty", "steps": [
+      {"sql": "SHOW VARIABLES"}
+    ]},
+    {"name": "show-accounts", "steps": [
+      {"sql": "SHOW ACCOUNTS", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"organization_name\" IS NOT NULL, \"account_name\" IS NOT NULL, \"edition\" IS NOT NULL, \"snowflake_region\" IS NOT NULL FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true", "true"]]}}
+    ]},
+    {"name": "show-organization-accounts",
+     "skip": {"backends": ["snowflake"], "reason": "SHOW ORGANIZATION ACCOUNTS needs the ORGADMIN role to return any row (Java test had the same assumption)"},
+     "steps": [
+      {"sql": "SHOW ORGANIZATION ACCOUNTS", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"organization_name\" IS NOT NULL, \"account_name\" IS NOT NULL, \"edition\" IS NOT NULL, \"is_org_admin\" IS NOT NULL FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true", "true"]]}}
+    ]},
+    {"name": "unset-text-cells-are-empty-not-null", "steps": [
+      {"sql": "CREATE TABLE uc_t (\n    plain NUMBER,\n    withdefault NUMBER DEFAULT 7,\n    commented NUMBER COMMENT 'a comment',\n    autocol NUMBER AUTOINCREMENT)"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.uc_t"},
+      {"sql": "SELECT '<' || \"default\" || '>', '<' || \"expression\" || '>', '<' || \"comment\" || '>', '<' || \"autoincrement\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'PLAIN'",
+       "expect": {"rows": [["<>", "<>", "<>", "<>"]]}}
+    ]},
+    {"name": "set-cells-keep-their-value", "steps": [
+      {"sql": "CREATE TABLE uc_t (\n    plain NUMBER,\n    withdefault NUMBER DEFAULT 7,\n    commented NUMBER COMMENT 'a comment',\n    autocol NUMBER AUTOINCREMENT)"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.uc_t"},
+      {"sql": "SELECT MAX(IFF(\"column_name\" = 'WITHDEFAULT', \"default\", NULL)), MAX(IFF(\"column_name\" = 'COMMENTED', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["7", "a comment"]]}}
+    ]},
+    {"name": "an-identity-column-spells-its-generator-in-the-autoincrement-cell", "steps": [
+      {"sql": "CREATE TABLE uc_t (\n    plain NUMBER,\n    withdefault NUMBER DEFAULT 7,\n    commented NUMBER COMMENT 'a comment',\n    autocol NUMBER AUTOINCREMENT)"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.uc_t"},
+      {"sql": "SELECT \"autoincrement\", '<' || \"default\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'AUTOCOL'",
+       "expect": {"rows": [["IDENTITY START 1 INCREMENT 1 NOORDER", "<>"]]}}
+    ]},
+    {"name": "the-trailing-pair-is-genuinely-null", "steps": [
+      {"sql": "CREATE TABLE uc_t (\n    plain NUMBER,\n    withdefault NUMBER DEFAULT 7,\n    commented NUMBER COMMENT 'a comment',\n    autocol NUMBER AUTOINCREMENT)"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.uc_t"},
+      {"sql": "SELECT \"schema_evolution_record\", \"write_default\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'PLAIN'",
+       "expect": {"rows": [["NULL", "NULL"]]}}
+    ]},
+    {"name": "a-derived-column-follows-the-same-rules", "steps": [
+      {"sql": "CREATE TABLE uc_t (\n    plain NUMBER,\n    withdefault NUMBER DEFAULT 7,\n    commented NUMBER COMMENT 'a comment',\n    autocol NUMBER AUTOINCREMENT)"},
+      {"sql": "CREATE VIEW uc_v AS SELECT plain + 1 AS derived FROM uc_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.uc_v"},
+      {"sql": "SELECT '<' || \"default\" || '>', '<' || \"expression\" || '>', '<' || \"comment\" || '>', '<' || \"autoincrement\" || '>', \"schema_evolution_record\", \"write_default\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'DERIVED'",
+       "expect": {"rows": [["<>", "<>", "<>", "<>", "NULL", "NULL"]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "suite": "functions-typeof",
+  "description": "TYPEOF reports Snowflake's variant type names: strings are VARCHAR (not TEXT), floating point is DOUBLE and fixed point is DECIMAL (never REAL), and a SQL NULL input answers SQL NULL - NULL_VALUE is reserved for a JSON null VALUE inside a variant. The engine previously returned TEXT / REAL / NULL_VALUE for these. A bare decimal literal is fixed-point NUMBER, hence DECIMAL, but a bare ::NUMBER is NUMBER(38,0) so 3.14 rounds to a whole value and reports INTEGER; only an explicit scale keeps DECIMAL. Inside PARSE_JSON a plain fraction is DECIMAL and only scientific notation is DOUBLE (all live-verified). Converted 1:1 from functions/TypeOfTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "an-integer-is-integer", "steps": [
+      {"sql": "SELECT TYPEOF(42)", "expect": {"value": "INTEGER"}}
+    ]},
+    {"name": "a-string-is-varchar-not-text", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT('hello'))", "expect": {"value": "VARCHAR"}}
+    ]},
+    {"name": "fixed-point-is-decimal", "steps": [
+      {"sql": "SELECT TYPEOF(3.14)", "expect": {"value": "DECIMAL"}},
+      {"sql": "SELECT TYPEOF(3.14::NUMBER)", "expect": {"value": "INTEGER"}},
+      {"sql": "SELECT TYPEOF(3.14::NUMBER(10,2))", "expect": {"value": "DECIMAL"}}
+    ]},
+    {"name": "floating-point-is-double", "steps": [
+      {"sql": "SELECT TYPEOF(3.14::DOUBLE)", "expect": {"value": "DOUBLE"}}
+    ]},
+    {"name": "a-boolean-is-boolean", "steps": [
+      {"sql": "SELECT TYPEOF(TRUE)", "expect": {"value": "BOOLEAN"}}
+    ]},
+    {"name": "a-sql-null-is-null-and-a-json-null-is-null-value", "steps": [
+      {"sql": "SELECT TYPEOF(NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('null'))", "expect": {"value": "NULL_VALUE"}}
+    ]},
+    {"name": "json-arrays-and-objects-report-their-container", "steps": [
+      {"sql": "SELECT TYPEOF(PARSE_JSON('[1,2]'))", "expect": {"value": "ARRAY"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"a\":1}'))", "expect": {"value": "OBJECT"}}
+    ]},
+    {"name": "a-json-fraction-is-decimal-and-only-an-exponent-is-double", "steps": [
+      {"sql": "SELECT TYPEOF(PARSE_JSON('3.14'))", "expect": {"value": "DECIMAL"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('1e5'))", "expect": {"value": "DOUBLE"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('1.50'))", "expect": {"value": "DECIMAL"}}
+    ]}
+  ]
+}

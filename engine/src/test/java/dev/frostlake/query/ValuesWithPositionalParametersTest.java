@@ -54,6 +54,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT $1, $2
             FROM VALUES(1, 2), (3, 4), (5, 6)
+            ORDER BY 1
             """);
 
         assertEquals(3, result.getRowCount());
@@ -76,6 +77,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT $1, $2
             FROM VALUES('Alice', 'Engineer'), ('Bob', 'Manager')
+            ORDER BY 1
             """);
 
         assertEquals(2, result.getRowCount());
@@ -95,6 +97,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT $2, $1
             FROM VALUES(1, 2)
+            ORDER BY 1
             """);
 
         assertEquals(1, result.getRowCount());
@@ -110,6 +113,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT $1, $1
             FROM VALUES(42)
+            ORDER BY 1
             """);
 
         assertEquals(1, result.getRowCount());
@@ -125,6 +129,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT $1 + $2 AS sum, $1 * $2 AS product
             FROM VALUES(3, 4)
+            ORDER BY 1
             """);
 
         assertEquals(1, result.getRowCount());
@@ -141,6 +146,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
             SELECT $1, $2
             FROM VALUES(1, 10), (2, 20), (3, 30)
             WHERE $1 > 1
+            ORDER BY 1
             """);
 
         assertEquals(2, result.getRowCount());
@@ -183,6 +189,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT $1, $2, $3
             FROM VALUES(1, 2, 3)
+            ORDER BY 1
             """);
 
         assertEquals(1, result.getRowCount());
@@ -199,6 +206,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT *
             FROM VALUES(1, 2, 3)
+            ORDER BY 1
             """);
 
         assertEquals(1, result.getRowCount());
@@ -212,6 +220,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT $1, *
             FROM VALUES(10, 20)
+            ORDER BY 1
             """);
 
         assertEquals(1, result.getRowCount());

@@ -1,0 +1,89 @@
+{
+  "suite": "ddl-alter-table-add-column-backfill",
+  "description": "ALTER TABLE ADD COLUMN backfill semantics (NULL/default backfill, multi-column ADD, IF NOT EXISTS), converted 1:1 from ddl/AlterTableAddColumnBackfillTest.java (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "add-column-no-default-backfills-null",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER)"},
+        {"sql": "INSERT INTO t VALUES (5)"},
+        {"sql": "ALTER TABLE t ADD COLUMN a2 NUMBER"},
+        {"sql": "SELECT a1, a2 FROM t", "expect": {"rows": [["5", null]]}}
+      ]
+    },
+    {
+      "name": "select-star-reflects-new-column-width",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER)"},
+        {"sql": "INSERT INTO t VALUES (5)"},
+        {"sql": "ALTER TABLE t ADD COLUMN a2 NUMBER"},
+        {"sql": "SELECT * FROM t", "expect": {"columns": ["A1", "A2"], "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "add-column-with-default-backfills",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER)"},
+        {"sql": "INSERT INTO t VALUES (5)"},
+        {"sql": "ALTER TABLE t ADD COLUMN a2 NUMBER DEFAULT 7"},
+        {"sql": "SELECT a2 FROM t", "expect": {"value": "7"}}
+      ]
+    },
+    {
+      "name": "rows-inserted-after-add-column-still-work",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER)"},
+        {"sql": "INSERT INTO t VALUES (5)"},
+        {"sql": "ALTER TABLE t ADD COLUMN a2 NUMBER"},
+        {"sql": "INSERT INTO t VALUES (6, 60)"},
+        {"sql": "SELECT a1, a2 FROM t ORDER BY a1", "expect": {"rows": [["5", null], ["6", "60"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "add-column-with-default-feeds-aggregate",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+        {"sql": "ALTER TABLE t ADD COLUMN w NUMBER DEFAULT 10"},
+        {"sql": "SELECT SUM(w) FROM t", "expect": {"value": "30"}}
+      ]
+    },
+    {
+      "name": "add-column-to-empty-table",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER)"},
+        {"sql": "ALTER TABLE t ADD COLUMN a2 NUMBER"},
+        {"sql": "INSERT INTO t VALUES (1, 2)"},
+        {"sql": "SELECT a1, a2 FROM t", "expect": {"rows": [["1", "2"]]}}
+      ]
+    },
+    {
+      "name": "add-multiple-columns-in-one-statement",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER)"},
+        {"sql": "INSERT INTO t VALUES (5)"},
+        {"sql": "ALTER TABLE t ADD b VARCHAR, c NUMBER"},
+        {"sql": "SELECT a1, b, c FROM t", "expect": {"columns": ["A1", "B", "C"], "rows": [["5", null, null]]}}
+      ]
+    },
+    {
+      "name": "add-multiple-columns-with-defaults-backfills-each",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER)"},
+        {"sql": "INSERT INTO t VALUES (5)"},
+        {"sql": "ALTER TABLE t ADD COLUMN d NUMBER DEFAULT 9, e VARCHAR DEFAULT 'z'"},
+        {"sql": "SELECT d, e FROM t", "expect": {"rows": [["9", "z"]]}}
+      ]
+    },
+    {
+      "name": "add-multiple-columns-if-not-exists-skips-existing-only",
+      "steps": [
+        {"sql": "CREATE TABLE t (a1 NUMBER, b NUMBER)"},
+        {"sql": "INSERT INTO t VALUES (1, 2)"},
+        {"sql": "ALTER TABLE t ADD COLUMN IF NOT EXISTS b NUMBER, c NUMBER DEFAULT 7"},
+        {"sql": "SELECT a1, b, c FROM t", "expect": {"columns": ["A1", "B", "C"], "rows": [["1", "2", "7"]]}}
+      ]
+    }
+  ]
+}

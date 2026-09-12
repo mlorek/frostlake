@@ -1,0 +1,24 @@
+{
+  "suite": "scripting-bare-raise",
+  "description": "A bare RAISE in an exception handler re-raises the ORIGINAL error (not a generic one); a handler without re-raise swallows it. Converted 1:1 from scripting/BareRaiseReraiseTest.java (now retired). The original assertFalse(contains 'Error raised') is expressed as messageContains on the propagated NOT NULL wording.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {
+      "name": "bare-raise-re-raises-the-original-error-not-a-generic-one",
+      "steps": [
+        {"sql": "CREATE TABLE rr (a INTEGER NOT NULL)"},
+        {"sql": "BEGIN\n    INSERT INTO rr VALUES (NULL);\nEXCEPTION\n    WHEN OTHER THEN\n        RAISE;\nEND;",
+         "expect": {"error": {"messageContains": "NULL"}}}
+      ]
+    },
+    {
+      "name": "handler-without-reraise-swallows-the-error",
+      "steps": [
+        {"sql": "CREATE TABLE rr2 (a INTEGER NOT NULL)"},
+        {"sql": "CREATE TABLE raise_log (m VARCHAR)"},
+        {"sql": "BEGIN\n    INSERT INTO rr2 VALUES (NULL);\nEXCEPTION\n    WHEN OTHER THEN\n        INSERT INTO raise_log VALUES ('caught');\nEND;"},
+        {"sql": "SELECT COUNT(*) FROM raise_log", "expect": {"value": "1"}}
+      ]
+    }
+  ]
+}

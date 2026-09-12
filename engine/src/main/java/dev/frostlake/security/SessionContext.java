@@ -18,6 +18,7 @@ package dev.frostlake.security;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -55,6 +56,13 @@ public class SessionContext {
     private final Set<String> activeRoles;
     private boolean securityEnabled;
     private final Map<String, Object> sessionParameters;
+    /**
+     * The session VARIABLES SET defined, in the order SET created them. They are stored apart from the
+     * session parameters: a variable and a parameter may carry the same name without either seeing the
+     * other, so {@code SET timezone = 'abc'} leaves the TIMEZONE parameter — and the session's clock —
+     * untouched, and an ALTER SESSION parameter never becomes readable as {@code $name}.
+     */
+    private final Map<String, Object> sessionVariables = new LinkedHashMap<>();
 
     public SessionContext() {
         this.activeRoles = new HashSet<>();
@@ -136,6 +144,7 @@ public class SessionContext {
         securityEnabled = true;
         sessionParameters.clear();
         sessionParameters.put("MULTI_STATEMENT_COUNT", 1);
+        sessionVariables.clear();
     }
 
     public void setSessionParameter(final String name, final Object value) {
@@ -157,7 +166,42 @@ public class SessionContext {
         }
     }
 
+    /** Define, or redefine, the session variable SET names. */
+    public void setSessionVariable(final String name, final Object value) {
+        if (name != null) {
+            sessionVariables.put(name.toUpperCase(), value);
+        }
+    }
+
+    /** A session variable's value, or null when SET never defined one of that name. */
+    public Object getSessionVariable(final String name) {
+        if (name == null) {
+            return null;
+        }
+        return sessionVariables.get(name.toUpperCase());
+    }
+
+    /** Forget a session variable UNSET removed. Removing a name no SET defined is silently accepted. */
+    public void unsetSessionVariable(final String name) {
+        if (name != null) {
+            sessionVariables.remove(name.toUpperCase());
+        }
+    }
+
+    /**
+     * Whether SET defined a session variable of this name. A session PARAMETER is not one: live refuses
+     * {@code $TIMEZONE} and {@code $QUERY_TAG} unless a SET made a variable of that name.
+     */
+    public boolean isSessionVariable(final String name) {
+        return name != null && sessionVariables.containsKey(name.toUpperCase());
+    }
+
     public Map<String, Object> getAllSessionParameters() {
         return new HashMap<>(sessionParameters);
+    }
+
+    /** Every session variable SET defined, in creation order — what SHOW VARIABLES lists. */
+    public Map<String, Object> getAllSessionVariables() {
+        return new LinkedHashMap<>(sessionVariables);
     }
 }

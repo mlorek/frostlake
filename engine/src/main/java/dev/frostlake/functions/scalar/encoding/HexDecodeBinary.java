@@ -24,7 +24,7 @@ import java.util.List;
 
 /** HEX_DECODE_BINARY(string) — decodes a hex string into a BINARY value. */
 public class HexDecodeBinary extends BuiltInFunction {
-    public HexDecodeBinary() { super("HEX_DECODE_BINARY", BinaryType.VARBINARY); }
+    public HexDecodeBinary() { super("HEX_DECODE_BINARY", BinaryType.AT_MAXIMUM); }
 
     @Override
     public Object evaluate(final List<Object> args) {

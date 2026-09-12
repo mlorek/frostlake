@@ -1,0 +1,107 @@
+{
+  "suite": "ddl-comment-if-exists",
+  "description": "COMMENT IF EXISTS ON <object-type> ... IS '<text>' completes SILENTLY for every missing target (database, schema, table, column, the column's table, view, stream, task, warehouse, stage, function, procedure, user, role) and behaves exactly like the plain command when the target exists, read back through the same SHOW/DESCRIBE cells. All live-verified. Converted 1:1 from ddl/CommentIfExistsTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "comment-if-exists-on-database", "steps": [
+      {"sql": "COMMENT IF EXISTS ON DATABASE cmt_ife_nodb IS 'Comment'"},
+      {"sql": "CREATE OR REPLACE DATABASE cmt_ife_db"},
+      {"sql": "COMMENT IF EXISTS ON DATABASE cmt_ife_db IS 'Updated comment'"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_ife_db'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Updated comment"}},
+      {"sql": "DROP DATABASE cmt_ife_db"}
+    ]},
+    {"name": "comment-if-exists-on-schema", "steps": [
+      {"sql": "COMMENT IF EXISTS ON SCHEMA cmt_ife_noschema IS 'Comment'"},
+      {"sql": "CREATE SCHEMA cmt_ife_schema"},
+      {"sql": "COMMENT IF EXISTS ON SCHEMA cmt_ife_schema IS 'Schema comment'"},
+      {"sql": "SHOW SCHEMAS LIKE 'cmt_ife_schema'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Schema comment"}}
+    ]},
+    {"name": "comment-if-exists-on-table", "steps": [
+      {"sql": "COMMENT IF EXISTS ON TABLE cmt_ife_notable IS 'Comment'"},
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "COMMENT IF EXISTS ON TABLE users IS 'User table'"},
+      {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "User table"}}
+    ]},
+    {"name": "comment-if-exists-on-column", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "COMMENT IF EXISTS ON COLUMN users.nonexistent IS 'Comment'"},
+      {"sql": "COMMENT IF EXISTS ON COLUMN cmt_ife_notable.name IS 'Comment'"},
+      {"sql": "COMMENT IF EXISTS ON COLUMN users.name IS 'User name'"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'NAME'", "expect": {"value": "User name"}}
+    ]},
+    {"name": "comment-if-exists-on-view", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "COMMENT IF EXISTS ON VIEW cmt_ife_noview IS 'Comment'"},
+      {"sql": "CREATE VIEW active_users AS SELECT * FROM users"},
+      {"sql": "COMMENT IF EXISTS ON VIEW active_users IS 'Active users'"},
+      {"sql": "SHOW VIEWS LIKE 'active_users'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Active users"}}
+    ]},
+    {"name": "comment-if-exists-on-function", "steps": [
+      {"sql": "COMMENT IF EXISTS ON FUNCTION cmt_ife_nofn() IS 'Comment'"},
+      {"sql": "CREATE FUNCTION add_numbers(x INTEGER, y INTEGER)\nRETURNS INTEGER AS 'x + y'"},
+      {"sql": "COMMENT IF EXISTS ON FUNCTION add_numbers(INTEGER, INTEGER) IS 'Addition function'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'add_numbers'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Addition function"}}
+    ]},
+    {"name": "comment-if-exists-on-procedure", "steps": [
+      {"sql": "COMMENT IF EXISTS ON PROCEDURE cmt_ife_noproc() IS 'Comment'"},
+      {"sql": "CREATE PROCEDURE test_proc()\nRETURNS VARCHAR AS 'BEGIN RETURN ''done''; END;'"},
+      {"sql": "COMMENT IF EXISTS ON PROCEDURE test_proc() IS 'Test procedure'"},
+      {"sql": "SHOW PROCEDURES LIKE 'test_proc'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test procedure"}}
+    ]},
+    {"name": "comment-if-exists-on-stream", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "COMMENT IF EXISTS ON STREAM cmt_ife_nostream IS 'Comment'"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "COMMENT IF EXISTS ON STREAM user_stream IS 'User stream'"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "User stream"}}
+    ]},
+    {"name": "comment-if-exists-on-task", "steps": [
+      {"sql": "CREATE WAREHOUSE cmt_ife_wh"},
+      {"sql": "COMMENT IF EXISTS ON TASK cmt_ife_notask IS 'Comment'"},
+      {"sql": "CREATE TASK daily_task\nWAREHOUSE = 'cmt_ife_wh'\nSCHEDULE = 'USING CRON 0 9 * * * UTC'\nAS SELECT 1"},
+      {"sql": "COMMENT IF EXISTS ON TASK daily_task IS 'Daily task'"},
+      {"sql": "SHOW TASKS LIKE 'daily_task'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Daily task"}},
+      {"sql": "DROP WAREHOUSE cmt_ife_wh"}
+    ]},
+    {"name": "comment-if-exists-on-warehouse", "steps": [
+      {"sql": "COMMENT IF EXISTS ON WAREHOUSE cmt_ife_nowh IS 'Comment'"},
+      {"sql": "CREATE OR REPLACE WAREHOUSE cmt_ife_wh2"},
+      {"sql": "COMMENT IF EXISTS ON WAREHOUSE cmt_ife_wh2 IS 'Test warehouse'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'cmt_ife_wh2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test warehouse"}},
+      {"sql": "DROP WAREHOUSE cmt_ife_wh2"}
+    ]},
+    {"name": "comment-if-exists-on-stage", "steps": [
+      {"sql": "COMMENT IF EXISTS ON STAGE cmt_ife_nostage IS 'Comment'"},
+      {"sql": "CREATE STAGE cmt_ife_stage URL = 's3://bucket/path'"},
+      {"sql": "COMMENT IF EXISTS ON STAGE cmt_ife_stage IS 'Test stage'"},
+      {"sql": "SHOW STAGES LIKE 'cmt_ife_stage'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test stage"}}
+    ]},
+    {"name": "comment-if-exists-on-user", "steps": [
+      {"sql": "COMMENT IF EXISTS ON USER cmt_ife_nouser IS 'Comment'"},
+      {"sql": "CREATE OR REPLACE USER cmt_ife_user PASSWORD = 'Sekrit!42x'"},
+      {"sql": "COMMENT IF EXISTS ON USER cmt_ife_user IS 'Test user'"},
+      {"sql": "SHOW USERS LIKE 'cmt_ife_user'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test user"}},
+      {"sql": "DROP USER cmt_ife_user"}
+    ]},
+    {"name": "comment-if-exists-on-role", "steps": [
+      {"sql": "COMMENT IF EXISTS ON ROLE cmt_ife_norole IS 'Comment'"},
+      {"sql": "CREATE OR REPLACE ROLE cmt_ife_role"},
+      {"sql": "COMMENT IF EXISTS ON ROLE cmt_ife_role IS 'Test role'"},
+      {"sql": "SHOW ROLES LIKE 'cmt_ife_role'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test role"}},
+      {"sql": "DROP ROLE cmt_ife_role"}
+    ]}
+  ]
+}

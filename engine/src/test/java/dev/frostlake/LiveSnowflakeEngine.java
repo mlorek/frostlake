@@ -38,8 +38,11 @@ import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.Token;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.StringNode;
 
 import java.math.BigDecimal;
 import java.sql.ResultSetMetaData;
@@ -389,8 +392,8 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             // A semi-structured column arrives as JSON text. Snowflake keeps a path result VARIANT —
             // so a string leaf comes back QUOTED ("txt") and a number as its JSON text — while the
             // engine unwraps path results to plain runtime values. Unwrap JSON SCALARS to the same
-            // Java shapes the engine produces so value comparisons line up; objects and arrays stay
-            // canonical text (the session already emits it compact, see JSON_INDENT).
+            // Java shapes the engine produces so value comparisons line up; objects and arrays come
+            // back compact, each number token spelled exactly as the account sent it.
             try {
                 final JsonNode node = JSON.readTree((String) value);
                 if (node.isTextual()) {
@@ -399,15 +402,58 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
                 if (node.isBoolean()) {
                     return Boolean.valueOf(node.booleanValue());
                 }
+                if (node.isNumber() && !node.isIntegralNumber()) {
+                    // A DOUBLE leaf stays a double, the shape the engine unwraps a path result to. It
+                    // used to hop through BigDecimal.valueOf, which has no negative zero: the account
+                    // hands GET(PARSE_JSON('[-0e0]'), 0) back as -0.000000000000000e+00, and the hop
+                    // read it as 0.0 — a sign lost in this harness, never on the account.
+                    return Double.valueOf(node.doubleValue());
+                }
                 if (node.isNumber()) {
                     return coerce(node.decimalValue(), false);
                 }
-                return node.toString();
+                return compactKeepingNumbers((String) value);
             } catch (final RuntimeException notJson) {
                 return value;
             }
         }
         return value;
+    }
+
+    /**
+     * The document compacted, with every number token spelled exactly as the account sent it. A tree's
+     * re-serialisation respells a DOUBLE in Java's shortest form — 1.000000000000000e+00 as 1.0 — which
+     * is the one place the account's display and the engine's canonical text differ.
+     */
+    private static String compactKeepingNumbers(final String text) {
+        final StringBuilder out = new StringBuilder();
+        boolean separate = false;
+        try (JsonParser parser = JSON.createParser(text)) {
+            JsonToken token = parser.nextToken();
+            while (token != null) {
+                if (token == JsonToken.END_OBJECT || token == JsonToken.END_ARRAY) {
+                    out.append(token == JsonToken.END_OBJECT ? '}' : ']');
+                    separate = true;
+                } else {
+                    if (separate) {
+                        out.append(',');
+                    }
+                    if (token == JsonToken.START_OBJECT || token == JsonToken.START_ARRAY) {
+                        out.append(token == JsonToken.START_OBJECT ? '{' : '[');
+                        separate = false;
+                    } else if (token == JsonToken.PROPERTY_NAME) {
+                        out.append(StringNode.valueOf(parser.currentName()).toString()).append(':');
+                        separate = false;
+                    } else {
+                        out.append(token == JsonToken.VALUE_STRING
+                            ? StringNode.valueOf(parser.getString()).toString() : parser.getString());
+                        separate = true;
+                    }
+                }
+                token = parser.nextToken();
+            }
+        }
+        return out.toString();
     }
 
     /**

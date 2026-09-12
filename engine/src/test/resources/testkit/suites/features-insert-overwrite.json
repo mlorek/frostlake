@@ -1,0 +1,169 @@
+{
+  "suite": "features-insert-overwrite",
+  "description": "INSERT OVERWRITE semantics: truncate-and-load with VALUES/SELECT/CTE sources, column lists, qualified names, and transactional behaviour (visible inside the transaction, undone by ROLLBACK). Converted 1:1 from features/InsertOverwriteTest.java (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "inside-a-transaction-overwrite-replaces-rows-inserted-by-that-transaction",
+      "steps": [
+        {"sql": "CREATE TABLE staged (id INTEGER, tag VARCHAR)"},
+        {"sql": "BEGIN TRANSACTION"},
+        {"sql": "INSERT INTO staged VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+        {"sql": "INSERT OVERWRITE INTO staged (id, tag) SELECT id, tag FROM staged WHERE id = 3"},
+        {"sql": "SELECT id, tag FROM staged", "expect": {"rows": [["3", "c"]]}},
+        {"sql": "COMMIT"},
+        {"sql": "SELECT id, tag FROM staged", "expect": {"rows": [["3", "c"]]}}
+      ]
+    },
+    {
+      "name": "inside-a-transaction-an-empty-source-still-empties-the-table",
+      "steps": [
+        {"sql": "CREATE TABLE staged (id INTEGER, tag VARCHAR)"},
+        {"sql": "BEGIN TRANSACTION"},
+        {"sql": "INSERT INTO staged VALUES (1, 'a'), (2, 'b')"},
+        {"sql": "INSERT OVERWRITE INTO staged (id, tag) SELECT id, tag FROM staged WHERE 1 = 0"},
+        {"sql": "SELECT id, tag FROM staged", "expect": {"rowCount": 0}},
+        {"sql": "COMMIT"},
+        {"sql": "SELECT id, tag FROM staged", "expect": {"rowCount": 0}}
+      ]
+    },
+    {
+      "name": "inside-a-transaction-overwrite-is-undone-by-rollback",
+      "steps": [
+        {"sql": "CREATE TABLE staged (id INTEGER, tag VARCHAR)"},
+        {"sql": "INSERT INTO staged VALUES (1, 'committed')"},
+        {"sql": "BEGIN TRANSACTION"},
+        {"sql": "INSERT OVERWRITE INTO staged (id, tag) SELECT 9, 'replaced'"},
+        {"sql": "SELECT tag FROM staged", "expect": {"value": "replaced"}},
+        {"sql": "ROLLBACK"},
+        {"sql": "SELECT id, tag FROM staged", "expect": {"rows": [["1", "committed"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-values",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 2}},
+        {"sql": "INSERT OVERWRITE INTO test_table VALUES (3, 'Charlie'), (4, 'Diana')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rows": [["3", "Charlie"], ["4", "Diana"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-select",
+      "steps": [
+        {"sql": "CREATE TABLE source (id INTEGER, value VARCHAR)"},
+        {"sql": "INSERT INTO source VALUES (1, 'A'), (2, 'B'), (3, 'C')"},
+        {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+        {"sql": "INSERT INTO target VALUES (10, 'X'), (20, 'Y')"},
+        {"sql": "SELECT * FROM target", "expect": {"rowCount": 2}},
+        {"sql": "INSERT OVERWRITE INTO target SELECT * FROM source"},
+        {"sql": "SELECT * FROM target", "expect": {"rows": [["1", "A"], ["2", "B"], ["3", "C"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-empty-table",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 0}},
+        {"sql": "INSERT OVERWRITE INTO test_table VALUES (1, 'Alice')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rows": [["1", "Alice"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-column-list",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR, value INTEGER)"},
+        {"sql": "INSERT INTO test_table VALUES (1, 'Alice', 100), (2, 'Bob', 200)"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 2}},
+        {"sql": "INSERT OVERWRITE INTO test_table (id, name) VALUES (3, 'Charlie'), (4, 'Diana')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rows": [["3", "Charlie", null], ["4", "Diana", null]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-select-and-where",
+      "steps": [
+        {"sql": "CREATE TABLE source (id INTEGER, category VARCHAR, value INTEGER)"},
+        {"sql": "INSERT INTO source VALUES (1, 'A', 100), (2, 'B', 200), (3, 'A', 300)"},
+        {"sql": "CREATE TABLE target (id INTEGER, category VARCHAR, value INTEGER)"},
+        {"sql": "INSERT INTO target VALUES (10, 'X', 1000)"},
+        {"sql": "INSERT OVERWRITE INTO target SELECT * FROM source WHERE category = 'A'"},
+        {"sql": "SELECT * FROM target", "expect": {"rows": [["1", "A", "100"], ["3", "A", "300"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-multiple-times",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+        {"sql": "INSERT OVERWRITE INTO test_table VALUES (1, 'First')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rows": [["1", "First"]]}},
+        {"sql": "INSERT OVERWRITE INTO test_table VALUES (2, 'Second')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rows": [["2", "Second"]]}},
+        {"sql": "INSERT OVERWRITE INTO test_table VALUES (3, 'Third')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rows": [["3", "Third"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-vs-regular-insert",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO test_table VALUES (1, 'Alice')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 1}},
+        {"sql": "INSERT INTO test_table VALUES (2, 'Bob')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 2}},
+        {"sql": "INSERT OVERWRITE INTO test_table VALUES (3, 'Charlie')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rows": [["3", "Charlie"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-select-order-by",
+      "steps": [
+        {"sql": "CREATE TABLE source (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO source VALUES (3, 'C'), (1, 'A'), (2, 'B')"},
+        {"sql": "CREATE TABLE target (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO target VALUES (99, 'Z')"},
+        {"sql": "INSERT OVERWRITE INTO target SELECT * FROM source ORDER BY id"},
+        {"sql": "SELECT * FROM target", "expect": {"rows": [["1", "A"], ["2", "B"], ["3", "C"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-cte",
+      "steps": [
+        {"sql": "CREATE TABLE target (id INTEGER, value INTEGER)"},
+        {"sql": "INSERT INTO target VALUES (1, 10), (2, 20)"},
+        {"sql": "SELECT * FROM target", "expect": {"rowCount": 2}},
+        {"sql": "INSERT OVERWRITE INTO target WITH cte AS (SELECT 100 AS id, 200 AS value) SELECT * FROM cte"},
+        {"sql": "SELECT * FROM target", "expect": {"rows": [["100", "200"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-qualified-table-name",
+      "steps": [
+        {"sql": "CREATE TABLE test_schema.test_table (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO test_schema.test_table VALUES (1, 'Old')"},
+        {"sql": "SELECT * FROM test_schema.test_table", "expect": {"rowCount": 1}},
+        {"sql": "INSERT OVERWRITE INTO test_schema.test_table VALUES (2, 'New')"},
+        {"sql": "SELECT * FROM test_schema.test_table", "expect": {"rows": [["2", "New"]]}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-multiple-values",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+        {"sql": "INSERT OVERWRITE INTO test_table VALUES (2, 'B'), (3, 'C'), (4, 'D'), (5, 'E')"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 4}}
+      ]
+    },
+    {
+      "name": "insert-overwrite-with-select-from-values",
+      "steps": [
+        {"sql": "CREATE TABLE target (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO target VALUES (1, 'Old1'), (2, 'Old2')"},
+        {"sql": "SELECT * FROM target", "expect": {"rowCount": 2}},
+        {"sql": "INSERT OVERWRITE INTO target SELECT $1, $2 FROM VALUES(10, 'New1'), (20, 'New2')"},
+        {"sql": "SELECT * FROM target", "expect": {"rows": [["10", "New1"], ["20", "New2"]]}}
+      ]
+    }
+  ]
+}

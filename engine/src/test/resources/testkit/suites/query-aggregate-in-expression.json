@@ -1,0 +1,82 @@
+{
+  "suite": "query-aggregate-in-expression",
+  "description": "An aggregate nested inside a larger scalar expression - a cast (COUNT(*)::VARCHAR), a concatenation ('n=' || COUNT(*)), arithmetic (SUM(x) + 1) - must still be computed as an AGGREGATE. Previously only a bare aggregate call was recognised in the grouped-projection path, so a wrapped aggregate fell through to a column-name lookup and resolved to NULL. The same holds one level further in: an aggregate under a scalar FUNCTION argument (NVL, COALESCE) lives beneath functionArgList/functionArg/booleanExpr rather than as a direct expression child, so it went undetected and the query ran row-by-row with MIN/MAX looked up as scalar functions ('Unknown function: MIN'). Over an EMPTY input the scalar-function form must return its default from an implicit-aggregate one-row NULL rather than crash with an index-out-of-bounds. The regression guard is the last test: NVL over ordinary columns, with no aggregate anywhere, must stay a per-row projection. Converted 1:1 from query/AggregateInExpressionTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "count-star-cast-to-varchar", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT COUNT(*)::VARCHAR FROM t", "expect": {"value": "3"}},
+      {"sql": "SELECT CAST(COUNT(*) AS VARCHAR) FROM t", "expect": {"value": "3"}}
+    ]},
+    {"name": "count-star-cast-to-int", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT COUNT(*)::INT FROM t", "expect": {"value": "3"}}
+    ]},
+    {"name": "aggregates-of-columns-cast", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT COUNT(id)::VARCHAR FROM t", "expect": {"value": "3"}},
+      {"sql": "SELECT MAX(v)::VARCHAR FROM t", "expect": {"value": "z"}}
+    ]},
+    {"name": "an-aggregate-in-a-concatenation", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT 'n=' || COUNT(*) FROM t", "expect": {"value": "n=3"}},
+      {"sql": "SELECT 'x' || COUNT(*)::VARCHAR FROM t", "expect": {"value": "x3"}}
+    ]},
+    {"name": "an-aggregate-in-arithmetic", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT SUM(id) + 1 FROM t", "expect": {"value": "14"}},
+      {"sql": "SELECT COUNT(*) + 1 FROM t", "expect": {"value": "4"}}
+    ]},
+    {"name": "a-nested-aggregate-in-a-scalar-subquery", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT (SELECT COUNT(*)::VARCHAR FROM t)", "expect": {"value": "3"}},
+      {"sql": "SELECT 'count=' || (SELECT COUNT(*)::VARCHAR FROM t)", "expect": {"value": "count=3"}}
+    ]},
+    {"name": "a-nested-aggregate-with-group-by", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT grp, COUNT(*)::VARCHAR AS c FROM t GROUP BY grp ORDER BY grp", "expect": {"rows": [["a", "2"], ["b", "1"]], "ordered": true}}
+    ]},
+    {"name": "a-nested-aggregate-over-an-empty-group-is-zero", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT COUNT(*)::VARCHAR FROM t WHERE id > 999", "expect": {"value": "0"}}
+    ]},
+    {"name": "an-aggregate-inside-nvl", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT NVL(MIN(id), 0) FROM t", "expect": {"value": "1"}}
+    ]},
+    {"name": "an-aggregate-inside-coalesce", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT COALESCE(MIN(id), 0) FROM t", "expect": {"value": "1"}}
+    ]},
+    {"name": "max-inside-nvl", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT NVL(MAX(id), 0) FROM t", "expect": {"value": "10"}}
+    ]},
+    {"name": "an-aggregate-in-a-scalar-fn-over-an-empty-input-uses-the-default", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT NVL(MIN(id), -1) FROM t WHERE id > 999", "expect": {"value": "-1"}}
+    ]},
+    {"name": "an-aggregate-in-a-scalar-fn-inside-a-scalar-subquery", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT (SELECT NVL(MIN(id), -1) FROM t)", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-plain-scalar-function-is-not-treated-as-an-aggregate", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 'x'), ('a', 2, 'y'), ('b', 10, 'z')"},
+      {"sql": "SELECT NVL(v, 'none') FROM t ORDER BY id", "expect": {"rows": [["x"], ["y"], ["z"]], "ordered": true}}
+    ]}
+  ]
+}

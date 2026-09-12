@@ -1,0 +1,50 @@
+{
+  "suite": "query-alias-keywords",
+  "description": "An alias after AS takes a wider vocabulary than a column reference: case, cast, constraint, cross, default, inner, join and when are legal as select-item and table aliases (and a table alias qualifies columns) though illegal as column references, while truly reserved words (select, from, where, order) stay refused. Converted 1:1 from ddl/AliasKeywordTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "each-is-a-legal-select-item-alias", "steps": [
+      {"sql": "CREATE TABLE ak (x NUMBER)"},
+      {"sql": "INSERT INTO ak VALUES (7)"},
+      {"sql": "SELECT x AS case FROM ak", "expect": {"value": "7", "columns": ["case"]}},
+      {"sql": "SELECT x AS cast FROM ak", "expect": {"value": "7", "columns": ["cast"]}},
+      {"sql": "SELECT x AS constraint FROM ak", "expect": {"value": "7", "columns": ["constraint"]}},
+      {"sql": "SELECT x AS cross FROM ak", "expect": {"value": "7", "columns": ["cross"]}},
+      {"sql": "SELECT x AS default FROM ak", "expect": {"value": "7", "columns": ["default"]}},
+      {"sql": "SELECT x AS inner FROM ak", "expect": {"value": "7", "columns": ["inner"]}},
+      {"sql": "SELECT x AS join FROM ak", "expect": {"value": "7", "columns": ["join"]}},
+      {"sql": "SELECT x AS when FROM ak", "expect": {"value": "7", "columns": ["when"]}}
+    ]},
+    {"name": "each-is-a-legal-table-alias", "steps": [
+      {"sql": "CREATE TABLE ak (x NUMBER)"},
+      {"sql": "INSERT INTO ak VALUES (7)"},
+      {"sql": "SELECT x FROM ak AS case", "expect": {"value": "7"}},
+      {"sql": "SELECT x FROM ak AS cast", "expect": {"value": "7"}},
+      {"sql": "SELECT x FROM ak AS constraint", "expect": {"value": "7"}},
+      {"sql": "SELECT x FROM ak AS cross", "expect": {"value": "7"}},
+      {"sql": "SELECT x FROM ak AS default", "expect": {"value": "7"}},
+      {"sql": "SELECT x FROM ak AS inner", "expect": {"value": "7"}},
+      {"sql": "SELECT x FROM ak AS join", "expect": {"value": "7"}},
+      {"sql": "SELECT x FROM ak AS when", "expect": {"value": "7"}}
+    ]},
+    {"name": "the-table-alias-qualifies-a-column", "steps": [
+      {"sql": "CREATE TABLE ak (x NUMBER)"},
+      {"sql": "INSERT INTO ak VALUES (7)"},
+      {"sql": "SELECT inner.x FROM ak AS inner", "expect": {"value": "7", "columns": ["x"]}}
+    ]},
+    {"name": "the-ordinary-aliases-still-work", "steps": [
+      {"sql": "CREATE TABLE ak (x NUMBER)"},
+      {"sql": "INSERT INTO ak VALUES (7)"},
+      {"sql": "SELECT x AS c FROM ak AS t", "expect": {"value": "7", "columns": ["c"]}},
+      {"sql": "SELECT x AS auto FROM ak AS limit", "expect": {"value": "7", "columns": ["auto"]}}
+    ]},
+    {"name": "a-reserved-word-is-still-refused-as-an-alias", "steps": [
+      {"sql": "CREATE TABLE ak (x NUMBER)"},
+      {"sql": "INSERT INTO ak VALUES (7)"},
+      {"sql": "SELECT x AS select FROM ak", "expect": {"error": {}}},
+      {"sql": "SELECT x AS from FROM ak", "expect": {"error": {}}},
+      {"sql": "SELECT x AS where FROM ak", "expect": {"error": {}}},
+      {"sql": "SELECT x AS order FROM ak", "expect": {"error": {}}}
+    ]}
+  ]
+}

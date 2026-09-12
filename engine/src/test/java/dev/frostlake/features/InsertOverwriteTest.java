@@ -93,12 +93,12 @@ public class InsertOverwriteTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')");
 
-        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(2, rs1.getRowCount());
 
         engine.execute("INSERT OVERWRITE INTO test_table VALUES (3, 'Charlie'), (4, 'Diana')");
 
-        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(2, rs2.getRowCount());
         assertEquals(3L, rs2.getRows().get(0).getValue(0));
         assertEquals("Charlie", rs2.getRows().get(0).getValue(1));
@@ -141,12 +141,12 @@ public class InsertOverwriteTest extends BaseDatabaseTest {
 
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
 
-        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(0, rs1.getRowCount());
 
         engine.execute("INSERT OVERWRITE INTO test_table VALUES (1, 'Alice')");
 
-        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(1, rs2.getRowCount());
         assertEquals(1L, rs2.getRows().get(0).getValue(0));
         assertEquals("Alice", rs2.getRows().get(0).getValue(1));
@@ -161,12 +161,12 @@ public class InsertOverwriteTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR, value INTEGER)");
         engine.execute("INSERT INTO test_table VALUES (1, 'Alice', 100), (2, 'Bob', 200)");
 
-        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(2, rs1.getRowCount());
 
         engine.execute("INSERT OVERWRITE INTO test_table (id, name) VALUES (3, 'Charlie'), (4, 'Diana')");
 
-        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(2, rs2.getRowCount());
         assertEquals(3L, rs2.getRows().get(0).getValue(0));
         assertEquals("Charlie", rs2.getRows().get(0).getValue(1));
@@ -203,17 +203,17 @@ public class InsertOverwriteTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, value VARCHAR)");
 
         engine.execute("INSERT OVERWRITE INTO test_table VALUES (1, 'First')");
-        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(1, rs1.getRowCount());
         assertEquals("First", rs1.getRows().get(0).getValue(1));
 
         engine.execute("INSERT OVERWRITE INTO test_table VALUES (2, 'Second')");
-        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(1, rs2.getRowCount());
         assertEquals("Second", rs2.getRows().get(0).getValue(1));
 
         engine.execute("INSERT OVERWRITE INTO test_table VALUES (3, 'Third')");
-        final ResultSet rs3 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs3 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(1, rs3.getRowCount());
         assertEquals("Third", rs3.getRows().get(0).getValue(1));
 
@@ -227,17 +227,17 @@ public class InsertOverwriteTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO test_table VALUES (1, 'Alice')");
 
-        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(1, rs1.getRowCount());
 
         engine.execute("INSERT INTO test_table VALUES (2, 'Bob')");
 
-        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(2, rs2.getRowCount());
 
         engine.execute("INSERT OVERWRITE INTO test_table VALUES (3, 'Charlie')");
 
-        final ResultSet rs3 = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs3 = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(1, rs3.getRowCount());
         assertEquals(3L, rs3.getRows().get(0).getValue(0));
         assertEquals("Charlie", rs3.getRows().get(0).getValue(1));
@@ -257,10 +257,14 @@ public class InsertOverwriteTest extends BaseDatabaseTest {
 
         engine.execute("INSERT OVERWRITE INTO target SELECT * FROM source ORDER BY id");
 
-        final ResultSet rs = engine.executeQuery("SELECT * FROM target");
+        // What OVERWRITE promises is that the old contents are GONE and the new ones are all there —
+        // not that the source's ORDER BY fixed where the rows physically landed, which nothing does.
+        final ResultSet rs = engine.executeQuery("SELECT * FROM target ORDER BY id");
         assertEquals(3, rs.getRowCount());
         assertEquals(1L, rs.getRows().get(0).getValue(0));
         assertEquals("A", rs.getRows().get(0).getValue(1));
+        assertEquals(2L, rs.getRows().get(1).getValue(0));
+        assertEquals(3L, rs.getRows().get(2).getValue(0));
 
         logger.info("INSERT OVERWRITE with SELECT ORDER BY works correctly");
     }
@@ -320,7 +324,7 @@ public class InsertOverwriteTest extends BaseDatabaseTest {
 
         engine.execute("INSERT OVERWRITE INTO test_table VALUES (2, 'B'), (3, 'C'), (4, 'D'), (5, 'E')");
 
-        final ResultSet rs = engine.executeQuery("SELECT * FROM test_table");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_table ORDER BY id");
         assertEquals(4, rs.getRowCount());
 
         logger.info("INSERT OVERWRITE with multiple value tuples works correctly");

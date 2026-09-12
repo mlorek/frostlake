@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.AnonymousBlockResult;
 import dev.frostlake.executor.ContinueHandler;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
@@ -27,17 +28,16 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.storage.ResultSet;
-import dev.frostlake.storage.ResultSetColumn;
-import dev.frostlake.storage.Row;
 import dev.frostlake.transaction.TransactionManager;
+import dev.frostlake.types.DataType;
 import dev.frostlake.types.StringType;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -77,14 +77,48 @@ public class BeginEndBlockHandler implements CommandHandler {
         return queryExecutor;
     }
 
+    /** The declared types of the names already in scope: for a procedure's own block, its parameters. */
+    private Map<String, DataType> declaredTypesInScope() {
+        final Map<String, DataType> types = new HashMap<String, DataType>();
+        for (final String name : proceduralExecutor.getAllVariables().keySet()) {
+            final DataType type = proceduralExecutor.getDeclaredVariableType(name);
+            if (type != null) {
+                types.put(ScriptingNameValidator.canonical(name), type);
+            }
+        }
+        return types;
+    }
+
     public Object handle(final FrostlakeParser.BeginEndBlockContext ctx) {
+        // A syntax fault the engine's grammar reads past is refused before anything else is judged.
+        ScriptingNameValidator.rejectDottedBindVariables(ctx);
+        // An unnamed bind is refused while the block compiles, before any statement of it runs.
+        ScriptingNameValidator.rejectUnnamedBinds(ctx);
         // Compile the WHOLE block before running any of it, as Snowflake does: a name that resolves to
         // nothing is refused even on a branch this run will not take. Seeded with what is already in
         // scope — a stored procedure's parameters, or an enclosing block's variables.
         final Set<String> inScope = new HashSet<String>(proceduralExecutor.getAllVariables().keySet());
         inScope.addAll(proceduralExecutor.saveCursorNames());
         inScope.addAll(proceduralExecutor.declaredExceptionNames());
-        ScriptingNameValidator.validate(ctx, inScope);
+        // A procedure's OWN block also judges its direct RETURNs against the declared RETURNS type in
+        // the same pass, so whichever fault comes first in the body is the one reported, as live does.
+        // A name introduced twice in one scope is refused before any other name is judged, even one
+        // used earlier in the block (live-verified). A procedure's own block has its parameters in scope,
+        // and only those: the variables of a block that called it are another scope.
+        final Set<String> parameters = new HashSet<String>();
+        for (final String name : proceduralExecutor.ownBlockParameterNames()) {
+            parameters.add(ScriptingNameValidator.canonical(name));
+        }
+        ScriptingNameValidator.rejectRedeclaration(ctx, parameters, false);
+        final DataType declaredReturn = proceduralExecutor.declaredReturnOfNextBlock();
+        ScriptingNameValidator.validate(ctx, inScope, declaredReturn == null ? null
+            : new DeclaredReturnJudge(declaredReturn, declaredTypesInScope(), queryExecutor));
+        // The DECLARED TYPES are judged in the same pass and for the same reason: live refuses a bad
+        // width while COMPILING the block, so it never becomes a runtime exception and never reaches
+        // the uncaught-exception wrapper below. This sits BEFORE enterScope/enterBlock deliberately —
+        // a refusal thrown after those runs would skip the finally that unwinds them and leave the
+        // executor believing it is still inside a block, which breaks every later block in the session.
+        ScriptTypeCompiler.validateDeclaredTypes(ctx);
 
         // Enter a new scope for this block; also snapshot cursors so inner-declared
         // cursors are cleaned up when the block exits.
@@ -223,15 +257,12 @@ public class BeginEndBlockHandler implements CommandHandler {
                     return returnValue;
                 }
 
-                // Otherwise, return the value as a single-row, single-column ResultSet
-                final List<ResultSetColumn> columns = new ArrayList<>();
-                columns.add(new ResultSetColumn("RESULT", StringType.VARCHAR, null));
-
-                final List<Row> rows = new ArrayList<>();
-                final Row row = new Row(returnValue);
-                rows.add(row);
-
-                return new ResultSet(columns, rows);
+                // Otherwise, return the value as the block's single-row, single-column result: typed by
+                // the declared RETURNS type when the RETURN converted to it, else by the static type of
+                // the expression the RETURN names (a text or a binary one at the full width Snowflake
+                // declares), else the nominal VARCHAR. A CALL renames the column after its procedure.
+                final DataType typed = proceduralExecutor.getReturnedResultType();
+                return AnonymousBlockResult.of(returnValue, typed == null ? StringType.VARCHAR : typed);
             }
         } catch (final ProceduralException uncaught) {
             // An exception no handler caught reads with live's wording at the TOP of the script
@@ -253,7 +284,8 @@ public class BeginEndBlockHandler implements CommandHandler {
             // here with a statement position, so a syntax error stays a plain syntax error.
             if (outermostBlock && proceduralExecutor.getFailureLine() > 0
                     && !(uncaught instanceof UndeclaredScriptVariableException)) {
-                throw new RuntimeException("Uncaught exception of type 'STATEMENT_ERROR' on line "
+                throw new RuntimeException("Uncaught exception of type '"
+                    + proceduralExecutor.getFailureKind() + "' on line "
                     + proceduralExecutor.getFailureLine() + " at position "
                     + proceduralExecutor.getFailurePosition() + " : " + uncaught.getMessage(), uncaught);
             }
@@ -290,6 +322,7 @@ public class BeginEndBlockHandler implements CommandHandler {
         final Object prevSqlState = proceduralExecutor.getVariable("SQLSTATE");
         bindHandlerErrorVariables(e);
         proceduralExecutor.pushHandledException(e);
+        proceduralExecutor.enterCompound();
         try {
             for (final FrostlakeParser.StatementContext stmtCtx : handlerCtx.statementList().statement()) {
                 StatementClock.advance();
@@ -297,6 +330,7 @@ public class BeginEndBlockHandler implements CommandHandler {
                 queryExecutor.getTransactionManager().autocommitStatementEnd();
             }
         } finally {
+            proceduralExecutor.exitCompound();
             proceduralExecutor.popHandledException();
             proceduralExecutor.setVariable("SQLCODE", prevSqlCode);
             proceduralExecutor.setVariable("SQLERRM", prevSqlErrm);

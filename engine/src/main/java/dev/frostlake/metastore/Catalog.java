@@ -45,6 +45,7 @@ import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.security.SessionContext;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -55,6 +56,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class Catalog {
 
+    // The account locator a fully qualified name may lead with; null until the engine sets it.
+    private String accountLocator;
     private final Map<String, Database> databases;
     private final Map<String, Warehouse> warehouses;
     private final Map<String, ComputePool> computePools = new ConcurrentHashMap<>();
@@ -104,7 +107,7 @@ public class Catalog {
     public void createDatabase(final String name) {
         final String upperName = name.toUpperCase();
         if (databases.containsKey(upperName)) {
-            throw new RuntimeException("Database already exists: " + name);
+            throw new RuntimeException(alreadyExists(upperName));
         }
         // The name is stored as the reference resolved it — bare folded to upper, quoted verbatim — so a
         // database created as "mixedDb" is still called mixedDb. Folding it here lost that, and with it any
@@ -120,7 +123,7 @@ public class Catalog {
         final String targetUpper = targetName.toUpperCase();
 
         if (databases.containsKey(targetUpper)) {
-            throw new RuntimeException("Database already exists: " + targetName);
+            throw new RuntimeException(alreadyExists(targetUpper));
         }
 
         final Database sourceDb = getDatabase(sourceName);
@@ -128,12 +131,51 @@ public class Catalog {
         databases.put(targetUpper, targetDb);
     }
 
+    /**
+     * The sentence live gives for a name already taken — the same one a renamed table gets, so every
+     * kind of object answers alike. The name is canonical, which is what a bare one folds to.
+     *
+     * @param canonicalName the taken name, already folded
+     * @return the refusal message
+     */
+    private static String alreadyExists(final String canonicalName) {
+        return SqlCompilationError.of("Object '" + canonicalName + "' already exists.");
+    }
+
     public void dropDatabase(final String name, final boolean cascade) {
         final String upperName = name.toUpperCase();
         if (!databases.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
-        databases.remove(upperName);
+        final Database dropped = databases.remove(upperName);
+        // ★ DROPPING THE CURRENT DATABASE LEAVES THE SESSION WITH NO CONTEXT AT ALL. Live answers NULL
+        // to both CURRENT_DATABASE() and CURRENT_SCHEMA() afterwards; keeping the dropped name current
+        // leaves a pair that names nothing and fails whenever an unqualified name is resolved. The session
+        // carries the stored name, which differs from the index key only in case.
+        if (dropped.getName().equalsIgnoreCase(getCurrentDatabase())) {
+            setCurrentDatabaseName(null);
+            setCurrentSchemaName(null);
+        }
+    }
+
+    /**
+     * Drop a schema and move the session off it when it was the current one.
+     *
+     * <p>★ THE SCHEMA FALLS BACK TO PUBLIC, not to nothing — live leaves the DATABASE alone and puts
+     * the schema back to PUBLIC, which is the same landing place {@link #useDatabase} chooses. Only
+     * dropping the database itself clears both.
+     *
+     * @param databaseName the schema's database
+     * @param schemaName the schema to drop
+     * @param cascade whether to drop the schema's contents with it
+     */
+    public void dropSchema(final String databaseName, final String schemaName, final boolean cascade) {
+        final Database database = getDatabase(databaseName);
+        database.dropSchema(schemaName, cascade);
+        if (schemaName.equalsIgnoreCase(getCurrentSchema())
+                && database.getName().equalsIgnoreCase(getCurrentDatabase())) {
+            setCurrentSchemaName(database.hasSchema("PUBLIC") ? "PUBLIC" : null);
+        }
     }
 
     /**
@@ -213,10 +255,31 @@ public class Catalog {
      * brackets every statement with begin/clear so sessions cannot see each other's context.
      */
     public void beginSessionScope(final String database, final String schema) {
-        sessionScope.set(new String[] {
-            database == null ? null : database.toUpperCase(),
-            schema == null ? null : schema.toUpperCase()
-        });
+        sessionScope.set(new String[] {storedDatabaseName(database), storedSchemaName(database, schema)});
+    }
+
+    /**
+     * The name a database is stored under, for a name a session or a saved context already holds. The
+     * index is case-insensitive, so the object is found whatever case the holder kept, and the context
+     * then carries the object's own spelling: a quoted lower-case name folded to upper case names nothing
+     * an exact lookup can find. A name matching no database is folded, as it always was.
+     */
+    private String storedDatabaseName(final String name) {
+        if (name == null) {
+            return null;
+        }
+        final Database database = databases.get(name.toUpperCase());
+        return database != null ? database.getName() : name.toUpperCase();
+    }
+
+    /** {@link #storedDatabaseName}'s counterpart for a schema of that database. */
+    private String storedSchemaName(final String databaseName, final String schemaName) {
+        if (schemaName == null) {
+            return null;
+        }
+        final Database database = databaseName == null ? null : databases.get(databaseName.toUpperCase());
+        return database != null && database.hasSchema(schemaName)
+            ? database.getSchema(schemaName).getName() : schemaName.toUpperCase();
     }
 
     /** End this thread's session scope (idempotent). Read the final values via the getters first. */
@@ -258,11 +321,14 @@ public class Catalog {
 
     public void useDatabase(final String name) {
         final Database database = getDatabase(name); // Validates existence
-        setCurrentDatabaseName(name.toUpperCase());
+        // The session carries the database's STORED name, not the caller's spelling folded: a database
+        // created as "php dsn db" is current as php dsn db, which is what CURRENT_DATABASE() answers and
+        // what the exact lookup of every unqualified name needs.
+        setCurrentDatabaseName(database.getName());
         // Switching database also moves the current schema, as Snowflake does: leaving a schema of the OLD
         // database current produces an impossible (database, schema) pair that then fails whenever anything
         // resolves an unqualified name. PUBLIC when the new database has one, otherwise unset.
-        setCurrentSchemaName(database.getSchema("PUBLIC") != null ? "PUBLIC" : null);
+        setCurrentSchemaName(database.hasSchema("PUBLIC") ? "PUBLIC" : null);
     }
 
     /**
@@ -270,20 +336,64 @@ public class Catalog {
      * task back to the caller's context. Re-running {@link #useDatabase}/{@link #useSchema} there can throw
      * (the objects may have been dropped meanwhile, or the saved pair may no longer be valid), and an
      * exception raised while unwinding replaces the statement's real result and escapes the procedure's own
-     * EXCEPTION handler.
+     * EXCEPTION handler. Names that still match an object are restored in its stored spelling.
      */
     public void restoreContext(final String databaseName, final String schemaName) {
-        setCurrentDatabaseName(databaseName == null ? null : databaseName.toUpperCase());
-        setCurrentSchemaName(schemaName == null ? null : schemaName.toUpperCase());
+        setCurrentDatabaseName(storedDatabaseName(databaseName));
+        setCurrentSchemaName(storedSchemaName(databaseName, schemaName));
     }
 
     public void useSchema(final String name) {
         if (getCurrentDatabase() == null) {
-            throw new RuntimeException("No database selected");
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
         final Database db = getDatabase(getCurrentDatabase());
-        db.getSchema(name); // Validates existence
-        setCurrentSchemaName(name.toUpperCase());
+        setCurrentSchemaName(db.getSchema(name).getName()); // Validates existence
+    }
+
+    /**
+     * USE DATABASE as a SQL reference resolves it — EXACTLY: the reference's resolved name (a bare one
+     * folded to upper case, a quoted one verbatim) must equal a stored name, so {@code "audit_db"} does
+     * not select AUDIT_DB and a bare {@code mixeddb} does not select {@code "MiXedDb"}. A miss names
+     * nothing — live answers every failed USE with the same sentence — and leaves the context as it was.
+     *
+     * @param resolvedName the database reference, resolved
+     */
+    public void useDatabaseReference(final String resolvedName) {
+        final Database database = exactDatabaseOrNull(resolvedName);
+        if (database == null) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+        useDatabase(database.getName());
+    }
+
+    /**
+     * USE SCHEMA as a SQL reference resolves it, exactly as {@link #useDatabaseReference} does, for a
+     * schema of the named database or, with no database part, of the current one. Both parts resolve
+     * before anything moves, so a missing schema leaves the current database unchanged too.
+     *
+     * @param resolvedDatabase the database part, resolved, or null for the current database
+     * @param resolvedSchema the schema part, resolved
+     */
+    public void useSchemaReference(final String resolvedDatabase, final String resolvedSchema) {
+        if (resolvedDatabase == null && getCurrentDatabase() == null) {
+            // Live answers USE SCHEMA with no current database in the sentence of any failed USE.
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+        final Database database = exactDatabaseOrNull(resolvedDatabase != null ? resolvedDatabase : getCurrentDatabase());
+        final Schema schema = database == null || !database.hasSchema(resolvedSchema)
+            ? null : database.getSchema(resolvedSchema);
+        if (schema == null || !schema.getName().equals(resolvedSchema)) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+        setCurrentDatabaseName(database.getName());
+        setCurrentSchemaName(schema.getName());
+    }
+
+    /** The database whose stored name is exactly {@code resolvedName}, or null. */
+    private Database exactDatabaseOrNull(final String resolvedName) {
+        final Database database = databases.get(resolvedName.toUpperCase());
+        return database != null && database.getName().equals(resolvedName) ? database : null;
     }
 
     public String getCurrentDatabase() {
@@ -318,18 +428,54 @@ public class Catalog {
         return table;
     }
 
-    public Table resolveTable(final QualifiedName qn) {
+    /**
+     * The account locator a name may lead with — set from the engine's configuration, upper-cased as a
+     * bare identifier folds; null leaves every name as written.
+     *
+     * @param locator the locator CURRENT_ACCOUNT() answers with
+     */
+    public void setAccountLocator(final String locator) {
+        this.accountLocator = locator == null ? null : locator.toUpperCase();
+    }
+
+    /**
+     * An object name without the account locator it may lead with. A fully qualified name has up to
+     * {@code objectParts} parts (three for a table or view, two for a schema); live accepts one more in
+     * front when it is THIS account's locator — {@code am68630.db.s.t}, a quoted {@code "AM68630"} too —
+     * and resolves the rest exactly as the shorter spelling. Any other extra part, a wrong account or a
+     * fifth part, names nothing and is refused in the sentence live gives.
+     *
+     * @param parts the resolved parts (a bare one folded, a quoted one verbatim)
+     * @param objectParts how many parts the name may have without the account
+     * @return the parts naming the object within the account
+     */
+    public String[] withoutAccount(final String[] parts, final int objectParts) {
+        if (parts.length <= objectParts) {
+            return parts;
+        }
+        if (parts.length == objectParts + 1 && accountLocator != null && accountLocator.equals(parts[0])) {
+            return Arrays.copyOfRange(parts, 1, parts.length);
+        }
+        throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+    }
+
+    private QualifiedName withoutAccount(final QualifiedName qn, final int objectParts) {
+        return qn.size() <= objectParts ? qn : QualifiedName.of(withoutAccount(qn.parts(), objectParts));
+    }
+
+    public Table resolveTable(final QualifiedName written) {
+        final QualifiedName qn = withoutAccount(written, 3);
         if (qn.size() == 1) {
             // table name only
             if (getCurrentDatabase() == null || getCurrentSchema() == null) {
-                throw new RuntimeException("No database or schema selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
             final Schema owner = databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema());
             return tableForReference(owner, qn.part(0), owner.qualifiedName(qn.part(0)), "Table");
         } else if (qn.size() == 2) {
             // schema.table
             if (getCurrentDatabase() == null) {
-                throw new RuntimeException("No database selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
             final Schema owner = databaseExact(getCurrentDatabase()).schemaExact(qn.part(0));
             return tableForReference(owner, qn.part(1), owner.qualifiedName(qn.part(1)), "Table");
@@ -352,42 +498,84 @@ public class Catalog {
      * what plain {@link #resolveTable(QualifiedName)} does.
      */
     public Table resolveTableAsWritten(final String qualifiedName, final String reportedKind) {
-        return resolveTableAsWritten(QualifiedName.parse(qualifiedName), reportedKind);
+        return resolveTableAsWritten(QualifiedName.parse(qualifiedName), reportedKind, "SELECT");
     }
 
-    public Table resolveTableAsWritten(final QualifiedName qn, final String reportedKind) {
+    /**
+     * {@link #resolveTableAsWritten(String, String)} for a lookup a query does not make. With no current
+     * database, a schema-qualified name is refused naming that lookup: CLONE for a CLONE source, DUPLICATE
+     * for a LIKE source, where every FROM clause says SELECT (live-verified).
+     *
+     * @param lookup what the refusal names when the session cannot place a schema-qualified name
+     */
+    public Table resolveTableAsWritten(final String qualifiedName, final String reportedKind,
+                                       final String lookup) {
+        return resolveTableAsWritten(QualifiedName.parse(qualifiedName), reportedKind, lookup);
+    }
+
+    public Table resolveTableAsWritten(final QualifiedName written, final String reportedKind) {
+        return resolveTableAsWritten(written, reportedKind, "SELECT");
+    }
+
+    /**
+     * Whether the table a SQL reference names exists, asked without the throw. False for a missing table
+     * and for a name the session cannot place: a bare one with no current schema, or a schema-qualified
+     * one with no current database. A database or schema the reference does name must still exist.
+     *
+     * @param written the reference, resolved part by part
+     * @return whether the table exists
+     */
+    public boolean hasTableAsWritten(final QualifiedName written) {
+        final QualifiedName qn = withoutAccount(written, 3);
+        final boolean placeable = qn.size() == 3
+            || getCurrentDatabase() != null && (qn.size() == 2 || getCurrentSchema() != null);
+        return placeable && schemaOwning(qn).tableExact(qn.last()) != null;
+    }
+
+    private Table resolveTableAsWritten(final QualifiedName written, final String reportedKind,
+                                        final String lookup) {
+        final QualifiedName qn = withoutAccount(written, 3);
         if (qn.size() != 1) {
             // Any qualifier at all and the reported name is the fully expanded one, which is exactly what
             // the schema already spells — only the kind can differ.
             if ("Table".equals(reportedKind)) {
                 return resolveTable(qn);
             }
-            if (getCurrentDatabase() == null) {
-                throw new RuntimeException("No database selected");
+            // Only a TWO-part name needs the session: it names a schema, and the database has to come
+            // from somewhere. A fully qualified one names its own database and resolves with no
+            // current context at all — which is what dropping the current database now leaves.
+            //
+            // With none, a FROM clause is refused as a SELECT whatever the statement, and so is the target
+            // an UPDATE, a DELETE or a MERGE reads. DESCRIBE VIEW names its own verb (live-verified).
+            if (qn.size() == 2 && getCurrentDatabase() == null) {
+                throw "Object".equals(reportedKind)
+                    ? NoCurrentDatabaseRefusal.naming(lookup) : NoCurrentDatabaseRefusal.forStatement();
             }
             final Schema schema = qn.size() == 2
                 ? databaseExact(getCurrentDatabase()).schemaExact(qn.part(0))
                 : databaseExact(qn.part(0)).schemaExact(qn.part(1));
             final String last = qn.part(qn.size() - 1);
             return tableForReference(schema, last,
-                schema.getDatabaseName() + "." + schema.getName() + "." + last, reportedKind);
+                QualifiedName.join(schema.getDatabaseName(), schema.getName(), last), reportedKind);
         }
         if (getCurrentDatabase() == null || getCurrentSchema() == null) {
-            throw new RuntimeException("No database or schema selected");
+            // A bare name the session cannot place names nothing, and misses as any other name would.
+            throw new RuntimeException(SqlCompilationError.doesNotExist(reportedKind, QualifiedName.join(qn.part(0))));
         }
         return tableForReference(databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema()),
-            qn.part(0), qn.part(0), reportedKind);
+            qn.part(0), QualifiedName.join(qn.part(0)), reportedKind);
     }
 
     public View resolveView(final String qualifiedName) {
         return resolveView(QualifiedName.parse(qualifiedName));
     }
 
-    public View resolveView(final QualifiedName qn) {
+    public View resolveView(final QualifiedName written) {
+        final QualifiedName qn = withoutAccount(written, 3);
         if (qn.size() == 1) {
             // view name only
             if (getCurrentDatabase() == null || getCurrentSchema() == null) {
-                throw new RuntimeException("No database or schema selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
             return databaseExact(getCurrentDatabase())
                     .schemaExact(getCurrentSchema())
@@ -395,7 +583,7 @@ public class Catalog {
         } else if (qn.size() == 2) {
             // schema.view
             if (getCurrentDatabase() == null) {
-                throw new RuntimeException("No database selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
             return databaseExact(getCurrentDatabase())
                     .schemaExact(qn.part(0))
@@ -429,18 +617,31 @@ public class Catalog {
     }
 
     /**
+     * The schema an object name passes through, which must exist even where the object itself need not:
+     * DROP … IF EXISTS and TRUNCATE … IF EXISTS forgive only the object's own absence (live-verified). A
+     * name the session cannot place is refused naming the statement.
+     *
+     * @param written the object's name, resolved part by part
+     * @return the schema that holds, or would hold, the object
+     */
+    public Schema requireOwningSchema(final QualifiedName written) {
+        return schemaOwning(written);
+    }
+
+    /**
      * The schema a qualified object name belongs to: the current one for a bare name, the named one
      * within the current database for {@code schema.object}, and the fully spelled one for three parts.
      */
-    private Schema schemaOwning(final QualifiedName qn) {
+    private Schema schemaOwning(final QualifiedName written) {
+        final QualifiedName qn = withoutAccount(written, 3);
         if (qn.size() == 1) {
             if (getCurrentDatabase() == null || getCurrentSchema() == null) {
-                throw new RuntimeException("No database or schema selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
             return databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema());
         } else if (qn.size() == 2) {
             if (getCurrentDatabase() == null) {
-                throw new RuntimeException("No database selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
             return databaseExact(getCurrentDatabase()).schemaExact(qn.part(0));
         } else if (qn.size() == 3) {
@@ -454,10 +655,11 @@ public class Catalog {
         return resolveSchema(QualifiedName.parse(qualifiedName));
     }
 
-    public Schema resolveSchema(final QualifiedName qn) {
+    public Schema resolveSchema(final QualifiedName written) {
+        final QualifiedName qn = withoutAccount(written, 2);
         if (qn.size() == 1) {
             if (getCurrentDatabase() == null) {
-                throw new RuntimeException("No database selected");
+                throw NoCurrentDatabaseRefusal.forStatement();
             }
             return databaseExact(getCurrentDatabase()).schemaExact(qn.part(0));
         } else if (qn.size() == 2) {
@@ -470,7 +672,7 @@ public class Catalog {
     // Warehouse Management
     public void createWarehouse(final String name, final WarehouseSize size) {
         if (warehouses.containsKey(name.toUpperCase())) {
-            throw new RuntimeException("Warehouse already exists: " + name);
+            throw new RuntimeException(SqlCompilationError.of("Object '" + name.toUpperCase() + "' already exists."));
         }
         final Warehouse warehouse = new Warehouse(name, size);
         warehouse.setOwner(currentRoleForOwner());
@@ -571,11 +773,11 @@ public class Catalog {
         // db.schema.object while another database is current is exactly what qualifying it fully is for.
         if (parts.length == 3) return getDatabase(parts[0]).getSchema(parts[1]);
         final String dbName = getCurrentDatabase();
-        if (dbName == null) throw new RuntimeException("No database selected");
+        if (dbName == null) throw NoCurrentDatabaseRefusal.forStatement();
         final Database db = getDatabase(dbName);
         if (parts.length == 2) return db.getSchema(parts[0]);
         final String scName = getCurrentSchema();
-        if (scName == null) throw new RuntimeException("No schema selected");
+        if (scName == null) throw NoCurrentDatabaseRefusal.forStatement();
         return db.getSchema(scName);
     }
 
@@ -643,11 +845,19 @@ public class Catalog {
             ? sessionContext.getCurrentUser() : "PUBLIC";
     }
 
-    /** USE ROLE &lt;name&gt;: switch the session's primary role; errors if the role does not exist. */
+    /**
+     * USE ROLE &lt;name&gt;: switch the session's primary role; errors if the role does not exist.
+     *
+     * <p>The refusal NAMES NOTHING — live answers "Object does not exist, or operation cannot be
+     * performed." for a role that is not there, without quoting the name the way its object-not-found
+     * sentences do elsewhere. That is deliberate on a real account: a role a session cannot use is
+     * indistinguishable from one that does not exist, so the message cannot confirm either.
+     */
     public void useRole(final String roleName) {
         final String upper = roleName == null ? null : roleName.toUpperCase();
         if (upper == null || !roles.containsKey(upper)) {
-            throw new RuntimeException("Role '" + roleName + "' does not exist or not authorized");
+            throw new RuntimeException(SqlCompilationError.of(
+                "Object does not exist, or operation cannot be performed."));
         }
         if (sessionContext != null) {
             sessionContext.setCurrentRole(upper);
@@ -736,7 +946,9 @@ public class Catalog {
     public void createStage(final String name, final StageType type, final String url) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
-        if (schema.hasStage(objName)) throw new RuntimeException("Stage already exists: " + name);
+        if (schema.hasStageExact(objName)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
+        }
         final Stage stage = new Stage(objName, type, url, "CSV", false, null, s3PathResolver);
         stage.setOwner(currentRoleForOwner());
         schema.addStage(stage);
@@ -746,7 +958,9 @@ public class Catalog {
                            final String fileFormat, final boolean encryption, final String comment) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
-        if (schema.hasStage(objName)) throw new RuntimeException("Stage already exists: " + name);
+        if (schema.hasStageExact(objName)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
+        }
         final Stage stage = new Stage(objName, type, url, fileFormat, encryption, comment, s3PathResolver);
         stage.setOwner(currentRoleForOwner());
         schema.addStage(stage);
@@ -760,8 +974,12 @@ public class Catalog {
     public void renameStage(final String name, final String newName) {
         final Schema schema = resolveSchemaForObject(name);
         final Stage stage = schema.getStage(objectName(name));
+        // The new name is taken: refused before the old one is given up.
+        if (schema.hasStageExact(objectName(newName))) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + objectName(newName) + "' already exists."));
+        }
         schema.dropStage(objectName(name));
-        stage.setName(newName.toUpperCase());
+        stage.setName(newName);
         schema.addStage(stage);
     }
 
@@ -813,7 +1031,9 @@ public class Catalog {
     public void createTag(final String name) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
-        if (schema.hasTag(objName)) throw new RuntimeException("Tag already exists: " + name);
+        if (schema.hasTag(objName)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
+        }
         final Tag tag = new Tag(objName);
         tag.setOwner(currentRoleForOwner());
         schema.addTag(tag);
@@ -822,7 +1042,9 @@ public class Catalog {
     public void createTag(final String name, final List<String> allowedValues, final String comment) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
-        if (schema.hasTag(objName)) throw new RuntimeException("Tag already exists: " + name);
+        if (schema.hasTag(objName)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
+        }
         final Tag tag = new Tag(objName, allowedValues, comment);
         tag.setOwner(currentRoleForOwner());
         schema.addTag(tag);
@@ -1099,7 +1321,7 @@ public class Catalog {
             throw new RuntimeException("Cannot create system role: " + name);
         }
         if (roles.containsKey(upperName)) {
-            throw new RuntimeException("Role already exists: " + name);
+            throw new RuntimeException(SqlCompilationError.of("Object '" + upperName + "' already exists."));
         }
         final Role role = new Role(name);
         role.setOwner(currentRoleForOwner());
@@ -1263,7 +1485,7 @@ public class Catalog {
     public void renameDatabase(final String oldName, final String newName) {
         final Database db = getDatabase(oldName);
         if (databases.containsKey(newName.toUpperCase())) {
-            throw new RuntimeException("Database already exists: " + newName);
+            throw new RuntimeException(alreadyExists(newName.toUpperCase()));
         }
         databases.remove(oldName.toUpperCase());
         // createDatabase stores the name upper-cased; keep rename symmetric so getName()
@@ -1276,8 +1498,9 @@ public class Catalog {
         final Table table = resolveTable(qualifiedName);
         final Schema schema = resolveSchemaForTable(qualifiedName);
         // The taken-name check comes FIRST, so a refused rename leaves the catalog untouched —
-        // and refuses with the account's own object-exists sentence.
-        if (schema.hasTable(newName)) {
+        // and refuses with the account's own object-exists sentence, which a rename gives PLAIN:
+        // the "already exists as KIND" form belongs to a create (live-verified).
+        if (schema.relationKindOf(newName) != null) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Object '" + newName.toUpperCase() + "' already exists."));
         }
@@ -1318,18 +1541,46 @@ public class Catalog {
         final Table table = resolveTable(sourceQualifiedName);
         final Schema source = resolveSchemaForTable(sourceQualifiedName);
         final Schema target = getDatabase(targetDatabase).getSchema(targetSchema);
-        if (target.hasTable(newName)) {
-            throw new RuntimeException("Table already exists: "
-                + targetDatabase + "." + targetSchema + "." + newName);
+        if (target.relationKindOf(newName) != null) {
+            // The account's own object-exists sentence, naming the new name as written (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Object '" + newName.toUpperCase() + "' already exists."));
         }
         source.dropTable(table.getName());
         table.rename(newName);
         target.addTable(table);
     }
 
+    /**
+     * Move a view to a (possibly different) schema/database under a new name — ALTER VIEW's RENAME TO,
+     * whose new name the session's context places. The destination must exist and hold no view of
+     * that name, both checked before anything changes; a move within the view's own schema is a rename.
+     */
+    public void moveView(final String sourceQualifiedName, final String targetDatabase,
+                         final String targetSchema, final String newName) {
+        final View view = resolveView(sourceQualifiedName);
+        final Schema source = resolveSchemaForTable(sourceQualifiedName);
+        final Schema target = getDatabase(targetDatabase).getSchema(targetSchema);
+        if (target == source) {
+            renameView(sourceQualifiedName, newName);
+            return;
+        }
+        if (target.relationKindOf(newName) != null) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + newName.toUpperCase() + "' already exists."));
+        }
+        source.dropView(view.getName());
+        view.rename(newName);
+        target.addView(view);
+    }
+
     public void renameView(final String qualifiedName, final String newName) {
         final View view = resolveView(qualifiedName);
         final Schema schema = resolveSchemaForTable(qualifiedName);
+        // A name any relation kind holds - the view's own included - refuses the rename plainly,
+        // before anything moves (live-verified).
+        if (schema.relationKindOf(newName) != null) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Object '" + newName.toUpperCase() + "' already exists."));
+        }
         schema.dropView(view.getName());
         view.rename(newName);
         schema.addView(view);

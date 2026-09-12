@@ -1,0 +1,22 @@
+{
+  "suite": "functions-nvl2",
+  "description": "NVL2(expr1, expr2, expr3) - expr2 when expr1 is NOT NULL, else expr3. Works over columns and accepts a NULL third branch. Converted 1:1 from functions/Nvl2Test (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-non-null-first-argument-returns-the-second", "steps": [
+      {"sql": "SELECT NVL2(1, 'a', 'b')", "expect": {"value": "a"}}
+    ]},
+    {"name": "a-null-first-argument-returns-the-third", "steps": [
+      {"sql": "SELECT NVL2(NULL, 'a', 'b')", "expect": {"value": "b"}}
+    ]},
+    {"name": "it-works-over-columns", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, phone VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, '555-1234'), (2, NULL)"},
+      {"sql": "SELECT NVL2(phone, 'has phone', 'no phone') FROM t WHERE id = 1", "expect": {"value": "has phone"}},
+      {"sql": "SELECT NVL2(phone, 'has phone', 'no phone') FROM t WHERE id = 2", "expect": {"value": "no phone"}}
+    ]},
+    {"name": "the-third-branch-may-be-null", "steps": [
+      {"sql": "SELECT NVL2(NULL, 'a', NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

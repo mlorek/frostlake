@@ -16,6 +16,7 @@
 
 package dev.frostlake;
 
+import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.jdbc.DirectConnection;
 import dev.frostlake.jdbc.DirectResultSet;
 import dev.frostlake.jdbc.DirectStatement;
@@ -24,7 +25,9 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.sql.ResultSetMetaData;
@@ -207,9 +210,21 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
             return BinaryValue.of((byte[]) value);
         }
         if (semiStructured && value instanceof String) {
+            final String text = (String) value;
+            // The driver hands a VARIANT back as its client text, a DOUBLE in the fifteen-decimal form.
+            // Read the way PARSE_JSON reads it, the exponent restores the DOUBLE family and with it the
+            // canonical text. The reading is kept only when it spells the text back exactly, which is
+            // what tells a variant's text from a plain string cell that merely looks like JSON.
+            final JsonNode read = JsonTypeHelper.parseLenient(text);
+            if (read != null) {
+                final VariantValue reread = VariantValue.ofNode(read);
+                if (VariantJsonText.clientTextOf(reread).equals(text)) {
+                    return reread;
+                }
+            }
             try {
-                JSON.readTree((String) value);
-                return VariantValue.of((String) value);
+                JSON.readTree(text);
+                return VariantValue.of(text);
             } catch (final RuntimeException notJson) {
                 return value;
             }

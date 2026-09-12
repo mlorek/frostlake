@@ -1,0 +1,130 @@
+{
+  "suite": "expressions-json-literals",
+  "description": "Brace/bracket JSON literals: canonicalization (sorted keys, compact), escaping of control characters, VALUES-clause rejection, column references, NULL-pair dropping. Converted 1:1 from expressions/JsonLiteralsTest.java (now retired); the original contains-style asserts were pinned to the exact canonical rendering, live-verified.",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {
+      "name": "select-json-object-literal",
+      "steps": [
+        {"sql": "SELECT {'name': 'John', 'age': 30} as user_json", "expect": {"value": "{\"age\":30,\"name\":\"John\"}"}}
+      ]
+    },
+    {
+      "name": "control-characters-in-literal-strings-are-json-escaped",
+      "steps": [
+        {"sql": "SELECT {'a': 'x\ny'}:a::VARCHAR AS v, {'q': 'he said \"hi\"'}:q::VARCHAR AS w, {'deep': {'p': 'l1\nl2'}}:deep:p::VARCHAR AS d",
+         "expect": {"rows": [["x\ny", "he said \"hi\"", "l1\nl2"]]}}
+      ]
+    },
+    {
+      "name": "array-literal-elements-are-json-escaped-too",
+      "steps": [
+        {"sql": "SELECT ['a\nb', 'c']::VARIANT AS arr, ['a\nb'][0]::VARCHAR AS el",
+         "expect": {"rows": [["[\"a\\nb\",\"c\"]", "a\nb"]]}}
+      ]
+    },
+    {
+      "name": "select-json-array-literal",
+      "steps": [
+        {"sql": "SELECT [1, 2, 3, 4, 5] as numbers", "expect": {"value": "[1,2,3,4,5]"}}
+      ]
+    },
+    {
+      "name": "insert-json-object-into-table",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, profile VARIANT)"},
+        {"sql": "INSERT INTO users VALUES (1, {'name': 'Alice', 'email': 'alice@example.com'})",
+         "expect": {"error": {"messageContains": "in VALUES clause"}}},
+        {"sql": "INSERT INTO users SELECT 1, {'name': 'Alice', 'email': 'alice@example.com'}"},
+        {"sql": "SELECT * FROM users", "expect": {"rows": [["1", "{\"email\":\"alice@example.com\",\"name\":\"Alice\"}"]]}}
+      ]
+    },
+    {
+      "name": "insert-json-array-into-table",
+      "steps": [
+        {"sql": "CREATE TABLE tags_table (id INTEGER, tag_list VARIANT)"},
+        {"sql": "INSERT INTO tags_table VALUES (1, ['java', 'sql', 'database'])",
+         "expect": {"error": {"messageContains": "in VALUES clause"}}},
+        {"sql": "INSERT INTO tags_table SELECT 1, ['java', 'sql', 'database']"},
+        {"sql": "SELECT tag_list FROM tags_table", "expect": {"value": "[\"java\",\"sql\",\"database\"]"}}
+      ]
+    },
+    {
+      "name": "nested-json-objects",
+      "steps": [
+        {"sql": "SELECT {'user': {'name': 'Bob', 'age': 25}, 'active': 'true'} as data",
+         "expect": {"value": "{\"active\":\"true\",\"user\":{\"age\":25,\"name\":\"Bob\"}}"}}
+      ]
+    },
+    {
+      "name": "json-array-of-objects",
+      "steps": [
+        {"sql": "SELECT [{'id': 1, 'name': 'Item1'}, {'id': 2, 'name': 'Item2'}] as items",
+         "expect": {"value": "[{\"id\":1,\"name\":\"Item1\"},{\"id\":2,\"name\":\"Item2\"}]"}}
+      ]
+    },
+    {
+      "name": "empty-json-object",
+      "steps": [
+        {"sql": "SELECT {} as empty_obj", "expect": {"value": "{}"}}
+      ]
+    },
+    {
+      "name": "empty-json-array",
+      "steps": [
+        {"sql": "SELECT [] as empty_arr", "expect": {"value": "[]"}}
+      ]
+    },
+    {
+      "name": "json-with-column-references",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, age INTEGER)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 30)"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 25)"},
+        {"sql": "SELECT id, {'name': name, 'age': age} as json_data FROM employees ORDER BY id",
+         "expect": {"rows": [["1", "{\"age\":30,\"name\":\"Alice\"}"], ["2", "{\"age\":25,\"name\":\"Bob\"}"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "json-array-with-column-references",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, price DECIMAL(10,2))"},
+        {"sql": "INSERT INTO products VALUES (1, 10.99)"},
+        {"sql": "INSERT INTO products VALUES (2, 20.50)"},
+        {"sql": "INSERT INTO products VALUES (3, 15.75)"},
+        {"sql": "SELECT [price, price, price] as price_array FROM products WHERE id = 1",
+         "expect": {"value": "[10.99,10.99,10.99]"}}
+      ]
+    },
+    {
+      "name": "json-with-different-data-types",
+      "steps": [
+        {"sql": "SELECT {'string': 'hello', 'number': 42, 'bool_true': 'true', 'bool_false': 'false', 'null_val': NULL} as mixed",
+         "expect": {"value": "{\"bool_false\":\"false\",\"bool_true\":\"true\",\"number\":42,\"string\":\"hello\"}"}}
+      ]
+    },
+    {
+      "name": "complex-nested-structure",
+      "steps": [
+        {"sql": "SELECT {'company': 'Acme Corp', 'employees': [{'name': 'Alice', 'role': 'Engineer'}, {'name': 'Bob', 'role': 'Manager'}], 'metadata': {'created': '2024-01-01', 'active': 'true'}} as company_data",
+         "expect": {"value": "{\"company\":\"Acme Corp\",\"employees\":[{\"name\":\"Alice\",\"role\":\"Engineer\"},{\"name\":\"Bob\",\"role\":\"Manager\"}],\"metadata\":{\"active\":\"true\",\"created\":\"2024-01-01\"}}"}}
+      ]
+    },
+    {
+      "name": "object-literal-drops-sql-null-pairs-like-object-construct",
+      "steps": [
+        {"sql": "SELECT {'a': 1, 'gone': NULL} AS o", "expect": {"value": "{\"a\":1}"}},
+        {"sql": "SELECT {'a': 1, 'kept': PARSE_JSON('null')} AS o", "expect": {"value": "{\"a\":1,\"kept\":null}"}}
+      ]
+    },
+    {
+      "name": "bracket-literals-canonicalize-like-parse-json",
+      "steps": [
+        {"sql": "SELECT [{'edition': 'pro*'}] AS c", "expect": {"value": "[{\"edition\":\"pro*\"}]"}},
+        {"sql": "SELECT {'b': 2, 'a': 1} AS o", "expect": {"value": "{\"a\":1,\"b\":2}"}},
+        {"sql": "SELECT [{'max_version': '9.1','min_version': '9.0'}] EXCEPT SELECT PARSE_JSON('[{\"min_version\":\"9.0\",\"max_version\":\"9.1\"}]')",
+         "expect": {"rowCount": 0}}
+      ]
+    }
+  ]
+}

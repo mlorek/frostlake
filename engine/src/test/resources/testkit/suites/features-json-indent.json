@@ -1,0 +1,57 @@
+{
+  "suite": "features-json-indent",
+  "description": "JSON_INDENT sets how wide a semi-structured value is displayed: this engine's own default is COMPACT (its canonical rendering) while a real account defaults to two spaces; the parameter itself behaves as live's does and the indented form is byte-identical to a real account's at the same width. Width 2 and 4 renderings (nested arrays indenting one level further), empty containers never split, TO_VARCHAR always compact, UNSET restoring the engine default, and SHOW PARAMETERS reporting live's default (2), description and NUMBER type. Converted 1:1 from features/JsonIndentTest (now retired). Tests pinning the engine's compact default or the indented renders skip the snowflake backend (live's session default differs and the live harness normalisation the Java class assumed is absent here).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "the-engine-displays-compact-by-default",
+     "skip": {"backends": ["snowflake"], "reason": "the engine's default rendering is COMPACT; live's default JSON_INDENT is 2"},
+     "steps": [
+      {"sql": "SELECT ARRAY_CONSTRUCT('a','b')", "expect": {"value": "[\"a\",\"b\"]"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('k','v')", "expect": {"value": "{\"k\":\"v\"}"}}
+    ]},
+    {"name": "indent-two-matches-the-live-rendering",
+     "skip": {"backends": ["snowflake", "http"], "reason": "engine-canonical indent pins; live defaults differ and the HTTP transport serializes semi-structured cells compactly regardless of JSON_INDENT"},
+     "steps": [
+      {"sql": "ALTER SESSION SET JSON_INDENT = 2"},
+      {"sql": "SELECT ARRAY_CONSTRUCT('a','b')", "expect": {"value": "[\n  \"a\",\n  \"b\"\n]"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('k','v')", "expect": {"value": "{\n  \"k\": \"v\"\n}"}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(ARRAY_CONSTRUCT('x'))", "expect": {"value": "[\n  [\n    \"x\"\n  ]\n]"}},
+      {"sql": "ALTER SESSION UNSET JSON_INDENT"}
+    ]},
+    {"name": "the-width-is-whatever-the-session-sets",
+     "skip": {"backends": ["snowflake", "http"], "reason": "engine-canonical indent pins; live defaults differ and the HTTP transport serializes semi-structured cells compactly regardless of JSON_INDENT"},
+     "steps": [
+      {"sql": "ALTER SESSION SET JSON_INDENT = 4"},
+      {"sql": "SELECT ARRAY_CONSTRUCT('a','b')", "expect": {"value": "[\n    \"a\",\n    \"b\"\n]"}},
+      {"sql": "ALTER SESSION SET JSON_INDENT = 0"},
+      {"sql": "SELECT ARRAY_CONSTRUCT('a','b')", "expect": {"value": "[\"a\",\"b\"]"}},
+      {"sql": "ALTER SESSION UNSET JSON_INDENT"}
+    ]},
+    {"name": "an-empty-container-is-never-split-across-lines", "steps": [
+      {"sql": "ALTER SESSION SET JSON_INDENT = 2"},
+      {"sql": "SELECT ARRAY_CONSTRUCT()", "expect": {"value": "[]"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT()", "expect": {"value": "{}"}},
+      {"sql": "ALTER SESSION UNSET JSON_INDENT"}
+    ]},
+    {"name": "to-varchar-stays-compact-at-every-width", "steps": [
+      {"sql": "ALTER SESSION SET JSON_INDENT = 2"},
+      {"sql": "SELECT TO_VARCHAR(ARRAY_CONSTRUCT('a'))", "expect": {"value": "[\"a\"]"}},
+      {"sql": "ALTER SESSION SET JSON_INDENT = 4"},
+      {"sql": "SELECT TO_VARCHAR(ARRAY_CONSTRUCT('a'))", "expect": {"value": "[\"a\"]"}},
+      {"sql": "ALTER SESSION UNSET JSON_INDENT"}
+    ]},
+    {"name": "unsetting-restores-the-default",
+     "skip": {"backends": ["snowflake", "http"], "reason": "UNSET restores the ENGINE default (compact); live defaults differ and the HTTP transport serializes semi-structured cells compactly regardless of JSON_INDENT"},
+     "steps": [
+      {"sql": "ALTER SESSION SET JSON_INDENT = 2"},
+      {"sql": "SELECT ARRAY_CONSTRUCT('a')", "expect": {"value": "[\n  \"a\"\n]"}},
+      {"sql": "ALTER SESSION UNSET JSON_INDENT"},
+      {"sql": "SELECT ARRAY_CONSTRUCT('a')", "expect": {"value": "[\"a\"]"}}
+    ]},
+    {"name": "show-parameters-reports-json-indent", "steps": [
+      {"sql": "SHOW PARAMETERS LIKE 'JSON_INDENT'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"key\", \"default\", \"description\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["JSON_INDENT", "2", "Width of indentation in JSON output (0 for compact)", "NUMBER"]]}}
+    ]}
+  ]
+}

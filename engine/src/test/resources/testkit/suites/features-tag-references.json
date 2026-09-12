@@ -1,0 +1,127 @@
+{
+  "suite": "features-tag-references",
+  "description": "INFORMATION_SCHEMA.TAG_REFERENCES(object_name, object_domain) - the tags on one object, read the way a real account exposes them. Both arguments are required; a bare object name resolves against the current database and schema; TABLE covers every table-like object (passing VIEW is refused in favour of TABLE); COLUMN takes a four-part name whose last part is the column; SCHEMA, DATABASE and WAREHOUSE are domains of their own. Creation-time [WITH] TAG clauses are recorded, not merely accepted, and a column's own clause stays on the column. Converted 1:1 from features/TagReferencesTest (now retired); its @BeforeEach fixture (tag cost_center, table tagged with a table tag and a column tag on V, view tagged_view with a view tag) is inlined per test.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "tag-references-carries-the-live-column-layout", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE tagged (k NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE tagged SET TAG cost_center = 'finance'"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TAGGED', 'TABLE'))",
+       "expect": {"columns": ["TAG_DATABASE", "TAG_SCHEMA", "TAG_NAME", "TAG_VALUE", "LEVEL", "OBJECT_DATABASE", "OBJECT_SCHEMA", "OBJECT_NAME", "DOMAIN", "COLUMN_NAME", "APPLY_METHOD"]}}
+    ]},
+    {"name": "a-table-tag-is-reported-at-the-table-level", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE tagged (k NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE tagged SET TAG cost_center = 'finance'"},
+      {"sql": "SELECT TAG_NAME, TAG_VALUE, LEVEL, DOMAIN, OBJECT_NAME, APPLY_METHOD, IFF(COLUMN_NAME IS NULL, 'null', 'set') FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TEST_DB.TEST_SCHEMA.TAGGED', 'TABLE'))",
+       "expect": {"rows": [["COST_CENTER", "finance", "TABLE", "TABLE", "TAGGED", "MANUAL", "null"]]}}
+    ]},
+    {"name": "a-column-tag-is-reported-at-the-column-level", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE tagged (k NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE tagged MODIFY COLUMN v SET TAG cost_center = 'col-level'"},
+      {"sql": "SELECT TAG_VALUE, LEVEL, DOMAIN, OBJECT_NAME, COLUMN_NAME FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TEST_DB.TEST_SCHEMA.TAGGED.V', 'COLUMN'))",
+       "expect": {"rows": [["col-level", "COLUMN", "COLUMN", "TAGGED", "V"]]}}
+    ]},
+    {"name": "a-views-tags-are-read-under-the-table-domain", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE tagged (k NUMBER, v VARCHAR)"},
+      {"sql": "CREATE VIEW tagged_view AS SELECT * FROM tagged"},
+      {"sql": "ALTER VIEW tagged_view SET TAG cost_center = 'view-level'"},
+      {"sql": "SELECT TAG_VALUE, OBJECT_NAME, DOMAIN FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TAGGED_VIEW', 'TABLE'))",
+       "expect": {"rows": [["view-level", "TAGGED_VIEW", "TABLE"]]}}
+    ]},
+    {"name": "a-bare-object-name-resolves-against-the-current-schema", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE tagged (k NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE tagged SET TAG cost_center = 'finance'"},
+      {"sql": "SELECT OBJECT_DATABASE, OBJECT_SCHEMA, TAG_VALUE FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TAGGED', 'TABLE'))",
+       "expect": {"rows": [["TEST_DB", "TEST_SCHEMA", "finance"]]}}
+    ]},
+    {"name": "an-untagged-object-returns-no-rows", "steps": [
+      {"sql": "CREATE TABLE untagged (k NUMBER)"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('UNTAGGED', 'TABLE'))",
+       "expect": {"rowCount": 0}}
+    ]},
+    {"name": "an-unknown-object-is-rejected-by-its-written-name", "steps": [
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('NO_SUCH_TABLE', 'TABLE'))",
+       "expect": {"error": {"messageContains": "Table 'NO_SUCH_TABLE' does not exist or not authorized."}}}
+    ]},
+    {"name": "an-unknown-domain-is-rejected", "steps": [
+      {"sql": "CREATE TABLE tagged (k NUMBER, v VARCHAR)"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TAGGED', 'BOGUS'))",
+       "expect": {"error": {"messageContains": "Unknown domain: BOGUS."}}}
+    ]},
+    {"name": "the-view-domain-is-refused-in-favour-of-table", "steps": [
+      {"sql": "CREATE TABLE tagged (k NUMBER, v VARCHAR)"},
+      {"sql": "CREATE VIEW tagged_view AS SELECT * FROM tagged"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TAGGED_VIEW', 'VIEW'))",
+       "expect": {"error": {"messageContains": "Please use object type TABLE for all kinds of table-like objects"}}}
+    ]},
+    {"name": "modify-column-is-accepted-as-alter-column", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE modify_probe (k NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE modify_probe MODIFY COLUMN v SET TAG cost_center = 'via-modify'"},
+      {"sql": "SELECT TAG_VALUE FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TEST_DB.TEST_SCHEMA.MODIFY_PROBE.V', 'COLUMN'))",
+       "expect": {"value": "via-modify"}},
+      {"sql": "ALTER TABLE modify_probe MODIFY COLUMN v UNSET TAG cost_center"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TEST_DB.TEST_SCHEMA.MODIFY_PROBE.V', 'COLUMN'))",
+       "expect": {"rowCount": 0}}
+    ]},
+    {"name": "every-tag-on-an-object-is-one-row", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TAG owner_team"},
+      {"sql": "CREATE TABLE multi_tagged (k NUMBER)"},
+      {"sql": "ALTER TABLE multi_tagged SET TAG cost_center = 'ops'"},
+      {"sql": "ALTER TABLE multi_tagged SET TAG owner_team = 'platform'"},
+      {"sql": "SELECT COUNT(*), COUNT_IF(TAG_NAME = 'COST_CENTER'), COUNT_IF(TAG_NAME = 'OWNER_TEAM') FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('MULTI_TAGGED', 'TABLE'))",
+       "expect": {"rows": [["2", "1", "1"]]}}
+    ]},
+    {"name": "a-creation-time-tag-clause-reaches-tag-references", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE inline_tagged (k NUMBER) WITH TAG (cost_center = 'inline')"},
+      {"sql": "SELECT TAG_VALUE FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('INLINE_TAGGED', 'TABLE'))",
+       "expect": {"value": "inline"}},
+      {"sql": "CREATE TABLE bare_tagged (k NUMBER) TAG (cost_center = 'bare')"},
+      {"sql": "SELECT TAG_VALUE FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('BARE_TAGGED', 'TABLE'))",
+       "expect": {"value": "bare"}}
+    ]},
+    {"name": "a-column-tag-clause-does-not-leak-onto-the-table", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE col_only (k NUMBER, v VARCHAR TAG (cost_center = 'col'))"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('COL_ONLY', 'TABLE'))",
+       "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-view-takes-a-creation-time-tag-clause", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE view_tag_src (k NUMBER)"},
+      {"sql": "CREATE VIEW inline_view COMMENT = 'v' TAG (cost_center = 'view-inline') AS SELECT * FROM view_tag_src"},
+      {"sql": "SELECT TAG_VALUE FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('INLINE_VIEW', 'TABLE'))",
+       "expect": {"value": "view-inline"}}
+    ]},
+    {"name": "schema-tags-are-read-under-the-schema-domain", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE SCHEMA tagged_schema WITH TAG (cost_center = 'schema-level')"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "SELECT TAG_VALUE, LEVEL, OBJECT_NAME, OBJECT_DATABASE, IFF(OBJECT_SCHEMA IS NULL, 'null', 'set') FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TEST_DB.TAGGED_SCHEMA', 'SCHEMA'))",
+       "expect": {"rows": [["schema-level", "SCHEMA", "TAGGED_SCHEMA", "TEST_DB", "null"]]}}
+    ]},
+    {"name": "database-tags-are-read-under-the-database-domain", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "ALTER DATABASE test_db SET TAG cost_center = 'db-level'"},
+      {"sql": "SELECT TAG_VALUE, LEVEL, OBJECT_NAME, IFF(OBJECT_DATABASE IS NULL, 'null', 'set'), IFF(OBJECT_SCHEMA IS NULL, 'null', 'set') FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TEST_DB', 'DATABASE'))",
+       "expect": {"rows": [["db-level", "DATABASE", "TEST_DB", "null", "null"]]}},
+      {"sql": "ALTER DATABASE test_db UNSET TAG cost_center"}
+    ]},
+    {"name": "warehouse-tags-are-read-under-the-warehouse-domain", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "DROP WAREHOUSE IF EXISTS tagged_wh"},
+      {"sql": "CREATE WAREHOUSE tagged_wh WAREHOUSE_SIZE = XSMALL"},
+      {"sql": "ALTER WAREHOUSE tagged_wh SET TAG cost_center = 'wh-level'"},
+      {"sql": "SELECT TAG_VALUE, LEVEL, OBJECT_NAME, IFF(OBJECT_DATABASE IS NULL, 'null', 'set') FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('TAGGED_WH', 'WAREHOUSE'))",
+       "expect": {"rows": [["wh-level", "WAREHOUSE", "TAGGED_WH", "null"]]}},
+      {"sql": "DROP WAREHOUSE tagged_wh"}
+    ]}
+  ]
+}

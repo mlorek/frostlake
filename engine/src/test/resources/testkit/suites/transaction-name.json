@@ -1,0 +1,97 @@
+{
+  "suite": "transaction-name",
+  "description": "A transaction may be NAMED, and the name is what SHOW TRANSACTIONS reports in place of the UUID an unnamed one carries - live-verified for every opening spelling: BEGIN NAME, BEGIN WORK NAME, BEGIN TRANSACTION NAME and START TRANSACTION NAME. The name is an IDENTIFIER and follows an identifier's rules: unquoted folds upper, quoted keeps its case, and a string literal is refused outright. Two measured oddities are pinned rather than tidied away - a DOTTED name is accepted and only its FIRST part survives, and NAME itself is a legal name - and only the OPENING statement takes one, so COMMIT NAME x is a syntax error. NAME staying a non-reserved word is pinned from both sides: it still works as a column name and as a table name. Converted 1:1 from transaction/TransactionNameTest (now retired); its helper opened the transaction, wrote a row, then read the single SHOW TRANSACTIONS row's name cell, which becomes SHOW TRANSACTIONS read back through RESULT_SCAN. Each named test counts the rows carrying ITS OWN name rather than asserting the whole listing has one row, and the unnamed test reads the most recently started row: SHOW TRANSACTIONS is SESSION-scoped, and a driver that keeps one session across the corpus arrives here with other transactions already open, so an assertion over the whole listing passes on the engine backend and on an isolated run but fails in a full driver sweep. Each test ends with the ROLLBACK the class's teardown performed.",
+  "tags": ["transaction", "converted"],
+  "tests": [
+    {"name": "an-unnamed-transaction-is-named-by-a-uuid", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SELECT TO_VARCHAR(\"name\" RLIKE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}') AS r FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"started_on\" DESC LIMIT 1", "expect": {"value": "true"}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "begin-name-names-the-transaction", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN NAME my_txn"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MY_TXN'", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "begin-work-takes-a-name-too", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN WORK NAME w1"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'W1'", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "begin-transaction-takes-a-name-too", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN TRANSACTION NAME txn_two"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TXN_TWO'", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "start-transaction-takes-a-name-too", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "START TRANSACTION NAME txn_three"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TXN_THREE'", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "a-quoted-name-keeps-its-case", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN NAME \"MixedCase\""},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MixedCase'", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "a-dotted-name-keeps-only-its-first-part", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN NAME a.b"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'A'", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "name-is-itself-a-legal-name", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN NAME name"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "SHOW TRANSACTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'NAME'", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "a-string-literal-is-not-a-name", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN NAME 'a string'", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "only-the-opening-statement-takes-a-name", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN NAME z"},
+      {"sql": "COMMIT NAME z", "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "name-remains-usable-as-a-column-name", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN"},
+      {"sql": "CREATE TABLE kw_column (name INT)"},
+      {"sql": "INSERT INTO kw_column VALUES (7)"},
+      {"sql": "SELECT name FROM kw_column WHERE name = 7", "expect": {"value": 7}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "name-remains-usable-as-a-table-name", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN"},
+      {"sql": "CREATE TABLE name (n INT)"},
+      {"sql": "INSERT INTO name VALUES (3)"},
+      {"sql": "SELECT n FROM name", "expect": {"value": 3}},
+      {"sql": "ROLLBACK"}
+    ]}
+  ]
+}

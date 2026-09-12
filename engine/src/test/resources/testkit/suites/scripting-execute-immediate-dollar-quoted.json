@@ -1,0 +1,62 @@
+{
+  "suite": "scripting-execute-immediate-dollar-quoted",
+  "description": "EXECUTE IMMEDIATE with a DOLLAR-QUOTED statement string. The form's value is that the inner SQL needs no quote escaping, so a CREATE TABLE, an INSERT carrying a quoted apostrophe, a SELECT, a CREATE VIEW, a CREATE PROCEDURE whose own body is single-quoted, a CREATE FUNCTION, a DELETE and an UPDATE all go through verbatim. The single-quoted form still works beside it, which is the mixed-styles regression guard. Each statement's EFFECT is checked, not merely that it parsed. Converted 1:1 from scripting/ExecuteImmediateDollarQuotedTest (now retired); the Java read the JDBC ResultSet row by row, and where it scanned SHOW TABLES / SHOW PROCEDURES / SHOW FUNCTIONS for a name that becomes a RESULT_SCAN over the same SHOW. Its INSERT test asserted only that the stored name CONTAINS 'Brien' because it was unsure whether the doubled quote survived; the converted step pins the whole value.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "execute-immediate-creates-a-table", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)$$"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PRODUCTS'", "expect": {"value": 1}}
+    ]},
+    {"name": "execute-immediate-inserts-a-quoted-value", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "EXECUTE IMMEDIATE $$INSERT INTO users VALUES (1, 'John O''Brien')$$"},
+      {"sql": "SELECT id, name FROM users", "expect": {"rows": [[1, "John O'Brien"]]}}
+    ]},
+    {"name": "execute-immediate-runs-a-select", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000), (2, 'Bob', 50000)"},
+      {"sql": "EXECUTE IMMEDIATE $$SELECT * FROM employees WHERE salary > 60000$$", "expect": {"rows": [[1,"Alice",75000]]}}
+    ]},
+    {"name": "execute-immediate-creates-a-procedure-with-a-single-quoted-body", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$CREATE PROCEDURE calculate_bonus(emp_salary INTEGER) RETURNS INTEGER AS 'BEGIN RETURN emp_salary * 0.10; END'$$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CALCULATE_BONUS'", "expect": {"value": 1}}
+    ]},
+    {"name": "execute-immediate-creates-another-table", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$CREATE TABLE inventory (id INTEGER, product_name VARCHAR, quantity INTEGER)$$"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'INVENTORY'", "expect": {"value": 1}}
+    ]},
+    {"name": "execute-immediate-creates-a-view", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, customer VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 'Alice', 100), (2, 'Bob', 200), (3, 'Alice', 150)"},
+      {"sql": "EXECUTE IMMEDIATE $$CREATE VIEW high_value_orders AS SELECT * FROM orders WHERE amount > 100$$"},
+      {"sql": "SELECT id, customer, amount FROM high_value_orders ORDER BY id", "expect": {"rows": [[2,"Bob",200],[3,"Alice",150]], "ordered": true}}
+    ]},
+    {"name": "execute-immediate-creates-a-function", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$CREATE FUNCTION triple(x INTEGER) RETURNS INTEGER AS 'x * 3'$$"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TRIPLE'", "expect": {"value": 1}},
+      {"sql": "SELECT triple(4)", "expect": {"value": 12}}
+    ]},
+    {"name": "both-quoting-styles-work-side-by-side", "steps": [
+      {"sql": "EXECUTE IMMEDIATE 'CREATE TABLE test1 (id INTEGER)'"},
+      {"sql": "EXECUTE IMMEDIATE $$CREATE TABLE test2 (id INTEGER)$$"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('TEST1','TEST2')", "expect": {"value": 2}}
+    ]},
+    {"name": "execute-immediate-runs-a-delete", "steps": [
+      {"sql": "CREATE TABLE items (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO items VALUES (1, 'Item1'), (2, 'Item2')"},
+      {"sql": "EXECUTE IMMEDIATE $$DELETE FROM items WHERE id = 1$$"},
+      {"sql": "SELECT id, name FROM items", "expect": {"rows": [[2,"Item2"]]}}
+    ]},
+    {"name": "execute-immediate-runs-an-update", "steps": [
+      {"sql": "CREATE TABLE prices (id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO prices VALUES (1, 100)"},
+      {"sql": "EXECUTE IMMEDIATE $$UPDATE prices SET amount = 200 WHERE id = 1$$"},
+      {"sql": "SELECT id, amount FROM prices", "expect": {"rows": [[1,200]]}}
+    ]}
+  ]
+}

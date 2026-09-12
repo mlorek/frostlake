@@ -1,0 +1,166 @@
+{
+  "suite": "dml-copy-into",
+  "description": "COPY INTO over empty stages: option surface, transformations and the function allowlist, unload to stage. Converted 1:1 from dml/CopyIntoTest.java (now retired). The two engine-specific cells carry snowflake skips mirroring the original live-mode assumptions.",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {
+      "name": "copy-into-table-from-stage-simple",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DECIMAL(10,2))"},
+        {"sql": "CREATE STAGE my_stage"},
+        {"sql": "COPY INTO employees FROM @my_stage", "expect": {"value": "Copy executed with 0 files processed."}}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-file-format",
+      "steps": [
+        {"sql": "CREATE TABLE sales (sale_id INTEGER, product VARCHAR, amount DECIMAL(10,2))"},
+        {"sql": "CREATE STAGE sales_stage"},
+        {"sql": "COPY INTO sales FROM @sales_stage FILE_FORMAT = (TYPE = 'CSV' FIELD_DELIMITER = ',' SKIP_HEADER = 1)"}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-pattern",
+      "steps": [
+        {"sql": "CREATE TABLE logs (timestamp VARCHAR, message VARCHAR, level VARCHAR)"},
+        {"sql": "CREATE STAGE log_stage"},
+        {"sql": "COPY INTO logs FROM @log_stage PATTERN = '.*\\.csv'", "expect": {"value": "Copy executed with 0 files processed."}}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-on-error",
+      "steps": [
+        {"sql": "CREATE TABLE transactions (id INTEGER, amount DECIMAL(10,2), status VARCHAR)"},
+        {"sql": "CREATE STAGE tx_stage"},
+        {"sql": "COPY INTO transactions FROM @tx_stage FILE_FORMAT = (TYPE = 'CSV') ON_ERROR = 'CONTINUE'"}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-validation-mode",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (col1 INTEGER, col2 VARCHAR)"},
+        {"sql": "CREATE STAGE test_stage"},
+        {"sql": "COPY INTO test_data FROM @test_stage VALIDATION_MODE = 'RETURN_ERRORS'"}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-force",
+      "steps": [
+        {"sql": "CREATE TABLE reload_data (id INTEGER, value VARCHAR)"},
+        {"sql": "CREATE STAGE reload_stage"},
+        {"sql": "COPY INTO reload_data FROM @reload_stage FORCE = TRUE"}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-files-names-missing-files-errors",
+      "steps": [
+        {"sql": "CREATE TABLE specific_files (id INTEGER, data VARCHAR)"},
+        {"sql": "CREATE STAGE files_stage"},
+        {"sql": "COPY INTO specific_files FROM @files_stage FILES = ('file1.csv', 'file2.csv', 'file3.csv')",
+         "expect": {"error": {"messageContains": "was not found"}}}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-column-mapping",
+      "steps": [
+        {"sql": "CREATE TABLE mapped_data (id INTEGER, name VARCHAR, email VARCHAR)"},
+        {"sql": "CREATE STAGE mapped_stage"},
+        {"sql": "COPY INTO mapped_data (id, name, email) FROM @mapped_stage FILE_FORMAT = (TYPE = 'CSV')"}
+      ]
+    },
+    {
+      "name": "copy-into-table-from-s3-direct",
+      "skip": {"backends": ["snowflake"], "reason": "targets a raw s3:// URL; a real account contacts the bucket and fails with Access Denied (403) - the cell's essence is the URL form itself"},
+      "steps": [
+        {"sql": "CREATE TABLE s3_data (id INTEGER, value VARCHAR)"},
+        {"sql": "COPY INTO s3_data FROM 's3://mybucket/data/' FILE_FORMAT = (TYPE = 'CSV')"}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-json-format",
+      "steps": [
+        {"sql": "CREATE TABLE json_data (data VARIANT)"},
+        {"sql": "CREATE STAGE json_stage"},
+        {"sql": "COPY INTO json_data FROM @json_stage FILE_FORMAT = (TYPE = 'JSON')"},
+        {"sql": "CREATE TABLE json_pair (id INTEGER, data VARIANT)"},
+        {"sql": "COPY INTO json_pair FROM @json_stage FILE_FORMAT = (TYPE = 'JSON')",
+         "expect": {"error": {"messageContains": "one and only one column"}}}
+      ]
+    },
+    {
+      "name": "copy-into-table-rejects-parquet-without-formats-module",
+      "skip": {"backends": ["snowflake"], "reason": "pins the engine's own frostlake-formats module-missing refusal; a real account loads PARQUET natively"},
+      "steps": [
+        {"sql": "CREATE TABLE parquet_data (data VARIANT)"},
+        {"sql": "CREATE STAGE parquet_stage"},
+        {"sql": "COPY INTO parquet_data FROM @parquet_stage FILE_FORMAT = (TYPE = 'PARQUET')",
+         "expect": {"error": {"messageContains": "frostlake-formats"}}}
+      ]
+    },
+    {
+      "name": "copy-into-table-complex-options",
+      "steps": [
+        {"sql": "CREATE TABLE complex_load (id INTEGER, name VARCHAR, email VARCHAR, created_date DATE)"},
+        {"sql": "CREATE STAGE complex_stage"},
+        {"sql": "COPY INTO complex_load (id, name, email, created_date) FROM @complex_stage FILE_FORMAT = (TYPE = 'CSV' FIELD_DELIMITER = ',' SKIP_HEADER = 1 DATE_FORMAT = 'YYYY-MM-DD' COMPRESSION = 'GZIP') PATTERN = '.*data.*\\.csv\\.gz' ON_ERROR = 'SKIP_FILE' SIZE_LIMIT = 1000000 PURGE = TRUE"}
+      ]
+    },
+    {
+      "name": "copy-into-stage-from-table",
+      "steps": [
+        {"sql": "CREATE TABLE export_data (id INTEGER, name VARCHAR, value DECIMAL(10,2))"},
+        {"sql": "INSERT INTO export_data VALUES (1, 'Item1', 100.50), (2, 'Item2', 200.75)"},
+        {"sql": "CREATE STAGE export_stage"},
+        {"sql": "COPY INTO @export_stage FROM export_data FILE_FORMAT = (TYPE = 'CSV' FIELD_DELIMITER = ',')", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "copy-into-stage-from-query",
+      "steps": [
+        {"sql": "CREATE TABLE source_data (id INTEGER, category VARCHAR, amount INTEGER)"},
+        {"sql": "INSERT INTO source_data VALUES (1, 'A', 100), (2, 'B', 200), (3, 'A', 150)"},
+        {"sql": "CREATE STAGE query_export_stage"},
+        {"sql": "COPY INTO @query_export_stage FROM (SELECT category, SUM(amount) as total FROM source_data GROUP BY category) FILE_FORMAT = (TYPE = 'CSV')", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "copy-transformation-honors-the-function-allowlist",
+      "steps": [
+        {"sql": "CREATE TABLE transformed_data (id INTEGER, name VARCHAR, tail VARCHAR)"},
+        {"sql": "CREATE STAGE transform_stage"},
+        {"sql": "COPY INTO transformed_data FROM (SELECT $1::INTEGER, IFF($2 = '', 'empty', CONCAT($2, '!')), SUBSTR($3, 1, 3) FROM @transform_stage) FILE_FORMAT = (TYPE = 'CSV')"},
+        {"sql": "COPY INTO transformed_data FROM (SELECT $1, UPPER($2), $3 FROM @transform_stage) FILE_FORMAT = (TYPE = 'CSV')",
+         "expect": {"error": {"messageContains": "Function 'UPPER' not supported within a COPY"}}},
+        {"sql": "COPY INTO transformed_data FROM (SELECT $1, $2, $3 * 2 FROM @transform_stage) FILE_FORMAT = (TYPE = 'CSV')",
+         "expect": {"error": {"messageContains": "Function '*' not supported within a COPY"}}}
+      ]
+    },
+    {
+      "name": "copy-into-table-returns-results",
+      "steps": [
+        {"sql": "CREATE TABLE result_test (id INTEGER, name VARCHAR)"},
+        {"sql": "CREATE STAGE result_stage"},
+        {"sql": "COPY INTO result_test FROM @result_stage FILE_FORMAT = (TYPE = 'CSV')",
+         "expect": {"value": "Copy executed with 0 files processed."}}
+      ]
+    },
+    {
+      "name": "multiple-copy-operations",
+      "steps": [
+        {"sql": "CREATE TABLE batch1 (id INTEGER, data VARCHAR)"},
+        {"sql": "CREATE TABLE batch2 (id INTEGER, data VARCHAR)"},
+        {"sql": "CREATE STAGE batch_stage"},
+        {"sql": "COPY INTO batch1 FROM @batch_stage PATTERN = '.*batch1_.*\\.csv' FILE_FORMAT = (TYPE = 'CSV')"},
+        {"sql": "COPY INTO batch2 FROM @batch_stage PATTERN = '.*batch2_.*\\.csv' FILE_FORMAT = (TYPE = 'CSV')"}
+      ]
+    },
+    {
+      "name": "copy-into-table-with-match-by-column-name",
+      "steps": [
+        {"sql": "CREATE TABLE column_match (id INTEGER, name VARCHAR, email VARCHAR)"},
+        {"sql": "CREATE STAGE column_stage"},
+        {"sql": "COPY INTO column_match FROM @column_stage FILE_FORMAT = (TYPE = 'JSON') MATCH_BY_COLUMN_NAME = 'CASE_INSENSITIVE'"}
+      ]
+    }
+  ]
+}

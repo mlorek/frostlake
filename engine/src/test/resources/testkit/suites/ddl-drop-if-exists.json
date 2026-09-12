@@ -1,0 +1,139 @@
+{
+  "suite": "ddl-drop-if-exists",
+  "description": "DROP ... IF EXISTS across every object type: missing object is a no-op, existing object drops, repeat drop is a no-op. Converted 1:1 from ddl/DropIfExistsTest.java (now retired); its own CREATE SCHEMA test_schema became a fresh name (qual_s) because the runner's reset already provides test_schema.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "drop-database-if-exists",
+      "steps": [
+        {"sql": "DROP DATABASE IF EXISTS nonexistent_db"},
+        {"sql": "CREATE DATABASE test_drop_db"},
+        {"sql": "DROP DATABASE IF EXISTS test_drop_db"},
+        {"sql": "DROP DATABASE IF EXISTS test_drop_db"}
+      ]
+    },
+    {
+      "name": "drop-schema-if-exists",
+      "steps": [
+        {"sql": "DROP SCHEMA IF EXISTS nonexistent_schema"},
+        {"sql": "CREATE SCHEMA test_drop_schema"},
+        {"sql": "DROP SCHEMA IF EXISTS test_drop_schema"},
+        {"sql": "DROP SCHEMA IF EXISTS test_drop_schema"}
+      ]
+    },
+    {
+      "name": "drop-table-if-exists",
+      "steps": [
+        {"sql": "DROP TABLE IF EXISTS nonexistent_table"},
+        {"sql": "CREATE TABLE test_drop_table (id INTEGER, name VARCHAR)"},
+        {"sql": "DROP TABLE IF EXISTS test_drop_table"},
+        {"sql": "DROP TABLE IF EXISTS test_drop_table"}
+      ]
+    },
+    {
+      "name": "drop-view-if-exists",
+      "steps": [
+        {"sql": "DROP VIEW IF EXISTS nonexistent_view"},
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+        {"sql": "CREATE VIEW test_drop_view AS SELECT * FROM test_table"},
+        {"sql": "DROP VIEW IF EXISTS test_drop_view"},
+        {"sql": "DROP VIEW IF EXISTS test_drop_view"}
+      ]
+    },
+    {
+      "name": "drop-function-if-exists",
+      "steps": [
+        {"sql": "DROP FUNCTION IF EXISTS nonexistent_func()"},
+        {"sql": "CREATE FUNCTION test_drop_func(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+        {"sql": "DROP FUNCTION IF EXISTS test_drop_func(INTEGER)"},
+        {"sql": "DROP FUNCTION IF EXISTS test_drop_func(INTEGER)"}
+      ]
+    },
+    {
+      "name": "drop-procedure-if-exists",
+      "steps": [
+        {"sql": "DROP PROCEDURE IF EXISTS nonexistent_proc()"},
+        {"sql": "CREATE PROCEDURE test_drop_proc(x INTEGER) RETURNS INTEGER AS $$BEGIN RETURN x + 1; END;$$"},
+        {"sql": "DROP PROCEDURE IF EXISTS test_drop_proc(INTEGER)"},
+        {"sql": "DROP PROCEDURE IF EXISTS test_drop_proc(INTEGER)"}
+      ]
+    },
+    {
+      "name": "drop-task-if-exists",
+      "steps": [
+        {"sql": "DROP TASK IF EXISTS nonexistent_task"},
+        {"sql": "CREATE TASK test_drop_task WAREHOUSE = 'compute_wh' SCHEDULE = '60 MINUTES' AS SELECT 1"},
+        {"sql": "DROP TASK IF EXISTS test_drop_task"},
+        {"sql": "DROP TASK IF EXISTS test_drop_task"}
+      ]
+    },
+    {
+      "name": "drop-stream-if-exists",
+      "steps": [
+        {"sql": "DROP STREAM IF EXISTS nonexistent_stream"},
+        {"sql": "CREATE TABLE test_stream_table (id INTEGER, name VARCHAR)"},
+        {"sql": "CREATE STREAM test_drop_stream ON TABLE test_stream_table"},
+        {"sql": "DROP STREAM IF EXISTS test_drop_stream"},
+        {"sql": "DROP STREAM IF EXISTS test_drop_stream"}
+      ]
+    },
+    {
+      "name": "drop-warehouse-if-exists",
+      "steps": [
+        {"sql": "DROP WAREHOUSE IF EXISTS nonexistent_wh"},
+        {"sql": "CREATE WAREHOUSE test_drop_wh"},
+        {"sql": "DROP WAREHOUSE IF EXISTS test_drop_wh"},
+        {"sql": "DROP WAREHOUSE IF EXISTS test_drop_wh"}
+      ]
+    },
+    {
+      "name": "drop-stage-if-exists",
+      "steps": [
+        {"sql": "DROP STAGE IF EXISTS nonexistent_stage"},
+        {"sql": "CREATE STAGE test_drop_stage URL = 's3://bucket/path'"},
+        {"sql": "DROP STAGE IF EXISTS test_drop_stage"},
+        {"sql": "DROP STAGE IF EXISTS test_drop_stage"}
+      ]
+    },
+    {
+      "name": "drop-user-if-exists",
+      "steps": [
+        {"sql": "DROP USER IF EXISTS nonexistent_user"},
+        {"sql": "CREATE USER test_drop_user"},
+        {"sql": "DROP USER IF EXISTS test_drop_user"},
+        {"sql": "DROP USER IF EXISTS test_drop_user"}
+      ]
+    },
+    {
+      "name": "drop-role-if-exists",
+      "steps": [
+        {"sql": "DROP ROLE IF EXISTS nonexistent_role"},
+        {"sql": "CREATE ROLE test_drop_role"},
+        {"sql": "DROP ROLE IF EXISTS test_drop_role"},
+        {"sql": "DROP ROLE IF EXISTS test_drop_role"}
+      ]
+    },
+    {
+      "name": "multiple-drop-if-exists-in-sequence",
+      "steps": [
+        {"sql": "CREATE TABLE t1 (id INTEGER)"},
+        {"sql": "CREATE TABLE t2 (id INTEGER)"},
+        {"sql": "CREATE VIEW v1 AS SELECT * FROM t1"},
+        {"sql": "DROP TABLE IF EXISTS t1"},
+        {"sql": "DROP VIEW IF EXISTS v1"},
+        {"sql": "DROP TABLE IF EXISTS t2"},
+        {"sql": "DROP TABLE IF EXISTS t1"}
+      ]
+    },
+    {
+      "name": "drop-if-exists-with-qualified-names",
+      "steps": [
+        {"sql": "CREATE SCHEMA qual_s"},
+        {"sql": "CREATE TABLE qual_s.qualified_table (id INTEGER)"},
+        {"sql": "DROP TABLE IF EXISTS qual_s.qualified_table"},
+        {"sql": "DROP TABLE IF EXISTS qual_s.qualified_table"},
+        {"sql": "DROP TABLE IF EXISTS qual_s.nonexistent"}
+      ]
+    }
+  ]
+}

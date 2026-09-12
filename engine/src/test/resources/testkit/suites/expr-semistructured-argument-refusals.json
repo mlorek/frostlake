@@ -1,0 +1,91 @@
+{
+  "suite": "expr-semistructured-argument-refusals",
+  "description": "A function handed a CONTAINER is refused at COMPILE time, in a view as in a query: the sentence names the function and its argument types anchored at the CALL's place in the WHOLE statement (view bodies composing their re-parsed offsets with where the body starts, multi-line bodies keeping their own column, aggregates anchoring through the GROUP BY path too), AVG reports as SUM (live names the function the plan rewrites into), the refused view is never created empty, and the legal uses (GET, TYPEOF, TO_VARCHAR) stay legal. Converted 1:1 from expressions/SemiStructuredArgumentRefusalTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "a-query-is-refused-at-the-call", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, a ARRAY, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), 'abc', 1"},
+      {"sql": "SELECT UPPER(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\nInvalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "SELECT TRIM(a) AS c FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\nInvalid argument types for function 'TRIM': (ARRAY)"}}},
+      {"sql": "SELECT LOWER(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'LOWER': (OBJECT)"}}},
+      {"sql": "SELECT CONCAT(s, o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (VARCHAR(10), OBJECT)"}}}
+    ]},
+    {"name": "a-view-over-the-same-body-is-refused-at-compile-time", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, a ARRAY, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), 'abc', 1"},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT UPPER(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT TRIM(a) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT LOWER(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT ABS(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT LENGTH(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT CONCAT(s, o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT SUM(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT AVG(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT UPPER(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "SQL compilation error"}}}
+    ]},
+    {"name": "no-empty-view-is-created", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, a ARRAY, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), 'abc', 1"},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT UPPER(o) AS c FROM ss", "expect": {"error": {}}},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ss_v", "expect": {"error": {}}}
+    ]},
+    {"name": "an-aggregate-reports-the-function-it-is-rewritten-into", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, a ARRAY, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), 'abc', 1"},
+      {"sql": "SELECT AVG(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}}
+    ]},
+    {"name": "the-anchor-is-the-functions-place-in-the-statement", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, a ARRAY, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), 'abc', 1"},
+      {"sql": "SELECT UPPER(o) FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\nInvalid argument types for function"}}},
+      {"sql": "CREATE VIEW v1 AS SELECT UPPER(o) FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 25\nInvalid argument types for function"}}},
+      {"sql": "CREATE OR REPLACE VIEW v3 AS SELECT UPPER(o) FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 36\nInvalid argument types for function"}}},
+      {"sql": "CREATE VIEW v4 AS SELECT s, UPPER(o) FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 28\nInvalid argument types for function"}}},
+      {"sql": "CREATE VIEW v6 AS SELECT UPPER(o) FROM (SELECT o FROM ss)",
+       "expect": {"error": {"messageContains": "error line 1 at position 25\nInvalid argument types for function"}}},
+      {"sql": "INSERT INTO ss SELECT UPPER(o), a, s, n FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 22\nInvalid argument types for function"}}}
+    ]},
+    {"name": "a-multi-line-body-keeps-its-own-column", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, a ARRAY, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), 'abc', 1"},
+      {"sql": "CREATE VIEW v5 AS\n  SELECT UPPER(o) FROM ss",
+       "expect": {"error": {"messageContains": "error line 2 at position 9\nInvalid argument types for function"}}}
+    ]},
+    {"name": "an-aggregate-is-anchored-too", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, a ARRAY, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), 'abc', 1"},
+      {"sql": "SELECT SUM(o) FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\nInvalid argument types for function"}}},
+      {"sql": "CREATE VIEW v2 AS SELECT SUM(o) FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 25\nInvalid argument types for function"}}}
+    ]},
+    {"name": "the-legal-uses-are-untouched", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, a ARRAY, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), 'abc', 1"},
+      {"sql": "SELECT GET(o, 'k') AS c FROM ss", "expect": {"rowCount": 1}},
+      {"sql": "SELECT TYPEOF(o) AS c FROM ss", "expect": {"rowCount": 1}},
+      {"sql": "SELECT TO_VARCHAR(o) AS c FROM ss", "expect": {"rowCount": 1}},
+      {"sql": "CREATE OR REPLACE VIEW ss_v AS SELECT GET(o, 'k') AS c FROM ss"}
+    ]}
+  ]
+}

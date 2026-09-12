@@ -1,0 +1,238 @@
+{
+  "suite": "ddl-alter-objects",
+  "description": "ALTER across object kinds: RENAME and SET COMMENT for databases, schemas, tables, views, users, roles and warehouses; ADD/DROP/RENAME COLUMN effects on the SELECT shape; renamed names stored upper-cased; DEFAULT_ROLE upper-cased on CREATE and ALTER USER; materialized-view rename re-keys; SHOW SCHEMAS is_current; grantor and owner stamped from the session's current role; ALTER COLUMN SET DEFAULT restricted to re-pointing sequence defaults; SHOW ROLES is_current tracking USE ROLE. Converted 1:1 from ddl/AlterStatementTest (now retired). Account-level users/roles/warehouses/databases are dropped at test end; role-switching tests restore USE ROLE SYSADMIN.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "alter-database-rename", "steps": [
+      {"sql": "CREATE DATABASE old_db"},
+      {"sql": "ALTER DATABASE old_db RENAME TO new_db"},
+      {"sql": "SHOW DATABASES LIKE 'new_db'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW DATABASES LIKE 'old_db'", "expect": {"rowCount": 0}},
+      {"sql": "DROP DATABASE new_db"}
+    ]},
+    {"name": "alter-database-set-comment", "steps": [
+      {"sql": "ALTER DATABASE test_db SET COMMENT = 'Test database comment'"},
+      {"sql": "SHOW DATABASES LIKE 'test_db'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "alter-schema-rename", "steps": [
+      {"sql": "CREATE SCHEMA old_schema"},
+      {"sql": "ALTER SCHEMA old_schema RENAME TO new_schema"},
+      {"sql": "SHOW SCHEMAS LIKE 'new_schema'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW SCHEMAS LIKE 'old_schema'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-schema-set-comment", "steps": [
+      {"sql": "ALTER SCHEMA test_schema SET COMMENT = 'Test schema comment'"},
+      {"sql": "SHOW SCHEMAS LIKE 'test_schema'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "alter-table-rename", "steps": [
+      {"sql": "CREATE TABLE old_table (id INT, name VARCHAR)"},
+      {"sql": "ALTER TABLE old_table RENAME TO new_table"},
+      {"sql": "SHOW TABLES LIKE 'new_table'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW TABLES LIKE 'old_table'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-table-add-column", "steps": [
+      {"sql": "CREATE TABLE users (id INT, name VARCHAR)"},
+      {"sql": "ALTER TABLE users ADD COLUMN email VARCHAR"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')"},
+      {"sql": "SELECT * FROM users", "expect": {"columns": ["id", "name", "email"], "rowCount": 1}}
+    ]},
+    {"name": "alter-table-drop-column", "steps": [
+      {"sql": "CREATE TABLE users (id INT, name VARCHAR, email VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')"},
+      {"sql": "ALTER TABLE users DROP COLUMN email"},
+      {"sql": "SELECT * FROM users", "expect": {"columns": ["id", "name"]}}
+    ]},
+    {"name": "alter-table-rename-column", "steps": [
+      {"sql": "CREATE TABLE users (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "ALTER TABLE users RENAME COLUMN name TO full_name"},
+      {"sql": "SELECT * FROM users", "expect": {"columns": ["id", "full_name"], "rows": [["1", "Alice"]]}}
+    ]},
+    {"name": "alter-table-set-comment", "steps": [
+      {"sql": "CREATE TABLE users (id INT, name VARCHAR)"},
+      {"sql": "ALTER TABLE users SET COMMENT = 'User data table'"},
+      {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "alter-view-rename", "steps": [
+      {"sql": "CREATE TABLE users (id INT, name VARCHAR)"},
+      {"sql": "CREATE VIEW old_view AS SELECT * FROM users"},
+      {"sql": "ALTER VIEW old_view RENAME TO new_view"},
+      {"sql": "SHOW VIEWS LIKE 'new_view'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW VIEWS LIKE 'old_view'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-view-set-comment", "steps": [
+      {"sql": "CREATE TABLE users (id INT, name VARCHAR)"},
+      {"sql": "CREATE VIEW user_view AS SELECT * FROM users"},
+      {"sql": "ALTER VIEW user_view SET COMMENT = 'User view'"},
+      {"sql": "SHOW VIEWS LIKE 'user_view'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "alter-user-rename-keeps-login-and-display-names", "steps": [
+      {"sql": "CREATE OR REPLACE USER old_user PASSWORD = 'pass123'"},
+      {"sql": "ALTER USER old_user RENAME TO new_user"},
+      {"sql": "SHOW USERS LIKE 'new_user'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\", \"login_name\", \"display_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["NEW_USER", "OLD_USER", "OLD_USER"]]}},
+      {"sql": "SHOW USERS LIKE 'old_user'", "expect": {"rowCount": 0}},
+      {"sql": "DROP USER new_user"}
+    ]},
+    {"name": "alter-user-set-password", "steps": [
+      {"sql": "CREATE OR REPLACE USER test_user PASSWORD = 'Fl0stlake-Old-Passw0rd!'"},
+      {"sql": "ALTER USER test_user SET PASSWORD = 'Fr0stlake-New-Passw0rd!'"},
+      {"sql": "SHOW USERS LIKE 'test_user'", "expect": {"rowCount": 1}},
+      {"sql": "DROP USER test_user"}
+    ]},
+    {"name": "alter-user-set-default-role", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE test_role"},
+      {"sql": "CREATE OR REPLACE USER test_user PASSWORD = 'pass123'"},
+      {"sql": "ALTER USER test_user SET DEFAULT_ROLE = test_role"},
+      {"sql": "SHOW USERS LIKE 'test_user'", "expect": {"rowCount": 1}},
+      {"sql": "DROP USER test_user"},
+      {"sql": "DROP ROLE test_role"}
+    ]},
+    {"name": "alter-user-set-comment", "steps": [
+      {"sql": "CREATE OR REPLACE USER test_user PASSWORD = 'pass123'"},
+      {"sql": "ALTER USER test_user SET COMMENT = 'Test user account'"},
+      {"sql": "SHOW USERS LIKE 'test_user'", "expect": {"rowCount": 1}},
+      {"sql": "DROP USER test_user"}
+    ]},
+    {"name": "alter-role-rename", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE old_role"},
+      {"sql": "ALTER ROLE old_role RENAME TO new_role"},
+      {"sql": "SHOW ROLES LIKE 'new_role'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW ROLES LIKE 'old_role'", "expect": {"rowCount": 0}},
+      {"sql": "DROP ROLE new_role"}
+    ]},
+    {"name": "alter-role-set-comment", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE test_role"},
+      {"sql": "ALTER ROLE test_role SET COMMENT = 'Test role'"},
+      {"sql": "SHOW ROLES LIKE 'test_role'", "expect": {"rowCount": 1}},
+      {"sql": "DROP ROLE test_role"}
+    ]},
+    {"name": "alter-warehouse-rename", "steps": [
+      {"sql": "CREATE WAREHOUSE old_wh"},
+      {"sql": "ALTER WAREHOUSE old_wh RENAME TO new_wh"},
+      {"sql": "SHOW WAREHOUSES LIKE 'new_wh'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW WAREHOUSES LIKE 'old_wh'", "expect": {"rowCount": 0}},
+      {"sql": "DROP WAREHOUSE new_wh"}
+    ]},
+    {"name": "alter-warehouse-set-comment", "steps": [
+      {"sql": "CREATE WAREHOUSE test_wh"},
+      {"sql": "ALTER WAREHOUSE test_wh SET COMMENT = 'Test warehouse'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'", "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "alter-warehouse-set-size", "steps": [
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "ALTER WAREHOUSE test_wh SET WAREHOUSE_SIZE = 'LARGE'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'", "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "alter-warehouse-set-auto-suspend", "steps": [
+      {"sql": "CREATE WAREHOUSE test_wh"},
+      {"sql": "ALTER WAREHOUSE test_wh SET AUTO_SUSPEND = 300"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'", "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "alter-database-rename-uppercases-name", "steps": [
+      {"sql": "CREATE DATABASE old_db2"},
+      {"sql": "ALTER DATABASE old_db2 RENAME TO new_db2"},
+      {"sql": "SHOW DATABASES LIKE 'new_db2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NEW_DB2"}},
+      {"sql": "DROP DATABASE new_db2"}
+    ]},
+    {"name": "alter-user-rename-uppercases-name", "steps": [
+      {"sql": "CREATE OR REPLACE USER old_user2 PASSWORD = 'p'"},
+      {"sql": "ALTER USER old_user2 RENAME TO new_user2"},
+      {"sql": "SHOW USERS LIKE 'new_user2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NEW_USER2"}},
+      {"sql": "DROP USER new_user2"}
+    ]},
+    {"name": "alter-role-rename-uppercases-name", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE old_role2"},
+      {"sql": "ALTER ROLE old_role2 RENAME TO new_role2"},
+      {"sql": "SHOW ROLES LIKE 'new_role2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NEW_ROLE2"}},
+      {"sql": "DROP ROLE new_role2"}
+    ]},
+    {"name": "default-role-uppercased-on-create-and-alter", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE analyst_role"},
+      {"sql": "CREATE OR REPLACE USER dr_user PASSWORD = 'p' DEFAULT_ROLE = analyst_role"},
+      {"sql": "SHOW USERS LIKE 'dr_user'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"default_role\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ANALYST_ROLE"}},
+      {"sql": "CREATE OR REPLACE ROLE other_role"},
+      {"sql": "ALTER USER dr_user SET DEFAULT_ROLE = other_role"},
+      {"sql": "SHOW USERS LIKE 'dr_user'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"default_role\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OTHER_ROLE"}},
+      {"sql": "DROP USER dr_user"},
+      {"sql": "DROP ROLE analyst_role"},
+      {"sql": "DROP ROLE other_role"}
+    ]},
+    {"name": "alter-materialized-view-rename-rekeys", "steps": [
+      {"sql": "CREATE TABLE mv_src (id INTEGER, val INTEGER)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_old AS SELECT id, val FROM mv_src"},
+      {"sql": "ALTER MATERIALIZED VIEW mv_old RENAME TO mv_new"},
+      {"sql": "SHOW MATERIALIZED VIEWS LIKE 'mv_new'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "MV_NEW"}},
+      {"sql": "SHOW MATERIALIZED VIEWS LIKE 'mv_old'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "show-schemas-is-current-case-insensitive", "steps": [
+      {"sql": "SHOW SCHEMAS"},
+      {"sql": "SELECT \"is_current\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") = 'TEST_SCHEMA'",
+       "expect": {"rows": [["Y"]]}}
+    ]},
+    {"name": "grantor-tracked-from-session",
+     "skip": {"backends": ["snowflake"], "reason": "USE ROLE of a just-created role needs a grant to the session user on a live account (Java test had the same assumption)"},
+     "steps": [
+      {"sql": "CREATE OR REPLACE ROLE granting_role"},
+      {"sql": "CREATE OR REPLACE ROLE child_role"},
+      {"sql": "CREATE OR REPLACE ROLE parent_role"},
+      {"sql": "USE ROLE granting_role"},
+      {"sql": "GRANT ROLE child_role TO ROLE parent_role"},
+      {"sql": "SHOW GRANTS OF ROLE child_role", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"granted_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'PARENT_ROLE'",
+       "expect": {"value": "GRANTING_ROLE"}},
+      {"sql": "USE ROLE SYSADMIN"},
+      {"sql": "DROP ROLE granting_role"},
+      {"sql": "DROP ROLE child_role"},
+      {"sql": "DROP ROLE parent_role"}
+    ]},
+    {"name": "object-owner-stamped-with-creating-role",
+     "skip": {"backends": ["snowflake"], "reason": "USE ROLE of a just-created role needs a grant to the session user on a live account (Java test had the same assumption)"},
+     "steps": [
+      {"sql": "CREATE OR REPLACE ROLE data_owner"},
+      {"sql": "USE ROLE data_owner"},
+      {"sql": "CREATE TABLE owned_tbl (id INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'owned_tbl'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"owner\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DATA_OWNER"}},
+      {"sql": "USE ROLE SYSADMIN"},
+      {"sql": "DROP ROLE data_owner"}
+    ]},
+    {"name": "alter-column-set-default-is-restricted-to-sequences", "steps": [
+      {"sql": "CREATE TABLE def_tbl (id INT, region VARCHAR(50) NOT NULL DEFAULT 'EU')"},
+      {"sql": "INSERT INTO def_tbl(id) VALUES (1)"},
+      {"sql": "SELECT region FROM def_tbl", "expect": {"value": "EU"}},
+      {"sql": "ALTER TABLE def_tbl ALTER COLUMN region SET DEFAULT 'US'", "expect": {"error": {}}},
+      {"sql": "CREATE SEQUENCE def_seq"},
+      {"sql": "CREATE SEQUENCE def_seq2"},
+      {"sql": "ALTER TABLE def_tbl ALTER COLUMN id SET DEFAULT def_seq.NEXTVAL", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE seq_tbl (id NUMBER DEFAULT def_seq.NEXTVAL, txt VARCHAR)"},
+      {"sql": "ALTER TABLE seq_tbl ALTER COLUMN id SET DEFAULT def_seq2.NEXTVAL"},
+      {"sql": "ALTER TABLE def_tbl ALTER COLUMN region DROP DEFAULT"},
+      {"sql": "INSERT INTO def_tbl(id) VALUES (2)", "expect": {"error": {}}}
+    ]},
+    {"name": "show-roles-is-current-reflects-session",
+     "skip": {"backends": ["snowflake"], "reason": "USE ROLE of a just-created role needs a grant to the session user on a live account (Java test had the same assumption)"},
+     "steps": [
+      {"sql": "CREATE OR REPLACE ROLE my_show_role"},
+      {"sql": "USE ROLE my_show_role"},
+      {"sql": "SHOW ROLES"},
+      {"sql": "SELECT \"is_current\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MY_SHOW_ROLE'",
+       "expect": {"rows": [["Y"]]}},
+      {"sql": "SHOW ROLES"},
+      {"sql": "SELECT \"is_current\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'SYSADMIN'",
+       "expect": {"rows": [["N"]]}},
+      {"sql": "USE ROLE SYSADMIN"},
+      {"sql": "DROP ROLE my_show_role"}
+    ]}
+  ]
+}

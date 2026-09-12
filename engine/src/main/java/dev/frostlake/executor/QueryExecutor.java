@@ -25,9 +25,11 @@ import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
+import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.SourcePosition;
@@ -67,13 +69,18 @@ import dev.frostlake.functions.scalar.context.CurrentAccount;
 import dev.frostlake.functions.scalar.context.GetDdl;
 import dev.frostlake.functions.scalar.context.LastQueryId;
 import dev.frostlake.functions.scalar.context.PolicyBodyScope;
+import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.functions.scalar.file.ToFile;
 import dev.frostlake.functions.scalar.file.TryToFile;
 import dev.frostlake.functions.table.QueryHistoryFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.functions.table.ResultScan;
 import dev.frostlake.functions.table.ToQuery;
+import dev.frostlake.functions.window.WholePartitionAggregates;
+import dev.frostlake.functions.window.WindowFunctionArity;
+import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
@@ -86,6 +93,7 @@ import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.JoinPolicy;
+import dev.frostlake.metastore.model.JoinedRelations;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Privilege;
@@ -102,9 +110,11 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.metastore.model.View;
+import dev.frostlake.parser.EmptySchemaPartSyntax;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
+import dev.frostlake.parser.StatementSeparation;
 import dev.frostlake.parser.SyntaxErrorListener;
 import dev.frostlake.persistence.WalStatementKinds;
 import dev.frostlake.security.SecurityManager;
@@ -133,18 +143,22 @@ import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
+import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.ExactValues;
 import dev.frostlake.values.GeoValue;
+import dev.frostlake.values.ValueRange;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -155,6 +169,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.regex.Pattern;
@@ -188,6 +203,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.WeakHashMap;
 
 /**
  * Query Executor - Executes SQL statements using ANTLR-based parsing
@@ -197,6 +213,13 @@ public class QueryExecutor {
     private static final Logger logger = LoggerFactory.getLogger(QueryExecutor.class);
 
     private final Catalog catalog;
+
+    /** True while CREATE VIEW compiles its body in the view's own schema. */
+    private boolean compilingViewBody;
+
+    /** A derived table's or a CTE's blanked body per body as written, and "" where none can be (see prunedBody). */
+    private final Map<ParserRuleContext, String> prunedBodies =
+        Collections.synchronizedMap(new WeakHashMap<ParserRuleContext, String>());
     private final StorageEngine storageEngine;
     private final FunctionRegistry functionRegistry;
     private final TransactionManager transactionManager;
@@ -255,6 +278,9 @@ public class QueryExecutor {
                 return new ArrayDeque<>();
             }
         };
+    // The statistics bound of the SELECT clause executing on this thread (see CountStatisticsBound),
+    // per thread like the stacks above; executeSingleSelect scopes it to its own clause.
+    private final ThreadLocal<CountStatisticsBound> statisticsBound = new ThreadLocal<>();
     // PIVOT / UNPIVOT query stage (row<->column transforms).
     private final PivotUnpivotExecutor pivotExecutor = new PivotUnpivotExecutor(this);
     // COPY subsystem: COPY INTO <table> load, COPY INTO <stage> unload, VALIDATION_MODE, transformations,
@@ -450,6 +476,14 @@ public class QueryExecutor {
         // CURRENT_TIMESTAMP is statement-stable, so every row and every nested call inside a procedural
         // block sees the same instant. See StatementClock.
         final Instant displacedInstant = outermost ? StatementClock.pin(pendingStatementInstant) : null;
+        // The session's zone is pinned on the same boundary and for the same reason: a TIMESTAMP_LTZ is
+        // an instant, and reading or rendering one needs the zone it should be shown in. Both live deep
+        // in static helpers with no session to ask, and one engine serves many sessions.
+        final ZoneId displacedZone = outermost ? SessionZone.pin(sessionTimezoneName()) : null;
+        // What a BARE TIMESTAMP means rides along: it is resolved wherever the word is written, which
+        // includes the expression layer, and that has no session to ask either.
+        final String displacedMapping = outermost
+            ? SessionTimestampMapping.pin(sessionParameter("TIMESTAMP_TYPE_MAPPING")) : null;
         if (outermost) {
             // Remember it as well as pinning it: the write-ahead log records the statement at COMMIT, by
             // which point the pin has been released, and reading the clock again there would log the
@@ -466,8 +500,60 @@ public class QueryExecutor {
             executeReentryDepth--;
             if (outermost) {
                 StatementClock.restore(displacedInstant);
+                SessionZone.restore(displacedZone);
+                SessionTimestampMapping.restore(displacedMapping);
             }
         }
+    }
+
+    /**
+     * The collation each projected column compares under, for a DISTINCT over the projection.
+     *
+     * @param columnSources the expression each output column projects, null where it has none
+     * @param table         the base relation, or null
+     * @param aliasToTable  its alias map, or null
+     * @param allTables     its joined relations, or null
+     * @return one entry per column, null where the column carries no collation
+     */
+    private CollationSpec[] projectionCollations(final List<String> columnSources, final Table table,
+                                                 final Map<String, Table> aliasToTable,
+                                                 final List<Table> allTables) {
+        if (!KeyCollations.reachable(columnSources, table, aliasToTable, allTables)) {
+            return null;
+        }
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        if (aliasToTable != null && allTables != null) {
+            evaluator.setMultiTableContext(aliasToTable, allTables);
+        }
+        return KeyCollations.resolve(columnSources, evaluator);
+    }
+
+    /**
+     * Stamp each projected column with the collation its expression carries.
+     *
+     * @param columns    the output columns, replaced in place where a collation applies
+     * @param collations one entry per column, null entries and a null array for none
+     */
+    private void stampCollations(final List<ResultSetColumn> columns, final CollationSpec[] collations) {
+        if (collations == null) {
+            return;
+        }
+        for (int i = 0; i < columns.size() && i < collations.length; i++) {
+            if (collations[i] != null) {
+                columns.set(i, columns.get(i).withCollation(collations[i].getText()));
+            }
+        }
+    }
+
+    /** The session's TIMEZONE parameter, or null when nothing has set one. */
+    private Object sessionTimezoneName() {
+        return sessionParameter("TIMEZONE");
+    }
+
+    /** A session parameter's value, or null when there is no session or it has not been set. */
+    private Object sessionParameter(final String name) {
+        return securityManager == null ? null
+            : securityManager.getSessionContext().getSessionParameter(name);
     }
 
     /**
@@ -542,6 +628,7 @@ public class QueryExecutor {
         }
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
         final SyntaxErrorListener errorListener = new SyntaxErrorListener(sql, quiet);
+        errorListener.statementParse();
         lexer.removeErrorListeners();
         lexer.addErrorListener(errorListener);
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
@@ -550,6 +637,8 @@ public class QueryExecutor {
         parser.addErrorListener(errorListener);
         final FrostlakeParser.SqlScriptContext tree = parser.sqlScript();
         errorListener.throwIfErrors();
+        StatementSeparation.requireSeparators(tree, tokens, sql);
+        EmptySchemaPartSyntax.requireWellFormed(tree, tokens, sql);
         SCRIPT_CACHE.put(sql, tree);
         return tree;
     }
@@ -581,6 +670,47 @@ public class QueryExecutor {
     }
 
     /**
+     * The query {@code sql} parses to, read from the cache statements use, or null when it is not one query.
+     * A subquery's text is a statement of its own, so its shape can be read without running it.
+     */
+    public FrostlakeParser.SelectStatementContext subqueryStatement(final String sql) {
+        final FrostlakeParser.SqlScriptContext tree;
+        try {
+            tree = parseScript(sql, true);
+        } catch (final RuntimeException unparseable) {
+            return null;
+        }
+        if (tree.flowChain().isEmpty() || tree.flowChain().get(0).statement().isEmpty()) {
+            return null;
+        }
+        final FrostlakeParser.QueryStatementContext query =
+            tree.flowChain().get(0).statement().get(0).queryStatement();
+        return query == null ? null : query.selectStatement();
+    }
+
+    /**
+     * The rows a catalog table's storage holds right now, by its storage key, or -1 when there is none: a
+     * metadata question, as live's planner asks it before any row is read.
+     */
+    public long storedRowCount(final String storageKey) {
+        if (storageKey == null || !storageEngine.hasTable(storageKey)) {
+            return -1;
+        }
+        return storageEngine.getTableStorage(storageKey).getRowCount();
+    }
+
+    /** {@link #storedRowCount} for a table named as a query writes it, or -1 when the name reaches no storage. */
+    public long storedRowCountOf(final String writtenName) {
+        final String key;
+        try {
+            key = getFullyQualifiedTableName(writtenName);
+        } catch (final RuntimeException unresolvable) {
+            return -1;
+        }
+        return storedRowCount(key);
+    }
+
+    /**
      * True when {@code sql} parses as a single Snowflake-Scripting block — {@code BEGIN … END} or
      * {@code DECLARE … BEGIN … END}. Sibling of {@link #isQueryStatement(String)}: the decision is made on the
      * parse tree, never on a string prefix, so the transaction statement {@code BEGIN;} (a different grammar
@@ -607,6 +737,27 @@ public class QueryExecutor {
     public void reportBlockSyntaxError(final String sql) {
         if (opensBlock(sql) && proceduralBlockOf(sql) == null) {
             parseScript(sql, false);
+        }
+    }
+
+    /**
+     * Throw the syntax error of a block-opening body that RUNS OUT before its block closes — the parse
+     * error sits at end of input, so the engine has read every token and positively knows the block
+     * never ended, which a real account also refuses at CREATE. Any other parse failure returns
+     * quietly: this grammar is a SUBSET of Snowflake's, so a mid-body error may be a construct the
+     * engine does not model, and the CREATE-time body checks fail OPEN on those (see the note on
+     * {@link #parsesAsScript(String)}).
+     */
+    public void reportUnterminatedBlock(final String sql) {
+        if (!opensBlock(sql) || proceduralBlockOf(sql) != null) {
+            return;
+        }
+        try {
+            parseScript(sql, true);
+        } catch (final RuntimeException e) {
+            if (e.getMessage() != null && e.getMessage().contains("'<EOF>'")) {
+                throw e;
+            }
         }
     }
 
@@ -648,11 +799,60 @@ public class QueryExecutor {
     }
 
     /**
+     * How many statements {@code sql} parses into — every stage of every flow chain — or 0 when it does
+     * not parse. The CREATE-time SQL-UDF body check refuses a body of more than one.
+     */
+    public int statementCountOf(final String sql) {
+        if (sql == null) {
+            return 0;
+        }
+        try {
+            int count = 0;
+            for (final FrostlakeParser.FlowChainContext chain : parseScript(sql, true).flowChain()) {
+                count += chain.statement().size();
+            }
+            return count;
+        } catch (final RuntimeException doesNotParse) {
+            return 0;
+        }
+    }
+
+    /**
      * The {@code BEGIN … END} block {@code sql} consists of, or null when it is not exactly one block.
      * The parse-tree half of {@link #isProceduralBlock(String)}, for callers that must INSPECT the block
      * rather than merely recognise it (the CREATE-time SQL-UDF body check reads which statements and
      * expressions it contains).
      */
+    /**
+     * The syntax error {@code sql} earns when the FIRST thing wrong with it is a statement inside a block
+     * that lacks its semicolon, or null for any other text. The engine read that statement whole, so the
+     * fault is positively known rather than a construct the grammar lacks, and a CREATE PROCEDURE refuses
+     * it as the account does.
+     */
+    public String missingTerminatorRefusal(final String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return null;
+        }
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+        final SyntaxErrorListener errorListener = new SyntaxErrorListener(sql, true);
+        errorListener.statementParse();
+        lexer.removeErrorListeners();
+        lexer.addErrorListener(errorListener);
+        final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
+        parser.removeErrorListeners();
+        parser.addErrorListener(errorListener);
+        parser.sqlScript();
+        if (!errorListener.firstErrorIsMissingTerminator()) {
+            return null;
+        }
+        try {
+            errorListener.throwIfErrors();
+        } catch (final SqlSyntaxException refused) {
+            return refused.getMessage();
+        }
+        return null;
+    }
+
     public FrostlakeParser.BeginEndBlockContext proceduralBlockOf(final String sql) {
         if (sql == null || sql.trim().isEmpty()) {
             return null;
@@ -777,12 +977,17 @@ public class QueryExecutor {
             // result via $n, and only the LAST stage's result is the chain's result).
             for (final FrostlakeParser.FlowChainContext chainCtx : tree.flowChain()) {
                 final List<FrostlakeParser.StatementContext> stages = chainCtx.statement();
+                // The statement actually run, kept for the status row built after the try below.
+                FrostlakeParser.StatementContext executedStatement = null;
                 final List<ResultSet> priorFlowResults = flowChainResults;
                 final Object result;
+                // The statement a failure names: the stage being run, so a flow chain names its own.
+                FrostlakeParser.StatementContext failingStage = stages.get(stages.size() - 1);
                 try {
                     if (stages.size() > 1) {
                         flowChainResults = new ArrayList<>();
                         for (int stage = 0; stage < stages.size() - 1; stage++) {
+                            failingStage = stages.get(stage);
                             final Object stageResult = visitor.visit(stages.get(stage));
                             flowChainResults.add(stageResult instanceof ResultSet ? (ResultSet) stageResult : null);
                             // Time-travel snapshots per stage, mirroring the per-statement behavior below.
@@ -792,6 +997,11 @@ public class QueryExecutor {
                         }
                     }
                     final FrostlakeParser.StatementContext stmtCtx = stages.get(stages.size() - 1);
+                    executedStatement = stmtCtx;
+                    failingStage = stmtCtx;
+                    // The conditional-DDL branch is per STATEMENT: whatever an earlier statement's
+                    // handler reported must not leak into this one's status sentence.
+                    ConditionalDdlOutcome.clear();
 
                     // If we have lateral context and this is a query statement (SELECT), pass it along.
                     // (The stream-consuming DML window and DDL's implicit pre-commit both live in the
@@ -807,12 +1017,36 @@ public class QueryExecutor {
                     } else {
                         result = visitor.visit(stmtCtx);
                     }
+                } catch (final RuntimeException statementFailure) {
+                    // A statement that fails inside a script of several is NAMED by the answer, the way
+                    // the account names it; one sent on its own answers with its own error unadorned.
+                    throw MultiStatementFailure.wrapping(tree, failingStage, statementFailure,
+                        lateralContext == null);
                 } finally {
                     flowChainResults = priorFlowResults;
                 }
+                // An anonymous block run as a statement answers one row even when it finished without a
+                // RETURN: NULL, in the block's result column.
+                final Object answer = result == null && lateralContext == null
+                    && AnonymousBlockResult.isBlock(executedStatement)
+                    ? AnonymousBlockResult.withoutReturn() : result;
 
-                if (result instanceof ResultSet) {
-                    final ResultSet resultSet = (ResultSet) result;
+                if (!(answer instanceof ResultSet) && lateralContext == null
+                        && !isProceduralControlFlow(tree)) {
+                    // A statement that produces no rows of its own still answers ONE ROW on a real
+                    // account — a VARCHAR column named `status` carrying a sentence. Frostlake used to
+                    // answer nothing at all, so a client reading the first result set of a CREATE got an
+                    // empty set where live hands back "Table T successfully created."
+                    final List<ResultSetColumn> statusColumns = new ArrayList<>();
+                    statusColumns.add(new ResultSetColumn("status", StringType.VARCHAR));
+                    final List<Row> statusRows = new ArrayList<>();
+                    statusRows.add(new Row(Arrays.asList(
+                        (Object) DdlStatusMessage.forStatement(executedStatement,
+                            ConditionalDdlOutcome.take()))));
+                    results.add(new ResultSet(statusColumns, statusRows));
+                }
+                if (answer instanceof ResultSet) {
+                    final ResultSet resultSet = (ResultSet) answer;
                     // Cache the result for RESULT_SCAN (only for non-correlated queries)
                     if (lateralContext == null) {
                         final String queryId = resultCache.cacheResult(sql, resultSet);
@@ -857,7 +1091,7 @@ public class QueryExecutor {
             // Mark query as failed and add to history
             if (queryHistory != null) {
                 // Generate query ID for failed query
-                final String queryId = resultCache.generateQueryId(sql);
+                final String queryId = resultCache.generateFailedQueryId(sql);
                 queryHistory.setQueryId(queryId);
                 queryHistory.markFailed(LocalDateTime.now(ZoneOffset.UTC), e.getMessage());
                 queryHistoryTracker.addQuery(queryHistory);
@@ -868,7 +1102,7 @@ public class QueryExecutor {
             // Mark query as failed and add to history
             if (queryHistory != null) {
                 // Generate query ID for failed query
-                final String queryId = resultCache.generateQueryId(sql);
+                final String queryId = resultCache.generateFailedQueryId(sql);
                 queryHistory.setQueryId(queryId);
                 queryHistory.markFailed(LocalDateTime.now(ZoneOffset.UTC), e.getMessage());
                 queryHistoryTracker.addQuery(queryHistory);
@@ -879,7 +1113,7 @@ public class QueryExecutor {
             // Mark query as failed and add to history
             if (queryHistory != null) {
                 // Generate query ID for failed query
-                final String queryId = resultCache.generateQueryId(sql);
+                final String queryId = resultCache.generateFailedQueryId(sql);
                 queryHistory.setQueryId(queryId);
                 queryHistory.markFailed(LocalDateTime.now(ZoneOffset.UTC), e.getMessage());
                 queryHistoryTracker.addQuery(queryHistory);
@@ -890,7 +1124,7 @@ public class QueryExecutor {
             // Mark query as failed and add to history
             if (queryHistory != null) {
                 // Generate query ID for failed query
-                final String queryId = resultCache.generateQueryId(sql);
+                final String queryId = resultCache.generateFailedQueryId(sql);
                 queryHistory.setQueryId(queryId);
                 queryHistory.markFailed(LocalDateTime.now(ZoneOffset.UTC), e.getMessage());
                 queryHistoryTracker.addQuery(queryHistory);
@@ -919,7 +1153,7 @@ public class QueryExecutor {
         values.add(count);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(values));
-        return new ResultSet(columns, rows);
+        return new ResultSet(columns, rows).markUpdateCount(count);
     }
 
     /**
@@ -938,7 +1172,7 @@ public class QueryExecutor {
         values.add(0L);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(values));
-        return new ResultSet(columns, rows);
+        return new ResultSet(columns, rows).markUpdateCount(updated);
     }
 
     /** Resolve a per-column INSERT value: the provided value, else auto-increment, else the column DEFAULT, else null. */
@@ -1158,7 +1392,10 @@ public class QueryExecutor {
                 // so the recursive step can reference named columns
                 cteResult = executeRecursiveCte(cteCtx, cteName, lateralContext, cteResults);
             } else {
-                cteResult = executeSelectFromContextWithCTEs(cteCtx.selectStatement(), lateralContext, cteResults);
+                final String prunedBody = prunedBody(cteCtx.selectStatement(), cteCtx,
+                    cteColumnNames(cteCtx), lateralContext, cteResults);
+                cteResult = executeSelectFromContextWithCTEs(prunedBody != null
+                    ? parseSelectStatement(prunedBody) : cteCtx.selectStatement(), lateralContext, cteResults);
                 // Apply column aliases for non-recursive CTEs: WITH cte(a, b) AS (...)
                 if (cteCtx.columnListOptional() != null) {
                     cteResult = renameColumns(cteResult, cteCtx.columnListOptional());
@@ -1364,7 +1601,13 @@ public class QueryExecutor {
             // requires matching column counts.
             anyByName |= isUnionByName(operator);
             if (!isUnionByName(operator) && nextResult.getColumns().size() != columnCount) {
-                throw new RuntimeException("Set operation queries must have the same number of columns");
+                // Live NAMES the counts and the branch, and calls it a COMPILATION error — the prefix
+                // being what marks a body that will not compile, so a view over this shape was created
+                // with null columns instead of being refused.
+                throw new RuntimeException(SqlCompilationError.of(
+                    "invalid number of result columns for set operator input branches, expected "
+                        + columnCount + ", got " + nextResult.getColumns().size()
+                        + " in branch " + (i + 1)));
             }
         }
         // Every branch's own column layout, kept so the combined result can only claim a STATIC type
@@ -1376,6 +1619,7 @@ public class QueryExecutor {
             branchRows.add(new ArrayList<>(branch.getRows()));
         }
         final List<List<NumericType>> literalMeasurements = stringLiteralMeasurements(operands);
+        final List<List<Boolean>> nullArms = nullLiteralArms(operands);
         // Eager conversion applies to all-UNION chains only: a subtractive operator over an EMPTY
         // left side short-circuits WITHOUT converting the right side (live-verified in
         // SetOperations), so MINUS / EXCEPT / INTERSECT keep the lazy compare-time coercion.
@@ -1385,7 +1629,8 @@ public class QueryExecutor {
         }
         if (!anyByName && allUnion) {
             SetOperations.coerceStringBranches(branchRows, branchColumns,
-                reconcileBranchTypes(firstResult.getColumns(), branchColumns, literalMeasurements));
+                reconcileBranchTypes(firstResult.getColumns(), branchColumns, literalMeasurements,
+                nullArms));
         }
 
         final List<List<Row>> terms = new ArrayList<>();
@@ -1434,7 +1679,7 @@ public class QueryExecutor {
                 allRows = SetOperations.applyExcept(allRows, terms.get(j), hasAll);
             }
         }
-        accColumns = reconcileBranchTypes(accColumns, branchColumns, literalMeasurements);
+        accColumns = reconcileBranchTypes(accColumns, branchColumns, literalMeasurements, nullArms);
 
         // ORDER BY / LIMIT / FETCH apply once to the combined result (statement level). A set
         // operation's ORDER BY resolves against the combined OUTPUT only (its column names,
@@ -1521,6 +1766,63 @@ public class QueryExecutor {
                                          final FrostlakeParser.SelectClauseContext ctx,
                                          final Map<String, Object> lateralContext,
                                          final Map<String, ResultSet> cteResults) {
+        // Each clause answers to its own statistics bound: a subquery's must not reach the clause that
+        // runs it, nor the enclosing clause's the subquery.
+        final CountStatisticsBound enclosing = statisticsBound.get();
+        statisticsBound.remove();
+        try {
+            return runSingleSelect(stmtCtx, ctx, lateralContext, cteResults);
+        } finally {
+            if (enclosing == null) {
+                statisticsBound.remove();
+            } else {
+                statisticsBound.set(enclosing);
+            }
+        }
+    }
+
+    /**
+     * Whether a clause's result still carries the statistics of the catalog table beneath it (see
+     * RelationStatistics): it reads one table — or one relation that carries them — through a projection
+     * and at most a WHERE, window functions and scalar subqueries in its items included. A join, a PIVOT,
+     * a SAMPLE, time travel, DISTINCT, TOP, a grouping, an aggregate, HAVING, QUALIFY, CONNECT BY, an
+     * ORDER BY, a LIMIT or FETCH and a set operation each take it past them (live: a derived table doing
+     * any of these folds a typeof over its COUNT to the scan).
+     */
+    private boolean keepsSourceStatistics(final FrostlakeParser.SelectStatementContext stmtCtx,
+                                          final FrostlakeParser.SelectClauseContext ctx,
+                                          final FrostlakeParser.TableReferenceContext reference,
+                                          final Table source, final boolean joined) {
+        if (reference == null || joined || source == null || statisticsBound.get() == null
+                || !source.isCatalogResident() && source.getRelationStatistics() == null) {
+            return false;
+        }
+        if (reference.pivotClause() != null || reference.unpivotClause() != null
+                || reference.sampleClause() != null || reference.tableSource().timeTravelClause() != null) {
+            return false;
+        }
+        if (ctx.DISTINCT() != null || ctx.topClause() != null || ctx.groupByClause() != null
+                || ctx.havingClause() != null || ctx.qualifyClause() != null || ctx.connectByClause() != null
+                || hasAggregateFunction(ctx) || aggregatesInOrderByOrQualify(stmtCtx, ctx)) {
+            return false;
+        }
+        return stmtCtx.selectOperand().size() == 1 && stmtCtx.orderByClause() == null
+            && stmtCtx.limitClause() == null && stmtCtx.fetchClause() == null;
+    }
+
+    private ResultSet runSingleSelect(final FrostlakeParser.SelectStatementContext stmtCtx,
+                                      final FrostlakeParser.SelectClauseContext ctx,
+                                      final Map<String, Object> lateralContext,
+                                      final Map<String, ResultSet> cteResults) {
+        // A FRAME with no ORDER BY beside it is refused FIRST, ahead of everything below and ahead of
+        // the relation being resolved at all — measured, it outranks every neighbour it was put beside
+        // and loses only to a syntax error. The walk covers the whole statement, so a window written in
+        // a SUBQUERY is refused at its own OVER even when that subquery would never have been reached.
+        windowEvaluator.rejectFrameWithoutOrderBy(stmtCtx);
+        // A windowed MEDIAN, MODE or PERCENTILE may not carry an ORDER BY or a moving frame — it
+        // already ranks its input, and live refuses the second ordering outright. Ahead of the
+        // relation, which it outranks.
+        windowEvaluator.rejectUnsupportedFrameForWholePartitionAggregate(stmtCtx);
         // Outside the try so Snowflake's own wording reaches the caller unwrapped.
         SelectItemAccessors.rejectStandaloneInterval(ctx.selectList());
         try {
@@ -1531,27 +1833,49 @@ public class QueryExecutor {
             // reads "[G.A] is not a valid group by expression", while `SELECT SUM(b) FROM g QUALIFY
             // SUM(b) > 0`, whose list is fine, reaches the sentence below after all. So it is deferred
             // there and raised once the grouped validation has had its say.
-            if (!aggregatesAnywhere(stmtCtx, ctx)) {
+            // A statement carrying an unresolvable function NAME is deferred for the same reason: live
+            // names the function before it complains about the clause, so the check waits for the site
+            // below, which runs after the name scan.
+            // A statement with a FROM is deferred for a third: an unresolvable COLUMN outranks this too,
+            // and nothing here can know that yet — the relation is not resolved until further down. Only
+            // the FROM-less shape, which returns before the deferred site, is judged here.
+            if (ctx.qualifyClause() != null && ctx.tableExpression() == null
+                    && !aggregatesAnywhere(stmtCtx, ctx)
+                    && collectUnresolvableCalls(stmtCtx, ctx).isEmpty()) {
                 rejectQualifyWithoutWindow(ctx);
             }
 
             final FrostlakeParser.TableExpressionContext tableExpr = ctx.tableExpression();
 
             // Handle SELECT without FROM clause (e.g., SELECT 1, SELECT {'key': 'value'})
-            if (tableExpr == null) {
-                return executeSelectWithoutFrom(ctx);
+            //
+            // ★ AN AGGREGATE IS THE EXCEPTION, and it takes the ordinary path instead. A FROM-less query
+            // is ONE ROW OF ONE GROUP on a real account — SELECT SUM(1) is 1, COUNT(*) is 1, and
+            // SELECT SUM(1) WHERE 1 = 0 still answers a row, holding NULL, because the group survives
+            // its own empty input. Evaluating the select list item by item, as the no-FROM path does,
+            // can never produce any of that: the aggregate falls through to the scalar dispatch, which
+            // does not know aggregate names and answers "Unknown function SUM." for a function the
+            // engine registers and evaluates happily one clause later. So the row is SYNTHESISED and
+            // everything below — WHERE, the implicit group, HAVING, ORDER BY, LIMIT — runs unchanged.
+            final boolean synthesizedSingleRow = tableExpr == null;
+            if (synthesizedSingleRow && !aggregatesAnywhere(stmtCtx, ctx)
+                    && !hasWindowCallAtThisLevel(ctx)) {
+                rejectUnresolvableNamesWithoutFrom(stmtCtx, ctx);
+                return executeSelectWithoutFrom(ctx, lateralContext);
             }
 
             // Get the first table reference
-            List<FrostlakeParser.TableReferenceContext> allTableRefs = tableExpr.tableReference();
-            if (allTableRefs.isEmpty()) {
+            List<FrostlakeParser.TableReferenceContext> allTableRefs = synthesizedSingleRow
+                ? new ArrayList<FrostlakeParser.TableReferenceContext>() : tableExpr.tableReference();
+            if (allTableRefs.isEmpty() && !synthesizedSingleRow) {
                 throw new RuntimeException("No table reference found in SELECT");
             }
             // A parenthesized FROM join — FROM ( a JOIN b ON c ) — is pure grouping: identical to
             // FROM a JOIN b ON c and, unlike a derived-table subquery, keeps the inner aliases (a, b)
             // visible to the outer WHERE/SELECT. Flatten any such reference by splicing its inner
             // tableReferences/joinClauses inline so the ordinary join path below handles it unchanged.
-            List<FrostlakeParser.JoinClauseContext> allJoins = tableExpr.joinClause();
+            List<FrostlakeParser.JoinClauseContext> allJoins = synthesizedSingleRow
+                ? new ArrayList<FrostlakeParser.JoinClauseContext>() : tableExpr.joinClause();
             if (hasParenthesizedJoin(allTableRefs)) {
                 final List<FrostlakeParser.TableReferenceContext> flatRefs = new ArrayList<>();
                 final List<FrostlakeParser.JoinClauseContext> innerJoins = new ArrayList<>();
@@ -1562,16 +1886,24 @@ public class QueryExecutor {
                 allTableRefs = flatRefs;
                 allJoins = innerJoins;
             }
-            final FrostlakeParser.TableReferenceContext firstTableRef = allTableRefs.get(0);
+            final FrostlakeParser.TableReferenceContext firstTableRef = synthesizedSingleRow
+                ? null : allTableRefs.get(0);
+            if (!synthesizedSingleRow) {
+                rejectDuplicateSourceNames(tableExpr, cteResults);
+            }
 
-            // Execute the first table to get initial rows and table metadata
-            final TableData tableData = executeTableReference(firstTableRef, null, cteResults);
+            // Execute the first table to get initial rows and table metadata. The synthesised source is
+            // one row of NO columns: nothing can be selected FROM it, and nothing needs to be — every
+            // item of a FROM-less select list stands on its own.
+            final TableData tableData = synthesizedSingleRow ? singleEmptyRowSource()
+                : executeTableReference(firstTableRef, null, cteResults);
             List<Row> rows = tableData.rows;
             Table table = tableData.table;
             final String tableName = table.getName();
 
             // Check SELECT permission on first table (if it's not a subquery)
-            if (securityManager != null && firstTableRef.tableSource().tableQualifiedName() != null) {
+            if (securityManager != null && firstTableRef != null
+                    && firstTableRef.tableSource().tableQualifiedName() != null) {
                 final String qualifiedTableName = ParseTreeText.getQualifiedName(firstTableRef.tableSource().tableQualifiedName());
                 securityManager.checkPermission(Privilege.SELECT, SecurableObjectType.TABLE, qualifiedTableName);
             }
@@ -1622,6 +1954,7 @@ public class QueryExecutor {
                     rows = conditionJoin(leftRows, leftTable, rightRows, rightTable, JoinType.LEFT,
                         String.join(" AND ", onParts), aliasToTable, allTables);
                     table = mergeTableMetadata(leftTable, rightTable);
+                    recordNullExtension(table, leftTable, rightTable, JoinType.LEFT);
                     plusHandled = true;
                 }
             }
@@ -1718,8 +2051,11 @@ public class QueryExecutor {
                     allTables.add(asofRightTable);
                     rows = applyAsofJoin(rows, table, asofRight.rows, asofRightTable, joinCtx,
                         leftAliases, leftTables, asofAlias, aliasToTable, allTables);
+                    final Table asofLeft = table;
                     table = mergeTableMetadata(table, asofRightTable,
                         usingJoinColumnNames(joinCtx, table, asofRightTable));
+                    // An ASOF join extends its right side with NULLs where no row matches.
+                    recordNullExtension(table, asofLeft, asofRightTable, JoinType.LEFT);
                     continue;
                 }
                 // A table function joined WITHOUT the LATERAL keyword is still implicitly lateral in
@@ -1747,7 +2083,9 @@ public class QueryExecutor {
                     final TableData lateralData = executeLateralJoin(rows, table, rightTableRef, joinCtx, aliasToTable, allTables, ctx);
                     rows = lateralData.rows;
                     // Update table metadata after lateral join
+                    final Table lateralLeft = table;
                     table = mergeTableMetadata(table, lateralData.table);
+                    recordNullExtension(table, lateralLeft, lateralData.table, joinTypeOf(joinCtx));
                     aliasToTable.put(lateralData.alias != null ? lateralData.alias : lateralData.table.getName(),
                                     lateralData.table);
                     allTables.add(lateralData.table);
@@ -1757,8 +2095,10 @@ public class QueryExecutor {
                     final TableData groupData =
                         executeJoinGroup(rightTableRef.tableSource(), aliasToTable, allTables, ctx, cteResults);
                     rows = applyJoin(rows, table, groupData.rows, groupData.table, joinCtx, aliasToTable, allTables, ctx);
+                    final Table groupLeft = table;
                     table = mergeTableMetadata(table, groupData.table,
                         usingJoinColumnNames(joinCtx, table, groupData.table));
+                    recordNullExtension(table, groupLeft, groupData.table, joinTypeOf(joinCtx));
                 } else {
                     // Regular join
                     final TableData rightData = executeTableReference(rightTableRef, null, cteResults);
@@ -1828,24 +2168,91 @@ public class QueryExecutor {
             final String whereExpr = plusHandled
                 ? plusResidualWhere
                 : (whereCtx != null ? getOriginalText(whereCtx.booleanExpr()) : null);
+            StarArgumentPlacement.rejectOutsideSelectList(whereCtx, ctx.havingClause(), ctx.qualifyClause(),
+                stmtCtx.orderByClause());
             boolean limitApplied = false;
             // A PIVOT/UNPIVOT reshapes the relation, and in Snowflake WHERE filters the pivot's OUTPUT (it may
             // reference the pivoted columns), so defer it until after the pivot below. isStreamableSelect
             // already excludes a pivot, so the streaming branch is unaffected.
-            final boolean hasPivotSource =
-                firstTableRef.pivotClause() != null || firstTableRef.unpivotClause() != null;
+            final boolean hasPivotSource = firstTableRef != null
+                && (firstTableRef.pivotClause() != null || firstTableRef.unpivotClause() != null);
             // Plan-time WHERE scope validation — before either evaluation branch, so it fires over
             // empty inputs and under the streaming path alike. A pivot rewrites the referencable
             // columns, so its deferred WHERE is left to row-time resolution.
+            // A name that resolves to no function at all is refused HERE, ahead of every clause rule
+            // below AND ahead of the WHERE walk beside it, because that is the order live answers in —
+            // see the method for the measured map of what outranks it and what it outranks. It runs
+            // BEFORE the strict WHERE walk because that walk would otherwise stop at the FIRST bad name
+            // it met, and live names every one of them in one sentence; the identifier half of the same
+            // walk is run inside, so an unresolvable COLUMN in WHERE still speaks first.
+            if (lateralContext == null) {
+                rejectUnresolvableFunctionNames(stmtCtx, ctx, table, aliasToTable, allTables);
+            }
+            // The SELECT LIST's names come first of all: live scans them ahead of every other clause,
+            // so two bad names one clause apart report the LIST's. Measured against WHERE, HAVING,
+            // QUALIFY and ORDER BY, each with a different name in each clause.
+            if (!hasPivotSource && lateralContext == null) {
+                validateSelectListNames(ctx, table, aliasToTable, allTables);
+            }
             if (whereExpr != null && !hasPivotSource && lateralContext == null) {
                 validateClauseScope(whereExpr, table, aliasToTable, allTables,
                     selectItemAliasNames(ctx), ctx.whereClause().booleanExpr());
             }
             // A window function belongs to the SELECT list, QUALIFY and ORDER BY, and nowhere else.
-            rejectWindowFunctionsOutsideAllowedClauses(ctx);
-            rejectAggregatesOutsideAllowedClauses(ctx);
+            final PlanEcho echo =
+                new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog);
+            rejectNonWindowFunctionsWithOver(ctx, stmtCtx.orderByClause());
+            // The ordered percentiles' own compile-time rules — the WITHIN GROUP clause's shape, the
+            // fraction's constancy and range, and the call's arity.
+            new PercentileCallRules(this, functionRegistry, catalog)
+                .validate(stmtCtx, table, aliasToTable, allTables);
+            // The approximate summaries' constant limits and fractions, judged the same way.
+            new ApproximateCallRules(functionRegistry, catalog)
+                .validate(stmtCtx, table, aliasToTable, allTables);
+            rejectWindowFunctionsOutsideAllowedClauses(ctx, echo);
+            rejectAggregatesOutsideAllowedClauses(ctx, echo, table, aliasToTable, allTables);
             if (stmtCtx.orderByClause() != null && ctx.groupByClause() != null) {
-                rejectWindowInGroupedOrderBy(stmtCtx.orderByClause());
+                rejectWindowInGroupedOrderBy(stmtCtx.orderByClause(), echo, ctx, table, aliasToTable);
+            }
+            // The SELECT list's and ORDER BY list's own NAMES, resolved BEFORE the positional range
+            // check below: live settles what every reference means before it judges a position, so
+            // `SELECT nosuchcol FROM t ORDER BY 9` is "invalid identifier 'NOSUCHCOL'" there rather
+            // than the out-of-range sentence, and so is a bad name in the ORDER BY list itself.
+            if (!hasPivotSource && lateralContext == null) {
+                validateNamesBeforeOrdinals(ctx, stmtCtx, table, aliasToTable, allTables);
+            }
+            // Below the names, because the sentence it raises echoes a RESOLVED plan and live orders it
+            // the same way: an unresolvable column inside the very call it would echo speaks first.
+            rejectWholeRangeFrameForWholePartitionAggregate(ctx, stmtCtx, echo, table, aliasToTable,
+                allTables);
+            // A positional ORDER BY key past the select list is a COMPILE-time refusal live, whatever
+            // the query's shape — the per-shape sort paths each resolve ordinals their own way (and a
+            // grouped or star-projected one did not range-check at all), so the range is judged once,
+            // here, where the relation is known and the rows are not yet built.
+            if (!isEarlierSetOperationArm(stmtCtx, ctx)) {
+                orderByExecutor.validateOrderOrdinals(stmtCtx, table, aliasToTable);
+            }
+            // QUALIFY's own NAMES, resolved here rather than beside the clause's other rules further
+            // down, because live settles what a reference means before it judges anything about the
+            // clause it sits in: a bad name outranks BOTH the no-window refusal and the grouped
+            // select-list rule that a QUALIFY aggregate triggers. Down there it lost to both.
+            // It sits BELOW the ordinal, though — QUALIFY and HAVING are the two clauses live resolves
+            // after the position, so an out-of-range ORDER BY beats a bad name in either of them.
+            // HAVING before QUALIFY, measured: a bad name in each reports HAVING's.
+            if (ctx.havingClause() != null && !hasPivotSource && lateralContext == null) {
+                validateClauseColumnScope(getOriginalText(ctx.havingClause().booleanExpr()),
+                    table, aliasToTable, allTables, selectItemAliasNames(ctx),
+                    ctx.havingClause().booleanExpr());
+            }
+            if (ctx.qualifyClause() != null && !hasPivotSource && lateralContext == null) {
+                validateClauseScope(getOriginalText(ctx.qualifyClause().booleanExpr()),
+                    table, aliasToTable, allTables, selectItemAliasNames(ctx),
+                    ctx.qualifyClause().booleanExpr());
+                // The predicate's TYPE is judged here too, ahead of the deferred no-window refusal:
+                // live settles that QUALIFY g over a VARCHAR is no predicate before it looks for a
+                // window in the statement.
+                validateClausePredicateType(getOriginalText(ctx.qualifyClause().booleanExpr()),
+                    table, aliasToTable, allTables, ctx, ctx.qualifyClause().booleanExpr());
             }
             // A scalar subquery may not correlate to a table function's output unless it aggregates —
             // plan-time, because live reports it as a compilation error rather than a row-time one.
@@ -1853,7 +2260,7 @@ public class QueryExecutor {
                 new TableFunctionCorrelationRule(functionRegistry, catalog)
                     .validate(ctx, tableExpr, aliasToTable);
             }
-            if (lateralContext == null
+            if (lateralContext == null && firstTableRef != null
                     && isStreamableSelect(ctx, stmtCtx, firstTableRef, allTables)) {
                 rows = streamFilterLimit(rows, table, whereExpr, stmtCtx.limitClause());
                 limitApplied = true;
@@ -1867,7 +2274,8 @@ public class QueryExecutor {
             // Snowflake. Returning the pivoted ResultSet straight from here silently DISCARDED all of them:
             // `SELECT c FROM t PIVOT(…)` handed back the whole pivoted relation, and a derived column such as
             // `CASE … END AS record_type` never existed for an outer query to reference.
-            final FrostlakeParser.TableSourceContext firstSource = firstTableRef.tableSource();
+            final FrostlakeParser.TableSourceContext firstSource = firstTableRef == null
+                ? null : firstTableRef.tableSource();
             if (hasPivotSource) {
                 final ResultSet pivoted = renamePivotColumns(
                     firstTableRef.pivotClause() != null
@@ -1900,8 +2308,52 @@ public class QueryExecutor {
             // ORDER BY key or a QUALIFY predicate: live answers `SELECT a FROM g ORDER BY SUM(b)` with
             // "[G.A] is not a valid group by expression", which is the ungrouped SELECT LIST being
             // refused rather than any complaint about the aggregate's place.
-            final boolean hasAggregates = hasAggregateFunction(ctx) || ctx.havingClause() != null
-                || aggregatesInOrderByOrQualify(stmtCtx, ctx);
+            // A window call inside SYSTEM$TYPEOF is typed rather than computed, but its arguments are
+            // still judged at plan time: SYSTEM$TYPEOF(RATIO_TO_REPORT(d) OVER ()) over a DATE is
+            // "Invalid argument types for function 'SUM': (DATE)" on the account.
+            if (lateralContext == null && !hasPivotSource) {
+                final List<FrostlakeParser.FunctionCallExprContext> typeofWindowCalls = new ArrayList<>();
+                for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+                    if (SelectItemAccessors.isExprItem(item)) {
+                        windowEvaluator.collectTypeofWindowFunctionCalls(
+                            SelectItemAccessors.getItemValueExpr(item), typeofWindowCalls);
+                    }
+                }
+                if (!typeofWindowCalls.isEmpty()) {
+                    windowEvaluator.rejectFileWindowArguments(typeofWindowCalls, table, selectItemAliasNames(ctx));
+                }
+            }
+            // The clause's statistics bound, which a typeof over COUNT, MIN or MAX reads; decided on first
+            // use, so no other query reads the table for it. A derived relation's own rows are what the
+            // statistics of the table beneath it are proven over.
+            final Table clauseSource = table;
+            if (tableExpr != null && !hasPivotSource) {
+                statisticsBound.set(new CountStatisticsBound(this, ctx, table, aliasToTable, whereExpr,
+                    allTableRefs.size() > 1 || !allJoins.isEmpty(),
+                    table.isCatalogResident() ? null : tableData.rows));
+            }
+            final boolean selectListAggregates = hasAggregateFunction(ctx);
+            // A select list whose aggregates ALL sit inside SYSTEM$TYPEOF is an aggregate query for
+            // validation — a bare column beside SYSTEM$TYPEOF(SUM(c)) is "[T.C] is not a valid group by
+            // expression" on the account — but the typeof folds to a constant there and the aggregate
+            // it wraps is never computed, so the query runs as a SCAN, one row per input row, unless
+            // the account could have answered that aggregate from statistics (see
+            // WindowFunctionEvaluator.typeofAggregatesFoldToScan). A lone BASE TABLE holding no rows
+            // at all still answers one row, as an aggregate over nothing does — its emptiness is
+            // metadata there — where a scan that keeps nothing (a filter, a derived table, a join
+            // with an empty side) answers nothing.
+            final boolean typeofFoldsToScan = selectListAggregates && ctx.groupByClause() == null
+                && ctx.havingClause() == null && !aggregatesInOrderByOrQualify(stmtCtx, ctx)
+                && !hasPivotSource && lateralContext == null
+                && windowEvaluator.typeofAggregatesFoldToScan(ctx, table)
+                && !(rows.isEmpty() && whereExpr == null && tableExpr != null
+                    && tableExpr.tableReference().size() == 1 && tableExpr.joinClause().isEmpty()
+                    && firstSource != null && firstSource.tableQualifiedName() != null);
+            if (typeofFoldsToScan) {
+                groupByEvaluator.validateImplicitSelectList(ctx, table, aliasToTable, allTables);
+            }
+            final boolean hasAggregates = (selectListAggregates && !typeofFoldsToScan)
+                || ctx.havingClause() != null || aggregatesInOrderByOrQualify(stmtCtx, ctx);
             // A window call written ONLY in ORDER BY — never in the SELECT list and never in QUALIFY —
             // still needs the window stage. Without it the key reached the column resolver as plain
             // text and was refused as an invalid identifier, though live sorts by it perfectly well.
@@ -1917,17 +2369,32 @@ public class QueryExecutor {
             rejectAggregationPolicyViolation(ctx, table, hasGroupBy || hasAggregates
                 || ctx.DISTINCT() != null);
             rejectJoinPolicyViolation(ctx, allTables);
+            // Every aggregate item's DECLARED type, before any group is computed: the type can itself
+            // be the refusal — MEDIAN over a NUMBER(38,37) is "Invalid intermediate datatype:
+            // NUMBER(41,40)." at compile time on the account, ahead of the value it would then fail
+            // to hold, and over an empty input too.
+            if ((hasGroupBy || hasAggregates) && !hasPivotSource && lateralContext == null) {
+                rejectUntypeableAggregateItems(ctx, table, aliasToTable, allTables);
+            }
             final List<List<Row>> havingGroupRows = new ArrayList<>();
             if (hasGroupBy) {
                 rows = applyGroupBy(rows, table, ctx, aliasToTable, allTables, havingGroupRows);
             } else if (hasAggregates) {
                 // No GROUP BY but has aggregates - treat entire result as one group
+                final int inputRows = rows.size();
                 rows = applyImplicitGroupBy(rows, table, ctx, aliasToTable, allTables, havingGroupRows);
+                if (ctx.havingClause() == null && rows.size() == 1 && inputRows > 1 && lateralContext == null
+                        && windowEvaluator.typeofBesideStatisticsReplicates(ctx, table)) {
+                    // Every item is a typeof constant or a whole-input statistic, so the account's one
+                    // row per input row is this row, repeated; DISTINCT, ORDER BY and LIMIT follow.
+                    rows = repeatedAggregateRow(rows.get(0), inputRows, havingGroupRows);
+                }
             }
 
-            // Map each output row instance to its source group, so a later ORDER BY key that is a grouped
-            // column / aggregate NOT in the SELECT can be computed fresh over the group. Identity-keyed so it
-            // survives HAVING filtering (the same Row instances flow through).
+            // Map each output row instance to its source group, so a later ORDER BY key or QUALIFY window
+            // key that is a grouped column / aggregate NOT in the SELECT can be computed fresh over the
+            // group. Identity-keyed so it survives HAVING filtering (the same Row instances flow through);
+            // the window projection does NOT preserve identity, so it re-registers its own rows below.
             final Map<Row, List<Row>> orderRowToGroup = new IdentityHashMap<>();
             for (int gi = 0; gi < rows.size() && gi < havingGroupRows.size(); gi++) {
                 orderRowToGroup.put(rows.get(gi), havingGroupRows.get(gi));
@@ -1941,11 +2408,13 @@ public class QueryExecutor {
                 validateClauseScope(getOriginalText(ctx.havingClause().booleanExpr()),
                     table, aliasToTable, allTables, selectItemAliasNames(ctx),
                     ctx.havingClause().booleanExpr());
+                validateClausePredicateType(getOriginalText(ctx.havingClause().booleanExpr()),
+                    table, aliasToTable, allTables, ctx, ctx.havingClause().booleanExpr());
             }
 
             // Apply HAVING clause (only after GROUP BY)
             if (ctx.havingClause() != null && (hasGroupBy || hasAggregates)) {
-                rows = applyHaving(rows, ctx, table, aliasToTable, allTables, havingGroupRows);
+                rows = applyHaving(rows, ctx, table, aliasToTable, allTables, havingGroupRows, lateralContext);
             }
 
             // The deferred QUALIFY-without-a-window refusal: an aggregate query reaches it only once the
@@ -2005,7 +2474,7 @@ public class QueryExecutor {
                 // aggregates like SUM(x) in a window key) against the SELECT-list layout.
                 final Table windowShape = rowsAreProjected
                     && (hasWindowFunctions || ctx.qualifyClause() != null)
-                    ? projectedShapeTable(ctx, table) : table;
+                    ? projectedShapeTable(ctx, table, aliasToTable, allTables) : table;
                 if (hasWindowFunctions) {
                     // The select list's OVER keys, before any row is computed. The walk runs against
                     // the BASE table even over grouped rows, which is what makes the grouped shapes
@@ -2023,12 +2492,49 @@ public class QueryExecutor {
                                 allTables, selectItemAliasNames(ctx));
                         }
                     }
-                    // Over grouped rows the window's keys and arguments may be RAW AGGREGATES the
-                    // SELECT list never projects — OVER (ORDER BY SUM(b)), LAG(SUM(b)) — and the only
-                    // place their values exist is the group each output row came from.
-                    final GroupedExpressionValues savedGroupValues = windowEvaluator.beginGroupedValues(
-                        rowsAreProjected ? newGroupedExpressionValues(orderRowToGroup, table,
-                            aliasToTable, allTables) : null);
+                    // AFTER the keys are resolved, because live reports an unresolvable key FIRST:
+                    // OVER (PARTITION BY nosuchcol) with no ORDER BY answers "invalid identifier
+                    // 'NOSUCHCOL'", not the missing-ORDER-BY sentence (measured both ways round).
+                    windowEvaluator.rejectWindowWithoutRequiredOrderBy(ctx);
+                }
+
+                // Plan-time scope validation of a GROUPED / windowed query's ORDER BY keys, positioned
+                // between the two families of refusal that surround it. AFTER the window-key walk and
+                // the missing-ORDER-BY refusal, because live reports either of those first. BEFORE the
+                // window stage, because that stage precomputes every unselected key per row: left later,
+                // its row-time failure spoke first and said "invalid identifier" for a key this check
+                // refuses in live's own words — and only over a NON-EMPTY input, so the same query
+                // refused or answered depending on the data.
+                if (hasGroupBy || hasAggregates || hasWindowFunctions) {
+                    if (lateralContext == null) {
+                        orderByExecutor.validateGroupedOrderKeyScope(stmtCtx, ctx, table, aliasToTable,
+                            allTables);
+                    }
+                }
+                // DISTINCT narrows the ORDER BY to the SELECT list's own output, whatever else the
+                // query is. It is judged AFTER the checks above because live names an unresolvable
+                // key first, and before the window stage for the same reason they are.
+                if (lateralContext == null) {
+                    orderByExecutor.validateDistinctOrderKeyScope(stmtCtx, ctx, table, aliasToTable,
+                        allTables);
+                }
+
+                // Over grouped rows a window's keys and arguments may be RAW AGGREGATES the SELECT list
+                // never projects — OVER (ORDER BY SUM(b)), LAG(SUM(b)) — and the only place their values
+                // exist is the group each output row came from. An ORDER BY key the SELECT list never
+                // projects is that same shape, so one resolver serves both stages.
+                final GroupedExpressionValues groupValues = rowsAreProjected
+                    ? newGroupedExpressionValues(orderRowToGroup, table, aliasToTable, allTables) : null;
+                if (hasWindowFunctions && !rowsAreProjected && lateralContext == null) {
+                    // A windowed query is projected by the window stage, never by applyProjection, so the
+                    // plan-time argument walk that method runs has to run here, before any row is
+                    // evaluated — or an arity or argument-type refusal in any item is raised per row,
+                    // unpositioned, and over an empty input not at all.
+                    validateWindowedSelectArguments(ctx, table, aliasToTable, allTables);
+                }
+                if (hasWindowFunctions) {
+                    final GroupedExpressionValues savedGroupValues =
+                        windowEvaluator.beginGroupedValues(groupValues);
                     try {
                         windowFunctionResults = windowEvaluator.computeWindowFunctions(rows, ctx, windowShape, rowsAreProjected, table);
                     } finally {
@@ -2041,7 +2547,8 @@ public class QueryExecutor {
                         // base-table resolver, so such a key read the wrong slot positionally and every
                         // row landed in one NULL partition. Filter first, then reshape only the
                         // survivors, remapping their precomputed window values to the new indices.
-                        final List<Row> keptRows = applyQualify(rows, ctx, windowFunctionResults, table, true);
+                        final List<Row> keptRows =
+                            applyQualify(rows, ctx, windowFunctionResults, table, table, true);
                         final Map<Row, Integer> oldIndexByRow = new IdentityHashMap<>();
                         for (int i = 0; i < rows.size(); i++) {
                             oldIndexByRow.put(rows.get(i), i);
@@ -2056,9 +2563,29 @@ public class QueryExecutor {
                         rows = keptRows;
                         windowFunctionResults = remapped;
                     }
-                    // Add window function values to rows (also precomputes any not-selected ORDER BY keys).
-                    rows = addWindowFunctionsToRows(rows, windowFunctionResults, ctx, windowShape,
-                        table, rowsAreProjected, windowOrderKeyExprs, windowOrderKeyTrees, windowOrderKeyValues);
+                    // Add window function values to rows (also precomputes any not-selected ORDER BY keys,
+                    // which over grouped rows are answered by the group resolver installed here).
+                    final List<Row> preWindowRows = rows;
+                    final GroupedExpressionValues savedKeyValues =
+                        windowEvaluator.beginGroupedValues(groupValues);
+                    try {
+                        rows = addWindowFunctionsToRows(rows, windowFunctionResults, ctx, windowShape,
+                            table, rowsAreProjected, windowOrderKeyExprs, windowOrderKeyTrees,
+                            windowOrderKeyValues);
+                    } finally {
+                        windowEvaluator.endGroupedValues(savedKeyValues);
+                    }
+                    // That projection builds NEW Row instances, one per input row, so the identity-keyed
+                    // group map stops answering for them — and QUALIFY runs AFTER it. Carry each group
+                    // across to its projected row so the stage below can still reach it.
+                    if (rowsAreProjected) {
+                        for (int i = 0; i < rows.size() && i < preWindowRows.size(); i++) {
+                            final List<Row> sourceGroup = orderRowToGroup.get(preWindowRows.get(i));
+                            if (sourceGroup != null) {
+                                orderRowToGroup.put(rows.get(i), sourceGroup);
+                            }
+                        }
+                    }
                 }
 
                 // Apply QUALIFY clause (filters on window functions) for the flows whose rows are already
@@ -2066,8 +2593,23 @@ public class QueryExecutor {
                 if (ctx.qualifyClause() != null && (!hasWindowFunctions || rowsAreProjected)) {
                     // Grouped rows are SELECT-shape whether or not the select list carries windows —
                     // an inline QUALIFY window over them needs the projected shape either way.
-                    rows = applyQualify(rows, ctx, windowFunctionResults,
-                        rowsAreProjected ? windowShape : table, !rowsAreProjected);
+                    //
+                    // The group resolver is installed for the same reason the two window stages above
+                    // install it: an inline QUALIFY window's key may be a RAW AGGREGATE the SELECT list
+                    // never projects — QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(b)) > 1 beside a select
+                    // list of `a` — and the group each row came from is the only place that value exists.
+                    // Without it the key evaluated to NULL on every row, so the ranking saw them all as
+                    // equal and numbered them in GROUP order: the predicate then kept a set of rows that
+                    // looked like an answer (row numbers 1..n are all present) but belonged to the wrong
+                    // rows, and RANK, whose ties are all 1, filtered everything out.
+                    final GroupedExpressionValues savedQualifyValues =
+                        windowEvaluator.beginGroupedValues(groupValues);
+                    try {
+                        rows = applyQualify(rows, ctx, windowFunctionResults,
+                            rowsAreProjected ? windowShape : table, table, !rowsAreProjected);
+                    } finally {
+                        windowEvaluator.endGroupedValues(savedQualifyValues);
+                    }
                 }
             } finally {
                 if (pushJoinAliasContext) {
@@ -2136,27 +2678,18 @@ public class QueryExecutor {
                     // If we've done GROUP BY, aggregates, or window functions,
                     // the row structure matches the SELECT list, not the original table
                     if (hasGroupBy || hasAggregates || hasWindowFunctions) {
-                        // Let ORDER BY reference a key that is NOT in the SELECT list (valid in Snowflake):
-                        //   • pure GROUP BY / aggregate → a grouped column / aggregate, computed over the
-                        //     row's group (the identity map still holds — no window recreated the rows);
-                        //   • window function → a FROM column dropped by projection, precomputed during the
-                        //     window projection (windowOrderKeyValues) and looked up by projected-row identity.
-                        final GroupOrderKeyResolver orderResolver;
-                        if ((hasGroupBy || hasAggregates) && !hasWindowFunctions) {
-                            orderResolver = newGroupOrderResolver(rows, orderRowToGroup, table, aliasToTable,
+                        // Let ORDER BY reference a key that is NOT in the SELECT list (valid in Snowflake).
+                        // Whenever a window ran, its projection is what dropped the FROM columns, so the
+                        // key was precomputed THERE (windowOrderKeyValues) and is looked up by
+                        // projected-row identity — over grouped rows too, where that precompute answered
+                        // the key from the row's own source group. Without a window the key is computed
+                        // over that group here instead (the identity map still holds — nothing recreated
+                        // the rows).
+                        final GroupOrderKeyResolver orderResolver = hasWindowFunctions
+                            ? newWindowOrderResolver(rows, windowOrderKeyValues, windowOrderKeyIndex)
+                            : newGroupOrderResolver(rows, orderRowToGroup, table, aliasToTable,
                                 allTables, ctx);
-                        } else if (hasWindowFunctions && !hasGroupBy && !hasAggregates) {
-                            orderResolver = newWindowOrderResolver(rows, windowOrderKeyValues, windowOrderKeyIndex);
-                        } else {
-                            orderResolver = null;
-                        }
-                        // Plan-time key scope validation — the per-group resolution below never
-                        // runs over an empty input, while live rejects at compile time.
-                        if (lateralContext == null) {
-                            orderByExecutor.validateGroupedOrderKeyScope(stmtCtx, ctx, table,
-                                aliasToTable, allTables);
-                        }
-                        if (orderResolver == null && hasAggregates && !hasGroupBy
+                        if (hasAggregates && !hasGroupBy
                                 && windowEvaluator.hasWindowFunctionInTree(stmtCtx.orderByClause())) {
                             // Implicit aggregation answers exactly ONE row, so no ordering of it can
                             // change anything — live accepts a window key here, and sorting is a no-op.
@@ -2193,6 +2726,9 @@ public class QueryExecutor {
 
             // Build result columns
             final List<ResultSetColumn> columns = new ArrayList<>();
+            // Each column's select item as written, which tells a derived relation's COUNT whether the
+            // column passes a stored column through (see DerivedStatistics).
+            final List<String> columnSources = new ArrayList<>();
             // The static type of each projected column, so a derived table / CTE / view built from this
             // result set carries REAL declared types into the enclosing query rather than the VARCHAR
             // placeholder below — that placeholder is why every type-based rule could be bypassed by
@@ -2208,6 +2744,7 @@ public class QueryExecutor {
                         columns.add(projectedColumn(sc.getOutputName(), sc.getDataType(), tableName,
                             sc.getExpression(), projectionTypes, sc.isNullable(),
                             sc.isNullabilityKnown()));
+                        columnSources.add(sc.getExpression());
                     }
                 } else if (SelectItemAccessors.isQualifiedStarItem(item)) {
                     // Expand t.* to all columns of the referenced table/alias
@@ -2222,12 +2759,12 @@ public class QueryExecutor {
                                 break;
                             }
                         }
-                        final String tAlias = alias.toUpperCase();
-                        if (qualifier.equals(tAlias) || qualifier.equals(t.getName().toUpperCase())) {
+                        if (starQualifierMatches(qualifier, alias, t)) {
                             for (final TableColumn col : t.getColumns()) {
                                 columns.add(projectedColumn(col.getName(), col.getDataType(), t.getName(),
                                     qualifier + "." + col.getName(), projectionTypes, col.isNullable(),
                                     true));
+                                columnSources.add(qualifier + "." + col.getName());
                             }
                             break;
                         }
@@ -2236,6 +2773,7 @@ public class QueryExecutor {
                     // One OBJECT-valued column, labelled with the item's own source form ({* EXCLUDE (A)}).
                     columns.add(new ResultSetColumn(SelectItemAccessors.objectStarLabel(item),
                         ObjectType.OBJECT, null));
+                    columnSources.add(null);
                 } else {
                     // Handle expression select item — the output name/type come from the parse tree.
                     final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
@@ -2265,6 +2803,7 @@ public class QueryExecutor {
                         colType = NumericType.BIGINT;
                     } else if (columnExpr instanceof FrostlakeParser.QualifiedNameExprContext) {
                         final String baseColName = selectItemColumnName(columnExpr);
+                        final int positional = positionalOrdinalOf(baseColName);
                         if (table.hasColumn(baseColName)) {
                             final int colIndex = table.getColumnIndex(baseColName);
                             colType = table.getColumns().get(colIndex).getDataType();
@@ -2276,6 +2815,14 @@ public class QueryExecutor {
                             if (!hasAlias && unqualified) {
                                 colName = table.getColumns().get(colIndex).getName();
                             }
+                        } else if (positional > 0 && positional <= table.getColumns().size()
+                                && (allTables == null || allTables.size() <= 1)) {
+                            // $N is the Nth column of a single-relation source BY POSITION, and is
+                            // typed as that column is: SELECT $1 FROM VALUES (TRUE) declares BOOLEAN
+                            // live. It keeps its dollar name, as live names it.
+                            colType = table.getColumns().get(positional - 1).getDataType();
+                            colNullable = table.getColumns().get(positional - 1).isNullable();
+                            colNullabilityKnown = true;
                         }
                     }
 
@@ -2286,6 +2833,7 @@ public class QueryExecutor {
                     columns.add(projectedColumn(colName, colType, null,
                         typeSource != null ? getOriginalText(typeSource) : null, projectionTypes,
                         colNullable, colNullabilityKnown, typeSource));
+                    columnSources.add(typeSource != null ? getOriginalText(typeSource) : null);
                 }
             }
 
@@ -2296,14 +2844,26 @@ public class QueryExecutor {
             }
 
             // Apply DISTINCT if specified
+            // A projected column carries the collation of the expression it projects, so a derived
+            // relation, a view or a CTAS over this result compares it under that collation.
+            final CollationSpec[] projected = projectionCollations(columnSources, table, aliasToTable, allTables);
+            stampCollations(columns, projected);
             if (ctx.DISTINCT() != null) {
                 rows = foldDistinctForAggregationPolicy(rows, preProjectionRows, table);
-                rows = SetOperations.applyDistinct(rows);
+                // A collated column de-duplicates under its collation, and the row that survives reports
+                // the smallest of the values that folded into it.
+                rows = SetOperations.applyDistinct(rows, projected);
                 logger.trace("Applied DISTINCT, reduced to {} unique rows", rows.size());
             }
 
             logger.trace("Selected {} rows from table: {}", rows.size(), tableName);
-            return new ResultSet(columns, rows);
+            final ResultSet selected = new ResultSet(columns, rows);
+            if (lateralContext == null && !hasPivotSource && keepsSourceStatistics(stmtCtx, ctx, firstTableRef,
+                    clauseSource, allTableRefs.size() > 1 || !allJoins.isEmpty())) {
+                selected.setRelationStatistics(
+                    new DerivedStatistics(this, statisticsBound.get(), clauseSource, columnSources));
+            }
+            return selected;
 
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
@@ -2316,7 +2876,40 @@ public class QueryExecutor {
     /**
      * Execute SELECT without FROM clause (e.g., SELECT 1, SELECT {'key': 'value'})
      */
-    private ResultSet executeSelectWithoutFrom(final FrostlakeParser.SelectClauseContext ctx) {
+    /**
+     * The one-row source a FROM-less query runs over. It has no columns at all, which is exactly right:
+     * a FROM-less select list references nothing from its source, and an aggregate over it sees the one
+     * row live's implicit single group is made of.
+     *
+     * @return one row of no columns, over a table named for the FROM-less shape
+     */
+    private TableData singleEmptyRowSource() {
+        final List<Row> rows = new ArrayList<>();
+        if (!RelationShapeOnly.isActive()) {
+            rows.add(new Row(new ArrayList<>()));
+        }
+        return new TableData(new Table("DUMMY", new ArrayList<>(), false), rows, null);
+    }
+
+    /**
+     * A FROM-less item's value while a relation is read for its shape only: computed when it can be,
+     * NULL when the computation faults at value time — that fault belongs to whoever reads the view —
+     * while a refusal the compiler raises still propagates.
+     */
+    private static Object shapeOnlyValue(final ExpressionEvaluator evaluator, final String exprText,
+                                         final Row row) {
+        try {
+            return evaluator.evaluate(exprText, row);
+        } catch (final RuntimeException failed) {
+            if (SqlCompilationError.isCompilationError(failed.getMessage())) {
+                throw failed;
+            }
+            return null;
+        }
+    }
+
+    private ResultSet executeSelectWithoutFrom(final FrostlakeParser.SelectClauseContext ctx,
+                                               final Map<String, Object> lateralContext) {
         try {
             // CONNECT BY parses without FROM but is then refused — live's single-line shape,
             // positioned at the statement start.
@@ -2339,6 +2932,16 @@ public class QueryExecutor {
             final ExpressionEvaluator evaluator = new ExpressionEvaluator(dummyTable, functionRegistry, catalog, this);
             // alias -> computed value, built up left-to-right for forward-reference resolution
             final Map<String, Object> selectAliasValues = new HashMap<>();
+            // A correlated FROM-less subquery reads the outer row: (SELECT fz.id + 1) answers per outer
+            // row (live-verified). Its own aliases, added as the list is walked, come on top. Only those
+            // are reused directly below; an outer value is read through the evaluator, whose count of
+            // outer reads is what keeps the subquery from being memoized as uncorrelated.
+            final Set<String> ownAliases = new HashSet<>();
+            // The item names whose value is an aggregate — a WHERE may not read one of those.
+            final Set<String> aggregateItemNames = new HashSet<>();
+            if (lateralContext != null) {
+                selectAliasValues.putAll(lateralContext);
+            }
             // Offer those values as lateral (outer) values so a LATER item can reference an earlier alias
             // INSIDE an expression — SELECT 1 AS x, x + 1 AS y. Matching the whole expression text against an
             // alias (below) only handles a bare `x`. The evaluator holds this map by reference, so entries
@@ -2374,7 +2977,7 @@ public class QueryExecutor {
                         instanceof FrostlakeParser.QualifiedNameExprContext;
 
                 final Object value;
-                if (referenceShaped && selectAliasValues.containsKey(exprText.toUpperCase())) {
+                if (referenceShaped && ownAliases.contains(exprText.toUpperCase())) {
                     value = selectAliasValues.get(exprText.toUpperCase());
                 } else {
                     final Row dummyRow = new Row(values);
@@ -2386,7 +2989,18 @@ public class QueryExecutor {
                         : new SourcePosition(itemOrigin.getStart().getLine(),
                                              itemOrigin.getStart().getCharPositionInLine()));
                     try {
-                        value = evaluator.evaluate(exprText, dummyRow);
+                        // The boolean positions are judged on their STATIC types first: a CASE over a
+                        // literal or a VARIANT expression refuses here as it does over a table, where
+                        // the value-first evaluation would have answered.
+                        evaluator.validateBooleanPositions(ExpressionEvaluator.parse(exprText));
+                        // A user-defined function's argument types are a plan-time refusal too.
+                        evaluator.validateUdfArguments(ExpressionEvaluator.parse(exprText));
+                        // And every other argument type, judged as the strict walk judges a FROM query's
+                        // items: 'x' || ARRAY_CONSTRUCT(1) is refused before anything is computed.
+                        evaluator.validateStrict(ExpressionEvaluator.parse(exprText));
+                        value = RelationShapeOnly.isActive()
+                            ? shapeOnlyValue(evaluator, exprText, dummyRow)
+                            : evaluator.evaluate(exprText, dummyRow);
                     } finally {
                         ExpressionSource.end(displacedItem);
                     }
@@ -2404,20 +3018,71 @@ public class QueryExecutor {
 
                 // Same channel as the FROM-bearing projection: live types the two identically
                 // (OBJECT/ARRAY/VARIANT reported, everything else recovered from the values).
-                columns.add(projectedColumn(columnName, StringType.VARCHAR, null, exprText, evaluator,
-                    true, false, SelectItemAccessors.getItemExpression(item)));
+                final ResultSetColumn projectedItem = projectedColumn(columnName, StringType.VARCHAR, null,
+                    exprText, evaluator, true, false, SelectItemAccessors.getItemExpression(item));
+                // With no FROM, a collation can only be one the item WROTE — and it travels out of the
+                // projection like any other, so a derived relation over it collates the column.
+                final CollationSpec itemCollation = KeyCollations.reachable(List.of(exprText), null, null, null)
+                    ? evaluator.keyCollation(ExpressionEvaluator.parse(exprText)) : null;
+                columns.add(itemCollation == null ? projectedItem
+                    : projectedItem.withCollation(itemCollation.getText()));
                 values.add(value);
                 selectAliasValues.put(columnName.toUpperCase(), value);
+                ownAliases.add(columnName.toUpperCase());
+                final List<ParserRuleContext> itemAggregates = new ArrayList<>();
+                collectAggregateCallsOutsideNestedQueries(
+                    SelectItemAccessors.getItemExpression(item), itemAggregates);
+                if (!itemAggregates.isEmpty()) {
+                    aggregateItemNames.add(columnName);
+                }
             }
 
-            // Apply WHERE clause if present
+            // Apply WHERE clause if present. The item list is a scope: a FROM-less predicate reads the
+            // names this select publishes exactly as a query over a relation reads its columns, so the
+            // predicate is evaluated over a one-row relation MADE of those items (live-verified). Its
+            // reach ends there — a query nested in the predicate has a scope of its own and cannot see
+            // these names, which is why they are a relation here rather than an outer lateral context.
             final FrostlakeParser.WhereClauseContext whereCtxNoFrom = getWhereClause(ctx);
             if (whereCtxNoFrom != null) {
-                final Table dummyTable2 = new Table("DUMMY", new ArrayList<>(), false);
+                final FromlessSelectScope publishedScope = new FromlessSelectScope();
+                final List<TableColumn> publishedColumns = new ArrayList<>();
+                for (final ResultSetColumn projected : columns) {
+                    publishedColumns.add(new TableColumn(projected.getName(), projected.getDataType(),
+                        true, null, false, false, false));
+                    publishedScope.publish(projected.getName(),
+                        aggregateItemNames.contains(projected.getName()));
+                }
+                // Judged before the predicate's own origin is scoped, so each name is reported at its
+                // own place in the statement.
+                publishedScope.rejectUnresolvableNames(whereCtxNoFrom.booleanExpr(),
+                    new ExpressionEvaluator(new Table("DUMMY", new ArrayList<TableColumn>(), false),
+                        functionRegistry, catalog, this),
+                    new Row(new ArrayList<>()));
+                final Table dummyTable2 = new Table("DUMMY", publishedColumns, false);
                 final Row dummyRow2 = new Row(values);
                 final String whereExpr = getOriginalText(whereCtxNoFrom.booleanExpr());
                 final ExpressionEvaluator whereEval = new ExpressionEvaluator(dummyTable2, functionRegistry, catalog, this);
-                final Object whereResult = whereEval.evaluate(whereExpr, dummyRow2);
+                whereEval.setScopeOpaqueToSubqueries(true);
+                // The clause rules a WHERE over a relation is held to, in live's order. Each scopes the
+                // predicate's origin for itself, so they run before the evaluation's own scope is open.
+                rejectAggregatesIn(whereCtxNoFrom, "where clause",
+                    new PlanEcho(dummyTable2, new HashMap<String, Table>(), new ArrayList<Table>(),
+                        functionRegistry, catalog));
+                validateClausePredicateType(whereExpr, dummyTable2, null, null, ctx,
+                    whereCtxNoFrom.booleanExpr());
+                // Scoped to the predicate's origin like the items above, so a refusal raised while it is
+                // evaluated carries its position in the statement.
+                final SourcePosition displacedWhere = ExpressionSource.beginNested(new SourcePosition(
+                    whereCtxNoFrom.booleanExpr().getStart().getLine(),
+                    whereCtxNoFrom.booleanExpr().getStart().getCharPositionInLine()));
+                final Object whereResult;
+                try {
+                    // The predicate's argument types are judged before it is evaluated, as a FROM query's are.
+                    whereEval.validateStrict(ExpressionEvaluator.parse(whereExpr));
+                    whereResult = whereEval.evaluate(whereExpr, dummyRow2);
+                } finally {
+                    ExpressionSource.end(displacedWhere);
+                }
                 final boolean condMet = SqlTruth.isTrue(whereResult)
                     ? true : whereResult != null && !"false".equalsIgnoreCase(whereResult.toString()) && !"0".equals(whereResult.toString());
                 if (!condMet) {
@@ -2509,22 +3174,98 @@ public class QueryExecutor {
      * the failure.
      */
     public void enforceColumnConstraintsForDml(final Table table, final Row row) {
+        enforceColumnConstraintsForDml(table, row, false, null);
+    }
+
+    /** {@link #enforceColumnConstraintsForDml(Table, Row, boolean, String)} naming the table bare. */
+    public void enforceColumnConstraintsForDml(final Table table, final Row row,
+                                               final boolean boundToColumnSlot) {
+        enforceColumnConstraintsForDml(table, row, boundToColumnSlot, null);
+    }
+
+    /**
+     * The same constraints, told whether the values were BOUND STRAIGHT INTO THE COLUMN'S SLOT — which is
+     * what an {@code INSERT … VALUES} does and what nothing else does. Only the out-of-range refusal can
+     * tell the difference, and it prints it: through VALUES the storage class is the COLUMN's, through
+     * every query-sourced write it is the VALUE's.
+     *
+     * @param table the table being written
+     * @param row the row as built
+     * @param boundToColumnSlot whether the values came from a VALUES list rather than a query
+     */
+    /**
+     * The write-time constraints of one row, each failure wrapped in the DML envelope that names the
+     * table AS THE STATEMENT WROTE IT — {@code TEST_DB.TEST_SCHEMA.TWO} for a qualified INSERT,
+     * {@code TWO} for a bare one, four parts when the account was written (live-verified for INSERT,
+     * UPDATE, UPDATE … FROM and both MERGE branches). The spelling travels as a PARAMETER from the
+     * handler that read the statement: a thread-local for it leaked into the next statement once.
+     *
+     * @param writtenName the table as written, upper-cased per part, or null for the bare catalog name
+     */
+    public void enforceColumnConstraintsForDml(final Table table, final Row row,
+                                               final boolean boundToColumnSlot, final String writtenName) {
         final List<TableColumn> cols = table.getColumns();
         for (int i = 0; i < cols.size() && i < row.getValues().size(); i++) {
             try {
                 if (enforceTypes) {
+                    rejectValuePastColumnRange(row.getValue(i), cols.get(i), boundToColumnSlot);
                     row.setValue(i, coerceWriteValue(row.getValue(i), cols.get(i).getDataType()));
                 }
                 if (!cols.get(i).isNullable() && row.getValue(i) == null) {
                     throw new RuntimeException("NULL result in a non-nullable column");
                 }
             } catch (final RuntimeException violation) {
-                throw new RuntimeException("DML operation to table " + table.getName()
-                    + " failed on column " + cols.get(i).getName() + " with error: "
-                    + violation.getMessage());
+                throw DmlWriteTarget.failedOnColumn(writtenName != null ? writtenName : table.getName(),
+                    cols.get(i).getName(), violation);
             }
         }
         enforceCheckConstraints(table, row);
+    }
+
+    /**
+     * Refuse a number too wide for the column it is being written into — the write half of the
+     * out-of-representable-range family, which Frostlake used to skip entirely: a 1000 SETTLED into a
+     * NUMBER(2,0) column, four digits in a two-digit slot, and read back out again.
+     *
+     * <p>The check runs on the value AS WRITTEN, before the column's scale is applied, because the
+     * sentence names that number rather than the rounded one. A STRING source earns the other sentence
+     * of the family — live names the text and never mentions a type — and one that is not a number at
+     * all is left to the coercion below, whose "is not recognized" is the right refusal for it.
+     *
+     * <p>Only the FIXED-POINT families reach it: a FLOAT column swallows 1e308 and answers Infinity past
+     * that, live-verified, so an approximate column is never out of range.
+     *
+     * @param value the value about to be written, still in its source form
+     * @param column the column it is destined for
+     * @param boundToColumnSlot whether the class printed should be the column's rather than the value's
+     */
+    private void rejectValuePastColumnRange(final Object value, final TableColumn column,
+                                            final boolean boundToColumnSlot) {
+        if (value == null || !(column.getDataType() instanceof NumericType)) {
+            return;
+        }
+        final NumericType type = (NumericType) column.getDataType();
+        if (type.getScale() < 0 || !isFixedPointNumeric(type.getName())) {
+            return;
+        }
+        final BigDecimal exact;
+        try {
+            exact = value instanceof BigDecimal ? (BigDecimal) value
+                : new BigDecimal(value.toString().trim());
+        } catch (final NumberFormatException notANumber) {
+            return;
+        }
+        if (!NumericRangeRefusal.exceeds(exact, type.getPrecision(), type.getScale())) {
+            return;
+        }
+        if (value instanceof CharSequence) {
+            throw new RuntimeException(NumericRangeRefusal.unconvertibleText(value));
+        }
+        final String tag = boundToColumnSlot || value instanceof Double || value instanceof Float
+            ? SignedStorageWidth.tagOfPrecision(type.getPrecision())
+            : SignedStorageWidth.tagOf(exact, type.getScale());
+        throw new RuntimeException(NumericRangeRefusal.typed(tag, type.getPrecision(), type.getScale(),
+            column.isNullable(), exact));
     }
 
     /**
@@ -2559,6 +3300,31 @@ public class QueryExecutor {
         final List<TableColumn> cols = table.getColumns();
         for (int i = 0; i < cols.size() && i < row.getValues().size(); i++) {
             row.setValue(i, coerceWriteValue(row.getValue(i), cols.get(i).getDataType()));
+        }
+    }
+
+    /**
+     * A CTAS row written into the declared types of its column list, as live writes it: each value is
+     * converted to its column the way an INSERT converts it — a number rounded to the scale, text parsed —
+     * and a value that does not fit is refused inside the DML envelope naming the table and the column
+     * ("DML operation to table DB.S.T failed on column X with error: String 'abcd' is too long and would be
+     * truncated"). A NULL in a NOT NULL column is the bare "NULL result in a non-nullable column" there
+     * (live-verified).
+     *
+     * @param envelopeName the table as the CTAS envelope names it, one level up from how it was written
+     */
+    public void writeCtasRow(final Table table, final Row row, final String envelopeName) {
+        final List<TableColumn> cols = table.getColumns();
+        for (int i = 0; i < cols.size() && i < row.getValues().size(); i++) {
+            try {
+                rejectValuePastColumnRange(row.getValue(i), cols.get(i), false);
+                row.setValue(i, coerceWriteValue(row.getValue(i), cols.get(i).getDataType()));
+            } catch (final RuntimeException violation) {
+                throw DmlWriteTarget.failedOnColumn(envelopeName, cols.get(i).getName(), violation);
+            }
+            if (!cols.get(i).isNullable() && row.getValue(i) == null) {
+                throw new RuntimeException("NULL result in a non-nullable column");
+            }
         }
     }
 
@@ -2649,13 +3415,39 @@ public class QueryExecutor {
                 return functionRegistry.getFunction("TO_VARIANT").evaluate(variantArgs);
             }
         }
+        if (type instanceof UuidType) {
+            // A UUID column holds the canonical lower-case text and refuses anything else with the
+            // conversion's own sentence, which the DML envelope then wraps (live-verified).
+            return ToUuid.canonical(value instanceof String ? (String) value : value.toString());
+        }
         if (type instanceof StringType) {
             final StringType st = (StringType) type;
-            final String s = (value instanceof String) ? (String) value : value.toString();
+            // A value written into a text column reads as its cast to VARCHAR would: a FLOAT in its display
+            // form (2, 1e+20), a timestamp as 2024-02-03 00:00:00.000 (live-verified), never Java's text.
+            final String s = (value instanceof String) ? (String) value : SharedFunctionHelpers.textOf(value);
             if (st.getMaxLength() > 0 && s.length() > st.getMaxLength()) {
                 throw new ColumnLengthException(st.getMaxLength(), s);
             }
             return s;
+        }
+        if (type instanceof BinaryType && value instanceof BinaryValue) {
+            // A BINARY column's declared width is enforced on every write, the way a VARCHAR's is: the
+            // value is refused rather than truncated, and the DML envelope names the table and column.
+            final BinaryType binary = (BinaryType) type;
+            final BinaryValue bytes = (BinaryValue) value;
+            if (binary.getMaxLength() > 0 && bytes.length() > binary.getMaxLength()) {
+                throw ColumnLengthException.forBinary(binary.getMaxLength(), bytes.toHex());
+            }
+            return value;
+        }
+        if (type instanceof NumericType && NumericType.isApproximate(type)) {
+            // A FLOAT column HOLDS A DOUBLE: every write path on the account converts the value to the
+            // nearest double, so a stored 0.1 is 0.10000000000000000555 and a stored nineteen-digit
+            // integer is 1234567890123456768. Keeping the value's arrival class instead — a BigDecimal
+            // from a literal, a Long from an integer — made the same column hold three carriers and
+            // answer three different things through ::NUMBER, comparison and SUM.
+            final Double approximate = ApproximateValues.written(value);
+            return approximate != null ? approximate : value;
         }
         if (type instanceof NumericType && value instanceof String) {
             try {
@@ -2679,7 +3471,12 @@ public class QueryExecutor {
             // A string (or other temporal) written into a DATE/TIME/TIMESTAMP column becomes a real
             // LocalDate/LocalTime/LocalDateTime — the same value TO_DATE/TO_TIMESTAMP would produce — so a
             // string-inserted timestamp compares equal to a computed one (e.g. under EXCEPT / joins).
-            return SharedFunctionHelpers.toTemporalValue(type.getName().toUpperCase(), value);
+            // A value written into a TIME or TIMESTAMP column is truncated to the column's DECLARED
+            // fractional precision (live: '10:00:00.123456789' into a TIMESTAMP_NTZ(0) reads back
+            // 10:00:00.000, into a TIMESTAMP_NTZ(3) 10:00:00.123).
+            return SharedFunctionHelpers.atDeclaredPrecision(
+                SharedFunctionHelpers.toTemporalValue(type.getName().toUpperCase(), value),
+                ((DateTimeType) type).getPrecision());
         }
         if (type instanceof BinaryType) {
             if (value instanceof BinaryValue) {
@@ -2764,21 +3561,10 @@ public class QueryExecutor {
         if (value == null || type.getScale() < 0 || !isFixedPointNumeric(type.getName())) {
             return value;
         }
-        final BigDecimal bd = (value instanceof BigDecimal) ? (BigDecimal) value : new BigDecimal(value.toString());
-        if (bd.scale() == type.getScale()) {
-            return value;
-        }
-        final BigDecimal rounded = bd.setScale(type.getScale(), RoundingMode.HALF_UP);
-        if (type.getScale() == 0) {
-            // Scale-0 fixed-point columns (bare NUMBER, INTEGER, …) round fractional writes to a
-            // whole value — live-verified: INSERT of 10.5 into a NUMBER column stores 11.
-            try {
-                return rounded.longValueExact();
-            } catch (final ArithmeticException beyondLong) {
-                return rounded;
-            }
-        }
-        return rounded;
+        // The column's ONE carrier: a scale-0 column rounds a fractional write to a whole value
+        // (live-verified: INSERT of 10.5 into a NUMBER column stores 11) held as a Long, a scaled
+        // column pads or rounds to its scale — the same rule the storage applies on every write.
+        return ExactValues.written(value, type);
     }
 
     private static boolean isFixedPointNumeric(final String name) {
@@ -2792,6 +3578,8 @@ public class QueryExecutor {
      * Execute TRUNCATE TABLE
      */
     public void executeTruncate(final String tableName, final boolean ifExists) {
+        // IF EXISTS forgives only the table's own absence, never its database's or schema's (live-verified).
+        catalog.requireOwningSchema(QualifiedName.parse(tableName));
         try {
             // Resolve the table
             final Table table;
@@ -3270,11 +4058,17 @@ public class QueryExecutor {
         }
     }
 
-    /** Local directory for an implicit internal stage: {@code <internalRoot>/<kind>/<name>[/subPath]}. */
+    /**
+     * Local directory for an implicit internal stage: {@code <internalRoot>/<kind>/<name>[/subPath]}.
+     * The segment is folded, because the name reaching here is not always a parsed identifier: a stage
+     * path is a STRING ({@code @st/hello.txt}), so the writer's spelling and the reader's need not match
+     * where the object's own name would. Two stages whose names differ only in case therefore share one
+     * directory.
+     */
     private Path internalStageDir(final String kind, final String name, final String subPath) {
         final String root = engineConfig != null ? engineConfig.getStageInternalLocalRoot()
             : System.getProperty("user.home") + "/.frostlake_stages/internal";
-        final Path dir = Paths.get(root, kind, sanitizeStageSegment(name));
+        final Path dir = Paths.get(root, kind, sanitizeStageSegment(name).toUpperCase());
         final String sub = subPath.startsWith("/") ? subPath.substring(1) : subPath;
         return sub.isEmpty() ? dir : dir.resolve(sub);
     }
@@ -3451,11 +4245,12 @@ public class QueryExecutor {
             if (nameVal == null) {
                 throw new RuntimeException("IDENTIFIER() expression evaluated to null");
             }
+            rejectInvalidIdentifierReference(nameVal.toString(), ctx.expression());
             // The value is an identifier reference, not an already-resolved name: an unquoted string
             // folds to upper case, a double-quoted one keeps its case. Passing it through raw made
             // IDENTIFIER('test_table') reach a table stored as TEST_TABLE only because lookup was
             // case-insensitive; it is exact now.
-            return SqlIdentifiers.canonicalText(nameVal.toString());
+            return SqlIdentifiers.identifierReferenceText(nameVal.toString().trim());
         }
         // Fold the identifier parts (unquoted -> upper-case, quoted preserved) rather than returning the
         // raw text, so a created object's canonical name matches Snowflake.
@@ -3477,28 +4272,40 @@ public class QueryExecutor {
             if (nameVal == null) {
                 throw new RuntimeException("IDENTIFIER() expression evaluated to null");
             }
-            return SqlIdentifiers.canonicalTextParts(nameVal.toString());
+            rejectInvalidIdentifierReference(nameVal.toString(), ctx.expression());
+            return SqlIdentifiers.identifierReferenceParts(nameVal.toString().trim());
         }
         return ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
+    }
+
+    /**
+     * Refuses an IDENTIFIER() argument whose value is no identifier reference ({@code 'my table'},
+     * {@code '1abc'}, {@code ''}), as the account does before any lookup. The echo is the argument as
+     * written, quotes and all, or a variable by its own name, at the argument's position.
+     */
+    private void rejectInvalidIdentifierReference(final String value,
+                                                  final FrostlakeParser.ExpressionContext argument) {
+        if (SqlIdentifiers.isIdentifierReference(value)) {
+            return;
+        }
+        throw new RuntimeException(SqlCompilationError.at(argument.getStart().getLine(),
+            argument.getStart().getCharPositionInLine(), "invalid identifier '" + getOriginalText(argument) + "'"));
     }
 
     /** Re-key a renamed table's row storage: the new name keeps the old table's database/schema. */
     public void renameTableStorage(final String oldName, final String newShortName) {
         final String oldQualified = getFullyQualifiedTableName(oldName);
-        final int lastDot = oldQualified.lastIndexOf('.');
-        final String newQualified = lastDot >= 0
-            ? oldQualified.substring(0, lastDot + 1) + newShortName.toUpperCase()
-            : newShortName.toUpperCase();
-        storageEngine.renameTable(oldQualified, newQualified);
+        // Re-keyed by its parts, not at the last dot, which may sit inside a quoted "a.b".
+        final String[] parts = QualifiedName.parse(oldQualified).parts();
+        parts[parts.length - 1] = newShortName;
+        storageEngine.renameTable(oldQualified, QualifiedName.key(parts));
     }
 
     /** Re-key a moved table's row storage to a new database/schema/name (cross-schema RENAME TO). */
     public void moveTableStorage(final String oldName, final String targetDatabase,
                                  final String targetSchema, final String newShortName) {
         final String oldQualified = getFullyQualifiedTableName(oldName);
-        final String newQualified =
-            (targetDatabase + "." + targetSchema + "." + newShortName).toUpperCase();
-        storageEngine.renameTable(oldQualified, newQualified);
+        storageEngine.renameTable(oldQualified, QualifiedName.key(targetDatabase, targetSchema, newShortName));
     }
 
     /**
@@ -3526,6 +4333,26 @@ public class QueryExecutor {
      * wrapping its {@code expression}, unwrapped here so callers keep working with {@code ExpressionContext}
      * (e.g. the {@code LAST_QUERY_ID()} instanceof check for RESULT_SCAN).
      */
+    /**
+     * The positional arguments' texts, in order. A plain argument is its text as written. A subquery written
+     * without parentheses of its own, FLATTEN(SELECT PARSE_JSON('[1,2]')), is parenthesised, so it evaluates
+     * as the scalar subquery it is.
+     */
+    private static List<String> funcArgTexts(final FrostlakeParser.FunctionCallExprContext funcCtx) {
+        final List<String> out = new ArrayList<>();
+        if (funcCtx.functionArgList() != null) {
+            for (final FrostlakeParser.FunctionArgContext arg : funcCtx.functionArgList().functionArg()) {
+                if (arg.selectStatement() != null) {
+                    out.add("(" + ParseTreeText.getOriginalText(arg.selectStatement()) + ")");
+                } else if (arg.booleanExpr() instanceof FrostlakeParser.ValueExprContext) {
+                    out.add(ParseTreeText.getOriginalText(
+                        ((FrostlakeParser.ValueExprContext) arg.booleanExpr()).expression()));
+                }
+            }
+        }
+        return out;
+    }
+
     private static List<FrostlakeParser.ExpressionContext> funcArgExprs(final FrostlakeParser.FunctionCallExprContext funcCtx) {
         final List<FrostlakeParser.ExpressionContext> out = new ArrayList<>();
         if (funcCtx.functionArgList() != null) {
@@ -3547,6 +4374,19 @@ public class QueryExecutor {
      * and string literals and quoted identifiers INSIDE the text fold too ({@code "lc" || 'x'} names
      * {@code "LC" || 'X'}). Only an explicit quoted alias escapes it, at the call sites.
      */
+    /** The ordinal a {@code $N} select item names, or 0 for any other name. */
+    private static int positionalOrdinalOf(final String columnName) {
+        if (columnName == null || columnName.length() < 2 || columnName.charAt(0) != '$') {
+            return 0;
+        }
+        for (int i = 1; i < columnName.length(); i++) {
+            if (!Character.isDigit(columnName.charAt(i))) {
+                return 0;
+            }
+        }
+        return Integer.parseInt(columnName.substring(1));
+    }
+
     private String selectItemColumnName(final FrostlakeParser.ExpressionContext valueExpr) {
         final FrostlakeParser.ExpressionContext simple = SelectItemAccessors.unwrapParens(valueExpr);
         if (simple instanceof FrostlakeParser.QualifiedNameExprContext) {
@@ -3598,16 +4438,17 @@ public class QueryExecutor {
     }
 
     public String getFullyQualifiedTableName(final String tableName) {
-        final String[] parts = QualifiedName.parse(tableName).parts();
+        final String[] parts = catalog.withoutAccount(QualifiedName.parse(tableName).parts(), 3);
         if (parts.length == 3) {
             // Already fully qualified - uppercase all parts
-            return parts[0].toUpperCase() + "." + parts[1].toUpperCase() + "." + parts[2].toUpperCase();
+            return QualifiedName.key(parts[0], parts[1], parts[2]);
         } else if (parts.length == 2) {
-            // Has schema.table, need database
-            return catalog.getCurrentDatabase() + "." + parts[0].toUpperCase() + "." + parts[1].toUpperCase();
+            // Has schema.table, need database. The current names are the stored ones, which keep a quoted
+            // name's case; the storage key folds every part, as the three-part branch does.
+            return QualifiedName.key(catalog.getCurrentDatabase(), parts[0], parts[1]);
         } else {
             // Just table name, need both database and schema
-            return catalog.getCurrentDatabase() + "." + catalog.getCurrentSchema() + "." + tableName.toUpperCase();
+            return QualifiedName.key(catalog.getCurrentDatabase(), catalog.getCurrentSchema(), parts[0]);
         }
     }
 
@@ -3663,15 +4504,91 @@ public class QueryExecutor {
         return evaluator.evaluate(expressionText, dummyRow);
     }
 
+    /**
+     * Run a view's body where the VIEW lives: its bare names resolve in the view's own database and
+     * schema, whatever the reading session's context, and CURRENT_DATABASE() / CURRENT_SCHEMA() inside
+     * it answer the view's (live-verified). The caller's context is put back however the body ends.
+     *
+     * @param viewName the view as the statement names it
+     * @param body     the body to run
+     * @return its results
+     */
+    private List<ResultSet> executeInViewScope(final String viewName, final String body) {
+        final String[] scope = viewScope(viewName);
+        final String savedDatabase = catalog.getCurrentDatabase();
+        final String savedSchema = catalog.getCurrentSchema();
+        catalog.restoreContext(scope[0], scope[1]);
+        try {
+            return execute(body);
+        } finally {
+            catalog.restoreContext(savedDatabase, savedSchema);
+        }
+    }
+
+    /** The database and schema a view name places the view in, as {@link #resolveView} places it. */
+    private String[] viewScope(final String viewName) {
+        final String[] parts = catalog.withoutAccount(QualifiedName.parse(viewName).parts(), 3);
+        if (parts.length >= 3) {
+            return new String[] {parts[0], parts[1]};
+        }
+        if (parts.length == 2) {
+            return new String[] {catalog.getCurrentDatabase(), parts[0]};
+        }
+        return new String[] {catalog.getCurrentDatabase(), catalog.getCurrentSchema()};
+    }
+
+    /**
+     * Resolve a view's body shape at CREATE where the view will live, as {@link #executeInViewScope}
+     * reads it: a bare name in the body is the view's schema's, and a missing one is named there.
+     *
+     * @param database   the view's database
+     * @param schema     the view's schema
+     * @param body       the body
+     * @param columnNames the view's written column names, or null
+     * @return the body's columns
+     */
+    public List<TableColumn> resolveViewShapeInScope(final String database, final String schema, final String body,
+                                                     final List<String> columnNames) {
+        final String savedDatabase = catalog.getCurrentDatabase();
+        final String savedSchema = catalog.getCurrentSchema();
+        final boolean savedCompiling = compilingViewBody;
+        catalog.restoreContext(database, schema);
+        compilingViewBody = true;
+        try {
+            return resolveRelationShape(body, columnNames);
+        } finally {
+            compilingViewBody = savedCompiling;
+            catalog.restoreContext(savedDatabase, savedSchema);
+        }
+    }
+
+    /**
+     * The name a FROM reference is looked up under: as written, or, while CREATE VIEW compiles its body,
+     * completed to its full path in the view's schema, so that a miss names what live names.
+     */
+    private String viewScopeQualified(final String tableName) {
+        if (!compilingViewBody) {
+            return tableName;
+        }
+        final String[] parts = QualifiedName.parse(tableName).parts();
+        if (parts.length == 1) {
+            return QualifiedName.join(catalog.getCurrentDatabase(), catalog.getCurrentSchema(), parts[0]);
+        }
+        if (parts.length == 2) {
+            return QualifiedName.join(catalog.getCurrentDatabase(), parts[0], parts[1]);
+        }
+        return tableName;
+    }
+
     private View resolveView(final String viewName) {
-        final String[] parts = QualifiedName.parse(viewName).parts();
+        final String[] parts = catalog.withoutAccount(QualifiedName.parse(viewName).parts(), 3);
         final Schema schema;
         final String actualViewName;
 
         if (parts.length == 1) {
             // Unqualified: use current schema
             schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
-            actualViewName = viewName;
+            actualViewName = parts[0];
         } else if (parts.length == 2) {
             // schema.view (using current database)
             schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
@@ -3682,7 +4599,9 @@ public class QueryExecutor {
             actualViewName = parts[2];
         }
 
-        return schema.getView(actualViewName);
+        // A TEMPORARY table of the name shadows the view for the session that made it, so the read
+        // reaches the table - and uncovers the view again when the table is dropped (live-verified).
+        return schema.hasTemporaryTable(actualViewName) ? null : schema.getView(actualViewName);
     }
 
     /** Resolve a MATERIALIZED VIEW by (optionally qualified) name; the schema getter is case-insensitive. */
@@ -3692,7 +4611,8 @@ public class QueryExecutor {
             ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema())
             : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
             : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-        return schema.getMaterializedView(parts[parts.length - 1]);
+        return schema.hasTemporaryTable(parts[parts.length - 1])
+            ? null : schema.getMaterializedView(parts[parts.length - 1]);
     }
 
     /** Resolve a DYNAMIC TABLE by (optionally qualified) name; the schema getter is case-insensitive. */
@@ -3702,7 +4622,218 @@ public class QueryExecutor {
             ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema())
             : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
             : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-        return schema.getDynamicTable(parts[parts.length - 1]);
+        return schema.hasTemporaryTable(parts[parts.length - 1])
+            ? null : schema.getDynamicTable(parts[parts.length - 1]);
+    }
+
+    /**
+     * Find every relation an INSERT's source query reads, in the order written, and refuse the first
+     * that names nothing, before the target is looked up. Live reports a missing source relation ahead
+     * of a missing target or a bad column list, while a missing target still comes ahead of the source's
+     * column and function errors (live-verified). Nothing is read: each name is only found, the way a
+     * FROM clause finds it.
+     *
+     * @param source the INSERT's source query
+     */
+    public void requireSourceRelations(final FrostlakeParser.SelectStatementContext source) {
+        requireRelations(source);
+    }
+
+    /**
+     * {@link #requireSourceRelations} over any statement or part of one: every relation it reads, in
+     * the order written, found as a FROM clause finds it, and the first that names nothing refused.
+     *
+     * @param statement the statement, or the part of it whose relations are to be found
+     */
+    /**
+     * The object a GRANT, a REVOKE or a SHOW GRANTS names must exist, and is found before anything else
+     * the statement names (live-verified). A table and a view resolve each other, the named kind wording
+     * the miss; a schema, a database, a function, a sequence and a stage are each found in their own
+     * place, a missing container refused as such. Other kinds are not looked up.
+     *
+     * @param objectType the kind the statement names, upper-case
+     * @param parts      the object's name, part by part
+     */
+    public void requireSecurable(final String objectType, final String[] parts) {
+        requireSecurable(objectType, parts, null);
+    }
+
+    /**
+     * {@link #requireSecurable(String, String[])} with a routine's written argument count: a function none
+     * of whose overloads takes that many arguments names nothing (live-verified).
+     *
+     * @param objectType     the kind the statement names, upper-case
+     * @param parts          the object's name, part by part
+     * @param signatureArity the number of argument types written after the name, or null for none
+     */
+    public void requireSecurable(final String objectType, final String[] parts, final Integer signatureArity) {
+        switch (objectType) {
+            case "TABLE":
+            case "VIEW":
+                requireNamedRelation(QualifiedName.join(parts), "TABLE".equals(objectType) ? "Table" : "View");
+                return;
+            case "SCHEMA":
+                catalog.resolveSchema(QualifiedName.of(parts));
+                return;
+            case "DATABASE":
+                catalog.databaseExact(parts[0]);
+                return;
+            case "FUNCTION": {
+                final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
+                final String name = parts[parts.length - 1];
+                owner.getFunction(name);
+                if (signatureArity != null && !takesArguments(owner.getFunctionOverloads(name), signatureArity)) {
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Function", owner.qualifiedName(name)));
+                }
+                return;
+            }
+            case "SEQUENCE":
+                catalog.requireOwningSchema(QualifiedName.of(parts)).getSequence(parts[parts.length - 1]);
+                return;
+            case "STAGE":
+                catalog.requireOwningSchema(QualifiedName.of(parts)).getStage(parts[parts.length - 1]);
+                return;
+            default:
+                return;
+        }
+    }
+
+    /** Whether one of a routine's overloads takes exactly {@code arity} arguments. */
+    private static boolean takesArguments(final List<Function> overloads, final int arity) {
+        for (final Function overload : overloads) {
+            if (overload.getParameters().size() == arity) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A table, view or materialized view by that name, or the named kind's refusal. */
+    private void requireNamedRelation(final String name, final String kind) {
+        try {
+            if (resolveView(name) != null) {
+                return;
+            }
+        } catch (final RuntimeException notAView) {
+            // not a view
+        }
+        try {
+            if (resolveMaterializedView(name) != null) {
+                return;
+            }
+        } catch (final RuntimeException notAMaterializedView) {
+            // not a materialized view
+        }
+        catalog.resolveTableAsWritten(name, kind);
+    }
+
+    /**
+     * A FROM clause whose sources register one name twice is refused, {@code duplicate alias 'A'} (see
+     * FromSourceNames), once every relation the clause names has been found: live reports a missing
+     * relation first, wherever it stands in the clause.
+     */
+    private void rejectDuplicateSourceNames(final FrostlakeParser.TableExpressionContext tableExpr,
+                                            final Map<String, ResultSet> cteResults) {
+        final FromSourceNames names = new FromSourceNames(this);
+        names.registerSources(tableExpr);
+        if (names.duplicate() == null) {
+            return;
+        }
+        final Set<String> cteNames = new HashSet<>();
+        collectCteNames(tableExpr, cteNames);
+        if (cteResults != null) {
+            for (final String cte : cteResults.keySet()) {
+                cteNames.add(cte.toUpperCase());
+            }
+        }
+        if (getCurrentCteContext() != null) {
+            for (final String cte : getCurrentCteContext().keySet()) {
+                cteNames.add(cte.toUpperCase());
+            }
+        }
+        requireRelationsIn(tableExpr, cteNames);
+        names.rejectDuplicate();
+    }
+
+    public void requireRelations(final ParseTree statement) {
+        final Set<String> cteNames = new HashSet<>();
+        collectCteNames(statement, cteNames);
+        requireRelationsIn(statement, cteNames);
+    }
+
+    /**
+     * An UPDATE's or DELETE's WHERE refuses an aggregate as a query's does:
+     * {@code Invalid aggregate function in where clause [COUNT(*)]} (live-verified).
+     *
+     * @param where the statement's WHERE, or null
+     * @param table the statement's target
+     */
+    public void rejectAggregatesInWhere(final FrostlakeParser.WhereClauseContext where, final Table table) {
+        if (where == null) {
+            return;
+        }
+        final Map<String, Table> aliasToTable = new HashMap<>();
+        final List<Table> allTables = new ArrayList<>();
+        allTables.add(table);
+        rejectAggregatesIn(where, "where clause",
+            new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog));
+    }
+
+    private static void collectCteNames(final ParseTree node, final Set<String> into) {
+        if (node instanceof FrostlakeParser.CteDefinitionContext) {
+            into.add(ParseTreeText.namePartText(
+                ((FrostlakeParser.CteDefinitionContext) node).nameStartPart()).toUpperCase());
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectCteNames(node.getChild(i), into);
+        }
+    }
+
+    private void requireRelationsIn(final ParseTree node, final Set<String> cteNames) {
+        if (node instanceof FrostlakeParser.TableSourceContext
+                && ((FrostlakeParser.TableSourceContext) node).tableQualifiedName() != null) {
+            requireRelation(((FrostlakeParser.TableSourceContext) node).tableQualifiedName(), cteNames);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            requireRelationsIn(node.getChild(i), cteNames);
+        }
+    }
+
+    /** One FROM name found as {@code resolveTableReference} finds it, in the same order, reading nothing. */
+    private void requireRelation(final FrostlakeParser.TableQualifiedNameContext name, final Set<String> cteNames) {
+        final String tableName = ParseTreeText.getQualifiedName(name);
+        final boolean bareUnquotedDual = "DUAL".equalsIgnoreCase(tableName)
+            && name.namePart().isEmpty()
+            && name.nameStartPart().identifier() != null
+            && name.nameStartPart().identifier().QUOTED_IDENTIFIER() == null;
+        if (cteNames.contains(tableName.toUpperCase()) || bareUnquotedDual
+                || executeSystemViewIfApplicable(tableName, null) != null) {
+            return;
+        }
+        try {
+            if (resolveView(tableName) != null) {
+                return;
+            }
+        } catch (final RuntimeException notAView) {
+            // not a view
+        }
+        try {
+            if (resolveMaterializedView(tableName) != null) {
+                return;
+            }
+        } catch (final RuntimeException notAMaterializedView) {
+            // not a materialized view
+        }
+        try {
+            if (resolveDynamicTable(tableName) != null) {
+                return;
+            }
+        } catch (final RuntimeException notADynamicTable) {
+            // not a dynamic table
+        }
+        if (findStream(tableName) == null) {
+            catalog.resolveTableAsWritten(viewScopeQualified(tableName), "Object");
+        }
     }
 
     /**
@@ -3734,6 +4865,11 @@ public class QueryExecutor {
         // Check if this is INFORMATION_SCHEMA schema
         if (!"INFORMATION_SCHEMA".equals(schema)) {
             return null;
+        }
+        if (database == null) {
+            // A schema-qualified INFORMATION_SCHEMA view belongs to the current database, and a session
+            // with none has nowhere to read it from (live-verified).
+            throw NoCurrentDatabaseRefusal.naming("SELECT");
         }
 
         // Route to appropriate system view method
@@ -3814,7 +4950,7 @@ public class QueryExecutor {
         }
         // Parse the predicate once, then evaluate the AST per row — the string overload would take
         // the shared parse-cache monitor for every row.
-        final Expression parsedWhere = ExpressionEvaluator.parse(whereExpr);
+        final Expression parsedWhere = evaluator.withNarrowingCastEqualitiesAnswered(ExpressionEvaluator.parse(whereExpr));
         final List<Row> filtered = new ArrayList<>();
         for (final Row row : rows) {
             final Object result = evaluator.evaluate(parsedWhere, row);
@@ -4246,6 +5382,10 @@ public class QueryExecutor {
             if (token.getType() == FrostlakeParser.OFFSET) {
                 inOffset = true;
             } else if (token.getType() == FrostlakeParser.INTEGER_LITERAL) {
+                // The slot takes a written literal straight from the token stream, so the literal
+                // reader's own width refusal has to be applied here too — otherwise the number reader
+                // throws its raw complaint in place of live's positioned sentence.
+                IntegerLiteralRange.reject(token);
                 if (inOffset) {
                     offset = Long.parseLong(token.getText());
                 } else {
@@ -4313,7 +5453,8 @@ public class QueryExecutor {
                     return lateralEval.evaluate(expr, row);
                 }
             });
-        } else if (allTables.size() > 1 || tableExpr.joinClause().size() > 0
+        } else if (allTables.size() > 1
+                || (tableExpr != null && tableExpr.joinClause().size() > 0)
                 || hasAliasDistinctFromTableName(aliasToTable, table)) {
             mode = WhereEvaluationMode.WITH_ALIASES;
             // Provide custom evaluator for JOIN queries — and for a SINGLE aliased table, whose alias
@@ -4385,9 +5526,21 @@ public class QueryExecutor {
 
         final OperatorContext context = contextBuilder.build();
 
-        // Create and execute WHERE operator
+        // Create and execute WHERE operator. A refusal raised while the rows are filtered — a correlated
+        // subquery live cannot evaluate — is positioned in the WHERE, as the plan-time walk's refusals are.
         final WhereOperator whereOperator = new WhereOperator(whereExpr, mode);
-        return whereOperator.execute(rows, context);
+        final FrostlakeParser.BooleanExprContext written = selectCtx == null || selectCtx.whereClause() == null
+            ? null : selectCtx.whereClause().booleanExpr();
+        if (written == null || !whereExpr.equals(getOriginalText(written))) {
+            return whereOperator.execute(rows, context);
+        }
+        final SourcePosition displacedWhere = ExpressionSource.beginNested(
+            new SourcePosition(written.getStart().getLine(), written.getStart().getCharPositionInLine()));
+        try {
+            return whereOperator.execute(rows, context);
+        } finally {
+            ExpressionSource.end(displacedWhere);
+        }
     }
 
     /**
@@ -4572,10 +5725,12 @@ public class QueryExecutor {
         // Parse the condition AST and build the alias-aware multi-table evaluator ONCE, then reuse both
         // for every candidate row-pair below. The old path re-extracted the text, re-parsed it, and
         // allocated a fresh evaluator on every pair — quadratic for non-equi (nested-loop) joins.
-        final Expression joinConditionAst = ExpressionEvaluator.parse(joinCondition);
         final ExpressionEvaluator joinConditionEval =
             new ExpressionEvaluator(leftTable, functionRegistry, catalog, this);
         joinConditionEval.setMultiTableContext(aliasToTable, allTables);
+        final Expression joinConditionAst =
+            joinConditionEval.withNarrowingCastEqualitiesAnswered(ExpressionEvaluator.parse(joinCondition));
+        joinConditionEval.validateCollations(joinConditionAst);
 
         // Snowflake lets the ON condition reference a SELECT-list alias of the same query
         // (… HASH(…) AS _chk … JOIN r ON r.chk != _chk). Collect the aliases this ON actually mentions
@@ -4806,6 +5961,7 @@ public class QueryExecutor {
         final Expression conditionAst = ExpressionEvaluator.parse(conditionText);
         final ExpressionEvaluator conditionEval = new ExpressionEvaluator(leftTable, functionRegistry, catalog, this);
         conditionEval.setMultiTableContext(aliasToTable, allTables);
+        conditionEval.validateCollations(conditionAst);
         return new JoinConditionEvaluator() {
             @Override
             public boolean matches(final Row leftRow, final Row rightRow) {
@@ -4922,11 +6078,25 @@ public class QueryExecutor {
     void validateClauseScope(final String expressionText, final Table table,
                              final Map<String, Table> aliasToTable, final List<Table> allTables,
                              final Set<String> outputNames, final ParserRuleContext clause) {
+        validateClauseScope(expressionText, table, aliasToTable, allTables, outputNames, clause, null);
+    }
+
+    /**
+     * As above, with the names a refusal's echo prints BARE because they read as output columns — the
+     * ORDER BY walk's, where a bare name is the projected column whenever it names one.
+     */
+    void validateClauseScope(final String expressionText, final Table table,
+                             final Map<String, Table> aliasToTable, final List<Table> allTables,
+                             final Set<String> outputNames, final ParserRuleContext clause,
+                             final Set<String> echoedBare) {
         final ExpressionEvaluator scopeEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
         if (aliasToTable != null && allTables != null && !allTables.isEmpty()) {
             scopeEval.setMultiTableContext(aliasToTable, allTables);
         }
         scopeEval.setScopeExemptNames(outputNames);
+        if (echoedBare != null) {
+            scopeEval.setOutputScopeNames(echoedBare);
+        }
         final SourcePosition displacedOrigin = ExpressionSource.beginNested(clause == null ? null
             : new SourcePosition(clause.getStart().getLine(),
                                  clause.getStart().getCharPositionInLine()));
@@ -4935,6 +6105,78 @@ public class QueryExecutor {
         } finally {
             ExpressionSource.end(displacedOrigin);
         }
+    }
+
+    /**
+     * Plan-time PREDICATE-TYPE validation for HAVING and QUALIFY — the rule WHERE runs in its operator:
+     * a condition whose static type is VARCHAR or NUMBER is refused while the statement compiles,
+     * "Invalid data type [VARCHAR(10)] for predicate [RT.G]", the predicate spelled from the plan
+     * ({@code MAX(RT.G)}, {@code COUNT(*)}, {@code RT.N + 1}, a window call in its canonical form, a
+     * SELECT alias bare: {@code GG}). Live judges it before it asks whether QUALIFY has a window at
+     * all, which is why the QUALIFY site runs ahead of that refusal. The SELECT aliases are typed from
+     * their own expressions, so an alias in the predicate is judged by what it projects.
+     *
+     * @param expressionText the clause's predicate text
+     * @param table          the query's base relation
+     * @param aliasToTable   the FROM-clause keys, for a joined query
+     * @param allTables      every relation of a joined query
+     * @param ctx            the select clause, for its output aliases
+     * @param clause         the predicate's parse node, for the refusal's origin
+     */
+    private void validateClausePredicateType(final String expressionText, final Table table,
+                                             final Map<String, Table> aliasToTable,
+                                             final List<Table> allTables,
+                                             final FrostlakeParser.SelectClauseContext ctx,
+                                             final ParserRuleContext clause) {
+        final ExpressionEvaluator typeChecker = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        if (aliasToTable != null && allTables != null && !allTables.isEmpty()) {
+            typeChecker.setMultiTableContext(aliasToTable, allTables);
+        }
+        final Set<String> outputNames = selectItemAliasNames(ctx);
+        final Set<String> upperNames = new HashSet<>();
+        for (final String name : outputNames) {
+            upperNames.add(name.toUpperCase(Locale.ROOT));
+        }
+        typeChecker.setScopeExemptNames(outputNames);
+        typeChecker.setOutputScopeNames(upperNames);
+        typeChecker.setOutputAliasTypes(selectItemAliasTypes(ctx, typeChecker));
+        final SourcePosition displacedOrigin = ExpressionSource.beginNested(clause == null ? null
+            : new SourcePosition(clause.getStart().getLine(),
+                                 clause.getStart().getCharPositionInLine()));
+        try {
+            typeChecker.validatePredicate(ExpressionEvaluator.parse(expressionText));
+        } finally {
+            ExpressionSource.end(displacedOrigin);
+        }
+    }
+
+    /**
+     * Each SELECT item alias with the static type of the expression it names, keyed upper-cased; an
+     * item this context cannot parse or type is left out, so a reference to it stays undetermined.
+     *
+     * @param ctx   the select clause
+     * @param typer an evaluator over the query's relation context
+     * @return alias to type
+     */
+    private Map<String, DataType> selectItemAliasTypes(final FrostlakeParser.SelectClauseContext ctx,
+                                                       final ExpressionEvaluator typer) {
+        final Map<String, DataType> types = new HashMap<>();
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            final String alias = SelectItemAccessors.getItemAlias(item);
+            if (alias == null || !SelectItemAccessors.isExprItem(item)) {
+                continue;
+            }
+            try {
+                final DataType type = typer.inferStaticType(ExpressionEvaluator.parse(
+                    getOriginalText(SelectItemAccessors.getItemExpression(item))));
+                if (type != null) {
+                    types.put(alias.toUpperCase(Locale.ROOT), type);
+                }
+            } catch (final RuntimeException untyped) {
+                // The item's own site refuses what must be refused; here it is merely untyped.
+            }
+        }
+        return types;
     }
 
 
@@ -4953,15 +6195,307 @@ public class QueryExecutor {
      * something about how live sees it: there the window is simply an expression the grouping does not
      * carry. Both were measured on the account, in the plain and the nested-in-an-expression forms.
      *
-     * <p>Live re-prints the call CANONICALISED — the column qualified, the sort spelled out
-     * ({@code ROW_NUMBER() OVER (ORDER BY G.A ASC NULLS LAST)}) — where this prints it as written; the
-     * refusal itself, which is what decides whether a statement runs, is the same.
+     * <p>The call itself is re-printed from the analysed plan rather than echoed from the source —
+     * see {@link PlanEcho} for the form and for the two keys shapes that stay divergent.
      */
-    private void rejectWindowFunctionsOutsideAllowedClauses(final FrostlakeParser.SelectClauseContext ctx) {
-        rejectWindowFunctionsIn(ctx.whereClause(), false);
-        rejectWindowFunctionsIn(ctx.groupByClause(), false);
-        rejectWindowFunctionsIn(ctx.tableExpression(), false);
-        rejectWindowFunctionsIn(ctx.havingClause(), true);
+    /**
+     * A name written WITH an {@code OVER} clause that is not a window function and not an aggregate.
+     * Live refuses every such call the same way, whatever the name IS:
+     *
+     * <pre>
+     *   nosuchfn(a) OVER (…)        Invalid function type [NOSUCHFN] for window function.
+     *   ABS(a) OVER (…)             Invalid function type [ABS] for window function.
+     *   FLATTEN(a) OVER (…)         Invalid function type [FLATTEN] for window function.
+     * </pre>
+     *
+     * <p>So an unresolvable name, an ordinary scalar and a table function all land in one sentence —
+     * what is judged is the name's KIND once resolved, not whether it resolves. An aggregate is a
+     * window function in Snowflake and passes; so does anything {@code WindowFunctionNames} declares.
+     *
+     * <p>THE PREFIX IS THE POINT. Frostlake refused these from inside the row loop, unprefixed, so the
+     * refusal was not a compile-time one: an empty relation answered, and a view or CTAS over the shape
+     * was CREATED with null columns rather than refused. Running it here, before the rows exist, is what
+     * makes it compile-time — and it must run before the clause-placement rule, because live reports
+     * this sentence for a call in WHERE where Frostlake reported the misplacement.
+     *
+     * <p>The name is echoed the way every refusal echoes one: qualified parts kept, a quoted name kept
+     * verbatim with its quotes ({@code ["nosuchfn"]}), anything else upper-cased.
+     */
+    private void rejectNonWindowFunctionsWithOver(final FrostlakeParser.SelectClauseContext ctx,
+                                                  final FrostlakeParser.OrderByClauseContext orderBy) {
+        final List<FrostlakeParser.FunctionCallExprContext> found = new ArrayList<>();
+        collectWindowCallsIn(ctx.selectList(), found);
+        collectWindowCallsIn(ctx.whereClause(), found);
+        collectWindowCallsIn(ctx.groupByClause(), found);
+        collectWindowCallsIn(ctx.havingClause(), found);
+        collectWindowCallsIn(ctx.qualifyClause(), found);
+        collectWindowCallsIn(ctx.tableExpression(), found);
+        collectWindowCallsIn(orderBy, found);
+        for (final FrostlakeParser.FunctionCallExprContext call : found) {
+            final String written = call.functionName().getText();
+            final String canonical = written.toUpperCase();
+            if (WindowFunctionNames.handles(canonical)
+                    || functionRegistry.getAggregateFunction(canonical) != null) {
+                continue;
+            }
+            throw new RuntimeException(SqlCompilationError.of("Invalid function type ["
+                + spelledCallName(call.functionName()) + "] for window function."));
+        }
+    }
+
+    /**
+     * A call's name spelled the way a refusal echoes it — every dotted part read from the PARSE TREE,
+     * each folded to upper case unless it was written quoted, in which case it keeps its case and its
+     * quotes. A name the grammar reaches by another route (the {@code IDENTIFIER('fn')} form, or a
+     * keyword-headed call) has no identifier parts and is echoed as written.
+     */
+    private String spelledCallName(final FrostlakeParser.FunctionNameContext name) {
+        final List<FrostlakeParser.IdentifierContext> parts = name.identifier();
+        if (parts == null || parts.isEmpty()) {
+            return name.getText().toUpperCase();
+        }
+        final StringBuilder spelled = new StringBuilder();
+        for (final FrostlakeParser.IdentifierContext part : parts) {
+            if (spelled.length() > 0) {
+                spelled.append('.');
+            }
+            spelled.append(SqlIdentifiers.spellAsWritten(part.getText()));
+        }
+        return spelled.toString();
+    }
+
+    /** {@link #collectWindowCallsOutsideNestedQueries} over a clause that may be absent. */
+    private void collectWindowCallsIn(final ParseTree clause,
+                                      final List<FrostlakeParser.FunctionCallExprContext> out) {
+        if (clause != null) {
+            collectWindowCallsOutsideNestedQueries(clause, out);
+        }
+    }
+
+    /**
+     * What a GROUP BY KEY may be — not a window call, not an aggregate. Both rules live here rather
+     * than with their WHERE / ON / HAVING siblings because live runs them LAST of the grouped checks:
+     * it compiles the SELECT LIST against the grouping keys first, so a list that is wrong for the
+     * grouping speaks at its own item's offset whatever nonsense the GROUP BY holds. With a list that
+     * IS valid for the grouping these two sentences are what live gives, unchanged.
+     *
+     * <p>Called from the grouped path immediately after the select-list validator.
+     */
+    void rejectGroupByKeyKinds(final FrostlakeParser.SelectClauseContext ctx, final Table table,
+                               final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        if (ctx.groupByClause() == null) {
+            return;
+        }
+        final PlanEcho echo = new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog);
+        rejectWindowFunctionsIn(ctx.groupByClause(), false, echo);
+        final List<ParserRuleContext> found = new ArrayList<>();
+        collectAggregateCallsOutsideNestedQueries(ctx.groupByClause(), found);
+        if (!found.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of("[" + echo.print(found.get(0))
+                + "] is not a valid group by expression"));
+        }
+    }
+
+    /**
+     * A GROUP BY key that RESOLVES — by 1-based ordinal or by SELECT-list alias — to an aggregate or
+     * window select item, which live refuses AFTER the grouped select-list validation, echoing the
+     * item's OUTPUT NAME: {@code [A]} for an aliased item (the alias as written — canonical for an
+     * unquoted one, verbatim for a quoted one) and the derived name — {@code [SUM(I)]} — for an
+     * unaliased one. An aggregate anywhere in the item counts ({@code SUM(i)+1 AS a} refuses as
+     * {@code [A]}), a key resolving to a PLAIN item stays accepted, and an out-of-range ordinal has
+     * already spoken with its own bracketed sentence wherever in the list it sits (all
+     * live-verified).
+     *
+     * <p>★ INSIDE ROLLUP / CUBE / GROUPING SETS THE ECHO IS THE CALL, NOT THE NAME: an aggregate
+     * member — however the item spells it — reads {@code [SUM(GT.I)] is not a valid group by
+     * expression}, and a window member gets the window sentence ("appears outside of SELECT,
+     * QUALIFY, and ORDER BY clauses."), exactly what a call WRITTEN in the member gets.
+     *
+     * <p>{@code aliasNames} and {@code itemByIndex} are the star-EXPANDED parallel lists — the
+     * ordinal counts output columns, so a key can resolve through a star's width.
+     */
+    void rejectSelectItemGroupKeys(final FrostlakeParser.GroupByClauseContext groupBy,
+                                   final List<String> aliasNames,
+                                   final List<FrostlakeParser.SelectItemContext> itemByIndex,
+                                   final Table table, final Map<String, Table> aliasToTable,
+                                   final List<Table> allTables, final boolean superGroup) {
+        final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
+        for (final FrostlakeParser.GroupByElementContext elem : groupBy.groupByElement()) {
+            if (elem.expression() != null) {
+                keys.add(elem.expression());
+            }
+            if (elem.groupByColumnList() != null) {
+                keys.addAll(elem.groupByColumnList().expression());
+            }
+            if (elem.groupingSetList() != null) {
+                for (final FrostlakeParser.GroupingSetContext set : elem.groupingSetList().groupingSet()) {
+                    keys.addAll(set.expression());
+                }
+            }
+        }
+        for (final FrostlakeParser.ExpressionContext key : keys) {
+            final int index = resolvedSelectItemIndex(
+                ParseTreeText.getOriginalText(key), aliasNames, itemByIndex.size(), table, allTables);
+            if (index < 0) {
+                continue;
+            }
+            final FrostlakeParser.SelectItemContext item = itemByIndex.get(index);
+            final ParserRuleContext itemExpr = SelectItemAccessors.getItemExpression(item);
+            if (itemExpr == null) {
+                continue;
+            }
+            final List<ParserRuleContext> aggregates = new ArrayList<>();
+            collectAggregateCallsOutsideNestedQueries(itemExpr, aggregates);
+            final List<FrostlakeParser.FunctionCallExprContext> windows = new ArrayList<>();
+            collectWindowCallsOutsideNestedQueries(itemExpr, windows);
+            if (aggregates.isEmpty() && windows.isEmpty()) {
+                continue;
+            }
+            if (superGroup) {
+                final PlanEcho echo =
+                    new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog);
+                if (!aggregates.isEmpty()) {
+                    throw new RuntimeException(SqlCompilationError.of("[" + echo.print(aggregates.get(0))
+                        + "] is not a valid group by expression"));
+                }
+                throw new RuntimeException(SqlCompilationError.of("Window function ["
+                    + echo.printWindowCall(windows.get(0))
+                    + "] appears outside of SELECT, QUALIFY, and ORDER BY clauses."));
+            }
+            final String name = aliasNames.get(index) != null
+                ? aliasNames.get(index) : unaliasedItemName(item);
+            throw new RuntimeException(SqlCompilationError.of(
+                "[" + name + "] is not a valid group by expression"));
+        }
+    }
+
+    /**
+     * Whether a GROUP BY key resolves — by ordinal or alias — to a select item that contains a
+     * WINDOW call. Such a key must not COVER its item during the grouped select-list validation:
+     * live still holds the window's own references to the grouping (an uncovered one is refused at
+     * the reference), and only a list that validates reaches the key-kind sentence for the window
+     * item itself.
+     */
+    boolean groupKeyResolvesToWindowItem(final String rawKey, final List<String> aliasNames,
+                                         final List<FrostlakeParser.SelectItemContext> itemByIndex,
+                                         final Table table, final List<Table> allTables) {
+        final int index =
+            resolvedSelectItemIndex(rawKey, aliasNames, itemByIndex.size(), table, allTables);
+        if (index < 0) {
+            return false;
+        }
+        final ParserRuleContext itemExpr = SelectItemAccessors.getItemExpression(itemByIndex.get(index));
+        if (itemExpr == null) {
+            return false;
+        }
+        final List<FrostlakeParser.FunctionCallExprContext> windows = new ArrayList<>();
+        collectWindowCallsOutsideNestedQueries(itemExpr, windows);
+        return !windows.isEmpty();
+    }
+
+    /**
+     * The star-expanded select-item index a GROUP BY key resolves to — the 1-based ordinal's slot,
+     * or the item whose alias a BARE identifier names when no real column shadows it (a column
+     * always wins over a same-named alias) — or -1 when the key is neither, is qualified, or is an
+     * out-of-range ordinal (whose own sentence has already spoken).
+     */
+    private int resolvedSelectItemIndex(final String rawKey, final List<String> aliasNames,
+                                        final int itemCount, final Table table,
+                                        final List<Table> allTables) {
+        final long position = OrdinalLiteral.positionOf(rawKey);
+        if (position != OrdinalLiteral.NOT_AN_ORDINAL) {
+            return position >= 1 && position <= itemCount ? (int) position - 1 : -1;
+        }
+        final Expression parsed;
+        try {
+            parsed = ExpressionEvaluator.parse(rawKey);
+        } catch (final RuntimeException notAnExpression) {
+            return -1;
+        }
+        if (!(parsed instanceof ColumnReferenceExpression)) {
+            return -1;
+        }
+        final ColumnReferenceExpression ref = (ColumnReferenceExpression) parsed;
+        if (ref.getTableName() != null) {
+            return -1;
+        }
+        if (table != null && table.hasColumn(ref.getColumnName())) {
+            return -1;
+        }
+        if (allTables != null) {
+            for (final Table candidate : allTables) {
+                if (candidate != null && candidate.hasColumn(ref.getColumnName())) {
+                    return -1;
+                }
+            }
+        }
+        for (int i = 0; i < aliasNames.size(); i++) {
+            if (aliasNames.get(i) != null && aliasNames.get(i).equalsIgnoreCase(ref.getColumnName())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * A {@link WholePartitionAggregates whole-partition aggregate} windowed over a RANGE frame that
+     * spans the WHOLE partition — the one frame shape whose ROWS spelling is legal and whose RANGE
+     * spelling is not. Live elides a range covering everything, and then has an ordered aggregate
+     * window left over with an ORDER BY it cannot use:
+     *
+     * <pre>
+     *   MEDIAN(n) OVER (ORDER BY n RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+     *       Aggregate window function with order by clause is not supported:
+     *       [MEDIAN(W.N) OVER (ORDER BY W.N ASC NULLS LAST)].
+     * </pre>
+     *
+     * <p>★ THE SENTENCE CARRIES NO POSITION and echoes the call from the PLAN, frame dropped and sort
+     * keys spelled out — so it is raised HERE rather than beside its cumulative and sliding siblings,
+     * which are refused before anything is resolved. That ordering is live's own: this one LOSES to an
+     * unknown relation and to an unresolvable column, where those two beat both.
+     *
+     * <p>★ IT IS PER-FUNCTION, NOT PER-FRAME. {@code SUM(n)} over the same frame answers.
+     */
+    private void rejectWholeRangeFrameForWholePartitionAggregate(
+            final FrostlakeParser.SelectClauseContext ctx,
+            final FrostlakeParser.SelectStatementContext stmtCtx, final PlanEcho echo,
+            final Table table, final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final List<FrostlakeParser.FunctionCallExprContext> calls = new ArrayList<>();
+        collectWindowCallsIn(ctx.selectList(), calls);
+        collectWindowCallsIn(ctx.qualifyClause(), calls);
+        collectWindowCallsIn(stmtCtx.orderByClause(), calls);
+        for (final FrostlakeParser.FunctionCallExprContext call : calls) {
+            final FrostlakeParser.WindowFrameContext frame = call.overClause().windowFrame();
+            final String name =
+                SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase();
+            if (frame == null || !WindowFrameShape.isRange(frame)
+                    || !WindowFrameShape.spansWholePartition(frame)
+                    || !WholePartitionAggregates.coversWholePartitionOnly(name)
+                    || WholePartitionAggregates.answersWholeRangeFrame(name)) {
+                continue;
+            }
+            // The call's own NAMES first — its arguments, then its keys. A reference that resolves to
+            // nothing outranks this sentence, which is the ordinary consequence of the sentence being
+            // built from a resolved plan; the checks below run for every query later on, and are
+            // brought forward here for this one call so the two speak in live's order.
+            final List<FrostlakeParser.FunctionCallExprContext> one = new ArrayList<>();
+            one.add(call);
+            windowEvaluator.rejectFileWindowArguments(one, table, selectItemAliasNames(ctx));
+            validateWindowKeyScope(call, table, aliasToTable, allTables, selectItemAliasNames(ctx));
+            throw new RuntimeException(SqlCompilationError.of(
+                "Aggregate window function with order by clause is not supported: ["
+                    + echo.printWindowCall(call) + "]."));
+        }
+    }
+
+    private void rejectWindowFunctionsOutsideAllowedClauses(final FrostlakeParser.SelectClauseContext ctx,
+                                                            final PlanEcho echo) {
+        rejectWindowFunctionsIn(ctx.whereClause(), false, echo);
+        // The GROUP BY half is NOT here: live compiles the SELECT LIST against the grouping keys
+        // before it says anything about what those keys ARE, so both key-kind rules run after the
+        // grouped validator instead — see rejectGroupByKeyKinds.
+        rejectWindowFunctionsIn(ctx.tableExpression(), false, echo);
+        rejectWindowFunctionsIn(ctx.havingClause(), true, echo);
     }
 
 
@@ -4982,16 +6516,63 @@ public class QueryExecutor {
      * <p>An IMPLICITLY aggregated query is different and is left alone: live runs
      * {@code SELECT SUM(b) FROM g ORDER BY ROW_NUMBER() OVER (…)}, which has exactly one row.
      *
-     * <p>Live re-prints the call canonicalised where this prints it as written — the same difference as
-     * everywhere else a refusal names a window.
+     * <p>The call is re-printed from the analysed plan — see {@link PlanEcho}.
      */
-    private void rejectWindowInGroupedOrderBy(final FrostlakeParser.OrderByClauseContext orderBy) {
+    private void rejectWindowInGroupedOrderBy(final FrostlakeParser.OrderByClauseContext orderBy,
+                                              final PlanEcho echo,
+                                              final FrostlakeParser.SelectClauseContext ctx,
+                                              final Table table, final Map<String, Table> aliasToTable) {
         final List<FrostlakeParser.FunctionCallExprContext> found = new ArrayList<>();
         collectWindowCallsOutsideNestedQueries(orderBy, found);
         if (!found.isEmpty()) {
-            throw new RuntimeException(SqlCompilationError.of("[" + getOriginalText(found.get(0))
+            // An ORDER BY expression is re-printed as it resolves in the OUTPUT scope — see
+            // PlanEcho.printInOutputScope — so the echo needs the names that scope carries.
+            echo.printInOutputScope(selectOutputColumnNames(ctx, table, aliasToTable));
+            throw new RuntimeException(SqlCompilationError.of("[" + echo.printWindowCall(found.get(0))
                 + "] is not a valid order by expression"));
         }
+    }
+
+    /**
+     * The names a SELECT list PROJECTS, upper-cased — its aliases where items are aliased, the plain
+     * column's own name where one is selected bare or qualified, and every column a star expands to.
+     *
+     * <p>An item that is neither is deliberately absent: {@code SELECT a + 1} outputs a column named
+     * "A + 1", and nothing a bare reference could spell. Live's echo agrees, and that is the cell that
+     * separates this from the GROUP BY keys — {@code SELECT a AS z … ORDER BY a} prints A qualified,
+     * because the output carries Z and not A.
+     */
+    private Set<String> selectOutputColumnNames(final FrostlakeParser.SelectClauseContext ctx,
+                                                final Table table,
+                                                final Map<String, Table> aliasToTable) {
+        final Set<String> names = new HashSet<>();
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            final String alias = SelectItemAccessors.getItemAlias(item);
+            if (alias != null) {
+                names.add(alias.toUpperCase());
+                continue;
+            }
+            if (SelectItemAccessors.isStarItem(item) || SelectItemAccessors.isQualifiedStarItem(item)) {
+                if (table != null) {
+                    for (final StarColumn starColumn : starItemColumns(item, table, aliasToTable)) {
+                        names.add(starColumn.getOutputName().toUpperCase());
+                    }
+                }
+                continue;
+            }
+            final FrostlakeParser.ExpressionContext value = SelectItemAccessors.getItemValueExpr(item);
+            if (value instanceof FrostlakeParser.QualifiedNameExprContext) {
+                // The output name is the LAST part of the reference — read from the tree, since the
+                // dots of a quoted part are not separators.
+                final FrostlakeParser.QualifiedNameContext reference =
+                    ((FrostlakeParser.QualifiedNameExprContext) value).qualifiedName();
+                final List<FrostlakeParser.NamePartContext> tail = reference.namePart();
+                names.add((tail == null || tail.isEmpty()
+                    ? reference.nameStartPart().getText()
+                    : tail.get(tail.size() - 1).getText()).toUpperCase());
+            }
+        }
+        return names;
     }
 
 
@@ -5015,22 +6596,63 @@ public class QueryExecutor {
      * <p>A WINDOWED aggregate ({@code SUM(b) OVER (…)}) is a window, not an aggregate, and is judged by
      * {@link #rejectWindowFunctionsOutsideAllowedClauses} instead.
      */
-    private void rejectAggregatesOutsideAllowedClauses(final FrostlakeParser.SelectClauseContext ctx) {
-        rejectAggregatesIn(ctx.whereClause(), "where clause");
-        rejectAggregatesIn(ctx.tableExpression(), "ON clause");
-        if (ctx.groupByClause() != null) {
-            final List<ParserRuleContext> found = new ArrayList<>();
-            collectAggregateCallsOutsideNestedQueries(ctx.groupByClause(), found);
-            if (!found.isEmpty()) {
-                throw new RuntimeException(SqlCompilationError.of("[" + getOriginalText(found.get(0))
-                    + "] is not a valid group by expression"));
+    private void rejectAggregatesOutsideAllowedClauses(final FrostlakeParser.SelectClauseContext ctx,
+                                                       final PlanEcho echo, final Table table,
+                                                       final Map<String, Table> aliasToTable,
+                                                       final List<Table> allTables) {
+        rejectAggregatesIn(ctx.whereClause(), "where clause", echo);
+        rejectAggregatesIn(ctx.tableExpression(), "ON clause", echo);
+        // The GROUP BY half moved to rejectGroupByKeyKinds, below the grouped select-list validator.
+        rejectMisplacedCallsInsideAggregate(ctx.selectList(), echo, table, aliasToTable, allTables);
+        // HAVING is judged by the same rule: live refuses SUM(AVG(n)) > 0 there with the nesting
+        // sentence, where it used to pass here unjudged.
+        rejectMisplacedCallsInsideAggregate(ctx.havingClause(), echo, table, aliasToTable, allTables);
+    }
+
+    /**
+     * An aggregate written INSIDE another aggregate — {@code SUM(SUM(x))}, and equally
+     * {@code PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY SUM(x))} — which live refuses because the two
+     * would have to consume the same grouping, one after the other, and there is only one.
+     *
+     * <pre>
+     *   Aggregate functions cannot be nested: [SUM(T.N)] nested in [SUM(SUM(T.N))]
+     * </pre>
+     *
+     * <p>★ BOTH CALLS ARE ECHOED AS THE PLAN HOLDS THEM, not as they were written — see
+     * {@link PlanEcho#printAggregateCall}: the ordered aggregates are re-shaped and a plain AVG is
+     * expanded into its definition, its SUM half naming it when it is the bracketed call itself.
+     *
+     * <p>★ A WINDOWED OUTER CALL IS LEGAL AND MUST STAY SO. {@code SUM(SUM(x)) OVER (PARTITION BY k)}
+     * over a grouped query is the ordinary running-total-of-a-total, and live runs it: the window is
+     * computed AFTER the grouping, so the two never compete. The collector already skips a call
+     * carrying an OVER clause, which is exactly the exemption this rule needs.
+     *
+     * <p>★ THE PREFIX CARRIES NO POSITION but keeps its separator, leaving "SQL compilation error: "
+     * with a trailing space — measured beside the window-nesting refusal, which in the same run has no
+     * trailing space, so it is live's own shape rather than a harness artefact.
+     */
+    private void rejectNestedAggregates(final ParseTree node, final PlanEcho echo) {
+        if (node == null) {
+            return;
+        }
+        final List<ParserRuleContext> aggregates = new ArrayList<>();
+        collectAggregateCallsOutsideNestedQueries(node, aggregates);
+        for (final ParserRuleContext aggregate : aggregates) {
+            final List<ParserRuleContext> nested = new ArrayList<>();
+            for (int i = 0; i < aggregate.getChildCount(); i++) {
+                collectAggregateCallsOutsideNestedQueries(aggregate.getChild(i), nested);
+            }
+            if (!nested.isEmpty()) {
+                throw new RuntimeException(SqlCompilationError.withoutPosition(
+                    "Aggregate functions cannot be nested: [" + echo.printAggregateCall(nested.get(0))
+                        + "] nested in [" + echo.printAggregateCall(aggregate) + "]"));
             }
         }
-        rejectWindowInsideAggregate(ctx.selectList());
     }
 
     /** Refuses the first aggregate written anywhere in {@code clause}, naming the clause live names. */
-    private void rejectAggregatesIn(final ParserRuleContext clause, final String clauseName) {
+    private void rejectAggregatesIn(final ParserRuleContext clause, final String clauseName,
+                                    final PlanEcho echo) {
         if (clause == null) {
             return;
         }
@@ -5038,16 +6660,45 @@ public class QueryExecutor {
         collectAggregateCallsOutsideNestedQueries(clause, found);
         if (!found.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.of("Invalid aggregate function in "
-                + clauseName + " [" + getOriginalText(found.get(0)) + "]"));
+                + clauseName + " [" + echo.print(found.get(0)) + "]"));
         }
     }
 
     /**
-     * A window call written INSIDE an aggregate's arguments — {@code SUM(ROW_NUMBER() OVER (…))} — which
-     * live refuses with a sentence of its own. The window would have to be computed after the grouping
-     * that the aggregate is part of, so there is no order in which both can run.
+     * A call written INSIDE an aggregate's arguments that cannot be computed there — a WINDOW call, or
+     * another AGGREGATE — each of which live refuses with a sentence of its own:
+     *
+     * <pre>
+     *   SUM(ROW_NUMBER() OVER (ORDER BY n))   Window function [ROW_NUMBER() OVER (ORDER BY T.N ASC
+     *                                         NULLS LAST)] may not appear inside an aggregate function.
+     *   SUM(SUM(n))                           Aggregate functions cannot be nested: [SUM(T.N)] nested
+     *                                         in [SUM(SUM(T.N))]
+     * </pre>
+     *
+     * <p>★ WHEN BOTH FAULTS ARE PRESENT, THE ONE WRITTEN FIRST IS REPORTED — the two rules do not rank
+     * against each other, the source position does. Measured both ways round:
+     *
+     * <pre>
+     *   SUM(SUM(n) + ROW_NUMBER() OVER (…))   the nesting sentence
+     *   SUM(ROW_NUMBER() OVER (…) + SUM(n))   the window sentence
+     * </pre>
+     *
+     * That is why the two are ONE walk rather than two checks in an order: any fixed order gets one of
+     * these two statements wrong, and which one is wrong is decided by how the user typed it.
+     *
+     * <p>★ A WINDOWED OUTER CALL IS LEGAL AND MUST STAY SO. {@code SUM(SUM(x)) OVER (PARTITION BY k)}
+     * over a grouped query is the ordinary running-total-of-a-total, and live runs it: the window is
+     * computed AFTER the grouping, so the two never compete. The collector already skips a call
+     * carrying an OVER clause, which is exactly the exemption this needs.
+     *
+     * <p>★ THE NESTING PREFIX CARRIES NO POSITION but keeps its separator, leaving "SQL compilation
+     * error: " with a trailing space, where the window sentence has none. Both measured in one run, so
+     * the difference is live's rather than a harness artefact.
      */
-    private void rejectWindowInsideAggregate(final ParseTree node) {
+    private void rejectMisplacedCallsInsideAggregate(final ParseTree node, final PlanEcho echo,
+                                                    final Table table,
+                                                    final Map<String, Table> aliasToTable,
+                                                    final List<Table> allTables) {
         if (node == null || node instanceof FrostlakeParser.SelectClauseContext
                 && !(node instanceof FrostlakeParser.SelectListContext)) {
             return;
@@ -5056,14 +6707,333 @@ public class QueryExecutor {
         collectAggregateCallsOutsideNestedQueries(node, aggregates);
         for (final ParserRuleContext aggregate : aggregates) {
             final List<FrostlakeParser.FunctionCallExprContext> windows = new ArrayList<>();
+            final List<ParserRuleContext> nested = new ArrayList<>();
             for (int i = 0; i < aggregate.getChildCount(); i++) {
                 collectWindowCallsOutsideNestedQueries(aggregate.getChild(i), windows);
+                collectAggregateCallsOutsideNestedQueries(aggregate.getChild(i), nested);
             }
-            if (!windows.isEmpty()) {
+            if (windows.isEmpty() && nested.isEmpty()) {
+                continue;
+            }
+            if (nested.isEmpty() || !windows.isEmpty()
+                    && windows.get(0).getStart().getStartIndex()
+                        < nested.get(0).getStart().getStartIndex()) {
                 throw new RuntimeException(SqlCompilationError.of("Window function ["
-                    + getOriginalText(windows.get(0))
+                    + echo.printWindowCall(windows.get(0))
                     + "] may not appear inside an aggregate function."));
             }
+            // ★ AN ARGUMENT-TYPE COMPLAINT OUTRANKS THE NESTING ONE, measured: SUM(ARRAY_AGG(n)) is
+            // "Invalid argument types for function 'SUM': (ARRAY)" live, not a nesting refusal, and
+            // MAX(ARRAY_AGG(n)) reports its own does-not-support sentence. The types are settled before
+            // the arrangement is judged, so the strict walk speaks first and only silence reaches the
+            // throw below.
+            rejectAggregateArgumentTypes(aggregate, table, aliasToTable, allTables);
+            throw new RuntimeException(SqlCompilationError.withoutPosition(
+                "Aggregate functions cannot be nested: [" + echo.printAggregateCall(nested.get(0))
+                    + "] nested in [" + echo.printAggregateCall(aggregate) + "]"));
+        }
+    }
+
+    /**
+     * The outer aggregate's arguments judged by TYPE, through the same strict walk the select-item
+     * validator uses, so an argument live refuses on its type is refused with live's own sentence
+     * rather than being overtaken by the nesting rule. The call's own offset is scoped around the walk
+     * because the sentence is positioned; a failure to type at all is left alone, since that is not
+     * this rule's complaint to make.
+     */
+    private void rejectAggregateArgumentTypes(final ParserRuleContext aggregate, final Table table,
+                                              final Map<String, Table> aliasToTable,
+                                              final List<Table> allTables) {
+        final ExpressionEvaluator strictEval =
+            new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        if (aliasToTable != null && allTables != null && !allTables.isEmpty()) {
+            strictEval.setMultiTableContext(aliasToTable, allTables);
+        }
+        final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
+            aggregate.getStart().getLine(), aggregate.getStart().getCharPositionInLine()));
+        try {
+            strictEval.validateStrict(
+                ExpressionEvaluator.parse(getOriginalText(aggregate)));
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /**
+     * Every call in THIS statement whose name resolves to no function, refused in ONE sentence naming
+     * them all — {@code Unknown functions FNC, FNA, FNB.} — which is live's own shape.
+     *
+     * <p>WHERE THIS SITS. Live resolves in phases: names first, then function names, then everything a
+     * clause means. Frostlake found an unknown name only while TYPING the result columns, which happens
+     * after every clause has been validated and after the rows have been produced, so any refusal raised
+     * on the way there spoke first. Measured, the whole family did:
+     *
+     * <pre>
+     *   … GROUP BY a ORDER BY b        [GW.B] is not a valid order by expression
+     *   … , b FROM gw GROUP BY a       'GW.B' … is neither an aggregate nor in the group by clause.
+     *   … QUALIFY nosuchfn(a) &gt; 1      found QUALIFY clause but no window function.
+     *   … WHERE SUM(b) &gt; 1             Invalid aggregate function in where clause [SUM(GW.B)]
+     *   … ORDER BY ROW_NUMBER() OVER…  [ROW_NUMBER() OVER (…)] is not a valid order by expression
+     * </pre>
+     *
+     * <p>and live answers every one of them with the unknown NAME instead.
+     *
+     * <p>WHAT STILL OUTRANKS IT, measured in both directions: a syntax error, a missing relation, an
+     * invalid identifier ANYWHERE (its own arguments, WHERE, the select list, HAVING, QUALIFY, a window
+     * key — six clauses, all the same way), a window that needs an ORDER BY, and an out-of-range ORDER BY
+     * ordinal. Those checks are therefore run HERE, before the sentence is raised; they are pure and
+     * already run later on their own, so asking them twice changes only which one speaks first.
+     *
+     * <p>A statement whose every name resolves leaves this method at the first return, having done
+     * nothing but the walk — that is deliberate, and it is what keeps a working query on exactly the
+     * path it was on before.
+     */
+    private void rejectUnresolvableFunctionNames(final FrostlakeParser.SelectStatementContext stmtCtx,
+                                                 final FrostlakeParser.SelectClauseContext ctx,
+                                                 final Table table,
+                                                 final Map<String, Table> aliasToTable,
+                                                 final List<Table> allTables) {
+        final List<FunctionCallExpression> unresolvable = collectUnresolvableCalls(stmtCtx, ctx);
+        // The two refusals raised here are INDEPENDENT: a name nothing can resolve, and a window name
+        // written with no specification. Either one alone brings the walk in, because they no longer
+        // share a cause — a window-only name is a KNOWN name, so it never reaches the list above.
+        final List<FrostlakeParser.FunctionCallExprContext> specificationless = new ArrayList<>();
+        collectSpecificationlessWindowCalls(ctx.selectList(), specificationless);
+        collectSpecificationlessWindowCalls(ctx.whereClause(), specificationless);
+        collectSpecificationlessWindowCalls(ctx.groupByClause(), specificationless);
+        collectSpecificationlessWindowCalls(ctx.havingClause(), specificationless);
+        collectSpecificationlessWindowCalls(ctx.tableExpression(), specificationless);
+        collectSpecificationlessWindowCalls(stmtCtx.orderByClause(), specificationless);
+        // ARITY is judged over every window call, specified or not: live refuses LEAD() for its
+        // argument count whether or not an OVER follows it.
+        final List<FrostlakeParser.FunctionCallExprContext> windowNamed = new ArrayList<>();
+        collectWindowNamedCalls(ctx.selectList(), windowNamed);
+        collectWindowNamedCalls(ctx.whereClause(), windowNamed);
+        collectWindowNamedCalls(ctx.groupByClause(), windowNamed);
+        collectWindowNamedCalls(ctx.havingClause(), windowNamed);
+        collectWindowNamedCalls(ctx.qualifyClause(), windowNamed);
+        collectWindowNamedCalls(stmtCtx.orderByClause(), windowNamed);
+        final FrostlakeParser.FunctionCallExprContext miscounted = firstMiscountedCall(windowNamed);
+        if (unresolvable.isEmpty() && specificationless.isEmpty() && miscounted == null) {
+            return;
+        }
+        final Set<String> outputNames = selectItemAliasNames(ctx);
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            if (SelectItemAccessors.isExprItem(item)) {
+                validateClauseColumnScope(getOriginalText(SelectItemAccessors.getItemExpression(item)),
+                    table, aliasToTable, allTables, outputNames,
+                    SelectItemAccessors.getItemExpression(item));
+            }
+        }
+        // A GROUP BY key's own identifier is NOT walked here: its clause wraps every key in a
+        // super-group element, so there is no expression to hand the scope walk without unwrapping
+        // one, and no measured cell needs it to outrank a name. It keeps the site it always had.
+        if (ctx.whereClause() != null) {
+            validateClauseColumnScope(getOriginalText(ctx.whereClause().booleanExpr()), table,
+                aliasToTable, allTables, outputNames, ctx.whereClause().booleanExpr());
+        }
+        if (ctx.havingClause() != null) {
+            validateClauseColumnScope(getOriginalText(ctx.havingClause().booleanExpr()), table,
+                aliasToTable, allTables, outputNames, ctx.havingClause().booleanExpr());
+        }
+        if (ctx.qualifyClause() != null) {
+            validateClauseColumnScope(getOriginalText(ctx.qualifyClause().booleanExpr()), table,
+                aliasToTable, allTables, outputNames, ctx.qualifyClause().booleanExpr());
+        }
+        if (stmtCtx.orderByClause() != null) {
+            for (final FrostlakeParser.OrderItemContext item : stmtCtx.orderByClause().orderItem()) {
+                validateClauseColumnScope(getOriginalText(item.expression()), table, aliasToTable,
+                    allTables, outputNames, item.expression());
+            }
+        }
+        validateWindowKeyScope(ctx.selectList(), table, aliasToTable, allTables, outputNames);
+        if (ctx.qualifyClause() != null) {
+            validateWindowKeyScope(ctx.qualifyClause().booleanExpr(), table, aliasToTable, allTables,
+                outputNames);
+        }
+        if (stmtCtx.orderByClause() != null) {
+            validateWindowKeyScope(stmtCtx.orderByClause(), table, aliasToTable, allTables, outputNames);
+        }
+        windowEvaluator.rejectWindowWithoutRequiredOrderBy(ctx);
+        orderByExecutor.validateOrderOrdinals(stmtCtx, table, aliasToTable);
+        // A window-ONLY name reached here because the registry carries no callable scalar for it — but
+        // it is not unknown, it is unspecified. Raised at the same seam so everything this method has
+        // already settled (a bad argument name, a window key, an out-of-range position) still speaks
+        // first, exactly as measured.
+        final PlanEcho echo = new PlanEcho(table, aliasToTable, allTables, functionRegistry, catalog);
+        if (miscounted != null) {
+            // Positioned on the call, and raised BEFORE the missing specification — measured: LEAD()
+            // with no OVER is refused for its arity, never for its absent window.
+            throw new RuntimeException(SqlCompilationError.at(
+                miscounted.getStart().getLine(), miscounted.getStart().getCharPositionInLine(),
+                WindowFunctionArity.refusal(miscounted.functionName().getText().toUpperCase(),
+                    echo.printBareCall(miscounted), argumentCount(miscounted))));
+        }
+        rejectWindowFunctionsWithoutOver(ctx, stmtCtx.orderByClause(), echo);
+        if (unresolvable.isEmpty()) {
+            return;
+        }
+        throw new RuntimeException(SqlCompilationError.of(
+            new ExpressionEvaluator(table, functionRegistry, catalog, this)
+                .unknownFunctionSentence(unresolvable)));
+    }
+
+    /**
+     * True when this clause is an arm of a set operation and not its LAST arm.
+     *
+     * <p>Every arm validates the SAME statement's ORDER BY ordinals, so an early arm's range check
+     * would fire before a later arm's names had ever resolved — and live resolves every arm's names
+     * first, reporting the bad one at its own arm's offset. Deferring the check to the last arm puts
+     * it after all of them. A nested statement as the final operand is left alone: the check then runs
+     * where it always did, because there is no clause to compare against.
+     */
+    private boolean isEarlierSetOperationArm(final FrostlakeParser.SelectStatementContext stmtCtx,
+                                             final FrostlakeParser.SelectClauseContext ctx) {
+        final List<FrostlakeParser.SelectOperandContext> operands = stmtCtx.selectOperand();
+        if (operands == null || operands.size() < 2) {
+            return false;
+        }
+        final FrostlakeParser.SelectClauseContext last = operands.get(operands.size() - 1).selectClause();
+        return last != null && last != ctx;
+    }
+
+    /**
+     * The SELECT LIST's own column references, resolved before every other clause's. Live scans the
+     * list first: with a different bad name in the list and in WHERE, HAVING, QUALIFY or ORDER BY, the
+     * one it reports is always the LIST's.
+     *
+     * <p>Phase one only, and the alias exemption grows item by item — which is what keeps a FORWARD
+     * reference to a later item's alias the invalid identifier live calls it.
+     */
+    private void validateSelectListNames(final FrostlakeParser.SelectClauseContext ctx,
+                                         final Table table,
+                                         final Map<String, Table> aliasToTable,
+                                         final List<Table> allTables) {
+        final Set<String> earlierNames = new HashSet<>();
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            final ParserRuleContext expression = SelectItemAccessors.getItemExpression(item);
+            if (expression != null) {
+                validateClauseColumnScope(getOriginalText(expression), table, aliasToTable, allTables,
+                    earlierNames, expression);
+            }
+            final String alias = SelectItemAccessors.getItemAlias(item);
+            if (alias != null) {
+                earlierNames.add(alias);
+            }
+        }
+    }
+
+    /**
+     * The SELECT list's and ORDER BY list's column references, resolved before the positional range
+     * check. Live's precedence is measured, not assumed: a name in the select list, the ORDER BY
+     * list, WHERE or the GROUP BY list outranks an out-of-range position, while a name in HAVING or
+     * QUALIFY loses to it. Only the first two are walked here — WHERE already resolves above, and
+     * the other two must stay below.
+     *
+     * <p>Phase one only, so an argument-type complaint keeps its place beneath the unknown-name scan.
+     * The alias exemption grows item by item, which is what keeps a FORWARD reference to a later
+     * item's alias the invalid identifier live calls it.
+     */
+    private void validateNamesBeforeOrdinals(final FrostlakeParser.SelectClauseContext ctx,
+                                             final FrostlakeParser.SelectStatementContext stmtCtx,
+                                             final Table table,
+                                             final Map<String, Table> aliasToTable,
+                                             final List<Table> allTables) {
+        if (stmtCtx.orderByClause() != null) {
+            // The ORDER BY half goes through the sort's OWN scope rule rather than a second one: a key
+            // resolves against the SELECT OUTPUT before the relation, so `SELECT aa.d FROM aa JOIN bb …
+            // ORDER BY d` reads the projected D and never sees the join's ambiguous base columns. That
+            // rule also declines set operations, whose ORDER BY resolves against the combined output.
+            orderByExecutor.validateOrderKeyScope(stmtCtx, table, aliasToTable, allTables);
+        }
+    }
+
+    /**
+     * {@link #validateClauseScope} narrowed to PHASE ONE — column references and nothing else. The full
+     * walk also raises argument-type complaints, which live places BELOW an unknown function name, so
+     * the unknown-name scan can only afford the identifier half.
+     *
+     * <p>A clause the expression grammar cannot parse on its own is left alone: it is validated by its
+     * own site later, exactly as before.
+     */
+    private void validateClauseColumnScope(final String expressionText, final Table table,
+                                           final Map<String, Table> aliasToTable,
+                                           final List<Table> allTables, final Set<String> outputNames,
+                                           final ParserRuleContext clause) {
+        final ExpressionEvaluator scopeEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        if (aliasToTable != null && allTables != null && !allTables.isEmpty()) {
+            scopeEval.setMultiTableContext(aliasToTable, allTables);
+        }
+        scopeEval.setScopeExemptNames(outputNames);
+        final SourcePosition displacedOrigin = ExpressionSource.beginNested(clause == null ? null
+            : new SourcePosition(clause.getStart().getLine(),
+                                 clause.getStart().getCharPositionInLine()));
+        try {
+            scopeEval.validateColumnScope(ExpressionEvaluator.parse(expressionText));
+        } catch (final RuntimeException unparseable) {
+            if (SqlCompilationError.isCompilationError(unparseable.getMessage())) {
+                throw unparseable;
+            }
+        } finally {
+            ExpressionSource.end(displacedOrigin);
+        }
+    }
+
+    /**
+     * The statement's own calls whose NAME resolves to nothing, in the order live names them: the
+     * statement's clauses in written order, and within each expression the ARGUMENTS before their call.
+     * Nothing is de-duplicated, because live does not de-duplicate either.
+     *
+     * @param stmtCtx the statement, for its ORDER BY
+     * @param ctx     the select clause
+     * @return the unresolvable calls, empty when every name resolves
+     */
+    private List<FunctionCallExpression> collectUnresolvableCalls(
+            final FrostlakeParser.SelectStatementContext stmtCtx,
+            final FrostlakeParser.SelectClauseContext ctx) {
+        final List<FrostlakeParser.FunctionCallExprContext> calls = new ArrayList<>();
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            // The FROM clause is left out. A call there is a TABLE function, resolved by the relation
+            // machinery and not by the expression registry — a built-in written qualified
+            // (INFORMATION_SCHEMA.QUERY_HISTORY) resolves perfectly well while looking, to this
+            // question, like a user routine that does not exist. Judging it here refused 41 working
+            // queries. An unknown name in a join's ON condition is left to its own site for the same
+            // reason: the whole clause is skipped, not just the table references.
+            if (ctx.getChild(i) != ctx.tableExpression()) {
+                collectCallsOutsideNestedQueries(ctx.getChild(i), calls);
+            }
+        }
+        if (stmtCtx.orderByClause() != null) {
+            collectCallsOutsideNestedQueries(stmtCtx.orderByClause(), calls);
+        }
+        // No table: the question is only whether the NAME exists, which the registry and the catalog
+        // answer between them — the relation has nothing to say about it.
+        final ExpressionEvaluator scan = new ExpressionEvaluator(null, functionRegistry, catalog, this);
+        final List<FunctionCallExpression> unresolvable = new ArrayList<>();
+        for (final FrostlakeParser.FunctionCallExprContext call : calls) {
+            try {
+                final Expression parsed = ExpressionEvaluator.parse(getOriginalText(call));
+                if (parsed instanceof FunctionCallExpression && !scan.resolvesToAFunctionName(parsed)) {
+                    unresolvable.add((FunctionCallExpression) parsed);
+                }
+            } catch (final RuntimeException notACallOnItsOwn) {
+                // A windowed or otherwise non-standalone form: left to the paths that already judge it.
+            }
+        }
+        return unresolvable;
+    }
+
+    /** Calls written in this clause itself, innermost FIRST, skipping any nested query's own. */
+    private void collectCallsOutsideNestedQueries(final ParseTree node,
+                                                  final List<FrostlakeParser.FunctionCallExprContext> out) {
+        if (node == null || node instanceof FrostlakeParser.SelectClauseContext) {
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectCallsOutsideNestedQueries(node.getChild(i), out);
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            out.add((FrostlakeParser.FunctionCallExprContext) node);
         }
     }
 
@@ -5100,7 +7070,8 @@ public class QueryExecutor {
     }
 
     /** Refuses the first window call written anywhere in {@code clause}, with the clause's sentence. */
-    private void rejectWindowFunctionsIn(final ParserRuleContext clause, final boolean groupedWording) {
+    private void rejectWindowFunctionsIn(final ParserRuleContext clause, final boolean groupedWording,
+                                         final PlanEcho echo) {
         if (clause == null) {
             return;
         }
@@ -5109,7 +7080,7 @@ public class QueryExecutor {
         if (found.isEmpty()) {
             return;
         }
-        final String call = getOriginalText(found.get(0));
+        final String call = echo.printWindowCall(found.get(0));
         throw new RuntimeException(SqlCompilationError.of(groupedWording
             ? "[" + call + "] is not a valid group by expression"
             : "Window function [" + call
@@ -5122,6 +7093,110 @@ public class QueryExecutor {
      * ({@code WHERE a IN (SELECT ROW_NUMBER() OVER (…) FROM …)} runs on both engines), so the walk
      * stops at every nested select.
      */
+    /**
+     * A WINDOW-ONLY function written with NO over clause. Live names the missing specification and
+     * echoes the call in PLAN form — the argument qualified and upper-cased, with any implicit cast
+     * printed — where Frostlake called the NAME unknown, which is false: the name is perfectly well
+     * known, it is the specification that is absent. The registry simply does not carry these as
+     * callable scalars, so the lookup missed and the unknown-name sentence won.
+     *
+     * <p>Only the names that are window-ONLY are caught, and that exclusion is what keeps working SQL
+     * working: SUM, COUNT, AVG, MIN and MAX are aggregates as well and answer without an OVER, and
+     * PERCENTILE_CONT / PERCENTILE_DISC take WITHIN GROUP instead — live accepts all seven.
+     *
+     * <p>QUALIFY is the one clause this does not speak in. A call with no OVER is not a window
+     * function, so {@code QUALIFY ROW_NUMBER() = 1} is the no-window refusal there instead, raised
+     * further down — measured, and the reason the qualify clause is not walked here.
+     */
+    private void rejectWindowFunctionsWithoutOver(final FrostlakeParser.SelectClauseContext ctx,
+                                                  final FrostlakeParser.OrderByClauseContext orderBy,
+                                                  final PlanEcho echo) {
+        final List<FrostlakeParser.FunctionCallExprContext> found = new ArrayList<>();
+        collectSpecificationlessWindowCalls(ctx.selectList(), found);
+        collectSpecificationlessWindowCalls(ctx.whereClause(), found);
+        collectSpecificationlessWindowCalls(ctx.groupByClause(), found);
+        collectSpecificationlessWindowCalls(ctx.havingClause(), found);
+        collectSpecificationlessWindowCalls(ctx.tableExpression(), found);
+        collectSpecificationlessWindowCalls(orderBy, found);
+        for (final FrostlakeParser.FunctionCallExprContext call : found) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Missing window specification for function ["
+                    + echo.printSpecificationlessCall(call) + "]."));
+        }
+    }
+
+    /** Calls naming a window-ONLY function and carrying no OVER, outside any nested query. */
+    private void collectSpecificationlessWindowCalls(final ParseTree clause,
+                                                     final List<FrostlakeParser.FunctionCallExprContext> out) {
+        if (clause != null) {
+            collectSpecificationlessWindowCallsIn(clause, out);
+        }
+    }
+
+    /** Calls naming a WINDOW function — with or without an OVER — outside any nested query. */
+    private void collectWindowNamedCalls(final ParseTree clause,
+                                         final List<FrostlakeParser.FunctionCallExprContext> out) {
+        if (clause == null || clause instanceof FrostlakeParser.SelectClauseContext) {
+            return;
+        }
+        if (clause instanceof FrostlakeParser.FunctionCallExprContext
+                && WindowFunctionArity.isMeasured(
+                    ((FrostlakeParser.FunctionCallExprContext) clause)
+                        .functionName().getText().toUpperCase())) {
+            out.add((FrostlakeParser.FunctionCallExprContext) clause);
+        }
+        for (int i = 0; i < clause.getChildCount(); i++) {
+            collectWindowNamedCalls(clause.getChild(i), out);
+        }
+    }
+
+    /** The first of these calls whose argument count live refuses, or null when all of them fit. */
+    private FrostlakeParser.FunctionCallExprContext firstMiscountedCall(
+            final List<FrostlakeParser.FunctionCallExprContext> calls) {
+        for (final FrostlakeParser.FunctionCallExprContext call : calls) {
+            if (WindowFunctionArity.refusal(call.functionName().getText().toUpperCase(), "",
+                    argumentCount(call)) != null) {
+                return call;
+            }
+        }
+        return null;
+    }
+
+    /** How many positional arguments a call was written with. */
+    private int argumentCount(final FrostlakeParser.FunctionCallExprContext call) {
+        return call.functionArgList() == null ? 0 : call.functionArgList().functionArg().size();
+    }
+
+    /**
+     * Whether a name is WINDOW-ONLY — one this engine knows but cannot answer without an OVER clause.
+     * The aggregate exclusion is what keeps working SQL working: SUM, COUNT, AVG, MIN and MAX are
+     * window functions AND aggregates, and answer perfectly well with no specification at all.
+     *
+     * @param canonical the upper-cased function name
+     * @return whether the name needs a window specification
+     */
+    private boolean isWindowOnlyName(final String canonical) {
+        return WindowFunctionNames.handles(canonical)
+            && functionRegistry.getAggregateFunction(canonical) == null;
+    }
+
+    private void collectSpecificationlessWindowCallsIn(final ParseTree node,
+                                                       final List<FrostlakeParser.FunctionCallExprContext> out) {
+        if (node instanceof FrostlakeParser.SelectClauseContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
+            final String canonical = call.functionName().getText().toUpperCase();
+            if (call.overClause() == null && isWindowOnlyName(canonical)) {
+                out.add(call);
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectSpecificationlessWindowCallsIn(node.getChild(i), out);
+        }
+    }
+
     private void collectWindowCallsOutsideNestedQueries(final ParseTree node,
                                                         final List<FrostlakeParser.FunctionCallExprContext> out) {
         if (node instanceof FrostlakeParser.SelectClauseContext) {
@@ -5205,6 +7280,38 @@ public class QueryExecutor {
         return names;
     }
 
+    /**
+     * The plan-time argument walk over a windowed query's select list — the walk {@link #applyProjection}
+     * runs for every other query, item by item at each item's own place, with the lateral aliases of the
+     * items before it exempt. The names are settled before either runs, so an invalid identifier or an
+     * unknown function still outranks what this refuses.
+     */
+    private void validateWindowedSelectArguments(final FrostlakeParser.SelectClauseContext ctx, final Table table,
+                                                 final Map<String, Table> aliasToTable,
+                                                 final List<Table> allTables) {
+        final ExpressionEvaluator strictEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        strictEval.setMultiTableContext(aliasToTable, allTables);
+        final Set<String> earlierOutputNames = new HashSet<>();
+        strictEval.setScopeExemptNames(earlierOutputNames);
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            if (!SelectItemAccessors.isExprItem(item)) {
+                continue;
+            }
+            final ParserRuleContext itemExpr = SelectItemAccessors.getItemExpression(item);
+            final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
+                itemExpr.getStart().getLine(), itemExpr.getStart().getCharPositionInLine()));
+            try {
+                strictEval.validateStrict(ExpressionEvaluator.parse(getOriginalText(itemExpr)));
+            } finally {
+                ExpressionSource.end(displaced);
+            }
+            final String alias = SelectItemAccessors.getItemAlias(item);
+            if (alias != null) {
+                earlierOutputNames.add(SqlIdentifiers.canonicalText(alias));
+            }
+        }
+    }
+
     private List<Row> applyProjection(final List<Row> rows, final Table table,
                                       final FrostlakeParser.SelectClauseContext ctx,
                                       final Map<String, Table> aliasToTable,
@@ -5230,7 +7337,7 @@ public class QueryExecutor {
                 final String qualifier = SelectItemAccessors.getItemQualifier(item).toUpperCase();
                 Table target = null;
                 for (final Map.Entry<String, Table> e : aliasToTable.entrySet()) {
-                    if (qualifier.equals(e.getKey().toUpperCase()) || qualifier.equals(e.getValue().getName().toUpperCase())) {
+                    if (starQualifierMatches(qualifier, e.getKey(), e.getValue())) {
                         target = e.getValue();
                         break;
                     }
@@ -5598,6 +7705,20 @@ public class QueryExecutor {
         return groupByEvaluator.applyGroupBy(rows, table, ctx, aliasToTable, allTables, groupRowsSink);
     }
 
+    /** The one implicit-group row repeated {@code count} times, each copy mapped to the same source group. */
+    private static List<Row> repeatedAggregateRow(final Row row, final int count, final List<List<Row>> groupRows) {
+        final List<Row> copies = new ArrayList<>(count);
+        final List<Row> group = groupRows.isEmpty() ? null : groupRows.get(0);
+        copies.add(row);
+        for (int i = 1; i < count; i++) {
+            copies.add(new Row(new ArrayList<>(row.getValues())));
+            if (group != null) {
+                groupRows.add(group);
+            }
+        }
+        return copies;
+    }
+
     private List<Row> applyImplicitGroupBy(final List<Row> rows, final Table table,
                                            final FrostlakeParser.SelectClauseContext ctx,
                                            final Map<String, Table> aliasToTable, final List<Table> allTables,
@@ -5611,7 +7732,8 @@ public class QueryExecutor {
      */
     private List<Row> applyHaving(final List<Row> rows, final FrostlakeParser.SelectClauseContext ctx,
                                   final Table table, final Map<String, Table> aliasToTable,
-                                  final List<Table> allTables, final List<List<Row>> groupRows) {
+                                  final List<Table> allTables, final List<List<Row>> groupRows,
+                                  final Map<String, Object> lateralContext) {
         final String havingExpr = getOriginalText(ctx.havingClause().booleanExpr());
         final FrostlakeParser.BooleanExprContext havingBool = ctx.havingClause().booleanExpr();
 
@@ -5650,6 +7772,42 @@ public class QueryExecutor {
         }
 
         final ExpressionEvaluator ev = new ExpressionEvaluator(null, functionRegistry, catalog, this);
+        // Inside a correlated subquery HAVING reads the outer row too (live-verified). The result context
+        // below is consulted first, so the subquery's own group keys still win over an outer name.
+        if (lateralContext != null) {
+            ev.setOuterLateralContext(lateralContext);
+        }
+        // A grouping key the select list does not project is still the group's value in HAVING: GROUP BY id
+        // HAVING id > 5 answers the groups past 5 (live-verified). Each plain key is read off the group's
+        // first row, which every row of the group agrees on.
+        final List<String> keyTexts = new ArrayList<>();
+        final List<String> keyPrints = new ArrayList<>();
+        final List<String> keyColumns = new ArrayList<>();
+        if (ctx.groupByClause() != null && ctx.groupByClause().ALL() == null) {
+            for (final FrostlakeParser.GroupByElementContext element : ctx.groupByClause().groupByElement()) {
+                if (element.expression() == null) {
+                    continue;
+                }
+                final String keyText = getOriginalText(element.expression());
+                final Expression parsedKey;
+                try {
+                    parsedKey = ExpressionEvaluator.parse(keyText);
+                } catch (final RuntimeException unparseable) {
+                    continue;
+                }
+                if (parsedKey instanceof LiteralExpression) {
+                    continue;   // an ordinal names a select item, which the context already holds
+                }
+                keyTexts.add(keyText);
+                keyPrints.add(AstPrinterVisitor.print(parsedKey));
+                keyColumns.add(parsedKey instanceof ColumnReferenceExpression
+                    ? ((ColumnReferenceExpression) parsedKey).getColumnName().toUpperCase() : null);
+            }
+        }
+        final ExpressionEvaluator keyEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        if (aliasToTable != null && allTables != null && !allTables.isEmpty()) {
+            keyEval.setMultiTableContext(aliasToTable, allTables);
+        }
         // The HAVING tree's aggregate calls and their canonical keys are per-STATEMENT facts —
         // collected once here, evaluated per group inside the filter below.
         final List<FrostlakeParser.ExpressionContext> havingAggCalls =
@@ -5674,6 +7832,16 @@ public class QueryExecutor {
                 if (group != null) {
                     rc.putAll(groupByEvaluator.havingAggregateContext(
                         havingAggCalls, havingAggKeys, group, table, aliasToTable, allTables));
+                    for (int k = 0; k < keyTexts.size() && !group.isEmpty(); k++) {
+                        if (rc.containsKey(keyPrints.get(k))) {
+                            continue;
+                        }
+                        final Object keyValue = keyEval.evaluate(keyTexts.get(k), group.get(0));
+                        rc.put(keyPrints.get(k), keyValue);
+                        if (keyColumns.get(k) != null && !rc.containsKey(keyColumns.get(k))) {
+                            rc.put(keyColumns.get(k), keyValue);
+                        }
+                    }
                 }
                 ev.setResultContext(rc);
                 final Object result = ev.evaluate(condition, aggregatedRow);
@@ -5695,10 +7863,16 @@ public class QueryExecutor {
     /**
      * Apply QUALIFY clause using operator pipeline.
      * QUALIFY filters rows based on window function results.
+     *
+     * @param table     the shape the ROWS are in — the SELECT-list layout over grouped rows
+     * @param baseTable the FROM relation, which is what an inline window's arguments are SCOPED
+     *                  against: over grouped rows the two differ, and a window argument may name a
+     *                  base column the projection never carries (LAG(SUM(b)) beside a select list of a)
      */
     private List<Row> applyQualify(final List<Row> rows, final FrostlakeParser.SelectClauseContext ctx,
                                     final Map<Integer, Map<Integer, Object>> windowFunctionResults,
-                                    final Table table, final boolean rowsAreBaseShape) {
+                                    final Table table, final Table baseTable,
+                                    final boolean rowsAreBaseShape) {
         final FrostlakeParser.BooleanExprContext qualifyBool = ctx.qualifyClause().booleanExpr();
         final String qualifyExpr = getOriginalText(qualifyBool);
 
@@ -5727,7 +7901,13 @@ public class QueryExecutor {
         collectWindowFunctionCalls(qualifyBool, inlineWindowFns);
         final Map<String, List<Object>> inlineWindowValues = new LinkedHashMap<>();
         if (!inlineWindowFns.isEmpty()) {
-            windowEvaluator.rejectFileWindowArguments(inlineWindowFns, table, selectItemAliasNames(ctx));
+            // Scoped against the BASE relation, not the row shape. An inline window's argument may be a
+            // RAW AGGREGATE over a column the grouped projection dropped — QUALIFY LAG(SUM(b)) OVER (…)
+            // beside `SELECT a … GROUP BY a` — and checking it against the SELECT-list shape refused a
+            // query live runs, naming the aggregated column as an invalid identifier. This is the same
+            // rule the SELECT list's own window-key walk follows.
+            windowEvaluator.rejectFileWindowArguments(inlineWindowFns, baseTable,
+                selectItemAliasNames(ctx));
             final Map<FrostlakeParser.OverClauseContext, Map<List<Object>, List<Row>>> overCache = new HashMap<>();
             windowEvaluator.resetPartitionOrderCache();
             // Expose the SELECT aliases so an inline QUALIFY window's PARTITION BY / ORDER BY can name one
@@ -5863,13 +8043,43 @@ public class QueryExecutor {
         return ids == null || ids.isEmpty() ? nameCtx.getText() : ids.get(ids.size() - 1).getText();
     }
 
-    private Function resolveUdtf(final String name) {
+    /**
+     * Whether a star's qualifier names a relation: its alias, or its own name; and for a relation with no
+     * alias of its own, also its name qualified by its schema or by its database and schema, the way live
+     * reads {@code db.s.t.*} and {@code db..t.*}.
+     */
+    private static boolean starQualifierMatches(final String qualifier, final String alias, final Table table) {
+        if (qualifier.equals(alias.toUpperCase()) || qualifier.equals(table.getName().toUpperCase())) {
+            return true;
+        }
+        if (!alias.equalsIgnoreCase(table.getName()) || table.getQualifiedName() == null) {
+            return false;
+        }
+        final String[] written = QualifiedName.parse(qualifier).parts();
+        final String[] own = QualifiedName.parse(table.getQualifiedName().toUpperCase()).parts();
+        if (written.length > own.length) {
+            return false;
+        }
+        for (int i = 1; i <= written.length; i++) {
+            if (!written[written.length - i].equals(own[own.length - i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The user table function a call names: in its own schema when qualified, else the current one. */
+    private Function resolveUdtf(final FrostlakeParser.FunctionNameContext nameCtx) {
+        final String[] parts = ParseTreeText.functionNameParts(nameCtx);
+        if (parts == null || parts.length > 3) {
+            return null;
+        }
         try {
-            final String db = catalog.getCurrentDatabase();
-            final String sc = catalog.getCurrentSchema();
+            final String db = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
+            final String sc = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema();
             if (db == null || sc == null) return null;
             final Schema schema = catalog.getDatabase(db).getSchema(sc);
-            final Function f = schema.getFunction(name);
+            final Function f = schema.getFunction(parts[parts.length - 1]);
             return f != null && f.isTableFunction() ? f : null;
         } catch (final Exception e) {
             return null;
@@ -5955,6 +8165,51 @@ public class QueryExecutor {
         return windowEvaluator.hasAggregateFunctionInExpression(expr);
     }
 
+    /**
+     * Whether a window call belongs to THIS query rather than to a subquery inside one of its items.
+     * The ordinary detector counts a call anywhere in a select item, which is right for deciding
+     * whether the window stage runs at all — but wrong for deciding whether a FROM-LESS query needs a
+     * synthesised row: {@code SELECT (SELECT LAG(a) OVER () FROM t) = (…)} has no window of its own,
+     * and giving it one made the inner call's columns resolve against the empty synthesised source.
+     *
+     * @param ctx the select clause
+     * @return whether this level writes a window call
+     */
+    private boolean hasWindowCallAtThisLevel(final FrostlakeParser.SelectClauseContext ctx) {
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            if (!SelectItemAccessors.isExprItem(item)) {
+                continue;
+            }
+            final FrostlakeParser.ExpressionContext expr = SelectItemAccessors.getItemValueExpr(item);
+            if (expr == null) {
+                continue;
+            }
+            final List<FrostlakeParser.FunctionCallExprContext> calls = new ArrayList<>();
+            windowEvaluator.collectWindowFunctionCalls(expr, calls);
+            for (final FrostlakeParser.FunctionCallExprContext call : calls) {
+                // The ITEM is the limit, not the expression: the accessor may hand back a node the call
+                // does not actually descend from, and a walk that never meets its limit runs on to the
+                // statement itself and calls every window nested.
+                if (!insideNestedSelect(call, item)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Whether {@code node} sits inside a SELECT of its own, somewhere below {@code limit}. */
+    private boolean insideNestedSelect(final ParserRuleContext node, final ParserRuleContext limit) {
+        ParserRuleContext parent = node.getParent();
+        while (parent != null && parent != limit) {
+            if (parent instanceof FrostlakeParser.SelectStatementContext) {
+                return true;
+            }
+            parent = parent.getParent();
+        }
+        return false;
+    }
+
     private boolean hasWindowFunction(final FrostlakeParser.SelectClauseContext ctx) {
         return windowEvaluator.hasWindowFunction(ctx);
     }
@@ -5973,8 +8228,66 @@ public class QueryExecutor {
      * alias (else its derived output name) — used as the resolution table for the window stage when the rows
      * have already been projected by GROUP BY / implicit aggregation. A star item contributes the base
      * table's columns.
+     *
+     * <p>Each non-window item carries the STATIC type the projection infers for it, marked trusted, so
+     * a window argument that names a projected item — an aliased aggregate, a group key that is also
+     * selected — is typed exactly as the item is. A window item itself stays a placeholder: its type is
+     * what the window stage is computing. A base column the SELECT list never projects is resolved
+     * through the grouped resolver's base relation instead, so both routes read the same declarations.
      */
-    private Table projectedShapeTable(final FrostlakeParser.SelectClauseContext ctx, final Table base) {
+    /**
+     * Types every aggregate select item against the base relation and lets a compilation error through.
+     * An ordinary undetermined type is nothing; a declared width that is no NUMBER at all is a refusal
+     * live raises before it computes anything, which is where it has to be raised here too — the
+     * grouped evaluator would otherwise reach the value first and refuse THAT.
+     *
+     * <p>Window items are left to the window stage's own walk.
+     *
+     * @param ctx          the select clause
+     * @param base         the relation the items read
+     * @param aliasToTable the joined relations by alias
+     * @param allTables    the joined relations in order
+     */
+    private void rejectUntypeableAggregateItems(final FrostlakeParser.SelectClauseContext ctx,
+                                                final Table base,
+                                                final Map<String, Table> aliasToTable,
+                                                final List<Table> allTables) {
+        ExpressionEvaluator itemTypes = null;
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            if (!SelectItemAccessors.isExprItem(item)) {
+                continue;
+            }
+            final FrostlakeParser.ExpressionContext expr = SelectItemAccessors.getItemValueExpr(item);
+            if (expr == null || !hasAggregateFunctionInExpression(expr)
+                    || hasWindowFunctionInExpression(expr)) {
+                continue;
+            }
+            if (itemTypes == null) {
+                itemTypes = new ExpressionEvaluator(base, functionRegistry, catalog, this);
+                itemTypes.setMultiTableContext(aliasToTable, allTables);
+            }
+            final ParserRuleContext origin = SelectItemAccessors.getItemExpression(item);
+            staticProjectionType(getOriginalText(expr), itemTypes, origin);
+            // The argument-family refusals too, from the same declared types and at the item's own
+            // place — so SUM(bo) over an EMPTY table is refused at compile time, as live refuses it.
+            final SourcePosition displaced = ExpressionSource.beginNested(origin == null ? null
+                : new SourcePosition(origin.getStart().getLine(), origin.getStart().getCharPositionInLine()));
+            try {
+                itemTypes.rejectArgumentFamilies(ExpressionEvaluator.parse(getOriginalText(expr)));
+            } catch (final RuntimeException refused) {
+                if (SqlCompilationError.isCompilationError(refused.getMessage())) {
+                    throw refused;
+                }
+            } finally {
+                ExpressionSource.end(displaced);
+            }
+        }
+    }
+
+    private Table projectedShapeTable(final FrostlakeParser.SelectClauseContext ctx, final Table base,
+                                      final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final ExpressionEvaluator itemTypes = new ExpressionEvaluator(base, functionRegistry, catalog, this);
+        itemTypes.setMultiTableContext(aliasToTable, allTables);
         final List<TableColumn> columns = new ArrayList<>();
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             if (SelectItemAccessors.isStarItem(item)
@@ -5991,7 +8304,24 @@ public class QueryExecutor {
             final String name = SelectItemAccessors.getItemAlias(item) != null
                 ? (SelectItemAccessors.getItemAlias(item))
                 : unaliasedItemName(item);
-            columns.add(new TableColumn(name, StringType.VARCHAR, true, null, false, false, false));
+            DataType known = null;
+            if (SelectItemAccessors.isExprItem(item)
+                    && !hasWindowFunctionInExpression(SelectItemAccessors.getItemValueExpr(item))) {
+                try {
+                    known = staticProjectionType(
+                        getOriginalText(SelectItemAccessors.getItemValueExpr(item)), itemTypes, null);
+                } catch (final RuntimeException undetermined) {
+                    known = null;
+                }
+            }
+            final TableColumn column = new TableColumn(name, known != null ? known : StringType.VARCHAR,
+                true, null, false, false, false);
+            column.setStaticallyTyped(known != null);
+            if (known != null) {
+                column.setValueRange(staticProjectionRange(
+                    getOriginalText(SelectItemAccessors.getItemValueExpr(item)), itemTypes));
+            }
+            columns.add(column);
         }
         return new Table("__WINDOW_PROJECTED__", columns, false);
     }
@@ -6075,6 +8405,21 @@ public class QueryExecutor {
     private GroupedExpressionValues newGroupedExpressionValues(final Map<Row, List<Row>> rowToGroup,
             final Table table, final Map<String, Table> aliasToTable, final List<Table> allTables) {
         return new GroupedExpressionValues() {
+            @Override
+            public Table baseTable() {
+                return table;
+            }
+
+            @Override
+            public Map<String, Table> aliasToTable() {
+                return aliasToTable;
+            }
+
+            @Override
+            public List<Table> allTables() {
+                return allTables;
+            }
+
             @Override
             public Object valueOf(final Row projectedRow, final String expressionText) {
                 final List<Row> group = rowToGroup.get(projectedRow);
@@ -6183,6 +8528,21 @@ public class QueryExecutor {
     }
 
     /**
+     * An UPDATE's SET value over the row being updated, typed like a projection under the target's
+     * ALIAS when one was written — {@code UPDATE upd u SET d = COALESCE(u.va, u.d)} folds and casts
+     * exactly as the bare form does, so the refusal is the cast's own sentence.
+     */
+    Object evaluateUpdateValue(final String expr, final Row row, final Table table, final String alias) {
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        final Map<String, Table> aliasToTable = new HashMap<>();
+        aliasToTable.put((alias != null ? alias : table.getName()).toUpperCase(), table);
+        final List<Table> relations = new ArrayList<>();
+        relations.add(table);
+        evaluator.setDeclaredTypeBase(table, aliasToTable, relations);
+        return evaluator.evaluate(expr, row);
+    }
+
+    /**
      * As {@link #evaluateExpression(String, Row, Table)}, additionally offering {@code lateralAliases} — the
      * SELECT list's already-computed column aliases, keyed by uppercased alias. They are consulted only AFTER
      * the row's real columns, so a column of the same name keeps precedence.
@@ -6197,6 +8557,12 @@ public class QueryExecutor {
         final Deque<Map<String, Table>> aliasStack = windowAliasToTableStack.get();
         if (!aliasStack.isEmpty()) {
             evaluator.setMultiTableContext(aliasStack.peek(), windowAllTablesStack.get().peek());
+            evaluator.setDeclaredTypeBase(table, aliasStack.peek(), windowAllTablesStack.get().peek());
+        } else {
+            // The SET value of an UPDATE is typed like a projection: a conditional over a VARIANT and
+            // a DATE folds to DATE and CASTS its branch, so the refusal is the cast's own sentence —
+            // live's "Failed to cast variant value 1 to DATE" — rather than the write's.
+            evaluator.setDeclaredTypeBase(table, null, null);
         }
         return evaluator.evaluate(expr, row);
     }
@@ -6418,8 +8784,10 @@ public class QueryExecutor {
             groupTables.add(rightJoinTable);
             groupRows = applyJoin(groupRows, groupTable, rightData.rows, rightJoinTable, join,
                 groupAliases, groupTables, ctx);
+            final Table groupLeft = groupTable;
             groupTable = mergeTableMetadata(groupTable, rightJoinTable,
                 usingJoinColumnNames(join, groupTable, rightJoinTable));
+            recordNullExtension(groupTable, groupLeft, rightJoinTable, joinTypeOf(join));
         }
 
         // Now expose the group's tables/aliases to the caller — the outer ON references them, and the
@@ -6461,6 +8829,10 @@ public class QueryExecutor {
         if (referenceAliases != null) {
             resolved = new TableData(applyColumnAliases(resolved.table, referenceAliases), resolved.rows, resolved.alias);
         }
+        if (RelationShapeOnly.isActive()) {
+            // The source's columns without its rows — see RelationShapeOnly.
+            resolved = new TableData(resolved.table, new ArrayList<>(), resolved.alias);
+        }
         if (ctx.sampleClause() == null) {
             return resolved;
         }
@@ -6498,7 +8870,7 @@ public class QueryExecutor {
             // SAMPLE BERNOULLI ($s): the size comes from a session variable set with SET s = ...
             final String varName = sample.SESSION_VAR_REF().getText().substring(1).toUpperCase();
             final Object varValue = securityManager != null
-                ? securityManager.getSessionContext().getSessionParameter(varName)
+                ? securityManager.getSessionContext().getSessionVariable(varName)
                 : sessionVariables.get(varName);
             if (varValue == null) {
                 throw new RuntimeException("Session variable not defined: $" + varName.toLowerCase());
@@ -6583,6 +8955,138 @@ public class QueryExecutor {
             + " at position " + tableToken.getCharPositionInLine() + " unexpected 'TABLE'."));
     }
 
+    /**
+     * Whether the query block reading a relation keeps no row, whatever the relation holds: a WHERE with a
+     * constant conjunct that is FALSE or NULL, or a LIMIT 0. Live never produces such a relation's rows, so
+     * a value that would fault in one is never computed (live-verified: {@code SELECT c FROM v WHERE 1=0}
+     * answers no row over a view whose column c faults).
+     */
+    private boolean keepsNoRow(final ParserRuleContext reference) {
+        if (UnreadColumnPruning.limitedToNothing(reference)) {
+            return true;
+        }
+        for (final ParserRuleContext conjunct : UnreadColumnPruning.constantConjuncts(reference)) {
+            try {
+                final Object value = new ExpressionEvaluator(null, functionRegistry, catalog, this)
+                    .evaluate(getOriginalText(conjunct), null);
+                if (value == null || Boolean.FALSE.equals(value)) {
+                    return true;
+                }
+            } catch (final RuntimeException notConstant) {
+                // decided per row after all, as written
+            }
+        }
+        return false;
+    }
+
+    /** A view's relation with its columns and no row, from the shape resolved when it was created. */
+    private TableData emptyView(final View view, final String tableName, final String alias) {
+        final List<ResultSetColumn> columns = new ArrayList<>();
+        for (final TableColumn column : view.getResolvedColumns()) {
+            columns.add(new ResultSetColumn(column.getName(), column.getDataType()));
+        }
+        final Table virtualTable = resultSetToTable(new ResultSet(columns, new ArrayList<>()), tableName);
+        stampViewRowAccessPolicy(view, virtualTable);
+        return new TableData(virtualTable, new ArrayList<>(), alias);
+    }
+
+    /**
+     * A view's body as {@code reference} reads it: every select item the reading statement never reads is
+     * blanked to NULL first (see UnreadColumnPruning), so a value that would fault in it is never computed.
+     */
+    private String readDefinition(final View view, final ParserRuleContext reference) {
+        final String definition = view.getDefinition();
+        if (view.hasRowAccessPolicy()) {
+            return definition;   // the policy reads its own columns of every row
+        }
+        final Set<String> read = UnreadColumnPruning.namesRead(reference);
+        if (read == null || readsEveryColumn(view, read)) {
+            return definition;
+        }
+        try {
+            final String pruned = UnreadColumnPruning.pruned(definition, parseSelectStatement(definition),
+                view.hasExplicitColumnNames() ? view.getColumnNames() : null, read, functionRegistry);
+            return pruned != null ? pruned : definition;
+        } catch (final RuntimeException unreadable) {
+            return definition;   // a body this cannot take apart runs, and refuses, as written
+        }
+    }
+
+    /**
+     * A derived table's or a CTE's body with every select item the statement never reads blanked, as a
+     * view's are (see UnreadColumnPruning), or null when none can be. Live plans such a body into the query
+     * that reads it, so an unread item is never computed and a value it would fault on never produced; but
+     * the body still COMPILES whole, so before the blanked text runs, the body as written is run once for
+     * its shape alone (see RelationShapeOnly), which raises an unknown name or function where it stands.
+     * The blanked text is remembered per body, so a body run again for each outer row is decided once.
+     *
+     * @param body       the body as written
+     * @param reference  where the statement names the relation
+     * @param names      the relation's column names when a list renames the body's items, else null
+     * @param lateral    the enclosing row's context, or null
+     * @param cteResults the CTEs in scope for a CTE's body, or null for a derived table
+     */
+    private String prunedBody(final FrostlakeParser.SelectStatementContext body, final ParserRuleContext reference,
+                              final List<String> names, final Map<String, Object> lateral,
+                              final Map<String, ResultSet> cteResults) {
+        final String known = prunedBodies.get(body);
+        if (known != null) {
+            return known.isEmpty() ? null : known;
+        }
+        String pruned = null;
+        final Set<String> read = UnreadColumnPruning.namesRead(reference, body);
+        if (read != null) {
+            final String text = getOriginalText(body);
+            try {
+                pruned = UnreadColumnPruning.pruned(text, parseSelectStatement(text), names, read, functionRegistry);
+            } catch (final RuntimeException unreadable) {
+                pruned = null;   // a body this cannot take apart runs as written
+            }
+        }
+        if (pruned != null) {
+            final boolean previous = RelationShapeOnly.begin();
+            try {
+                if (cteResults != null) {
+                    executeSelectFromContextWithCTEs(body, lateral, cteResults);
+                } else {
+                    executeSelectFromContext(body, lateral);
+                }
+            } catch (final RuntimeException uncompilable) {
+                // A body this cannot compile on its own — one reading the row beside it — keeps every item:
+                // whatever it raises is raised where it runs, as it was before any item was blanked.
+                pruned = null;
+            } finally {
+                RelationShapeOnly.end(previous);
+            }
+        }
+        prunedBodies.put(body, pruned != null ? pruned : "");
+        return pruned;
+    }
+
+    /** A CTE's column list, canonical as a written name is, or null when its items name its columns. */
+    private List<String> cteColumnNames(final FrostlakeParser.CteDefinitionContext cte) {
+        if (cte.columnListOptional() == null) {
+            return null;
+        }
+        final List<String> names = new ArrayList<>();
+        for (final FrostlakeParser.NamePartContext part : cte.columnListOptional().namePart()) {
+            names.add(ParseTreeText.namePartText(part));
+        }
+        return names;
+    }
+
+    private static boolean readsEveryColumn(final View view, final Set<String> read) {
+        if (!view.hasResolvedColumns()) {
+            return false;
+        }
+        for (final TableColumn column : view.getResolvedColumns()) {
+            if (!read.contains(column.getName().toUpperCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private TableData resolveTableReference(final FrostlakeParser.TableReferenceContext ctx, final Map<String, Object> lateralContext, final Map<String, ResultSet> cteResults) {
         final FrostlakeParser.TableSourceContext source = ctx.tableSource();
         // A bare table function is only a FROM source under LATERAL — `FROM t, LATERAL SPLIT_TO_TABLE(...)`.
@@ -6626,7 +9130,8 @@ public class QueryExecutor {
             if (nameVal == null) {
                 throw new RuntimeException("IDENTIFIER() expression evaluated to null");
             }
-            final String dynamicTableName = SqlIdentifiers.canonicalText(nameVal.toString());
+            rejectInvalidIdentifierReference(nameVal.toString(), source.expression());
+            final String dynamicTableName = SqlIdentifiers.identifierReferenceText(nameVal.toString().trim());
             // IDENTIFIER() can name a view / materialized view / dynamic table / stream, not only a base
             // table — resolve it the same way a direct FROM reference does. A common pattern is
             // `FROM IDENTIFIER(:src)` where :src toggles between a view or base table (backfill) and a
@@ -6635,7 +9140,9 @@ public class QueryExecutor {
             if (identifierSource != null) {
                 return identifierSource;
             }
-            final Table dynamicTable = catalog.resolveTable(dynamicTableName);
+            // A miss reads as a FROM clause's does: Object 'NOSUCH' as written when bare, expanded in full
+            // once qualified (live-verified, the same sentences a plain FROM earns).
+            final Table dynamicTable = catalog.resolveTableAsWritten(dynamicTableName, "Object");
             final String fqName = getFullyQualifiedTableName(dynamicTableName);
             // Overlay-aware read: a loader fills IDENTIFIER(:tmp) and joins it ONE statement later
             // inside the same explicit transaction — a raw scan() was blind to the buffered rows, so
@@ -6716,7 +9223,11 @@ public class QueryExecutor {
 
         // Handle subquery
         if (source.selectStatement() != null) {
-            final ResultSet subqueryResult = executeSelectFromContext(source.selectStatement(), lateralContext);
+            final String prunedBody = lateralContext == null && !lateral
+                ? prunedBody(source.selectStatement(), ctx, columnAliases, lateralContext, null) : null;
+            final ResultSet subqueryResult = prunedBody != null
+                ? executeSelectFromContext(parseSelectStatement(prunedBody), lateralContext)
+                : executeSelectFromContext(source.selectStatement(), lateralContext);
             // Convert ResultSet to Table and rows
             Table virtualTable = resultSetToTable(subqueryResult, alias != null ? alias : "values");
 
@@ -6789,6 +9300,13 @@ public class QueryExecutor {
             }
             final List<Row> rows = new ArrayList<>();
             final List<TableColumn> columns = new ArrayList<>();
+            // Each column's DECLARED type is the fold of its rows' expression types, exactly as a set
+            // operation folds its arms — (1), (100000) declares NUMBER(6,0), (1.5), (200.25)
+            // NUMBER(5,2), ('a'), ('bb') VARCHAR(2) — a bare NULL row contributing nothing; and its
+            // interval is the rows' own, so the storage tag follows (live-verified).
+            final List<List<DataType>> columnTypes = new ArrayList<>();
+            final List<ValueRange> columnRanges = new ArrayList<>();
+            final List<Boolean> columnNulls = new ArrayList<>();
 
             // Parse all value tuples
             for (final FrostlakeParser.ValueTupleContext tuple : source.valueTupleList().valueTuple()) {
@@ -6796,7 +9314,7 @@ public class QueryExecutor {
                 int colIndex = 0;
 
                 // Parse each value as an expression
-                for (final FrostlakeParser.ExpressionContext expr : tuple.valueList().expression()) {
+                for (final FrostlakeParser.BooleanExprContext expr : tuple.valueList().booleanExpr()) {
                     final String exprText = getOriginalText(expr);
                     // Create dummy table/row for expression evaluation
                     final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
@@ -6805,6 +9323,21 @@ public class QueryExecutor {
                     evaluator.setOuterLateralContext(lateralContext);
                     final Object value = evaluator.evaluate(exprText, dummyRow);
                     values.add(value);
+                    while (columnTypes.size() <= colIndex) {
+                        columnTypes.add(new ArrayList<>());
+                        columnRanges.add(ValueRange.EMPTY);
+                        columnNulls.add(Boolean.FALSE);
+                    }
+                    if (!isBareNullLiteral(exprText)) {
+                        columnTypes.get(colIndex).add(valuesItemStaticType(exprText, evaluator));
+                    }
+                    final BigDecimal exact = ValueRange.exactOf(value);
+                    if (exact != null) {
+                        columnRanges.set(colIndex, columnRanges.get(colIndex).including(exact));
+                    }
+                    if (value == null) {
+                        columnNulls.set(colIndex, Boolean.TRUE);
+                    }
 
                     // Create columns based on first row
                     if (rows.isEmpty()) {
@@ -6824,8 +9357,22 @@ public class QueryExecutor {
                 rows.add(new Row(values));
             }
 
+            for (int i = 0; i < columns.size() && i < columnTypes.size(); i++) {
+                final DataType folded = columnTypes.get(i).isEmpty() ? null
+                    : DeclaredTypeFold.foldBranches(columnTypes.get(i));
+                if (folded != null) {
+                    final TableColumn untyped = columns.get(i);
+                    final TableColumn typed = new TableColumn(untyped.getName(), folded, true, null, false, false, false);
+                    typed.setStaticallyTyped(true);
+                    typed.setValueRange(columnRanges.get(i).withNullable(columnNulls.get(i)));
+                    columns.set(i, typed);
+                }
+            }
+
             // Create virtual table
-            final String tableName = alias != null ? alias : "values";
+            // An unaliased VALUES clause is spelled VALUES where an unaliased subquery is "values":
+            // CAST(VALUES.COLUMN1 AS DATE) against CAST("values".X AS DATE) in the same sentence.
+            final String tableName = alias != null ? alias : "VALUES";
             final Table virtualTable = new Table(tableName, columns, false);
             return new TableData(virtualTable, rows, alias);
         }
@@ -6869,8 +9416,12 @@ public class QueryExecutor {
         }
 
         if (view != null) {
-            // Execute the view definition
-            final List<ResultSet> results = execute(view.getDefinition());
+            // A block that keeps no row never runs the view, and a column nobody reads is blanked first:
+            // a value that would fault in either is never computed (see UnreadColumnPruning).
+            if (view.hasResolvedColumns() && keepsNoRow(ctx)) {
+                return emptyView(view, alias != null ? alias : tableName, alias);
+            }
+            final List<ResultSet> results = executeInViewScope(tableName, readDefinition(view, ctx));
             final ResultSet viewResult = results.isEmpty() ? null : results.get(0);
             final Table virtualTable;
             if (view.hasExplicitColumnNames()) {
@@ -6879,6 +9430,10 @@ public class QueryExecutor {
                 virtualTable = resultSetToTable(viewResult, alias != null ? alias : tableName);
             }
             stampViewRowAccessPolicy(view, virtualTable);
+            if (view.hasRowAccessPolicy()) {
+                // A policy decides per row what the view hands out, which no statistics bound.
+                virtualTable.setRelationStatistics(null);
+            }
             return new TableData(virtualTable, viewResult.getRows(), alias);
         }
 
@@ -6888,7 +9443,7 @@ public class QueryExecutor {
         MaterializedView materializedView = null;
         try { materializedView = resolveMaterializedView(tableName); } catch (final Exception e) { /* not an MV */ }
         if (materializedView != null) {
-            final List<ResultSet> results = execute(materializedView.getDefinition());
+            final List<ResultSet> results = executeInViewScope(tableName, materializedView.getDefinition());
             final ResultSet mvResult = results.isEmpty() ? null : results.get(0);
             final Table virtualTable = materializedView.hasExplicitColumnNames()
                 ? resultSetToTable(mvResult, alias != null ? alias : tableName, materializedView.getColumnNames())
@@ -6941,9 +9496,11 @@ public class QueryExecutor {
         // Regular table (a quoted "DUAL" or qualified ...DUAL reaches a real table here).
         final Table table;
         // A name missing from a FROM clause is an OBJECT, not a Table, and is echoed as written —
-        // see Catalog#resolveTableAsWritten for the measurements.
-        table = catalog.resolveTableAsWritten(tableName, "Object");
+        // see Catalog#resolveTableAsWritten for the measurements — except while CREATE VIEW compiles
+        // a body, where live spells it by its full path in the view's own schema.
+        table = catalog.resolveTableAsWritten(viewScopeQualified(tableName), "Object");
         final String fullyQualifiedName = getFullyQualifiedTableName(tableName);
+        table.setQualifiedName(fullyQualifiedName);
         final TableStorage tableStorage =
             storageEngine.getTableStorage(fullyQualifiedName);
 
@@ -7001,6 +9558,57 @@ public class QueryExecutor {
     }
 
     /**
+     * A catalog column's statistics: the interval between the least and the greatest value in the WHOLE
+     * table — every row, whatever the query's WHERE keeps — which is what the account tags the column by,
+     * and whether any row holds a NULL, which decides whether the column may answer one. Empty for a
+     * column holding only NULLs or no rows; null for a table this executor cannot read.
+     *
+     * @param owner      the catalog table, as the FROM clause resolved it
+     * @param columnName the column
+     * @return the interval, or null when the table's rows are not reachable
+     */
+    public ValueRange columnValueRange(final Table owner, final String columnName) {
+        final String qualifiedName = owner.getQualifiedName();
+        if (qualifiedName == null || !storageEngine.hasTable(qualifiedName)) {
+            return null;
+        }
+        final int index = owner.getColumnIndex(columnName);
+        if (index < 0) {
+            return null;
+        }
+        ValueRange range = ValueRange.EMPTY;
+        boolean holdsNull = false;
+        for (final Row row : readTableRowsForTransaction(qualifiedName)) {
+            final Object value = index < row.size() ? row.getValue(index) : null;
+            holdsNull |= value == null;
+            range = range.including(ValueRange.exactOf(value));
+        }
+        return range.withNullable(holdsNull);
+    }
+
+    /**
+     * The rows a catalog table holds, as this transaction sees them, or null when the table's rows are
+     * not reachable — the bound the account gives a COUNT over it.
+     */
+    public Long baseTableRowCount(final Table owner) {
+        final String qualifiedName = owner.getQualifiedName();
+        if (qualifiedName == null || !storageEngine.hasTable(qualifiedName)) {
+            return null;
+        }
+        return (long) readTableRowsForTransaction(qualifiedName).size();
+    }
+
+    /**
+     * Whether the SELECT clause executing on this thread reads past its table's statistics — a join, a
+     * grouping key, a HAVING, or a WHERE the statistics cannot prove — so that its COUNT is tagged by its
+     * declared width and a typeof over COUNT, MIN or MAX is no longer answered from them.
+     */
+    public boolean countIsUnbounded() {
+        final CountStatisticsBound bound = statisticsBound.get();
+        return bound != null && bound.isUnbounded();
+    }
+
+    /**
      * Rows of a table as THIS transaction sees them: the committed base overlaid with the transaction's
      * buffered writes when deferred-apply is active, else a plain scan. For read-only consumers (a MERGE
      * source, for example) — a raw {@code scan()} was blind to rows the same transaction had just
@@ -7030,7 +9638,7 @@ public class QueryExecutor {
             return null;
         }
         try {
-            return catalog.getDatabase(db).getSchema(sc).getStream(streamName.toUpperCase());
+            return catalog.getDatabase(db).getSchema(sc).getStream(streamName);
         } catch (final Exception e) {
             return null;   // getStream throws when the name is not a stream
         }
@@ -7052,18 +9660,22 @@ public class QueryExecutor {
         View view = null;
         try { view = resolveView(name); } catch (final Exception e) { /* not a view */ }
         if (view != null) {
-            final List<ResultSet> results = execute(view.getDefinition());
+            final List<ResultSet> results = executeInViewScope(name, view.getDefinition());
             final ResultSet viewResult = results.isEmpty() ? null : results.get(0);
             final Table virtualTable = view.hasExplicitColumnNames()
                 ? resultSetToTable(viewResult, alias != null ? alias : name, view.getColumnNames())
                 : resultSetToTable(viewResult, alias != null ? alias : name);
             stampViewRowAccessPolicy(view, virtualTable);
+            if (view.hasRowAccessPolicy()) {
+                // A policy decides per row what the view hands out, which no statistics bound.
+                virtualTable.setRelationStatistics(null);
+            }
             return new TableData(virtualTable, viewResult.getRows(), alias);
         }
         MaterializedView mv = null;
         try { mv = resolveMaterializedView(name); } catch (final Exception e) { /* not an MV */ }
         if (mv != null) {
-            final List<ResultSet> results = execute(mv.getDefinition());
+            final List<ResultSet> results = executeInViewScope(name, mv.getDefinition());
             final ResultSet mvResult = results.isEmpty() ? null : results.get(0);
             final Table virtualTable = mv.hasExplicitColumnNames()
                 ? resultSetToTable(mvResult, alias != null ? alias : name, mv.getColumnNames())
@@ -7723,15 +10335,38 @@ public class QueryExecutor {
 
     /** The ANSI FETCH window: an optional OFFSET-rows prefix, then the fetched count. */
     private List<Row> applyFetchClause(final FrostlakeParser.FetchClauseContext ctx, final List<Row> rows) {
-        final List<TerminalNode> ints = ctx.INTEGER_LITERAL();
-        int index = 0;
+        // Each slot is read by WHERE IT SITS, not by counting INTEGER_LITERALs. NULL is legal in both
+        // and means "no offset" / "no limit", so an index into the integer list silently read the FETCH
+        // COUNT as the offset the moment the offset was written NULL.
         int offset = 0;
-        if (ctx.OFFSET() != null && index < ints.size()) {
-            offset = Integer.parseInt(ints.get(index).getText());
-            index++;
+        int fetch = Integer.MAX_VALUE;
+        boolean afterOffset = false;
+        boolean afterFetch = false;
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            if (!(ctx.getChild(i) instanceof TerminalNode)) {
+                continue;
+            }
+            final Token slot = ((TerminalNode) ctx.getChild(i)).getSymbol();
+            if (slot.getType() == FrostlakeParser.OFFSET) {
+                afterOffset = true;
+                afterFetch = false;
+            } else if (slot.getType() == FrostlakeParser.FETCH) {
+                afterFetch = true;
+                afterOffset = false;
+            } else if (slot.getType() == FrostlakeParser.INTEGER_LITERAL) {
+                if (afterOffset) {
+                    offset = Integer.parseInt(slot.getText());
+                } else if (afterFetch) {
+                    fetch = Integer.parseInt(slot.getText());
+                }
+                afterOffset = false;
+                afterFetch = false;
+            } else if (slot.getType() == FrostlakeParser.NULL) {
+                // "no offset" / "no limit" — both are the defaults already in force.
+                afterOffset = false;
+                afterFetch = false;
+            }
         }
-        final int fetch = index < ints.size()
-            ? Integer.parseInt(ints.get(index).getText()) : Integer.MAX_VALUE;
         final int start = Math.min(offset, rows.size());
         final int end = (int) Math.min((long) start + (long) fetch, (long) rows.size());
         return rows.subList(start, end);
@@ -7752,7 +10387,8 @@ public class QueryExecutor {
         boolean constant = parsed instanceof LiteralExpression;
         if (parsed instanceof UnaryOperationExpression) {
             final UnaryOperationExpression unary = (UnaryOperationExpression) parsed;
-            constant = unary.getOperator() == UnaryOperator.NEGATE
+            constant = (unary.getOperator() == UnaryOperator.NEGATE
+                || unary.getOperator() == UnaryOperator.PLUS)
                 && unary.getOperand() instanceof LiteralExpression;
         }
         if (!constant) {
@@ -8077,7 +10713,7 @@ public class QueryExecutor {
                 }
                 schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
             }
-            return schema.getProcedure(getIdentifier(ids.get(ids.size() - 1)).toUpperCase());
+            return schema.getProcedure(getIdentifier(ids.get(ids.size() - 1)));
         } catch (final RuntimeException notAProcedure) {
             return null;
         }
@@ -8144,11 +10780,8 @@ public class QueryExecutor {
     /** Canonical schema part written immediately before the function's own name, or empty when the
      *  call is unqualified (or keyword-named). */
     private String schemaQualifierOf(final FrostlakeParser.FunctionNameContext nameCtx) {
-        final List<FrostlakeParser.IdentifierContext> ids = nameCtx.identifier();
-        if (ids == null || ids.size() < 2) {
-            return "";
-        }
-        return getIdentifier(ids.get(ids.size() - 2));
+        final String[] parts = ParseTreeText.functionNameParts(nameCtx);
+        return parts == null || parts.length < 2 ? "" : parts[parts.length - 2];
     }
 
     private ResultSet executeBareTableFunction(final FrostlakeParser.TableFunctionExprContext ctx,
@@ -8157,7 +10790,7 @@ public class QueryExecutor {
         final String functionName = functionSimpleName(ctx.functionName());
         final TableFunction tableFunc = functionRegistry.getTableFunction(functionName);
         if (tableFunc == null) {
-            throw new RuntimeException("Unknown table function: " + rawName);
+            throw new RuntimeException(SqlCompilationError.of("Unknown table function " + rawName));
         }
         final boolean hasNamed = ctx.namedArgument() != null && !ctx.namedArgument().isEmpty();
         if (hasNamed) {
@@ -8275,7 +10908,7 @@ public class QueryExecutor {
             final String rawName = mixCtx.functionName().getText();
             final String functionName = functionSimpleName(mixCtx.functionName());
             final TableFunction tableFunc = functionRegistry.getTableFunction(functionName);
-            if (tableFunc == null) throw new RuntimeException("Unknown table function: " + rawName);
+            if (tableFunc == null) throw new RuntimeException(SqlCompilationError.of("Unknown table function " + rawName));
             final Map<String, Object> namedArgs = new HashMap<>();
             validateTableFunctionCall(functionName.toUpperCase(), schemaQualifierOf(mixCtx.functionName()),
                 mixCtx.functionName().getStart(),
@@ -8306,7 +10939,7 @@ public class QueryExecutor {
             final TableFunction tableFunc = functionRegistry.getTableFunction(functionName);
 
             if (tableFunc == null) {
-                throw new RuntimeException("Unknown table function: " + rawName);
+                throw new RuntimeException(SqlCompilationError.of("Unknown table function " + rawName));
             }
 
             // Parse named arguments
@@ -8382,11 +11015,10 @@ public class QueryExecutor {
                 validateTableFunctionCall(functionName.toUpperCase(),
                     schemaQualifierOf(funcCtx.functionName()),
                     funcCtx.functionName().getStart(), funcArgExprs(funcCtx), null);
-                if (!funcArgExprs(funcCtx).isEmpty()) {
+                if (!funcArgTexts(funcCtx).isEmpty()) {
                     // Positional args, e.g. SPLIT_TO_TABLE('a,b', ',') or FLATTEN(col) — evaluate and pass through.
                     final List<Object> positionalArgs = new ArrayList<>();
-                    for (final FrostlakeParser.ExpressionContext argExpr : funcArgExprs(funcCtx)) {
-                        final String argText = getOriginalText(argExpr);
+                    for (final String argText : funcArgTexts(funcCtx)) {
                         positionalArgs.add(lateralContext != null && !lateralContext.isEmpty()
                             ? evaluateExpressionWithLateralContextSimple(argText, lateralContext)
                             : evaluateExpression(argText, null, (Table) null));
@@ -8397,12 +11029,11 @@ public class QueryExecutor {
             }
 
             // Check if it's a user-defined table function (UDTF)
-            final Function udtf = resolveUdtf(functionName);
+            final Function udtf = resolveUdtf(funcCtx.functionName());
             if (udtf != null && udtf.isTableFunction()) {
                 final List<Object> callArgs = new ArrayList<>();
-                if (!funcArgExprs(funcCtx).isEmpty()) {
-                    for (final FrostlakeParser.ExpressionContext argExpr : funcArgExprs(funcCtx)) {
-                        final String argText = getOriginalText(argExpr);
+                if (!funcArgTexts(funcCtx).isEmpty()) {
+                    for (final String argText : funcArgTexts(funcCtx)) {
                         final Object val = lateralContext != null && !lateralContext.isEmpty()
                             ? evaluateExpressionWithLateralContextSimple(argText, lateralContext)
                             : evaluateExpression(argText, null, (Table) null);
@@ -8427,7 +11058,7 @@ public class QueryExecutor {
                 return procResult;
             }
 
-            throw new RuntimeException("Unknown table function: " + functionName);
+            throw new RuntimeException(SqlCompilationError.of("Unknown table function " + functionName));
         }
 
         // Handle SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('task') as table function
@@ -8741,6 +11372,7 @@ public class QueryExecutor {
             allColumns.add(rightNullExtended && !merged.isNullable() ? merged.nullableCopy() : merged);
         }
         final Table joined = new Table("joined", allColumns, false);
+        joined.setJoinedRelations(JoinedRelations.joining(left, right, leftNullExtended, rightNullExtended));
         final List<String> keyNames = new ArrayList<>();
         for (final String name : mergedNames) {
             keyNames.add(name.toUpperCase());
@@ -8756,6 +11388,18 @@ public class QueryExecutor {
             joined.setJoinKeyNames(keyNames);
         }
         return joined;
+    }
+
+    /**
+     * Records on a join's merged relation which of its relations the join extends with NULLs, for a
+     * merge made without the join's kind — an ASOF join, a legacy {@code (+)} join, a LATERAL join or a
+     * parenthesized join group. The column metadata the merge built is left as it is.
+     */
+    private static void recordNullExtension(final Table joined, final Table left, final Table right,
+                                            final JoinType joinType) {
+        joined.setJoinedRelations(JoinedRelations.joining(left, right,
+            joinType == JoinType.RIGHT || joinType == JoinType.FULL,
+            joinType == JoinType.LEFT || joinType == JoinType.FULL));
     }
 
     /** The join type a clause declares — INNER when it names none. */
@@ -8840,6 +11484,21 @@ public class QueryExecutor {
      * including the static types #149 threads out of the inner projection, which is how an
      * {@code OBJECT_CONSTRUCT} column is reported OBJECT rather than as the VARCHAR placeholder.
      */
+    /**
+     * A relation's column list from its definition's SHAPE alone — no row is read and no value computed
+     * (see {@link RelationShapeOnly}), which is how CREATE VIEW learns its columns: a value-time fault in
+     * the body is the reader's, not the creator's.
+     */
+    public List<TableColumn> resolveRelationShape(final String definition,
+                                                  final List<String> explicitColumnNames) {
+        final boolean previous = RelationShapeOnly.begin();
+        try {
+            return resolveRelationColumns(definition, explicitColumnNames);
+        } finally {
+            RelationShapeOnly.end(previous);
+        }
+    }
+
     public List<TableColumn> resolveRelationColumns(final String definition,
                                                     final List<String> explicitColumnNames) {
         try {
@@ -8851,7 +11510,32 @@ public class QueryExecutor {
             final Table shape = explicitColumnNames != null && !explicitColumnNames.isEmpty()
                 ? resultSetToTable(resolved, RESOLVED_SHAPE_NAME, explicitColumnNames)
                 : resultSetToTable(resolved, RESOLVED_SHAPE_NAME);
-            return shape.getColumns();
+            // A VIEW is a stored column shape, and both string EDGES settle to the 16MB storage
+            // default there: the 128MB unknown length an expression carries clamps down, and the
+            // ZERO width a bare NULL item carries widens up — live declares a view over SELECT NULL
+            // as VARCHAR(16777216), where the bare query's result column is VARCHAR(0). Derived
+            // tables and CTEs are untouched: they go through resultSetToTable directly.
+            final List<TableColumn> settled = new ArrayList<>();
+            for (final TableColumn column : shape.getColumns()) {
+                if (column.getDataType() instanceof StringType
+                        && (((StringType) column.getDataType()).getMaxLength() == 0
+                            || ((StringType) column.getDataType()).getMaxLength()
+                                == DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR)) {
+                    settled.add(settledCollation(new TableColumn(column.getName(), StringType.VARCHAR,
+                        column.isNullable(), null, false, false, false), column));
+                } else if (column.getDataType() instanceof BinaryType
+                        && ((BinaryType) column.getDataType()).atColumnWidth() != column.getDataType()) {
+                    // So does a binary wider than a column's default: live declares a view over a 16MB
+                    // concatenation, or over CAST(x AS BINARY(67108864)), BINARY(8388608), where a query
+                    // over the view reads the full width.
+                    settled.add(settledCollation(new TableColumn(column.getName(),
+                        ((BinaryType) column.getDataType()).atColumnWidth(),
+                        column.isNullable(), null, false, false, false), column));
+                } else {
+                    settled.add(column);
+                }
+            }
+            return settled;
         } catch (final RuntimeException undetermined) {
             if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
                 throw undetermined;
@@ -8862,6 +11546,12 @@ public class QueryExecutor {
         }
     }
 
+    /** A settled view column keeps the collation the resolved one carried. */
+    private static TableColumn settledCollation(final TableColumn settled, final TableColumn resolved) {
+        settled.setCollation(resolved.getCollation());
+        return settled;
+    }
+
     /**
      * Convert a ResultSet to a Table object
      */
@@ -8870,7 +11560,9 @@ public class QueryExecutor {
         for (final ResultSetColumn col : rs.getColumns()) {
             columns.add(derivedColumn(col.getName(), col));
         }
-        return new Table(tableName, columns, false);
+        final Table derived = new Table(tableName, columns, false);
+        derived.setRelationStatistics(rs.getRelationStatistics());
+        return derived;
     }
 
     private Table resultSetToTable(final ResultSet rs, final String tableName, final List<String> columnNames) {
@@ -8885,7 +11577,9 @@ public class QueryExecutor {
         for (int i = 0; i < rsColumns.size(); i++) {
             columns.add(derivedColumn(columnNames.get(i), rsColumns.get(i)));
         }
-        return new Table(tableName, columns, false);
+        final Table derived = new Table(tableName, columns, false);
+        derived.setRelationStatistics(rs.getRelationStatistics());
+        return derived;
     }
 
     /**
@@ -8903,22 +11597,55 @@ public class QueryExecutor {
      */
     private List<ResultSetColumn> reconcileBranchTypes(final List<ResultSetColumn> combined,
                                                        final List<List<ResultSetColumn>> branches,
-                                                       final List<List<NumericType>> literalMeasurements) {
+                                                       final List<List<NumericType>> literalMeasurements,
+                                                       final List<List<Boolean>> nullArms) {
         final List<ResultSetColumn> reconciled = new ArrayList<>();
         for (int i = 0; i < combined.size(); i++) {
             final ResultSetColumn column = combined.get(i);
-            final DataType agreedStatic = branchStaticType(i, branches, literalMeasurements);
+            final DataType agreedStatic = branchStaticType(i, branches, literalMeasurements, nullArms);
             // The REPORTED type is the fold too, not the leading arm's. Live declares the folded arm
             // everywhere it can fold one: v UNION w is VARCHAR(9) and not VARCHAR(5), i UNION n is
             // NUMBER(38,2) and not NUMBER(38,0), n UNION f is FLOAT and d UNION ts TIMESTAMP_NTZ.
             // Where no fold exists the leading arm stays, which is what the arms-disagree scan needs.
-            final DataType reported = agreedStatic != null ? agreedStatic : column.getDataType();
+            // EVERY arm a bare NULL declares VARCHAR(0) — a width no column can hold and no literal can
+            // produce, which is live's way of saying "nothing was named here". It is set on the
+            // REPORTED type only: the STATIC one stays undetermined, and that distinction is the whole
+            // reason this can be done at all. Giving the column a static type instead handed the INSERT
+            // type check a concrete type to compare for the first time, and a string does not match a
+            // VARIANT / ARRAY / OBJECT column — fourteen vendor loaders insert an all-NULL set
+            // operation into exactly those columns and every one of them was refused.
+            final DataType reported = agreedStatic != null ? agreedStatic
+                : everyArmIsNull(i, branches, nullArms) ? new StringType("VARCHAR", 0)
+                    : column.getDataType();
             // A set operation's column always accepts NULL — even when EVERY branch is NOT NULL, and
             // even for INTERSECT (live-verified). The rebuild is unconditional for that reason.
             reconciled.add(new ResultSetColumn(column.getName(), reported,
-                column.getTableName(), agreedStatic, true));
+                column.getTableName(), agreedStatic, true, false,
+                agreedStatic != null ? branchValueRange(i, branches, nullArms) : null));
         }
         return reconciled;
+    }
+
+    /**
+     * The union of every branch's interval for column {@code i} — a set operation's statistics are its
+     * arms' together — or null when any arm's is unknown. A bare NULL arm adds no value, only the NULL.
+     */
+    private ValueRange branchValueRange(final int i, final List<List<ResultSetColumn>> branches,
+                                        final List<List<Boolean>> nullArms) {
+        ValueRange union = null;
+        for (int k = 0; k < branches.size(); k++) {
+            final List<ResultSetColumn> columns = branches.get(k);
+            final ValueRange arm;
+            if (i < columns.size() && isNullArm(nullArms, k, i)) {
+                arm = ValueRange.EMPTY;
+            } else if (i >= columns.size() || columns.get(i).getValueRange() == null) {
+                return null;
+            } else {
+                arm = columns.get(i).getValueRange();
+            }
+            union = union == null ? arm : union.union(arm);
+        }
+        return union;
     }
 
     /**
@@ -8936,47 +11663,165 @@ public class QueryExecutor {
      * DATE, DATE.
      */
     private DataType branchStaticType(final int i, final List<List<ResultSetColumn>> branches,
-                                      final List<List<NumericType>> literalMeasurements) {
+                                      final List<List<NumericType>> literalMeasurements,
+                                      final List<List<Boolean>> nullArms) {
+        // A bare NULL arm contributes NOTHING to the fold: the other arms decide the type between
+        // themselves, and the NULL simply joins whatever they settle on. Written SECOND that already
+        // happened, because the walk kept the type it had; written FIRST the NULL's own reported
+        // VARCHAR(16777216) became the answer and the real arms were folded INTO a 16MB string.
+        // With every arm a NULL there is nothing to decide and the column is VARCHAR(0).
         final List<DataType> declared = new ArrayList<>();
-        for (final List<ResultSetColumn> branch : branches) {
+        final List<Integer> declaredBranch = new ArrayList<>();
+        for (int k = 0; k < branches.size(); k++) {
+            final List<ResultSetColumn> branch = branches.get(k);
             if (i >= branch.size()) {
                 return null;
+            }
+            if (isNullArm(nullArms, k, i)) {
+                continue;
             }
             final DataType branchType = branch.get(i).getStaticType();
             if (branchType == null) {
                 return null;
             }
             declared.add(branchType);
+            // The ORIGINAL branch index, kept because skipping the NULL arms compacts the list and a
+            // literal's measurement is recorded against the branch it was written in.
+            declaredBranch.add(Integer.valueOf(k));
         }
-        boolean anyString = false;
-        DataType nonString = null;
-        boolean mixedNonString = false;
-        for (final DataType type : declared) {
-            if (type instanceof StringType) {
-                anyString = true;
-            } else if (nonString == null) {
-                nonString = type;
-            } else if (!nonString.getClass().equals(type.getClass())) {
-                mixedNonString = true;
-            }
+        if (declared.isEmpty()) {
+            // EVERY arm a bare NULL. Live declares VARCHAR(0) here; this leaves the column
+            // undetermined instead, because naming a type where there was none turns an INSERT into a
+            // VARIANT / ARRAY / OBJECT column into a refusal — the type check has a concrete type to
+            // compare for the first time, and a string is not one of those families.
+            return null;
         }
+        // The arms fold LEFT TO RIGHT, and a STRING arm contributes whatever the fold it MEETS makes of
+        // it — not itself. What it meets is the running fold; only the first arm has none yet, and then
+        // it is the first non-string arm that decides, because that is the one it will meet next.
+        //
+        // This used to ask a different question: "do all the non-string arms agree with each other?",
+        // and switched the substitution off entirely when they did not. That broke the fold an arm
+        // EARLY. `i UNION v UNION bn` is refused by both engines, but live folds i with v into
+        // NUMBER(38,5) first and breaks on the BINARY, while Frostlake never folded i with v at all —
+        // it broke on the VARCHAR and reported the running fold as the NUMBER(38,0) it started with.
+        // The arms after a string have nothing to say about what that string meets.
         DataType combined = null;
         for (int k = 0; k < declared.size(); k++) {
             DataType contribution = declared.get(k);
-            if (anyString && nonString != null && !mixedNonString
-                    && contribution instanceof StringType) {
-                contribution = stringBranchContribution(nonString,
-                    literalMeasurement(literalMeasurements, k, i));
-                if (contribution == null) {
-                    return null;
+            if (contribution instanceof StringType) {
+                final DataType met = combined != null ? combined : firstNonStringArm(declared);
+                if (met != null && !(met instanceof StringType)) {
+                    final DataType substituted = stringBranchContribution(met,
+                        literalMeasurement(literalMeasurements, declaredBranch.get(k).intValue(), i));
+                    if (substituted == null) {
+                        // A BINARY does not meet a string, and live refuses the pair rather than
+                        // leaving the column undetermined — whether the BINARY has been folded into
+                        // the running answer yet or is still ahead. Every OTHER non-string reaching
+                        // here is a pairing nobody has measured, so it keeps its undetermined answer.
+                        // The sentence names the RUNNING FOLD as what it got and the arm it could not
+                        // take as what it expected. Which of the two the string is depends on where it
+                        // stands: after a BINARY it is the arm being refused, and before one it is the
+                        // running fold and the BINARY ahead is the arm.
+                        if (met instanceof BinaryType) {
+                            rejectUnfoldableArms(combined != null ? combined : contribution,
+                                combined != null ? contribution : met);
+                        }
+                        return null;
+                    }
+                    contribution = substituted;
                 }
             }
-            combined = combined == null ? contribution : combineDeclaredTypes(combined, contribution);
             if (combined == null) {
+                combined = contribution;
+                continue;
+            }
+            final DataType folded = combineDeclaredTypes(combined, contribution);
+            if (folded == null) {
+                rejectUnfoldableArms(combined, contribution);
                 return null;
             }
+            combined = folded;
         }
         return combined;
+    }
+
+    /** The first arm that is not a string, which is what a LEADING string arm will meet. */
+    private DataType firstNonStringArm(final List<DataType> declared) {
+        for (final DataType type : declared) {
+            if (!(type instanceof StringType)) {
+                return type;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Arms whose declared types cannot be brought together at all. Live refuses these at COMPILE time,
+     * and words them two ways — the same pair of sentences a CONDITIONAL uses for its branches, because
+     * the two surfaces share one fold:
+     *
+     * <pre>
+     *   SELECT d FROM t UNION SELECT tm FROM t
+     *       inconsistent data type for result columns for set operator input branches,
+     *       expected TIME(9), got DATE
+     *   SELECT tm FROM t UNION SELECT ts FROM t
+     *       incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]
+     * </pre>
+     *
+     * <p>The wording of the first is worth reading carefully: "expected" is the arm the fold FAILED ON
+     * and "got" is the running fold of everything before it — not the last arm and not the first.
+     * Three arms is what shows the difference, because there the two readings disagree:
+     * {@code i UNION v UNION bn} reports "expected BINARY(5), got NUMBER(38,5)", and NUMBER(38,5) is
+     * no single arm's type — it is what {@code i} and {@code v} folded to before the BINARY broke it.
+     *
+     * <p>The TIME rule names the TIME first however the arms were written, exactly as it does between
+     * branches, so the sentence is stable under reordering while the other one is not.
+     *
+     * @param foldedSoFar the running fold of the arms already read
+     * @param arm         the arm that would not join it
+     */
+    private void rejectUnfoldableArms(final DataType foldedSoFar, final DataType arm) {
+        // A VARIANT absorbs whatever stands beside it and the fold keeps the arm already read —
+        // va UNION i is VARIANT and ob UNION va is OBJECT — so the pairing is not a refusal at all,
+        // whatever the shared fold answers for it. Left undetermined here rather than refused; the
+        // fold itself is #393's.
+        if (foldedSoFar instanceof VariantType || arm instanceof VariantType) {
+            return;
+        }
+        final DataType time = timeOf(foldedSoFar, arm);
+        final DataType timestamp = timestampOf(foldedSoFar, arm);
+        if (time != null && timestamp != null) {
+            throw new RuntimeException(SqlCompilationError.of("incompatible types: ["
+                + SqlTypeNames.canonical(time) + "] and [" + SqlTypeNames.canonical(timestamp) + "]"));
+        }
+        throw new RuntimeException(SqlCompilationError.of(
+            "inconsistent data type for result columns for set operator input branches, expected "
+                + SqlTypeNames.canonical(arm) + ", got " + SqlTypeNames.canonical(foldedSoFar)));
+    }
+
+    /** Whichever of the two is a TIME, or null when neither is. */
+    private DataType timeOf(final DataType left, final DataType right) {
+        if (left instanceof DateTimeType && "TIME".equalsIgnoreCase(left.getName())) {
+            return left;
+        }
+        if (right instanceof DateTimeType && "TIME".equalsIgnoreCase(right.getName())) {
+            return right;
+        }
+        return null;
+    }
+
+    /** Whichever of the two is a TIMESTAMP of any zone, or null when neither is. */
+    private DataType timestampOf(final DataType left, final DataType right) {
+        if (left instanceof DateTimeType
+                && left.getName().toUpperCase(Locale.ROOT).startsWith("TIMESTAMP")) {
+            return left;
+        }
+        if (right instanceof DateTimeType
+                && right.getName().toUpperCase(Locale.ROOT).startsWith("TIMESTAMP")) {
+            return right;
+        }
+        return null;
     }
 
     /** What a VARCHAR branch contributes to the fold beside the given non-string type, or null when
@@ -9033,6 +11878,84 @@ public class QueryExecutor {
 
     /** The numeric measurement of one select item when it is a bare string literal spelling a
      *  number, else null. */
+    /**
+     * Per branch, per column: whether the select item is a BARE {@code NULL} literal. A NULL arm
+     * contributes nothing to the fold — {@code SELECT NULL UNION SELECT i} is NUMBER(38,0) and
+     * {@code SELECT NULL UNION SELECT d} is DATE — and when EVERY arm is one the column is VARCHAR(0).
+     *
+     * <p>It has to be read off the AST because the reported type cannot tell them apart: a bare NULL
+     * reports VARCHAR(16777216), and so does a real 16MB VARCHAR column. Reading the type alone would
+     * have made every wide VARCHAR arm vanish from the fold.
+     *
+     * <p>A TYPED null is NOT one of these — {@code NULL::INT} and {@code CAST(NULL AS DATE)} parse to a
+     * cast rather than a literal, and both already fold as the type they name.
+     */
+    private List<List<Boolean>> nullLiteralArms(
+            final List<FrostlakeParser.SelectOperandContext> operands) {
+        final List<List<Boolean>> perBranch = new ArrayList<>();
+        for (final FrostlakeParser.SelectOperandContext operand : operands) {
+            final List<Boolean> flags = new ArrayList<>();
+            if (operand.selectClause() != null && operand.selectClause().selectList() != null) {
+                for (final FrostlakeParser.SelectItemContext item
+                        : operand.selectClause().selectList().selectItem()) {
+                    flags.add(Boolean.valueOf(isBareNullLiteral(item)));
+                }
+            }
+            perBranch.add(flags);
+        }
+        return perBranch;
+    }
+
+    /** Whether a select item is the bare word NULL and nothing else. */
+    private boolean isBareNullLiteral(final FrostlakeParser.SelectItemContext item) {
+        if (!SelectItemAccessors.isExprItem(item)) {
+            return false;
+        }
+        final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
+        if (valueExpr == null) {
+            return false;
+        }
+        try {
+            final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(valueExpr));
+            return parsed instanceof LiteralExpression
+                && ((LiteralExpression) parsed).getType() == LiteralType.NULL;
+        } catch (final RuntimeException notALiteral) {
+            return false;
+        }
+    }
+
+    /** Whether branch {@code k}'s column {@code i} was written as a bare NULL. */
+    /**
+     * Whether column {@code i} is a bare NULL in EVERY arm — the one shape with no type to fold at all.
+     * Mirrors the skip in {@link #branchStaticType}, whose declared list comes out empty for exactly
+     * these columns.
+     *
+     * @param i        the column's position
+     * @param branches every arm's columns
+     * @param nullArms per arm, per column, whether the item was written as a bare NULL
+     * @return true when no arm named a type
+     */
+    private boolean everyArmIsNull(final int i, final List<List<ResultSetColumn>> branches,
+                                   final List<List<Boolean>> nullArms) {
+        if (branches.isEmpty()) {
+            return false;
+        }
+        for (int k = 0; k < branches.size(); k++) {
+            if (i >= branches.get(k).size() || !isNullArm(nullArms, k, i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isNullArm(final List<List<Boolean>> nullArms, final int k, final int i) {
+        if (nullArms == null || k >= nullArms.size()) {
+            return false;
+        }
+        final List<Boolean> branch = nullArms.get(k);
+        return i < branch.size() && branch.get(i).booleanValue();
+    }
+
     private NumericType stringLiteralMeasurement(final FrostlakeParser.SelectItemContext item) {
         if (!SelectItemAccessors.isExprItem(item)) {
             return null;
@@ -9080,6 +12003,11 @@ public class QueryExecutor {
             staticType != null ? staticType : source.getDataType(), source.isNullable(),
             null, false, false, false);
         column.setStaticallyTyped(staticType != null);
+        column.setValueRange(source.getValueRange());
+        column.setSpelledNumber(source.getSpelledNumber());
+        // A collation rides along too: the outer query compares, sorts and groups the derived column
+        // under the collation the projection settled on, as it would a catalog column's.
+        column.setCollation(source.getCollation());
         return column;
     }
 
@@ -9159,8 +12087,67 @@ public class QueryExecutor {
                                             final boolean nullable, final boolean nullabilityKnown,
                                             final ParserRuleContext origin) {
         final DataType staticType = staticProjectionType(expressionText, projectionTypes, origin);
-        return new ResultSetColumn(name, semiStructuredReportedType(reportedType, staticType),
-            sourceTableName, staticType, nullable, nullabilityKnown);
+        return new ResultSetColumn(name,
+            isBareNullLiteral(expressionText) ? new StringType("VARCHAR", 0)
+                : semiStructuredReportedType(reportedType, staticType),
+            sourceTableName, staticType, nullable, nullabilityKnown,
+            staticType != null ? staticProjectionRange(expressionText, projectionTypes) : null,
+            staticType != null ? staticSpelledNumber(expressionText, projectionTypes) : null);
+    }
+
+    /**
+     * The NUMBER a select item spells when it is a bare string literal, or a column carrying one out of a
+     * derived relation; null otherwise — see TableColumn#getSpelledNumber.
+     */
+    private DataType staticSpelledNumber(final String expressionText,
+                                         final ExpressionEvaluator projectionTypes) {
+        if (expressionText == null || expressionText.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return projectionTypes.spelledNumber(ExpressionEvaluator.parse(expressionText));
+        } catch (final RuntimeException undetermined) {
+            return null;
+        }
+    }
+
+    /** The interval a select item's values lie in, propagated from its source's statistics, or null. */
+    private ValueRange staticProjectionRange(final String expressionText,
+                                             final ExpressionEvaluator projectionTypes) {
+        if (expressionText == null || expressionText.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return projectionTypes.inferStaticRange(ExpressionEvaluator.parse(expressionText));
+        } catch (final RuntimeException undetermined) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether a select item is the word NULL itself. Live declares such a column VARCHAR(0) — a width no
+     * column can hold and no literal can produce, which is its way of saying nothing was named — where
+     * Frostlake reported the 16MB placeholder every other untyped item falls back to.
+     *
+     * <p>The REPORTED type only. The static type stays undetermined, as it always was, and that is what
+     * keeps an INSERT of a NULL into a VARIANT / ARRAY / OBJECT column working: the type check has
+     * nothing concrete to compare and skips the column. Setting the static type instead is what refused
+     * fourteen vendor loaders when the same width was tried on the set-operation fold.
+     *
+     * @param expressionText the select item as written
+     * @return true for the bare NULL literal, in any case, parenthesised or not
+     */
+    private boolean isBareNullLiteral(final String expressionText) {
+        if (expressionText == null) {
+            return false;
+        }
+        try {
+            final Expression parsed = ExpressionEvaluator.parse(expressionText);
+            return parsed instanceof LiteralExpression
+                && ((LiteralExpression) parsed).getType() == LiteralType.NULL;
+        } catch (final RuntimeException notAnExpression) {
+            return false;
+        }
     }
 
     /**
@@ -9174,6 +12161,18 @@ public class QueryExecutor {
             return staticType;
         }
         return reportedType;
+    }
+
+    /** The static type of one VALUES cell's expression, or null when the channel cannot type it. */
+    private static DataType valuesItemStaticType(final String exprText, final ExpressionEvaluator evaluator) {
+        try {
+            return evaluator.inferStaticType(ExpressionEvaluator.parse(exprText));
+        } catch (final RuntimeException undetermined) {
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+                throw undetermined;
+            }
+            return null;
+        }
     }
 
     /** The static type of a select item's expression text, or null when it cannot be determined —
@@ -9260,10 +12259,17 @@ public class QueryExecutor {
             // Renaming a derived column keeps its declared type, so it keeps its static-type verdict too:
             // FROM (SELECT f FROM t) d (g) makes d.g exactly as FILE-typed as the f it renames.
             newCol.setStaticallyTyped(originalCol.isStaticallyTyped());
+            // …and whatever literal it projects: FROM (SELECT '12.5' AS t, …) AS d(t, n) folds as the
+            // literal as well (live-verified).
+            newCol.setSpelledNumber(originalCol.getSpelledNumber());
             newColumns.add(newCol);
         }
 
-        return new Table(table.getName(), newColumns, table.isTemporary());
+        // Renaming keeps what the relation reads: a catalog table under new names still reads every row.
+        final Table renamed = new Table(table.getName(), newColumns, table.isTemporary());
+        renamed.setRelationStatistics(table.isCatalogResident()
+            ? new DerivedStatistics(this, null, table, null) : table.getRelationStatistics());
+        return renamed;
     }
 
     // Extract equi-join key column indices ({leftIdx[], rightIdx[]}) from a join condition, for the
@@ -9658,7 +12664,7 @@ public class QueryExecutor {
     /**
      * Parse a SELECT statement from a string
      */
-    private FrostlakeParser.SelectStatementContext parseSelectStatement(final String sql) {
+    FrostlakeParser.SelectStatementContext parseSelectStatement(final String sql) {
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
         final SyntaxErrorListener errorListener = new SyntaxErrorListener(sql);
         lexer.removeErrorListeners();
@@ -9724,4 +12730,24 @@ public class QueryExecutor {
             (FrostlakeParser.FunctionCallExprContext) argExpr;
         return "LAST_QUERY_ID".equalsIgnoreCase(call.functionName().getText());
     }
+
+    /**
+     * The unknown-name sentence for a FROM-less projection, which returns before the walk that raises it
+     * for every other query. Live names EVERY unresolvable call in one sentence there too - {@code
+     * SELECT r1(), r2(), r3()} is {@code Unknown functions R2, R3.} - where evaluating the items one by
+     * one stops at the first name it cannot resolve. A single name already reports itself that way, in
+     * the same words, so only the plural case is raised here; and with no FROM there are no columns to
+     * scope, which is what the fuller walk spends its time on.
+     */
+    private void rejectUnresolvableNamesWithoutFrom(final FrostlakeParser.SelectStatementContext stmtCtx,
+                                                    final FrostlakeParser.SelectClauseContext ctx) {
+        final List<FunctionCallExpression> unresolvable = collectUnresolvableCalls(stmtCtx, ctx);
+        if (unresolvable.size() < 2) {
+            return;
+        }
+        throw new RuntimeException(SqlCompilationError.of(
+            new ExpressionEvaluator(null, functionRegistry, catalog, this)
+                .unknownFunctionSentence(unresolvable)));
+    }
+
 }

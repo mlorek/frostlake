@@ -1,0 +1,49 @@
+{
+  "suite": "scripting-create-function",
+  "description": "CREATE FUNCTION and the SHOW FUNCTIONS listing that reports it. A simple scalar UDF, one with NO parameters, one with a SCHEMA-QUALIFIED name (listed once that schema is in use), a TABLE function, and one with an INTEGER parameter are each created and then found in SHOW FUNCTIONS. DROP FUNCTION removes it - counted by the user-defined rows, is_builtin = 'N', because both backends list the whole built-in library alongside the user's functions - and DROP FUNCTION IF EXISTS on the now-missing name does not throw. Creating two functions leaves two user-defined rows. One shape worth naming: Snowflake checks a SQL UDF's DECLARED return type against the body's ACTUAL one at CREATE, so RETURNS FLOAT over a bare decimal literal fails 'Declared return type FLOAT is incompatible with actual return type NUMBER(6,5)' - which is why the no-parameter function's body casts. Converted 1:1 from scripting/CreateFunctionJdbcTest (now retired); the Java scanned the SHOW FUNCTIONS ResultSet row by row through JDBC, which becomes a RESULT_SCAN over the same SHOW - the rows are scanned rather than read positionally for exactly the reason the Java gave.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-simple-scalar-function", "steps": [
+      {"sql": "CREATE FUNCTION add_numbers(x INTEGER, y INTEGER) RETURNS INTEGER AS 'x + y'"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ADD_NUMBERS'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-function-with-no-parameters", "steps": [
+      {"sql": "CREATE FUNCTION get_pi() RETURNS FLOAT AS '3.14159::FLOAT'"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'GET_PI'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-function-with-a-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA my_schema"},
+      {"sql": "CREATE FUNCTION my_schema.multiply(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a * b'"},
+      {"sql": "USE SCHEMA my_schema"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MULTIPLY'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-table-function", "steps": [
+      {"sql": "CREATE FUNCTION get_values() RETURNS TABLE(id INTEGER, name VARCHAR) AS 'SELECT 1, ''test'''"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'GET_VALUES'", "expect": {"value": 1}}
+    ]},
+    {"name": "drop-function-removes-it", "steps": [
+      {"sql": "CREATE FUNCTION test_func(x INTEGER) RETURNS INTEGER AS 'x * 2'"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_FUNC'", "expect": {"value": 1}},
+      {"sql": "DROP FUNCTION test_func(INTEGER)"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"is_builtin\" = 'N'", "expect": {"value": 0}},
+      {"sql": "DROP FUNCTION IF EXISTS test_func(INTEGER)"}
+    ]},
+    {"name": "show-functions-counts-the-user-defined-ones", "steps": [
+      {"sql": "CREATE FUNCTION func1(x INTEGER) RETURNS INTEGER AS 'x'"},
+      {"sql": "CREATE FUNCTION func2(x INTEGER, y INTEGER) RETURNS INTEGER AS 'x + y'"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"is_builtin\" = 'N'", "expect": {"value": 2}}
+    ]},
+    {"name": "a-function-with-an-integer-parameter", "steps": [
+      {"sql": "CREATE FUNCTION double_val(x INTEGER) RETURNS INTEGER AS 'x * 2'"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'DOUBLE_VAL'", "expect": {"value": 1}}
+    ]}
+  ]
+}

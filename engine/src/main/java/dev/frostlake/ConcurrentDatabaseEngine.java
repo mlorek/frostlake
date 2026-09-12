@@ -78,6 +78,20 @@ public class ConcurrentDatabaseEngine {
      * Execute SQL in a session context
      */
     public ExecutionResult execute(final String sql, final SessionContext session) {
+        return execute(sql, session, null);
+    }
+
+    /**
+     * Execute SQL in a session context, the session first following the autocommit mode the client
+     * declares for this request (see {@link SessionContext#followClientAutoCommit(Boolean)}).
+     *
+     * @param sql the statement text
+     * @param session the session to run in
+     * @param clientAutoCommit the request's autocommit mode, or null when it declares none
+     * @return the statement's result
+     */
+    public ExecutionResult execute(final String sql, final SessionContext session,
+                                   final Boolean clientAutoCommit) {
         if (session == null) {
             throw new IllegalArgumentException("Session context is required");
         }
@@ -98,6 +112,8 @@ public class ConcurrentDatabaseEngine {
         }
 
         synchronized (state) {
+            // Under the session's lock, so the mode applied below is the one this request declared.
+            session.followClientAutoCommit(clientAutoCommit);
             try {
                 // Read lock for read-only scripts, write lock for anything that mutates — decided
                 // ONCE per request from the parse tree (the unlock below must mirror the decision).

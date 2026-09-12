@@ -27,7 +27,9 @@ public enum WarehouseSize {
     X_LARGE("X-Large", 16, 128),
     X2_LARGE("2X-Large", 32, 256),
     X3_LARGE("3X-Large", 64, 512),
-    X4_LARGE("4X-Large", 128, 1024);
+    X4_LARGE("4X-Large", 128, 1024),
+    X5_LARGE("5X-Large", 256, 2048),
+    X6_LARGE("6X-Large", 512, 4096);
 
     private final String displayName;
     private final int servers;

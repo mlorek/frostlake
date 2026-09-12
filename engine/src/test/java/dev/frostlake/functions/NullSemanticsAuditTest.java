@@ -47,8 +47,6 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
     private static final Set<String> NON_NULL_WHITELIST = new HashSet<>(Arrays.asList(
         "ARRAY_CONSTRUCT",              // builds [null]
         "ARRAY_CONSTRUCT_COMPACT",      // builds [] (drops NULLs by definition)
-        "OBJECT_CONSTRUCT",             // {} — a NULL key omits the pair
-        "OBJECT_CONSTRUCT_KEEP_NULL",   // {} — a NULL key still omits the pair (only NULL values kept)
         // {} — the MAP constructor, same rule as its OBJECT twin. Live-measured over a
         // two-row table (so no all-NULL column could be folded to a NULL literal): a NULL KEY drops the
         // whole pair, so an all-NULL call is the EMPTY map rather than NULL. The rest of the MAP family
@@ -79,6 +77,10 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         // TRY_CAST(expr AS type) exists, and it parses as a cast expression), so the registered
         // function exists solely for SHOW FUNCTIONS and refuses direct evaluation.
         "TRY_CAST",
+        // COLLATE's specification must be WRITTEN as a string literal, and a NULL is none: live refuses
+        // COLLATE(NULL, NULL) with "Argument number 2 for function 'COLLATE' needs to be a string
+        // literal." (measured). A NULL operand beside a written specification is NULL.
+        "COLLATE",
         // The SEQ family's optional argument is a SIGN, and live refuses a NULL one outright rather
         // than folding the row's ordinal away: "Invalid parameter value: NULL. Reason: sign must not
         // be NULL". Measured, not inferred — and it is the same refusal for all four widths.
@@ -86,6 +88,10 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         // Catalog-only entry like TRY_CAST: the call shape CAST(x, ...) is not SQL — only
         // CAST(expr AS type) exists, parsed as the cast construct.
         "CAST",
+        // One NULL is an ODD argument count, refused for its arity before any key is judged (live:
+        // "invalid number of arguments for [OBJECT_CONSTRUCT], expected 2, got 1"); an even count of
+        // NULLs is {}, since a NULL key omits its pair.
+        "OBJECT_CONSTRUCT", "OBJECT_CONSTRUCT_KEEP_NULL",
         // The strict-argument families refuse a bare NULL literal by MEASURED design, and their
         // NULL cells are pinned in their own live-verified classes (map/typed-value/vector
         // strictness) — this audit only confirms they refuse rather than mis-propagate.
@@ -93,6 +99,13 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         "MAP_INSERT", "MAP_KEYS", "MAP_PICK", "MAP_SIZE",
         "TRY_TO_BINARY", "TRY_TO_BOOLEAN", "TRY_TO_DATE", "TRY_TO_DOUBLE", "TRY_TO_NUMBER",
         "TRY_TO_TIME", "TRY_TO_TIMESTAMP", "TRY_TO_TIMESTAMP_NTZ",
+        // The LTZ and TZ twins refuse an untyped NULL exactly as the NTZ spelling does — live,
+        // TRY_TO_TIMESTAMP_LTZ(NULL) is "Function TRY_CAST cannot be used with arguments of types
+        // NULL and TIMESTAMP_LTZ(9)" (measured beside the rest of the TRY_TO_* matrix).
+        "TRY_TO_TIMESTAMP_LTZ", "TRY_TO_TIMESTAMP_TZ",
+        // TRY_TO_UUID is the same TRY_CAST: live refuses TRY_TO_UUID(NULL) as "Function TRY_CAST cannot
+        // be used with arguments of types NULL and UUID".
+        "TRY_TO_UUID",
         "VECTOR_COSINE_SIMILARITY", "VECTOR_INNER_PRODUCT", "VECTOR_L1_DISTANCE",
         "VECTOR_L2_DISTANCE", "VECTOR_NORMALIZE", "VECTOR_TRUNC",
         // A projection policy's verdict takes a NAMED argument and nothing else: live refuses the

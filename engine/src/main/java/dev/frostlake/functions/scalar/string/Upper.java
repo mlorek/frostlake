@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
@@ -37,4 +38,10 @@ public class Upper extends TextArgumentFunction {
 
     @Override
     public int getMaxArgCount() { return 1; }
+
+    /** A BINARY is no text here: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

@@ -1,0 +1,19 @@
+{
+  "suite": "scripting-repeat-until",
+  "description": "REPEAT ... UNTIL (<condition>) END REPEAT - a POST-TEST loop executed in anonymous BEGIN...END blocks. The body runs AT LEAST ONCE, then iterates while the condition is false and stops once it becomes true; the run-at-least-once case is pinned with a condition that is ALREADY TRUE on entry, which is the only shape that distinguishes a post-test loop from a pre-test one. The UNTIL condition must be PARENTHESISED, as Snowflake requires. Accumulation across iterations and BREAK are pinned too. Converted 1:1 from scripting/RepeatUntilTest (now retired); the blocks are written on one line here, which the scripting parser reads identically.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "repeat-loops-until-the-condition-is-true", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; REPEAT i := i + 1; UNTIL (i >= 5) END REPEAT; RETURN i; END;", "expect": {"value": 5}}
+    ]},
+    {"name": "repeat-runs-its-body-at-least-once", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 10; LET runs INTEGER := 0; REPEAT runs := runs + 1; UNTIL (i >= 5) END REPEAT; RETURN runs; END;", "expect": {"value": 1}}
+    ]},
+    {"name": "repeat-accumulates-across-iterations", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; LET total INTEGER := 0; REPEAT i := i + 1; total := total + i; UNTIL (i >= 4) END REPEAT; RETURN total; END;", "expect": {"value": 10}}
+    ]},
+    {"name": "break-exits-a-repeat-loop", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; REPEAT i := i + 1; IF (i = 3) THEN BREAK; END IF; UNTIL (i >= 100) END REPEAT; RETURN i; END;", "expect": {"value": 3}}
+    ]}
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "suite": "ddl-composite-primary-key",
+  "description": "Composite (multi-column) PRIMARY KEY metadata through SHOW PRIMARY KEYS IN TABLE (one row per key column) and DESCRIBE TABLE's primary key / null? / default cells: two- and three-column keys, keys mixed with NOT NULL and DEFAULT (the default cell shows the expression as written, quotes included), inserted data intact, column-level and table-level single-column keys, key order independent of column order, all-key tables, and qualified table names. Converted 1:1 from ddl/CompositePrimaryKeyTest (now retired).",
+  "tags": ["ddl", "constraints", "converted"],
+  "tests": [
+    {"name": "composite-primary-key-two-columns", "steps": [
+      {"sql": "CREATE TABLE order_items (\norder_id INTEGER,\nitem_id INTEGER,\nquantity INTEGER,\nPRIMARY KEY (order_id, item_id)\n)"},
+      {"sql": "DESCRIBE TABLE order_items", "expect": {"rowCount": 3}},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ORDER_ID", "Y"], ["ITEM_ID", "Y"], ["QUANTITY", "N"]], "ordered": true}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE order_items", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" IN ('ORDER_ID', 'ITEM_ID')",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "composite-primary-key-three-columns", "steps": [
+      {"sql": "CREATE TABLE inventory (\nwarehouse_id INTEGER,\nproduct_id INTEGER,\nlocation VARCHAR,\nquantity INTEGER,\nPRIMARY KEY (warehouse_id, product_id, location)\n)"},
+      {"sql": "DESCRIBE TABLE inventory", "expect": {"rowCount": 4}},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["WAREHOUSE_ID", "Y"], ["PRODUCT_ID", "Y"], ["LOCATION", "Y"], ["QUANTITY", "N"]], "ordered": true}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE inventory", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "composite-primary-key-with-other-constraints", "steps": [
+      {"sql": "CREATE TABLE user_roles (\nuser_id INTEGER NOT NULL,\nrole_id INTEGER NOT NULL,\ngranted_date DATE,\ngranted_by VARCHAR DEFAULT 'system',\nPRIMARY KEY (user_id, role_id)\n)"},
+      {"sql": "DESCRIBE TABLE user_roles"},
+      {"sql": "SELECT \"name\", \"primary key\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('USER_ID', 'ROLE_ID') ORDER BY \"name\" DESC",
+       "expect": {"rows": [["USER_ID", "Y", "N"], ["ROLE_ID", "Y", "N"]], "ordered": true}},
+      {"sql": "DESCRIBE TABLE user_roles"},
+      {"sql": "SELECT \"default\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'GRANTED_BY'",
+       "expect": {"value": "'system'"}}
+    ]},
+    {"name": "composite-primary-key-insert-data", "steps": [
+      {"sql": "CREATE TABLE order_items (\norder_id INTEGER,\nitem_id INTEGER,\nquantity INTEGER,\nPRIMARY KEY (order_id, item_id)\n)"},
+      {"sql": "INSERT INTO order_items VALUES (1, 101, 5)"},
+      {"sql": "INSERT INTO order_items VALUES (1, 102, 3)"},
+      {"sql": "INSERT INTO order_items VALUES (2, 101, 2)"},
+      {"sql": "SELECT * FROM order_items ORDER BY order_id, item_id",
+       "expect": {"rows": [["1", "101", "5"], ["1", "102", "3"], ["2", "101", "2"]], "ordered": true}}
+    ]},
+    {"name": "mixed-primary-keys", "steps": [
+      {"sql": "CREATE TABLE test_mixed (\nid INTEGER PRIMARY KEY,\ncode VARCHAR,\nname VARCHAR\n)"},
+      {"sql": "DESCRIBE TABLE test_mixed"},
+      {"sql": "SELECT \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'", "expect": {"value": "Y"}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE test_mixed", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "composite-primary-key-different-order", "steps": [
+      {"sql": "CREATE TABLE test (\ncol_a VARCHAR,\ncol_b INTEGER,\ncol_c DATE,\ncol_d BOOLEAN,\nPRIMARY KEY (col_c, col_a)\n)"},
+      {"sql": "DESCRIBE TABLE test"},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["COL_A", "Y"], ["COL_B", "N"], ["COL_C", "Y"], ["COL_D", "N"]], "ordered": true}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE test", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "single-column-table-level-primary-key", "steps": [
+      {"sql": "CREATE TABLE users (\nid INTEGER,\nname VARCHAR,\nPRIMARY KEY (id)\n)"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ID", "Y"], ["NAME", "N"]], "ordered": true}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE users", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "composite-primary-key-all-data-types", "steps": [
+      {"sql": "CREATE TABLE multi_key (\nint_key INTEGER,\nvarchar_key VARCHAR,\ndate_key DATE,\ndata VARCHAR,\nPRIMARY KEY (int_key, varchar_key, date_key)\n)"},
+      {"sql": "DESCRIBE TABLE multi_key"},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["INT_KEY", "Y"], ["VARCHAR_KEY", "Y"], ["DATE_KEY", "Y"], ["DATA", "N"]], "ordered": true}}
+    ]},
+    {"name": "table-with-only-primary-key-columns", "steps": [
+      {"sql": "CREATE TABLE lookup (\nkey1 INTEGER,\nkey2 VARCHAR,\nPRIMARY KEY (key1, key2)\n)"},
+      {"sql": "DESCRIBE TABLE lookup", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["KEY1", "Y"], ["KEY2", "Y"]], "ordered": true}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE lookup", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "composite-primary-key-with-qualified-table-name", "steps": [
+      {"sql": "CREATE TABLE test_db.test_schema.composite_test (\nid1 INTEGER,\nid2 INTEGER,\nvalue VARCHAR,\nPRIMARY KEY (id1, id2)\n)"},
+      {"sql": "DESCRIBE TABLE composite_test"},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ID1", "Y"], ["ID2", "Y"], ["VALUE", "N"]], "ordered": true}}
+    ]}
+  ]
+}

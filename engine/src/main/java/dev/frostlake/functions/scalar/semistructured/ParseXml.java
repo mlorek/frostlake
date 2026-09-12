@@ -90,6 +90,15 @@ public class ParseXml extends BuiltInFunction {
         if (text.trim().isEmpty()) {
             return null;
         }
+        // ★ The FAULT is decided before any parse is attempted, because the Java parser's own message
+        // shares nothing with live's — and because it refuses documents live ACCEPTS. Only once the
+        // scanner is satisfied is the text handed on, with its unquoted attribute values quoted so
+        // the parser will take them.
+        final String fault = XmlFaultReader.faultOf(text);
+        if (fault != null) {
+            throw new IllegalArgumentException(fault);
+        }
+        text = XmlAttributeQuoting.quoted(text);
         final Document document;
         try {
             final DocumentBuilder builder = newDocumentBuilder();

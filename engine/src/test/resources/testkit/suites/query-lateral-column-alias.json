@@ -1,0 +1,92 @@
+{
+  "suite": "query-lateral-column-alias",
+  "description": "Lateral column aliases - a later item in a SELECT list may reference an alias defined by an EARLIER item of the same list. Resolution consults the prior aliases only AFTER table columns, so a real column of the same name still wins, and FORWARD references to a later alias are not allowed. The alias chain must resolve TRANSITIVELY: an alias defined over another alias, a WHERE filtering on such a chained alias over a join, a chained alias feeding a LATERAL FLATTEN, and a chained alias used as a window's ORDER key inside QUALIFY all used to evaluate each alias in isolation, so the chained definition threw, was nulled, and the surrounding filter silently kept nothing or everything. An ON condition may reference a select-list alias too. Aliases do not leak across rows, and a star followed by explicit items keeps duplicate output names rather than merging them. Converted 1:1 from query/LateralColumnAliasTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-alias-referenced-in-a-later-expression", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (10, 100)"},
+      {"sql": "SELECT 5 AS a, a + 1 AS b FROM t", "expect": {"rows": [[5, 6]]}}
+    ]},
+    {"name": "chained-alias-references", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (10, 100)"},
+      {"sql": "SELECT x AS a, a * 2 AS b, b + 1 AS c FROM t", "expect": {"rows": [[10, 20, 21]]}}
+    ]},
+    {"name": "an-alias-used-inside-a-function-call", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (10, 100)"},
+      {"sql": "SELECT x - 30 AS a, ABS(a) AS z FROM t", "expect": {"rows": [[-20, 20]]}}
+    ]},
+    {"name": "a-bare-alias-reference", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (10, 100)"},
+      {"sql": "SELECT x AS a, a AS b FROM t", "expect": {"rows": [[10, 10]]}}
+    ]},
+    {"name": "a-real-column-takes-precedence-over-a-same-named-alias", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (10, 100)"},
+      {"sql": "SELECT y AS x, x + 1 AS w FROM t", "expect": {"rows": [[100, 11]]}}
+    ]},
+    {"name": "a-forward-reference-to-a-later-alias-is-not-allowed", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (10, 100)"},
+      {"sql": "SELECT a + 1 AS c, 5 AS a FROM t", "expect": {"error": {}}}
+    ]},
+    {"name": "a-lateral-alias-across-a-join", "steps": [
+      {"sql": "CREATE TABLE m (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO m VALUES (1, 7)"},
+      {"sql": "CREATE TABLE n (id INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO n VALUES (1, 3)"},
+      {"sql": "SELECT m.v + n.w AS tot, tot * 10 AS scaled FROM m JOIN n ON m.id = n.id", "expect": {"rows": [[10, 100]]}}
+    ]},
+    {"name": "a-where-on-a-chained-alias-over-a-join-filters", "steps": [
+      {"sql": "CREATE TABLE cur (k VARCHAR, score NUMBER(20,10))"},
+      {"sql": "CREATE TABLE prop (k VARCHAR, score NUMBER(20,10))"},
+      {"sql": "INSERT INTO cur VALUES ('big', 0.40), ('tiny', 0.50)"},
+      {"sql": "INSERT INTO prop VALUES ('big', 0.02), ('tiny', 0.4999)"},
+      {"sql": "SELECT c.k FROM cur c INNER JOIN prop p ON p.k = c.k WHERE ABS((p.score - c.score) / NULLIFZERO(c.score) * 100) >= 1 ORDER BY c.k", "expect": {"rows": [["big"]], "ordered": true}},
+      {"sql": "SELECT c.k, (p.score - c.score) AS score_diff, (score_diff / NULLIFZERO(c.score) * 100) AS pct FROM cur c INNER JOIN prop p ON p.k = c.k WHERE ABS(pct) >= 1 ORDER BY c.k", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "aliases-do-not-leak-across-rows", "steps": [
+      {"sql": "CREATE TABLE r (a INTEGER)"},
+      {"sql": "INSERT INTO r VALUES (1), (2), (3)"},
+      {"sql": "SELECT a * 10 AS ten, ten + 1 AS eleven FROM r ORDER BY a", "expect": {"rows": [[10,11],[20,21],[30,31]], "ordered": true}}
+    ]},
+    {"name": "a-star-followed-by-explicit-columns-keeps-duplicate-output-names", "steps": [
+      {"sql": "WITH r AS (SELECT 1 AS a, 2 AS b) SELECT *, 3 AS b, 4 AS a FROM r", "expect": {"rows": [[1,2,3,4]], "columns": ["A","B","B","A"]}}
+    ]},
+    {"name": "an-alias-referenced-in-a-join-on-condition", "steps": [
+      {"sql": "CREATE TABLE stg (id VARCHAR, val VARCHAR)"},
+      {"sql": "CREATE TABLE map (id VARCHAR, ck NUMBER)"},
+      {"sql": "INSERT INTO stg VALUES ('a', 'NEW'), ('b', 'OLD_B')"},
+      {"sql": "INSERT INTO map SELECT 'a', HASH('OLD_A')"},
+      {"sql": "INSERT INTO map SELECT 'b', HASH('OLD_B')"},
+      {"sql": "SELECT c.id FROM stg c INNER JOIN map m ON m.id = c.id AND m.ck != HASH(c.val)", "expect": {"rows": [["a"]]}},
+      {"sql": "SELECT c.id, HASH(c.val) _ck FROM stg c INNER JOIN map m ON m.id = c.id AND m.ck != _ck", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "a-chained-alias-referenced-in-a-join-on-condition", "steps": [
+      {"sql": "CREATE TABLE stg (id VARCHAR, val VARCHAR, st VARCHAR)"},
+      {"sql": "CREATE TABLE map (id VARCHAR, ckey VARCHAR, val VARCHAR, st VARCHAR, acting BOOLEAN, ck NUMBER)"},
+      {"sql": "INSERT INTO stg VALUES ('a', 'new-key-a', 'Current'), ('b', 'key-b', 'Current')"},
+      {"sql": "INSERT INTO map SELECT 'a', 'cls-1', 'hash-key-a', 'DELETED', FALSE, HASH('cls-1', 'hash-key-a', 'DELETED', FALSE)"},
+      {"sql": "INSERT INTO map SELECT 'b', 'cls-1', 'key-b',      'CURRENT', FALSE, HASH('cls-1', 'key-b', 'CURRENT', FALSE)"},
+      {"sql": "SELECT c.id, c.val, UPPER(c.st) _st, HASH(m.ckey, c.val, _st, m.acting) _ck FROM stg c INNER JOIN map m ON m.id = c.id AND m.ck != _ck", "expect": {"rowCount": 1}},
+      {"sql": "SELECT c.id, UPPER(c.st) _st FROM stg c INNER JOIN map m ON m.id = c.id AND m.ck != HASH(m.ckey, c.val, UPPER(c.st), m.acting)", "expect": {"rows": [["a","CURRENT"]]}}
+    ]},
+    {"name": "a-chained-alias-feeding-a-lateral-flatten", "steps": [
+      {"sql": "CREATE TABLE src (s VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('ab')"},
+      {"sql": "SELECT UPPER(t.s) _up, ARRAY_CONSTRUCT(_up, t.s) arr, f.value::VARCHAR v FROM src t, TABLE(FLATTEN(input => arr)) f ORDER BY v DESC", "expect": {"rowCount": 2}},
+      {"sql": "SELECT f.value::VARCHAR v FROM src t, TABLE(FLATTEN(input => ARRAY_CONSTRUCT(UPPER(t.s), t.s))) f ORDER BY v DESC", "expect": {"rows": [["ab"],["AB"]], "ordered": true}}
+    ]},
+    {"name": "a-chained-alias-as-a-window-order-key", "steps": [
+      {"sql": "CREATE TABLE pri (grp VARCHAR, meta VARIANT, cls VARCHAR, score NUMBER)"},
+      {"sql": "INSERT INTO pri SELECT 'g1', PARSE_JSON('{\"method\":\"calculated\"}'), 'OT', 1.0"},
+      {"sql": "INSERT INTO pri SELECT 'g1', PARSE_JSON('{\"method\":\"calculated\"}'), 'T1', 0.4"},
+      {"sql": "INSERT INTO pri SELECT 'g1', PARSE_JSON('{\"method\":\"default\"}'),    'T1', 0.3"},
+      {"sql": "SELECT grp, score, meta:method AS m, cls AS c, CASE WHEN m = 'calculated' AND c = 'OT' THEN 1 WHEN m = 'calculated' AND c = 'T1' THEN 2 WHEN m = 'default' THEN 3 END AS pri_rank FROM pri QUALIFY RANK() OVER (PARTITION BY grp ORDER BY pri_rank ASC) = 1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT grp, TO_VARCHAR(score), pri_rank FROM (SELECT grp, score, meta:method AS m, cls AS c, CASE WHEN m = 'calculated' AND c = 'OT' THEN 1 WHEN m = 'calculated' AND c = 'T1' THEN 2 WHEN m = 'default' THEN 3 END AS pri_rank FROM pri QUALIFY RANK() OVER (PARTITION BY grp ORDER BY pri_rank ASC) = 1)", "expect": {"rows": [["g1","1",1]]}}
+    ]}
+  ]
+}

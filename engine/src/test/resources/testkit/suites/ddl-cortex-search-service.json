@@ -1,0 +1,270 @@
+{
+  "suite": "ddl-cortex-search-service",
+  "description": "CREATE / SHOW / DESCRIBE / ALTER / DROP CORTEX SEARCH SERVICE: full definition storage, Snowflake's 20-column SHOW shape, defaulted and named EMBEDDING_MODEL, required WAREHOUSE/TARGET_LAG options, projection checks for search/attribute columns, OR REPLACE vs IF NOT EXISTS, comment set/unset, LIKE and scope filters, and the keywords staying usable as identifiers. Cell-level SHOW asserts read back via SELECT ... FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())). Converted 1:1 from CortexSearchServiceTest (now retired). Warehouses are account-level, so tests create them IF NOT EXISTS and drop them at the end.",
+  "tags": ["ddl", "cortex", "converted"],
+  "tests": [
+    {"name": "create-stores-the-whole-definition",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\", \"search_column\", \"attribute_columns\", \"warehouse\", \"target_lag\", \"database_name\", \"schema_name\", \"definition\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["S1", "BODY", "[\"CAT\"]", "FL_CORTEX_WH", "1 hour", "TEST_DB", "TEST_SCHEMA", "SELECT id, body, cat FROM docs"]]}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "show-column-shape-matches-snowflake",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES",
+       "expect": {"columns": ["created_on", "name", "database_name", "schema_name", "target_lag", "warehouse", "search_column", "attribute_columns", "columns", "definition", "comment", "embedding_model", "indexing_state", "serving_state", "source_data_num_rows", "primary_key_columns", "scoring_profile_count", "auto_suspend", "refresh_mode", "vector_indexes"]}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "columns-come-from-the-defining-query",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE narrow\n  ON body WAREHOUSE = fl_cortex_wh TARGET_LAG = '1 hour'\n  AS (SELECT id, body FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"columns\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "[\"ID\",\"BODY\"]"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "embedding-model-defaults",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"embedding_model\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "snowflake-arctic-embed-m-v1.5"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "embedding-model-is-kept-when-named",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE named\n  ON body WAREHOUSE = fl_cortex_wh TARGET_LAG = '1 hour'\n  EMBEDDING_MODEL = 'snowflake-arctic-embed-l-v2.0'\n  COMMENT = 'a comment'\n  AS (SELECT id, body FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"embedding_model\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["snowflake-arctic-embed-l-v2.0", "a comment"]]}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "warehouse-is-required",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s2 ON body TARGET_LAG = '1 hour'\n  AS (SELECT id, body FROM docs)",
+       "expect": {"error": {"messageContains": "Missing option(s): [WAREHOUSE]"}}}
+    ]},
+    {"name": "target-lag-is-required",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s3 ON body WAREHOUSE = fl_cortex_wh\n  AS (SELECT id, body FROM docs)",
+       "expect": {"error": {"messageContains": "Missing option(s): [TARGET_LAG]"}}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "option-order-is-free",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE swapped\n  ON body TARGET_LAG = '2 hours' WAREHOUSE = fl_cortex_wh\n  AS (SELECT id, body FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"target_lag\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "2 hours"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "defining-query-needs-no-parentheses",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE bare\n  ON body WAREHOUSE = fl_cortex_wh TARGET_LAG = '1 hour'\n  AS SELECT id, body FROM docs"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "search-column-must-be-projected",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s4 ON nosuch WAREHOUSE = fl_cortex_wh TARGET_LAG = '1 hour'\n  AS (SELECT id, body FROM docs)",
+       "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "attribute-column-must-be-projected",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s5 ON body ATTRIBUTES nosuch\n  WAREHOUSE = fl_cortex_wh TARGET_LAG = '1 hour'\n  AS (SELECT id, body FROM docs)",
+       "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "describe-returns-the-one-service-in-the-show-shape",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "DESCRIBE CORTEX SEARCH SERVICE s1",
+       "expect": {"rowCount": 1,
+                  "columns": ["created_on", "name", "database_name", "schema_name", "target_lag", "warehouse", "search_column", "attribute_columns", "columns", "definition", "comment", "embedding_model", "indexing_state", "serving_state", "source_data_num_rows", "primary_key_columns", "scoring_profile_count", "auto_suspend", "refresh_mode", "vector_indexes"]}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "S1"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "describe-accepts-the-short-spelling",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "DESC CORTEX SEARCH SERVICE s1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "S1"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "describe-missing-service-reports-it-fully-qualified",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live)"},
+     "steps": [
+      {"sql": "DESCRIBE CORTEX SEARCH SERVICE nosuch",
+       "expect": {"error": {"messageContains": "Cortex Search Service 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."}}}
+    ]},
+    {"name": "drop-missing-service-is-an-error",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live)"},
+     "steps": [
+      {"sql": "DROP CORTEX SEARCH SERVICE nosuch",
+       "expect": {"error": {"messageContains": "Cortex Search Service 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."}}}
+    ]},
+    {"name": "drop-if-exists-forgives-a-missing-service",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live)"},
+     "steps": [
+      {"sql": "DROP CORTEX SEARCH SERVICE IF EXISTS nosuch"}
+    ]},
+    {"name": "drop-removes-the-service",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "DROP CORTEX SEARCH SERVICE s1"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 0}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "create-or-replace-redefines-the-service",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh2 WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "CREATE OR REPLACE CORTEX SEARCH SERVICE s1\n  ON cat WAREHOUSE = fl_cortex_wh2 TARGET_LAG = '5 minutes'\n  AS (SELECT id, cat FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"search_column\", \"warehouse\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["CAT", "FL_CORTEX_WH2"]]}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh2"}
+    ]},
+    {"name": "create-if-not-exists-keeps-the-first-definition",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh2 WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE IF NOT EXISTS s1\n  ON cat WAREHOUSE = fl_cortex_wh2 TARGET_LAG = '5 minutes'\n  AS (SELECT id, cat FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"search_column\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "BODY"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh2"}
+    ]},
+    {"name": "alter-sets-and-unsets-the-comment",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "ALTER CORTEX SEARCH SERVICE s1 SET COMMENT = 'now commented'"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "now commented"}},
+      {"sql": "ALTER CORTEX SEARCH SERVICE s1 UNSET COMMENT"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NULL"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "alter-missing-service-is-an-error",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live)"},
+     "steps": [
+      {"sql": "ALTER CORTEX SEARCH SERVICE nosuch SET COMMENT = 'x'",
+       "expect": {"error": {"messageContains": "Cortex Search Service"}}}
+    ]},
+    {"name": "alter-if-exists-forgives-a-missing-service",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live)"},
+     "steps": [
+      {"sql": "ALTER CORTEX SEARCH SERVICE IF EXISTS nosuch SET COMMENT = 'x'"}
+    ]},
+    {"name": "show-filters-by-like",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE other ON body WAREHOUSE = fl_cortex_wh TARGET_LAG = '1 hour'\n  AS (SELECT id, body FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES", "expect": {"rowCount": 2}},
+      {"sql": "SHOW CORTEX SEARCH SERVICES LIKE 'S%'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "S1"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "show-scopes-to-a-schema",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES IN SCHEMA test_db.test_schema", "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "show-scopes-to-a-database",
+     "skip": {"backends": ["snowflake"], "reason": "Cortex Search needs an account tier with Cortex (the Java class probed and skipped on live); also creates warehouses"},
+     "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS fl_cortex_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)"},
+      {"sql": "INSERT INTO docs VALUES (1, 'the battery lasts', 'power')"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE s1\n  ON body\n  ATTRIBUTES cat\n  WAREHOUSE = fl_cortex_wh\n  TARGET_LAG = '1 hour'\n  AS (SELECT id, body, cat FROM docs)"},
+      {"sql": "SHOW CORTEX SEARCH SERVICES IN DATABASE test_db", "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE IF EXISTS fl_cortex_wh"}
+    ]},
+    {"name": "keywords-remain-identifiers", "steps": [
+      {"sql": "CREATE TABLE cortex(search VARCHAR, service VARCHAR, attributes VARCHAR)"},
+      {"sql": "INSERT INTO cortex VALUES ('a', 'b', 'c')"},
+      {"sql": "SELECT search, service, attributes FROM cortex", "expect": {"rows": [["a", "b", "c"]]}}
+    ]},
+    {"name": "cortex-functions-are-unknown-without-the-pack",
+     "skip": {"backends": ["snowflake"], "reason": "On an account WITH Cortex the function exists; this pins the bare-engine/featureless-account refusal"},
+     "steps": [
+      {"sql": "SELECT SNOWFLAKE.CORTEX.SENTIMENT('x')",
+       "expect": {"error": {"messageContains": "SNOWFLAKE.CORTEX.SENTIMENT"}}}
+    ]}
+  ]
+}

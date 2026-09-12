@@ -1,0 +1,145 @@
+{
+  "suite": "functions-datetime-ext",
+  "description": "The extended date/time function surface: DATEADD and DATEDIFF across day, week, month, quarter, year and hour; DATE_PART and EXTRACT for every field; DATE_TRUNC at year, month, day, hour and quarter; LAST_DAY over a 31-day month and both a leap and a non-leap February; NEXT_DAY / PREVIOUS_DAY; ADD_MONTHS in both directions; MONTHS_BETWEEN; DATE_FROM_PARTS and TIMESTAMP_FROM_PARTS; the YEAR / MONTH / DAY / HOUR / MINUTE / SECOND / QUARTER / WEEKOFYEAR / DAYOFYEAR extractors; and CURRENT_TIME answering. Converted 1:1 from functions/DateTimeFunctionsExtTest (now retired); the Java class compared java.time objects and their toString prefixes, so the converted suite reads TO_VARCHAR and asserts the same prefixes with STARTSWITH / CONTAINS in Snowflake's own rendering (a space separator and FF3, not java.time's T-form).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "dateadd-day", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATEADD('day', 5, '2024-01-10')), '2024-01-15')", "expect": {"value": "true"}}
+    ]},
+    {"name": "dateadd-month", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATEADD('month', 2, '2024-01-31')), '2024-03')", "expect": {"value": "true"}}
+    ]},
+    {"name": "dateadd-year", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATEADD('year', 1, '2024-06-15')), '2025-06-15')", "expect": {"value": "true"}}
+    ]},
+    {"name": "dateadd-week", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATEADD('week', 2, '2024-01-01')), '2024-01-15')", "expect": {"value": "true"}}
+    ]},
+    {"name": "dateadd-hour", "steps": [
+      {"sql": "SELECT CONTAINS(TO_VARCHAR(DATEADD('hour', 3, '2024-01-01T10:00:00')), '13:00')", "expect": {"value": "true"}}
+    ]},
+    {"name": "dateadd-quarter", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATEADD('quarter', 1, '2024-01-01')), '2024-04')", "expect": {"value": "true"}}
+    ]},
+    {"name": "datediff-day", "steps": [
+      {"sql": "SELECT DATEDIFF('day', '2024-01-01', '2024-01-11')", "expect": {"value": "10"}}
+    ]},
+    {"name": "datediff-month", "steps": [
+      {"sql": "SELECT DATEDIFF('month', '2024-01-01', '2024-03-01')", "expect": {"value": "2"}}
+    ]},
+    {"name": "datediff-year", "steps": [
+      {"sql": "SELECT DATEDIFF('year', '2020-01-01', '2023-01-01')", "expect": {"value": "3"}}
+    ]},
+    {"name": "datediff-hour", "steps": [
+      {"sql": "SELECT DATEDIFF('hour', '2024-01-01T00:00:00', '2024-01-02T00:00:00')", "expect": {"value": "24"}}
+    ]},
+    {"name": "datediff-week", "steps": [
+      {"sql": "SELECT DATEDIFF('week', '2024-01-01', '2024-01-15')", "expect": {"value": "2"}}
+    ]},
+    {"name": "date-part-year", "steps": [
+      {"sql": "SELECT DATE_PART('year', '2024-06-15'::DATE)", "expect": {"value": "2024"}}
+    ]},
+    {"name": "date-part-month", "steps": [
+      {"sql": "SELECT DATE_PART('month', '2024-06-15'::DATE)", "expect": {"value": "6"}}
+    ]},
+    {"name": "date-part-day", "steps": [
+      {"sql": "SELECT DATE_PART('day', '2024-06-15'::DATE)", "expect": {"value": "15"}}
+    ]},
+    {"name": "date-part-quarter", "steps": [
+      {"sql": "SELECT DATE_PART('quarter', '2024-06-15'::DATE)", "expect": {"value": "2"}}
+    ]},
+    {"name": "date-part-hour", "steps": [
+      {"sql": "SELECT DATE_PART('hour', '2024-06-15T10:30:45'::TIMESTAMP)", "expect": {"value": "10"}}
+    ]},
+    {"name": "date-part-minute", "steps": [
+      {"sql": "SELECT DATE_PART('minute', '2024-06-15T10:30:45'::TIMESTAMP)", "expect": {"value": "30"}}
+    ]},
+    {"name": "date-part-second", "steps": [
+      {"sql": "SELECT DATE_PART('second', '2024-06-15T10:30:45'::TIMESTAMP)", "expect": {"value": "45"}}
+    ]},
+    {"name": "extract", "steps": [
+      {"sql": "SELECT EXTRACT('year', '2024-06-15'::DATE)", "expect": {"value": "2024"}}
+    ]},
+    {"name": "date-trunc-year", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATE_TRUNC('year', '2024-06-15'::DATE)), '2024-01-01')", "expect": {"value": "true"}}
+    ]},
+    {"name": "date-trunc-month", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATE_TRUNC('month', '2024-06-15'::DATE)), '2024-06-01')", "expect": {"value": "true"}}
+    ]},
+    {"name": "date-trunc-day", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATE_TRUNC('day', '2024-06-15T10:30:00'::TIMESTAMP)), '2024-06-15 00:00')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "date-trunc-hour", "steps": [
+      {"sql": "SELECT CONTAINS(TO_VARCHAR(DATE_TRUNC('hour', '2024-06-15T10:30:45'::TIMESTAMP)), '10:00')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "date-trunc-quarter", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(DATE_TRUNC('quarter', '2024-06-15'::DATE)), '2024-04-01')", "expect": {"value": "true"}}
+    ]},
+    {"name": "last-day-of-january", "steps": [
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2024-01-15'::DATE))", "expect": {"value": "2024-01-31"}}
+    ]},
+    {"name": "last-day-of-a-leap-february", "steps": [
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2024-02-01'::DATE))", "expect": {"value": "2024-02-29"}}
+    ]},
+    {"name": "last-day-of-a-non-leap-february", "steps": [
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2023-02-01'::DATE))", "expect": {"value": "2023-02-28"}}
+    ]},
+    {"name": "next-day", "steps": [
+      {"sql": "SELECT TO_VARCHAR(NEXT_DAY('2024-01-01'::DATE, 'Tuesday'))", "expect": {"value": "2024-01-02"}}
+    ]},
+    {"name": "previous-day", "steps": [
+      {"sql": "SELECT TO_VARCHAR(PREVIOUS_DAY('2024-01-05'::DATE, 'Monday'))", "expect": {"value": "2024-01-01"}}
+    ]},
+    {"name": "add-months", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ADD_MONTHS('2024-01-15', 2))", "expect": {"value": "2024-03-15 00:00:00.000"}}
+    ]},
+    {"name": "add-months-negative", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ADD_MONTHS('2024-01-15', -2))", "expect": {"value": "2023-11-15 00:00:00.000"}}
+    ]},
+    {"name": "months-between", "steps": [
+      {"sql": "SELECT ABS(MONTHS_BETWEEN('2024-03-15'::DATE, '2024-01-15'::DATE) - 2.0) < 0.01",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "date-from-parts", "steps": [
+      {"sql": "SELECT TO_VARCHAR(DATE_FROM_PARTS(2024, 6, 15))", "expect": {"value": "2024-06-15"}}
+    ]},
+    {"name": "timestamp-from-parts", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TIMESTAMP_FROM_PARTS(2024, 6, 15, 10, 30, 45))",
+       "expect": {"value": "2024-06-15 10:30:45.000"}}
+    ]},
+    {"name": "year", "steps": [
+      {"sql": "SELECT YEAR('2024-06-15'::DATE)", "expect": {"value": "2024"}}
+    ]},
+    {"name": "month", "steps": [
+      {"sql": "SELECT MONTH('2024-06-15'::DATE)", "expect": {"value": "6"}}
+    ]},
+    {"name": "day", "steps": [
+      {"sql": "SELECT DAY('2024-06-15'::DATE)", "expect": {"value": "15"}}
+    ]},
+    {"name": "hour", "steps": [
+      {"sql": "SELECT HOUR('2024-06-15T10:30:45'::TIMESTAMP)", "expect": {"value": "10"}}
+    ]},
+    {"name": "minute", "steps": [
+      {"sql": "SELECT MINUTE('2024-06-15T10:30:45'::TIMESTAMP)", "expect": {"value": "30"}}
+    ]},
+    {"name": "second", "steps": [
+      {"sql": "SELECT SECOND('2024-06-15T10:30:45'::TIMESTAMP)", "expect": {"value": "45"}}
+    ]},
+    {"name": "quarter", "steps": [
+      {"sql": "SELECT QUARTER('2024-06-15'::DATE), QUARTER('2024-01-01'::DATE), QUARTER('2024-12-31'::DATE)",
+       "expect": {"rows": [["2", "1", "4"]]}}
+    ]},
+    {"name": "week-of-year", "steps": [
+      {"sql": "SELECT WEEKOFYEAR('2024-01-01'::DATE)", "expect": {"value": "1"}}
+    ]},
+    {"name": "day-of-year", "steps": [
+      {"sql": "SELECT DAYOFYEAR('2024-01-01'::DATE), DAYOFYEAR('2024-12-31'::DATE)",
+       "expect": {"rows": [["1", "366"]]}}
+    ]},
+    {"name": "current-time-answers", "steps": [
+      {"sql": "SELECT IFF(CURRENT_TIME() IS NULL, 'null', 'set')", "expect": {"value": "set"}}
+    ]}
+  ]
+}

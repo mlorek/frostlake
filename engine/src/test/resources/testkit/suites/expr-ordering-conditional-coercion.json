@@ -1,0 +1,81 @@
+{
+  "suite": "expr-ordering-conditional-coercion",
+  "description": "GREATEST/LEAST convert their arguments before ordering and answer with the CONVERTED value: a string joins the other family whichever side it is on (numbers, dates), BOOLEAN takes the ordering, a scalar VARIANT unwraps, ordinary same-family calls are untouched; an unreadable string fails per ROW in the account's words (Numeric value / Date ... is not recognized) while a BINARY beside another family is refused at COMPILE time naming the operand (the _IGNORE_NULLS spellings too), never leaking an internal exception, and a view over the same body is refused rather than created. Converted 1:1 from expressions/OrderingConditionalCoercionTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "a-string-joins-the-other-family", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "SELECT GREATEST(n, '5') AS c FROM qx", "expect": {"value": "5"}},
+      {"sql": "SELECT GREATEST('5', n) AS c FROM qx", "expect": {"value": "5"}},
+      {"sql": "SELECT LEAST(n, '5') AS c FROM qx", "expect": {"value": "1"}},
+      {"sql": "SELECT GREATEST(d, '2027-01-01') AS c FROM qx", "expect": {"value": "2027-01-01"}},
+      {"sql": "SELECT GREATEST('2027-01-01', d) AS c FROM qx", "expect": {"value": "2027-01-01"}}
+    ]},
+    {"name": "boolean-takes-it-and-a-variant-unwraps", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "SELECT GREATEST(bo, n) AS c FROM qx", "expect": {"value": "true"}},
+      {"sql": "SELECT GREATEST(n, bo) AS c FROM qx", "expect": {"value": "true"}},
+      {"sql": "SELECT GREATEST(v, n) AS c FROM qx", "expect": {"value": "1"}},
+      {"sql": "SELECT GREATEST(n, v) AS c FROM qx", "expect": {"value": "1"}}
+    ]},
+    {"name": "the-ordinary-calls-still-answer", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "SELECT GREATEST(n, 2.5) AS c FROM qx", "expect": {"value": "2.5"}},
+      {"sql": "SELECT GREATEST(1, 2, 3) AS c FROM qx", "expect": {"value": "3"}},
+      {"sql": "SELECT GREATEST(s, 'zzz') AS c FROM qx", "expect": {"value": "zzz"}},
+      {"sql": "SELECT GREATEST(b, TO_BINARY('41')) AS c FROM qx", "expect": {"value": "4142"}}
+    ]},
+    {"name": "an-unreadable-string-fails-at-row-time", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "SELECT GREATEST(n, s) AS c FROM qx", "expect": {"error": {"messageContains": "Numeric value 'abc' is not recognized"}}},
+      {"sql": "SELECT GREATEST(d, s) AS c FROM qx", "expect": {"error": {"messageContains": "Date 'abc' is not recognized"}}}
+    ]},
+    {"name": "a-binary-beside-another-family-is-refused", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "SELECT GREATEST(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}},
+      {"sql": "SELECT LEAST(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}},
+      {"sql": "SELECT GREATEST(s, b) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.B' of type [BINARY(4)] into expected type [VARCHAR(10)]"}}},
+      {"sql": "SELECT GREATEST(b, n) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.N' of type [NUMBER(38,0)] into expected type [BINARY(4)]"}}},
+      {"sql": "SELECT GREATEST(b, d) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.D' of type [DATE] into expected type [BINARY(4)]"}}},
+      {"sql": "SELECT GREATEST(b, bo) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.BO' of type [BOOLEAN] into expected type [BINARY(4)]"}}},
+      {"sql": "SELECT GREATEST(b, 'abc') AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter ''abc'' of type [VARCHAR(3)] into expected type [BINARY(4)]"}}},
+      {"sql": "SELECT GREATEST_IGNORE_NULLS(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}},
+      {"sql": "SELECT LEAST_IGNORE_NULLS(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}}
+    ]},
+    {"name": "no-internal-exception-escapes", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "SELECT GREATEST(b, s) AS c FROM qx", "expect": {"error": {"messageContains": "SQL compilation error"}}},
+      {"sql": "SELECT LEAST(s, b) AS c FROM qx", "expect": {"error": {"messageContains": "SQL compilation error"}}},
+      {"sql": "SELECT GREATEST(b, v) AS c FROM qx", "expect": {"error": {"messageContains": "SQL compilation error"}}},
+      {"sql": "SELECT GREATEST(b, n) AS c FROM qx", "expect": {"error": {"messageContains": "SQL compilation error"}}},
+      {"sql": "SELECT LEAST_IGNORE_NULLS(b, d) AS c FROM qx", "expect": {"error": {"messageContains": "SQL compilation error"}}}
+    ]},
+    {"name": "a-view-over-the-same-body-is-refused", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT GREATEST(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT LEAST(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT GREATEST(s, b) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT GREATEST(b, n) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter"}}}
+    ]}
+  ]
+}

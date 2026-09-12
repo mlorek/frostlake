@@ -1,0 +1,20 @@
+{
+  "suite": "dml-merge-multi-match",
+  "description": "A target row joining more than one source row makes a merge-UPDATE non-deterministic and Snowflake refuses it (ERROR_ON_NONDETERMINISTIC_MERGE default TRUE, Duplicate row detected during DML action) with the target untouched and no duplicate falling through to WHEN NOT MATCHED; the rule is UPDATE-specific and clause-sensitive - the same duplicate join runs with only WHEN MATCHED THEN DELETE, and with a WHEN MATCHED AND that narrows the duplicates to one source row. Converted 1:1 from dml/MergeMultiMatchTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "multi-matched-source-does-not-insert-a-duplicate", "steps": [
+      {"sql": "CREATE TABLE tgt (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO tgt VALUES (1, 'x')"},
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'a'), (1, 'b')"},
+      {"sql": "MERGE INTO tgt USING src ON tgt.id = src.id WHEN MATCHED THEN UPDATE SET v = src.v WHEN NOT MATCHED THEN INSERT (id, v) VALUES (src.id, src.v)",
+       "expect": {"error": {"messageContains": "Duplicate row detected during DML action"}}},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "1"}},
+      {"sql": "MERGE INTO tgt USING src ON tgt.id = src.id WHEN MATCHED AND src.v = 'a' THEN UPDATE SET v = src.v"},
+      {"sql": "SELECT v FROM tgt", "expect": {"value": "a"}},
+      {"sql": "MERGE INTO tgt USING src ON tgt.id = src.id WHEN MATCHED THEN DELETE"},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "0"}}
+    ]}
+  ]
+}

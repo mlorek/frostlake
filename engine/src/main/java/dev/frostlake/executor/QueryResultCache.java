@@ -39,6 +39,9 @@ import java.util.UUID;
  *
  * <p>Cached RESULTS stay shared across sessions: a query ID is a handle anyone holding it can scan,
  * which is how Snowflake behaves. Only the history of "what did I run last" is per session.
+ *
+ * <p>A statement that FAILED gets an ID too, and LAST_QUERY_ID names it, but it has no result: those
+ * IDs are remembered, bounded like the results, so RESULT_SCAN can refuse one with the reason.
  */
 public class QueryResultCache {
 
@@ -54,6 +57,7 @@ public class QueryResultCache {
     private final int maxCachedResults;
     private final Map<String, CachedResult> cache;
     private final Map<String, Deque<String>> historyBySession;
+    private final Map<String, Boolean> failedQueryIds;
     private final ThreadLocal<String> boundSession = new ThreadLocal<>();
 
     public QueryResultCache() {
@@ -75,6 +79,12 @@ public class QueryResultCache {
             @Override
             protected boolean removeEldestEntry(final Map.Entry<String, Deque<String>> eldest) {
                 return size() > MAX_TRACKED_SESSIONS;
+            }
+        };
+        this.failedQueryIds = new LinkedHashMap<String, Boolean>(16, 0.75f, false) {
+            @Override
+            protected boolean removeEldestEntry(final Map.Entry<String, Boolean> eldest) {
+                return size() > maxCachedResults;
             }
         };
     }
@@ -197,6 +207,9 @@ public class QueryResultCache {
         synchronized (historyBySession) {
             historyBySession.clear();
         }
+        synchronized (failedQueryIds) {
+            failedQueryIds.clear();
+        }
     }
 
     /**
@@ -219,6 +232,33 @@ public class QueryResultCache {
         final String queryId = generateQueryId();
         pushQueryId(queryId);
         return queryId;
+    }
+
+    /**
+     * Generate the query ID of a statement that FAILED. It enters the session's history like any other,
+     * so LAST_QUERY_ID names it, and is remembered as failed, so RESULT_SCAN refuses it with the reason.
+     *
+     * @param sql the SQL statement
+     * @return the generated query ID
+     */
+    public String generateFailedQueryId(final String sql) {
+        final String queryId = generateQueryId(sql);
+        synchronized (failedQueryIds) {
+            failedQueryIds.put(queryId, Boolean.TRUE);
+        }
+        return queryId;
+    }
+
+    /**
+     * Whether a query ID names a statement that failed.
+     *
+     * @param queryId the query ID
+     * @return true when the statement it names failed
+     */
+    public boolean hasFailed(final String queryId) {
+        synchronized (failedQueryIds) {
+            return failedQueryIds.containsKey(queryId);
+        }
     }
 
     private void pushQueryId(final String queryId) {

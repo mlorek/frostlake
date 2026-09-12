@@ -1,0 +1,88 @@
+{
+  "suite": "scripting-identifier-resolution",
+  "description": "A bare identifier in a scripting block must name something IN SCOPE, or the block is refused. Frostlake used to resolve an unknown name to NULL, so RETURN missing_name quietly gave back NULL where live raises invalid identifier 'MISSING_NAME' - a typo'd variable produced a plausible wrong answer instead of an error. The whole block is compiled BEFORE any of it runs, so a reference on a branch this execution will never take is refused just the same, which is the measurement that rules out checking the name when it is evaluated. Scope is ORDERED (a name is invisible before its own declaration), an inner block's variables are gone once it ends, and a loop counter and a cursor record both end with their loop. Assignment to an undeclared name, an unknown cursor name, an unknown exception name and a QUOTED unknown name are all refused, the last reported WITH its quotes. The refusals are asserted from BOTH sides on purpose, because refusing too much is the worse failure: every shape live accepts has its own test here - declared variables, loop counters, a cursor record FIELD, procedure parameters, names inside EMBEDDED SQL (which belong to the query layer and this pass must not touch), the script-supplied SQLCODE and SQLROWCOUNT (which need no declaration and answer NULL outside a handler, so the validator must let through a name that resolves to nothing at run time), and a DECLAREd exception. A bad name in a PROCEDURE body surfaces at CALL and not at CREATE, because live compiles a body when it runs it. The refusal carries the POSITION of the name it names. And a :name in a SCRIPTING EXPRESSION names a block variable, so an unknown one is refused exactly like a bare identifier, at the COLON - this used to be ACCEPTED outright - and it is echoed AS WRITTEN rather than folded, so :nope reports 'nope' and :NoPe reports 'NoPe' where a bare identifier in the same position is upper-cased. Converted 1:1 from scripting/ScriptingIdentifierResolutionTest (now retired); the Java computed each expected offset with sql.indexOf(token), and the numbers that rule produces are written out here beside the statements they come from.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "an-undeclared-name-is-refused", "steps": [
+      {"sql": "BEGIN RETURN missing_name; END", "expect": {"error": {"messageContains": "invalid identifier 'MISSING_NAME'"}}}
+    ]},
+    {"name": "an-unreachable-reference-is-refused-too", "steps": [
+      {"sql": "BEGIN IF (1 = 2) THEN RETURN missing_name; END IF; RETURN 99; END", "expect": {"error": {"messageContains": "invalid identifier 'MISSING_NAME'"}}},
+      {"sql": "BEGIN LET n INTEGER := 0; WHILE (n > 0) DO RETURN missing_name; END WHILE; RETURN 98; END", "expect": {"error": {"messageContains": "invalid identifier 'MISSING_NAME'"}}}
+    ]},
+    {"name": "a-bare-column-name-is-refused", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, nm VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "BEGIN RETURN id; END", "expect": {"error": {"messageContains": "invalid identifier 'ID'"}}}
+    ]},
+    {"name": "use-before-declaration-is-refused", "steps": [
+      {"sql": "BEGIN RETURN later_v; LET later_v INTEGER := 1; END", "expect": {"error": {"messageContains": "invalid identifier 'LATER_V'"}}}
+    ]},
+    {"name": "an-inner-blocks-variable-is-refused-outside", "steps": [
+      {"sql": "BEGIN BEGIN LET inner_v INTEGER := 1; END; RETURN inner_v; END", "expect": {"error": {"messageContains": "invalid identifier 'INNER_V'"}}}
+    ]},
+    {"name": "loop-variables-are-refused-after-the-loop", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, nm VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "BEGIN FOR i IN 1 TO 2 DO NULL; END FOR; RETURN i; END", "expect": {"error": {"messageContains": "invalid identifier 'I'"}}},
+      {"sql": "DECLARE c CURSOR FOR SELECT id, nm FROM t; BEGIN FOR r IN c DO NULL; END FOR; RETURN r.nm; END", "expect": {"error": {"messageContains": "invalid identifier 'R"}}}
+    ]},
+    {"name": "assigning-to-an-undeclared-name-is-refused", "steps": [
+      {"sql": "BEGIN missing_name := 1; RETURN 2; END", "expect": {"error": {"messageContains": "invalid identifier 'MISSING_NAME'"}}}
+    ]},
+    {"name": "unknown-cursor-and-exception-names-are-refused", "steps": [
+      {"sql": "BEGIN OPEN nocur; RETURN 1; END", "expect": {"error": {"messageContains": "invalid identifier 'NOCUR'"}}},
+      {"sql": "BEGIN RAISE nosuch_exc; RETURN 1; END", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH_EXC'"}}}
+    ]},
+    {"name": "a-quoted-unknown-name-is-refused", "steps": [
+      {"sql": "BEGIN RETURN \"missing_name\"; END", "expect": {"error": {"messageContains": "invalid identifier '\"missing_name\"'"}}}
+    ]},
+    {"name": "declared-variables-and-loop-counters-resolve", "steps": [
+      {"sql": "DECLARE v INTEGER DEFAULT 7; BEGIN RETURN v; END", "expect": {"value": 7}},
+      {"sql": "BEGIN LET total INTEGER := 0; FOR i IN 1 TO 3 DO total := total + i; END FOR; RETURN total; END", "expect": {"value": 6}},
+      {"sql": "BEGIN LET x INTEGER := 1; RETURN x + 1; END", "expect": {"value": 2}}
+    ]},
+    {"name": "a-cursor-record-field-resolves", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, nm VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "DECLARE c CURSOR FOR SELECT id, nm FROM t; BEGIN FOR r IN c DO RETURN r.nm; END FOR; RETURN 'none'; END", "expect": {"value": "a"}}
+    ]},
+    {"name": "procedure-parameters-resolve", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE ap(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN x + 1; END $$"},
+      {"sql": "CALL ap(4)", "expect": {"value": 5}}
+    ]},
+    {"name": "a-bad-name-in-a-procedure-body-fails-at-call-not-at-create", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE bp(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN y + 1; END $$"},
+      {"sql": "CALL bp(4)", "expect": {"error": {"messageContains": "invalid identifier 'Y'"}}}
+    ]},
+    {"name": "names-inside-embedded-sql-are-left-to-the-query-layer", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, nm VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "DECLARE v INTEGER DEFAULT 2; BEGIN RETURN (SELECT nm FROM t WHERE id = :v); END", "expect": {"value": "b"}},
+      {"sql": "BEGIN RETURN (SELECT COUNT(*) FROM t); END", "expect": {"value": 2}},
+      {"sql": "DECLARE v VARCHAR; BEGIN SELECT nm INTO :v FROM t WHERE id = 1; RETURN IFF(v = 'a', 1, 0); END", "expect": {"value": 1}}
+    ]},
+    {"name": "script-supplied-names-resolve", "steps": [
+      {"sql": "BEGIN RETURN SQLCODE; END", "expect": {"rows": [[null]]}},
+      {"sql": "BEGIN SELECT 1; RETURN SQLROWCOUNT; END", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-declared-exception-resolves", "steps": [
+      {"sql": "DECLARE e EXCEPTION (-20001, 'boom'); BEGIN RAISE e; EXCEPTION WHEN e THEN RETURN 'caught'; END", "expect": {"value": "caught"}}
+    ]},
+    {"name": "the-refusal-carries-the-identifiers-position", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, nm VARCHAR)"},
+      {"sql": "BEGIN RETURN missing_name; END", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 13\ninvalid identifier 'MISSING_NAME'"}}},
+      {"sql": "BEGIN IF (1 = 2) THEN RETURN missing_name; END IF; RETURN 99; END", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 29\ninvalid identifier 'MISSING_NAME'"}}},
+      {"sql": "BEGIN RETURN id; END", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 13\ninvalid identifier 'ID'"}}}
+    ]},
+    {"name": "an-unknown-bind-name-in-a-scripting-expression-is-refused-at-its-colon", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, nm VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "BEGIN RETURN :nope; END", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 13\ninvalid identifier 'nope'"}}},
+      {"sql": "BEGIN RETURN :NoPe; END", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 13\ninvalid identifier 'NoPe'"}}},
+      {"sql": "BEGIN RETURN (SELECT :nope); END", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 21\ninvalid identifier 'nope'"}}},
+      {"sql": "BEGIN RETURN (SELECT nm FROM t WHERE id = :nope); END", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 42\ninvalid identifier 'nope'"}}},
+      {"sql": "DECLARE nope INTEGER DEFAULT 7; BEGIN RETURN :nope; END", "expect": {"value": 7}}
+    ]}
+  ]
+}

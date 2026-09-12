@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  *
  * <p>Measured but deliberately not asserted here: for a CALL left open with no arguments live adds a
  * second, BACKWARDS line naming the '(' it never closed ({@code SELECT MAX(} is '&lt;EOF&gt;' at 11 then
- * '(' at 10). Frostlake reports the first line only.
+ * '(' at 10). {@link UnclosedCallLinesTest} asserts that line for a call standing in a SELECT list.
  */
 public class StackedSyntaxErrorTest extends BaseDatabaseTest {
 

@@ -1,0 +1,80 @@
+{
+  "suite": "query-incompatible-branch",
+  "description": "A conditional whose branches cannot be brought together is refused at COMPILE time, and live words it by naming the offending OPERAND and the type the FIRST branch expects - so the sentence TURNS AROUND with the branches. ONE pair is worded differently and does NOT turn around: a TIME beside a TIMESTAMP reads 'incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]' with the TIME first however it was written, while a TIME beside a DATE is not that case and takes the ordinary sentence. What CONVERTS is as much the point as what does not: a VARIANT absorbs every scalar but a BINARY, a string meets a number, a temporal or a boolean, and a number meets a boolean - those must keep running, and a conversion that can only fail at ROW time is still accepted here. The SCALAR families are the whole scope; live is just as strict about OBJECT and ARRAY beside a scalar, but that half is measured and left to its own task. The other conditionals - IFF, CASE, NVL, GREATEST, LEAST - answer the same way. Converted 1:1 from query/IncompatibleBranchTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-temporal-beside-a-number-is-refused-both-ways", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ic (i INT, v VARCHAR(5), d DATE, tm TIME, ts TIMESTAMP_NTZ, bo BOOLEAN, bn BINARY(5), va VARIANT, ob OBJECT, ar ARRAY, tl TIMESTAMP_LTZ, vn VARCHAR(5))"},
+      {"sql": "INSERT INTO ic SELECT 1, 'ab', '2020-01-01', '10:00:00', '2020-01-01 10:00:00', TRUE, TO_BINARY('AB'), TO_VARIANT(1), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), '2020-01-01 10:00:00', '123'"},
+      {"sql": "SELECT COALESCE(d, i) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.I' of type [NUMBER(38,0)] into expected type [DATE]"}}},
+      {"sql": "SELECT COALESCE(i, d) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.D' of type [DATE] into expected type [NUMBER(38,0)]"}}},
+      {"sql": "SELECT COALESCE(ts, i) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.I' of type [NUMBER(38,0)] into expected type [TIMESTAMP_NTZ(9)]"}}},
+      {"sql": "SELECT COALESCE(i, ts) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.TS' of type [TIMESTAMP_NTZ(9)] into expected type [NUMBER(38,0)]"}}},
+      {"sql": "SELECT COALESCE(tm, i) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.I' of type [NUMBER(38,0)] into expected type [TIME(9)]"}}},
+      {"sql": "SELECT COALESCE(i, tm) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.TM' of type [TIME(9)] into expected type [NUMBER(38,0)]"}}}
+    ]},
+    {"name": "a-boolean-and-a-binary-meet-very-little", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ic (i INT, v VARCHAR(5), d DATE, tm TIME, ts TIMESTAMP_NTZ, bo BOOLEAN, bn BINARY(5), va VARIANT, ob OBJECT, ar ARRAY, tl TIMESTAMP_LTZ, vn VARCHAR(5))"},
+      {"sql": "INSERT INTO ic SELECT 1, 'ab', '2020-01-01', '10:00:00', '2020-01-01 10:00:00', TRUE, TO_BINARY('AB'), TO_VARIANT(1), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), '2020-01-01 10:00:00', '123'"},
+      {"sql": "SELECT COALESCE(bo, d) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.D' of type [DATE] into expected type [BOOLEAN]"}}},
+      {"sql": "SELECT COALESCE(d, bo) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.BO' of type [BOOLEAN] into expected type [DATE]"}}},
+      {"sql": "SELECT COALESCE(tm, bo) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.BO' of type [BOOLEAN] into expected type [TIME(9)]"}}},
+      {"sql": "SELECT COALESCE(bo, bn) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.BN' of type [BINARY(5)] into expected type [BOOLEAN]"}}},
+      {"sql": "SELECT COALESCE(bn, bo) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.BO' of type [BOOLEAN] into expected type [BINARY(5)]"}}},
+      {"sql": "SELECT COALESCE(bn, i) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.I' of type [NUMBER(38,0)] into expected type [BINARY(5)]"}}},
+      {"sql": "SELECT COALESCE(bn, d) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.D' of type [DATE] into expected type [BINARY(5)]"}}},
+      {"sql": "SELECT COALESCE(v, bn) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.BN' of type [BINARY(5)] into expected type [VARCHAR(5)]"}}}
+    ]},
+    {"name": "a-time-beside-a-date-takes-the-ordinary-sentence", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ic (i INT, v VARCHAR(5), d DATE, tm TIME, ts TIMESTAMP_NTZ, bo BOOLEAN, bn BINARY(5), va VARIANT, ob OBJECT, ar ARRAY, tl TIMESTAMP_LTZ, vn VARCHAR(5))"},
+      {"sql": "INSERT INTO ic SELECT 1, 'ab', '2020-01-01', '10:00:00', '2020-01-01 10:00:00', TRUE, TO_BINARY('AB'), TO_VARIANT(1), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), '2020-01-01 10:00:00', '123'"},
+      {"sql": "SELECT COALESCE(d, tm) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.TM' of type [TIME(9)] into expected type [DATE]"}}},
+      {"sql": "SELECT COALESCE(tm, d) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.D' of type [DATE] into expected type [TIME(9)]"}}}
+    ]},
+    {"name": "a-time-beside-a-timestamp-has-its-own-sentence", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ic (i INT, v VARCHAR(5), d DATE, tm TIME, ts TIMESTAMP_NTZ, bo BOOLEAN, bn BINARY(5), va VARIANT, ob OBJECT, ar ARRAY, tl TIMESTAMP_LTZ, vn VARCHAR(5))"},
+      {"sql": "INSERT INTO ic SELECT 1, 'ab', '2020-01-01', '10:00:00', '2020-01-01 10:00:00', TRUE, TO_BINARY('AB'), TO_VARIANT(1), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), '2020-01-01 10:00:00', '123'"},
+      {"sql": "SELECT COALESCE(tm, ts) FROM ic", "expect": {"error": {"messageContains": "incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]"}}},
+      {"sql": "SELECT COALESCE(ts, tm) FROM ic", "expect": {"error": {"messageContains": "incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]"}}},
+      {"sql": "SELECT COALESCE(tm, tl) FROM ic", "expect": {"error": {"messageContains": "incompatible types: [TIME(9)] and [TIMESTAMP_LTZ(9)]"}}},
+      {"sql": "SELECT COALESCE(tl, tm) FROM ic", "expect": {"error": {"messageContains": "incompatible types: [TIME(9)] and [TIMESTAMP_LTZ(9)]"}}}
+    ]},
+    {"name": "every-conditional-answers-the-same-way", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ic (i INT, v VARCHAR(5), d DATE, tm TIME, ts TIMESTAMP_NTZ, bo BOOLEAN, bn BINARY(5), va VARIANT, ob OBJECT, ar ARRAY, tl TIMESTAMP_LTZ, vn VARCHAR(5))"},
+      {"sql": "INSERT INTO ic SELECT 1, 'ab', '2020-01-01', '10:00:00', '2020-01-01 10:00:00', TRUE, TO_BINARY('AB'), TO_VARIANT(1), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), '2020-01-01 10:00:00', '123'"},
+      {"sql": "SELECT IFF(bo, d, tm) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.TM' of type [TIME(9)] into expected type [DATE]"}}},
+      {"sql": "SELECT CASE WHEN bo THEN d ELSE tm END FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.TM' of type [TIME(9)] into expected type [DATE]"}}},
+      {"sql": "SELECT NVL(d, i) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.I' of type [NUMBER(38,0)] into expected type [DATE]"}}},
+      {"sql": "SELECT GREATEST(d, i) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.I' of type [NUMBER(38,0)] into expected type [DATE]"}}},
+      {"sql": "SELECT LEAST(bo, d) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.D' of type [DATE] into expected type [BOOLEAN]"}}}
+    ]},
+    {"name": "a-variant-absorbs-everything-but-a-binary", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ic (i INT, v VARCHAR(5), d DATE, tm TIME, ts TIMESTAMP_NTZ, bo BOOLEAN, bn BINARY(5), va VARIANT, ob OBJECT, ar ARRAY, tl TIMESTAMP_LTZ, vn VARCHAR(5))"},
+      {"sql": "INSERT INTO ic SELECT 1, 'ab', '2020-01-01', '10:00:00', '2020-01-01 10:00:00', TRUE, TO_BINARY('AB'), TO_VARIANT(1), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), '2020-01-01 10:00:00', '123'"},
+      {"sql": "SELECT COALESCE(va, i) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(i, va) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(va, v) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(v, va) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(va, bo) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(va, ob) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(ar, va) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(va, va) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT IFF(bo, va, i) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(va, bn) FROM ic", "expect": {"error": {"messageContains": "Can not convert parameter 'IC.BN' of type [BINARY(5)] into expected type [VARIANT]"}}}
+    ]},
+    {"name": "the-convertible-pairings-still-run", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ic (i INT, v VARCHAR(5), d DATE, tm TIME, ts TIMESTAMP_NTZ, bo BOOLEAN, bn BINARY(5), va VARIANT, ob OBJECT, ar ARRAY, tl TIMESTAMP_LTZ, vn VARCHAR(5))"},
+      {"sql": "INSERT INTO ic SELECT 1, 'ab', '2020-01-01', '10:00:00', '2020-01-01 10:00:00', TRUE, TO_BINARY('AB'), TO_VARIANT(1), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), '2020-01-01 10:00:00', '123'"},
+      {"sql": "SELECT COALESCE(d, d) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(tm, tm) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(d, ts) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(vn, i) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(i, vn) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(bo, i) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(i, bo) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(i, NULL) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(NULL, d) FROM ic", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COALESCE(v, v) FROM ic", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

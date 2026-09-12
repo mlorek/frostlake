@@ -1,0 +1,25 @@
+{
+  "suite": "scripting-cursor-positional-bind",
+  "description": "A cursor query may carry POSITIONAL bind placeholders (?) supplied at OPEN through OPEN <cursor> USING (v1, v2, ...). Previously the lexer rejected ? outright and OPEN had no USING clause at all. Pinned with two placeholders bounding a range, with a single one, and - as the regression guard - a plain cursor with no placeholders and no USING, which must still open. Converted 1:1 from scripting/CursorPositionalBindTest (now retired); the blocks are written on one line here, which the scripting parser reads identically.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-cursor-with-two-positional-binds", "steps": [
+      {"sql": "CREATE TABLE invoices (id NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO invoices VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+      {"sql": "DECLARE c1 CURSOR FOR SELECT price FROM invoices WHERE price > ? AND price < ?; BEGIN LET total INTEGER := 0; OPEN c1 USING (15, 45); FOR rec IN c1 DO total := total + rec.price; END FOR; RETURN total; END;",
+       "expect": {"value": 90}}
+    ]},
+    {"name": "a-cursor-with-a-single-positional-bind", "steps": [
+      {"sql": "CREATE TABLE invoices (id NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO invoices VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+      {"sql": "DECLARE c CURSOR FOR SELECT id FROM invoices WHERE price >= ?; BEGIN LET cnt INTEGER := 0; OPEN c USING (40); FOR r IN c DO cnt := cnt + 1; END FOR; RETURN cnt; END;",
+       "expect": {"value": 2}}
+    ]},
+    {"name": "a-cursor-without-binds-still-works", "steps": [
+      {"sql": "CREATE TABLE invoices (id NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO invoices VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+      {"sql": "DECLARE c CURSOR FOR SELECT price FROM invoices; BEGIN LET total INTEGER := 0; OPEN c; FOR r IN c DO total := total + r.price; END FOR; RETURN total; END;",
+       "expect": {"value": 150}}
+    ]}
+  ]
+}

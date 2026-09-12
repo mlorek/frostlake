@@ -1,0 +1,51 @@
+{
+  "suite": "functions-variant-json-null-extraction",
+  "description": "Extracting a PRESENT JSON null yields the VARIANT NULL_VALUE, not SQL NULL - whichever operator does the extracting. A MISSING key stays SQL NULL. Every expectation here was measured on a real Snowflake account; the divergence mattered because WHERE v:b IS NOT NULL selected different rows on the two engines. Live reference values, with jn standing for PARSE_JSON('{\"b\":null}'):b - TYPEOF(jn) is NULL_VALUE, jn IS NULL is FALSE, jn IS NOT NULL is TRUE; TYPEOF(PARSE_JSON('{\"a\":1}'):zz) is SQL NULL and that path IS NULL is TRUE. A JSON null has no members, so pathing or indexing into one is SQL NULL. Converted 1:1 from functions/VariantJsonNullExtractionTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "every-extraction-operator-keeps-a-present-json-null", "steps": [
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"b\":null,\"a\":1}'):b)", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TYPEOF(GET(PARSE_JSON('{\"b\":null,\"a\":1}'),'b'))", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"b\":null,\"a\":1}')['b'])", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TYPEOF(GET_PATH(PARSE_JSON('{\"b\":null,\"a\":1}'),'b'))", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TYPEOF(GET_IGNORE_CASE(PARSE_JSON('{\"b\":null,\"a\":1}'),'B'))", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TYPEOF(GET(PARSE_JSON('[1,null,2]'),1))", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('[1,null,2]')[1])", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TYPEOF(GET(OBJECT_CONSTRUCT_KEEP_NULL('b',NULL),'b'))", "expect": {"value": "NULL_VALUE"}}
+    ]},
+    {"name": "flatten-value-keeps-a-json-null-member", "steps": [
+      {"sql": "SELECT LISTAGG(TYPEOF(f.value), ',') WITHIN GROUP (ORDER BY f.index)\nFROM TABLE(FLATTEN(input => PARSE_JSON('[1,null,2]'))) f", "expect": {"value": "INTEGER,NULL_VALUE,INTEGER"}},
+      {"sql": "SELECT LISTAGG(f.key || '=' || TYPEOF(f.value), ',') WITHIN GROUP (ORDER BY f.key)\nFROM TABLE(FLATTEN(input => PARSE_JSON('{\"b\":null,\"a\":1}'))) f", "expect": {"value": "a=INTEGER,b=NULL_VALUE"}}
+    ]},
+    {"name": "try-parse-json-of-null-is-a-json-null-like-parse-json", "steps": [
+      {"sql": "SELECT TYPEOF(TRY_PARSE_JSON('null'))", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('null'))", "expect": {"value": "NULL_VALUE"}}
+    ]},
+    {"name": "a-missing-key-stays-sql-null", "steps": [
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"b\":null,\"a\":1}'):zz)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TYPEOF(GET(PARSE_JSON('{\"b\":null,\"a\":1}'),'zz'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TYPEOF(GET(PARSE_JSON('[1,null,2]'),99))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"b\":null,\"a\":1}'):zz IS NULL", "expect": {"value": "true"}},
+      {"sql": "SELECT COALESCE(PARSE_JSON('{\"b\":null,\"a\":1}'):zz, 9)", "expect": {"value": "9"}}
+    ]},
+    {"name": "is-null-is-false-for-an-extracted-json-null", "steps": [
+      {"sql": "SELECT GET(PARSE_JSON('{\"b\":null,\"a\":1}'),'b') IS NULL", "expect": {"value": "false"}},
+      {"sql": "SELECT GET(PARSE_JSON('{\"b\":null,\"a\":1}'),'b') IS NOT NULL", "expect": {"value": "true"}},
+      {"sql": "SELECT IS_NULL_VALUE(GET(PARSE_JSON('[1,null,2]'),1))", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-where-clause-selects-the-json-null-row", "steps": [
+      {"sql": "CREATE TABLE json_null_rows (id INTEGER, v VARIANT)"},
+      {"sql": "INSERT INTO json_null_rows SELECT 1, PARSE_JSON('{\"b\":null}')"},
+      {"sql": "INSERT INTO json_null_rows SELECT 2, PARSE_JSON('{\"b\":7}')"},
+      {"sql": "INSERT INTO json_null_rows SELECT 3, PARSE_JSON('{\"c\":1}')"},
+      {"sql": "SELECT LISTAGG(id, ',') WITHIN GROUP (ORDER BY id)\nFROM json_null_rows WHERE v:b IS NOT NULL", "expect": {"value": "1,2"}},
+      {"sql": "SELECT LISTAGG(id, ',') WITHIN GROUP (ORDER BY id)\nFROM json_null_rows WHERE v:b IS NULL", "expect": {"value": "3"}},
+      {"sql": "SELECT TYPEOF(v:b) FROM json_null_rows WHERE id = 1", "expect": {"value": "NULL_VALUE"}},
+      {"sql": "SELECT TO_JSON(v:b) FROM json_null_rows WHERE id = 1", "expect": {"value": "null"}}
+    ]},
+    {"name": "pathing-into-or-indexing-a-json-null-is-sql-null", "steps": [
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"b\":null,\"a\":1}'):b.deeper)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"b\":null,\"a\":1}'):b[0])", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

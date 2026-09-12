@@ -1,0 +1,30 @@
+{
+  "suite": "functions-udf-param-escaping",
+  "description": "SQL-UDF and bind-variable argument substitution renders values as string literals in a dialect where a backslash always escapes, so backslashes must be DOUBLED, not just quotes. Escaping quotes alone corrupted any value carrying escape sequences: an OBJECT whose JSON text held a nested JSON string reached the substituted PARSE_JSON('...') with bare inner quotes and failed with Invalid JSON (the classify(value OBJECT) shape). Converted 1:1 from functions/UdfParamEscapingTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "an-object-parameter-with-a-nested-json-string-survives-substitution", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION obj_field(value OBJECT)\nRETURNS VARCHAR\nLANGUAGE SQL\nAS $$ SELECT value:profile::VARCHAR $$"},
+      {"sql": "SELECT obj_field(OBJECT_CONSTRUCT('profile', '{\"firstName\":\"Nested\"}'))",
+       "expect": {"value": "{\"firstName\":\"Nested\"}"}}
+    ]},
+    {"name": "object-parameter-path-conditions-work", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION classify(value OBJECT)\nRETURNS VARCHAR\nLANGUAGE SQL\nAS $$\nSELECT CASE\n    WHEN NVL(UPPER(value:item_class::VARCHAR), 'NULL') <> 'NULL' THEN UPPER(value:item_class::VARCHAR)\n    WHEN IS_OBJECT(value:attributes) THEN 'GENERAL'\n    ELSE 'UNKNOWN'\nEND\n$$"},
+      {"sql": "SELECT classify(OBJECT_CONSTRUCT('attributes', OBJECT_CONSTRUCT('inner', '{\"k\":\"v with \\\\ backslash\"}')))",
+       "expect": {"value": "GENERAL"}}
+    ]},
+    {"name": "a-varchar-parameter-with-backslashes-round-trips", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION echo_text(v VARCHAR)\nRETURNS VARCHAR\nLANGUAGE SQL\nAS $$ SELECT v $$"},
+      {"sql": "CREATE TABLE esc_src (s VARCHAR)"},
+      {"sql": "INSERT INTO esc_src SELECT 'C:\\\\dir' || CHR(39) || 'q'"},
+      {"sql": "SELECT s FROM esc_src", "expect": {"value": "C:\\dir'q"}},
+      {"sql": "SELECT echo_text(s) FROM esc_src", "expect": {"value": "C:\\dir'q"}},
+      {"sql": "SELECT COUNT_IF(echo_text(s) = s) FROM esc_src", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-bind-variable-with-a-backslash-round-trips", "steps": [
+      {"sql": "CREATE TABLE esc_sink (v VARCHAR)"},
+      {"sql": "BEGIN\n    LET s VARCHAR := (SELECT 'a\\\\b' || CHR(39) || 'c');\n    INSERT INTO esc_sink SELECT :s;\nEND"},
+      {"sql": "SELECT v FROM esc_sink", "expect": {"value": "a\\b'c"}}
+    ]}
+  ]
+}

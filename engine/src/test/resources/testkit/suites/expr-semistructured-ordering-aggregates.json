@@ -1,0 +1,165 @@
+{
+  "suite": "expr-semistructured-ordering-aggregates",
+  "description": "MAX, MIN and MODE do not order a semi-structured value: they reject OBJECT, ARRAY and structured OBJECT/MAP columns (naming the whole parameterised type), in DISTINCT/windowed forms, over empty inputs, through casts to OBJECT/ARRAY (TRY_CAST included), conditionals and producer functions - while the bound holds everywhere else: a VARIANT is never rejected even holding an object (MAX(vo) returns the object), casts and TRY_CASTs to VARIANT are accepted, VARIANT producers and path reads pass, grouping/sorting/partitioning/DISTINCT/joins/set-ops/IN still take semi-structured keys, the non-ordering aggregates all accept, casting to VARCHAR works for the PLAIN types alone (the structured CAST/ARRAY_AGG divergence pinned beside its plain twin), and ordinary scalars are unaffected. Converted 1:1 from expressions/SemiStructuredOrderingAggregateTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "max-over-an-object-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MAX(o) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "max-over-an-array-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MAX(a) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support ARRAY argument type"}}}
+    ]},
+    {"name": "max-over-a-structured-map-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE sstm (id INTEGER, so OBJECT(x VARCHAR), sm MAP(VARCHAR, INT))"},
+      {"sql": "INSERT INTO sstm SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT)"},
+      {"sql": "SELECT MAX(sm) FROM sstm", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support MAP(VARCHAR(16777216), NUMBER(38,0)) argument type"}}},
+      {"sql": "SELECT MIN(sm) FROM sstm", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MIN does not support MAP(VARCHAR(16777216), NUMBER(38,0)) argument type"}}},
+      {"sql": "SELECT MAX(so) FROM sstm", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT(x VARCHAR(16777216)) argument type"}}},
+      {"sql": "SELECT COUNT(*) FROM sstm GROUP BY sm", "expect": {"rowCount": 1}},
+      {"sql": "SELECT id FROM sstm ORDER BY sm", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "min-and-mode-over-semi-structured-are-rejected", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MIN(o) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MIN does not support OBJECT argument type"}}},
+      {"sql": "SELECT MIN(a) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MIN does not support ARRAY argument type"}}},
+      {"sql": "SELECT MODE(o) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MODE does not support OBJECT argument type"}}},
+      {"sql": "SELECT MODE(a) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MODE does not support ARRAY argument type"}}}
+    ]},
+    {"name": "distinct-and-windowed-forms-are-rejected", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MAX(DISTINCT o) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(o) OVER () FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "an-empty-input-still-rejects", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MAX(o) FROM sst WHERE 1 = 0", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "a-cast-to-object-or-array-is-rejected", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MAX(vo::OBJECT) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(v::OBJECT) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(v::ARRAY) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support ARRAY argument type"}}},
+      {"sql": "SELECT MAX(CAST(o AS OBJECT)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "conditionals-over-semi-structured-branches-are-read-through", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MAX(IFF(TRUE, o, o)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(COALESCE(o, o)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(GREATEST(o, o)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(CASE WHEN TRUE THEN o ELSE o END) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MIN(IFF(TRUE, a, a)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MIN does not support ARRAY argument type"}}}
+    ]},
+    {"name": "semi-structured-producer-functions-are-rejected", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MAX(OBJECT_CONSTRUCT('k', id)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(OBJECT_INSERT(OBJECT_CONSTRUCT('k', id), 'j', 2)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(ARRAY_CONSTRUCT(id)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support ARRAY argument type"}}},
+      {"sql": "SELECT MAX(SPLIT(s, ',')) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support ARRAY argument type"}}},
+      {"sql": "SELECT MAX(OBJECT_KEYS(o)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support ARRAY argument type"}}},
+      {"sql": "SELECT MAX(TO_ARRAY(id)) FROM sst", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support ARRAY argument type"}}}
+    ]},
+    {"name": "a-variant-is-accepted-even-when-it-holds-an-object", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "INSERT INTO sst SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'y', 20"},
+      {"sql": "SELECT MAX(v) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MIN(v) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MODE(v) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(vo) FROM sst", "expect": {"value": "{\"x\":2}"}},
+      {"sql": "SELECT MIN(vo) FROM sst", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "an-object-cast-to-variant-is-accepted", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "SELECT MAX(o::VARIANT) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(TO_VARIANT(o)) FROM sst", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-try-cast-spelling-of-the-widening-reads-the-same-way", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "SELECT MAX(TRY_CAST(o AS VARIANT)) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(TRY_CAST(v AS VARIANT)) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(TRY_CAST(o AS OBJECT)) FROM sst", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(TRY_CAST(a AS ARRAY)) FROM sst", "expect": {"error": {"messageContains": "Function MAX does not support ARRAY argument type"}}}
+    ]},
+    {"name": "variant-producing-functions-stay-accepted", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "SELECT MAX(PARSE_JSON('{\"a\":1}')) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(TO_VARIANT(id)) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(o:k) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(a[0]) FROM sst", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "grouping-and-sorting-keys-still-accept-semi-structured", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "INSERT INTO sst SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'y', 20"},
+      {"sql": "SELECT COUNT(*) FROM sst GROUP BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*) FROM sst GROUP BY a", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM sst ORDER BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM sst ORDER BY a", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY o ORDER BY id) FROM sst", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY o) FROM sst", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "distinct-count-and-comparisons-still-work", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "INSERT INTO sst SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'y', 20"},
+      {"sql": "SELECT DISTINCT o FROM sst", "expect": {"rowCount": 2}},
+      {"sql": "SELECT DISTINCT a FROM sst", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(o) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(DISTINCT o) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT id FROM sst WHERE o = o", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-non-ordering-aggregates-still-accept-semi-structured", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "INSERT INTO sst SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'y', 20"},
+      {"sql": "SELECT ANY_VALUE(o) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_AGG(o) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_UNIQUE_AGG(a) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_AGG(s, o) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT HASH_AGG(o) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(o) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX_BY(o, id) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MIN_BY(o, id) FROM sst", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "casting-semi-structured-to-varchar-still-works", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "INSERT INTO sst SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'y', 20"},
+      {"sql": "SELECT CAST(o AS VARCHAR) FROM sst", "expect": {"rowCount": 2}},
+      {"sql": "SELECT TO_VARCHAR(a) FROM sst", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-cast-and-array-agg-acceptances-are-the-plain-types-alone", "steps": [
+      {"sql": "CREATE TABLE sstd (id INTEGER, so OBJECT(x VARCHAR), o OBJECT)"},
+      {"sql": "INSERT INTO sstd SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), OBJECT_CONSTRUCT('k', 'v1')"},
+      {"sql": "SELECT CAST(o AS VARCHAR) FROM sstd", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_AGG(o) FROM sstd", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CAST(so AS VARCHAR) FROM sstd", "expect": {"error": {"messageContains": "for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT ARRAY_AGG(so) FROM sstd", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT MAX(o) FROM sstd", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(so) FROM sstd", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT(x VARCHAR(16777216)) argument type"}}}
+    ]},
+    {"name": "joins-set-operations-and-in-still-work", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "INSERT INTO sst SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'y', 20"},
+      {"sql": "SELECT COUNT(*) FROM sst t1 JOIN sst t2 ON t1.o = t2.o", "expect": {"rowCount": 1}},
+      {"sql": "SELECT o FROM sst UNION SELECT o FROM sst", "expect": {"rowCount": 2}},
+      {"sql": "SELECT o FROM sst INTERSECT SELECT o FROM sst", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM sst WHERE o IN (SELECT o FROM sst)", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "ordinary-scalar-types-are-unaffected", "steps": [
+      {"sql": "CREATE TABLE sst (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO sst SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'x', 10"},
+      {"sql": "INSERT INTO sst SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'y', 20"},
+      {"sql": "SELECT MAX(s) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MIN(s) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(n) FROM sst", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MODE(s) FROM sst", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

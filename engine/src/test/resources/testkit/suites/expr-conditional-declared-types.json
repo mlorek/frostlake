@@ -1,0 +1,98 @@
+{
+  "suite": "expr-conditional-declared-types",
+  "description": "What a conditional declares is what its branches agree on, the same fold a set operation applies: strings to the WIDEST length, numbers so the widest INTEGER PART meets the widest SCALE (NUMBER(5,4) beside NUMBER(10,0) is NUMBER(14,4), not (10,4)), temporals of one flavour to the wider precision - and CASE, DECODE and NVL2 answer identically to IFF and COALESCE. DECODE and NVL2's branches are only their RESULT arguments: NVL2's tested first argument and DECODE's expression and searches contribute nothing, DECODE's trailing default exists only on an even argument count, and a mixed pair refuses in the conditionals' Can-not-convert words. Converted 1:1 from expressions/ConditionalDeclaredTypeTest + expressions/DecodeAndNvl2BranchesTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "two-strings-fold-to-the-widest", "steps": [
+      {"sql": "CREATE TABLE ct (s4 VARCHAR(4), s100 VARCHAR(100), n51 NUMBER(5,1), n103 NUMBER(10,3), n54 NUMBER(5,4), n100 NUMBER(10,0), t3 TIMESTAMP_NTZ(3), t9 TIMESTAMP_NTZ(9), d DATE)"},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT IFF(s4 = 'x', s4, s100) AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":100,\"byteLength\":400,\"nullable\":true,\"fixed\":false}"}},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT COALESCE(s4, s100) AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":100,\"byteLength\":400,\"nullable\":true,\"fixed\":false}"}}
+    ]},
+    {"name": "two-numbers-fold-to-the-supertype", "steps": [
+      {"sql": "CREATE TABLE ct (s4 VARCHAR(4), s100 VARCHAR(100), n51 NUMBER(5,1), n103 NUMBER(10,3), n54 NUMBER(5,4), n100 NUMBER(10,0), t3 TIMESTAMP_NTZ(3), t9 TIMESTAMP_NTZ(9), d DATE)"},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT IFF(s4 = 'x', n51, n103) AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"FIXED\",\"precision\":10,\"scale\":3,\"nullable\":true}"}},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT IFF(s4 = 'x', n54, n100) AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"FIXED\",\"precision\":14,\"scale\":4,\"nullable\":true}"}}
+    ]},
+    {"name": "temporals-fold-to-the-wider-precision", "steps": [
+      {"sql": "CREATE TABLE ct (s4 VARCHAR(4), s100 VARCHAR(100), n51 NUMBER(5,1), n103 NUMBER(10,3), n54 NUMBER(5,4), n100 NUMBER(10,0), t3 TIMESTAMP_NTZ(3), t9 TIMESTAMP_NTZ(9), d DATE)"},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT COALESCE(t3, t9) AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TIMESTAMP_NTZ\",\"precision\":0,\"scale\":9,\"nullable\":true}"}},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT IFF(s4 = 'x', d, d) AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"DATE\",\"nullable\":true}"}}
+    ]},
+    {"name": "every-spelling-folds-alike", "steps": [
+      {"sql": "CREATE TABLE ct (s4 VARCHAR(4), s100 VARCHAR(100), n51 NUMBER(5,1), n103 NUMBER(10,3), n54 NUMBER(5,4), n100 NUMBER(10,0), t3 TIMESTAMP_NTZ(3), t9 TIMESTAMP_NTZ(9), d DATE)"},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT CASE WHEN s4 = 'x' THEN s4 ELSE s100 END AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":100,\"byteLength\":400,\"nullable\":true,\"fixed\":false}"}},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT NVL2(s4, n51, n103) AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"FIXED\",\"precision\":10,\"scale\":3,\"nullable\":true}"}},
+      {"sql": "CREATE OR REPLACE VIEW ct_v AS SELECT DECODE(s4, 'x', n51, n103) AS c FROM ct"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ct_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"FIXED\",\"precision\":10,\"scale\":3,\"nullable\":true}"}}
+    ]},
+    {"name": "both-take-their-widest-branch", "steps": [
+      {"sql": "CREATE TABLE dn (b4 BINARY(4), b100 BINARY(100), s100 VARCHAR(100), n NUMBER)"},
+      {"sql": "INSERT INTO dn SELECT TO_BINARY('41424344'), TO_BINARY('4142'), 'abc', 1"},
+      {"sql": "CREATE OR REPLACE VIEW dn_v AS SELECT NVL2(b4, b4, b100) AS c FROM dn"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.dn_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"BINARY\",\"length\":100,\"byteLength\":100,\"nullable\":true,\"fixed\":true}"}},
+      {"sql": "CREATE OR REPLACE VIEW dn_v AS SELECT DECODE(n, 1, b4, b100) AS c FROM dn"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.dn_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"BINARY\",\"length\":100,\"byteLength\":100,\"nullable\":true,\"fixed\":true}"}}
+    ]},
+    {"name": "nvl2-ignores-its-test-argument", "steps": [
+      {"sql": "CREATE TABLE dn (b4 BINARY(4), b100 BINARY(100), s100 VARCHAR(100), n NUMBER)"},
+      {"sql": "INSERT INTO dn SELECT TO_BINARY('41424344'), TO_BINARY('4142'), 'abc', 1"},
+      {"sql": "CREATE OR REPLACE VIEW dn_v AS SELECT NVL2(s100, b4, b100) AS c FROM dn"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.dn_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"BINARY\",\"length\":100,\"byteLength\":100,\"nullable\":true,\"fixed\":true}"}}
+    ]},
+    {"name": "decode-ignores-its-expression-and-searches", "steps": [
+      {"sql": "CREATE TABLE dn (b4 BINARY(4), b100 BINARY(100), s100 VARCHAR(100), n NUMBER)"},
+      {"sql": "INSERT INTO dn SELECT TO_BINARY('41424344'), TO_BINARY('4142'), 'abc', 1"},
+      {"sql": "CREATE OR REPLACE VIEW dn_v AS SELECT DECODE(s100, 'x', b4, b100) AS c FROM dn"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.dn_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"BINARY\",\"length\":100,\"byteLength\":100,\"nullable\":true,\"fixed\":true}"}}
+    ]},
+    {"name": "decode-without-a-default-takes-its-results-alone", "steps": [
+      {"sql": "CREATE TABLE dn (b4 BINARY(4), b100 BINARY(100), s100 VARCHAR(100), n NUMBER)"},
+      {"sql": "INSERT INTO dn SELECT TO_BINARY('41424344'), TO_BINARY('4142'), 'abc', 1"},
+      {"sql": "CREATE OR REPLACE VIEW dn_v AS SELECT DECODE(n, 1, b4) AS c FROM dn"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.dn_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"BINARY\",\"length\":4,\"byteLength\":4,\"nullable\":true,\"fixed\":true}"}},
+      {"sql": "CREATE OR REPLACE VIEW dn_v AS SELECT DECODE(n, 1, b4, 2, b100) AS c FROM dn"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.dn_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"BINARY\",\"length\":100,\"byteLength\":100,\"nullable\":true,\"fixed\":true}"}}
+    ]},
+    {"name": "a-mixed-pair-is-refused", "steps": [
+      {"sql": "CREATE TABLE dn (b4 BINARY(4), b100 BINARY(100), s100 VARCHAR(100), n NUMBER)"},
+      {"sql": "INSERT INTO dn SELECT TO_BINARY('41424344'), TO_BINARY('4142'), 'abc', 1"},
+      {"sql": "CREATE OR REPLACE VIEW dn_bad AS SELECT NVL2(b4, b4, s100) AS c FROM dn",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'DN.S100' of type [VARCHAR(100)] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW dn_bad AS SELECT DECODE(n, 1, b4, s100) AS c FROM dn",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'DN.S100' of type [VARCHAR(100)] into expected type [BINARY(4)]"}}}
+    ]},
+    {"name": "neither-is-reported-as-variant", "steps": [
+      {"sql": "CREATE TABLE dn (b4 BINARY(4), b100 BINARY(100), s100 VARCHAR(100), n NUMBER)"},
+      {"sql": "INSERT INTO dn SELECT TO_BINARY('41424344'), TO_BINARY('4142'), 'abc', 1"},
+      {"sql": "CREATE OR REPLACE VIEW dn_v AS SELECT NVL2(b4, b4, b100) AS c FROM dn"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.dn_v"},
+      {"sql": "SELECT CONTAINS(\"data_type\", 'VARIANT') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "false"}},
+      {"sql": "CREATE OR REPLACE VIEW dn_v AS SELECT DECODE(n, 1, b4, b100) AS c FROM dn"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.dn_v"},
+      {"sql": "SELECT CONTAINS(\"data_type\", 'VARIANT') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "false"}}
+    ]}
+  ]
+}

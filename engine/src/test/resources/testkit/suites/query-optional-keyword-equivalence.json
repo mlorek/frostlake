@@ -1,0 +1,59 @@
+{
+  "suite": "query-optional-keyword-equivalence",
+  "description": "Optional keywords must be exactly that - optional. Each test here runs the same query with and without the optional token (or with the defaults spelled out) and pins BOTH the rows of each spelling and their equivalence: INNER on a join, OUTER on LEFT and FULL, ASC / NULLS LAST and DESC / NULLS FIRST as the ORDER BY defaults, TEMP as the abbreviation of TEMPORARY, and FLATTEN's outer / recursive / mode defaults written out in full. UNION is the counter-example that belongs with them: it is the one optional keyword that CHANGES semantics, so it is pinned from the other side - without ALL the default is DISTINCT and the row goes away. File-level coverage elsewhere exercises each SPELLING; this suite pins the EQUIVALENCE. Converted 1:1 from query/OptionalKeywordEquivalenceTest (now retired); the Java compared two result sets cell by cell in a loop, so each converted test asserts the ordered rows of both spellings, which is the same claim made checkable without the loop.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "inner-and-outer-keywords-are-optional", "steps": [
+      {"sql": "CREATE TABLE a (k INTEGER, av VARCHAR)"},
+      {"sql": "CREATE TABLE b (k INTEGER, bv VARCHAR)"},
+      {"sql": "INSERT INTO a VALUES (1, 'a1'), (2, 'a2'), (3, 'a3')"},
+      {"sql": "INSERT INTO b VALUES (2, 'b2'), (3, 'b3'), (4, 'b4')"},
+      {"sql": "SELECT a.k, av, bv FROM a JOIN b ON b.k = a.k ORDER BY a.k",
+       "expect": {"rows": [[2,"a2","b2"],[3,"a3","b3"]], "ordered": true}},
+      {"sql": "SELECT a.k, av, bv FROM a INNER JOIN b ON b.k = a.k ORDER BY a.k",
+       "expect": {"rows": [[2,"a2","b2"],[3,"a3","b3"]], "ordered": true}},
+      {"sql": "SELECT a.k, av, bv FROM a LEFT JOIN b ON b.k = a.k ORDER BY a.k",
+       "expect": {"rows": [[1,"a1",null],[2,"a2","b2"],[3,"a3","b3"]], "ordered": true}},
+      {"sql": "SELECT a.k, av, bv FROM a LEFT OUTER JOIN b ON b.k = a.k ORDER BY a.k",
+       "expect": {"rows": [[1,"a1",null],[2,"a2","b2"],[3,"a3","b3"]], "ordered": true}},
+      {"sql": "SELECT a.k, b.k, av, bv FROM a FULL JOIN b ON b.k = a.k ORDER BY a.k NULLS LAST, b.k",
+       "expect": {"rows": [[1,null,"a1",null],[2,2,"a2","b2"],[3,3,"a3","b3"],[null,4,null,"b4"]], "ordered": true}},
+      {"sql": "SELECT a.k, b.k, av, bv FROM a FULL OUTER JOIN b ON b.k = a.k ORDER BY a.k NULLS LAST, b.k",
+       "expect": {"rows": [[1,null,"a1",null],[2,2,"a2","b2"],[3,3,"a3","b3"],[null,4,null,"b4"]], "ordered": true}}
+    ]},
+    {"name": "order-by-defaults-spelled-out-change-nothing", "steps": [
+      {"sql": "CREATE TABLE n (v INTEGER)"},
+      {"sql": "INSERT INTO n VALUES (2), (NULL), (1)"},
+      {"sql": "SELECT v FROM n ORDER BY v", "expect": {"rows": [[1],[2],[null]], "ordered": true}},
+      {"sql": "SELECT v FROM n ORDER BY v ASC NULLS LAST", "expect": {"rows": [[1],[2],[null]], "ordered": true}},
+      {"sql": "SELECT v FROM n ORDER BY v DESC", "expect": {"rows": [[null],[2],[1]], "ordered": true}},
+      {"sql": "SELECT v FROM n ORDER BY v DESC NULLS FIRST", "expect": {"rows": [[null],[2],[1]], "ordered": true}}
+    ]},
+    {"name": "temp-abbreviates-temporary", "steps": [
+      {"sql": "CREATE TEMP TABLE t_short (x INTEGER)"},
+      {"sql": "CREATE TEMPORARY TABLE t_long (x INTEGER)"},
+      {"sql": "INSERT INTO t_short VALUES (1)"},
+      {"sql": "INSERT INTO t_long VALUES (1)"},
+      {"sql": "SELECT COUNT(*) FROM t_short", "expect": {"value": 1}},
+      {"sql": "SELECT COUNT(*) FROM t_long", "expect": {"value": 1}}
+    ]},
+    {"name": "flatten-defaults-equal-the-explicit-arguments", "steps": [
+      {"sql": "CREATE TABLE j (v VARIANT)"},
+      {"sql": "INSERT INTO j SELECT PARSE_JSON('{\"xs\": [1, 2, 3]}')"},
+      {"sql": "SELECT f.value::INTEGER FROM j, LATERAL FLATTEN(input => v:xs) f ORDER BY 1",
+       "expect": {"rows": [[1],[2],[3]], "ordered": true}},
+      {"sql": "SELECT f.value::INTEGER FROM j, LATERAL FLATTEN(input => v:xs, outer => FALSE, recursive => FALSE, mode => 'BOTH') f ORDER BY 1",
+       "expect": {"rows": [[1],[2],[3]], "ordered": true}}
+    ]},
+    {"name": "union-defaults-to-distinct-not-all", "steps": [
+      {"sql": "CREATE TABLE a (k INTEGER, av VARCHAR)"},
+      {"sql": "CREATE TABLE b (k INTEGER, bv VARCHAR)"},
+      {"sql": "INSERT INTO a VALUES (1, 'a1'), (2, 'a2'), (3, 'a3')"},
+      {"sql": "INSERT INTO b VALUES (2, 'b2'), (3, 'b3'), (4, 'b4')"},
+      {"sql": "SELECT k FROM a WHERE k <= 2 UNION SELECT k FROM b WHERE k <= 2 ORDER BY k",
+       "expect": {"rows": [[1],[2]], "ordered": true}},
+      {"sql": "SELECT k FROM a WHERE k <= 2 UNION ALL SELECT k FROM b WHERE k <= 2 ORDER BY k",
+       "expect": {"rows": [[1],[2],[2]], "ordered": true}}
+    ]}
+  ]
+}

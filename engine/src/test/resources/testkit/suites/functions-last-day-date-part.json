@@ -1,0 +1,22 @@
+{
+  "suite": "functions-last-day-date-part",
+  "description": "LAST_DAY honours the optional date_part argument (year / quarter / month / week) rather than always answering the last day of the month - the second argument used to be silently dropped. With the default week start, the week's last day is the Sunday, and MONTH is the default when no part is given. Converted 1:1 from functions/LastDayDatePartTest (now retired); the Java class compared LocalDate toString values, which TO_VARCHAR reproduces.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "year-returns-the-last-day-of-the-year", "steps": [
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2015-05-08'::DATE, 'year'))", "expect": {"value": "2015-12-31"}}
+    ]},
+    {"name": "quarter-returns-the-last-day-of-the-quarter", "steps": [
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2015-05-08'::DATE, 'quarter'))", "expect": {"value": "2015-06-30"}},
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2015-02-14'::DATE, 'quarter'))", "expect": {"value": "2015-03-31"}},
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2015-11-30'::DATE, 'quarter'))", "expect": {"value": "2015-12-31"}}
+    ]},
+    {"name": "week-returns-the-sunday-under-the-default-week-start", "steps": [
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2015-05-08'::DATE, 'week'))", "expect": {"value": "2015-05-10"}}
+    ]},
+    {"name": "month-is-the-default", "steps": [
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2015-05-08'::DATE))", "expect": {"value": "2015-05-31"}},
+      {"sql": "SELECT TO_VARCHAR(LAST_DAY('2015-05-08'::DATE, 'month'))", "expect": {"value": "2015-05-31"}}
+    ]}
+  ]
+}

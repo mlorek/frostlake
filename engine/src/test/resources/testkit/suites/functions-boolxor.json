@@ -1,0 +1,19 @@
+{
+  "suite": "functions-boolxor",
+  "description": "BOOLXOR(x, y) over three-valued logic: exactly one true is TRUE, both true or both false is FALSE, and either argument NULL gives NULL. Converted 1:1 from functions/BoolXorTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "exactly-one-true-is-true", "steps": [
+      {"sql": "SELECT BOOLXOR(1, 0)", "expect": {"value": "true"}}
+    ]},
+    {"name": "both-true-is-false", "steps": [
+      {"sql": "SELECT BOOLXOR(1, 1)", "expect": {"value": "false"}}
+    ]},
+    {"name": "both-false-is-false", "steps": [
+      {"sql": "SELECT BOOLXOR(0, 0)", "expect": {"value": "false"}}
+    ]},
+    {"name": "with-null-is-null", "steps": [
+      {"sql": "SELECT BOOLXOR(1, NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

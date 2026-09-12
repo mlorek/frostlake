@@ -1,0 +1,28 @@
+{
+  "suite": "scripting-named-exception-handler",
+  "description": "Named exception-handler matching: EXCEPTION WHEN <user_exception_name> must catch a RAISE of that SAME declared exception, and only that one. The exception MESSAGES here deliberately do NOT contain the exception name, so a catch proves real NAME-matching rather than a coincidental message substring, which was the previous behaviour. A non-matching named handler does not catch, so the raised exception propagates with its own message and the handler body never runs. A matching named handler wins over a WHEN OTHER written beside it. And WHEN OTHER on its own remains a catch-all for a RAISEd user exception, which is the regression guard. Converted 1:1 from scripting/NamedExceptionHandlerTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-named-handler-catches-a-matching-raise", "steps": [
+      {"sql": "CREATE TABLE caught (marker INTEGER)"},
+      {"sql": "DECLARE my_exc EXCEPTION (-20002, 'boom'); BEGIN RAISE my_exc; EXCEPTION WHEN my_exc THEN INSERT INTO caught VALUES (1); END;"},
+      {"sql": "SELECT marker FROM caught", "expect": {"value": 1}}
+    ]},
+    {"name": "a-non-matching-named-handler-does-not-catch", "steps": [
+      {"sql": "CREATE TABLE caught (marker INTEGER)"},
+      {"sql": "DECLARE err_a EXCEPTION (-20001, 'aaa'); err_b EXCEPTION (-20002, 'bbb'); BEGIN RAISE err_a; EXCEPTION WHEN err_b THEN INSERT INTO caught VALUES (1); END;",
+       "expect": {"error": {"messageContains": "aaa"}}},
+      {"sql": "SELECT COUNT(*) FROM caught", "expect": {"value": 0}}
+    ]},
+    {"name": "a-matching-named-handler-wins-over-when-other", "steps": [
+      {"sql": "CREATE TABLE caught (marker INTEGER)"},
+      {"sql": "DECLARE my_exc EXCEPTION (-20002, 'boom'); BEGIN RAISE my_exc; EXCEPTION WHEN my_exc THEN INSERT INTO caught VALUES (1); WHEN OTHER THEN INSERT INTO caught VALUES (2); END;"},
+      {"sql": "SELECT marker FROM caught", "expect": {"value": 1}}
+    ]},
+    {"name": "when-other-still-catches-a-raise", "steps": [
+      {"sql": "CREATE TABLE caught (marker INTEGER)"},
+      {"sql": "DECLARE my_exc EXCEPTION (-20002, 'boom'); BEGIN RAISE my_exc; EXCEPTION WHEN OTHER THEN INSERT INTO caught VALUES (7); END;"},
+      {"sql": "SELECT marker FROM caught", "expect": {"value": 7}}
+    ]}
+  ]
+}

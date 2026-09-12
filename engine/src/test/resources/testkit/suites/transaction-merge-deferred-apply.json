@@ -1,0 +1,65 @@
+{
+  "suite": "transaction-merge-deferred-apply",
+  "description": "MERGE wired through the deferred-apply write set. MERGE was previously fully NON-transactional - it logged nothing, so a ROLLBACK silently failed to undo it. Now WHEN MATCHED UPDATE, WHEN MATCHED DELETE and WHEN NOT MATCHED INSERT all buffer into the write set (matched target rows by stable id), are visible to their own transaction through the read overlay, are discarded by ROLLBACK and applied by COMMIT. Pinned for the upsert shape (one matched row updated, one unmatched row inserted) and for the delete shape, each under autocommit, rollback and commit. Converted 1:1 from transaction/MergeDeferredApplyTest (now retired); the Java built its own engine with transaction.deferredApply=true and toggled setAutoCommit, both of which the testkit backend supplies through the default engine plus an explicit BEGIN.",
+  "tags": ["transaction", "converted"],
+  "tests": [
+    {"name": "an-autocommit-merge-applies", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (2, 'B2'), (3, 'c3')"},
+      {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN UPDATE SET v = src.v WHEN NOT MATCHED THEN INSERT (id, v) VALUES (src.id, src.v)"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 3}},
+      {"sql": "SELECT v FROM t WHERE id = 2", "expect": {"value": "B2"}},
+      {"sql": "SELECT v FROM t WHERE id = 3", "expect": {"value": "c3"}}
+    ]},
+    {"name": "a-rollback-discards-a-merge-upsert", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (2, 'B2'), (3, 'c3')"},
+      {"sql": "BEGIN"},
+      {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN UPDATE SET v = src.v WHEN NOT MATCHED THEN INSERT (id, v) VALUES (src.id, src.v)"},
+      {"sql": "SELECT v FROM t WHERE id = 2", "expect": {"value": "B2"}},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 3}},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT v FROM t WHERE id = 2", "expect": {"value": "b"}},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}},
+      {"sql": "SELECT COUNT(*) FROM t WHERE id = 3", "expect": {"value": 0}}
+    ]},
+    {"name": "a-commit-applies-a-merge-upsert", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (2, 'B2'), (3, 'c3')"},
+      {"sql": "BEGIN"},
+      {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN UPDATE SET v = src.v WHEN NOT MATCHED THEN INSERT (id, v) VALUES (src.id, src.v)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 3}},
+      {"sql": "SELECT v FROM t WHERE id = 2", "expect": {"value": "B2"}},
+      {"sql": "SELECT v FROM t WHERE id = 3", "expect": {"value": "c3"}}
+    ]},
+    {"name": "a-rollback-restores-a-merge-delete", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (2, 'B2'), (3, 'c3')"},
+      {"sql": "BEGIN"},
+      {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN DELETE"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}}
+    ]},
+    {"name": "a-commit-applies-a-merge-delete", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (2, 'B2'), (3, 'c3')"},
+      {"sql": "BEGIN"},
+      {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN DELETE"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 1}},
+      {"sql": "SELECT COUNT(*) FROM t WHERE id = 2", "expect": {"value": 0}}
+    ]}
+  ]
+}

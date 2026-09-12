@@ -1,0 +1,1203 @@
+{
+ "suite": "features-sequences",
+ "description": "SEQUENCE objects: CREATE in every accepted spelling (START WITH / START / START =, INCREMENT BY / INCREMENT / INCREMENT =, ORDER / NOORDER, COMMENT), IF NOT EXISTS and the duplicate refusal, DROP with and without IF EXISTS, NEXTVAL through the seq.NEXTVAL pseudo-column (plain, in INSERT, as a column DEFAULT applied by INSERT and by MERGE, qualified inside joined and aliased selects), SHOW / DESCRIBE SEQUENCES cells, ALTER SET INCREMENT, and the refusals Snowflake has no form for (CURRVAL in either spelling, ALTER SEQUENCE RESTART with or without a value). Converted 1:1 from features/SequencesTest (now retired). Tests that pin an EXACT allocated value skip the snowflake backend, exactly as the Java class did through its assertAllocated helper: a real account allocates per-statement ranges (START 10 INCREMENT 10 answered 10 then 1010), so only ordering, uniqueness and the within-statement step hold there - and those are pinned by allocation-properties-hold-on-both-backends, which does run live.",
+ "tags": [
+  "features",
+  "converted"
+ ],
+ "tests": [
+  {
+   "name": "create-sequence",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq1"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "SEQ1"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-with-options",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_custom START WITH 100 INCREMENT BY 5"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT \"name\", \"next_value\", \"interval\", \"database_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "rows": [
+       [
+        "SEQ_CUSTOM",
+        "100",
+        "5",
+        "TEST_DB"
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-with-comment",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_comment COMMENT = 'Test sequence'"
+    },
+    {
+     "sql": "DESCRIBE SEQUENCE seq_comment",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT \"name\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "rows": [
+       [
+        "SEQ_COMMENT",
+        "Test sequence"
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-if-not-exists",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_exists"
+    },
+    {
+     "sql": "CREATE SEQUENCE IF NOT EXISTS seq_exists"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 1
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-duplicate-sequence-fails",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_dup"
+    },
+    {
+     "sql": "CREATE SEQUENCE seq_dup",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "drop-sequence",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_drop"
+    },
+    {
+     "sql": "DROP SEQUENCE seq_drop"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 0
+     }
+    }
+   ]
+  },
+  {
+   "name": "drop-sequence-if-exists",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_drop_exists"
+    },
+    {
+     "sql": "DROP SEQUENCE IF EXISTS seq_drop_exists"
+    },
+    {
+     "sql": "DROP SEQUENCE IF EXISTS seq_drop_exists"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 0
+     }
+    }
+   ]
+  },
+  {
+   "name": "drop-non-existent-sequence-fails",
+   "steps": [
+    {
+     "sql": "DROP SEQUENCE seq_nonexistent",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "nextval-function",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_nextval START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "SELECT seq_nextval.NEXTVAL as val",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "SELECT seq_nextval.NEXTVAL as val",
+     "expect": {
+      "value": "2"
+     }
+    },
+    {
+     "sql": "SELECT seq_nextval.NEXTVAL as val",
+     "expect": {
+      "value": "3"
+     }
+    }
+   ]
+  },
+  {
+   "name": "nextval-with-custom-increment",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_inc START WITH 10 INCREMENT BY 10"
+    },
+    {
+     "sql": "SELECT seq_inc.NEXTVAL as val",
+     "expect": {
+      "value": "10"
+     }
+    },
+    {
+     "sql": "SELECT seq_inc.NEXTVAL as val",
+     "expect": {
+      "value": "20"
+     }
+    },
+    {
+     "sql": "SELECT seq_inc.NEXTVAL as val",
+     "expect": {
+      "value": "30"
+     }
+    }
+   ]
+  },
+  {
+   "name": "nextval-with-negative-increment",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_neg START WITH 100 INCREMENT BY -5"
+    },
+    {
+     "sql": "SELECT seq_neg.NEXTVAL as val",
+     "expect": {
+      "value": "100"
+     }
+    },
+    {
+     "sql": "SELECT seq_neg.NEXTVAL as val",
+     "expect": {
+      "value": "95"
+     }
+    },
+    {
+     "sql": "SELECT seq_neg.NEXTVAL as val",
+     "expect": {
+      "value": "90"
+     }
+    }
+   ]
+  },
+  {
+   "name": "currval-function-is-rejected",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_currval START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "SELECT seq_currval.NEXTVAL as val"
+    },
+    {
+     "sql": "SELECT CURRVAL('seq_currval') as val",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "currval-before-nextval-fails",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_currval_fail START WITH 1"
+    },
+    {
+     "sql": "SELECT CURRVAL('seq_currval_fail') as val",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "sequence-in-insert",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE TABLE seq_table (id INTEGER, name VARCHAR)"
+    },
+    {
+     "sql": "CREATE SEQUENCE seq_insert START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "INSERT INTO seq_table VALUES (seq_insert.NEXTVAL, 'Alice')"
+    },
+    {
+     "sql": "INSERT INTO seq_table VALUES (seq_insert.NEXTVAL, 'Bob')"
+    },
+    {
+     "sql": "INSERT INTO seq_table VALUES (seq_insert.NEXTVAL, 'Charlie')"
+    },
+    {
+     "sql": "SELECT id, name FROM seq_table ORDER BY id",
+     "expect": {
+      "rowCount": 3,
+      "rows": [
+       [
+        "1",
+        "Alice"
+       ],
+       [
+        "2",
+        "Bob"
+       ],
+       [
+        "3",
+        "Charlie"
+       ]
+      ],
+      "ordered": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "alter-sequence-restart-is-rejected",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_restart START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "SELECT seq_restart.NEXTVAL as val",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "ALTER SEQUENCE seq_restart RESTART WITH 10",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "alter-sequence-restart-without-value-is-rejected",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_restart_orig START WITH 100 INCREMENT BY 1"
+    },
+    {
+     "sql": "ALTER SEQUENCE seq_restart_orig RESTART",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "show-sequences",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_show1 START WITH 1"
+    },
+    {
+     "sql": "CREATE SEQUENCE seq_show2 START WITH 100 INCREMENT BY 10"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 2
+     }
+    }
+   ]
+  },
+  {
+   "name": "describe-sequence",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_desc START WITH 50 INCREMENT BY 5"
+    },
+    {
+     "sql": "DESCRIBE SEQUENCE seq_desc",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT \"name\", \"database_name\", \"schema_name\", \"next_value\", \"interval\", \"ordered\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "rows": [
+       [
+        "SEQ_DESC",
+        "TEST_DB",
+        "TEST_SCHEMA",
+        "50",
+        "5",
+        "N"
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "multiple-sequences-independent",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_a START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "CREATE SEQUENCE seq_b START WITH 1000 INCREMENT BY 100"
+    },
+    {
+     "sql": "SELECT seq_a.NEXTVAL as val",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "SELECT seq_b.NEXTVAL as val",
+     "expect": {
+      "value": "1000"
+     }
+    },
+    {
+     "sql": "SELECT seq_a.NEXTVAL as val",
+     "expect": {
+      "value": "2"
+     }
+    },
+    {
+     "sql": "SELECT seq_b.NEXTVAL as val",
+     "expect": {
+      "value": "1100"
+     }
+    }
+   ]
+  },
+  {
+   "name": "sequence-case-insensitivity",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE SeQ_CaSe START WITH 1"
+    },
+    {
+     "sql": "SELECT seq_case.NEXTVAL as val",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "SELECT SEQ_CASE.NEXTVAL as val",
+     "expect": {
+      "value": "2"
+     }
+    },
+    {
+     "sql": "SELECT SeQ_CaSe.NEXTVAL as val",
+     "expect": {
+      "value": "3"
+     }
+    }
+   ]
+  },
+  {
+   "name": "sequence-in-multiple-tables",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE shared_seq START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "CREATE TABLE table1 (id INTEGER, data VARCHAR)"
+    },
+    {
+     "sql": "CREATE TABLE table2 (id INTEGER, info VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO table1 VALUES (shared_seq.NEXTVAL, 'data1')"
+    },
+    {
+     "sql": "INSERT INTO table2 VALUES (shared_seq.NEXTVAL, 'info1')"
+    },
+    {
+     "sql": "INSERT INTO table1 VALUES (shared_seq.NEXTVAL, 'data2')"
+    },
+    {
+     "sql": "SELECT id FROM table1 ORDER BY id",
+     "expect": {
+      "rows": [
+       [
+        "1"
+       ],
+       [
+        "3"
+       ]
+      ],
+      "ordered": true
+     }
+    },
+    {
+     "sql": "SELECT id FROM table2 ORDER BY id",
+     "expect": {
+      "rows": [
+       [
+        "2"
+       ]
+      ],
+      "ordered": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "nextval-in-select-without-from",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_select START WITH 42 INCREMENT BY 7"
+    },
+    {
+     "sql": "SELECT seq_select.NEXTVAL as next_value",
+     "expect": {
+      "rowCount": 1,
+      "value": "42"
+     }
+    }
+   ]
+  },
+  {
+   "name": "sequence-with-large-numbers",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_large START WITH 1000000 INCREMENT BY 1000000"
+    },
+    {
+     "sql": "SELECT seq_large.NEXTVAL as val",
+     "expect": {
+      "value": "1000000"
+     }
+    },
+    {
+     "sql": "SELECT seq_large.NEXTVAL as val",
+     "expect": {
+      "value": "2000000"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-with-order",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_order START WITH 1 INCREMENT BY 1 ORDER"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT seq_order.NEXTVAL as val",
+     "expect": {
+      "value": "1"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-with-no-order",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_noorder START WITH 10 INCREMENT BY 2 NOORDER"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT seq_noorder.NEXTVAL as val",
+     "expect": {
+      "value": "10"
+     }
+    },
+    {
+     "sql": "SELECT seq_noorder.NEXTVAL as val",
+     "expect": {
+      "value": "12"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-default-no-order",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_default START WITH 1"
+    },
+    {
+     "sql": "SELECT seq_default.NEXTVAL as val",
+     "expect": {
+      "value": "1"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-order-with-all-options",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_all_opts START WITH 100 INCREMENT BY 5 ORDER COMMENT = 'Full options'"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT seq_all_opts.NEXTVAL as val",
+     "expect": {
+      "value": "100"
+     }
+    },
+    {
+     "sql": "SELECT seq_all_opts.NEXTVAL as val",
+     "expect": {
+      "value": "105"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-without-with",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_no_with START 200"
+    },
+    {
+     "sql": "SHOW SEQUENCES",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT seq_no_with.NEXTVAL as val",
+     "expect": {
+      "value": "200"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-without-by",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_no_by START 1 INCREMENT 10"
+    },
+    {
+     "sql": "SELECT seq_no_by.NEXTVAL as val",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "SELECT seq_no_by.NEXTVAL as val",
+     "expect": {
+      "value": "11"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-without-with-or-by",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_no_keywords START 50 INCREMENT 5"
+    },
+    {
+     "sql": "SELECT seq_no_keywords.NEXTVAL as val",
+     "expect": {
+      "value": "50"
+     }
+    },
+    {
+     "sql": "SELECT seq_no_keywords.NEXTVAL as val",
+     "expect": {
+      "value": "55"
+     }
+    },
+    {
+     "sql": "SELECT seq_no_keywords.NEXTVAL as val",
+     "expect": {
+      "value": "60"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-with-equals",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_equals START = 1000 INCREMENT = 100"
+    },
+    {
+     "sql": "SELECT seq_equals.NEXTVAL as val",
+     "expect": {
+      "value": "1000"
+     }
+    },
+    {
+     "sql": "SELECT seq_equals.NEXTVAL as val",
+     "expect": {
+      "value": "1100"
+     }
+    }
+   ]
+  },
+  {
+   "name": "create-sequence-mixed-syntax",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_mixed START WITH 10 INCREMENT 3"
+    },
+    {
+     "sql": "SELECT seq_mixed.NEXTVAL as val",
+     "expect": {
+      "value": "10"
+     }
+    },
+    {
+     "sql": "SELECT seq_mixed.NEXTVAL as val",
+     "expect": {
+      "value": "13"
+     }
+    }
+   ]
+  },
+  {
+   "name": "alter-sequence-set-increment",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_inc START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "SELECT seq_inc.NEXTVAL as val",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "ALTER SEQUENCE seq_inc SET INCREMENT = 10"
+    },
+    {
+     "sql": "SELECT seq_inc.NEXTVAL as val",
+     "expect": {
+      "value": "11"
+     }
+    }
+   ]
+  },
+  {
+   "name": "nextval-dot-syntax",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE dseq START WITH 5 INCREMENT BY 5"
+    },
+    {
+     "sql": "SELECT dseq.NEXTVAL AS v",
+     "expect": {
+      "value": "5"
+     }
+    },
+    {
+     "sql": "SELECT dseq.NEXTVAL AS v",
+     "expect": {
+      "value": "10"
+     }
+    }
+   ]
+  },
+  {
+   "name": "currval-dot-syntax-is-rejected",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE cseq START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "SELECT cseq.NEXTVAL AS v"
+    },
+    {
+     "sql": "SELECT cseq.CURRVAL AS v",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "sequence-default-applied-on-insert",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE iseq START WITH 100 INCREMENT BY 1"
+    },
+    {
+     "sql": "CREATE TABLE idef (id INTEGER DEFAULT iseq.NEXTVAL, name VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO idef (name) VALUES ('a')"
+    },
+    {
+     "sql": "INSERT INTO idef (name) VALUES ('b')"
+    },
+    {
+     "sql": "SELECT id FROM idef ORDER BY id",
+     "expect": {
+      "rowCount": 2,
+      "rows": [
+       [
+        "100"
+       ],
+       [
+        "101"
+       ]
+      ],
+      "ordered": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "sequence-default-applied-on-merge",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE mseq START WITH 100 INCREMENT BY 1"
+    },
+    {
+     "sql": "CREATE TABLE mtgt (id INTEGER DEFAULT mseq.NEXTVAL, name VARCHAR)"
+    },
+    {
+     "sql": "CREATE TABLE msrc (name VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO msrc VALUES ('a'), ('b')"
+    },
+    {
+     "sql": "MERGE INTO mtgt t USING msrc s ON t.name = s.name WHEN NOT MATCHED THEN INSERT (name) VALUES (s.name)"
+    },
+    {
+     "sql": "SELECT id FROM mtgt ORDER BY id",
+     "expect": {
+      "rowCount": 2,
+      "rows": [
+       [
+        "100"
+       ],
+       [
+        "101"
+       ]
+      ],
+      "ordered": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "qualified-nextval-resolves-inside-joined-and-aliased-selects",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE test_schema.seq_join_shape"
+    },
+    {
+     "sql": "CREATE TABLE sq_a (id INTEGER)"
+    },
+    {
+     "sql": "CREATE TABLE sq_b (id INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO sq_a VALUES (1)"
+    },
+    {
+     "sql": "INSERT INTO sq_b VALUES (1)"
+    },
+    {
+     "sql": "SELECT test_schema.seq_join_shape.nextval FROM sq_a a JOIN sq_b b ON a.id = b.id",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "SET first = 1"
+    },
+    {
+     "sql": "SELECT test_schema.seq_join_shape.nextval > $first FROM sq_a x",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "order-by-over-a-nextval-item-draws-each-value-once",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE test_schema.seq_once"
+    },
+    {
+     "sql": "CREATE TABLE sq_three (id INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO sq_three VALUES (1), (2), (3)"
+    },
+    {
+     "sql": "SELECT test_schema.seq_once.nextval FROM sq_three ORDER BY 1",
+     "expect": {
+      "rowCount": 3,
+      "rows": [
+       [
+        "1"
+       ],
+       [
+        "2"
+       ],
+       [
+        "3"
+       ]
+      ],
+      "ordered": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "two-nextval-references-in-one-row-draw-distinct-values",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE test_schema.seq_two_refs"
+    },
+    {
+     "sql": "CREATE TABLE sq_one (id INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO sq_one VALUES (1)"
+    },
+    {
+     "sql": "SELECT test_schema.seq_two_refs.nextval, test_schema.seq_two_refs.nextval FROM sq_one",
+     "expect": {
+      "rows": [
+       [
+        "1",
+        "2"
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "start-and-increment-step-within-one-statement",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins exact allocated values; a real account allocates per-statement ranges"
+   },
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE test_schema.seq_step START = 5 INCREMENT = 10"
+    },
+    {
+     "sql": "CREATE TABLE sq_step_rows (id INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO sq_step_rows VALUES (1), (2), (3)"
+    },
+    {
+     "sql": "SELECT test_schema.seq_step.nextval FROM sq_step_rows ORDER BY 1",
+     "expect": {
+      "rows": [
+       [
+        "5"
+       ],
+       [
+        "15"
+       ],
+       [
+        "25"
+       ]
+      ],
+      "ordered": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "allocation-properties-hold-on-both-backends",
+   "steps": [
+    {
+     "sql": "CREATE SEQUENCE seq_props START WITH 1000 INCREMENT BY 100"
+    },
+    {
+     "sql": "SELECT seq_props.NEXTVAL AS v",
+     "expect": {
+      "value": "1000"
+     }
+    },
+    {
+     "sql": "CREATE SEQUENCE seq_step START WITH 1 INCREMENT BY 5"
+    },
+    {
+     "sql": "SELECT seq_step.NEXTVAL AS v FROM TABLE(GENERATOR(ROWCOUNT => 4))"
+    },
+    {
+     "sql": "SELECT COUNT(*), COUNT(DISTINCT d) FROM (SELECT v - LAG(v) OVER (ORDER BY v) AS d FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) QUALIFY d IS NOT NULL)",
+     "expect": {
+      "rows": [
+       [
+        "3",
+        "1"
+       ]
+      ]
+     }
+    },
+    {
+     "sql": "CREATE SEQUENCE seq_back START WITH 100 INCREMENT BY -5"
+    },
+    {
+     "sql": "SELECT seq_back.NEXTVAL AS v FROM TABLE(GENERATOR(ROWCOUNT => 4))"
+    },
+    {
+     "sql": "SELECT MAX(v) - MIN(v) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "15"
+     }
+    },
+    {
+     "sql": "CREATE SEQUENCE seq_mono START WITH 1 INCREMENT BY 1"
+    },
+    {
+     "sql": "SET m1 = (SELECT seq_mono.NEXTVAL)"
+    },
+    {
+     "sql": "SET m2 = (SELECT seq_mono.NEXTVAL)"
+    },
+    {
+     "sql": "SET m3 = (SELECT seq_mono.NEXTVAL)"
+    },
+    {
+     "sql": "SET m4 = (SELECT seq_mono.NEXTVAL)"
+    },
+    {
+     "sql": "SELECT $m2 > $m1, $m3 > $m2, $m4 > $m3",
+     "expect": {
+      "rows": [
+       [
+        "true",
+        "true",
+        "true"
+       ]
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

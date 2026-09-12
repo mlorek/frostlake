@@ -1,0 +1,28 @@
+{
+  "suite": "scripting-bare-error-variable",
+  "description": "Snowflake Scripting exposes SQLERRM / SQLCODE / SQLSTATE as BARE identifiers - no colon prefix - inside an exception handler, in a SCRIPTING expression such as RETURN 'ERR:' || SQLERRM. The evaluator has to resolve those to the procedural variables the handler bound rather than treating them as missing column references, and they work as bare FUNCTION ARGUMENTS too. Inside an EMBEDDED SQL statement they are ordinary scripting names and reach it only as :SQLERRM, so the bare form there is an invalid identifier while the colon form works and stores the message. One shape worth naming: the handler only runs if the failing statement is reachable, and assigning to an UNDECLARED name (a bare r := ...) fails with invalid identifier 'R' BEFORE the block ever runs, so LET (or a DECLARE) is required for the division by zero to reach the handler at all - that is asserted here directly. Converted 1:1 from scripting/BareErrorVariableTest (now retired); the Java asserted only that the message starts with 'ERR:' and is longer than four characters, so the converted tests pin the whole value, and its embedded-SQL test used the bare r := form, which threw on the UNDECLARED NAME before the handler could run - passing for the wrong reason. The converted test uses LET so the handler really runs, and then pins the actual refusal, invalid identifier 'SQLERRM'.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-bare-sqlerrm-in-a-handler-resolves", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_errm() RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE r INT; BEGIN r := (SELECT 1 / 0); RETURN 'no-error'; EXCEPTION WHEN OTHER THEN RETURN 'ERR:' || SQLERRM; END $$"},
+      {"sql": "CALL p_errm()", "expect": {"value": "ERR:Division by zero"}}
+    ]},
+    {"name": "bare-error-variables-as-function-arguments", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION emsg(t VARCHAR, m VARCHAR, c NUMBER, s VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ t || ':' || m $$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_args() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN LET r := (SELECT 1 / 0); RETURN 'x'; EXCEPTION WHEN OTHER THEN RETURN emsg('ERR', SQLERRM, SQLCODE, SQLSTATE); END $$"},
+      {"sql": "CALL p_args()", "expect": {"value": "ERR:Division by zero"}}
+    ]},
+    {"name": "a-bare-error-variable-inside-an-embedded-sql-statement-is-rejected", "steps": [
+      {"sql": "CREATE TABLE err_sink (msg VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_bare_sql() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN LET r := (SELECT 1 / 0); RETURN 'x'; EXCEPTION WHEN OTHER THEN INSERT INTO err_sink VALUES (SQLERRM); RETURN 'logged'; END $$"},
+      {"sql": "CALL p_bare_sql()", "expect": {"error": {"messageContains": "invalid identifier 'SQLERRM'"}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_colon_sql() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN LET r := (SELECT 1 / 0); RETURN 'x'; EXCEPTION WHEN OTHER THEN INSERT INTO err_sink VALUES (:SQLERRM); RETURN 'logged'; END $$"},
+      {"sql": "CALL p_colon_sql()", "expect": {"value": "logged"}},
+      {"sql": "SELECT msg FROM err_sink", "expect": {"value": "Division by zero"}}
+    ]},
+    {"name": "assigning-to-an-undeclared-name-fails-before-the-handler-runs", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_undeclared() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN r := (SELECT 1 / 0); RETURN 'x'; EXCEPTION WHEN OTHER THEN RETURN 'caught'; END $$"},
+      {"sql": "CALL p_undeclared()", "expect": {"error": {"messageContains": "invalid identifier 'R'"}}}
+    ]}
+  ]
+}

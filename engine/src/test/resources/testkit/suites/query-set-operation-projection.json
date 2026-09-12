@@ -1,0 +1,35 @@
+{
+  "suite": "query-set-operation-projection",
+  "description": "A set operation combines each operand's PROJECTED SELECT list, not the raw base rows, so a+1 UNION b is the union of the two computed columns and a UNION over one projected column de-duplicates on THAT column even though the rows differ elsewhere. INTERSECT binds TIGHTER than UNION and EXCEPT (Snowflake operator precedence), so 1 UNION 2 INTERSECT 2 is 1 UNION (2 INTERSECT 2) and answers both rows, not the single row the left-to-right reading would give. Mixed numeric types across branches - an integer column beside a decimal literal - must still SORT rather than fail on the mixed carriers. And FETCH applies to the COMBINED result. Converted 1:1 from query/SetOperationProjectionTest (now retired); the Java read cells by index, so each converted test pins the whole ordered row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "union-combines-projected-expressions-not-raw-rows", "steps": [
+      {"sql": "CREATE TABLE sp (a INTEGER, b INTEGER)"},
+      {"sql": "INSERT INTO sp VALUES (1, 99), (2, 88)"},
+      {"sql": "SELECT a+1 FROM sp UNION SELECT b FROM sp ORDER BY 1", "expect": {"rows": [[2],[3],[88],[99]], "ordered": true}}
+    ]},
+    {"name": "union-dedups-on-the-projected-column-only", "steps": [
+      {"sql": "CREATE TABLE sp2 (a INTEGER, b INTEGER)"},
+      {"sql": "INSERT INTO sp2 VALUES (1, 99), (1, 88), (2, 77)"},
+      {"sql": "SELECT a FROM sp2 UNION SELECT a FROM sp2 ORDER BY 1", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]},
+    {"name": "intersect-binds-tighter-than-union", "steps": [
+      {"sql": "SELECT 1 UNION SELECT 2 INTERSECT SELECT 2 ORDER BY 1", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]},
+    {"name": "except-combines-projected-columns", "steps": [
+      {"sql": "CREATE TABLE sp (a INTEGER, b INTEGER)"},
+      {"sql": "INSERT INTO sp VALUES (1, 99), (2, 88)"},
+      {"sql": "SELECT a FROM sp EXCEPT SELECT 2", "expect": {"rows": [[1]]}}
+    ]},
+    {"name": "mixed-numeric-types-across-branches-sort-without-error", "steps": [
+      {"sql": "CREATE TABLE mn (a INTEGER)"},
+      {"sql": "INSERT INTO mn VALUES (1), (2)"},
+      {"sql": "SELECT a FROM mn UNION SELECT 1.5 ORDER BY 1", "expect": {"rows": [[1],[1.5],[2]], "ordered": true}}
+    ]},
+    {"name": "fetch-applies-to-the-combined-set-operation-result", "steps": [
+      {"sql": "CREATE TABLE sp3 (a INTEGER)"},
+      {"sql": "INSERT INTO sp3 VALUES (1), (2), (3)"},
+      {"sql": "SELECT a FROM sp3 UNION SELECT a FROM sp3 ORDER BY a FETCH FIRST 2 ROWS ONLY", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]}
+  ]
+}

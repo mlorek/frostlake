@@ -1,0 +1,28 @@
+{
+  "suite": "scripting-java-procedure",
+  "description": "LANGUAGE JAVA stored procedures with a Snowpark HANDLER, whose body is Java SOURCE inside a dollar-quoted string. Three shapes: a handler building a nested Map and returning it through a Variant (the body also carries an escaped \\\" inside a Java string literal, which the dollar-quoted body must pass through untouched), a handler running SQL through session.sql() and reading the Row back, and a handler taking a declared VARCHAR parameter alongside the Session. Each is CALLed and its return value checked. Converted 1:1 from scripting/JavaProcedureTest (now retired); the first two tests asserted only that the answer CONTAINS certain characters, so the converted steps pin the whole value.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-variant-returning-java-handler", "steps": [
+      {"sql": "CREATE SCHEMA io"},
+      {"sql": "USE SCHEMA io"},
+      {"sql": "CREATE OR REPLACE PROCEDURE io.vt() RETURNS OBJECT LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:1.9.0') HANDLER='VariantTest.test' AS $$\nimport java.util.HashMap;\nimport java.util.Map;\nimport com.snowflake.snowpark_java.types.Variant;\nimport com.snowflake.snowpark_java.Session;\n\npublic class VariantTest {\n  public String test(Session session) throws Exception {\n    Map<String, Map<String, Object>> m = new HashMap<>();\n    Map<String, Object> m2 = new HashMap<>();\n    m2.put(\"c\", 1);\n    m.put(\"b\", m2);\n    Variant v = new Variant(\"{\\\"a\\\":1}\");\n    v = new Variant(m);\n    return v.toString();\n  }\n}\n$$"},
+      {"sql": "CALL vt()", "expect": {"value": "{\"b\":{\"c\":1}}"}}
+    ]},
+    {"name": "a-java-handler-running-session-sql", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE items (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO items VALUES (1, 'apple'), (2, 'banana')"},
+      {"sql": "CREATE SCHEMA io"},
+      {"sql": "USE SCHEMA io"},
+      {"sql": "CREATE OR REPLACE PROCEDURE count_items() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:1.9.0') HANDLER='Counter.run' AS $$\nimport com.snowflake.snowpark_java.DataFrame;\nimport com.snowflake.snowpark_java.Row;\nimport com.snowflake.snowpark_java.Session;\n\npublic class Counter {\n  public String run(Session session) {\n    DataFrame df = session.sql(\"SELECT COUNT(*) AS CNT FROM public.items\");\n    Row[] rows = df.collect();\n    if (rows.length > 0) {\n      return \"count=\" + rows[0].getLong(0);\n    }\n    return \"count=0\";\n  }\n}\n$$"},
+      {"sql": "CALL count_items()", "expect": {"value": "count=2"}}
+    ]},
+    {"name": "a-java-handler-with-a-string-parameter", "steps": [
+      {"sql": "CREATE SCHEMA io"},
+      {"sql": "USE SCHEMA io"},
+      {"sql": "CREATE OR REPLACE PROCEDURE greet(name VARCHAR) RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:1.9.0') HANDLER='Greeter.greet' AS $$\nimport com.snowflake.snowpark_java.Session;\n\npublic class Greeter {\n  public String greet(Session session, String name) {\n    return \"Hello, \" + name + \"!\";\n  }\n}\n$$"},
+      {"sql": "CALL greet('World')", "expect": {"value": "Hello, World!"}}
+    ]}
+  ]
+}

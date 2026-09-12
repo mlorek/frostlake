@@ -19,6 +19,8 @@ package dev.frostlake.executor;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
 import org.antlr.v4.runtime.CharStreams;
@@ -31,13 +33,17 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Substitutes procedural scripting variables into raw SQL text before it is parsed/executed:
- * record-field references ({@code rec.col} / {@code rec."col"}) and colon-prefixed bind variables
- * ({@code :var}). Holds a live reference to the procedural variable map.
+ * Substitutes procedural scripting BIND variables ({@code :var}) into raw SQL text before it is
+ * parsed/executed. Holds a live reference to the procedural variable map.
+ *
+ * <p>A record field is not one of them. Inside a SQL statement {@code rec.col} is an ordinary column
+ * reference on the account: {@code INSERT INTO t VALUES (r.a)} is "invalid identifier 'R.A'", and over
+ * a table aliased {@code r} it reads that table's own column. Only a scripting EXPRESSION reads the
+ * field ({@code x := r.a}, {@code RETURN r.a}, an IF condition), and none of those comes through here.
  *
  * <p>The substitution is driven by the SQL <em>lexer</em>, not hand-rolled character scanning: the SQL
- * is tokenized, and matches are recognized as token sequences ({@code IDENTIFIER '.' IDENTIFIER} for a
- * record field, {@code ':' IDENTIFIER} for a bind variable). Because the lexer classifies the text,
+ * is tokenized, and a bind variable is recognized as the token sequence {@code ':' IDENTIFIER}. Because
+ * the lexer classifies the text,
  * a name that appears inside a {@link FrostlakeLexer#STRING_LITERAL} or a {@link FrostlakeLexer#QUOTED_IDENTIFIER}
  * is never mistaken for a reference, and {@code ::} (cast) / {@code :=} (assignment) — their own tokens
  * — are never confused with a {@code :var}. The grammar's tokenizer stays the single source of truth
@@ -46,15 +52,27 @@ import java.util.Set;
 public class BindVariableSubstitutor {
 
     private final Map<String, Object> variables;
+    private final ProceduralExecutor declarations;
 
     public BindVariableSubstitutor(final Map<String, Object> variables) {
-        this.variables = variables;
+        this(variables, null);
     }
 
-    /** Substitute record-field refs and colon bind variables into the SQL. */
+    /**
+     * A substitutor that also knows the names' DECLARED types, so a numeric variable is spelled with
+     * its type — {@code (1)::NUMBER(9,0)} for a FOR counter, {@code (1.78)::NUMBER(5,2)} for a declared
+     * NUMBER — and the statement it lands in types it as live does (a column derived from {@code :i}
+     * declares NUMBER(9,0), not the digits' own width).
+     */
+    public BindVariableSubstitutor(final Map<String, Object> variables, final ProceduralExecutor declarations) {
+        this.variables = variables;
+        this.declarations = declarations;
+    }
+
+    /** Substitute colon bind variables into the SQL. */
     public String substitute(final String sql) {
-        // Nothing to do unless the text can contain a bind variable (':') or a record field ('.').
-        if (sql == null || (sql.indexOf(':') < 0 && sql.indexOf('.') < 0)) {
+        // Nothing to do unless the text can contain a bind variable.
+        if (sql == null || sql.indexOf(':') < 0) {
             return sql;
         }
 
@@ -84,34 +102,14 @@ public class BindVariableSubstitutor {
                         && nameTok.getStartIndex() == t.getStopIndex() + 1) {
                     rejectDottedBindVariable(toks, i + 1, nameTok);
                     out.append(sql, cursor, t.getStartIndex());
-                    out.append(toLiteral(variables.get(nameTok.getText().toUpperCase())));
+                    out.append(typedLiteral(nameTok.getText(), variables.get(nameTok.getText().toUpperCase()),
+                        isLiteralOnlySlot(toks, i)));
                     cursor = nameTok.getStopIndex() + 1;
                     i++;   // consumed the identifier too
                     continue;
                 }
             }
 
-            // rec.col / rec."col" — a qualified reference that resolves to a record-field variable.
-            if (SqlTokens.isWord(t) && i + 2 < toks.size()
-                    && toks.get(i + 1).getType() == FrostlakeLexer.DOT) {
-                final Token dot = toks.get(i + 1);
-                final Token colTok = toks.get(i + 2);
-                final int colType = colTok.getType();
-                if ((SqlTokens.isWord(colTok) || colType == FrostlakeLexer.QUOTED_IDENTIFIER)
-                        && dot.getStartIndex() == t.getStopIndex() + 1
-                        && colTok.getStartIndex() == dot.getStopIndex() + 1) {
-                    final String colName = colType == FrostlakeLexer.QUOTED_IDENTIFIER
-                        ? unquoteIdentifier(colTok.getText()) : colTok.getText();
-                    final String key = (t.getText() + "." + colName).toUpperCase();
-                    if (variables.containsKey(key)) {
-                        out.append(sql, cursor, t.getStartIndex());
-                        out.append(toLiteral(variables.get(key)));
-                        cursor = colTok.getStopIndex() + 1;
-                        i += 2;   // consumed the dot and the column token
-                        continue;
-                    }
-                }
-            }
         }
         out.append(sql, cursor, sql.length());
         return out.toString();
@@ -201,6 +199,43 @@ public class BindVariableSubstitutor {
         return endsAValue && prev.getStopIndex() + 1 == toks.get(colonIndex).getStartIndex();
     }
 
+    /**
+     * Whether the bind at {@code colonIndex} stands where the grammar takes a bare literal and no
+     * expression — after LIMIT / OFFSET / TOP / FETCH FIRST / NEXT, a {@code =>} argument, or inside
+     * SAMPLE ( … ) — so a typed cast would not parse there.
+     */
+    private static boolean isLiteralOnlySlot(final List<Token> toks, final int colonIndex) {
+        if (colonIndex == 0) {
+            return false;
+        }
+        final int previous = toks.get(colonIndex - 1).getType();
+        if (previous == FrostlakeLexer.LIMIT || previous == FrostlakeLexer.OFFSET || previous == FrostlakeLexer.TOP
+                || previous == FrostlakeLexer.FIRST || previous == FrostlakeLexer.NEXT
+                || previous == FrostlakeLexer.ARROW) {
+            return true;
+        }
+        if (previous == FrostlakeLexer.LPAREN && colonIndex >= 2) {
+            final int before = toks.get(colonIndex - 2).getType();
+            return before == FrostlakeLexer.SAMPLE || before == FrostlakeLexer.TABLESAMPLE;
+        }
+        return false;
+    }
+
+    /** The value as a literal, cast to its declared NUMBER type when the name carries one and a cast may stand there. */
+    private String typedLiteral(final String name, final Object value, final boolean literalOnlySlot) {
+        final String literal = toLiteral(value);
+        final DataType declared = declarations == null ? null : declarations.getDeclaredVariableType(name);
+        if (value == null || literalOnlySlot || !(declared instanceof NumericType)
+                || (value instanceof Double && !Double.isFinite((Double) value))) {
+            return literal;
+        }
+        final NumericType numeric = (NumericType) declared;
+        final String family = numeric.getName() == null ? "" : numeric.getName().toUpperCase();
+        final String typeText = family.equals("FLOAT") || family.equals("DOUBLE") || family.equals("REAL")
+            ? "FLOAT" : "NUMBER(" + numeric.getPrecision() + "," + numeric.getScale() + ")";
+        return "(" + literal + ")::" + typeText;
+    }
+
     private static String toLiteral(final Object value) {
         if (value == null) {
             return "NULL";
@@ -235,11 +270,4 @@ public class BindVariableSubstitutor {
         return SqlStringLiterals.encode(value.toString());
     }
 
-    /** Strip the surrounding double quotes from a QUOTED_IDENTIFIER token, unescaping "" to ". */
-    private static String unquoteIdentifier(final String quoted) {
-        if (quoted.length() >= 2 && quoted.startsWith("\"") && quoted.endsWith("\"")) {
-            return quoted.substring(1, quoted.length() - 1).replace("\"\"", "\"");
-        }
-        return quoted;
-    }
 }

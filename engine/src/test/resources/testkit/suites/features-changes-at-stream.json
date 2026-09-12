@@ -1,0 +1,99 @@
+{
+  "suite": "features-changes-at-stream",
+  "description": "CHANGES ... AT (STREAM => '<name>') starts the change window at a stream's own offset, so it answers exactly what that stream reports - the same rows, the same metadata columns - without consuming it. Each delta row rendered SQL-side as c1|METADATA$ACTION|METADATA$ISUPDATE and sorted, so sets of changes compare cleanly: DEFAULT is the whole delta, APPEND_ONLY is the rows APPENDED in the window (not the net delta's insert half - an appended-then-updated row keeps the value it was appended with, an appended-then-deleted row survives, a merely-updated pre-existing row is absent), an APPEND_ONLY stream agrees with CHANGES(APPEND_ONLY), a stream over another table contributes nothing, an unknown stream names itself in the error, and qualified stream names resolve. Converted 1:1 from features/ChangesAtStreamTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "default-information-returns-the-whole-delta", "steps": [
+      {"sql": "CREATE TABLE ct (c1 INTEGER, c2 VARCHAR)"},
+      {"sql": "INSERT INTO ct VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE STREAM s1 ON TABLE ct"},
+      {"sql": "INSERT INTO ct VALUES (3, 'c')"},
+      {"sql": "UPDATE ct SET c2 = 'B' WHERE c1 = 2"},
+      {"sql": "DELETE FROM ct WHERE c1 = 1"},
+      {"sql": "SELECT \"C1\" || '|' || \"METADATA$ACTION\" || '|' || TO_VARCHAR(\"METADATA$ISUPDATE\") AS r FROM ct CHANGES (INFORMATION => DEFAULT) AT (STREAM => 's1') ORDER BY r",
+       "expect": {"rows": [["1|DELETE|false"], ["2|DELETE|true"], ["2|INSERT|true"], ["3|INSERT|false"]], "ordered": true}},
+      {"sql": "SELECT \"C1\" || '|' || \"METADATA$ACTION\" || '|' || TO_VARCHAR(\"METADATA$ISUPDATE\") AS r FROM s1 ORDER BY r",
+       "expect": {"rows": [["1|DELETE|false"], ["2|DELETE|true"], ["2|INSERT|true"], ["3|INSERT|false"]], "ordered": true}}
+    ]},
+    {"name": "append-only-keeps-only-the-rows-that-were-appended", "steps": [
+      {"sql": "CREATE TABLE ct (c1 INTEGER, c2 VARCHAR)"},
+      {"sql": "INSERT INTO ct VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE STREAM s1 ON TABLE ct"},
+      {"sql": "INSERT INTO ct VALUES (3, 'c')"},
+      {"sql": "UPDATE ct SET c2 = 'B' WHERE c1 = 2"},
+      {"sql": "DELETE FROM ct WHERE c1 = 1"},
+      {"sql": "SELECT \"C1\" || '|' || \"METADATA$ACTION\" || '|' || TO_VARCHAR(\"METADATA$ISUPDATE\") AS r FROM ct CHANGES (INFORMATION => APPEND_ONLY) AT (STREAM => 's1') ORDER BY r",
+       "expect": {"rows": [["3|INSERT|false"]], "ordered": true}}
+    ]},
+    {"name": "an-append-is-not-the-insert-half-of-the-delta", "steps": [
+      {"sql": "CREATE TABLE ct2 (c1 INTEGER, c2 VARCHAR)"},
+      {"sql": "INSERT INTO ct2 VALUES (51, 'fifty-one')"},
+      {"sql": "CREATE STREAM s2 ON TABLE ct2"},
+      {"sql": "INSERT INTO ct2 VALUES (11, 'eleven'), (22, 'twentytwo'), (33, 'thirtythree')"},
+      {"sql": "UPDATE ct2 SET c2 = 'ELEVEN' WHERE c1 = 11"},
+      {"sql": "DELETE FROM ct2 WHERE c1 = 22"},
+      {"sql": "UPDATE ct2 SET c2 = 'FIFTY-ONE' WHERE c1 = 51"},
+      {"sql": "SELECT \"C1\" || '|' || \"METADATA$ACTION\" || '|' || TO_VARCHAR(\"METADATA$ISUPDATE\") AS r FROM ct2 CHANGES (INFORMATION => DEFAULT) AT (STREAM => 's2') ORDER BY r",
+       "expect": {"rows": [["11|INSERT|false"], ["33|INSERT|false"], ["51|DELETE|true"], ["51|INSERT|true"]], "ordered": true}},
+      {"sql": "SELECT \"C1\" || '|' || \"METADATA$ACTION\" || '|' || TO_VARCHAR(\"METADATA$ISUPDATE\") AS r FROM ct2 CHANGES (INFORMATION => APPEND_ONLY) AT (STREAM => 's2') ORDER BY r",
+       "expect": {"rows": [["11|INSERT|false"], ["22|INSERT|false"], ["33|INSERT|false"]], "ordered": true}},
+      {"sql": "SELECT \"C2\" AS r FROM ct2 CHANGES (INFORMATION => APPEND_ONLY) AT (STREAM => 's2') ORDER BY r",
+       "expect": {"rows": [["eleven"], ["thirtythree"], ["twentytwo"]], "ordered": true}}
+    ]},
+    {"name": "an-append-only-stream-agrees-with-append-only-changes", "steps": [
+      {"sql": "CREATE TABLE ct3 (c1 INTEGER, c2 VARCHAR)"},
+      {"sql": "INSERT INTO ct3 VALUES (1, 'a')"},
+      {"sql": "CREATE STREAM s3 ON TABLE ct3"},
+      {"sql": "CREATE STREAM s3ao ON TABLE ct3 APPEND_ONLY = TRUE"},
+      {"sql": "INSERT INTO ct3 VALUES (10, 'ten'), (20, 'twenty')"},
+      {"sql": "UPDATE ct3 SET c2 = 'TEN' WHERE c1 = 10"},
+      {"sql": "DELETE FROM ct3 WHERE c1 = 20"},
+      {"sql": "INSERT INTO ct3 VALUES (10, 'ten again')"},
+      {"sql": "UPDATE ct3 SET c2 = 'A' WHERE c1 = 1"},
+      {"sql": "SELECT \"C1\" || '|' || \"METADATA$ACTION\" || '|' || TO_VARCHAR(\"METADATA$ISUPDATE\") AS r FROM ct3 CHANGES (INFORMATION => APPEND_ONLY) AT (STREAM => 's3') ORDER BY r",
+       "expect": {"rows": [["10|INSERT|false"], ["10|INSERT|false"], ["20|INSERT|false"]], "ordered": true}},
+      {"sql": "SELECT \"C1\" || '|' || \"METADATA$ACTION\" || '|' || TO_VARCHAR(\"METADATA$ISUPDATE\") AS r FROM s3ao ORDER BY r",
+       "expect": {"rows": [["10|INSERT|false"], ["10|INSERT|false"], ["20|INSERT|false"]], "ordered": true}},
+      {"sql": "SELECT \"C2\" AS r FROM s3ao ORDER BY r",
+       "expect": {"rows": [["ten"], ["ten again"], ["twenty"]], "ordered": true}}
+    ]},
+    {"name": "reading-does-not-advance-the-stream", "steps": [
+      {"sql": "CREATE TABLE ct (c1 INTEGER, c2 VARCHAR)"},
+      {"sql": "INSERT INTO ct VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE STREAM s1 ON TABLE ct"},
+      {"sql": "INSERT INTO ct VALUES (3, 'c')"},
+      {"sql": "UPDATE ct SET c2 = 'B' WHERE c1 = 2"},
+      {"sql": "DELETE FROM ct WHERE c1 = 1"},
+      {"sql": "SELECT * FROM ct CHANGES (INFORMATION => DEFAULT) AT (STREAM => 's1')", "expect": {"rowCount": 4}},
+      {"sql": "SELECT * FROM s1", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "a-stream-over-another-table-contributes-nothing", "steps": [
+      {"sql": "CREATE TABLE ct (c1 INTEGER, c2 VARCHAR)"},
+      {"sql": "INSERT INTO ct VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE STREAM s1 ON TABLE ct"},
+      {"sql": "INSERT INTO ct VALUES (3, 'c')"},
+      {"sql": "UPDATE ct SET c2 = 'B' WHERE c1 = 2"},
+      {"sql": "DELETE FROM ct WHERE c1 = 1"},
+      {"sql": "CREATE TABLE other (x INTEGER)"},
+      {"sql": "CREATE STREAM s_other ON TABLE other"},
+      {"sql": "INSERT INTO other VALUES (9)"},
+      {"sql": "SELECT * FROM ct CHANGES (INFORMATION => DEFAULT) AT (STREAM => 's_other')", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "an-unknown-stream-is-reported-by-name", "steps": [
+      {"sql": "CREATE TABLE ct (c1 INTEGER, c2 VARCHAR)"},
+      {"sql": "INSERT INTO ct VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE STREAM s1 ON TABLE ct"},
+      {"sql": "SELECT * FROM ct CHANGES (INFORMATION => DEFAULT) AT (STREAM => 'nosuch')",
+       "expect": {"error": {"messageContains": "Stream 'nosuch' not found."}}}
+    ]},
+    {"name": "a-qualified-stream-name-resolves", "steps": [
+      {"sql": "CREATE TABLE ct (c1 INTEGER, c2 VARCHAR)"},
+      {"sql": "INSERT INTO ct VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE STREAM s1 ON TABLE ct"},
+      {"sql": "INSERT INTO ct VALUES (3, 'c')"},
+      {"sql": "UPDATE ct SET c2 = 'B' WHERE c1 = 2"},
+      {"sql": "DELETE FROM ct WHERE c1 = 1"},
+      {"sql": "SELECT * FROM ct CHANGES (INFORMATION => DEFAULT) AT (STREAM => 'test_db.test_schema.s1')", "expect": {"rowCount": 4}}
+    ]}
+  ]
+}

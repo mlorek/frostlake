@@ -38,17 +38,24 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
+import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import tools.jackson.databind.node.StringNode;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -83,7 +90,7 @@ final class UdfInvoker {
      * exact match made a call that relied on defaults resolve to no function at all, and because the caller
      * swallows the resulting exception it surfaced as the misleading "Unknown function".
      */
-    private static boolean acceptsArgumentCount(final Function func, final int argCount) {
+    static boolean acceptsArgumentCount(final Function func, final int argCount) {
         final List<Parameter> params = func.getParameters();
         return argCount >= requiredParameterCount(params) && argCount <= params.size();
     }
@@ -107,6 +114,7 @@ final class UdfInvoker {
      */
     private List<Object> coerceArgsToParameterTypes(final Function function, final List<Object> args) {
         final List<Parameter> params = function.getParameters();
+        final boolean sqlBody = function.getUdfLanguage() == UdfLanguage.SQL;
         List<Object> coerced = null;
         for (int i = 0; i < args.size() && i < params.size(); i++) {
             final Object value = args.get(i);
@@ -127,6 +135,33 @@ final class UdfInvoker {
                         coerced = new ArrayList<>(args);
                     }
                     coerced.set(i, null);
+                    continue;
+                }
+                // Anything else falls through to the conversion below: a scalar variant becomes a
+                // one-element ARRAY, and one handed to an OBJECT parameter is refused, exactly as a
+                // CAST to that type answers (live-verified).
+            }
+            if (sqlBody && !(paramType instanceof VariantType)) {
+                // A VARIANT parameter takes the value AS IT IS - that is what a VARIANT holds - so it is
+                // the one target with nothing to convert.
+                //
+                // A SQL UDF converts each argument to its parameter's DECLARED type as the value
+                // arrives - the same conversion a CAST to that type performs, refusing in the same
+                // words where the value will not convert (live-verified). Without it the argument
+                // reached the body as its text and the declared type never spoke.
+                if (keepsItsOwnNumber(paramType, value)) {
+                    // An exact number reaches an exact NUMBER parameter unconverted, so the parameter's
+                    // SCALE never rounds it: num_p(1.257) into NUMBER(10,2) answers 1.257, and num_p(1)
+                    // answers 1 rather than 1.00. A TEXT argument still converts — and rounds — because
+                    // it has to become a number at all (live-verified both ways).
+                    continue;
+                }
+                final Object cast = ValueCaster.castValue(value, SqlTypeNames.canonical(paramType));
+                if (cast != value) {
+                    if (coerced == null) {
+                        coerced = new ArrayList<>(args);
+                    }
+                    coerced.set(i, cast);
                 }
                 continue;
             }
@@ -206,10 +241,15 @@ final class UdfInvoker {
             return candidatesByCount.get(0);
         }
 
-        // Multiple candidates with same parameter count - try type matching
+        // Multiple candidates with same parameter count - take every one that ACCEPTS the arguments and
+        // let the argument's own preference choose between them. The account does not pick the nearest
+        // type (see UdfOverloadPreference), and taking the first declared one answered differently.
+        Function preferred = null;
+        int[] preferredRanks = null;
         for (final Function func : candidatesByCount) {
             boolean typesMatch = true;
             final List<Parameter> params = func.getParameters();
+            final int[] ranks = new int[params.size()];
             for (int i = 0; i < params.size(); i++) {
                 final Parameter param = params.get(i);
                 final Object argValue = argValues.get(i);
@@ -217,56 +257,51 @@ final class UdfInvoker {
                     typesMatch = false;
                     break;
                 }
+                ranks[i] = UdfOverloadPreference.rank(argValue, param.getDataType());
             }
-            if (typesMatch) {
-                return func;
+            if (typesMatch && (preferredRanks == null || preferredArgumentwise(ranks, preferredRanks))) {
+                preferred = func;
+                preferredRanks = ranks;
             }
+        }
+        if (preferred != null) {
+            return preferred;
         }
 
         // No exact match found, return first candidate as fallback
         return candidatesByCount.get(0);
     }
 
+    /**
+     * Whether an overload ACCEPTS this argument. The account's answer is the conversion's: an overload
+     * takes an argument when the value can be converted to the parameter's declared type, which is what
+     * the call then does with it - so a VARCHAR parameter takes a number, a boolean and a date, while
+     * neither a NUMBER nor a VARIANT one takes a DATE at all (live-verified). Which of several accepting
+     * overloads is CHOSEN is a separate question, answered by {@link UdfOverloadPreference}.
+     */
     private boolean isCompatibleArgument(final Object argValue, final DataType expectedType) {
-        if (argValue == null) {
+        if (argValue == null || expectedType == null) {
             return true; // NULL is compatible with all types
         }
-
-        final String typeName = expectedType.getName().toUpperCase();
-
-        // String types
-        if (typeName.equals("STRING") || typeName.equals("VARCHAR") || typeName.equals("TEXT")) {
-            return argValue instanceof String;
+        if (expectedType instanceof VariantType) {
+            // A VARIANT holds anything it is handed - except a temporal, which the account refuses.
+            return !(argValue instanceof LocalDate || argValue instanceof LocalDateTime
+                || argValue instanceof LocalTime || argValue instanceof OffsetDateTime
+                || argValue instanceof ZonedDateTime);
         }
-
-        // Integer types
-        if (typeName.equals("INTEGER") || typeName.equals("INT") || typeName.equals("BIGINT") || typeName.equals("SMALLINT")) {
-            return argValue instanceof Long || argValue instanceof Integer || argValue instanceof Short || argValue instanceof Byte;
+        // The pair of TYPES decides, not this value: an overload whose body never reads the argument
+        // still runs, so a VARCHAR argument reaches a NUMBER parameter while a DATE reaches neither a
+        // NUMBER nor a VARIANT one (live-verified). The order that ranks the candidates is the same
+        // table that says which pairs exist at all.
+        if (UdfOverloadPreference.accepts(argValue, expectedType)) {
+            return true;
         }
-
-        // Decimal/Numeric types
-        if (typeName.equals("DECIMAL") || typeName.equals("NUMERIC") || typeName.equals("NUMBER")) {
-            return argValue instanceof Number;
+        try {
+            ValueCaster.castValue(argValue, SqlTypeNames.canonical(expectedType));
+            return true;
+        } catch (final RuntimeException notConvertible) {
+            return false;
         }
-
-        // Float/Double types
-        if (typeName.equals("FLOAT") || typeName.equals("DOUBLE")) {
-            return argValue instanceof Double || argValue instanceof Float;
-        }
-
-        // Boolean type
-        if (typeName.equals("BOOLEAN")) {
-            return argValue instanceof Boolean;
-        }
-
-        // Date/Time types
-        if (typeName.equals("DATE") || typeName.equals("TIMESTAMP") || typeName.equals("TIME")) {
-            return argValue instanceof LocalDate || argValue instanceof LocalDateTime ||
-                   argValue instanceof LocalTime || argValue instanceof String;
-        }
-
-        // Default: allow anything
-        return true;
     }
 
     /**
@@ -352,6 +387,20 @@ final class UdfInvoker {
      * instead of quoting its text — and a scalar string under a VARIANT declaration becomes a
      * VARIANT STRING, exactly as the SQL-side cast would make it.
      */
+    /**
+     * Whether an argument reaches its parameter as the number it already is, with no conversion and so
+     * no rounding to the parameter's declared scale.
+     *
+     * @param paramType the parameter's declared type
+     * @param value     the argument's value
+     * @return whether the value passes through untouched
+     */
+    private static boolean keepsItsOwnNumber(final DataType paramType, final Object value) {
+        return paramType instanceof NumericType && !NumericType.isApproximate(paramType)
+            && (value instanceof BigDecimal || value instanceof Long || value instanceof Integer
+                || value instanceof Short || value instanceof Byte || value instanceof BigInteger);
+    }
+
     private Object wrapSemiStructuredReturn(final Function function, final Object result) {
         if (!(result instanceof String)) {
             return result;
@@ -512,23 +561,36 @@ final class UdfInvoker {
                 argStr = "NULL";
             } else if (argVal instanceof Number || argVal instanceof Boolean) {
                 argStr = argVal.toString();
-            } else if (argVal instanceof LocalDateTime || argVal instanceof LocalDate || argVal instanceof LocalTime) {
+            } else if (argVal instanceof LocalDateTime || argVal instanceof LocalDate
+                    || argVal instanceof LocalTime || argVal instanceof OffsetDateTime
+                    || argVal instanceof ZonedDateTime) {
                 // A temporal substitutes as a typed literal in Snowflake's output text form, not
                 // java.time's T-separated toString — so the body keeps a real temporal (date arithmetic
-                // works) and VARIANT/OBJECT output renders it as '2026-01-03 00:00:00.000'.
+                // works) and VARIANT/OBJECT output renders it as '2026-01-03 00:00:00.000'. A
+                // TIMESTAMP_LTZ must name its own flavour, or the body would rebuild it as a naive
+                // TIMESTAMP_NTZ and the offset would be gone by the time the result came back.
                 final String cast = argVal instanceof LocalDate ? "DATE"
-                    : argVal instanceof LocalTime ? "TIME" : "TIMESTAMP_NTZ";
+                    : argVal instanceof LocalTime ? "TIME"
+                    : argVal instanceof ZonedDateTime ? "TIMESTAMP_TZ"
+                    : argVal instanceof OffsetDateTime ? "TIMESTAMP_LTZ" : "TIMESTAMP_NTZ";
                 argStr = "'" + SharedFunctionHelpers.textOf(argVal) + "'::" + cast;
             } else if (param.getDataType() != null
                     && param.getDataType().getCategory() == TypeCategory.SEMI_STRUCTURED) {
-                argStr = "PARSE_JSON(" + SqlStringLiterals.encode(argVal.toString()) + ")";
+                // A semi-structured argument substitutes as its own JSON TEXT, not as the bare text of
+                // the value it holds: PARSE_JSON over an unquoted `x` is not JSON at all, where what the
+                // caller passed was the JSON string "x" - which the account answers as "x".
+                argStr = "PARSE_JSON(" + SqlStringLiterals.encode(argVal instanceof VariantValue
+                    ? VariantJsonText.clientTextOf((VariantValue) argVal) : argVal.toString()) + ")";
             } else if (param.getDataType() instanceof VectorType) {
                 // A VECTOR parameter substitutes as a TYPED vector literal, like the temporals above:
                 // the vector functions' argument rules are compile-time and read the STATIC type, so a
                 // bare string body would fail "Invalid argument types … (VARCHAR(13))" where Snowflake
                 // evaluates the body fine (live: a UDF whose body is
                 // VECTOR_L2_DISTANCE(a, b) over two VECTOR(FLOAT,3) parameters returns 5.196152422706632).
-                argStr = SqlStringLiterals.encode(argVal.toString()) + "::" + param.getDataType().getName();
+                // The text goes through PARSE_JSON first: a VARIANT converts to a vector, where a text cast
+                // straight to one is refused ("Unsupported data type 'TEXT'.").
+                argStr = "PARSE_JSON(" + SqlStringLiterals.encode(argVal.toString()) + ")::"
+                    + param.getDataType().getName();
             } else {
                 argStr = SqlStringLiterals.encode(argVal.toString());
             }
@@ -604,4 +666,18 @@ final class UdfInvoker {
             return javaResult.toString();
         }
     }
+
+    /**
+     * Whether one candidate's ranks beat another's, argument by argument in order: the first position
+     * where they differ decides, and an all-equal pair keeps the one declared first.
+     */
+    private static boolean preferredArgumentwise(final int[] candidate, final int[] incumbent) {
+        for (int i = 0; i < candidate.length && i < incumbent.length; i++) {
+            if (candidate[i] != incumbent[i]) {
+                return candidate[i] < incumbent[i];
+            }
+        }
+        return false;
+    }
+
 }

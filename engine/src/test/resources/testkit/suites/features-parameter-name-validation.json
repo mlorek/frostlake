@@ -1,0 +1,34 @@
+{
+  "suite": "features-parameter-name-validation",
+  "description": "Parameter NAMES are validated against the account's own vocabulary: an unknown session name refuses invalid parameter '<NAME>' for SET and UNSET alike (unquoted names upper-fold, quoted names keep their quotes), while an unknown key in an object's generic SET refuses invalid property '<NAME>' for '<KIND>'. Known names stay accepted whether or not the engine acts on them, because the registry is the account's list rather than the engine's implemented subset. Converted 1:1 from features/ParameterNameValidationTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "unknown-session-parameter-refuses-on-set-and-unset", "steps": [
+      {"sql": "ALTER SESSION SET NOT_A_REAL_PARAMETER = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid parameter 'NOT_A_REAL_PARAMETER'"}}},
+      {"sql": "ALTER SESSION UNSET NOT_A_REAL_PARAMETER",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid parameter 'NOT_A_REAL_PARAMETER'"}}}
+    ]},
+    {"name": "a-quoted-unknown-name-keeps-its-quotes", "steps": [
+      {"sql": "ALTER SESSION SET \"not_real\" = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid parameter '\"not_real\"'"}}}
+    ]},
+    {"name": "known-session-parameters-stay-accepted", "steps": [
+      {"sql": "ALTER SESSION SET QUERY_TAG = 'validation-test'"},
+      {"sql": "ALTER SESSION UNSET QUERY_TAG"},
+      {"sql": "ALTER SESSION SET TIMEZONE = 'UTC'"},
+      {"sql": "ALTER SESSION UNSET TIMEZONE"}
+    ]},
+    {"name": "unknown-table-property-refuses", "steps": [
+      {"sql": "CREATE TABLE pnv_t (a INTEGER)"},
+      {"sql": "ALTER TABLE pnv_t SET BOGUS_OPTION = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid property 'BOGUS_OPTION' for 'TABLE'"}}},
+      {"sql": "ALTER TABLE pnv_t SET DATA_RETENTION_TIME_IN_DAYS = 1"}
+    ]},
+    {"name": "unknown-database-property-refuses", "steps": [
+      {"sql": "ALTER DATABASE test_db SET BOGUS_OPTION = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid property 'BOGUS_OPTION' for 'DATABASE'"}}},
+      {"sql": "ALTER DATABASE test_db SET DATA_RETENTION_TIME_IN_DAYS = 1"}
+    ]}
+  ]
+}

@@ -18,6 +18,9 @@ package dev.frostlake.storage;
 
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.values.ExactValues;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -124,11 +127,12 @@ public class TableStorage {
         this.identityIncrement = incrementValue;
     }
 
-    public void insert(final Row row) {
+    public void insert(final Row written) {
         // Validate row (columnCount avoids the defensive column-list copy getColumns() makes)
-        if (row.getValues().size() != metadata.columnCount()) {
+        if (written.getValues().size() != metadata.columnCount()) {
             throw new RuntimeException("Row column count mismatch");
         }
+        final Row row = inDeclaredCarriers(written);
 
         // Handle primary key index (always maintain index; enforce constraint only when enabled)
         if (metadata.hasPrimaryKeyColumns()) {
@@ -167,10 +171,11 @@ public class TableStorage {
         engine.markDirty(this);
     }
 
-    public void update(final int rowIndex, final Row newRow) {
+    public void update(final int rowIndex, final Row written) {
         if (rowIndex < 0 || rowIndex >= rows.size()) {
             throw new RuntimeException("Invalid row index: " + rowIndex);
         }
+        final Row newRow = inDeclaredCarriers(written);
 
         // Update primary key index if needed
         if (!metadata.getPrimaryKeys().isEmpty()) {
@@ -251,8 +256,39 @@ public class TableStorage {
     /** Install a REPLACEMENT row at {@code index} — UPDATE never mutates a stored row in place,
      *  which is what lets {@link #takeSnapshot()} keep pointer copies instead of deep copies. */
     public void replaceRow(final int index, final Row newRow) {
-        rows.set(index, newRow);
+        rows.set(index, inDeclaredCarriers(newRow));
         engine.markDirty(this);
+    }
+
+    /**
+     * The row with every exact-numeric cell in the ONE carrier its column holds — a scale-0 column's
+     * Long, a scaled column's BigDecimal at that scale (see {@link ExactValues}). Every write lands here
+     * (INSERT, UPDATE, MERGE, CTAS, COPY, a clone), so a value written by any of them is the same class
+     * as one written by any other. The row is copied before a cell is replaced: a caller's row — a
+     * result set's, a snapshot's — is never rewritten under it.
+     */
+    private Row inDeclaredCarriers(final Row row) {
+        Row stored = row;
+        final int count = Math.min(row.size(), metadata.columnCount());
+        for (int i = 0; i < count; i++) {
+            final Object value = row.getValue(i);
+            if (!(value instanceof Number)) {
+                continue;
+            }
+            final DataType type = metadata.columnAt(i).getDataType();
+            if (!(type instanceof NumericType) || ExactValues.isCarrier(value, (NumericType) type)
+                    || NumericType.isApproximate(type)) {
+                continue;
+            }
+            final Object carrier = ExactValues.written(value, (NumericType) type);
+            if (carrier != value) {
+                if (stored == row) {
+                    stored = row.copy();
+                }
+                stored.setValue(i, carrier);
+            }
+        }
+        return stored;
     }
 
     /** The live row at {@code index} (used at deferred-apply time to capture pre-change values). */

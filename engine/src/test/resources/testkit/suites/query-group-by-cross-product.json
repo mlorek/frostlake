@@ -1,0 +1,13 @@
+{
+  "suite": "query-group-by-cross-product",
+  "description": "Multiple GROUP BY super-group elements combine as a CROSS PRODUCT of their grouping sets, not a flat union. ROLLUP(a), ROLLUP(g) is the grouping sets {(a,g),(a),(g),()} - not {(a),(),(g),()}, which duplicated the grand total and dropped the (a,g) detail rows. Over a three-row fixture that is 3 detail rows plus 2 for (a), 2 for (g) and exactly one grand total: eight rows. Converted 1:1 from query/GroupByCrossProductTest (now retired); the Java counted rows and then counted how many carried the grand total's sum, which would also have accepted the right count of the wrong rows - the converted test states all eight rows and their keys, so the (a,g) detail rows are named rather than inferred from a count.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "two-rollups-cross-product-rather-than-union", "steps": [
+      {"sql": "CREATE TABLE gt (a VARCHAR, g VARCHAR, v INTEGER)"},
+      {"sql": "INSERT INTO gt VALUES ('x','p',1), ('x','q',2), ('y','p',3)"},
+      {"sql": "SELECT a, g, SUM(v) FROM gt GROUP BY ROLLUP(a), ROLLUP(g) ORDER BY a NULLS LAST, g NULLS LAST", "expect": {"rows": [["x","p",1],["x","q",2],["x",null,3],["y","p",3],["y",null,3],[null,"p",4],[null,"q",2],[null,null,6]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT a, g, SUM(v) AS s FROM gt GROUP BY ROLLUP(a), ROLLUP(g)) WHERE a IS NULL AND g IS NULL", "expect": {"value": "1"}}
+    ]}
+  ]
+}

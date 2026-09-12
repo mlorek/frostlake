@@ -1,0 +1,35 @@
+{
+  "suite": "scripting-result-set",
+  "description": "RESULTSET handling in Snowflake Scripting. A RESULTSET value reaches a block TWO ways - DECLARE rs RESULTSET DEFAULT (query) and rs := (EXECUTE IMMEDIATE ...) - and both must be usable identically by RETURN TABLE(rs) and by a FOR rec IN rs loop, which is why every shape here appears once per path. The EXECUTE IMMEDIATE path is the one that already worked and is kept as the regression guard. A RESULTSET is NOT a FROM source - live refuses FROM TABLE(rs) - so its rows are consumed by ITERATING it, which the filtering test shows by counting only the matching rows. Converted 1:1 from scripting/ResultSetScriptingTest (now retired); the RETURN TABLE tests asserted only a row COUNT, so the converted steps pin the rows themselves.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "declare-resultset-default-then-return-table", "steps": [
+      {"sql": "DECLARE rs RESULTSET DEFAULT (SELECT 1 AS a UNION ALL SELECT 2 AS a); BEGIN RETURN TABLE(rs); END;",
+       "expect": {"rows": [[1],[2]]}}
+    ]},
+    {"name": "execute-immediate-resultset-then-return-table", "steps": [
+      {"sql": "DECLARE res RESULTSET; all_rows RESULTSET; stmt VARCHAR; BEGIN stmt := 'SELECT 1 AS a UNION ALL SELECT 2 AS a'; res := (EXECUTE IMMEDIATE stmt); RETURN TABLE(res); END;",
+       "expect": {"rows": [[1],[2]]}}
+    ]},
+    {"name": "a-for-loop-over-a-default-resultset", "steps": [
+      {"sql": "DECLARE rs RESULTSET DEFAULT (SELECT 10 AS v UNION ALL SELECT 20 AS v); BEGIN LET total INTEGER := 0; FOR rec IN rs DO total := total + rec.v; END FOR; RETURN total; END;",
+       "expect": {"value": 30}}
+    ]},
+    {"name": "a-for-loop-over-an-execute-immediate-resultset", "steps": [
+      {"sql": "DECLARE res RESULTSET; all_rows RESULTSET; stmt VARCHAR; BEGIN stmt := 'SELECT 10 AS v UNION ALL SELECT 20 AS v'; res := (EXECUTE IMMEDIATE stmt); LET total INTEGER := 0; FOR rec IN res DO total := total + rec.v; END FOR; RETURN total; END;",
+       "expect": {"value": 30}}
+    ]},
+    {"name": "return-table-of-a-directly-declared-resultset", "steps": [
+      {"sql": "DECLARE res RESULTSET DEFAULT (SELECT 1 AS a UNION ALL SELECT 2 AS a); BEGIN RETURN TABLE(res); END;",
+       "expect": {"rows": [[1],[2]]}}
+    ]},
+    {"name": "iterating-a-default-resultset-filters-rows", "steps": [
+      {"sql": "DECLARE rs RESULTSET DEFAULT (SELECT 1 AS a UNION ALL SELECT 2 AS a); matches INTEGER DEFAULT 0; BEGIN FOR rec IN rs DO IF (rec.a = 2) THEN matches := :matches + 1; END IF; END FOR; RETURN :matches; END;",
+       "expect": {"value": 1}}
+    ]},
+    {"name": "iterating-an-execute-immediate-resultset-sees-all-rows", "steps": [
+      {"sql": "DECLARE res RESULTSET; stmt VARCHAR; seen INTEGER DEFAULT 0; BEGIN stmt := 'SELECT 1 AS a UNION ALL SELECT 2 AS a'; res := (EXECUTE IMMEDIATE stmt); FOR rec IN res DO seen := :seen + 1; END FOR; RETURN :seen; END;",
+       "expect": {"value": 2}}
+    ]}
+  ]
+}

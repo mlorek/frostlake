@@ -197,7 +197,8 @@ public class LateralColumnAliasTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO src VALUES ('ab')");
         final ResultSet rs = engine.executeQuery("""
             SELECT UPPER(t.s) _up, ARRAY_CONSTRUCT(_up, t.s) arr, f.value::VARCHAR v
-            FROM src t, TABLE(FLATTEN(input => arr)) f""");
+            FROM src t, TABLE(FLATTEN(input => arr)) f
+            ORDER BY f.index""");
         assertEquals(2, rs.getRowCount());
         assertEquals("AB", rs.getRows().get(0).getValue(2));
         assertEquals("ab", rs.getRows().get(1).getValue(2));

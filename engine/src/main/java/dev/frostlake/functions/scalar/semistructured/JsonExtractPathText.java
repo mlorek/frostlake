@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
@@ -64,6 +65,13 @@ public class JsonExtractPathText extends BuiltInFunction {
             }
         }
         if (node == null || node.isNull()) return null;
+        if (node.isDouble() || node.isFloat()) {
+            // The DOUBLE family renders in the FLOAT display text — ten significant digits growing
+            // one per decade — not Java's own: live gives 1 for 1.000000000000000e+00, 1e-05 for the
+            // small exponent and 1.23456789 for a sixteen-digit mantissa (live-verified), exactly the
+            // FLOAT-to-VARCHAR rule.
+            return SharedFunctionHelpers.floatText(node.asDouble());
+        }
         return node.isTextual() ? node.asText() : node.toString();
     }
 

@@ -1,0 +1,22 @@
+{
+  "suite": "scripting-range-for-loop",
+  "description": "The integer-range FOR loop - FOR i IN [REVERSE] start TO end DO ... END FOR - executed in anonymous BEGIN...END blocks. Covers ascending iteration by its SUM, ascending iteration ORDER by building the digits 1,2,3 into 123 (a sum alone could not tell the order), REVERSE order the same way as 321, bounds given as VARIABLES rather than literals, and BREAK leaving the loop early. Converted 1:1 from scripting/RangeForLoopTest (now retired); the blocks are written on one line here, which the scripting parser reads identically.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "an-ascending-range-sums-its-counter", "steps": [
+      {"sql": "BEGIN LET total INTEGER := 0; FOR i IN 1 TO 5 DO total := total + i; END FOR; RETURN total; END;", "expect": {"value": 15}}
+    ]},
+    {"name": "an-ascending-range-iterates-in-order", "steps": [
+      {"sql": "BEGIN LET acc INTEGER := 0; FOR i IN 1 TO 3 DO acc := acc * 10 + i; END FOR; RETURN acc; END;", "expect": {"value": 123}}
+    ]},
+    {"name": "a-reverse-range-iterates-high-to-low", "steps": [
+      {"sql": "BEGIN LET acc INTEGER := 0; FOR i IN REVERSE 1 TO 3 DO acc := acc * 10 + i; END FOR; RETURN acc; END;", "expect": {"value": 321}}
+    ]},
+    {"name": "range-bounds-may-be-variables", "steps": [
+      {"sql": "BEGIN LET lo INTEGER := 2; LET hi INTEGER := 4; LET total INTEGER := 0; FOR i IN lo TO hi DO total := total + i; END FOR; RETURN total; END;", "expect": {"value": 9}}
+    ]},
+    {"name": "break-exits-a-range-loop", "steps": [
+      {"sql": "BEGIN LET last INTEGER := 0; FOR i IN 1 TO 100 DO last := i; IF (i = 4) THEN BREAK; END IF; END FOR; RETURN last; END;", "expect": {"value": 4}}
+    ]}
+  ]
+}

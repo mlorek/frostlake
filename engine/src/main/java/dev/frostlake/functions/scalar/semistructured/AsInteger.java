@@ -18,14 +18,15 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
+import dev.frostlake.values.DecimalOriginNode;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.util.List;
 
 public class AsInteger extends BuiltInFunction {
-    public AsInteger() { super("AS_INTEGER", NumericType.INTEGER); }
+    public AsInteger() { super("AS_INTEGER", IntegerResultWidths.WIDEST); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -33,6 +34,10 @@ public class AsInteger extends BuiltInFunction {
         // NULL, never a rounded or truncated value.
         if (args.get(0) == null) return null;
         final JsonNode node = ArrayFunctionHelper.parseNode(args.get(0));
+        // A whole DECIMAL (3.00 out of a NUMBER(10,2)) is no INTEGER variant either: NULL on the account.
+        if (node instanceof DecimalOriginNode) {
+            return null;
+        }
         if (node != null && node.isNumber()) {
             final BigDecimal dec = node.decimalValue().stripTrailingZeros();
             return dec.scale() <= 0 ? (Object) dec.longValue() : null;

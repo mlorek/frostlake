@@ -243,7 +243,12 @@ public class ProceduralBlockBuilder {
             final String varName = visitor.getText(lCtx.identifier());
             if (lCtx.expression() != null) {
                 final BaseExpression expr = visitor.buildExpression(lCtx.expression());
-                return new SetStatement(varName, expr);
+                final SetStatement let = new SetStatement(varName, expr, lCtx.dataTypeName() != null
+                    ? visitor.parseDataType(lCtx.dataTypeName(), lCtx.typeParameters()) : null);
+                if (lCtx.dataTypeName() == null) {
+                    let.setSqlInitialiser(DeclarationTypes.sqlExpression(lCtx.expression()));
+                }
+                return let;
             }
         }
 
@@ -364,6 +369,12 @@ public class ProceduralBlockBuilder {
         if (ctx.TABLE() != null) {
             return new ReturnTableStatement(expr);
         }
-        return new ReturnStatement(expr);
+        final ReturnStatement ret = new ReturnStatement(expr);
+        // The value read as SQL too, from the same parse tree: it types the result column whenever the
+        // RETURN keeps the expression's own type.
+        if (ctx.expression() != null) {
+            ret.setSqlExpression(DeclarationTypes.sqlExpression(ctx.expression()));
+        }
+        return ret;
     }
 }

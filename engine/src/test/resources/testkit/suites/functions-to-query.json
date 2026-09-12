@@ -1,0 +1,49 @@
+{
+  "suite": "functions-to-query",
+  "description": "The TO_QUERY table function: SELECT * FROM TABLE(TO_QUERY('<sql>')) compiles the text into a query and returns its rows, whose result participates in the outer query like any other source. Named arguments bind into :name placeholders, and every TO_QUERY argument is a STRING - live-verified, a numeric bind value fails \"argument needs to be a string\" and the positional ? form fails \"Bind variable ? not set.\". The query-text parameter is named SQL: Frostlake called it INPUT, so it ran a spelling no account accepts and refused the one every account does, and both refusals are pinned here. SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS is a SCALAR function and wrapping it in a TABLE call is refused, which Frostlake used to allow. The production shape is a stored procedure holding its source query in a variable and reading FROM TABLE(TO_QUERY(:source_sql)). Converted 1:1 from functions/ToQueryFunctionTest (now retired); its @BeforeEach tq fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "literal-sql-text-runs-as-a-query", "steps": [
+      {"sql": "CREATE TABLE tq (x INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO tq VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "SELECT * FROM TABLE(TO_QUERY('SELECT x, s FROM tq ORDER BY x'))",
+       "expect": {"rowCount": 3, "rows": [["1", "a"], ["2", "b"], ["3", "c"]], "ordered": true}}
+    ]},
+    {"name": "the-result-participates-in-the-outer-query", "steps": [
+      {"sql": "CREATE TABLE tq (x INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO tq VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(TO_QUERY('SELECT x FROM tq')) WHERE x > 1",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "a-named-argument-binds-into-a-placeholder", "steps": [
+      {"sql": "CREATE TABLE tq (x INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO tq VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "SELECT s FROM TABLE(TO_QUERY('SELECT s FROM tq WHERE x = :v', v => '2'))",
+       "expect": {"rowCount": 1, "value": "b"}}
+    ]},
+    {"name": "the-query-text-parameter-is-named-sql", "steps": [
+      {"sql": "CREATE TABLE tq (x INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO tq VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "SELECT * FROM TABLE(TO_QUERY(SQL => 'SELECT s FROM tq WHERE x = 2'))",
+       "expect": {"rowCount": 1, "value": "b"}},
+      {"sql": "SELECT s FROM TABLE(TO_QUERY(SQL => 'SELECT s FROM tq WHERE x = :v', v => '3'))",
+       "expect": {"value": "c"}},
+      {"sql": "SELECT * FROM TABLE(TO_QUERY(INPUT => 'SELECT 1 AS n'))",
+       "expect": {"error": {"messageContains": "missing required argument [SQL] for function [TO_QUERY]"}}},
+      {"sql": "SELECT * FROM TABLE(TO_QUERY())",
+       "expect": {"error": {"messageContains": "not enough arguments for function [TO_QUERY], expected 1, got 0"}}}
+    ]},
+    {"name": "the-task-cancel-system-function-is-not-a-table-function", "steps": [
+      {"sql": "SELECT * FROM TABLE(SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('nosuch'))",
+       "expect": {"error": {"messageContains": "Unknown table function SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS"}}}
+    ]},
+    {"name": "a-procedure-variable-holds-the-source-sql", "steps": [
+      {"sql": "CREATE TABLE tq (x INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO tq VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "CREATE TABLE tq_out (x INTEGER)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE copy_via_to_query() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE src VARCHAR DEFAULT 'SELECT x FROM tq WHERE x >= 2';\nBEGIN\n  INSERT INTO tq_out (x) SELECT q.x FROM TABLE(TO_QUERY(:src)) q;\n  RETURN 'done';\nEND $$"},
+      {"sql": "CALL copy_via_to_query()", "expect": {"value": "done"}},
+      {"sql": "SELECT COUNT(*), MIN(x) FROM tq_out", "expect": {"rows": [["2", "2"]]}}
+    ]}
+  ]
+}

@@ -41,4 +41,24 @@ public class VarSamp extends AggregateFunction {
     public SemiStructuredRejection semiStructuredRejection(final int position) {
         return SemiStructuredRejection.MULTIPLY_OPERANDS;
     }
+
+    /**
+     * A BOOLEAN, a temporal or a BINARY argument is refused at compile time in the multiplication's
+     * name with the type twice — "Invalid argument types for function '*': (DATE, DATE)" — exactly as
+     * a semi-structured one is: live reaches its internal sum of squares first (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+    }
+
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+    }
 }

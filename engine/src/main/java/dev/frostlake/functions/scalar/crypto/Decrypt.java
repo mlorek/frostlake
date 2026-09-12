@@ -28,7 +28,7 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 public class Decrypt extends BuiltInFunction {
-    public Decrypt() { super("DECRYPT", BinaryType.VARBINARY); }
+    public Decrypt() { super("DECRYPT", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

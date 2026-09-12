@@ -1,0 +1,111 @@
+{
+  "suite": "features-streams",
+  "description": "STREAM behavior through the SQL surface - SHOW STREAMS cells and reads of the stream itself (METADATA$ACTION / METADATA$ISUPDATE per change row): creation over a table (source_type Table, mode DEFAULT or APPEND_ONLY), a qualified stream reference resolving from another schema, a read through IDENTIFIER(), the delta reported for inserts, updates (a DELETE+INSERT pair both flagged as an update) and deletes, APPEND_ONLY keeping only the insert, consumption by a DML that reads the stream, DROP STREAM, and a stream on a VIEW surviving a database CLONE (still readable by name and through IDENTIFIER, still listed with source_type View). Converted 1:1 from features/StreamsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "create-stream", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'"},
+      {"sql": "SELECT ENDSWITH(\"table_name\", 'USERS'), \"source_type\", \"mode\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "Table", "DEFAULT"]]}}
+    ]},
+    {"name": "create-append-only-stream", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users APPEND_ONLY = TRUE"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'"},
+      {"sql": "SELECT \"mode\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "APPEND_ONLY"}}
+    ]},
+    {"name": "qualified-stream-reference-resolves-across-schemas", "steps": [
+      {"sql": "CREATE TABLE test_schema.t (id INTEGER)"},
+      {"sql": "CREATE STREAM test_schema.strm ON TABLE test_schema.t"},
+      {"sql": "INSERT INTO test_schema.t VALUES (1), (2)"},
+      {"sql": "CREATE SCHEMA other_schema"},
+      {"sql": "USE SCHEMA other_schema"},
+      {"sql": "SELECT COUNT(*) AS c FROM test_schema.strm", "expect": {"value": "2"}},
+      {"sql": "USE SCHEMA test_schema"}
+    ]},
+    {"name": "stream-read-via-identifier-function", "steps": [
+      {"sql": "CREATE TABLE test_schema.fact (id INTEGER)"},
+      {"sql": "CREATE STREAM test_schema.strm ON TABLE test_schema.fact"},
+      {"sql": "INSERT INTO test_schema.fact VALUES (1), (2), (3)"},
+      {"sql": "SELECT COUNT(*) AS c FROM IDENTIFIER('test_schema.strm')", "expect": {"value": "3"}}
+    ]},
+    {"name": "stream-tracks-inserts", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM user_stream", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(METADATA$ACTION = 'INSERT'), COUNT_IF(METADATA$ISUPDATE) FROM user_stream",
+       "expect": {"rows": [["2", "0"]]}}
+    ]},
+    {"name": "stream-tracks-updates", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "UPDATE users SET age = 31 WHERE id = 1"},
+      {"sql": "SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM user_stream", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(IFF(METADATA$ACTION = 'DELETE', TO_VARCHAR(METADATA$ISUPDATE), NULL)), MAX(IFF(METADATA$ACTION = 'INSERT', TO_VARCHAR(METADATA$ISUPDATE), NULL)) FROM user_stream",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "stream-tracks-deletes", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "DELETE FROM users WHERE id = 1"},
+      {"sql": "SELECT id, METADATA$ACTION FROM user_stream", "expect": {"rowCount": 1, "rows": [["1", "DELETE"]]}}
+    ]},
+    {"name": "append-only-stream-only-tracks-inserts", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users APPEND_ONLY = TRUE"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "UPDATE users SET name = 'Alicia' WHERE id = 1"},
+      {"sql": "DELETE FROM users WHERE id = 1"},
+      {"sql": "SELECT id, METADATA$ACTION FROM user_stream", "expect": {"rowCount": 1, "rows": [["1", "INSERT"]]}}
+    ]},
+    {"name": "stream-consume", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "CREATE TABLE users_sink (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "SELECT COUNT(*) FROM user_stream", "expect": {"value": "1"}},
+      {"sql": "INSERT INTO users_sink SELECT id, name FROM user_stream"},
+      {"sql": "SELECT COUNT(*) FROM user_stream", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(*) FROM users_sink", "expect": {"value": "1"}}
+    ]},
+    {"name": "drop-stream", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "DROP STREAM user_stream"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "stream-with-multiple-operations", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, amount INTEGER, status VARCHAR)"},
+      {"sql": "CREATE STREAM order_stream ON TABLE orders"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 'pending'), (2, 200, 'completed')"},
+      {"sql": "SELECT COUNT(*) FROM order_stream", "expect": {"value": "2"}}
+    ]},
+    {"name": "stream-on-view-survives-database-clone", "steps": [
+      {"sql": "CREATE DATABASE clonesrc"},
+      {"sql": "USE DATABASE clonesrc"},
+      {"sql": "CREATE SCHEMA b"},
+      {"sql": "CREATE SCHEMA bt"},
+      {"sql": "CREATE TABLE b.fact_a (id INTEGER, c VARCHAR)"},
+      {"sql": "CREATE TABLE b.fact_del (id INTEGER, c VARCHAR)"},
+      {"sql": "CREATE VIEW bt.v_and_delete AS SELECT id, c FROM b.fact_a UNION ALL SELECT id, c FROM b.fact_del"},
+      {"sql": "CREATE OR REPLACE STREAM bt.s_and_delete ON VIEW bt.v_and_delete APPEND_ONLY = TRUE SHOW_INITIAL_ROWS = FALSE"},
+      {"sql": "CREATE DATABASE clonedst CLONE clonesrc"},
+      {"sql": "USE DATABASE clonedst"},
+      {"sql": "USE SCHEMA public"},
+      {"sql": "SELECT COUNT(*) FROM bt.s_and_delete", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) FROM IDENTIFIER('bt.s_and_delete')", "expect": {"rowCount": 1}},
+      {"sql": "SHOW STREAMS IN SCHEMA bt"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'S_AND_DELETE', \"source_type\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "View"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS clonedst"},
+      {"sql": "DROP DATABASE IF EXISTS clonesrc"}
+    ]}
+  ]
+}

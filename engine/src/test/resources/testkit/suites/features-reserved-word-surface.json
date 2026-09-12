@@ -1,0 +1,39 @@
+{
+  "suite": "features-reserved-word-surface",
+  "description": "The reserved-word surface, measured word by word over the grammar's identifier pool: INTO, INSERT, CURRENT, FOLLOWING, RLIKE, UNIQUE and UPDATE are RESERVED - refused as aliases and as column names - while their special positions stay legal: INSERT and RLIKE as function calls, any of them as a VARIANT path key. The ANSI context names split by position: legal as aliases, refused as column DEFINITIONS with the account's own dotted message. Converted 1:1 from features/ReservedWordSurfaceTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "reserved-words-refuse-as-aliases", "steps": [
+      {"sql": "SELECT 1 AS into", "expect": {"error": {"messageContains": "unexpected '"}}},
+      {"sql": "SELECT 1 AS insert", "expect": {"error": {"messageContains": "unexpected '"}}},
+      {"sql": "SELECT 1 AS current", "expect": {"error": {"messageContains": "unexpected '"}}},
+      {"sql": "SELECT 1 AS following", "expect": {"error": {"messageContains": "unexpected '"}}},
+      {"sql": "SELECT 1 AS rlike", "expect": {"error": {"messageContains": "unexpected '"}}},
+      {"sql": "SELECT 1 AS unique", "expect": {"error": {"messageContains": "unexpected '"}}},
+      {"sql": "SELECT 1 AS update", "expect": {"error": {"messageContains": "unexpected '"}}}
+    ]},
+    {"name": "reserved-words-refuse-as-column-names", "steps": [
+      {"sql": "CREATE TABLE rw_into (into INTEGER)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE rw_insert (insert INTEGER)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE rw_current (current INTEGER)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE rw_following (following INTEGER)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE rw_rlike (rlike INTEGER)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE rw_update (update INTEGER)", "expect": {"error": {}}}
+    ]},
+    {"name": "reserved-function-names-still-call", "steps": [
+      {"sql": "SELECT INSERT('abcdef', 2, 3, 'zzz')", "expect": {"rowCount": 1}},
+      {"sql": "SELECT RLIKE('san francisco', 'san.*')", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "reserved-words-stay-legal-as-variant-path-keys", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"update\": 1}'):update", "expect": {"value": "1"}},
+      {"sql": "SELECT PARSE_JSON('{\"current\": 2}'):current", "expect": {"value": "2"}}
+    ]},
+    {"name": "ansi-context-names-split-by-position", "steps": [
+      {"sql": "SELECT 1 AS current_date", "expect": {"rowCount": 1}},
+      {"sql": "CREATE TABLE rw_ansi (a INTEGER, current_date DATE)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 33\n.invalid column definition name 'CURRENT_DATE' (ANSI reserved)"}}},
+      {"sql": "CREATE TABLE rw_ansi (current_user VARCHAR)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 22\n.invalid column definition name 'CURRENT_USER' (ANSI reserved)"}}}
+    ]}
+  ]
+}

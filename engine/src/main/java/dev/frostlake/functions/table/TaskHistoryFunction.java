@@ -25,9 +25,11 @@ import dev.frostlake.metastore.model.TaskExecution;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.task.TaskTrigger;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -40,6 +42,9 @@ import java.util.Map;
  *         SELECT * FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(RESULT_LIMIT => 100))
  */
 public class TaskHistoryFunction extends TableFunction {
+
+    /** How far ahead a pending fire is listed — measured to the hour on the account. */
+    private static final int LOOK_AHEAD_DAYS = 8;
 
     private final Catalog catalog;
 
@@ -95,6 +100,29 @@ public class TaskHistoryFunction extends TableFunction {
                 for (final Schema schema : database.getAllSchemas()) {
                     for (final Task task : schema.getTasks()) {
                         if (filterTaskName != null && !task.getName().toUpperCase().equals(filterTaskName)) continue;
+                        // Live lists the next fire of every STARTED task as a SCHEDULED row, for as
+                        // long as that fire is within EIGHT DAYS of now — measured to the hour: a fire
+                        // 7 days 23 hours out is listed and one 8 days out is not.
+                        if (rows.size() < resultLimit && task.isActive() && task.getSchedule() != null
+                                && task.getNextRunTime() != null
+                                && !task.getNextRunTime().isAfter(LocalDateTime.now().plusDays(LOOK_AHEAD_DAYS))) {
+                            rows.add(new Row(Arrays.asList(
+                                null,
+                                task.getName(),
+                                database.getName(),
+                                schema.getName(),
+                                task.getSqlStatement(),
+                                task.getCondition(),
+                                "SCHEDULED",
+                                null,
+                                null,
+                                task.getNextRunTime().toString(),
+                                null,
+                                null,
+                                null,
+                                null, 1L, 1L, null, TaskTrigger.SCHEDULE.reported()
+                            )));
+                        }
                         for (final TaskExecution exec : task.getExecutionHistory()) {
                             if (rows.size() >= resultLimit) break;
                             rows.add(new Row(Arrays.asList(
@@ -111,7 +139,7 @@ public class TaskHistoryFunction extends TableFunction {
                                 exec.getStartTime() != null ? exec.getStartTime().toString() : null,
                                 null,
                                 exec.getEndTime() != null ? exec.getEndTime().toString() : null,
-                                null, 1L, 1L, null, "SCHEDULED"
+                                null, 1L, 1L, null, exec.getScheduledFrom()
                             )));
                         }
                         if (rows.size() >= resultLimit) break;

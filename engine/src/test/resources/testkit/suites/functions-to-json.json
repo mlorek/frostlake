@@ -1,0 +1,38 @@
+{
+  "suite": "functions-to-json",
+  "description": "TO_JSON serialises the VARIANT VALUE. The engine carries VARIANT, ARRAY and OBJECT values as JSON text, so TO_JSON of a semi-structured value returns that JSON compacted and must NOT re-encode the text into a JSON string - [\"a\"], never the double-encoded form, which broke vendor assertions written as TO_JSON(array_col) = '[\"X\"]'. A non-JSON string is a variant STRING and serialises quoted, including one whose text merely STARTS with a valid JSON number token: a lenient parser that ignored trailing tokens would truncate \"2026-04-20 12:00:00\" to 2026. A JSON null serialises as the four-character text null, which the suite pins by comparison and length rather than by reading the cell, since a SQL NULL renders the same way. Converted 1:1 from functions/ToJsonTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "an-array-column-serialises-as-a-json-array", "steps": [
+      {"sql": "CREATE TABLE tj_arr (a ARRAY)"},
+      {"sql": "INSERT INTO tj_arr SELECT ARRAY_CONSTRUCT('LAPTOP_DESKTOP')"},
+      {"sql": "SELECT TO_JSON(a) FROM tj_arr", "expect": {"value": "[\"LAPTOP_DESKTOP\"]"}},
+      {"sql": "SELECT COUNT(*) FROM tj_arr WHERE TO_JSON(a) = '[\"LAPTOP_DESKTOP\"]'", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-parsed-object-round-trips-compactly", "steps": [
+      {"sql": "SELECT TO_JSON(PARSE_JSON('{ \"a\": 1, \"b\": [true, null] }'))",
+       "expect": {"value": "{\"a\":1,\"b\":[true,null]}"}}
+    ]},
+    {"name": "a-variant-null-serialises-as-the-text-null", "steps": [
+      {"sql": "SELECT TO_JSON(PARSE_JSON('null')) = 'null'", "expect": {"value": "true"}},
+      {"sql": "SELECT LENGTH(TO_JSON(PARSE_JSON('null')))", "expect": {"value": "4"}}
+    ]},
+    {"name": "a-plain-string-serialises-quoted", "steps": [
+      {"sql": "SELECT TO_JSON(TO_VARIANT('hello'))", "expect": {"value": "\"hello\""}}
+    ]},
+    {"name": "a-string-with-a-json-like-prefix-stays-a-string", "steps": [
+      {"sql": "SELECT TO_JSON(TO_VARIANT('2026-04-20 12:00:00'))",
+       "expect": {"value": "\"2026-04-20 12:00:00\""}}
+    ]},
+    {"name": "a-number-serialises-bare", "steps": [
+      {"sql": "SELECT TO_JSON(42)", "expect": {"value": "42"}}
+    ]},
+    {"name": "a-null-input-returns-null", "steps": [
+      {"sql": "SELECT TO_JSON(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-nested-constructed-object-serialises", "steps": [
+      {"sql": "SELECT TO_JSON(OBJECT_CONSTRUCT('k', ARRAY_CONSTRUCT('v1', 'v2')))",
+       "expect": {"value": "{\"k\":[\"v1\",\"v2\"]}"}}
+    ]}
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "suite": "ddl-create-or-replace-routines",
+  "description": "CREATE OR REPLACE for functions and procedures: first-time create, replacing an existing one, the plain CREATE refusing a duplicate, IF NOT EXISTS not replacing, OR REPLACE + IF NOT EXISTS refused as incompatible options (live-verified sentence), schema-qualified replacement, and repeated replacement. Converted 1:1 from ddl/CreateOrReplaceFunctionTest and CreateOrReplaceProcedureTest (both now retired; they ran over JDBC but were pure SQL). The function different-schema test uses orf_schema instead of the Java literal test_schema, which already exists as the testkit reset schema.",
+  "tags": ["ddl", "functions", "converted"],
+  "tests": [
+    {"name": "create-or-replace-function-first-time", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION add_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a + b'"}
+    ]},
+    {"name": "create-or-replace-function-replace-existing", "steps": [
+      {"sql": "CREATE FUNCTION multiply_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a * b'"},
+      {"sql": "CREATE OR REPLACE FUNCTION multiply_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a * b * 2'"}
+    ]},
+    {"name": "create-function-without-or-replace-fails-if-exists", "steps": [
+      {"sql": "CREATE FUNCTION subtract_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
+      {"sql": "CREATE FUNCTION subtract_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'b - a'",
+       "expect": {"error": {}}}
+    ]},
+    {"name": "create-function-if-not-exists-does-not-replace", "steps": [
+      {"sql": "CREATE FUNCTION divide_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a / b'"},
+      {"sql": "CREATE FUNCTION IF NOT EXISTS divide_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'b / a'"}
+    ]},
+    {"name": "create-or-replace-function-with-if-not-exists-is-rejected", "steps": [
+      {"sql": "CREATE FUNCTION double_number(n INTEGER) RETURNS INTEGER AS 'n * 2'"},
+      {"sql": "CREATE OR REPLACE FUNCTION IF NOT EXISTS double_number(n INTEGER) RETURNS INTEGER AS 'n * 3'",
+       "expect": {"error": {"messageContains": "options IF NOT EXISTS and OR REPLACE are incompatible"}}}
+    ]},
+    {"name": "create-or-replace-function-in-different-schema", "steps": [
+      {"sql": "CREATE SCHEMA orf_schema"},
+      {"sql": "CREATE OR REPLACE FUNCTION orf_schema.square(n INTEGER) RETURNS INTEGER AS 'n * n'"},
+      {"sql": "CREATE OR REPLACE FUNCTION orf_schema.square(n INTEGER) RETURNS INTEGER AS 'n * n * n'"}
+    ]},
+    {"name": "create-or-replace-function-multiple-times", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION test_func(x INTEGER) RETURNS INTEGER AS 'x'"},
+      {"sql": "CREATE OR REPLACE FUNCTION test_func(x INTEGER) RETURNS INTEGER AS 'x * 2'"},
+      {"sql": "CREATE OR REPLACE FUNCTION test_func(x INTEGER) RETURNS INTEGER AS 'x * 3'"}
+    ]},
+    {"name": "create-or-replace-procedure-first-time", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE greet_user(name VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN ''Hello, '' || name; END;'"}
+    ]},
+    {"name": "create-or-replace-procedure-replace-existing", "steps": [
+      {"sql": "CREATE PROCEDURE format_name(name VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN ''Mr. '' || name; END;'"},
+      {"sql": "CREATE OR REPLACE PROCEDURE format_name(name VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN ''Dr. '' || name; END;'"}
+    ]},
+    {"name": "create-procedure-without-or-replace-fails-if-exists", "steps": [
+      {"sql": "CREATE PROCEDURE uppercase_text(text VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN UPPER(text); END;'"},
+      {"sql": "CREATE PROCEDURE uppercase_text(text VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN LOWER(text); END;'",
+       "expect": {"error": {}}}
+    ]},
+    {"name": "create-procedure-if-not-exists-does-not-replace", "steps": [
+      {"sql": "CREATE PROCEDURE lowercase_text(text VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN LOWER(text); END;'"},
+      {"sql": "CREATE PROCEDURE IF NOT EXISTS lowercase_text(text VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN UPPER(text); END;'"}
+    ]},
+    {"name": "create-or-replace-procedure-with-if-not-exists-is-rejected", "steps": [
+      {"sql": "CREATE PROCEDURE triple_number(n INTEGER) RETURNS INTEGER AS 'BEGIN RETURN n * 3; END;'"},
+      {"sql": "CREATE OR REPLACE PROCEDURE IF NOT EXISTS triple_number(n INTEGER) RETURNS INTEGER AS 'BEGIN RETURN n * 4; END;'",
+       "expect": {"error": {"messageContains": "options IF NOT EXISTS and OR REPLACE are incompatible"}}}
+    ]},
+    {"name": "create-or-replace-procedure-in-different-schema", "steps": [
+      {"sql": "CREATE SCHEMA proc_schema"},
+      {"sql": "CREATE OR REPLACE PROCEDURE proc_schema.calculate(a INTEGER, b INTEGER) RETURNS INTEGER AS 'BEGIN RETURN a + b; END;'"},
+      {"sql": "CREATE OR REPLACE PROCEDURE proc_schema.calculate(a INTEGER, b INTEGER) RETURNS INTEGER AS 'BEGIN RETURN a * b; END;'"}
+    ]},
+    {"name": "create-or-replace-procedure-multiple-times", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x; END;'"},
+      {"sql": "CREATE OR REPLACE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x * 2; END;'"},
+      {"sql": "CREATE OR REPLACE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x * 3; END;'"}
+    ]}
+  ]
+}

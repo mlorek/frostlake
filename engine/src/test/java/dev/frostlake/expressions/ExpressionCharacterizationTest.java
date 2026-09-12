@@ -150,7 +150,7 @@ public class ExpressionCharacterizationTest {
     public void testBooleanProjectionFromTable() {
         engine.execute("CREATE TABLE IF NOT EXISTS bp_tbl (a INT, b INT)");
         engine.execute("INSERT INTO bp_tbl VALUES (1, 1), (1, 0), (0, 0)");
-        final ResultSet rs = engine.executeQuery("SELECT a > 0 AND b > 0 AS flag FROM bp_tbl");
+        final ResultSet rs = engine.executeQuery("SELECT a > 0 AND b > 0 AS flag FROM bp_tbl ORDER BY a DESC, b DESC");
         assertEquals(3, rs.getRows().size());
         assertEquals(true, rs.getRows().get(0).getValue(0));
         assertEquals(false, rs.getRows().get(1).getValue(0));

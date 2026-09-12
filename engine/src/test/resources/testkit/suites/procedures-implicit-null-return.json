@@ -1,0 +1,33 @@
+{
+  "suite": "procedures-implicit-null-return",
+  "description": "A procedure body without RETURN yields one NULL row (named after the procedure); DML-only bodies apply their effects; an explicit RETURN still wins. Converted 1:1 from procedures/ProcedureImplicitNullReturnTest and jdbc/CallReturnlessProcedureJdbcTest (both now retired — the JDBC variant duplicated the same SQL semantics through the driver).",
+  "tags": ["procedures", "converted"],
+  "tests": [
+    {"name": "null-statement-body-returns-null-row", "steps": [
+      {"sql": "CREATE PROCEDURE p()\nRETURNS INT\nAS\nBEGIN\n    null;\nEND;"},
+      {"sql": "CALL p()", "expect": {"rowCount": 1, "columns": ["P"], "rows": [[null]]}}
+    ]},
+    {"name": "dml-only-body-returns-null-row-and-applies", "steps": [
+      {"sql": "CREATE TABLE del_marks (id VARCHAR)"},
+      {"sql": "CREATE PROCEDURE mark_ids(ids ARRAY)\nRETURNS STRING\nLANGUAGE SQL\nAS\n$$\nBEGIN\n    MERGE INTO del_marks AS target\n        USING (SELECT CAST(VALUE AS TEXT) AS id FROM TABLE(FLATTEN(input => :ids))) AS source\n        ON target.id = source.id\n        WHEN NOT MATCHED THEN INSERT (id) VALUES (source.id);\nEXCEPTION\n    WHEN OTHER THEN\n        RETURN 'error';\nEND;\n$$"},
+      {"sql": "CALL mark_ids(ARRAY_CONSTRUCT('a', 'b'))", "expect": {"rowCount": 1, "rows": [[null]]}},
+      {"sql": "SELECT COUNT(*) FROM del_marks", "expect": {"value": "2"}},
+      {"sql": "CALL mark_ids(ARRAY_CONSTRUCT('b', 'c'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT COUNT(*) FROM del_marks", "expect": {"value": "3"}}
+    ]},
+    {"name": "explicit-return-still-wins", "steps": [
+      {"sql": "CREATE PROCEDURE p2()\nRETURNS INT\nAS\nBEGIN\n    RETURN 7;\nEND;"},
+      {"sql": "CALL p2()", "expect": {"value": "7", "rowCount": 1}}
+    ]},
+    {"name": "jdbc-call-of-returnless-proc-yields-null-row", "steps": [
+      {"sql": "CREATE PROCEDURE p()\nRETURNS INT\nAS\nBEGIN\n    null;\nEND;"},
+      {"sql": "CALL p()", "expect": {"rowCount": 1, "rows": [[null]]}}
+    ]},
+    {"name": "jdbc-call-of-dml-proc-yields-null-row-and-applies", "steps": [
+      {"sql": "CREATE TABLE marks (id VARCHAR)"},
+      {"sql": "CREATE PROCEDURE mark(ids ARRAY)\nRETURNS STRING\nLANGUAGE SQL\nAS\n$$\nBEGIN\n    MERGE INTO marks AS target\n        USING (SELECT CAST(VALUE AS TEXT) AS id FROM TABLE(FLATTEN(input => :ids))) AS source\n        ON target.id = source.id\n        WHEN NOT MATCHED THEN INSERT (id) VALUES (source.id);\nEXCEPTION\n    WHEN OTHER THEN\n        RETURN 'error';\nEND;\n$$"},
+      {"sql": "CALL mark(ARRAY_CONSTRUCT('x', 'y'))", "expect": {"rowCount": 1, "rows": [[null]]}},
+      {"sql": "SELECT COUNT(*) FROM marks", "expect": {"value": "2"}}
+    ]}
+  ]
+}

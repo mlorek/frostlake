@@ -1,0 +1,26 @@
+{
+  "suite": "functions-current-user",
+  "description": "CURRENT_USER() - live-tolerant: the answer is non-empty, the function is case-insensitive in its spelling, it resolves in a WHERE clause against a fixture built server-side, and the connected user is present in SHOW USERS. The engine's default user is sourced from the OS login, so pinning its NAME is machine-dependent and stays in functions/CurrentUserTest, along with the custom-config engines and the catalog read of that user's granted roles. Converted from that class, which is trimmed to those four tests.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "current-user-answers-a-non-empty-user", "steps": [
+      {"sql": "SELECT CURRENT_USER()", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CURRENT_USER() IS NOT NULL AND LENGTH(CURRENT_USER()) > 0", "expect": {"value": "true"}}
+    ]},
+    {"name": "current-user-is-case-insensitive", "steps": [
+      {"sql": "SELECT current_user() = CURRENT_USER()", "expect": {"value": "true"}}
+    ]},
+    {"name": "current-user-in-a-where-clause", "steps": [
+      {"sql": "CREATE TABLE user_data (id INTEGER, username VARCHAR)"},
+      {"sql": "INSERT INTO user_data SELECT 1, CURRENT_USER()"},
+      {"sql": "INSERT INTO user_data VALUES (2, 'SOMEBODY_ELSE')"},
+      {"sql": "SELECT id FROM user_data WHERE username = CURRENT_USER()",
+       "expect": {"rowCount": 1, "value": "1"}}
+    ]},
+    {"name": "the-connected-user-is-listed-by-show-users", "steps": [
+      {"sql": "SHOW USERS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = CURRENT_USER()) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]}
+  ]
+}

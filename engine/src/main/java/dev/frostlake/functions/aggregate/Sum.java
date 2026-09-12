@@ -51,6 +51,26 @@ public class Sum extends AggregateFunction {
      * aggregate already extends {@link AggregateFunction}; the rule is the same one.
      */
     @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        // Live refuses every temporal, boolean and binary argument at COMPILE time, in the
+        // argument-type shape and at the call: "Invalid argument types for function 'SUM': (DATE)",
+        // "(TIMESTAMP_NTZ(9))", "(TIME(9))", "(BOOLEAN)", "(BINARY(5))" — while a VARCHAR, a VARIANT
+        // and a NULL are taken (a FLOAT sum). RATIO_TO_REPORT is refused in exactly these words,
+        // because the account rewrites it as a division by SUM.
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
     public SemiStructuredRejection semiStructuredRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }

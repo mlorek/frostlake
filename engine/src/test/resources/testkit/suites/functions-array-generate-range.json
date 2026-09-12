@@ -1,0 +1,19 @@
+{
+  "suite": "functions-array-generate-range",
+  "description": "ARRAY_GENERATE_RANGE(start, stop [, step]) - start inclusive to stop exclusive, with a default step of 1, an explicit positive step, a negative step counting down, and a NULL input answering NULL. Converted 1:1 from functions/ArrayGenerateRangeTest (now retired); the array cells are read through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-default-step-stops-before-the-bound", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_GENERATE_RANGE(2, 5))", "expect": {"value": "[2,3,4]"}}
+    ]},
+    {"name": "a-positive-step", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_GENERATE_RANGE(5, 25, 10))", "expect": {"value": "[5,15]"}}
+    ]},
+    {"name": "a-negative-step", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_GENERATE_RANGE(-5, -25, -10))", "expect": {"value": "[-5,-15]"}}
+    ]},
+    {"name": "a-null-input-is-null", "steps": [
+      {"sql": "SELECT ARRAY_GENERATE_RANGE(NULL, 5)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

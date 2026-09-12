@@ -1,0 +1,31 @@
+{
+  "suite": "functions-months-between",
+  "description": "MONTHS_BETWEEN uses Snowflake's formula (y1-y2)*12 + (m1-m2) + (day1-day2)/31, with a whole-number result when the day numbers match or both dates are their month's last day. The previous implementation double-counted the day difference - adding a day fraction on top of a Period that already accounted for it - so a partial-month case returned the wrong magnitude. The result carries Snowflake's NUMBER(27,6) scale, so the 31-day fraction is rounded to six decimals and never a raw double; the converted suite stringifies the result so those trailing digits are part of the assertion. Arguments must be temporal: VARCHAR inputs, literals included, are rejected at compile time, so every date is cast ::DATE. Converted 1:1 from functions/MonthsBetweenTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-partial-month-uses-the-31-day-day-fraction", "steps": [
+      {"sql": "SELECT '<' || MONTHS_BETWEEN('2021-03-10'::DATE, '2021-01-15'::DATE) || '>'",
+       "expect": {"value": "<1.838710>"}}
+    ]},
+    {"name": "both-month-end-is-whole", "steps": [
+      {"sql": "SELECT '<' || MONTHS_BETWEEN('2021-03-31'::DATE, '2021-02-28'::DATE) || '>'",
+       "expect": {"value": "<1.000000>"}}
+    ]},
+    {"name": "the-same-day-of-month-is-whole", "steps": [
+      {"sql": "SELECT '<' || MONTHS_BETWEEN('2024-03-15'::DATE, '2024-01-15'::DATE) || '>'",
+       "expect": {"value": "<2.000000>"}}
+    ]},
+    {"name": "reversed-arguments-negate-the-result", "steps": [
+      {"sql": "SELECT '<' || MONTHS_BETWEEN('2021-01-15'::DATE, '2021-03-10'::DATE) || '>'",
+       "expect": {"value": "<-1.838710>"}}
+    ]},
+    {"name": "whole-months-spanning-years", "steps": [
+      {"sql": "SELECT '<' || MONTHS_BETWEEN('2025-03-15'::DATE, '2024-01-15'::DATE) || '>'",
+       "expect": {"value": "<14.000000>"}}
+    ]},
+    {"name": "varchar-arguments-are-rejected", "steps": [
+      {"sql": "SELECT MONTHS_BETWEEN('2021-03-10', '2021-01-15')",
+       "expect": {"error": {"messageContains": "Function EXTRACT does not support VARCHAR(10) argument type"}}}
+    ]}
+  ]
+}

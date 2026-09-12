@@ -305,7 +305,9 @@ public final class PythonRuntime {
     public static boolean bindJson(final String name, final Object value) {
         if (value instanceof VariantValue) {
             final String variantHolder = "__json_text_" + name;
-            bind(variantHolder, value.toString());
+            // The CANONICAL JSON, not the display form: a variant STRING displays its content unquoted
+            // and an XML variant displays as XML, and json.loads can read neither.
+            bind(variantHolder, ((VariantValue) value).text());
             eval("import json\n" + name + " = json.loads(" + variantHolder + ")\n");
             return true;
         }

@@ -35,7 +35,7 @@ public class VectorAvgTest extends BaseVectorFunctionTest {
     public void averagesElementWiseAndDividesByTheNonNullCount() {
         // Live: over [1,2,3], [4,5,6] and a NULL row => [2.5,3.5,4.5] — divided by 2, not 3, so the
         // NULL row is skipped rather than counted as a zero vector.
-        assertVector("[2.5,3.5,4.5]", "SELECT VECTOR_AVG(v) FROM avg_rows");
+        assertVector("[2.500000,3.500000,4.500000]", "SELECT VECTOR_AVG(v) FROM avg_rows");
     }
 
     @Test
@@ -46,7 +46,7 @@ public class VectorAvgTest extends BaseVectorFunctionTest {
         engine.execute("INSERT INTO avg_cross SELECT [7,2,0]::VECTOR(FLOAT,3)");
         // Live: [4.0,5.3333335,-1.0]. The middle element is 16/3 computed in float64 and then narrowed
         // to a float32 element — the float64 rendering would be 5.333333333333333.
-        assertVector("[4.0,5.3333335,-1.0]", "SELECT VECTOR_AVG(v) FROM avg_cross");
+        assertVector("[4.000000,5.333333,-1.000000]", "SELECT VECTOR_AVG(v) FROM avg_cross");
     }
 
     @Test
@@ -56,7 +56,7 @@ public class VectorAvgTest extends BaseVectorFunctionTest {
         engine.execute("INSERT INTO avg_int SELECT [4,5,-6]::VECTOR(INT,3)");
         // Live: [2.5,7.0,-1.5] with SYSTEM$TYPEOF VECTOR(FLOAT, 3) — VECTOR_AVG is the one aggregate
         // that always widens INT to FLOAT.
-        assertVector("[2.5,7.0,-1.5]", "SELECT VECTOR_AVG(v) FROM avg_int");
+        assertVector("[2.500000,7.000000,-1.500000]", "SELECT VECTOR_AVG(v) FROM avg_int");
     }
 
     @Test
@@ -68,7 +68,7 @@ public class VectorAvgTest extends BaseVectorFunctionTest {
     @Test
     public void singleRowGroupIsThatRow() {
         // Live: VECTOR_AVG over one row is that row's vector.
-        assertVector("[1.0,2.0,3.0]", "SELECT VECTOR_AVG(v) FROM avg_rows WHERE id = 1");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT VECTOR_AVG(v) FROM avg_rows WHERE id = 1");
     }
 
     @Test

@@ -1,0 +1,51 @@
+{
+  "suite": "functions-json-null-distinct",
+  "description": "A JSON null is distinct from a SQL NULL (Snowflake): IS_NULL_VALUE is TRUE for a JSON null but NULL for a SQL NULL, and the SQL IS NULL operator does not catch a JSON null. A missing path element is a SQL NULL. The uncast path stays a JSON null; CASTING it to an ordinary type is what converts it to SQL NULL, and the engine carries a JSON null as the four-character text null, so without that every consumer saw the text and TO_TIMESTAMP / TO_DATE / TO_TIME / DATEADD all failed with \"Cannot parse date/time: null\". Casting to a semi-structured type keeps the JSON null, nested and indexed paths behave the same, a real value through the same path is untouched, and an ordinary VARCHAR holding the text null is unaffected. TRY_CAST cannot take a semi-structured SOURCE at all (live-verified: \"Function TRY_CAST cannot be used with arguments of types VARIANT and DATE\") while the plain cast succeeds. Converted 1:1 from functions/JsonNullDistinctTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "is-null-value-separates-a-json-null-from-a-sql-null", "steps": [
+      {"sql": "SELECT IS_NULL_VALUE(NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT IS_NULL_VALUE(PARSE_JSON('null'))", "expect": {"value": "true"}},
+      {"sql": "SELECT IS_NULL_VALUE(PARSE_JSON('1'))", "expect": {"value": "false"}}
+    ]},
+    {"name": "a-json-null-is-not-a-sql-null", "steps": [
+      {"sql": "SELECT PARSE_JSON('null') IS NULL", "expect": {"value": "false"}}
+    ]},
+    {"name": "a-path-to-a-present-json-null-is-a-json-null", "steps": [
+      {"sql": "SELECT IS_NULL_VALUE(PARSE_JSON('{\"a\":null}'):a)", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-path-to-an-absent-element-is-a-sql-null", "steps": [
+      {"sql": "SELECT IS_NULL_VALUE(PARSE_JSON('{\"a\":1}'):missing)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "casting-a-json-null-path-to-an-ordinary-type-gives-a-sql-null", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\":null}'):a::VARCHAR", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"a\":null}'):a::NUMBER", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"a\":null}'):a::NUMBER(10,2)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"a\":null}'):a::BOOLEAN", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"a\":null}'):a::DATE", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TRY_CAST(PARSE_JSON('{\"a\":null}'):a AS DATE)", "expect": {"error": {}}}
+    ]},
+    {"name": "casting-to-a-semi-structured-type-keeps-the-json-null", "steps": [
+      {"sql": "SELECT IS_NULL_VALUE(PARSE_JSON('{\"a\":null}'):a::VARIANT)", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-nested-or-indexed-json-null-also-casts-to-a-sql-null", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"n\":{\"b\":null}}'):n:b::VARCHAR", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"arr\":[null,1]}'):arr[0]::VARCHAR", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "temporal-functions-over-a-json-null-path-return-null", "steps": [
+      {"sql": "SELECT TO_TIMESTAMP_NTZ(PARSE_JSON('{\"d\":null}'):d::VARCHAR)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_DATE(PARSE_JSON('{\"d\":null}'):d::VARCHAR)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_TIME(PARSE_JSON('{\"d\":null}'):d::VARCHAR)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT DATEADD(DAY, 1, PARSE_JSON('{\"d\":null}'):d::VARCHAR)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-real-value-through-the-same-path-is-untouched", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\":\"x\"}'):a::VARCHAR", "expect": {"value": "x"}},
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP_NTZ(PARSE_JSON('{\"d\":\"2023-10-11 07:09:15\"}'):d::VARCHAR))",
+       "expect": {"value": "2023-10-11 07:09:15.000"}}
+    ]},
+    {"name": "a-varchar-holding-the-text-null-is-not-affected", "steps": [
+      {"sql": "SELECT '<' || 'null'::VARCHAR || '>'", "expect": {"value": "<null>"}},
+      {"sql": "SELECT 'null' IS NULL", "expect": {"value": "false"}}
+    ]}
+  ]
+}

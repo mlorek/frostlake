@@ -1,0 +1,25 @@
+{
+  "suite": "query-boolean-numeric-comparison",
+  "description": "Comparing a NUMBER with a BOOLEAN uses Snowflake's implicit numeric-to-boolean coercion: 0 is FALSE, any non-zero number is TRUE - so 1 = TRUE, 0 = FALSE and 2 = TRUE all hold, in either operand order, and a DECIMAL 1.0 coerces the same way. The idiom appears in real predicates as flag_expr = TRUE where the flag was computed with IFF(cond, 1, 0). Converted 1:1 from query/BooleanNumericComparisonTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "numeric-boolean-equality", "steps": [
+      {"sql": "SELECT 1 = TRUE AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT 0 = FALSE AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT TRUE = 1 AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT 2 = TRUE AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT 0 = TRUE AS r", "expect": {"value": "false"}},
+      {"sql": "SELECT 1 = FALSE AS r", "expect": {"value": "false"}},
+      {"sql": "SELECT 1.0 = TRUE AS r", "expect": {"value": "true"}}
+    ]},
+    {"name": "numeric-boolean-inequality", "steps": [
+      {"sql": "SELECT 0 != TRUE AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT 1 != TRUE AS r", "expect": {"value": "false"}}
+    ]},
+    {"name": "an-iff-computed-flag-compared-to-a-boolean-in-where", "steps": [
+      {"sql": "CREATE TABLE flags (name VARCHAR, hits INTEGER)"},
+      {"sql": "INSERT INTO flags VALUES ('with', 3), ('without', 0)"},
+      {"sql": "SELECT name FROM flags WHERE IFF(hits > 0, 1, 0) = TRUE", "expect": {"rows": [["with"]]}}
+    ]}
+  ]
+}

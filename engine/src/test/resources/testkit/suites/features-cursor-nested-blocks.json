@@ -1,0 +1,79 @@
+{
+  "suite": "features-cursor-nested-blocks",
+  "description": "Cursor operations inside nested BEGIN...END scripting blocks, via EXECUTE IMMEDIATE $$...$$ RETURN values: a cursor declared and iterated in an inner block updating an outer variable, sequential and same-block cursors, cursors inside IF/ELSE bodies (executed or skipped), declared-outer-iterated-inner, nested FOR loops re-opening the inner cursor per outer iteration, triple nesting, an empty cursor leaving the variable unchanged, a cursor name re-used across sequential blocks without leakage, and a WHERE-filtered cursor. Converted 1:1 from features/CursorNestedBlocksTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "cursor-declared-and-iterated-in-inner-block", "steps": [
+      {"sql": "CREATE TABLE nums (v INT)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE total INT DEFAULT 0;\nBEGIN\n    BEGIN\n        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.nums;\n        FOR rec IN cur DO\n            total := :total + rec.V;\n        END FOR;\n        CLOSE cur;\n    END;\n    RETURN :total;\nEND\n$$", "expect": {"value": "6"}}
+    ]},
+    {"name": "outer-variable-accumulated-by-inner-cursor-loop", "steps": [
+      {"sql": "CREATE TABLE words (w VARCHAR)"},
+      {"sql": "INSERT INTO words VALUES ('hello'),('world')"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result VARCHAR DEFAULT '';\nBEGIN\n    BEGIN\n        LET cur CURSOR FOR SELECT w FROM test_db.test_schema.words ORDER BY w;\n        FOR rec IN cur DO\n            result := :result || rec.W || ',';\n        END FOR;\n        CLOSE cur;\n    END;\n    RETURN :result;\nEND\n$$", "expect": {"value": "hello,world,"}}
+    ]},
+    {"name": "sequential-cursors-in-sequential-blocks", "steps": [
+      {"sql": "CREATE TABLE a_vals (x INT)"},
+      {"sql": "CREATE TABLE b_vals (x INT)"},
+      {"sql": "INSERT INTO a_vals VALUES (10)"},
+      {"sql": "INSERT INTO b_vals VALUES (20)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE total INT DEFAULT 0;\nBEGIN\n    BEGIN\n        LET c1 CURSOR FOR SELECT x FROM test_db.test_schema.a_vals;\n        FOR rec IN c1 DO\n            total := :total + rec.X;\n        END FOR;\n        CLOSE c1;\n    END;\n    BEGIN\n        LET c2 CURSOR FOR SELECT x FROM test_db.test_schema.b_vals;\n        FOR rec IN c2 DO\n            total := :total + rec.X;\n        END FOR;\n        CLOSE c2;\n    END;\n    RETURN :total;\nEND\n$$", "expect": {"value": "30"}}
+    ]},
+    {"name": "cursor-inside-if-body-executes-when-true", "steps": [
+      {"sql": "CREATE TABLE cond_data (v INT)"},
+      {"sql": "INSERT INTO cond_data VALUES (5)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result INT DEFAULT 0;\nBEGIN\n    IF (1 = 1) THEN\n        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.cond_data;\n        FOR rec IN cur DO\n            result := rec.V;\n        END FOR;\n        CLOSE cur;\n    END IF;\n    RETURN :result;\nEND\n$$", "expect": {"value": "5"}}
+    ]},
+    {"name": "cursor-inside-if-body-skipped-when-false", "steps": [
+      {"sql": "CREATE TABLE cond_data2 (v INT)"},
+      {"sql": "INSERT INTO cond_data2 VALUES (5)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result INT DEFAULT 0;\nBEGIN\n    IF (1 = 2) THEN\n        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.cond_data2;\n        FOR rec IN cur DO\n            result := rec.V;\n        END FOR;\n        CLOSE cur;\n    END IF;\n    RETURN :result;\nEND\n$$", "expect": {"value": "0"}}
+    ]},
+    {"name": "multiple-cursors-in-same-block", "steps": [
+      {"sql": "CREATE TABLE mc_a (n INT)"},
+      {"sql": "CREATE TABLE mc_b (n INT)"},
+      {"sql": "INSERT INTO mc_a VALUES (3)"},
+      {"sql": "INSERT INTO mc_b VALUES (4)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE total INT DEFAULT 0;\nBEGIN\n    LET c1 CURSOR FOR SELECT n FROM test_db.test_schema.mc_a;\n    LET c2 CURSOR FOR SELECT n FROM test_db.test_schema.mc_b;\n    FOR r1 IN c1 DO\n        total := :total + r1.N;\n    END FOR;\n    CLOSE c1;\n    FOR r2 IN c2 DO\n        total := :total + r2.N;\n    END FOR;\n    CLOSE c2;\n    RETURN :total;\nEND\n$$", "expect": {"value": "7"}}
+    ]},
+    {"name": "cursor-declared-outer-iterated-inner", "steps": [
+      {"sql": "CREATE TABLE outer_cur (v INT)"},
+      {"sql": "INSERT INTO outer_cur VALUES (7),(8)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE total INT DEFAULT 0;\nBEGIN\n    LET cur CURSOR FOR SELECT v FROM test_db.test_schema.outer_cur;\n    BEGIN\n        FOR rec IN cur DO\n            total := :total + rec.V;\n        END FOR;\n        CLOSE cur;\n    END;\n    RETURN :total;\nEND\n$$", "expect": {"value": "15"}}
+    ]},
+    {"name": "nested-for-loops-with-independent-cursors", "steps": [
+      {"sql": "CREATE TABLE nfl_labels (label VARCHAR)"},
+      {"sql": "CREATE TABLE nfl_single (cnt INT)"},
+      {"sql": "INSERT INTO nfl_labels VALUES ('A'),('B')"},
+      {"sql": "INSERT INTO nfl_single VALUES (1)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result VARCHAR DEFAULT '';\nBEGIN\n    LET cx CURSOR FOR SELECT label FROM test_db.test_schema.nfl_labels ORDER BY label;\n    FOR rx IN cx DO\n        BEGIN\n            LET cy CURSOR FOR SELECT cnt FROM test_db.test_schema.nfl_single;\n            FOR ry IN cy DO\n                result := :result || ry.CNT || ',';\n            END FOR;\n            CLOSE cy;\n        END;\n    END FOR;\n    CLOSE cx;\n    RETURN :result;\nEND\n$$", "expect": {"value": "1,1,"}}
+    ]},
+    {"name": "cursor-accumulation-through-triple-nesting", "steps": [
+      {"sql": "CREATE TABLE deep_vals (v INT)"},
+      {"sql": "INSERT INTO deep_vals VALUES (100)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result INT DEFAULT 0;\nBEGIN\n    BEGIN\n        BEGIN\n            LET cur CURSOR FOR SELECT v FROM test_db.test_schema.deep_vals;\n            FOR rec IN cur DO\n                result := rec.V;\n            END FOR;\n            CLOSE cur;\n        END;\n    END;\n    RETURN :result;\nEND\n$$", "expect": {"value": "100"}}
+    ]},
+    {"name": "empty-cursor-leaves-variable-unchanged", "steps": [
+      {"sql": "CREATE TABLE empty_tbl (v INT)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result VARCHAR DEFAULT 'default';\nBEGIN\n    BEGIN\n        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.empty_tbl;\n        FOR rec IN cur DO\n            result := 'changed';\n        END FOR;\n        CLOSE cur;\n    END;\n    RETURN :result;\nEND\n$$", "expect": {"value": "default"}}
+    ]},
+    {"name": "cursor-name-reused-across-sequential-blocks", "steps": [
+      {"sql": "CREATE TABLE seq1 (v INT)"},
+      {"sql": "CREATE TABLE seq2 (v INT)"},
+      {"sql": "INSERT INTO seq1 VALUES (5)"},
+      {"sql": "INSERT INTO seq2 VALUES (15)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE total INT DEFAULT 0;\nBEGIN\n    BEGIN\n        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.seq1;\n        FOR rec IN cur DO total := :total + rec.V; END FOR;\n        CLOSE cur;\n    END;\n    BEGIN\n        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.seq2;\n        FOR rec IN cur DO total := :total + rec.V; END FOR;\n        CLOSE cur;\n    END;\n    RETURN :total;\nEND\n$$", "expect": {"value": "20"}}
+    ]},
+    {"name": "cursor-with-where-filter-in-inner-block", "steps": [
+      {"sql": "CREATE TABLE filter_data (id INT, active BOOLEAN)"},
+      {"sql": "INSERT INTO filter_data VALUES (1, TRUE),(2, FALSE),(3, TRUE)"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE cnt INT DEFAULT 0;\nBEGIN\n    BEGIN\n        LET cur CURSOR FOR SELECT id FROM test_db.test_schema.filter_data WHERE active = TRUE;\n        FOR rec IN cur DO\n            cnt := :cnt + 1;\n        END FOR;\n        CLOSE cur;\n    END;\n    RETURN :cnt;\nEND\n$$", "expect": {"value": "2"}}
+    ]},
+    {"name": "cursor-in-else-branch-only", "steps": [
+      {"sql": "CREATE TABLE else_data (v VARCHAR)"},
+      {"sql": "INSERT INTO else_data VALUES ('found')"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result VARCHAR DEFAULT 'nothing';\nBEGIN\n    IF (1 = 2) THEN\n        result := 'wrong';\n    ELSE\n        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.else_data;\n        FOR rec IN cur DO\n            result := rec.V;\n        END FOR;\n        CLOSE cur;\n    END IF;\n    RETURN :result;\nEND\n$$", "expect": {"value": "found"}}
+    ]}
+  ]
+}

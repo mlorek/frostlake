@@ -28,9 +28,23 @@ import java.util.List;
  * (AVG of 90 and 95 is exactly 92.500000), while any Double/Float/VARIANT input keeps the double average.
  * NULL inputs are ignored; no non-null input yields NULL.
  */
-public class AvgAccumulator implements AggregateFunction.Accumulator {
+public class AvgAccumulator
+        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator {
 
     private final List<Object> values = new ArrayList<>();
+    private boolean approximateArgument;
+
+    /**
+     * The argument's DECLARED type, which the values alone cannot say: a FLOAT column is stored
+     * exactly here, so only this flag keeps its average on the double path. Without it live's
+     * 2.333333333 came back 2.333333, padded to the scale an exact input would have earned.
+     *
+     * @param approximate whether the aggregated expression is declared FLOAT / DOUBLE / REAL
+     */
+    @Override
+    public void setApproximateArgument(final boolean approximate) {
+        this.approximateArgument = approximate;
+    }
 
     @Override
     public void accumulate(final Object value) {
@@ -41,7 +55,7 @@ public class AvgAccumulator implements AggregateFunction.Accumulator {
 
     @Override
     public Object getResult() {
-        return AggregateNumerics.avg(values);
+        return AggregateNumerics.avg(values, approximateArgument);
     }
 
     @Override

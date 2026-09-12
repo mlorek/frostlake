@@ -1,0 +1,20 @@
+{
+  "suite": "functions-try-to-binary",
+  "description": "TRY_TO_BINARY(expr [, format]) is the non-throwing TO_BINARY: it decodes HEX by default and BASE64 on request, and answers NULL instead of erroring on undecodable input. The leniency has a boundary: TRY_TO_* is TRY_CAST under the hood and needs a VARCHAR source, so an UNTYPED NULL errors (live-verified: Function TRY_CAST cannot be used with arguments of types NULL and BINARY) while NULL::VARCHAR converts to NULL. Converted 1:1 from functions/TryToBinaryTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-decodes-hex-by-default", "steps": [
+      {"sql": "SELECT TRY_TO_BINARY('ab12')", "expect": {"value": "AB12"}}
+    ]},
+    {"name": "it-decodes-base64", "steps": [
+      {"sql": "SELECT TRY_TO_BINARY('U05PVw==', 'BASE64')", "expect": {"value": "534E4F57"}}
+    ]},
+    {"name": "invalid-hex-yields-null-not-an-error", "steps": [
+      {"sql": "SELECT TRY_TO_BINARY('xyz')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-untyped-null-is-rejected-and-a-cast-null-yields-null", "steps": [
+      {"sql": "SELECT TRY_TO_BINARY(NULL)", "expect": {"error": {"messageContains": "TRY_CAST"}}},
+      {"sql": "SELECT TRY_TO_BINARY(NULL::VARCHAR)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

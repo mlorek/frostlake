@@ -1,0 +1,109 @@
+{
+  "suite": "ddl-alter-column-forms",
+  "description": "Optional keywords of ALTER TABLE's column clauses (live-verified): DROP with or without COLUMN (single, comma-list, IF EXISTS), DROP CLUSTERING KEY / DROP PRIMARY KEY, NOT NULL with or without SET in the ALTER/MODIFY/COLUMN-less spellings, a MASKING POLICY in the column definition (WITH optional) on CREATE and ADD COLUMN, and FORCE replacing an attached policy where the plain form refuses (attachment asserted behaviourally via the already-attached refusal). Converted 1:1 from ddl/AlterColumnClauseFormsTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "drop-takes-the-column-keyword-or-not", "steps": [
+      {"sql": "CREATE TABLE d1 (keep INT, gone INT, also_gone INT)"},
+      {"sql": "ALTER TABLE d1 DROP gone"},
+      {"sql": "DESCRIBE TABLE d1"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'GONE'", "expect": {"value": "0"}},
+      {"sql": "ALTER TABLE d1 DROP COLUMN also_gone"},
+      {"sql": "DESCRIBE TABLE d1"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ALSO_GONE'", "expect": {"value": "0"}},
+      {"sql": "DESCRIBE TABLE d1"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'KEEP'", "expect": {"value": "1"}}
+    ]},
+    {"name": "drop-without-the-keyword-takes-a-list", "steps": [
+      {"sql": "CREATE TABLE d2 (keep INT, a INT, b INT)"},
+      {"sql": "ALTER TABLE d2 DROP a, b"},
+      {"sql": "DESCRIBE TABLE d2"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('A', 'B')", "expect": {"value": "0"}},
+      {"sql": "DESCRIBE TABLE d2"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'KEEP'", "expect": {"value": "1"}}
+    ]},
+    {"name": "drop-if-exists-works-without-the-keyword", "steps": [
+      {"sql": "CREATE TABLE d3 (keep INT)"},
+      {"sql": "ALTER TABLE d3 DROP IF EXISTS never_existed"},
+      {"sql": "DESCRIBE TABLE d3"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'KEEP'", "expect": {"value": "1"}}
+    ]},
+    {"name": "the-other-drop-forms-still-parse", "steps": [
+      {"sql": "CREATE TABLE d4 (n INT PRIMARY KEY) CLUSTER BY (n)"},
+      {"sql": "ALTER TABLE d4 DROP CLUSTERING KEY"},
+      {"sql": "ALTER TABLE d4 DROP PRIMARY KEY"},
+      {"sql": "DESCRIBE TABLE d4"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'N'", "expect": {"value": "1"}}
+    ]},
+    {"name": "not-null-needs-no-set", "steps": [
+      {"sql": "CREATE TABLE n1 (a INT, b INT, c INT, d INT)"},
+      {"sql": "ALTER TABLE n1 ALTER COLUMN a NOT NULL"},
+      {"sql": "ALTER TABLE n1 MODIFY COLUMN b NOT NULL"},
+      {"sql": "ALTER TABLE n1 ALTER c NOT NULL"},
+      {"sql": "ALTER TABLE n1 ALTER COLUMN d SET NOT NULL"},
+      {"sql": "DESCRIBE TABLE n1"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"null?\" = 'N' AND \"name\" IN ('A','B','C','D')",
+       "expect": {"value": "4"}}
+    ]},
+    {"name": "drop-not-null-still-works", "steps": [
+      {"sql": "CREATE TABLE n2 (a INT NOT NULL)"},
+      {"sql": "ALTER TABLE n2 ALTER COLUMN a DROP NOT NULL"},
+      {"sql": "DESCRIBE TABLE n2"},
+      {"sql": "SELECT \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'A'", "expect": {"value": "Y"}}
+    ]},
+    {"name": "a-column-definition-may-carry-a-masking-policy", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE MASKING POLICY mp2 AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE m1 (s VARCHAR WITH MASKING POLICY mp1)"},
+      {"sql": "ALTER TABLE m1 ALTER COLUMN s SET MASKING POLICY mp2",
+       "expect": {"error": {"messageContains": "already attached"}}}
+    ]},
+    {"name": "the-with-keyword-is-optional-on-the-definition", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE MASKING POLICY mp2 AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE m2 (s VARCHAR MASKING POLICY mp1)"},
+      {"sql": "ALTER TABLE m2 ALTER COLUMN s SET MASKING POLICY mp2",
+       "expect": {"error": {"messageContains": "already attached"}}}
+    ]},
+    {"name": "add-column-may-carry-a-masking-policy", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE MASKING POLICY mp2 AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE m3 (n INT)"},
+      {"sql": "ALTER TABLE m3 ADD COLUMN s VARCHAR WITH MASKING POLICY mp1"},
+      {"sql": "ALTER TABLE m3 ALTER COLUMN s SET MASKING POLICY mp2",
+       "expect": {"error": {"messageContains": "already attached"}}}
+    ]},
+    {"name": "add-column-takes-it-without-with-too", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE MASKING POLICY mp2 AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE m4 (n INT)"},
+      {"sql": "ALTER TABLE m4 ADD COLUMN s VARCHAR MASKING POLICY mp1"},
+      {"sql": "ALTER TABLE m4 ALTER COLUMN s SET MASKING POLICY mp2",
+       "expect": {"error": {"messageContains": "already attached"}}}
+    ]},
+    {"name": "force-replaces-an-attached-policy", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE MASKING POLICY mp2 AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE f1 (s VARCHAR)"},
+      {"sql": "ALTER TABLE f1 ALTER COLUMN s SET MASKING POLICY mp1"},
+      {"sql": "ALTER TABLE f1 ALTER COLUMN s SET MASKING POLICY mp2 FORCE"},
+      {"sql": "ALTER TABLE f1 ALTER COLUMN s SET MASKING POLICY mp1",
+       "expect": {"error": {"messageContains": "already attached"}}}
+    ]},
+    {"name": "without-force-a-second-policy-is-refused", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE MASKING POLICY mp2 AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE f2 (s VARCHAR)"},
+      {"sql": "ALTER TABLE f2 ALTER COLUMN s SET MASKING POLICY mp1"},
+      {"sql": "ALTER TABLE f2 ALTER COLUMN s SET MASKING POLICY mp2",
+       "expect": {"error": {"messageContains": "already attached"}}}
+    ]},
+    {"name": "reattaching-the-same-policy-is-accepted", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE f3 (s VARCHAR)"},
+      {"sql": "ALTER TABLE f3 ALTER COLUMN s SET MASKING POLICY mp1"},
+      {"sql": "ALTER TABLE f3 ALTER COLUMN s SET MASKING POLICY mp1"},
+      {"sql": "ALTER TABLE f3 ALTER COLUMN s SET MASKING POLICY mp1 FORCE"}
+    ]}
+  ]
+}

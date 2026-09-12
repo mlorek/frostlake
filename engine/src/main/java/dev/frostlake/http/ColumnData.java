@@ -16,6 +16,7 @@
 
 package dev.frostlake.http;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
  * Serializable column data
@@ -30,6 +31,11 @@ public class ColumnData {
     // must read that as unknown rather than as "not nullable". Every driver reads this object by
     // key, so the added field is ignored by the ones that do not want it.
     private Boolean nullable;
+    // A text column's length in characters or a binary column's in bytes (ColumnLengths), which a client
+    // reports as the column's precision and display size. Sent for those two families only: it is absent
+    // for every other type, and from a server that predates the field.
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Integer length;
 
     public String getName() {
         return name;
@@ -69,5 +75,13 @@ public class ColumnData {
 
     public void setScale(final int scale) {
         this.scale = scale;
+    }
+
+    public Integer getLength() {
+        return length;
+    }
+
+    public void setLength(final Integer length) {
+        this.length = length;
     }
 }

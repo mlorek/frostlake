@@ -1,0 +1,46 @@
+{
+  "suite": "functions-vector-min",
+  "description": "VECTOR_MIN - every expectation measured on a real Snowflake account. The minimum is ELEMENT-WISE, not row-wise: over [1,9,3], [4,5,-6] and [7,2,0] the answer is [1.000000,2.000000,-6.000000], with each element coming from a DIFFERENT row, so the reduction is per dimension and not 'the smallest row' - same-shaped rows would not have shown this. NULL rows are skipped. Like VECTOR_MAX and unlike VECTOR_AVG it KEEPS the INT element type, which is why the INT case renders [1,5,-6]. An empty or all-NULL group is NULL, a single-row group is that row, and a non-vector argument is a compile error naming the argument's type. Converted 1:1 from functions/vector/VectorMinTest (now retired); every vector is read as a bare cell, as recorded in functions-vector-avg.",
+  "tags": ["functions", "vector", "converted"],
+  "tests": [
+    {"name": "the-minimum-is-element-wise-not-row-wise", "steps": [
+      {"sql": "CREATE TABLE min_cross (v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO min_cross SELECT [1,9,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO min_cross SELECT [4,5,-6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO min_cross SELECT [7,2,0]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_MIN(v) FROM min_cross", "expect": {"value": "[1.000000,2.000000,-6.000000]"}}
+    ]},
+    {"name": "it-skips-null-rows", "steps": [
+      {"sql": "CREATE TABLE min_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO min_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO min_rows SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO min_rows SELECT 3, NULL"},
+      {"sql": "SELECT VECTOR_MIN(v) FROM min_rows", "expect": {"value": "[1.000000,2.000000,3.000000]"}}
+    ]},
+    {"name": "int-vectors-keep-the-int-element-type", "steps": [
+      {"sql": "CREATE TABLE min_int (v VECTOR(INT,3))"},
+      {"sql": "INSERT INTO min_int SELECT [1,9,3]::VECTOR(INT,3)"},
+      {"sql": "INSERT INTO min_int SELECT [4,5,-6]::VECTOR(INT,3)"},
+      {"sql": "SELECT VECTOR_MIN(v) FROM min_int", "expect": {"value": "[1,5,-6]"}}
+    ]},
+    {"name": "empty-and-all-null-groups-are-null", "steps": [
+      {"sql": "CREATE TABLE min_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO min_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO min_rows SELECT 3, NULL"},
+      {"sql": "SELECT VECTOR_MIN(v) FROM min_rows WHERE id = 99", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT VECTOR_MIN(v) FROM min_rows WHERE id = 3", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-single-row-group-is-that-row", "steps": [
+      {"sql": "CREATE TABLE min_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO min_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO min_rows SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_MIN(v) FROM min_rows WHERE id = 1", "expect": {"value": "[1.000000,2.000000,3.000000]"}}
+    ]},
+    {"name": "a-non-vector-argument-is-rejected", "steps": [
+      {"sql": "CREATE TABLE min_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO min_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_MIN(1)", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_MIN': (NUMBER(1,0))"}}},
+      {"sql": "SELECT VECTOR_MIN(id) FROM min_rows", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_MIN': (NUMBER(38,0))"}}}
+    ]}
+  ]
+}

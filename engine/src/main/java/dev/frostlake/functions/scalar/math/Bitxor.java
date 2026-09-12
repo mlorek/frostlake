@@ -17,17 +17,17 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
 public class Bitxor extends NumericArgumentFunction {
-    public Bitxor() { super("BITXOR", NumericType.INTEGER); }
+    public Bitxor() { super("BITXOR", IntegerResultWidths.WIDEST); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        return ((Number) args.get(0)).longValue() ^ ((Number) args.get(1)).longValue();
+        return BitwiseOperand.whole(args.get(0)) ^ BitwiseOperand.whole(args.get(1));
     }
 
     @Override

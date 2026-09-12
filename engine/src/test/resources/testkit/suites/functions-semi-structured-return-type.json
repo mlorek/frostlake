@@ -1,0 +1,848 @@
+{
+  "suite": "functions-semi-structured-return-type",
+  "description": "The DECLARED return type of every semi-structured producer, asserted directly: each expression is projected into a CREATE TABLE ... AS SELECT and the created column's type read back, so what is checked is the type the engine hands to a CONSUMER rather than whether some dependent rule happened to fire. Every expectation was measured on a live Snowflake account with two independent instruments that agreed on all of them - SYSTEM$TYPEOF over the expression, and the type the created column receives. Frostlake used to declare all of these VARIANT in the registry and then report the created column VARCHAR. The three families are genuinely distinct static types, not synonyms: OBJECT and ARRAY are refused by the ordering aggregates while VARIANT is accepted, which is why the VARIANT group matters as much as the other two, and the MAP-requiring family refuses an ARRAY exactly as it refuses an OBJECT or a VARIANT. Naming is no guide - OBJECT_KEYS is an ARRAY, ARRAY_MAX is a VARIANT, PARSE_URL is an OBJECT - so every name here was measured, not inferred from a sibling. The expression is projected through a derived table because that is the channel on which the declared type currently travels; both shapes declare the same type on a live account, and the VARCHAR control proves the wrapper does not simply type everything semi-structured. Converted 1:1 from functions/SemiStructuredReturnTypeTest (now retired); the Java helper read the type with DESCRIBE TABLE, which the suite reads from INFORMATION_SCHEMA.COLUMNS instead so each check is two steps rather than three.",
+  "tags": [
+    "functions",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "the-array-building-functions-declare-array",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_APPEND(a,1) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_CAT(a,a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_COMPACT(a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_CONSTRUCT(1,2) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_CONSTRUCT_COMPACT(1,NULL,2) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_DISTINCT(a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_EXCEPT(a,a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_FLATTEN(ARRAY_CONSTRUCT(a,a)) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_GENERATE_RANGE(0,3) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_INSERT(a,0,9) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_INTERSECTION(a,a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_PREPEND(a,1) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_REMOVE(a,1) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_REMOVE_AT(a,0) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_REVERSE(a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_SLICE(a,0,1) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_SORT(a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_REPEAT(1,2) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAYS_ZIP(a,a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-array-producing-functions-not-named-array-declare-array",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT OBJECT_KEYS(o) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT SPLIT('a,b',',') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT STRTOK_TO_ARRAY('a b') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT TO_ARRAY(1) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT AS_ARRAY(v) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT REGEXP_SUBSTR_ALL('a1b2','[0-9]') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-object-building-functions-declare-object",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT OBJECT_CONSTRUCT('k','v') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT OBJECT_CONSTRUCT_KEEP_NULL('k',NULL) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT OBJECT_DELETE(o,'k') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT OBJECT_INSERT(o,'z',1) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT OBJECT_PICK(o,'k') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT TO_OBJECT(o) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT AS_OBJECT(vo) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAYS_TO_OBJECT(ARRAY_CONSTRUCT('k'),ARRAY_CONSTRUCT(1)) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-parsing-functions-that-build-an-object-declare-object",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT PARSE_XML('<a>1</a>') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT XMLGET(PARSE_XML('<a><b>1</b></a>'),'b') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT PARSE_IP('1.2.3.4','INET') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT PARSE_URL('http://x.com/a') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-try-variant-declares-what-its-strict-form-declares",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT PARSE_IP('1.2.3.4','INET') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT TRY_PARSE_IP('1.2.3.4','INET') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT PARSE_JSON('{\"a\":1}') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT TRY_PARSE_JSON('{\"a\":1}') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-variant-producers-stay-variant",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT PARSE_JSON('{\"a\":1}') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT TO_VARIANT(1) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT STRIP_NULL_VALUE(v) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_MAX(a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_MIN(a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        }
+      ]
+    },
+    {
+      "name": "path-and-element-access-over-an-object-or-array-is-variant",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT GET(o,'k') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT GET_PATH(o,'k') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT GET_IGNORE_CASE(o,'K') AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT o:k AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT a[0] AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-semi-structured-aggregates-declare-their-own-family",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_AGG(n) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_UNIQUE_AGG(n) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAY_UNION_AGG(a) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT OBJECT_AGG(s, TO_VARIANT(n)) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-alias-carries-the-same-declared-type",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT ARRAYAGG(n) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT OBJECTAGG(s, TO_VARIANT(n)) AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "SELECT MAX(ARRAYAGG(n)) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Function MAX does not support ARRAY argument type"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-ordering-aggregates-refuse-the-object-and-array-producers",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "SELECT MAX(OBJECT_CONSTRUCT('k','v')) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Function MAX does not support OBJECT argument type"
+            }
+          }
+        },
+        {
+          "sql": "SELECT MIN(PARSE_URL('http://x.com/a')) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Function MIN does not support OBJECT argument type"
+            }
+          }
+        },
+        {
+          "sql": "SELECT MAX(SPLIT('a,b',',')) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Function MAX does not support ARRAY argument type"
+            }
+          }
+        },
+        {
+          "sql": "SELECT MAX(OBJECT_KEYS(o)) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Function MAX does not support ARRAY argument type"
+            }
+          }
+        },
+        {
+          "sql": "SELECT MAX(PARSE_JSON('1')) FROM st",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "SELECT MAX(TO_VARIANT(1)) FROM st",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "SELECT MAX(ARRAY_MAX(a)) FROM st",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "SELECT MAX(GET(o,'k')) FROM st",
+          "expect": {
+            "rowCount": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-map-family-refuses-an-array-argument",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "SELECT MAP_KEYS(a) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Invalid argument types for function 'MAP_KEYS': (ARRAY)"
+            }
+          }
+        },
+        {
+          "sql": "SELECT MAP_KEYS(ARRAY_CONSTRUCT(1,2)) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Invalid argument types for function 'MAP_KEYS': (ARRAY)"
+            }
+          }
+        },
+        {
+          "sql": "SELECT MAP_SIZE(SPLIT('a,b',',')) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Invalid argument types for function 'MAP_SIZE': (ARRAY)"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-argument-type-error-names-the-producers-own-family",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "SELECT MAP_KEYS(OBJECT_CONSTRUCT('k','v')) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Invalid argument types for function 'MAP_KEYS': (OBJECT)"
+            }
+          }
+        },
+        {
+          "sql": "SELECT MAP_KEYS(PARSE_JSON('{\"a\":1}')) FROM st",
+          "expect": {
+            "error": {
+              "messageContains": "Invalid argument types for function 'MAP_KEYS': (VARIANT)"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-derived-wrapper-does-not-type-everything-semi-structured",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER(10,2))"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 1, OBJECT_CONSTRUCT('k','v1'), ARRAY_CONSTRUCT(1,2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x',1)), 'x', 1.5"
+        },
+        {
+          "sql": "INSERT INTO st SELECT 2, OBJECT_CONSTRUCT('k','v2'), ARRAY_CONSTRUCT(3,4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x',2)), 'y', 2.5"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT s AS c FROM st)"
+        },
+        {
+          "sql": "DESCRIBE TABLE ct_probe"
+        },
+        {
+          "sql": "SELECT STARTSWITH(UPPER(\"type\"), 'VARCHAR') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT o AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT a AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_probe AS SELECT c FROM (SELECT v AS c FROM st)"
+        },
+        {
+          "sql": "SELECT UPPER(DATA_TYPE) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_PROBE'",
+          "expect": {
+            "value": "VARIANT"
+          }
+        }
+      ]
+    }
+  ]
+}

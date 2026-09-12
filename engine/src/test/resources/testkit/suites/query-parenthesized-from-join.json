@@ -1,0 +1,50 @@
+{
+  "suite": "query-parenthesized-from-join",
+  "description": "A parenthesized FROM join - FROM ( a JOIN b ON c ). The parentheses are PURE GROUPING: the query is identical to FROM a JOIN b ON c and, unlike a derived-table subquery, the inner table ALIASES stay visible to the outer WHERE and SELECT. The engine flattens the grouping into the ordinary join pipeline, recursively, so ((a JOIN b) JOIN c) works too, and a grouped chain may be the RIGHT side of an outer join - the inner chain executes first and its aliases join the outer scope, so the outer ON can reference them. The regression that goes with the grammar alternative is here as well: the (SELECT ...) derived-table form must keep parsing. Converted 1:1 from query/ParenthesizedFromJoinTest (now retired); the equivalence test looped over two result sets, so the converted test pins the ordered rows of both spellings, and the COUNT(*)-only tests keep the count and add the rows behind it.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-parenthesized-join-keeps-inner-aliases-visible-to-the-outer-where", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER, cust_id INTEGER, status VARCHAR)"},
+      {"sql": "CREATE TABLE ship (order_id INTEGER, cust_id INTEGER, dest INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 'OPEN'), (2, 100, 'OPEN'), (3, 100, 'CLOSED')"},
+      {"sql": "INSERT INTO ship VALUES (1, 100, 5), (2, 100, 8)"},
+      {"sql": "SELECT s.dest AS d, o.order_id AS oid FROM ( orders o JOIN ship s ON s.order_id = o.order_id AND s.cust_id = o.cust_id ) WHERE o.status = 'OPEN' AND s.dest > 6",
+       "expect": {"rows": [[8,2]], "columns": ["D","OID"]}}
+    ]},
+    {"name": "a-parenthesized-join-equals-the-unparenthesized-join", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER, cust_id INTEGER, status VARCHAR)"},
+      {"sql": "CREATE TABLE ship (order_id INTEGER, cust_id INTEGER, dest INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 'OPEN'), (2, 100, 'OPEN'), (3, 100, 'CLOSED')"},
+      {"sql": "INSERT INTO ship VALUES (1, 100, 5), (2, 100, 8)"},
+      {"sql": "SELECT o.order_id FROM ( orders o JOIN ship s ON s.order_id = o.order_id ) WHERE o.status = 'OPEN' ORDER BY o.order_id",
+       "expect": {"rows": [[1],[2]], "ordered": true}},
+      {"sql": "SELECT o.order_id FROM orders o JOIN ship s ON s.order_id = o.order_id WHERE o.status = 'OPEN' ORDER BY o.order_id",
+       "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]},
+    {"name": "nested-grouping-flattens", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER, cust_id INTEGER, status VARCHAR)"},
+      {"sql": "CREATE TABLE ship (order_id INTEGER, cust_id INTEGER, dest INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 'OPEN'), (2, 100, 'OPEN'), (3, 100, 'CLOSED')"},
+      {"sql": "INSERT INTO ship VALUES (1, 100, 5), (2, 100, 8)"},
+      {"sql": "SELECT COUNT(*) FROM ( ( orders o JOIN ship s ON o.order_id = s.order_id ) JOIN orders o2 ON o2.order_id = o.order_id )",
+       "expect": {"value": 2}},
+      {"sql": "SELECT o.order_id, o2.status FROM ( ( orders o JOIN ship s ON o.order_id = s.order_id ) JOIN orders o2 ON o2.order_id = o.order_id ) ORDER BY o.order_id",
+       "expect": {"rows": [[1,"OPEN"],[2,"OPEN"]], "ordered": true}}
+    ]},
+    {"name": "a-plain-subquery-still-parses", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER, cust_id INTEGER, status VARCHAR)"},
+      {"sql": "CREATE TABLE ship (order_id INTEGER, cust_id INTEGER, dest INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 'OPEN'), (2, 100, 'OPEN'), (3, 100, 'CLOSED')"},
+      {"sql": "INSERT INTO ship VALUES (1, 100, 5), (2, 100, 8)"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT order_id FROM orders WHERE status = 'OPEN')", "expect": {"value": 2}}
+    ]},
+    {"name": "a-parenthesized-join-as-the-right-side-of-an-outer-join", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER, cust_id INTEGER, status VARCHAR)"},
+      {"sql": "CREATE TABLE ship (order_id INTEGER, cust_id INTEGER, dest INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 'OPEN'), (2, 100, 'OPEN'), (3, 100, 'CLOSED')"},
+      {"sql": "INSERT INTO ship VALUES (1, 100, 5), (2, 100, 8)"},
+      {"sql": "SELECT COUNT(*) FROM orders o JOIN ( ship s JOIN orders o2 ON s.order_id = o2.order_id ) ON o.order_id = s.order_id",
+       "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

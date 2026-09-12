@@ -1,0 +1,47 @@
+{
+  "suite": "ddl-describe-objects",
+  "description": "DESCRIBE for FUNCTION (property/value listing with signature/returns/language), USER (property NAME reads the created name), MASKING POLICY and ROW ACCESS POLICY (one row: name/signature/return_type/body, STRING normalized to VARCHAR), a missing function refused, and DESCRIBE RESULT via LAST_QUERY_ID() and via a literal query id (spelled dynamically through SET + EXECUTE IMMEDIATE). Converted 1:1 from ddl/DescribeObjectTest and DescribeResultTest (both now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "describe-function", "steps": [
+      {"sql": "CREATE FUNCTION add_one(x INTEGER) RETURNS INTEGER AS $$ x + 1 $$"},
+      {"sql": "DESCRIBE FUNCTION add_one(INTEGER)"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" IN ('signature', 'returns')",
+       "expect": {"value": "2"}},
+      {"sql": "DESCRIBE FUNCTION add_one(INTEGER)"},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'language'",
+       "expect": {"value": "SQL"}}
+    ]},
+    {"name": "describe-user", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS alice"},
+      {"sql": "DESCRIBE USER alice"},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'NAME'",
+       "expect": {"value": "ALICE"}},
+      {"sql": "DROP USER IF EXISTS alice"}
+    ]},
+    {"name": "describe-masking-policy", "steps": [
+      {"sql": "CREATE MASKING POLICY mask_ssn AS (val STRING) RETURNS STRING -> '***'"},
+      {"sql": "DESCRIBE MASKING POLICY mask_ssn",
+       "expect": {"rowCount": 1, "rows": [["MASK_SSN", "(VAL VARCHAR)", "VARCHAR", "'***'"]]}}
+    ]},
+    {"name": "describe-row-access-policy", "steps": [
+      {"sql": "CREATE ROW ACCESS POLICY rap AS (v STRING) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "DESCRIBE ROW ACCESS POLICY rap",
+       "expect": {"rowCount": 1, "rows": [["RAP", "(V VARCHAR)", "BOOLEAN", "TRUE"]]}}
+    ]},
+    {"name": "describe-nonexistent-function-fails", "steps": [
+      {"sql": "DESCRIBE FUNCTION no_such_fn()", "expect": {"error": {}}}
+    ]},
+    {"name": "describe-result-via-last-query-id", "steps": [
+      {"sql": "SELECT 1 AS a, 'x' AS b"},
+      {"sql": "DESCRIBE RESULT LAST_QUERY_ID()", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"name\"",
+       "expect": {"rows": [["A"], ["B"]], "ordered": true}}
+    ]},
+    {"name": "describe-result-via-id", "steps": [
+      {"sql": "SELECT 7 AS only_col"},
+      {"sql": "SET stmt = 'DESCRIBE RESULT ''' || LAST_QUERY_ID() || ''''"},
+      {"sql": "EXECUTE IMMEDIATE $stmt", "expect": {"rowCount": 1, "rows": [["ONLY_COL", "NUMBER", "Y"]]}}
+    ]}
+  ]
+}

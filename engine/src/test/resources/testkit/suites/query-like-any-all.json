@@ -1,0 +1,59 @@
+{
+  "suite": "query-like-any-all",
+  "description": "Snowflake multi-pattern matching, live-verified: x LIKE ANY (p1, p2, ...) is TRUE when x matches at least ONE pattern, LIKE ALL when it matches EVERY pattern, and ILIKE ANY is the case-insensitive form. NULL patterns are SKIPPED rather than three-valued - 'a' LIKE ALL ('a', NULL) is TRUE and 'a' LIKE ANY ('b', NULL) is FALSE - and only a NULL SUBJECT or an ALL-NULL pattern list yields NULL. A numeric subject coerces to text. NOT LIKE ANY/ALL, ILIKE ALL and LIKE SOME do not exist in Snowflake and are rejected here too. An optional ESCAPE applies to EVERY pattern. Converted 1:1 from query/LikeAnyAllTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "like-any-matches-at-least-one-pattern", "steps": [
+      {"sql": "CREATE TABLE words (w VARCHAR)"},
+      {"sql": "INSERT INTO words VALUES ('alpha'), ('beta'), ('gamma'), (NULL)"},
+      {"sql": "SELECT w FROM words WHERE w LIKE ANY ('al%', '%eta') ORDER BY w", "expect": {"rows": [["alpha"],["beta"]], "ordered": true}}
+    ]},
+    {"name": "ilike-any-is-case-insensitive", "steps": [
+      {"sql": "CREATE TABLE words (w VARCHAR)"},
+      {"sql": "INSERT INTO words VALUES ('alpha'), ('beta'), ('gamma'), (NULL)"},
+      {"sql": "SELECT w FROM words WHERE w ILIKE ANY ('AL%', 'GA%') ORDER BY w", "expect": {"rows": [["alpha"],["gamma"]], "ordered": true}}
+    ]},
+    {"name": "like-all-requires-every-pattern", "steps": [
+      {"sql": "CREATE TABLE words (w VARCHAR)"},
+      {"sql": "INSERT INTO words VALUES ('alpha'), ('beta'), ('gamma'), (NULL)"},
+      {"sql": "SELECT w FROM words WHERE w LIKE ALL ('a%', '%a', '%lph%') ORDER BY w", "expect": {"rows": [["alpha"]], "ordered": true}}
+    ]},
+    {"name": "a-single-element-list-behaves-like-a-plain-like", "steps": [
+      {"sql": "CREATE TABLE words (w VARCHAR)"},
+      {"sql": "INSERT INTO words VALUES ('alpha'), ('beta'), ('gamma'), (NULL)"},
+      {"sql": "SELECT w FROM words WHERE w LIKE ANY ('bet_') ORDER BY w", "expect": {"rows": [["beta"]], "ordered": true}}
+    ]},
+    {"name": "a-null-subject-yields-null-not-false", "steps": [
+      {"sql": "SELECT NULL LIKE ANY ('a%', 'b%') AS r", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "null-patterns-are-skipped-not-three-valued", "steps": [
+      {"sql": "SELECT 'a' LIKE ANY ('a', NULL) AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT 'a' LIKE ANY ('b', NULL) AS r", "expect": {"value": "false"}},
+      {"sql": "SELECT 'a' LIKE ALL ('a', NULL) AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT 'a' LIKE ALL ('b', NULL) AS r", "expect": {"value": "false"}}
+    ]},
+    {"name": "an-all-null-pattern-list-yields-null", "steps": [
+      {"sql": "SELECT 'a' LIKE ANY (NULL) AS r", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT 'a' LIKE ALL (NULL, NULL) AS r", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-numeric-subject-coerces-to-text", "steps": [
+      {"sql": "SELECT 1 LIKE ANY ('1') AS r", "expect": {"value": "true"}}
+    ]},
+    {"name": "not-like-any-and-ilike-all-are-rejected-like-snowflake", "steps": [
+      {"sql": "SELECT 'a' NOT LIKE ANY ('a', 'b')", "expect": {"error": {}}},
+      {"sql": "SELECT 'A' ILIKE ALL ('a%')", "expect": {"error": {}}},
+      {"sql": "SELECT 'a' LIKE SOME ('a', 'b')", "expect": {"error": {}}}
+    ]},
+    {"name": "an-escape-applies-to-every-pattern", "steps": [
+      {"sql": "CREATE TABLE pct (v VARCHAR)"},
+      {"sql": "INSERT INTO pct VALUES ('50%'), ('50x')"},
+      {"sql": "SELECT v FROM pct WHERE v LIKE ANY ('50!%', '60!%') ESCAPE '!' ORDER BY v", "expect": {"rows": [["50%"]], "ordered": true}},
+      {"sql": "SELECT 'axb' LIKE ANY ('a!_b') ESCAPE '!' AS r", "expect": {"value": "false"}},
+      {"sql": "SELECT 'a_b' LIKE ANY ('a!_b') ESCAPE '!' AS r", "expect": {"value": "true"}}
+    ]},
+    {"name": "it-works-inside-a-sql-udf-body", "steps": [
+      {"sql": "CREATE FUNCTION kind_of(w VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS\n$$ SELECT CASE WHEN UPPER(w) ILIKE ANY ('AL%', 'BE%') THEN 'ab' ELSE 'other' END $$"},
+      {"sql": "SELECT kind_of('beta') AS r, kind_of('gamma') AS r2", "expect": {"rows": [["ab", "other"]]}}
+    ]}
+  ]
+}

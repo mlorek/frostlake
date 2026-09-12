@@ -1,0 +1,67 @@
+{
+  "suite": "query-correlated-subquery-over-flatten",
+  "description": "A correlated subquery may reference the outer row's FLATTEN outputs UNQUALIFIED - VALUE, KEY and INDEX have no natural alias - as in WHERE EXISTS (SELECT 1 FROM t WHERE k = UPPER(VALUE:field)). The lateral context passed into the subquery only carried table- and alias-qualified names, so such correlations silently resolved to NULL and an INNER-JOIN-plus-EXISTS pipeline produced zero rows. That is EXISTS. A SCALAR subquery correlating the same way is REFUSED outright unless it AGGREGATES, and the refusal names the subquery's own opening parenthesis counting BOTH line and position from 1. It is the table FUNCTION that matters and not FLATTEN specifically, so SPLIT_TO_TABLE is refused alike. The rule stays as narrow as the account's: a subquery correlating to the BASE table while a table function sits in the same FROM, an uncorrelated one beside a table function, and an ordinary correlated scalar subquery with no table function in sight are all still accepted. Converted 1:1 from query/CorrelatedSubqueryOverFlattenTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-correlated-exists-on-a-flatten-value-path", "steps": [
+      {"sql": "CREATE TABLE raw_events (id INT, src VARIANT)"},
+      {"sql": "INSERT INTO raw_events SELECT 1, PARSE_JSON('[{\"grp\":{\"guid\":\"g1\"},\"inst\":{\"iid\":\"i1\"}},{\"grp\":{\"guid\":\"g2\"},\"inst\":{\"iid\":\"i2\"}}]')"},
+      {"sql": "CREATE TABLE parents (pid VARCHAR, pkey VARCHAR)"},
+      {"sql": "INSERT INTO parents VALUES ('PFX:G1', 'K1')"},
+      {"sql": "SELECT VALUE:inst:iid::VARCHAR iid FROM raw_events s, TABLE(FLATTEN(src, OUTER => true)) WHERE EXISTS (SELECT 1 FROM parents WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR))", "expect": {"rows": [["i1"]]}}
+    ]},
+    {"name": "a-join-plus-a-correlated-exists-both-over-the-flatten-value", "steps": [
+      {"sql": "CREATE TABLE raw_events (id INT, src VARIANT)"},
+      {"sql": "INSERT INTO raw_events SELECT 1, PARSE_JSON('[{\"grp\":{\"guid\":\"g1\"},\"inst\":{\"iid\":\"i1\"}},{\"grp\":{\"guid\":\"g2\"},\"inst\":{\"iid\":\"i2\"}}]')"},
+      {"sql": "CREATE TABLE parents (pid VARCHAR, pkey VARCHAR)"},
+      {"sql": "INSERT INTO parents VALUES ('PFX:G1', 'K1')"},
+      {"sql": "SELECT VALUE:inst:iid::VARCHAR iid, p.pkey FROM raw_events s, TABLE(FLATTEN(src, OUTER => true)) INNER JOIN parents p ON p.pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR) WHERE EXISTS (SELECT 1 FROM parents WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR))", "expect": {"rows": [["i1", "K1"]]}}
+    ]},
+    {"name": "inner-columns-still-win-over-outer-bare-names", "steps": [
+      {"sql": "CREATE TABLE raw_events (id INT, src VARIANT)"},
+      {"sql": "INSERT INTO raw_events SELECT 1, PARSE_JSON('[{\"grp\":{\"guid\":\"g1\"},\"inst\":{\"iid\":\"i1\"}},{\"grp\":{\"guid\":\"g2\"},\"inst\":{\"iid\":\"i2\"}}]')"},
+      {"sql": "CREATE TABLE parents (pid VARCHAR, pkey VARCHAR)"},
+      {"sql": "INSERT INTO parents VALUES ('PFX:G1', 'K1')"},
+      {"sql": "CREATE TABLE inner_t (pid VARCHAR)"},
+      {"sql": "INSERT INTO inner_t VALUES ('PFX:G1')"},
+      {"sql": "SELECT p.pkey FROM parents p WHERE EXISTS (SELECT 1 FROM inner_t WHERE pid = p.pid)", "expect": {"rows": [["K1"]]}}
+    ]},
+    {"name": "a-correlated-scalar-subquery-on-a-flatten-value-is-refused", "steps": [
+      {"sql": "CREATE TABLE raw_events (id INT, src VARIANT)"},
+      {"sql": "INSERT INTO raw_events SELECT 1, PARSE_JSON('[{\"grp\":{\"guid\":\"g1\"},\"inst\":{\"iid\":\"i1\"}},{\"grp\":{\"guid\":\"g2\"},\"inst\":{\"iid\":\"i2\"}}]')"},
+      {"sql": "CREATE TABLE parents (pid VARCHAR, pkey VARCHAR)"},
+      {"sql": "INSERT INTO parents VALUES ('PFX:G1', 'K1')"},
+      {"sql": "SELECT (SELECT pkey FROM parents WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR)) k FROM raw_events s, TABLE(FLATTEN(src, OUTER => true)) ORDER BY VALUE:inst:iid::VARCHAR", "expect": {"error": {"messageContains": "SQL compilation error:\nUnsupported subquery type cannot be evaluated at line 1, position 8"}}}
+    ]},
+    {"name": "an-aggregate-in-the-subquery-makes-it-legal", "steps": [
+      {"sql": "CREATE TABLE raw_events (id INT, src VARIANT)"},
+      {"sql": "INSERT INTO raw_events SELECT 1, PARSE_JSON('[{\"grp\":{\"guid\":\"g1\"},\"inst\":{\"iid\":\"i1\"}},{\"grp\":{\"guid\":\"g2\"},\"inst\":{\"iid\":\"i2\"}}]')"},
+      {"sql": "CREATE TABLE parents (pid VARCHAR, pkey VARCHAR)"},
+      {"sql": "INSERT INTO parents VALUES ('PFX:G1', 'K1')"},
+      {"sql": "SELECT (SELECT MAX(pkey) FROM parents WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR)) k FROM raw_events s, TABLE(FLATTEN(src, OUTER => true)) ORDER BY VALUE:inst:iid::VARCHAR", "expect": {"rows": [["K1"], [null]], "ordered": true}}
+    ]},
+    {"name": "the-same-subquery-in-where-is-refused-at-its-own-position", "steps": [
+      {"sql": "CREATE TABLE raw_events (id INT, src VARIANT)"},
+      {"sql": "INSERT INTO raw_events SELECT 1, PARSE_JSON('[{\"grp\":{\"guid\":\"g1\"},\"inst\":{\"iid\":\"i1\"}},{\"grp\":{\"guid\":\"g2\"},\"inst\":{\"iid\":\"i2\"}}]')"},
+      {"sql": "CREATE TABLE parents (pid VARCHAR, pkey VARCHAR)"},
+      {"sql": "INSERT INTO parents VALUES ('PFX:G1', 'K1')"},
+      {"sql": "SELECT VALUE:inst:iid::VARCHAR iid FROM raw_events s, TABLE(FLATTEN(src, OUTER => true)) WHERE (SELECT pkey FROM parents WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR)) = 'K1'", "expect": {"error": {"messageContains": "SQL compilation error:\nUnsupported subquery type cannot be evaluated at line 1, position 96"}}}
+    ]},
+    {"name": "another-table-functions-output-is-refused-the-same-way", "steps": [
+      {"sql": "CREATE TABLE raw_events (id INT, src VARIANT)"},
+      {"sql": "INSERT INTO raw_events SELECT 1, PARSE_JSON('[{\"grp\":{\"guid\":\"g1\"},\"inst\":{\"iid\":\"i1\"}},{\"grp\":{\"guid\":\"g2\"},\"inst\":{\"iid\":\"i2\"}}]')"},
+      {"sql": "CREATE TABLE parents (pid VARCHAR, pkey VARCHAR)"},
+      {"sql": "INSERT INTO parents VALUES ('PFX:G1', 'K1')"},
+      {"sql": "SELECT (SELECT pkey FROM parents WHERE pid = t.value) k FROM parents p, TABLE(SPLIT_TO_TABLE(p.pid, ',')) t", "expect": {"error": {"messageContains": "SQL compilation error:\nUnsupported subquery type cannot be evaluated at line 1, position 8"}}}
+    ]},
+    {"name": "the-neighbouring-shapes-are-still-accepted", "steps": [
+      {"sql": "CREATE TABLE raw_events (id INT, src VARIANT)"},
+      {"sql": "INSERT INTO raw_events SELECT 1, PARSE_JSON('[{\"grp\":{\"guid\":\"g1\"},\"inst\":{\"iid\":\"i1\"}},{\"grp\":{\"guid\":\"g2\"},\"inst\":{\"iid\":\"i2\"}}]')"},
+      {"sql": "CREATE TABLE parents (pid VARCHAR, pkey VARCHAR)"},
+      {"sql": "INSERT INTO parents VALUES ('PFX:G1', 'K1')"},
+      {"sql": "SELECT (SELECT pkey FROM parents WHERE pkey <> s.id::VARCHAR) k FROM raw_events s, TABLE(FLATTEN(src, OUTER => true))", "expect": {"rowCount": 2}},
+      {"sql": "SELECT (SELECT pkey FROM parents WHERE pid = 'PFX:G1') k FROM raw_events s, TABLE(FLATTEN(src, OUTER => true))", "expect": {"rows": [["K1"], ["K1"]]}},
+      {"sql": "SELECT p.pid, (SELECT pkey FROM parents q WHERE q.pid = p.pid) k FROM parents p", "expect": {"rows": [["PFX:G1", "K1"]]}}
+    ]}
+  ]
+}

@@ -79,6 +79,25 @@ public final class ColumnTypeJson {
         return out.toString();
     }
 
+    /**
+     * The same for a column declared with a collation: live adds it after every other fact —
+     * {@code {"type":"TEXT",...,"fixed":false,"collation":"en-ci"}} — and a column without one, or
+     * with the empty specification, has no such key.
+     *
+     * @param type      the column's type
+     * @param nullable  whether it takes NULL
+     * @param collation its collation specification, or null
+     * @return the descriptor
+     */
+    public static String render(final DataType type, final boolean nullable, final String collation) {
+        final String rendered = render(type, nullable);
+        if (rendered == null || collation == null || collation.isEmpty() || !(type instanceof StringType)) {
+            return rendered;
+        }
+        final String escaped = collation.replace("\\", "\\\\").replace("\"", "\\\"");
+        return rendered.substring(0, rendered.length() - 1) + ",\"collation\":\"" + escaped + "\"}";
+    }
+
     private static void append(final StringBuilder out, final DataType type, final boolean nullable) {
         final String name = SqlTypeNames.internalName(type);
         out.append("{\"type\":\"").append(name).append('"');
@@ -86,7 +105,8 @@ public final class ColumnTypeJson {
             final NumericType numeric = (NumericType) type;
             out.append(",\"precision\":").append(numeric.getPrecision())
                .append(",\"scale\":").append(numeric.getScale());
-        } else if (type instanceof StringType) {
+        } else if (type instanceof StringType && !(type instanceof UuidType)) {
+            // A UUID is no string here: live's descriptor is {"type":"UUID","nullable":true}.
             final long length = Math.min(((StringType) type).getMaxLength(),
                 DESCRIBED_STRING_MAXIMUM);
             out.append(",\"length\":").append(length)
@@ -100,7 +120,7 @@ public final class ColumnTypeJson {
             out.append(",\"outputType\":\"OBJECT\"");
         }
         out.append(",\"nullable\":").append(nullable);
-        if (type instanceof StringType) {
+        if (type instanceof StringType && !(type instanceof UuidType)) {
             out.append(",\"fixed\":false");
         } else if (type instanceof BinaryType) {
             out.append(",\"fixed\":").append(((BinaryType) type).isFixed());

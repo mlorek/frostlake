@@ -1,0 +1,38 @@
+{
+  "suite": "query-boolean-coercion-in-predicate",
+  "description": "Snowflake type-checks PREDICATE POSITION at compile time: a bare column whose static type is VARCHAR or NUMBER is rejected with 'Invalid data type [VARCHAR(16777216)] for predicate [IS_DIRECT]' - the predicate itself is never implicitly TO_BOOLEAN'ed. Operands nested under a boolean operator (AND / NOT) still coerce through TO_BOOLEAN's text forms - 'true'/'t'/'yes'/'y'/'on'/'1', case-insensitive, and numbers as zero / non-zero - and the portable idioms are an explicit comparison or an explicit TO_BOOLEAN call. The fixture's UNION ALL takes its column type from the FIRST branch, a BOOLEAN literal, so every later branch's string is converted by TO_BOOLEAN before it reaches the VARCHAR column and 'Y' lands as 'true'; live-verified, the stored flags are true/false/true/false/true, so both explicit forms select ids 1, 3 and 5. Converted 1:1 from query/BooleanCoercionInPredicateTest (now retired); the Java counted rows, and the converted tests state WHICH rows so a coercion that selected the wrong three would fail.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-bare-varchar-column-predicate-is-rejected", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, is_direct VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t SELECT 1, True, 1 UNION ALL SELECT 2, False, 0 UNION ALL SELECT 3, 'true', 5 UNION ALL SELECT 4, 'FALSE', 0 UNION ALL SELECT 5, 'Y', 2"},
+      {"sql": "SELECT id FROM t WHERE is_direct", "expect": {"error": {"messageContains": "Invalid data type"}}},
+      {"sql": "SELECT id FROM t WHERE is_direct", "expect": {"error": {"messageContains": "[VARCHAR("}}},
+      {"sql": "SELECT id FROM t WHERE is_direct", "expect": {"error": {"messageContains": "for predicate"}}}
+    ]},
+    {"name": "a-bare-number-column-predicate-is-rejected", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, is_direct VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t SELECT 1, True, 1 UNION ALL SELECT 2, False, 0 UNION ALL SELECT 3, 'true', 5 UNION ALL SELECT 4, 'FALSE', 0 UNION ALL SELECT 5, 'Y', 2"},
+      {"sql": "SELECT id FROM t WHERE n", "expect": {"error": {"messageContains": "Invalid data type"}}},
+      {"sql": "SELECT id FROM t WHERE n", "expect": {"error": {"messageContains": "[NUMBER("}}},
+      {"sql": "SELECT id FROM t WHERE n", "expect": {"error": {"messageContains": "for predicate"}}}
+    ]},
+    {"name": "and-chained-varchar-booleans-coerce-too", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, is_direct VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t SELECT 1, True, 1 UNION ALL SELECT 2, False, 0 UNION ALL SELECT 3, 'true', 5 UNION ALL SELECT 4, 'FALSE', 0 UNION ALL SELECT 5, 'Y', 2"},
+      {"sql": "SELECT id FROM t WHERE id > 0 AND is_direct ORDER BY id", "expect": {"rows": [[1],[3],[5]], "ordered": true}},
+      {"sql": "SELECT a.id FROM t a JOIN t b ON a.id = b.id WHERE a.is_direct AND a.id < 5 ORDER BY a.id", "expect": {"rows": [[1],[3]], "ordered": true}}
+    ]},
+    {"name": "not-over-a-varchar-flag-still-coerces", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, is_direct VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t SELECT 1, True, 1 UNION ALL SELECT 2, False, 0 UNION ALL SELECT 3, 'true', 5 UNION ALL SELECT 4, 'FALSE', 0 UNION ALL SELECT 5, 'Y', 2"},
+      {"sql": "SELECT id FROM t WHERE NOT is_direct ORDER BY id", "expect": {"rows": [[2],[4]], "ordered": true}}
+    ]},
+    {"name": "the-explicit-forms-filter-rows", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, is_direct VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t SELECT 1, True, 1 UNION ALL SELECT 2, False, 0 UNION ALL SELECT 3, 'true', 5 UNION ALL SELECT 4, 'FALSE', 0 UNION ALL SELECT 5, 'Y', 2"},
+      {"sql": "SELECT id FROM t WHERE is_direct = 'true' ORDER BY id", "expect": {"rows": [[1],[3],[5]], "ordered": true}},
+      {"sql": "SELECT id FROM t WHERE TO_BOOLEAN(is_direct) ORDER BY id", "expect": {"rows": [[1],[3],[5]], "ordered": true}}
+    ]}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "suite": "functions-array-union-agg",
+  "description": "ARRAY_UNION_AGG(array) is Snowflake's MULTISET union (live-verified): each element keeps the MAXIMUM multiplicity it has in any single input array, so [2,2,2] unioned with [2,2] is [2,2,2] and a lone [5,5] keeps both fives; a NULL row contributes nothing and an all-NULL group yields the empty array. Element order is not guaranteed by Snowflake, so the Java class compared sorted numeric elements - the converted suite does the same server-side with ARRAY_SORT, reading the result through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell. Converted 1:1 from functions/ArrayUnionAggTest (now retired); its @BeforeEach fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-unions-across-rows-ignoring-null-rows", "steps": [
+      {"sql": "CREATE TABLE arr_t (g INTEGER, a ARRAY)"},
+      {"sql": "INSERT INTO arr_t SELECT 1, ARRAY_CONSTRUCT(1, 2, 3)"},
+      {"sql": "INSERT INTO arr_t SELECT 1, ARRAY_CONSTRUCT(3, 4)"},
+      {"sql": "INSERT INTO arr_t VALUES (1, NULL)"},
+      {"sql": "INSERT INTO arr_t SELECT 2, ARRAY_CONSTRUCT(5, 5)"},
+      {"sql": "SELECT g, TO_JSON(ARRAY_SORT(ARRAY_UNION_AGG(a))) FROM arr_t GROUP BY g ORDER BY g",
+       "expect": {"rowCount": 2, "rows": [["1", "[1,2,3,4]"], ["2", "[5,5]"]], "ordered": true}}
+    ]},
+    {"name": "the-multiset-union-keeps-the-maximum-multiplicity", "steps": [
+      {"sql": "CREATE TABLE arr_m (a ARRAY)"},
+      {"sql": "INSERT INTO arr_m SELECT ARRAY_CONSTRUCT(2, 2, 2)"},
+      {"sql": "INSERT INTO arr_m SELECT ARRAY_CONSTRUCT(2, 2)"},
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_UNION_AGG(a))) FROM arr_m", "expect": {"value": "[2,2,2]"}}
+    ]},
+    {"name": "an-all-null-group-yields-an-empty-array", "steps": [
+      {"sql": "CREATE TABLE arr_n (g INTEGER, a ARRAY)"},
+      {"sql": "INSERT INTO arr_n VALUES (7, NULL), (7, NULL)"},
+      {"sql": "SELECT TO_JSON(ARRAY_UNION_AGG(a)) FROM arr_n GROUP BY g", "expect": {"value": "[]"}}
+    ]}
+  ]
+}

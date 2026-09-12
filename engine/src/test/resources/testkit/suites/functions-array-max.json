@@ -1,0 +1,16 @@
+{
+  "suite": "functions-array-max",
+  "description": "ARRAY_MAX(array) - the largest non-null element, returned as a VARIANT (live-verified). Because the result is a VARIANT its raw display keeps the JSON quotes for text, so the text case is cast to VARCHAR to compare the element itself, which reads the same whichever backend serves the query. A NULL input answers NULL. Converted 1:1 from functions/ArrayMaxTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-largest-numeric-element", "steps": [
+      {"sql": "SELECT ARRAY_MAX(ARRAY_CONSTRUCT(20, 0, 10))", "expect": {"value": "20"}}
+    ]},
+    {"name": "the-largest-text-element-ignoring-nulls", "steps": [
+      {"sql": "SELECT ARRAY_MAX(ARRAY_CONSTRUCT('a', NULL, 'c', 'b'))::VARCHAR", "expect": {"value": "c"}}
+    ]},
+    {"name": "a-null-input-is-null", "steps": [
+      {"sql": "SELECT ARRAY_MAX(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

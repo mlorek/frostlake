@@ -16,11 +16,13 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -76,6 +78,12 @@ public class GrantRevokeHandler implements CommandHandler {
                     : scope.SCHEMA() != null ? "SCHEMA" : "ACCOUNT";
                 final String scopeName = scope.qualifiedName() != null
                     ? scope.qualifiedName().getText().toUpperCase() : "ACCOUNT";
+                // The scope must exist before anything is granted in it (live-verified).
+                if (scope.SCHEMA() != null) {
+                    catalog.resolveSchema(QualifiedName.of(ParseTreeText.qualifiedNameParts(scope.qualifiedName())));
+                } else if (scope.DATABASE() != null) {
+                    catalog.databaseExact(ParseTreeText.qualifiedNameParts(scope.qualifiedName())[0]);
+                }
                 String privilege = "ALL";
                 if (ctx.privilegeList().ALL() == null) {
                     final StringBuilder names = new StringBuilder();
@@ -158,6 +166,10 @@ public class GrantRevokeHandler implements CommandHandler {
                 final String targetName = visitor.getText(ctx.identifier(0));
                 final String objectType = ctx.objectType().getText().toUpperCase();
                 final boolean isUser = ctx.USER() != null;
+                // The object is found before the grantee or any authority is judged (live-verified).
+                queryExecutor.requireSecurable(objectType, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()),
+                    ctx.LPAREN() == null ? null
+                        : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size()));
 
                 // Only an owner / administrative role may grant privileges on an object.
                 if (queryExecutor.getSecurityManager() != null) {
@@ -288,6 +300,10 @@ public class GrantRevokeHandler implements CommandHandler {
                 final String targetName = visitor.getText(ctx.identifier(0));
                 final String objectType = ctx.objectType().getText().toUpperCase();
                 final boolean isUser = ctx.USER() != null;
+                // The object is found before the grantee or any authority is judged (live-verified).
+                queryExecutor.requireSecurable(objectType, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()),
+                    ctx.LPAREN() == null ? null
+                        : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size()));
 
                 if (ctx.OWNERSHIP() != null) {
                     // Revoke ownership

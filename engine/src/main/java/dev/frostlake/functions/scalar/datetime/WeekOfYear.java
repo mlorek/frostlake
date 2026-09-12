@@ -18,12 +18,12 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
 public class WeekOfYear extends BuiltInFunction {
-    public WeekOfYear() { super("WEEKOFYEAR", NumericType.INTEGER); }
+    public WeekOfYear() { super("WEEKOFYEAR", IntegerResultWidths.DATE_PART_SMALL); }
 
     @Override
     public Object evaluate(final List<Object> args) {

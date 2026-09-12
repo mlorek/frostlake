@@ -42,6 +42,11 @@ public class RegrAccumulator implements AggregateFunction.Accumulator {
         this.kind = kind;
     }
 
+    /** The member this accumulator computes, which decides which side of a pair is read at all. */
+    public RegrKind kind() {
+        return kind;
+    }
+
     @Override
     public void accumulate(final Object value) {
         // The executor drives two-argument aggregates through accumulate(y, x); the single-value form is unused.

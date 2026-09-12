@@ -1,0 +1,87 @@
+{
+  "suite": "query-set-operation-type-coercion",
+  "description": "Snowflake unifies the column types of set-operation branches BEFORE comparing rows: a VARCHAR branch against a TIMESTAMP branch coerces to TIMESTAMP, VARCHAR against NUMBER coerces to NUMBER, and NUMBER branches of different scales compare BY VALUE. The canonical real-world shape is a fixture's expected table built by CTAS from string literals, EXCEPT-compared against a typed TIMESTAMP_NTZ column - Snowflake reports no difference, so frostlake must not either, in both directions. Coercion must NEVER fire between two VARCHAR branches ('01' stays distinct from '1'), and numeric key comparison must stay EXACT for NUMBER(38,0) values beyond double precision: two twenty-digit keys that differ only in their low digits both round to 2.1000000006420546e19 through a double, so the set-op key has to stay BigDecimal. A string the unified type cannot read FAILS the statement rather than staying unmatched - 'Timestamp ... is not recognized' on the temporal side, 'Numeric value ... is not recognized' on the numeric one. The branch type comes from the leading branch's DECLARED column type and not from the rows it happens to produce, so an EMPTY leading branch still types the union, which is exactly the shape a fixture uses to borrow a table's column layout. And the subtractive operations SHORT-CIRCUIT on an empty left side: MINUS, EXCEPT and INTERSECT over an empty numeric left branch answer zero rows WITHOUT converting the right side, while UNION [ALL] over the identical inputs errors and a NON-empty left errors too. Converted 1:1 from query/SetOperationTypeCoercionTest (now retired); the two temporal readings are taken through ::VARCHAR so they read identically on every transport.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "except-matches-a-varchar-literal-against-a-timestamp-column", "steps": [
+      {"sql": "CREATE TABLE typed_ts (id INTEGER, ts TIMESTAMP_NTZ(3))"},
+      {"sql": "INSERT INTO typed_ts VALUES (1, '2025-09-29 14:49:57.461'), (2, '2025-10-02 09:05:21')"},
+      {"sql": "CREATE TABLE expected_ts AS SELECT 1 AS id, '2025-09-29 14:49:57.461' AS ts UNION ALL SELECT 2, '2025-10-02 09:05:21.000'"},
+      {"sql": "SELECT id, ts FROM expected_ts EXCEPT SELECT id, ts FROM typed_ts", "expect": {"rowCount": 0}},
+      {"sql": "SELECT id, ts FROM typed_ts EXCEPT SELECT id, ts FROM expected_ts", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "except-matches-a-varchar-literal-against-a-date-column", "steps": [
+      {"sql": "CREATE TABLE typed_d (d DATE)"},
+      {"sql": "INSERT INTO typed_d VALUES ('2025-10-02')"},
+      {"sql": "SELECT '2025-10-02' EXCEPT SELECT d FROM typed_d", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "intersect-coerces-a-string-against-a-timestamp", "steps": [
+      {"sql": "CREATE TABLE its (ts TIMESTAMP_NTZ(3))"},
+      {"sql": "INSERT INTO its VALUES ('2025-09-29 14:49:57.461')"},
+      {"sql": "SELECT '2025-09-29 14:49:57.461' INTERSECT SELECT ts FROM its", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "union-distinct-merges-a-number-and-a-numeric-string", "steps": [
+      {"sql": "SELECT 999001 UNION SELECT '999001'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "numbers-of-different-scales-compare-by-value", "steps": [
+      {"sql": "SELECT 1.0 EXCEPT SELECT 1", "expect": {"rowCount": 0}},
+      {"sql": "SELECT 406 INTERSECT SELECT 406.0", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "two-varchar-branches-never-coerce", "steps": [
+      {"sql": "SELECT '01' EXCEPT SELECT '1'", "expect": {"rows": [["01"]]}},
+      {"sql": "SELECT '01' UNION SELECT '1'", "expect": {"rows": [["01"],["1"]]}}
+    ]},
+    {"name": "huge-number-keys-stay-exact", "steps": [
+      {"sql": "CREATE TABLE big_a (n NUMBER(38,0))"},
+      {"sql": "CREATE TABLE big_b (n NUMBER(38,0))"},
+      {"sql": "INSERT INTO big_a VALUES (21000000006420544706)"},
+      {"sql": "INSERT INTO big_b VALUES (21000000006420546000)"},
+      {"sql": "SELECT n::VARCHAR FROM big_a EXCEPT SELECT n::VARCHAR FROM big_b", "expect": {"rows": [["21000000006420544706"]]}},
+      {"sql": "SELECT n FROM big_a EXCEPT SELECT 21000000006420544706", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-boolean-coerces-against-a-string-branch", "steps": [
+      {"sql": "SELECT TRUE EXCEPT SELECT 'true'", "expect": {"rowCount": 0}},
+      {"sql": "SELECT TRUE UNION SELECT 'TRUE'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "null-still-matches-null-across-branches", "steps": [
+      {"sql": "CREATE TABLE nul_ts (ts TIMESTAMP_NTZ(3))"},
+      {"sql": "INSERT INTO nul_ts VALUES (NULL), ('2025-09-29 14:49:57.461')"},
+      {"sql": "SELECT NULL UNION ALL SELECT '2025-09-29 14:49:57.461' EXCEPT SELECT ts FROM nul_ts", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "an-unmatchable-string-fails-the-set-operation", "steps": [
+      {"sql": "CREATE TABLE um_ts (ts TIMESTAMP_NTZ(3))"},
+      {"sql": "INSERT INTO um_ts VALUES ('2025-09-29 14:49:57.461')"},
+      {"sql": "SELECT 'not-a-timestamp' EXCEPT SELECT ts FROM um_ts", "expect": {"error": {"messageContains": "Timestamp 'not-a-timestamp' is not recognized"}}},
+      {"sql": "SELECT '2025-09-29 14:49:57.461' EXCEPT SELECT ts FROM um_ts", "expect": {"rowCount": 0}},
+      {"sql": "SELECT 'abc' UNION SELECT 1", "expect": {"error": {"messageContains": "Numeric value 'abc' is not recognized"}}},
+      {"sql": "SELECT '3' UNION SELECT 1", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "except-coerces-the-timestamp-comparison", "steps": [
+      {"sql": "CREATE TABLE ea_ts (ts TIMESTAMP_NTZ(3))"},
+      {"sql": "INSERT INTO ea_ts VALUES ('2025-09-29 14:49:57.461')"},
+      {"sql": "SELECT '2025-09-29 14:49:57.461' UNION ALL SELECT '2025-09-29 14:49:57.461' EXCEPT SELECT ts FROM ea_ts", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "an-empty-leading-branch-still-types-the-union", "steps": [
+      {"sql": "CREATE TABLE lead_ts (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "SELECT (SELECT ts FROM lead_ts WHERE FALSE UNION ALL SELECT '2024-01-01 00:00:003')::VARCHAR", "expect": {"value": "2024-01-01 00:00:03.000"}},
+      {"sql": "INSERT INTO lead_ts(ts) WITH c AS (SELECT ts FROM lead_ts WHERE FALSE UNION ALL SELECT '2024-01-01 00:00:003') SELECT ts FROM c"},
+      {"sql": "SELECT ts::VARCHAR FROM lead_ts", "expect": {"value": "2024-01-01 00:00:03.000"}},
+      {"sql": "SELECT ts FROM lead_ts WHERE FALSE UNION ALL SELECT 'not-a-timestamp'", "expect": {"error": {"messageContains": "not recognized"}}}
+    ]},
+    {"name": "an-empty-leading-branch-types-a-date-union-too", "steps": [
+      {"sql": "CREATE TABLE lead_d (d DATE)"},
+      {"sql": "SELECT (SELECT d FROM lead_d WHERE FALSE UNION ALL SELECT '9999-012-31')::VARCHAR", "expect": {"value": "9999-12-31"}}
+    ]},
+    {"name": "subtractive-operations-short-circuit-on-an-empty-left-side", "steps": [
+      {"sql": "CREATE TABLE sc_num (n NUMBER(38,0))"},
+      {"sql": "CREATE TABLE sc_str (s VARCHAR)"},
+      {"sql": "INSERT INTO sc_str VALUES ('00000000-0000-0000-0000-000000000000')"},
+      {"sql": "SELECT n FROM sc_num MINUS SELECT s FROM sc_str", "expect": {"rowCount": 0}},
+      {"sql": "SELECT n FROM sc_num EXCEPT SELECT s FROM sc_str", "expect": {"rowCount": 0}},
+      {"sql": "SELECT n FROM sc_num INTERSECT SELECT s FROM sc_str", "expect": {"rowCount": 0}},
+      {"sql": "SELECT n FROM sc_num UNION ALL SELECT s FROM sc_str", "expect": {"error": {"messageContains": "not recognized"}}},
+      {"sql": "INSERT INTO sc_num VALUES (12345)"},
+      {"sql": "SELECT n FROM sc_num MINUS SELECT s FROM sc_str", "expect": {"error": {"messageContains": "not recognized"}}}
+    ]}
+  ]
+}

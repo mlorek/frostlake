@@ -1,0 +1,140 @@
+{
+  "suite": "query-join-and-lateral",
+  "description": "The JOIN forms and the LATERAL keyword over a three-employee, three-department fixture. CROSS JOIN and the comma spelling both produce the cartesian product; INNER JOIN matches on the key; LEFT and LEFT OUTER keep every left row null-extended; RIGHT keeps the unmatched departments; FULL OUTER keeps both sides' orphans. A LATERAL subquery is evaluated per left row, so it correlates - and with an extra filter inside it, it drops the rows that no longer match. Multi-table joins, table aliases, a subquery in FROM, a join to a subquery, a WHERE beside a join, and multi-condition ON clauses all read. Converted 1:1 from query/JoinAndLateralTest (now retired); the Java asserted a row COUNT for fifteen of its eighteen tests and read cells for only three, so the converted tests name the rows - a LEFT JOIN keeping the right NUMBER of rows but null-extending the wrong one would have passed before.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-cross-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT * FROM employees CROSS JOIN departments", "expect": {"rowCount": 9, "columns": ["ID","NAME","DEPT_ID","DEPT_ID","DEPT_NAME"]}}
+    ]},
+    {"name": "an-inner-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT * FROM employees JOIN departments ON employees.dept_id = departments.dept_id ORDER BY id", "expect": {"rows": [[1,"Alice",10,10,"Engineering"],[2,"Bob",20,20,"Sales"],[3,"Charlie",10,10,"Engineering"]], "ordered": true}}
+    ]},
+    {"name": "an-explicit-inner-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT * FROM employees INNER JOIN departments ON employees.dept_id = departments.dept_id ORDER BY id", "expect": {"rows": [[1,"Alice",10,10,"Engineering"],[2,"Bob",20,20,"Sales"],[3,"Charlie",10,10,"Engineering"]], "ordered": true}}
+    ]},
+    {"name": "a-left-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "INSERT INTO employees VALUES (4, 'David', 99)"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e LEFT JOIN departments d ON e.dept_id = d.dept_id ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"],["David",null]], "ordered": true}}
+    ]},
+    {"name": "a-left-outer-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "INSERT INTO employees VALUES (4, 'David', 99)"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e LEFT OUTER JOIN departments d ON e.dept_id = d.dept_id ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"],["David",null]], "ordered": true}}
+    ]},
+    {"name": "a-lateral-with-a-subquery", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT e.name, dept.dept_name FROM employees e, LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"]], "ordered": true}}
+    ]},
+    {"name": "a-lateral-with-a-cross-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT e.name, dept.dept_name FROM employees e CROSS JOIN LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"]], "ordered": true}}
+    ]},
+    {"name": "multiple-joins", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "CREATE TABLE projects (proj_id INT, proj_name VARCHAR, emp_id INT)"},
+      {"sql": "INSERT INTO projects VALUES (100,'Project A',1),(200,'Project B',2)"},
+      {"sql": "SELECT * FROM employees e JOIN departments d ON e.dept_id = d.dept_id JOIN projects p ON p.emp_id = e.id ORDER BY e.id", "expect": {"rows": [[1,"Alice",10,10,"Engineering",100,"Project A",1],[2,"Bob",20,20,"Sales",200,"Project B",2]], "ordered": true}}
+    ]},
+    {"name": "a-join-with-table-aliases", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"]], "ordered": true}}
+    ]},
+    {"name": "a-subquery-in-from", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT name FROM (SELECT * FROM employees WHERE dept_id = 10) e ORDER BY name", "expect": {"rows": [["Alice"],["Charlie"]], "ordered": true}}
+    ]},
+    {"name": "a-join-with-a-subquery", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e JOIN (SELECT * FROM departments WHERE dept_id < 30) d ON e.dept_id = d.dept_id ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"]], "ordered": true}}
+    ]},
+    {"name": "a-lateral-with-a-filter", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT e.name, dept.dept_name FROM employees e, LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id AND d.dept_id = 10) dept ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Charlie","Engineering"]], "ordered": true}}
+    ]},
+    {"name": "a-join-with-a-where-clause", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id WHERE e.name = 'Alice'", "expect": {"rows": [["Alice","Engineering"]]}}
+    ]},
+    {"name": "a-cross-join-without-the-keyword", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT * FROM employees, departments", "expect": {"rowCount": 9, "columns": ["ID","NAME","DEPT_ID","DEPT_ID","DEPT_NAME"]}}
+    ]},
+    {"name": "a-right-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "INSERT INTO departments VALUES (40, 'HR')"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e RIGHT JOIN departments d ON e.dept_id = d.dept_id ORDER BY d.dept_name, e.name", "expect": {"rows": [["Alice","Engineering"],["Charlie","Engineering"],[null,"HR"],[null,"Marketing"],["Bob","Sales"]], "ordered": true}}
+    ]},
+    {"name": "a-full-outer-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "INSERT INTO employees VALUES (4, 'David', 99)"},
+      {"sql": "INSERT INTO departments VALUES (40, 'HR')"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e FULL OUTER JOIN departments d ON e.dept_id = d.dept_id ORDER BY e.name NULLS LAST, d.dept_name NULLS LAST", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"],["David",null],[null,"HR"],[null,"Marketing"]], "ordered": true}}
+    ]},
+    {"name": "a-complex-join-condition", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id AND d.dept_id >= 10 ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"]], "ordered": true}}
+    ]},
+    {"name": "a-join-with-multiple-conditions", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice',10),(2,'Bob',20),(3,'Charlie',10)"},
+      {"sql": "CREATE TABLE departments (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10,'Engineering'),(20,'Sales'),(30,'Marketing')"},
+      {"sql": "SELECT e.name, d.dept_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id AND e.dept_id < 30 ORDER BY e.name", "expect": {"rows": [["Alice","Engineering"],["Bob","Sales"],["Charlie","Engineering"]], "ordered": true}}
+    ]}
+  ]
+}

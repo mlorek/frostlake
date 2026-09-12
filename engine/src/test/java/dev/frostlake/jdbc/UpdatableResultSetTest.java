@@ -48,8 +48,14 @@ public class UpdatableResultSetTest extends BaseJdbcTest {
         statement.execute(sql);
         // Read through the connection's session scope: a raw sharedEngine call resolves against the
         // engine's GLOBAL context, and the connection's USE test_db no longer leaks into it.
+        // ORDER BY the key columns: every assertion below names a row by its position under the
+        // cursor, and a bare SELECT promises no sequence at all for the cursor to land on.
+        final StringBuilder ordered = new StringBuilder("SELECT * FROM " + tableName + " ORDER BY ");
+        for (int i = 0; i < keyColumns.length; i++) {
+            ordered.append(i == 0 ? "" : ", ").append(keyColumns[i]);
+        }
         final ResultSet engineResultSet = ((DirectConnection) connection)
-            .executeScoped("SELECT * FROM " + tableName).getResultSets().get(0);
+            .executeScoped(ordered.toString()).getResultSets().get(0);
         return new DirectResultSet(statement, engineResultSet, sharedEngine, tableName, Arrays.asList(keyColumns));
     }
 
@@ -178,7 +184,7 @@ public class UpdatableResultSetTest extends BaseJdbcTest {
         assertEquals(1, verifyRs.getInt(1));
         verifyRs.close();
 
-        verifyRs = statement.executeQuery("SELECT id FROM upd_test6");
+        verifyRs = statement.executeQuery("SELECT id FROM upd_test6 ORDER BY id");
         assertTrue(verifyRs.next());
         assertEquals(2, verifyRs.getInt("id"));
         verifyRs.close();

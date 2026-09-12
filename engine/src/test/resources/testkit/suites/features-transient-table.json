@@ -1,0 +1,128 @@
+{
+  "suite": "features-transient-table",
+  "description": "The TRANSIENT table type, asserted through the SQL surface - the SHOW TABLES kind cell (TRANSIENT vs TABLE, including through CLONE), plus the comment, cluster_by and DESCRIBE cells of the co-declared options. Covers IF NOT EXISTS, a schema-qualified name, COMMENT in both positions, CLUSTER BY, inline constraints, collation, a foreign key, and the clone rule: a permanent table may be cloned INTO a transient one, but a transient table cannot become permanent by cloning. Converted 1:1 from features/TransientTableTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "create-a-transient-table", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE test1 (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'test1'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST1'",
+       "expect": {"value": "TRANSIENT"}}
+    ]},
+    {"name": "a-regular-table-reports-kind-table", "steps": [
+      {"sql": "CREATE TABLE test2 (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'test2'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST2'",
+       "expect": {"value": "TABLE"}}
+    ]},
+    {"name": "transient-with-if-not-exists", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE IF NOT EXISTS test3 (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'test3'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST3'",
+       "expect": {"value": "TRANSIENT"}},
+      {"sql": "CREATE TRANSIENT TABLE IF NOT EXISTS test3 (id INTEGER, name VARCHAR)"}
+    ]},
+    {"name": "transient-with-a-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA transient_schema"},
+      {"sql": "CREATE TRANSIENT TABLE transient_schema.test4 (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'test4' IN SCHEMA transient_schema"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST4'",
+       "expect": {"value": "TRANSIENT"}}
+    ]},
+    {"name": "transient-with-a-comment", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE test5 (id INTEGER, name VARCHAR) COMMENT = 'Test transient table'"},
+      {"sql": "SHOW TABLES LIKE 'test5'"},
+      {"sql": "SELECT \"kind\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST5'",
+       "expect": {"rows": [["TRANSIENT", "Test transient table"]]}}
+    ]},
+    {"name": "transient-with-the-comment-before-the-column-list", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE test6 COMMENT = 'Comment position test' (id INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'test6'"},
+      {"sql": "SELECT \"kind\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST6'",
+       "expect": {"rows": [["TRANSIENT", "Comment position test"]]}}
+    ]},
+    {"name": "transient-with-cluster-by", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE test7 (\n    id INTEGER,\n    date DATE,\n    value NUMBER\n) CLUSTER BY (date)"},
+      {"sql": "SHOW TABLES LIKE 'test7'"},
+      {"sql": "SELECT \"kind\", \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST7'",
+       "expect": {"rows": [["TRANSIENT", "LINEAR(date)"]]}}
+    ]},
+    {"name": "transient-with-inline-constraints", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE test8 (\n    id INTEGER PRIMARY KEY,\n    email VARCHAR UNIQUE,\n    name VARCHAR NOT NULL,\n    status VARCHAR DEFAULT 'active'\n)"},
+      {"sql": "SHOW TABLES LIKE 'test8'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST8'",
+       "expect": {"value": "TRANSIENT"}},
+      {"sql": "DESCRIBE TABLE test8"},
+      {"sql": "SELECT \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'",
+       "expect": {"value": "Y"}}
+    ]},
+    {"name": "cloning-a-transient-table-keeps-it-transient", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE source (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TRANSIENT TABLE test9 CLONE source"},
+      {"sql": "SHOW TABLES LIKE 'source'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'SOURCE'",
+       "expect": {"value": "TRANSIENT"}},
+      {"sql": "SHOW TABLES LIKE 'test9'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST9'",
+       "expect": {"value": "TRANSIENT"}}
+    ]},
+    {"name": "a-permanent-table-may-be-cloned-into-a-transient-one", "steps": [
+      {"sql": "CREATE TABLE source2 (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TRANSIENT TABLE test10 CLONE source2"},
+      {"sql": "SHOW TABLES LIKE 'source2'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'SOURCE2'",
+       "expect": {"value": "TABLE"}},
+      {"sql": "SHOW TABLES LIKE 'test10'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST10'",
+       "expect": {"value": "TRANSIENT"}}
+    ]},
+    {"name": "a-transient-table-cannot-be-cloned-to-a-permanent-one", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE source3 (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE test11 CLONE source3",
+       "expect": {"error": {"messageContains": "Transient object cannot be cloned to a permanent object."}}},
+      {"sql": "SHOW TABLES LIKE 'test11'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "transient-with-many-columns", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE test12 (\n    id INTEGER,\n    first_name VARCHAR,\n    last_name VARCHAR,\n    email VARCHAR,\n    created_at TIMESTAMP,\n    updated_at TIMESTAMP\n)"},
+      {"sql": "SHOW TABLES LIKE 'test12'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST12'",
+       "expect": {"value": "TRANSIENT"}},
+      {"sql": "DESCRIBE TABLE test12", "expect": {"rowCount": 6}}
+    ]},
+    {"name": "transient-with-a-collated-column", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE test13 (\n    id INTEGER,\n    name VARCHAR COLLATE 'utf8'\n)"},
+      {"sql": "SHOW TABLES LIKE 'test13'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST13'",
+       "expect": {"value": "TRANSIENT"}},
+      {"sql": "DESCRIBE TABLE test13"},
+      {"sql": "SELECT CONTAINS(\"type\", 'COLLATE ''utf8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'NAME'",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "every-transient-option-combined", "steps": [
+      {"sql": "CREATE SCHEMA transient_schema"},
+      {"sql": "CREATE TRANSIENT TABLE IF NOT EXISTS transient_schema.test14\nCOMMENT = 'Full featured transient table'\n(\n    id INTEGER PRIMARY KEY,\n    name VARCHAR(200) NOT NULL UNIQUE COLLATE 'utf8',\n    status VARCHAR DEFAULT 'active',\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n    date DATE\n)\nCLUSTER BY (date)"},
+      {"sql": "SHOW TABLES LIKE 'test14' IN SCHEMA transient_schema"},
+      {"sql": "SELECT \"kind\", \"comment\", \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST14'",
+       "expect": {"rows": [["TRANSIENT", "Full featured transient table", "LINEAR(date)"]]}}
+    ]},
+    {"name": "transient-and-permanent-tables-coexist", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE transient1 (id INTEGER)"},
+      {"sql": "CREATE TABLE regular1 (id INTEGER)"},
+      {"sql": "CREATE TRANSIENT TABLE transient2 (id INTEGER)"},
+      {"sql": "CREATE TABLE regular2 (id INTEGER)"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'TRANSIENT1', \"kind\", NULL)), MAX(IFF(\"name\" = 'REGULAR1', \"kind\", NULL)), MAX(IFF(\"name\" = 'TRANSIENT2', \"kind\", NULL)), MAX(IFF(\"name\" = 'REGULAR2', \"kind\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["TRANSIENT", "TABLE", "TRANSIENT", "TABLE"]]}}
+    ]},
+    {"name": "transient-with-a-foreign-key", "steps": [
+      {"sql": "CREATE TABLE parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TRANSIENT TABLE test15 (\n    id INTEGER PRIMARY KEY,\n    parent_id INTEGER REFERENCES parent(id)\n)"},
+      {"sql": "SHOW TABLES LIKE 'test15'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST15'",
+       "expect": {"value": "TRANSIENT"}},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE test15"},
+      {"sql": "SELECT COUNT_IF(\"fk_column_name\" = 'PARENT_ID') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]}
+  ]
+}

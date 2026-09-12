@@ -51,7 +51,7 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
         //   └── BinaryOperationExpression(EQUAL): status = 'active'
 
         final ExecutionResult result = engine.execute(
-            "SELECT id FROM users WHERE age > 18 AND status = 'active'"
+            "SELECT id FROM users WHERE age > 18 AND status = 'active' ORDER BY id"
         );
         final ResultSet rs = result.getResultSets().get(0);
 

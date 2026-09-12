@@ -1,0 +1,17 @@
+{
+  "suite": "functions-boolnot",
+  "description": "BOOLNOT(x) over three-valued logic: NOT of a truthy value is FALSE, NOT of zero is TRUE, and NOT of NULL is NULL. BOOLNOT takes numeric or variant truthiness rather than a BOOLEAN, so BOOLNOT(TRUE) is rejected (live-verified). Converted 1:1 from functions/BoolNotTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "not-true-is-false-and-a-boolean-argument-is-rejected", "steps": [
+      {"sql": "SELECT BOOLNOT(1)", "expect": {"value": "false"}},
+      {"sql": "SELECT BOOLNOT(true)", "expect": {"error": {}}}
+    ]},
+    {"name": "not-false-is-true", "steps": [
+      {"sql": "SELECT BOOLNOT(0)", "expect": {"value": "true"}}
+    ]},
+    {"name": "not-null-is-null", "steps": [
+      {"sql": "SELECT BOOLNOT(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

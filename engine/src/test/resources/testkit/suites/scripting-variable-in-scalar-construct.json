@@ -1,0 +1,42 @@
+{
+  "suite": "scripting-variable-in-scalar-construct",
+  "description": "A Snowflake Scripting variable referenced inside a scalar construct the procedural builder does NOT model with a dedicated node - a :: or CAST cast, CASE, IN, BETWEEN - must resolve to the variable's VALUE. Previously such constructs were evaluated as a standalone SELECT <text> that could not see procedural variables, so w::VARCHAR silently returned NULL; they now flow through the shared AST evaluator with the current variables supplied as a resolution context. Pinned across both cast spellings, a cast inside arithmetic, CASE, IN, BETWEEN, the doc pattern that concatenates two casts, and a literal cast as the regression guard. The semi-structured cases are the subtle ones: Snowflake BINDS the variable's value into the statement and THEN compiles the surrounding expression, so a written ::VARIANT still applies - live-verified, ARRAY_CONTAINS(v::VARIANT, arr) answers 'available' and TYPEOF(v::VARIANT) answers VARCHAR, while dropping the cast errors 'Invalid argument types for function ARRAY_CONTAINS: (VARCHAR(1), VARIANT)', which reports the BOUND value's width. Rebuilding the call from argument VALUES alone dropped the cast, so the strict semi-structured families rejected the bare VARCHAR literal that substitution had created - and the last test keeps that rule firing. Converted 1:1 from scripting/ScriptVariableInScalarConstructTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-double-colon-cast-on-a-variable", "steps": [
+      {"sql": "BEGIN LET w INTEGER := 168; RETURN w::VARCHAR; END;", "expect": {"value": "168"}}
+    ]},
+    {"name": "the-cast-function-on-a-variable", "steps": [
+      {"sql": "BEGIN LET w INTEGER := 168; RETURN CAST(w AS VARCHAR); END;", "expect": {"value": "168"}}
+    ]},
+    {"name": "a-cast-variable-inside-arithmetic", "steps": [
+      {"sql": "BEGIN LET w VARCHAR := '168'; RETURN w::NUMBER + 1; END;", "expect": {"value": 169}}
+    ]},
+    {"name": "a-variable-inside-a-case-expression", "steps": [
+      {"sql": "BEGIN LET w INTEGER := 168; RETURN CASE WHEN 1 = 1 THEN w ELSE 99 END; END;", "expect": {"value": 168}}
+    ]},
+    {"name": "a-variable-inside-an-in-predicate", "steps": [
+      {"sql": "BEGIN LET w INTEGER := 168; RETURN w IN (1, 168, 200); END;", "expect": {"value": true}}
+    ]},
+    {"name": "a-variable-inside-a-between-predicate", "steps": [
+      {"sql": "BEGIN LET w INTEGER := 168; RETURN w BETWEEN 1 AND 200; END;", "expect": {"value": true}}
+    ]},
+    {"name": "a-literal-cast-still-works", "steps": [
+      {"sql": "BEGIN RETURN 168::VARCHAR; END;", "expect": {"value": "168"}}
+    ]},
+    {"name": "the-doc-example-concatenating-two-casts", "steps": [
+      {"sql": "BEGIN LET w INTEGER := 168; LET dt DATE := '2020-09-30'; RETURN w::VARCHAR || ', ' || dt::VARCHAR; END;",
+       "expect": {"value": "168, 2020-09-30"}}
+    ]},
+    {"name": "a-semi-structured-cast-on-a-variable-survives-into-a-function-call", "steps": [
+      {"sql": "DECLARE v_target_role VARCHAR := 'ROLE_CALLER'; role_array VARIANT; BEGIN SELECT PARSE_JSON('[\"ROLE_CALLER\",\"OTHER\"]') INTO role_array; IF (NOT ARRAY_CONTAINS(v_target_role::VARIANT, role_array)) THEN RETURN 'NOT available'; END IF; RETURN 'available'; END;",
+       "expect": {"value": "available"}}
+    ]},
+    {"name": "a-variant-cast-on-a-variable-keeps-typeof-working", "steps": [
+      {"sql": "BEGIN LET v VARCHAR := 'abc'; RETURN TYPEOF(v::VARIANT); END;", "expect": {"value": "VARCHAR"}}
+    ]},
+    {"name": "an-uncast-variable-stays-rejected-by-the-strict-family", "steps": [
+      {"sql": "BEGIN LET v VARCHAR := 'abc'; RETURN ARRAY_CONTAINS(v, PARSE_JSON('[\"abc\"]')); END;", "expect": {"error": {}}}
+    ]}
+  ]
+}

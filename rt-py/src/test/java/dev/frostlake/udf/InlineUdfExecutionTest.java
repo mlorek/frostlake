@@ -65,11 +65,11 @@ public class InlineUdfExecutionTest extends BaseJdbcTest {
     public void inlineJavaScriptUdfExecutes() throws SQLException {
         logger.info("inline JavaScript UDF (GraalVM JS)");
         statement.execute("""
-            CREATE OR REPLACE FUNCTION js_concat(x INTEGER)
+            CREATE OR REPLACE FUNCTION js_concat(x FLOAT)
             RETURNS STRING
             LANGUAGE JAVASCRIPT
             AS $$
-                return "js:" + x;
+                return "js:" + X;
             $$
             """);
         try (ResultSet rs = statement.executeQuery("SELECT js_concat(7)")) {

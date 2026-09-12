@@ -1,0 +1,46 @@
+{
+  "suite": "constraints-not-null",
+  "description": "NOT NULL enforcement on INSERT and UPDATE, converted 1:1 from constraints/NotNullEnforcementTest.java (now retired).",
+  "tags": ["constraints", "converted"],
+  "tests": [
+    {
+      "name": "insert-explicit-null-into-not-null-column-fails",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER NOT NULL, v VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (NULL, 'a')", "expect": {"error": {"messageContains": "null"}}}
+      ]
+    },
+    {
+      "name": "insert-omitting-not-null-column-fails",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER NOT NULL, v VARCHAR)"},
+        {"sql": "INSERT INTO t (v) VALUES ('a')", "expect": {"error": {"messageContains": "null"}}}
+      ]
+    },
+    {
+      "name": "nullable-column-accepts-null",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER NOT NULL, v VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1, 'a')"},
+        {"sql": "INSERT INTO t VALUES (2, NULL)"},
+        {"sql": "SELECT * FROM t", "expect": {"rowCount": 2}}
+      ]
+    },
+    {
+      "name": "not-null-with-default-uses-default",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER NOT NULL DEFAULT 7, v VARCHAR)"},
+        {"sql": "INSERT INTO t (v) VALUES ('a')"},
+        {"sql": "SELECT * FROM t WHERE id = 7", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "update-setting-not-null-column-to-null-fails",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER NOT NULL, v VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1, 'a')"},
+        {"sql": "UPDATE t SET id = NULL WHERE v = 'a'", "expect": {"error": {"messageContains": "null"}}}
+      ]
+    }
+  ]
+}

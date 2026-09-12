@@ -1,0 +1,89 @@
+{
+  "suite": "stream-on-join-view",
+  "description": "CDC over a stream ON an INNER-JOIN view, measured mutation by mutation on a real account: the stream is the NET DIFFERENCE of the JOIN'S RESULT across the window, not of either base table. A base-row insert with no join partner surfaces NOTHING; EITHER side completing a match surfaces the joined row as INSERT; a second match surfaces only the new combination; an in-window insert then delete cancels; deleting one side emits a DELETE of the joined row; and a one-side UPDATE emits a DELETE plus INSERT pair with METADATA$ISUPDATE true sharing a single METADATA$ROW_ID. Consumption advances the offset exactly as for any other stream, and SYSTEM$STREAM_HAS_DATA reports the capture window - it answers true even for the non-matching insert that produced no view delta, a false positive Snowflake permits. Converted 1:1 from stream/StreamOnJoinViewTest (now retired); each test repeats the class's BeforeEach fixture inline, and the change set is rendered as one concatenated string per row exactly as the Java's changes() helper did.",
+  "tags": ["stream", "converted"],
+  "tests": [
+    {"name": "a-fresh-stream-is-empty-and-a-non-matching-insert-stays-invisible", "steps": [
+      {"sql": "CREATE TABLE t1 (k INTEGER, a VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (k INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a1')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'b1')"},
+      {"sql": "CREATE VIEW jv AS SELECT t1.k AS k, t1.a AS a, t2.b AS b FROM t1 JOIN t2 ON t1.k = t2.k"},
+      {"sql": "CREATE STREAM js ON VIEW jv"},
+      {"sql": "SELECT k, a, b, METADATA$ACTION FROM js", "expect": {"rowCount": 0}},
+      {"sql": "INSERT INTO t1 VALUES (9, 'a9')"},
+      {"sql": "SELECT k, a, b, METADATA$ACTION FROM js", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "either-side-completing-a-match-surfaces-the-joined-row", "steps": [
+      {"sql": "CREATE TABLE t1 (k INTEGER, a VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (k INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a1')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'b1')"},
+      {"sql": "CREATE VIEW jv AS SELECT t1.k AS k, t1.a AS a, t2.b AS b FROM t1 JOIN t2 ON t1.k = t2.k"},
+      {"sql": "CREATE STREAM js ON VIEW jv"},
+      {"sql": "INSERT INTO t1 VALUES (2, 'a2')"},
+      {"sql": "INSERT INTO t2 VALUES (2, 'b2')"},
+      {"sql": "SELECT k || '|' || a || '|' || b || '|' || METADATA$ACTION || '|' || TO_VARCHAR(METADATA$ISUPDATE) AS r FROM js ORDER BY k, METADATA$ACTION", "expect": {"rows": [["2|a2|b2|INSERT|false"]], "ordered": true}},
+      {"sql": "CREATE OR REPLACE STREAM js ON VIEW jv"},
+      {"sql": "INSERT INTO t2 VALUES (2, 'b2x')"},
+      {"sql": "SELECT k || '|' || a || '|' || b || '|' || METADATA$ACTION || '|' || TO_VARCHAR(METADATA$ISUPDATE) AS r FROM js ORDER BY k, METADATA$ACTION", "expect": {"rows": [["2|a2|b2x|INSERT|false"]], "ordered": true}}
+    ]},
+    {"name": "deleting-one-side-emits-a-delete-of-the-joined-row", "steps": [
+      {"sql": "CREATE TABLE t1 (k INTEGER, a VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (k INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a1')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'b1')"},
+      {"sql": "CREATE VIEW jv AS SELECT t1.k AS k, t1.a AS a, t2.b AS b FROM t1 JOIN t2 ON t1.k = t2.k"},
+      {"sql": "CREATE STREAM js ON VIEW jv"},
+      {"sql": "DELETE FROM t2 WHERE k = 1"},
+      {"sql": "SELECT k || '|' || a || '|' || b || '|' || METADATA$ACTION || '|' || TO_VARCHAR(METADATA$ISUPDATE) AS r FROM js ORDER BY k, METADATA$ACTION", "expect": {"rows": [["1|a1|b1|DELETE|false"]], "ordered": true}}
+    ]},
+    {"name": "an-in-window-insert-then-delete-cancels", "steps": [
+      {"sql": "CREATE TABLE t1 (k INTEGER, a VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (k INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a1')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'b1')"},
+      {"sql": "CREATE VIEW jv AS SELECT t1.k AS k, t1.a AS a, t2.b AS b FROM t1 JOIN t2 ON t1.k = t2.k"},
+      {"sql": "CREATE STREAM js ON VIEW jv"},
+      {"sql": "INSERT INTO t1 VALUES (4, 'a4')"},
+      {"sql": "INSERT INTO t2 VALUES (4, 'b4')"},
+      {"sql": "DELETE FROM t1 WHERE k = 4"},
+      {"sql": "SELECT k, a, b, METADATA$ACTION FROM js", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-one-side-update-pairs-with-a-shared-row-id-and-isupdate-true", "steps": [
+      {"sql": "CREATE TABLE t1 (k INTEGER, a VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (k INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a1')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'b1')"},
+      {"sql": "CREATE VIEW jv AS SELECT t1.k AS k, t1.a AS a, t2.b AS b FROM t1 JOIN t2 ON t1.k = t2.k"},
+      {"sql": "CREATE STREAM js ON VIEW jv"},
+      {"sql": "UPDATE t1 SET a = 'a1-upd' WHERE k = 1"},
+      {"sql": "SELECT k || '|' || a || '|' || b || '|' || METADATA$ACTION || '|' || TO_VARCHAR(METADATA$ISUPDATE) AS r FROM js ORDER BY k, METADATA$ACTION", "expect": {"rows": [["1|a1|b1|DELETE|true"], ["1|a1-upd|b1|INSERT|true"]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) || '/' || COUNT(DISTINCT METADATA$ROW_ID) AS r FROM js", "expect": {"rows": [["2/1"]]}}
+    ]},
+    {"name": "consumption-advances-the-join-stream", "steps": [
+      {"sql": "CREATE TABLE t1 (k INTEGER, a VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (k INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a1')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'b1')"},
+      {"sql": "CREATE VIEW jv AS SELECT t1.k AS k, t1.a AS a, t2.b AS b FROM t1 JOIN t2 ON t1.k = t2.k"},
+      {"sql": "CREATE STREAM js ON VIEW jv"},
+      {"sql": "INSERT INTO t1 VALUES (5, 'a5')"},
+      {"sql": "INSERT INTO t2 VALUES (5, 'b5')"},
+      {"sql": "CREATE TABLE sink (k INTEGER, a VARCHAR, b VARCHAR)"},
+      {"sql": "INSERT INTO sink SELECT k, a, b FROM js"},
+      {"sql": "SELECT k FROM sink", "expect": {"rows": [[5]]}},
+      {"sql": "SELECT k, a, b, METADATA$ACTION FROM js", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "stream-has-data-reflects-the-window", "steps": [
+      {"sql": "CREATE TABLE t1 (k INTEGER, a VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (k INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a1')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'b1')"},
+      {"sql": "CREATE VIEW jv AS SELECT t1.k AS k, t1.a AS a, t2.b AS b FROM t1 JOIN t2 ON t1.k = t2.k"},
+      {"sql": "CREATE STREAM js ON VIEW jv"},
+      {"sql": "INSERT INTO t1 VALUES (6, 'a6')"},
+      {"sql": "SELECT UPPER(TO_VARCHAR(SYSTEM$STREAM_HAS_DATA('js'))) AS r", "expect": {"rows": [["TRUE"]]}}
+    ]}
+  ]
+}

@@ -16,11 +16,16 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
+/**
+ * SPACE(n): {@code n} blanks. The account plans it as {@code LPAD('', n, ' ')}, which is what judges a
+ * BINARY count — see {@link SemiStructuredRejection#SPACE_REWRITE_OPERANDS}.
+ */
 public class Space extends TextArgumentFunction {
     public Space() { super("SPACE", StringType.VARCHAR); }
 
@@ -35,4 +40,10 @@ public class Space extends TextArgumentFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 1; }
+
+    /** A BINARY count is judged as the LPAD the call is planned as (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.SPACE_REWRITE_OPERANDS;
+    }
 }

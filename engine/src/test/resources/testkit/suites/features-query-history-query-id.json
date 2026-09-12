@@ -1,0 +1,71 @@
+{
+  "suite": "features-query-history-query-id",
+  "description": "Query IDs are consistent between LAST_QUERY_ID() and INFORMATION_SCHEMA.QUERY_HISTORY(): the id a statement is remembered under is the one LAST_QUERY_ID() hands back, successive statements get distinct ids, DML statements are recorded under their own ids, every recorded statement carries a non-empty id, RESULT_SCAN over that id replays the statement's rows, and a FAILED statement is recorded with an id too. Converted 1:1 from features/QueryHistoryQueryIdTest (now retired). Each test uses statement texts unique to it, standing in for the embedded tracker's clear() (no SQL equivalent), and skips the snowflake backend for the same reason the Java class did.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "query-id-matches-last-query-id",
+     "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history: a real account's QUERY_HISTORY is account-wide and populated asynchronously"},
+     "steps": [
+      {"sql": "SELECT 1 AS qid_value_marker"},
+      {"sql": "SET qid = LAST_QUERY_ID()"},
+      {"sql": "SELECT query_id = $qid FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'SELECT 1 AS qid_value_marker' ORDER BY start_time DESC LIMIT 1",
+       "expect": {"rowCount": 1, "rows": [["true"]]}}
+    ]},
+    {"name": "multiple-queries-have-correct-ids",
+     "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history"},
+     "steps": [
+      {"sql": "SELECT 100 AS qid_first_marker"},
+      {"sql": "SET qid1 = LAST_QUERY_ID()"},
+      {"sql": "SELECT 200 AS qid_second_marker"},
+      {"sql": "SET qid2 = LAST_QUERY_ID()"},
+      {"sql": "SELECT $qid1 <> $qid2", "expect": {"value": "true"}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text IN ('SELECT 100 AS qid_first_marker', 'SELECT 200 AS qid_second_marker')",
+       "expect": {"value": "2"}},
+      {"sql": "SELECT query_id = $qid1 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'SELECT 100 AS qid_first_marker'",
+       "expect": {"rows": [["true"]]}},
+      {"sql": "SELECT query_id = $qid2 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'SELECT 200 AS qid_second_marker'",
+       "expect": {"rows": [["true"]]}}
+    ]},
+    {"name": "dml-query-id-consistency",
+     "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history"},
+     "steps": [
+      {"sql": "CREATE TABLE test_qid (id INTEGER)"},
+      {"sql": "SET create_qid = LAST_QUERY_ID()"},
+      {"sql": "INSERT INTO test_qid VALUES (1)"},
+      {"sql": "SET insert_qid = LAST_QUERY_ID()"},
+      {"sql": "SELECT query_id = $create_qid FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'CREATE TABLE test_qid (id INTEGER)'",
+       "expect": {"rows": [["true"]]}},
+      {"sql": "SELECT query_id = $insert_qid FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'INSERT INTO test_qid VALUES (1)'",
+       "expect": {"rows": [["true"]]}},
+      {"sql": "SELECT query_type FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_id IN ($create_qid, $insert_qid) ORDER BY start_time ASC",
+       "expect": {"rows": [["CREATE"], ["INSERT"]], "ordered": true}}
+    ]},
+    {"name": "query-id-not-null",
+     "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history"},
+     "steps": [
+      {"sql": "CREATE TABLE qid_test (id INTEGER)"},
+      {"sql": "INSERT INTO qid_test VALUES (1), (2), (3)"},
+      {"sql": "SELECT * FROM qid_test"},
+      {"sql": "UPDATE qid_test SET id = id + 10"},
+      {"sql": "DELETE FROM qid_test WHERE id > 11"},
+      {"sql": "SELECT COUNT(*) >= 5 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_id IS NOT NULL", "expect": {"value": "true"}},
+      {"sql": "SELECT COUNT_IF(query_id IS NULL OR query_id = '') FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())", "expect": {"value": "0"}}
+    ]},
+    {"name": "result-scan-uses-correct-query-id",
+     "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history"},
+     "steps": [
+      {"sql": "SELECT 42 AS qid_answer_marker"},
+      {"sql": "SET qid = LAST_QUERY_ID()"},
+      {"sql": "SELECT * FROM TABLE(RESULT_SCAN($qid))", "expect": {"rowCount": 1, "value": "42"}},
+      {"sql": "SELECT query_id = $qid FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'SELECT 42 AS qid_answer_marker' LIMIT 1",
+       "expect": {"rowCount": 1, "rows": [["true"]]}}
+    ]},
+    {"name": "failed-query-has-query-id",
+     "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history"},
+     "steps": [
+      {"sql": "SELECT * FROM qid_table_that_does_not_exist", "expect": {"error": {}}},
+      {"sql": "SELECT COUNT_IF(query_id IS NOT NULL) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED' AND query_text LIKE '%qid_table_that_does_not_exist%'",
+       "expect": {"value": "1"}}
+    ]}
+  ]
+}

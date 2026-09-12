@@ -1,0 +1,168 @@
+{
+  "suite": "ddl-show-routine-modifiers",
+  "description": "The routine listings' TERSE / USER / BUILTIN modifiers (all live-measured): TERSE is a no-op for both families (same rows, same columns - while SHOW TERSE TABLES still trims to five); the plain listing is BUILTIN plus USER with is_builtin flags consistent; every function listing shares the same 21 columns and every procedure listing the same 16 - the function columns' prefix, with no language or execute_as column; LIKE filters each variant; an IN SCHEMA scope parses and is ignored; BUILTIN and USER cannot combine and TERSE must come first. Converted 1:1 from ddl/ShowRoutineModifiersTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "terse-functions-is-identical-to-functions", "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SET n = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW TERSE FUNCTIONS",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}},
+      {"sql": "SELECT COUNT(*) = $n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "terse-builtin-functions-is-identical-to-builtin-functions", "steps": [
+      {"sql": "SHOW BUILTIN FUNCTIONS"},
+      {"sql": "SET n = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW TERSE BUILTIN FUNCTIONS",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}},
+      {"sql": "SELECT COUNT(*) = $n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "terse-user-functions-lists-no-builtins", "steps": [
+      {"sql": "SHOW TERSE USER FUNCTIONS",
+       "expect": {"rowCount": 0,
+                  "columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}},
+      {"sql": "CREATE FUNCTION terse_udf(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "SHOW TERSE USER FUNCTIONS", "expect": {"rowCount": 1}},
+      {"sql": "SELECT UPPER(\"name\"), \"is_builtin\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["TERSE_UDF", "N"]]}}
+    ]},
+    {"name": "terse-procedures-is-identical-to-procedures", "steps": [
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SET n0 = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW TERSE PROCEDURES"},
+      {"sql": "SELECT COUNT(*) = $n0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE terse_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SET n = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW TERSE PROCEDURES"},
+      {"sql": "SELECT COUNT(*) = $n, COUNT_IF(UPPER(\"name\") = 'TERSE_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "1"]]}}
+    ]},
+    {"name": "terse-builtin-procedures-is-identical-to-builtin-procedures", "steps": [
+      {"sql": "SHOW BUILTIN PROCEDURES"},
+      {"sql": "SET n0 = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW TERSE BUILTIN PROCEDURES"},
+      {"sql": "SELECT COUNT(*) = $n0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE terse_builtin_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW BUILTIN PROCEDURES"},
+      {"sql": "SET n = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW TERSE BUILTIN PROCEDURES"},
+      {"sql": "SELECT COUNT(*) = $n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "terse-user-procedures-lists-no-builtins", "steps": [
+      {"sql": "SHOW TERSE USER PROCEDURES", "expect": {"rowCount": 0}},
+      {"sql": "SHOW USER PROCEDURES", "expect": {"rowCount": 0}},
+      {"sql": "CREATE OR REPLACE PROCEDURE terse_user_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW TERSE USER PROCEDURES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT UPPER(\"name\"), \"is_builtin\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["TERSE_USER_PROC", "N"]]}}
+    ]},
+    {"name": "terse-still-trims-the-table-listing", "steps": [
+      {"sql": "CREATE TABLE terse_probe (a INTEGER)"},
+      {"sql": "SHOW TERSE TABLES",
+       "expect": {"columns": ["created_on", "name", "kind", "database_name", "schema_name"]}}
+    ]},
+    {"name": "every-procedure-listing-returns-the-same-sixteen-columns", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE shape_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW PROCEDURES",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
+      {"sql": "SHOW BUILTIN PROCEDURES",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
+      {"sql": "SHOW USER PROCEDURES",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
+      {"sql": "SHOW TERSE PROCEDURES",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
+      {"sql": "SHOW TERSE BUILTIN PROCEDURES",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
+      {"sql": "SHOW TERSE USER PROCEDURES",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}}
+    ]},
+    {"name": "every-function-listing-returns-the-same-columns", "steps": [
+      {"sql": "SHOW FUNCTIONS",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}},
+      {"sql": "SHOW BUILTIN FUNCTIONS",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}},
+      {"sql": "SHOW USER FUNCTIONS",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}},
+      {"sql": "SHOW TERSE USER FUNCTIONS",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}}
+    ]},
+    {"name": "procedure-listings-carry-no-language-or-execute-as-column", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE no_lang_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW PROCEDURES",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}}
+    ]},
+    {"name": "procedures-is-builtins-plus-user-procedures", "steps": [
+      {"sql": "SHOW BUILTIN PROCEDURES"},
+      {"sql": "SET b0 = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) = $b0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE split_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW BUILTIN PROCEDURES"},
+      {"sql": "SELECT COUNT(*) = $b0, COUNT_IF(UPPER(\"name\") = 'SPLIT_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "0"]]}},
+      {"sql": "SHOW USER PROCEDURES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'SPLIT_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) = $b0 + 1, COUNT_IF(UPPER(\"name\") = 'SPLIT_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "1"]]}}
+    ]},
+    {"name": "builtin-procedures-are-all-flagged-builtin", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE flag_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW BUILTIN PROCEDURES"},
+      {"sql": "SELECT COUNT_IF(\"is_builtin\" != 'Y') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}},
+      {"sql": "SHOW USER PROCEDURES"},
+      {"sql": "SELECT COUNT_IF(\"is_builtin\" != 'N') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+    ]},
+    {"name": "like-filters-the-terse-function-listing", "steps": [
+      {"sql": "SHOW TERSE FUNCTIONS LIKE 'ABS'",
+       "expect": {"rowCount": 1,
+                  "columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}},
+      {"sql": "SELECT UPPER(\"name\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ABS"}}
+    ]},
+    {"name": "like-filters-the-builtin-procedure-listing", "steps": [
+      {"sql": "SHOW BUILTIN PROCEDURES"},
+      {"sql": "SET b = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW BUILTIN PROCEDURES LIKE 'SYSTEM%'",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
+      {"sql": "SELECT COUNT(*) <= $b, COUNT_IF(NOT STARTSWITH(UPPER(\"name\"), 'SYSTEM')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "0"]]}}
+    ]},
+    {"name": "like-filters-the-terse-procedure-listing", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE like_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW TERSE PROCEDURES LIKE 'LIKE_PROC'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT UPPER(\"name\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LIKE_PROC"}}
+    ]},
+    {"name": "scope-is-accepted-by-the-terse-function-listing", "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SET n = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW TERSE FUNCTIONS IN SCHEMA test_schema",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}},
+      {"sql": "SELECT COUNT(*) = $n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "scope-is-accepted-by-the-terse-procedure-listing", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE scoped_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SET n = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW TERSE PROCEDURES IN SCHEMA test_schema",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
+      {"sql": "SELECT COUNT(*) = $n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "SHOW BUILTIN PROCEDURES IN SCHEMA test_schema",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
+      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'SCOPED_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+    ]},
+    {"name": "builtin-and-user-cannot-be-combined", "steps": [
+      {"sql": "SHOW BUILTIN USER FUNCTIONS", "expect": {"error": {}}},
+      {"sql": "SHOW USER BUILTIN FUNCTIONS", "expect": {"error": {}}},
+      {"sql": "SHOW BUILTIN USER PROCEDURES", "expect": {"error": {}}},
+      {"sql": "SHOW USER BUILTIN PROCEDURES", "expect": {"error": {}}},
+      {"sql": "SHOW TERSE USER BUILTIN PROCEDURES", "expect": {"error": {}}}
+    ]},
+    {"name": "terse-must-precede-user-and-builtin", "steps": [
+      {"sql": "SHOW USER TERSE FUNCTIONS", "expect": {"error": {}}},
+      {"sql": "SHOW BUILTIN TERSE FUNCTIONS", "expect": {"error": {}}},
+      {"sql": "SHOW USER TERSE PROCEDURES", "expect": {"error": {}}},
+      {"sql": "SHOW BUILTIN TERSE PROCEDURES", "expect": {"error": {}}}
+    ]}
+  ]
+}

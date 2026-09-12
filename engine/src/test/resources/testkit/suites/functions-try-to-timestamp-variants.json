@@ -1,0 +1,27 @@
+{
+  "suite": "functions-try-to-timestamp-variants",
+  "description": "TRY_TO_TIMESTAMP and its _LTZ / _TZ siblings are the non-throwing TO_TIMESTAMP family: they parse a valid timestamp and answer NULL instead of erroring on unparseable input. All three behave as NTZ in this engine. They share the TRY_CAST source rule - an UNTYPED NULL errors (live-verified: Function TRY_CAST cannot be used with arguments of types NULL and TIMESTAMP_NTZ(9)) while NULL::VARCHAR converts to NULL, for every spelling. Converted 1:1 from functions/TryToTimestampVariantsTest (now retired); the Java only asserted non-nullness on the parsing cases, so the suite keeps that assertion and pins the parsed render as well.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "try-to-timestamp-parses-a-valid-value", "steps": [
+      {"sql": "SELECT IFF(TRY_TO_TIMESTAMP('2024-06-15 10:30:00') IS NULL, 'null', 'set')", "expect": {"value": "set"}},
+      {"sql": "SELECT TO_VARCHAR(TRY_TO_TIMESTAMP('2024-06-15 10:30:00'), 'YYYY-MM-DD HH24:MI:SS')", "expect": {"value": "2024-06-15 10:30:00"}}
+    ]},
+    {"name": "an-invalid-timestamp-yields-null-not-an-error", "steps": [
+      {"sql": "SELECT TRY_TO_TIMESTAMP('not-a-timestamp')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "try-to-timestamp-ltz-parses-a-valid-value", "steps": [
+      {"sql": "SELECT IFF(TRY_TO_TIMESTAMP_LTZ('2024-06-15 10:30:00') IS NULL, 'null', 'set')", "expect": {"value": "set"}},
+      {"sql": "SELECT TO_VARCHAR(TRY_TO_TIMESTAMP_LTZ('2024-06-15 10:30:00'), 'YYYY-MM-DD HH24:MI:SS')", "expect": {"value": "2024-06-15 10:30:00"}}
+    ]},
+    {"name": "try-to-timestamp-tz-yields-null-on-garbage", "steps": [
+      {"sql": "SELECT TRY_TO_TIMESTAMP_TZ('nope')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-untyped-null-is-rejected-and-a-cast-null-yields-null", "steps": [
+      {"sql": "SELECT TRY_TO_TIMESTAMP(NULL)", "expect": {"error": {"messageContains": "TRY_CAST"}}},
+      {"sql": "SELECT TRY_TO_TIMESTAMP(NULL::VARCHAR)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TRY_TO_TIMESTAMP_LTZ(NULL::VARCHAR)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TRY_TO_TIMESTAMP_TZ(NULL::VARCHAR)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

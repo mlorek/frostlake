@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
@@ -130,6 +131,32 @@ public final class SqlIdentifiers {
      * @param path the canonical dotted name
      * @return the path as a refusal spells it
      */
+    /**
+     * An ALREADY-CANONICAL dotted name spelled back, part by part, without canonicalising it again.
+     *
+     * <p>The distinction from {@link #spellCanonicalPath} is the whole point: that one canonicalises
+     * first, which is right for text as the user WROTE it and wrong for a name that has already been
+     * through the mill. A canonical name has had its quotes removed and its case kept, so a second
+     * pass sees an unquoted {@code test_schema}, finds no quotes to protect it, and folds it — which
+     * is how {@code TEST_DB."test_schema"} came back as {@code TEST_DB.TEST_SCHEMA}.
+     *
+     * @param path the already-canonical name, parts separated by dots
+     * @return the name spelled with quotes only where a part needs them
+     */
+    public static String spellAlreadyCanonicalPath(final String path) {
+        if (path == null || path.indexOf('.') < 0) {
+            return spellCanonical(path);
+        }
+        final StringBuilder spelled = new StringBuilder();
+        for (final String part : QualifiedName.parse(path).parts()) {
+            if (spelled.length() > 0) {
+                spelled.append('.');
+            }
+            spelled.append(spellCanonical(part));
+        }
+        return spelled.toString();
+    }
+
     public static String spellCanonicalPath(final String path) {
         if (path == null || path.indexOf('.') < 0) {
             return spellCanonical(path);
@@ -165,11 +192,87 @@ public final class SqlIdentifiers {
         return true;
     }
 
+    /**
+     * Whether a runtime string reads as an identifier reference, the way IDENTIFIER() reads its argument.
+     * Once trimmed, each dotted part is a closed double-quoted identifier or an unquoted one: a letter or
+     * an underscore, then letters, digits, underscores and dollars. An empty part stands for the default
+     * database or schema ({@code a..b}), but the empty string names nothing (live-verified).
+     *
+     * @param text the evaluated argument
+     * @return true when every part is an identifier
+     */
+    public static boolean isIdentifierReference(final String text) {
+        final String trimmed = text.trim();
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        int i = 0;
+        while (true) {
+            if (i < trimmed.length() && trimmed.charAt(i) == '"') {
+                i = closingQuoteEnd(trimmed, i + 1);
+                if (i < 0) {
+                    return false;
+                }
+            } else {
+                final int start = i;
+                while (i < trimmed.length() && trimmed.charAt(i) != '.') {
+                    final char c = trimmed.charAt(i);
+                    final boolean leads = c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_';
+                    if (!leads && !(i > start && (c >= '0' && c <= '9' || c == '$'))) {
+                        return false;
+                    }
+                    i++;
+                }
+            }
+            if (i == trimmed.length()) {
+                return true;
+            }
+            if (trimmed.charAt(i) != '.') {
+                return false;
+            }
+            i++;
+        }
+    }
+
+    /** The index just past the quote closing a quoted part opened before {@code from}, or -1 when none does. */
+    private static int closingQuoteEnd(final String text, final int from) {
+        int i = from;
+        while (i < text.length()) {
+            if (text.charAt(i) == '"') {
+                if (i + 1 < text.length() && text.charAt(i + 1) == '"') {
+                    i += 2;
+                    continue;
+                }
+                return i + 1;
+            }
+            i++;
+        }
+        return -1;
+    }
+
     public static String canonicalText(final String text) {
         if (text == null || text.isEmpty()) {
             return text;
         }
-        return String.join(".", canonicalTextParts(text));
+        // Joined so a part holding a dot stays one part when the name is split again.
+        return QualifiedName.join(canonicalTextParts(text));
+    }
+
+    /**
+     * The canonical parts of an {@code IDENTIFIER(...)} argument's value: {@link #canonicalTextParts},
+     * with an empty middle part ({@code 'db..t'}) read as the PUBLIC schema, as the account reads it.
+     */
+    public static String[] identifierReferenceParts(final String text) {
+        final String[] parts = canonicalTextParts(text);
+        if (parts.length == 3 && parts[1].isEmpty() && !parts[0].isEmpty()) {
+            parts[1] = "PUBLIC";
+        }
+        return parts;
+    }
+
+    /** {@link #identifierReferenceParts}, joined the way {@link #canonicalText} joins. */
+    public static String identifierReferenceText(final String text) {
+        return QualifiedName.join(identifierReferenceParts(text));
     }
 
     /**

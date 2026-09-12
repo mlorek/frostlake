@@ -1,0 +1,59 @@
+{
+  "suite": "features-snowflake-strictness-rules",
+  "description": "Live-verified strictness rules: temporal functions reject a declared-VARCHAR column (a bare string constant is refused too, while an explicit cast and a real TIMESTAMP column work, and a derived value stays coercible), VALUES rejects a string literal for a semi-structured column (PARSE_JSON through SELECT is the way in), masking-policy attachment rules are enforced (a policy in use cannot be dropped, one policy per column, a masked column cannot be a policy argument), task cron schedules are validated (field count and a mandatory time zone), and a lateral table function cannot take an ON predicate while a lateral subquery can. Converted 1:1 from features/SnowflakeStrictnessRulesTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "temporal-functions-reject-declared-varchar-columns", "steps": [
+      {"sql": "CREATE TABLE tf_v (d VARCHAR, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO tf_v VALUES ('2024-04-08', '2024-04-08 10:00:00')"},
+      {"sql": "SELECT DATE_TRUNC('month', '2024-04-08'::DATE)", "expect": {"value": "2024-04-01"}},
+      {"sql": "SELECT DATE_TRUNC('month', '2024-04-08')", "expect": {"error": {}}},
+      {"sql": "SELECT DATE_TRUNC('month', d) FROM tf_v",
+       "expect": {"error": {"messageContains": "does not support VARCHAR("}}},
+      {"sql": "SELECT DATE_TRUNC('month', d::DATE) FROM tf_v", "expect": {"value": "2024-04-01"}},
+      {"sql": "SELECT LEFT(TO_VARCHAR(DATE_TRUNC('month', ts)), 10) FROM tf_v", "expect": {"value": "2024-04-01"}},
+      {"sql": "WITH t AS (SELECT CURRENT_TIMESTAMP(3) AS end_time) SELECT DATEDIFF(millisecond, '2024-01-01', end_time) >= 0 FROM t",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "values-rejects-string-literals-for-semi-structured-columns", "steps": [
+      {"sql": "CREATE TABLE ss (v VARIANT)"},
+      {"sql": "INSERT INTO ss VALUES ('{\"a\": 1}')",
+       "expect": {"error": {"messageContains": "expecting VARIANT but got VARCHAR"}}},
+      {"sql": "INSERT INTO ss SELECT PARSE_JSON('{\"a\": 1}')"},
+      {"sql": "SELECT v:a FROM ss", "expect": {"value": "1"}}
+    ]},
+    {"name": "masking-policy-attachment-rules-are-enforced", "steps": [
+      {"sql": "CREATE MASKING POLICY sp_m1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE sp_t (secret VARCHAR, other VARCHAR)"},
+      {"sql": "ALTER TABLE sp_t ALTER COLUMN secret SET MASKING POLICY sp_m1"},
+      {"sql": "DROP MASKING POLICY sp_m1", "expect": {"error": {}}},
+      {"sql": "ALTER TABLE sp_t ALTER COLUMN secret SET MASKING POLICY sp_m1"},
+      {"sql": "CREATE MASKING POLICY sp_m3 AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "ALTER TABLE sp_t ALTER COLUMN secret SET MASKING POLICY sp_m3", "expect": {"error": {}}},
+      {"sql": "CREATE MASKING POLICY sp_m2 AS (v VARCHAR, s VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "ALTER TABLE sp_t ALTER COLUMN other SET MASKING POLICY sp_m2 USING (other, secret)",
+       "expect": {"error": {}}},
+      {"sql": "ALTER TABLE sp_t ALTER COLUMN secret UNSET MASKING POLICY"},
+      {"sql": "DROP MASKING POLICY sp_m1"}
+    ]},
+    {"name": "task-cron-schedules-are-validated", "steps": [
+      {"sql": "CREATE WAREHOUSE sp_wh"},
+      {"sql": "CREATE TASK sp_bad WAREHOUSE = sp_wh SCHEDULE = 'USING CRON * * * UTC' AS SELECT 1",
+       "expect": {"error": {}}},
+      {"sql": "CREATE TASK sp_bad2 WAREHOUSE = sp_wh SCHEDULE = 'USING CRON 0 * * * *' AS SELECT 1",
+       "expect": {"error": {}}},
+      {"sql": "CREATE TASK sp_ok WAREHOUSE = sp_wh SCHEDULE = 'USING CRON 0 9 * * MON America/Los_Angeles' AS SELECT 1"},
+      {"sql": "CREATE TASK sp_min WAREHOUSE = sp_wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "DROP WAREHOUSE IF EXISTS sp_wh"}
+    ]},
+    {"name": "lateral-table-function-with-on-predicate-is-rejected", "steps": [
+      {"sql": "CREATE TABLE lt (id INTEGER, tags VARIANT)"},
+      {"sql": "INSERT INTO lt SELECT 1, PARSE_JSON('[\"a\",\"b\"]')"},
+      {"sql": "SELECT t.id, f.value FROM lt t JOIN LATERAL FLATTEN(INPUT => t.tags) f ON TRUE",
+       "expect": {"error": {"messageContains": "lateral table function"}}},
+      {"sql": "SELECT t.id FROM lt t JOIN LATERAL (SELECT 1 AS k) l ON TRUE", "expect": {"rowCount": 1}},
+      {"sql": "SELECT t.id, f.value FROM lt t, LATERAL FLATTEN(INPUT => t.tags) f", "expect": {"rowCount": 2}},
+      {"sql": "SELECT t.id FROM lt t CROSS JOIN LATERAL (SELECT 1 AS k) l", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.window;
 
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
 import dev.frostlake.storage.Row;
 
@@ -158,8 +159,11 @@ public final class WindowFunctionHelper {
         if (a == null && b == null) return 0;
         if (a == null) return -1;
         if (b == null) return 1;
-        if (a instanceof Number && b instanceof Number)
-            return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
+        if (a instanceof Number && b instanceof Number) {
+            // Exact numbers compare exactly and a double beside one compares as a double; -0.0 ties
+            // with 0.0 so a frame's MIN or MAX keeps the first seen, as live does.
+            return ValueComparisons.compareForExtreme(a, b);
+        }
         return a.toString().compareTo(b.toString());
     }
 
@@ -197,6 +201,33 @@ public final class WindowFunctionHelper {
     /** See {@link #sum(List, boolean)} — the same declared-VARIANT rule applied to a window AVG. */
     public static Object avg(final List<Object> values, final boolean variantArgument) {
         return AggregateNumerics.avg(values, variantArgument);
+    }
+
+    /**
+     * AVG over a NON-CUMULATIVE window, which declares three decimals wider than its input rather than
+     * six and TRUNCATES to that scale — see
+     * {@link AggregateNumerics#nonCumulativeWindowAvg(Iterable, boolean)}.
+     */
+    public static Object nonCumulativeAvg(final List<Object> values, final boolean variantArgument) {
+        return AggregateNumerics.nonCumulativeWindowAvg(values, variantArgument);
+    }
+
+    /**
+     * SUM over a window frame given as the partials its FLOAT sum is read in — see
+     * {@link AggregateNumerics#windowSum(List, boolean, boolean)}.
+     */
+    public static Object sum(final List<List<Object>> partials, final boolean variantArgument,
+                             final boolean rowWise) {
+        return AggregateNumerics.windowSum(partials, variantArgument, rowWise);
+    }
+
+    /**
+     * AVG over a window frame given as the partials its FLOAT sum is read in, at a cumulative window's
+     * scale or a non-cumulative one's — see {@link AggregateNumerics#windowAvg(List, boolean, boolean, boolean)}.
+     */
+    public static Object avg(final List<List<Object>> partials, final boolean variantArgument,
+                             final boolean nonCumulative, final boolean rowWise) {
+        return AggregateNumerics.windowAvg(partials, variantArgument, nonCumulative, rowWise);
     }
 
     /** MIN over the frame (by {@link #compareValues}), ignoring nulls; preserves the element's type. */

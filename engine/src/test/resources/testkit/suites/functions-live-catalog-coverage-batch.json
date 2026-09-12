@@ -1,0 +1,101 @@
+{
+  "suite": "functions-live-catalog-coverage-batch",
+  "description": "The live-catalog coverage batch: functions found in Snowflake's SHOW BUILTIN FUNCTIONS but once absent from the engine - bit operations and their aliases, numeric additions, string utilities, UUID and binary reinterpretation, TRY_ wrappers, ISO week parts and TIME_SLICE, the variant AS_ and IS_ families, array builders and JSON path text, aggregate aliases, FROM_PARTS aliases, and the context functions. Several behaviours here are live-verified and counter-intuitive: DIV is listed in SHOW BUILTIN FUNCTIONS but is not invocable (\"Unsupported feature 'DIV'\") so it is deliberately unregistered; NORMALIZE is min-max normalisation, unclamped, NOT Unicode normalisation, and a VARCHAR argument maps to its bytes as a base-256 fraction over 384; only the hyphenated 8-4-4-4-12 form is a UUID; REGEXP exists only as the infix operator, the function spelling being RLIKE; and AS_NUMBER defaults to NUMBER(38,0) so 2.5 ROUNDS to 3 while an explicit scale keeps it and AS_INTEGER of a fractional value is NULL rather than rounded. Converted from functions/LiveCatalogCoverageBatchTest (now retired); the Java compared java.time toString prefixes, which become TO_VARCHAR reads, and its single environment-dependent assertion (CURRENT_IP_ADDRESS) is split into its own skip-snowflake test so the rest of the context batch still runs live.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "bit-operations-and-aliases", "steps": [
+      {"sql": "SELECT BITCOUNT(11), BIT_AND(12, 10), BIT_OR(12, 10), BIT_XOR(12, 10), BIT_SHIFTLEFT(2, 2)",
+       "expect": {"rows": [["3", "8", "14", "6", "8"]]}}
+    ]},
+    {"name": "numeric-additions", "steps": [
+      {"sql": "SELECT NEGATE(5)", "expect": {"value": "-5"}},
+      {"sql": "SELECT DIV(10, 4)", "expect": {"error": {}}},
+      {"sql": "SELECT REGR_VALX(1, 7)", "expect": {"value": "7"}},
+      {"sql": "SELECT REGR_VALX(NULL, 7)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT REGR_VALY(1, 7)", "expect": {"value": "1"}}
+    ]},
+    {"name": "string-additions", "steps": [
+      {"sql": "SELECT RTRIMMED_LENGTH('ab   ')", "expect": {"value": "2"}},
+      {"sql": "SELECT LENGTH(RANDSTR(5, 42))", "expect": {"value": "5"}},
+      {"sql": "SELECT RANDSTR(8, 7) = RANDSTR(8, 7)", "expect": {"value": "true"}},
+      {"sql": "SELECT ABS(NORMALIZE(5, 0, 10) - 0.5) < 0.0001", "expect": {"value": "true"}},
+      {"sql": "SELECT ABS(NORMALIZE(15, 0, 10) - 1.5) < 0.0001", "expect": {"value": "true"}},
+      {"sql": "SELECT ABS(NORMALIZE('2024-01-16'::DATE, '2024-01-01'::DATE, '2024-01-31'::DATE) - 0.5) < 0.0001",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT ABS(NORMALIZE('7', 0, 10) - (55.0 / 384.0)) < 0.000001", "expect": {"value": "true"}},
+      {"sql": "SELECT TRY_VALIDATE_UTF8('abc')", "expect": {"value": "abc"}},
+      {"sql": "SELECT 'abc' REGEXP 'a.c'", "expect": {"value": "true"}},
+      {"sql": "SELECT RLIKE('abc', 'a.c')", "expect": {"value": "true"}}
+    ]},
+    {"name": "uuid-and-binary-reinterpretation", "steps": [
+      {"sql": "SELECT TO_UUID('123E4567-E89B-12D3-A456-426614174000')",
+       "expect": {"value": "123e4567-e89b-12d3-a456-426614174000"}},
+      {"sql": "SELECT TO_UUID('123E4567E89B12D3A456426614174000')", "expect": {"error": {}}},
+      {"sql": "SELECT TRY_TO_UUID('123E4567E89B12D3A456426614174000')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TRY_TO_UUID('not-a-uuid')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT BINARY_AS_STRING(STRING_AS_BINARY('hi'))", "expect": {"value": "hi"}},
+      {"sql": "SELECT MD5_BINARY('a') = TO_BINARY(MD5('a'), 'HEX')", "expect": {"value": "true"}},
+      {"sql": "SELECT SHA2_BINARY('a', 256) = TO_BINARY(SHA2('a', 256), 'HEX')", "expect": {"value": "true"}}
+    ]},
+    {"name": "try-wrappers", "steps": [
+      {"sql": "SELECT TRY_DECRYPT(ENCRYPT('secret', 'k1'), 'wrong-key')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT IFF(TRY_DECRYPT(ENCRYPT('secret', 'k1'), 'k1') IS NULL, 'null', 'set')",
+       "expect": {"value": "set"}},
+      {"sql": "SELECT TRY_PARSE_IP('not-an-ip', 'INET')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TRY_TO_TIMESTAMP_NTZ('garbage')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "iso-week-parts-and-time-slice", "steps": [
+      {"sql": "SELECT DAYOFWEEKISO('2026-01-05'::DATE), WEEKISO('2026-01-05'::DATE), YEAROFWEEKISO('2026-01-05'::DATE)",
+       "expect": {"rows": [["1", "2", "2026"]]}},
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(TIME_SLICE('2026-07-31 14:23:00'::TIMESTAMP, 15, 'MINUTE')), '2026-07-31 14:15')",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(TIME_SLICE('2026-07-31 14:23:00'::TIMESTAMP, 15, 'MINUTE', 'END')), '2026-07-31 14:30')",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT TO_VARCHAR(TIME_SLICE('2026-07-31'::DATE, 1, 'MONTH'))", "expect": {"value": "2026-07-01"}}
+    ]},
+    {"name": "the-variant-as-and-is-families", "steps": [
+      {"sql": "SELECT IS_DECIMAL(PARSE_JSON('1')), IS_DOUBLE(PARSE_JSON('1.5')), IS_CHAR(PARSE_JSON('\"x\"')), IS_DATE(PARSE_JSON('\"2026-01-01\"'))",
+       "expect": {"rows": [["true", "true", "true", "false"]]}},
+      {"sql": "SELECT '<' || AS_NUMBER(PARSE_JSON('2.5')) || '>'", "expect": {"value": "<3>"}},
+      {"sql": "SELECT '<' || AS_NUMBER(PARSE_JSON('2.5'), 10, 2) || '>'", "expect": {"value": "<2.50>"}},
+      {"sql": "SELECT AS_INTEGER(PARSE_JSON('2.5'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT AS_CHAR(PARSE_JSON('\"x\"'))", "expect": {"value": "x"}},
+      {"sql": "SELECT AS_DATE(PARSE_JSON('\"2026-01-01\"'))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "array-builders-and-json-path-text", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ARRAYS_ZIP(PARSE_JSON('[1,2]'), PARSE_JSON('[\"a\",\"b\"]')))",
+       "expect": {"value": "[{\"$1\":1,\"$2\":\"a\"},{\"$1\":2,\"$2\":\"b\"}]"}},
+      {"sql": "SELECT TO_VARCHAR(ARRAYS_TO_OBJECT(PARSE_JSON('[\"a\",\"b\"]'), PARSE_JSON('[1,2]')))",
+       "expect": {"value": "{\"a\":1,\"b\":2}"}},
+      {"sql": "SELECT TO_VARCHAR(ARRAY_REPEAT(7, 3))", "expect": {"value": "[7,7,7]"}},
+      {"sql": "SELECT JSON_EXTRACT_PATH_TEXT('{\"a\":{\"b\":[1,2]}}', 'a.b[1]')", "expect": {"value": "2"}},
+      {"sql": "SELECT JSON_EXTRACT_PATH_TEXT('{\"k\":\"x\"}', 'k')", "expect": {"value": "x"}}
+    ]},
+    {"name": "aggregate-aliases", "steps": [
+      {"sql": "CREATE TABLE lcb_t (n INTEGER)"},
+      {"sql": "INSERT INTO lcb_t VALUES (12), (10)"},
+      {"sql": "SELECT TO_VARCHAR(ARRAYAGG(n) WITHIN GROUP (ORDER BY n)) FROM lcb_t", "expect": {"value": "[10,12]"}},
+      {"sql": "SELECT HLL(n) FROM lcb_t", "expect": {"value": "2"}},
+      {"sql": "SELECT BITANDAGG(n), BIT_AND_AGG(n) FROM lcb_t", "expect": {"rows": [["8", "8"]]}}
+    ]},
+    {"name": "from-parts-aliases", "steps": [
+      {"sql": "SELECT TO_VARCHAR(DATEFROMPARTS(2026, 3, 15))", "expect": {"value": "2026-03-15"}},
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(TIMESTAMPNTZFROMPARTS(2026, 3, 15, 10, 30, 0)), '2026-03-15 10:30')",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(TIMESTAMP_NTZ_FROM_PARTS(2026, 3, 15, 10, 30, 0)), '2026-03-15 10:30')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "context-additions", "steps": [
+      {"sql": "SELECT CURRENT_ROLE_TYPE()", "expect": {"value": "ROLE"}},
+      {"sql": "SELECT IFF(CURRENT_SCHEMAS() IS NULL, 'null', 'set')", "expect": {"value": "set"}},
+      {"sql": "SELECT IFF(INVOKER_ROLE() IS NULL, 'null', 'set')", "expect": {"value": "set"}},
+      {"sql": "SELECT IS_ROLE_IN_SESSION('NO_SUCH_ROLE')", "expect": {"value": "false"}},
+      {"sql": "SELECT CURRENT_TRANSACTION()", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "the-client-ip-address",
+     "skip": {"backends": ["snowflake"], "reason": "environment-dependent - embedded the client address is loopback, on a live account it is whatever the connection came from"},
+     "steps": [
+      {"sql": "SELECT CURRENT_IP_ADDRESS()", "expect": {"value": "127.0.0.1"}}
+    ]}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "suite": "functions-round-mode",
+  "description": "The 3-argument ROUND honours its rounding-mode argument - HALF_TO_EVEN (banker's rounding) against the default HALF_AWAY_FROM_ZERO - where the mode used to be parsed and silently dropped. The mode name is case-insensitive. Converted 1:1 from functions/RoundModeTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "half-to-even-rounds-ties-to-the-nearest-even", "steps": [
+      {"sql": "SELECT ROUND(2.5, 0, 'HALF_TO_EVEN'), ROUND(3.5, 0, 'HALF_TO_EVEN'), ROUND(-0.5, 0, 'HALF_TO_EVEN'), ROUND(2.4, 0, 'HALF_TO_EVEN')",
+       "expect": {"rows": [["2", "4", "0", "2"]]}}
+    ]},
+    {"name": "half-away-from-zero-is-the-default", "steps": [
+      {"sql": "SELECT ROUND(2.5, 0), ROUND(2.5, 0, 'HALF_AWAY_FROM_ZERO'), ROUND(-0.5, 0)",
+       "expect": {"rows": [["3", "3", "-1"]]}}
+    ]},
+    {"name": "the-mode-name-is-case-insensitive", "steps": [
+      {"sql": "SELECT ROUND(2.5, 0, 'half_to_even')", "expect": {"value": "2"}}
+    ]}
+  ]
+}

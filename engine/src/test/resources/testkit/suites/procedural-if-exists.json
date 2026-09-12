@@ -1,0 +1,111 @@
+{
+  "suite": "procedural-if-exists",
+  "description": "Snowflake Scripting IF (EXISTS(...)) / NOT EXISTS branches in anonymous blocks, plus simple cursor declaration and uncaught-exception surfacing. Converted 1:1 from executor/procedural IfStatementExistsTest, SimpleCursorTest and SimpleExceptionTest (all now retired; the exception's Java-side errorCode assert became a messageContains).",
+  "tags": ["procedural", "converted"],
+  "tests": [
+    {
+      "name": "if-exists-with-result-returns-one",
+      "steps": [
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT 1 AS c)) THEN\n        RETURN 1;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "1", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "if-exists-with-empty-result-returns-zero",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER)"},
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM test_table)) THEN\n        RETURN 1;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "if-exists-with-non-empty-table",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER)"},
+        {"sql": "INSERT INTO test_table VALUES (1), (2), (3)"},
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM test_table)) THEN\n        RETURN 999;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "999"}}
+      ]
+    },
+    {
+      "name": "if-exists-with-where-clause",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, status VARCHAR)"},
+        {"sql": "INSERT INTO test_table VALUES (1, 'active'), (2, 'inactive')"},
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM test_table WHERE status = 'active')) THEN\n        RETURN 1;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "if-exists-with-where-no-match",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, status VARCHAR)"},
+        {"sql": "INSERT INTO test_table VALUES (1, 'inactive')"},
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM test_table WHERE status = 'active')) THEN\n        RETURN 1;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "if-not-exists",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER)"},
+        {"sql": "BEGIN\n    IF (NOT EXISTS(SELECT * FROM test_table)) THEN\n        RETURN 100;\n    END IF;\n    RETURN 200;\nEND;", "expect": {"value": "100"}}
+      ]
+    },
+    {
+      "name": "if-not-exists-with-data",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER)"},
+        {"sql": "INSERT INTO test_table VALUES (1)"},
+        {"sql": "BEGIN\n    IF (NOT EXISTS(SELECT * FROM test_table)) THEN\n        RETURN 100;\n    END IF;\n    RETURN 200;\nEND;", "expect": {"value": "200"}}
+      ]
+    },
+    {
+      "name": "if-exists-in-else-branch",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER)"},
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM test_table)) THEN\n        RETURN 1;\n    ELSE\n        RETURN 999;\n    END IF;\nEND;", "expect": {"value": "999"}}
+      ]
+    },
+    {
+      "name": "if-exists-with-multiple-conditions",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER)"},
+        {"sql": "INSERT INTO test_table VALUES (1)"},
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM test_table) AND 1 = 1) THEN\n        RETURN 42;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "42"}}
+      ]
+    },
+    {
+      "name": "if-exists-in-nested-if",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER)"},
+        {"sql": "INSERT INTO test_table VALUES (1)"},
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM test_table)) THEN\n        IF (EXISTS(SELECT 1)) THEN\n            RETURN 777;\n        END IF;\n        RETURN 555;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "777"}}
+      ]
+    },
+    {
+      "name": "if-exists-with-subquery",
+      "steps": [
+        {"sql": "CREATE TABLE orders (id INTEGER, status VARCHAR, amount INTEGER)"},
+        {"sql": "INSERT INTO orders VALUES (1, 'completed', 100)"},
+        {"sql": "INSERT INTO orders VALUES (2, 'pending', 200)"},
+        {"sql": "INSERT INTO orders VALUES (3, 'completed', 300)"},
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM orders WHERE status = 'completed' AND amount > 150)) THEN\n        RETURN 1;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "if-exists-with-values-clause",
+      "steps": [
+        {"sql": "BEGIN\n    IF (EXISTS(SELECT * FROM VALUES(1, 2, 3))) THEN\n        RETURN 123;\n    END IF;\n    RETURN 0;\nEND;", "expect": {"value": "123"}}
+      ]
+    },
+    {
+      "name": "simple-cursor-declaration",
+      "steps": [
+        {"sql": "DECLARE c1 CURSOR FOR SELECT 1 AS x; BEGIN RETURN 42; END;", "expect": {"value": "42", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "uncaught-declared-exception-surfaces",
+      "steps": [
+        {"sql": "DECLARE my_exception EXCEPTION (-20002, 'my exception'); BEGIN RAISE my_exception; END;",
+         "expect": {"error": {"messageContains": "Uncaught exception of type 'MY_EXCEPTION'"}}}
+      ]
+    }
+  ]
+}

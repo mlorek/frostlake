@@ -17,12 +17,12 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
 public class Factorial extends NumericArgumentFunction {
-    public Factorial() { super("FACTORIAL", NumericType.INTEGER); }
+    public Factorial() { super("FACTORIAL", IntegerResultWidths.FACTORIAL); }
 
     @Override
     public Object evaluate(final List<Object> args) {

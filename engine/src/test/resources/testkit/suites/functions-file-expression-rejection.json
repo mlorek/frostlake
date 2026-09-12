@@ -1,0 +1,40 @@
+{
+  "suite": "functions-file-expression-rejection",
+  "description": "What the semi-structured surface may and may not do with a FILE value. A FILE value IS an object of file metadata, but live Snowflake does not let the VARIANT surface reach into it. Measured over a populated FILE column: TYPEOF(f), OBJECT_KEYS(f) and f:RELATIVE_PATH are all compile errors naming the FILE type - the ':' operator reports itself as GET - while equality, IS NULL, COUNT and SELECT DISTINCT all work normally. The accessors are the only supported way in, and they need a real FILE: a BARE stage path string is the compile error 'Invalid argument types for function FL_GET_RELATIVE_PATH: (VARCHAR(14))', so the path must be wrapped in TO_FILE. Converted 1:1 from functions/file/FileExpressionRejectionTest (now retired); the class's createPopulatedFileColumn helper is inlined as the first two steps of each test that needs it.",
+  "tags": ["functions", "file", "converted"],
+  "tests": [
+    {"name": "typeof-rejects-a-file-column", "steps": [
+      {"sql": "CREATE TABLE fx (id INTEGER, f FILE)"},
+      {"sql": "INSERT INTO fx SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')"},
+      {"sql": "SELECT TYPEOF(f) FROM fx", "expect": {"error": {"messageContains": "Invalid argument types for function 'TYPEOF': (FILE)"}}}
+    ]},
+    {"name": "object-keys-rejects-a-file-column", "steps": [
+      {"sql": "CREATE TABLE fx (id INTEGER, f FILE)"},
+      {"sql": "INSERT INTO fx SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')"},
+      {"sql": "SELECT OBJECT_KEYS(f) FROM fx", "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_KEYS': (FILE)"}}}
+    ]},
+    {"name": "path-access-into-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fx (id INTEGER, f FILE)"},
+      {"sql": "INSERT INTO fx SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')"},
+      {"sql": "SELECT f:RELATIVE_PATH FROM fx", "expect": {"error": {"messageContains": "Invalid argument types for function 'GET': (FILE, VARCHAR(13))"}}}
+    ]},
+    {"name": "equality-null-test-and-count-still-work", "steps": [
+      {"sql": "CREATE TABLE fx (id INTEGER, f FILE)"},
+      {"sql": "INSERT INTO fx SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')"},
+      {"sql": "INSERT INTO fx VALUES (2, NULL)"},
+      {"sql": "SELECT f = f FROM fx WHERE id = 1", "expect": {"value": "true"}},
+      {"sql": "SELECT f IS NULL FROM fx WHERE id = 1", "expect": {"value": "false"}},
+      {"sql": "SELECT COUNT(f) FROM fx", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM fx", "expect": {"value": "2"}}
+    ]},
+    {"name": "accessors-reject-a-bare-stage-path-string", "steps": [
+      {"sql": "SELECT FL_GET_RELATIVE_PATH('@sse/hello.txt')", "expect": {"error": {"messageContains": "Invalid argument types for function 'FL_GET_RELATIVE_PATH': (VARCHAR(14))"}}}
+    ]},
+    {"name": "distinct-over-a-file-column-is-allowed", "steps": [
+      {"sql": "CREATE TABLE fx (id INTEGER, f FILE)"},
+      {"sql": "INSERT INTO fx SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')"},
+      {"sql": "INSERT INTO fx SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')"},
+      {"sql": "SELECT DISTINCT f FROM fx", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

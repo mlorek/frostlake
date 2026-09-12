@@ -22,6 +22,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.udf.RoutineImports;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
@@ -30,9 +31,18 @@ import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.VariantType;
 
+import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,6 +50,7 @@ import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -88,13 +99,25 @@ public class CreateRoutineHandler implements CommandHandler {
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         final boolean orReplace = ctx.or_replace() != null;
 
+        // MEMOIZABLE's place among the options is a SYNTAX rule on the account, so it is judged first.
+        rejectMisplacedMemoizable(ctx);
+        rejectRepeatedSignatureNames(ctx);
+
+        // A '?' in the body is refused before anything else looks at it: a DEFINITION may carry no
+        // unnamed bind, and the sentence is the definition's own rather than the unset-bind one.
+        if (functionLanguage(ctx) == UdfLanguage.SQL) {
+            BindsInDefinition.rejectInBody(
+                ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null);
+        }
         // Compile the body first, as Snowflake does: a SQL UDF whose body does not parse is rejected at CREATE
         // time. Deliberately OUTSIDE the try below — a compilation error is not an "already exists" condition
         // and must never be swallowed by IF NOT EXISTS.
         RoutineBodyCompiler.compileFunctionBody(queryExecutor, functionLanguage(ctx),
             ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null,
             ctx.returnType() != null && ctx.returnType().TABLE() != null,
-            parts[parts.length - 1]);
+            parts[parts.length - 1], signatureNames(ctx),
+            parts.length >= 3 ? parts[0] : catalog.getCurrentDatabase(),
+            parts.length >= 3 ? parts[1] : parts.length == 2 ? parts[0] : catalog.getCurrentSchema());
 
         try {
             final Schema schema;
@@ -102,16 +125,16 @@ public class CreateRoutineHandler implements CommandHandler {
 
             if (parts.length == 1) {
                 schema = ddl.resolveCurrentSchema();
-                functionName = parts[0].toUpperCase();
+                functionName = parts[0];
             } else if (parts.length == 2) {
                 if (catalog.getCurrentDatabase() == null) {
-                    throw new RuntimeException("No database selected");
+                    throw NoCurrentDatabaseRefusal.forStatement();
                 }
                 schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                functionName = parts[1].toUpperCase();
+                functionName = parts[1];
             } else if (parts.length == 3) {
                 schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                functionName = parts[2].toUpperCase();
+                functionName = parts[2];
             } else {
                 throw new RuntimeException("Invalid function name: " + qualifiedName);
             }
@@ -173,6 +196,7 @@ public class CreateRoutineHandler implements CommandHandler {
             String nullHandling = "CALLED ON NULL INPUT";
             String volatility = "VOLATILE";
             String comment = null;
+            boolean memoizable = false;
             final List<String> imports = new ArrayList<>();
             rejectRepeatedFunctionOptions(ctx.functionOption());
             for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
@@ -195,10 +219,16 @@ public class CreateRoutineHandler implements CommandHandler {
                     }
                 } else if (opt.commentClause() != null) {
                     comment = ddl.extractStringLiteral(opt.commentClause().STRING_LITERAL());
+                } else if (opt.MEMOIZABLE() != null) {
+                    memoizable = true;
                 }
+            }
+            if (memoizable) {
+                requireMemoizableShape(language, isTableFunction, returnType, parameters);
             }
 
             validateRoutineProperties(language, runtimeVersion, handler);
+            requireJavaScriptTypes(language, isTableFunction, returnType, parameters);
 
             // The declared-vs-actual return-type check runs at CREATE, like the body compile above.
             RoutineReturnTypeChecker.checkScalarSqlUdf(queryExecutor, catalog, language,
@@ -212,6 +242,7 @@ public class CreateRoutineHandler implements CommandHandler {
             function.setVolatility(volatility);
             if (!imports.isEmpty()) function.setImports(imports);
             if (comment != null) function.setComment(comment);
+            function.setMemoizable(memoizable);
 
             // The body is compiled before the function is registered, for the languages where a real
             // account does — see RoutineBodyCompiler for which those are and why it is not all of them.
@@ -231,15 +262,23 @@ public class CreateRoutineHandler implements CommandHandler {
     }
 
     public Object handleCreateProcedure(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        rejectRepeatedSignatureNames(ctx);
         final String qualifiedName = getText(ctx.qualifiedName(0));
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         final boolean orReplace = ctx.or_replace() != null;
+
+        // A procedure is never memoizable. Its language is judged first, as a function's is (live-verified).
+        if (ctx.MEMOIZABLE() != null) {
+            requireMemoizableLanguage(languageOf(ctx.languageClause()).name());
+            throw memoizableScalarOnly();
+        }
 
         // Compile the body first, as Snowflake does: a LANGUAGE SQL procedure whose body is not a scripting
         // block is rejected at CREATE time. Deliberately OUTSIDE the try below — a compilation error is not an
         // "already exists" condition and must never be swallowed by IF NOT EXISTS.
         RoutineBodyCompiler.compileProcedureBody(queryExecutor, languageOf(ctx.languageClause()),
-            ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null);
+            ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null,
+            parameterNames(ctx.parameterList()));
 
         try {
             final Schema schema;
@@ -247,16 +286,16 @@ public class CreateRoutineHandler implements CommandHandler {
 
             if (parts.length == 1) {
                 schema = ddl.resolveCurrentSchema();
-                procedureName = parts[0].toUpperCase();
+                procedureName = parts[0];
             } else if (parts.length == 2) {
                 if (catalog.getCurrentDatabase() == null) {
-                    throw new RuntimeException("No database selected");
+                    throw NoCurrentDatabaseRefusal.forStatement();
                 }
                 schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                procedureName = parts[1].toUpperCase();
+                procedureName = parts[1];
             } else if (parts.length == 3) {
                 schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                procedureName = parts[2].toUpperCase();
+                procedureName = parts[2];
             } else {
                 throw new RuntimeException("Invalid procedure name: " + qualifiedName);
             }
@@ -332,6 +371,7 @@ public class CreateRoutineHandler implements CommandHandler {
             }
 
             validateRoutineProperties(language, runtimeVersion, handler);
+            requireJavaScriptTypes(language, !procReturnColumns.isEmpty(), returnType, parameters);
 
             final Procedure procedure = new Procedure(procedureName, parameters, returnType, body, language, handler, runtimeVersion, packages);
             procedure.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
@@ -427,6 +467,132 @@ public class CreateRoutineHandler implements CommandHandler {
         }
     }
 
+    /**
+     * MEMOIZABLE has a fixed place where the other options' order is free: after LANGUAGE, the null-handling
+     * clause and the volatility, before COMMENT and the handler, runtime, package and import options, and
+     * only once. Live refuses any other placement as a syntax error one token on — at the token after the
+     * first word of an option that belongs before it ({@code MEMOIZABLE LANGUAGE SQL} at SQL,
+     * {@code MEMOIZABLE IMMUTABLE AS} at AS), or at the token after a MEMOIZABLE that comes too late or a
+     * second time ({@code COMMENT = 'c' MEMOIZABLE AS} at AS) (live-verified).
+     */
+    private static void rejectMisplacedMemoizable(final FrostlakeParser.CreateStatementContext ctx) {
+        boolean memoizableSeen = false;
+        boolean laterOptionSeen = false;
+        for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
+            boolean misplaced = false;
+            if (opt.MEMOIZABLE() != null) {
+                misplaced = memoizableSeen || laterOptionSeen;
+                memoizableSeen = true;
+            } else if (opt.languageClause() != null || opt.nullHandlingClause() != null
+                    || opt.volatilityClause() != null) {
+                misplaced = memoizableSeen;
+            } else {
+                laterOptionSeen = true;
+            }
+            if (misplaced) {
+                throw new RuntimeException(unexpectedAfterFirstWord(ctx, opt));
+            }
+        }
+    }
+
+    /** The syntax error at the token after an option's first word: its own second word, else what follows it. */
+    private static String unexpectedAfterFirstWord(final FrostlakeParser.CreateStatementContext ctx,
+            final FrostlakeParser.FunctionOptionContext option) {
+        final List<Token> words = new ArrayList<>();
+        collectWords(option, words, 2);
+        Token at = words.size() > 1 ? words.get(1) : null;
+        if (at == null) {
+            final int index = ctx.children.indexOf(option);
+            if (index >= 0 && index + 1 < ctx.getChildCount()) {
+                final ParseTree next = ctx.getChild(index + 1);
+                at = next instanceof TerminalNode ? ((TerminalNode) next).getSymbol()
+                    : ((ParserRuleContext) next).getStart();
+            }
+        }
+        if (at == null || at.getType() == Token.EOF) {
+            final Token last = option.getStop();
+            return SqlCompilationError.of("syntax error line " + last.getLine() + " at position "
+                + (last.getCharPositionInLine() + last.getText().length()) + " unexpected '<EOF>'.");
+        }
+        return SqlCompilationError.of("syntax error line " + at.getLine() + " at position "
+            + at.getCharPositionInLine() + " unexpected '" + at.getText() + "'.");
+    }
+
+    /** The first {@code limit} tokens under a parse-tree node, in order. */
+    private static void collectWords(final ParseTree node, final List<Token> words, final int limit) {
+        if (words.size() >= limit) {
+            return;
+        }
+        if (node instanceof TerminalNode) {
+            words.add(((TerminalNode) node).getSymbol());
+            return;
+        }
+        for (int i = 0; i < node.getChildCount() && words.size() < limit; i++) {
+            collectWords(node.getChild(i), words, limit);
+        }
+    }
+
+    /**
+     * A MEMOIZABLE function must be a scalar SQL UDF whose result is not a VARIANT or an OBJECT and whose
+     * arguments are not semi-structured: an ARRAY result is fine, an ARRAY argument is not. Live judges
+     * the language first, then the kind, then the result, then each argument in order (live-verified).
+     */
+    private static void requireMemoizableShape(final String language, final boolean tableFunction,
+            final DataType returnType, final List<Parameter> parameters) {
+        requireMemoizableLanguage(language);
+        if (tableFunction) {
+            throw memoizableScalarOnly();
+        }
+        final String result = semiStructuredName(returnType);
+        if (result != null && !"ARRAY".equals(result)) {
+            throw new RuntimeException(SqlCompilationError.PREFIX + " Memoizable function does not support "
+                + result + " return type.");
+        }
+        for (final Parameter parameter : parameters) {
+            final String argument = semiStructuredName(parameter.getDataType());
+            if (argument != null) {
+                throw new RuntimeException(SqlCompilationError.of("Unsupported data type '" + argument + "'."));
+            }
+        }
+    }
+
+    private static void requireMemoizableLanguage(final String language) {
+        if (!"SQL".equalsIgnoreCase(language)) {
+            throw new RuntimeException(SqlCompilationError.PREFIX
+                + " Memoizable function supports only SQL language.");
+        }
+    }
+
+    private static RuntimeException memoizableScalarOnly() {
+        return new RuntimeException(SqlCompilationError.PREFIX
+            + " Memoizable keyword only supports Scalar SQL UDF with zero arguments.");
+    }
+
+    /** VARIANT, OBJECT or ARRAY for a semi-structured type, null for any other. */
+    private static String semiStructuredName(final DataType type) {
+        if (type instanceof VariantType) {
+            return "VARIANT";
+        }
+        if (type instanceof ObjectType) {
+            return "OBJECT";
+        }
+        if (type instanceof ArrayType) {
+            return "ARRAY";
+        }
+        return null;
+    }
+
+    /** The canonical names a routine's signature declares, for the scripting scope checks. */
+    private static Set<String> parameterNames(final FrostlakeParser.ParameterListContext list) {
+        final Set<String> names = new HashSet<>();
+        if (list != null) {
+            for (final FrostlakeParser.ParameterDefContext def : list.parameterDef()) {
+                names.add(ScriptingNameValidator.canonical(def.identifier().getText()));
+            }
+        }
+        return names;
+    }
+
     private static UdfLanguage functionLanguage(final FrostlakeParser.CreateStatementContext ctx) {
         UdfLanguage language = UdfLanguage.SQL;
         for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
@@ -470,4 +636,86 @@ public class CreateRoutineHandler implements CommandHandler {
             throw new RuntimeException("Property 'handler' must be specified");
         }
     }
+
+    /**
+     * The names the signature declares, upper-cased, for the body's own name resolution. A parameter is
+     * matched without regard to case: a body over {@code (x INT)} may write {@code x} or {@code X}.
+     */
+    private Set<String> signatureNames(final FrostlakeParser.CreateStatementContext ctx) {
+        final Set<String> names = new LinkedHashSet<>();
+        if (ctx.parameterList() != null) {
+            for (final FrostlakeParser.ParameterDefContext parameter : ctx.parameterList().parameterDef()) {
+                names.add(getText(parameter.identifier()).toUpperCase());
+            }
+        }
+        return names;
+    }
+
+
+    /**
+     * The types JavaScript has no carrier for. A real account refuses one in an ARGUMENT or a SCALAR
+     * RETURN at CREATE, in a sentence of its own carrying NO compilation-error prefix and echoing the
+     * type canonically: every FIXED-POINT number (INT and DECIMAL fold into it) and TIME. A table
+     * return's columns are not reached by the rule, and FLOAT, VARCHAR, BOOLEAN, DATE, all three
+     * timestamp flavours, BINARY, VARIANT, OBJECT, ARRAY and GEOGRAPHY are taken (live-verified).
+     * MEMOIZABLE's own language refusal comes first, which is why this runs after it.
+     */
+    private static void requireJavaScriptTypes(final String language, final boolean tableFunction,
+                                               final DataType returnType, final List<Parameter> parameters) {
+        if (!"JAVASCRIPT".equalsIgnoreCase(language)) {
+            return;
+        }
+        for (final Parameter parameter : parameters) {
+            rejectUnsupportedJavaScriptType(parameter.getDataType());
+        }
+        if (!tableFunction) {
+            rejectUnsupportedJavaScriptType(returnType);
+        }
+    }
+
+    /** One type, judged against what the language carries. */
+    private static void rejectUnsupportedJavaScriptType(final DataType type) {
+        final boolean fixedPoint = type instanceof NumericType && !NumericType.isApproximate(type);
+        final boolean time = type instanceof DateTimeType && "TIME".equalsIgnoreCase(type.getName());
+        if (fixedPoint || time) {
+            throw new RuntimeException("Language JAVASCRIPT does not support type '"
+                + SqlTypeNames.canonical(type) + "' for argument or return type.");
+        }
+    }
+
+
+    /**
+     * Refuse a signature that repeats a name, before anything else about the routine is judged - the
+     * body compile, a block declaring a variable twice and the language's own type rule all come after
+     * it. Names are compared as they RESOLVE: an unquoted one folds, so {@code (x INT, X INT)} repeats
+     * while {@code ("x" INT, x INT)} is two arguments and is created. The account says "function
+     * signature" for a PROCEDURE too, and a duplicate in a TABLE return carries a sentence of its own.
+     * Neither sentence takes the compilation-error prefix (live-verified).
+     */
+    private void rejectRepeatedSignatureNames(final FrostlakeParser.CreateStatementContext ctx) {
+        final Set<String> arguments = new LinkedHashSet<>();
+        if (ctx.parameterList() != null) {
+            for (final FrostlakeParser.ParameterDefContext parameter : ctx.parameterList().parameterDef()) {
+                final String name = getText(parameter.identifier());
+                if (!arguments.add(name)) {
+                    throw new RuntimeException("Argument '" + name + "' repeats in the function signature.");
+                }
+            }
+        }
+        final Set<String> columns = new LinkedHashSet<>();
+        if (ctx.returnType() != null && ctx.returnType().columnList() != null) {
+            for (final FrostlakeParser.ColumnOrConstraintContext column
+                    : ctx.returnType().columnList().columnOrConstraint()) {
+                if (column.columnDef() == null) {
+                    continue;
+                }
+                final String name = ParseTreeText.namePartText(column.columnDef().columnDefName()).toUpperCase();
+                if (!columns.add(name)) {
+                    throw new RuntimeException(
+                        "Return signature contains a duplicate column name '" + name + "'.");
+                }
+            }
+        }
+    }
+
 }

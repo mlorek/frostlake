@@ -1,0 +1,65 @@
+{
+  "suite": "scripting-create-procedure",
+  "description": "CREATE PROCEDURE for SQL scripting procedures, asserted through SQL: each procedure is CALLed and both its RETURN VALUE and its SIDE EFFECTS are checked, and existence is read back through SHOW PROCEDURES LIKE, never through engine internals - so every assertion here holds against a live account too. Covers a procedure that UPDATEs by bind variable (and leaves the other row alone), one with NO parameters that DELETEs, a SCHEMA-QUALIFIED one where the body's BARE table name resolves in the procedure's HOME schema rather than the caller's, one with three parameters of three types, one with an IF / ELSE, one with a WHILE loop returning an OBJECT, and DROP PROCEDURE removing it from the listing. This is the invocation-side companion of scripting-create-procedure-listing, which covers the SHOW PROCEDURES listing. Converted 1:1 from scripting/CreateProcedureTest (now retired); the loop test asserted only that the rendered OBJECT CONTAINS 'count', '10' and 'completed', so the converted step pins the whole rendering.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-simple-procedure", "steps": [
+      {"sql": "CREATE TABLE data_rows (id INTEGER, label VARCHAR)"},
+      {"sql": "INSERT INTO data_rows VALUES (1, 'before'), (2, 'other')"},
+      {"sql": "CREATE PROCEDURE update_data(id INTEGER, value VARCHAR) RETURNS VARCHAR AS 'BEGIN UPDATE data_rows SET label = :value WHERE id = :id; RETURN ''updated''; END'"},
+      {"sql": "SHOW PROCEDURES LIKE 'update_data'", "expect": {"rowCount": 1}},
+      {"sql": "CALL update_data(1, 'after')", "expect": {"value": "updated"}},
+      {"sql": "SELECT id, label FROM data_rows ORDER BY id", "expect": {"rows": [[1,"after"],[2,"other"]], "ordered": true}}
+    ]},
+    {"name": "a-procedure-with-no-parameters", "steps": [
+      {"sql": "CREATE TABLE temp_table (id INTEGER)"},
+      {"sql": "INSERT INTO temp_table VALUES (1), (2)"},
+      {"sql": "CREATE PROCEDURE cleanup() RETURNS VARCHAR AS 'BEGIN DELETE FROM temp_table; RETURN ''cleaned''; END'"},
+      {"sql": "SHOW PROCEDURES LIKE 'cleanup'", "expect": {"rowCount": 1}},
+      {"sql": "CALL cleanup()", "expect": {"value": "cleaned"}},
+      {"sql": "SELECT COUNT(*) FROM temp_table", "expect": {"value": 0}}
+    ]},
+    {"name": "a-procedure-with-a-qualified-name-resolves-its-body-in-its-home-schema", "steps": [
+      {"sql": "CREATE SCHEMA my_schema"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE my_schema.orders (id INTEGER)"},
+      {"sql": "INSERT INTO my_schema.orders VALUES (1), (2), (3)"},
+      {"sql": "CREATE PROCEDURE my_schema.process_orders(order_id INTEGER) RETURNS INTEGER AS 'BEGIN RETURN (SELECT COUNT(*) FROM orders); END'"},
+      {"sql": "CALL my_schema.process_orders(1)", "expect": {"value": 3}}
+    ]},
+    {"name": "a-procedure-with-several-parameters", "steps": [
+      {"sql": "CREATE TABLE people (name VARCHAR, age INTEGER, active BOOLEAN)"},
+      {"sql": "CREATE PROCEDURE insert_record(name VARCHAR, age INTEGER, active BOOLEAN) RETURNS INTEGER AS 'BEGIN INSERT INTO people (name, age, active) VALUES (:name, :age, :active); RETURN 1; END'"},
+      {"sql": "SHOW PROCEDURES LIKE 'insert_record'", "expect": {"rowCount": 1}},
+      {"sql": "CALL insert_record('Ada', 36, TRUE)", "expect": {"value": 1}},
+      {"sql": "SELECT name, age, active FROM people", "expect": {"rows": [["Ada",36,true]]}}
+    ]},
+    {"name": "drop-procedure-removes-it-from-the-listing", "steps": [
+      {"sql": "CREATE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x * 2; END'"},
+      {"sql": "SHOW PROCEDURES LIKE 'test_proc'", "expect": {"rowCount": 1}},
+      {"sql": "DROP PROCEDURE test_proc(INTEGER)"},
+      {"sql": "SHOW PROCEDURES LIKE 'test_proc'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "two-procedures-are-each-listed-and-each-callable", "steps": [
+      {"sql": "CREATE PROCEDURE proc1(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x; END'"},
+      {"sql": "CREATE PROCEDURE proc2(x INTEGER, y INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x + y; END'"},
+      {"sql": "SHOW PROCEDURES LIKE 'proc1'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW PROCEDURES LIKE 'proc2'", "expect": {"rowCount": 1}},
+      {"sql": "CALL proc1(1)", "expect": {"value": 1}},
+      {"sql": "CALL proc2(2, 3)", "expect": {"value": 5}}
+    ]},
+    {"name": "a-procedure-with-an-if-statement", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE PROCEDURE check_value(max_count INTEGER) RETURNS VARCHAR AS 'DECLARE outcome VARCHAR; BEGIN IF (max_count > 2) THEN outcome := ''many''; ELSE outcome := ''few''; END IF; RETURN outcome; END'"},
+      {"sql": "SHOW PROCEDURES LIKE 'check_value'", "expect": {"rowCount": 1}},
+      {"sql": "CALL check_value(3)", "expect": {"value": "many"}},
+      {"sql": "CALL check_value(1)", "expect": {"value": "few"}}
+    ]},
+    {"name": "a-procedure-with-a-loop-and-an-object-return", "steps": [
+      {"sql": "CREATE PROCEDURE process_with_loop(max_iterations INTEGER) RETURNS OBJECT AS 'DECLARE counter INTEGER := 0; outcome OBJECT; BEGIN WHILE (counter < 10) DO counter := counter + 1; END WHILE; outcome := OBJECT_CONSTRUCT(''count'', counter, ''status'', ''completed''); RETURN outcome; END'"},
+      {"sql": "SHOW PROCEDURES LIKE 'process_with_loop'", "expect": {"rowCount": 1}},
+      {"sql": "CALL process_with_loop(5)", "expect": {"value": "{\"count\":10,\"status\":\"completed\"}"}}
+    ]}
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "suite": "query-set-operation-order-by",
+  "description": "A set operation's ORDER BY resolves against the COMBINED OUTPUT only - measured cell by cell on a real account. An output column name works, whether it is the first branch's alias or the produced name of an un-aliased item; so does a positional ordinal, and so does an expression built over those output names. Everything else is rejected as 'invalid identifier': a SECOND branch's column name, a branch table's qualifier, a first-branch column that was NOT selected, an aliased item's PRE-ALIAS expression text (the alias REPLACES it as the output name), and any unknown name. There is no fall-through to any branch's FROM scope. Converted 1:1 from query/SetOperationOrderByTest (now retired); the Java joined the first column of each row with a pipe, so the converted steps pin the ordered row set instead.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "output-names-ordinals-and-expressions-over-them-resolve", "steps": [
+      {"sql": "CREATE TABLE t1 (a INTEGER, c INTEGER)"},
+      {"sql": "CREATE TABLE t2 (b INTEGER, c INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (3, 30), (1, 10)"},
+      {"sql": "INSERT INTO t2 VALUES (2, 20)"},
+      {"sql": "SELECT a FROM t1 UNION ALL SELECT b FROM t2 ORDER BY a", "expect": {"rows": [[1],[2],[3]], "ordered": true}},
+      {"sql": "SELECT a FROM t1 UNION ALL SELECT b FROM t2 ORDER BY 1 DESC", "expect": {"rows": [[3],[2],[1]], "ordered": true}},
+      {"sql": "SELECT a FROM t1 UNION ALL SELECT b FROM t2 ORDER BY a + 1", "expect": {"rows": [[1],[2],[3]], "ordered": true}},
+      {"sql": "SELECT a AS x FROM t1 UNION ALL SELECT b FROM t2 ORDER BY x", "expect": {"rows": [[1],[2],[3]], "ordered": true}}
+    ]},
+    {"name": "everything-outside-the-output-is-an-invalid-identifier", "steps": [
+      {"sql": "CREATE TABLE t1 (a INTEGER, c INTEGER)"},
+      {"sql": "CREATE TABLE t2 (b INTEGER, c INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (3, 30), (1, 10)"},
+      {"sql": "INSERT INTO t2 VALUES (2, 20)"},
+      {"sql": "SELECT a FROM t1 UNION ALL SELECT b FROM t2 ORDER BY b", "expect": {"error": {"messageContains": "invalid identifier 'B'"}}},
+      {"sql": "SELECT a FROM t1 UNION ALL SELECT b FROM t2 ORDER BY t1.a", "expect": {"error": {"messageContains": "invalid identifier 'T1.A'"}}},
+      {"sql": "SELECT a FROM t1 UNION ALL SELECT b FROM t2 ORDER BY nosuch", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "SELECT a FROM t1 UNION ALL SELECT b FROM t2 ORDER BY c", "expect": {"error": {"messageContains": "invalid identifier 'C'"}}},
+      {"sql": "SELECT a AS x FROM t1 UNION ALL SELECT b FROM t2 ORDER BY a", "expect": {"error": {"messageContains": "invalid identifier 'A'"}}}
+    ]}
+  ]
+}

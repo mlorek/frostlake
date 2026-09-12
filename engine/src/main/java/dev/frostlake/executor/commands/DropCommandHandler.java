@@ -16,15 +16,18 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
@@ -99,8 +102,7 @@ public class DropCommandHandler implements CommandHandler {
                                            final Map<String, List<Row>> out) {
         final StorageEngine storage = queryExecutor.getStorageEngine();
         for (final Table table : schema.getTables()) {
-            final String fqn = databaseName.toUpperCase() + "." + schema.getName().toUpperCase()
-                + "." + table.getName().toUpperCase();
+            final String fqn = QualifiedName.key(databaseName, schema.getName(), table.getName());
             if (!storage.hasTable(fqn)) {
                 continue;
             }
@@ -111,8 +113,29 @@ public class DropCommandHandler implements CommandHandler {
         }
     }
 
+    /**
+     * IF EXISTS forgives only the dropped object's own absence: the database and schema its name passes
+     * through must exist, and a name the session cannot place is refused naming DROP, before anything is
+     * dropped (live-verified for every schema-scoped kind, and for a schema's database).
+     */
+    private void requireContainers(final FrostlakeParser.DropStatementContext ctx) {
+        if (ctx.SCHEMA() != null) {
+            final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName()), 2);
+            if (parts.length == 2) {
+                catalog.databaseExact(parts[0]);
+            } else if (catalog.getCurrentDatabase() == null) {
+                throw NoCurrentDatabaseRefusal.forStatement();
+            }
+        } else if (ctx.qualifiedName() != null) {
+            catalog.requireOwningSchema(QualifiedName.of(qualifiedNameParts(ctx.qualifiedName())));
+        } else if (ctx.objectName() != null) {
+            catalog.requireOwningSchema(QualifiedName.of(queryExecutor.resolveObjectNameParts(ctx.objectName())));
+        }
+    }
+
     public Object handleDropStatement(final FrostlakeParser.DropStatementContext ctx) {
         final boolean ifExists = ctx.if_exists() != null;
+        requireContainers(ctx);
 
         try {
             if (ctx.DATABASE() != null) {
@@ -138,11 +161,13 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped database: {}", dbName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Database does not exist (IF EXISTS): {}", dbName);
                 }
             } else if (ctx.SCHEMA() != null) {
                 final String schemaName = getText(ctx.qualifiedName());
-                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                // Refused before IF EXISTS forgives anything: a schema name has at most two parts.
+                final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName()), 2);
 
                 try {
                     checkDrop(SecurableObjectType.SCHEMA, schemaName);
@@ -154,19 +179,19 @@ public class DropCommandHandler implements CommandHandler {
                     if (snapSchema != null) {
                         final Map<String, List<Row>> tableRows = new LinkedHashMap<>();
                         snapshotAndReleaseStorage(snapDbName, snapSchema, tableRows);
-                        catalog.recordDropped("SCHEMA:" + snapDbName.toUpperCase() + "." + snapSchemaName.toUpperCase(),
+                        catalog.recordDropped("SCHEMA:" + QualifiedName.key(snapDbName, snapSchemaName),
                             new DroppedObject(snapSchema, tableRows));
                     }
                     // DROP SCHEMA … CASCADE also drops the objects the schema still contains; without it
                     // (RESTRICT, the default) a non-empty schema is refused.
                     final boolean cascade = ctx.dropBehavior() != null && ctx.dropBehavior().CASCADE() != null;
                     if (parts.length == 1) {
-                        catalog.getDatabase(catalog.getCurrentDatabase()).dropSchema(parts[0], cascade);
+                        catalog.dropSchema(catalog.getCurrentDatabase(), parts[0], cascade);
                         if (streamManager != null) {
                             streamManager.onSchemaDropped(catalog.getCurrentDatabase(), parts[0]);
                         }
                     } else {
-                        catalog.getDatabase(parts[0]).dropSchema(parts[1], cascade);
+                        catalog.dropSchema(parts[0], parts[1], cascade);
                         if (streamManager != null) {
                             streamManager.onSchemaDropped(parts[0], parts[1]);
                         }
@@ -174,6 +199,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped schema: {}", schemaName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Schema does not exist (IF EXISTS): {}", schemaName);
                 }
             } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
@@ -183,11 +209,16 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    rejectWrongKind(schema, parts[parts.length - 1], RelationKind.DYNAMIC_TABLE);
                     checkDrop(SecurableObjectType.DYNAMIC_TABLE, qn);
-                    schema.dropDynamicTable(parts[parts.length - 1].toUpperCase());
+                    schema.dropDynamicTable(parts[parts.length - 1]);
                     logger.trace("Dropped dynamic table: {}", qn);
                 } catch (final RuntimeException e) {
-                    if (!ifExists) throw e;
+                    // IF EXISTS forgives absence, never a name another kind holds.
+                    if (!ifExists || SqlCompilationError.isWrongObjectType(e.getMessage())) {
+                        throw e;
+                    }
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Dynamic table does not exist (IF EXISTS): {}", qn);
                 }
             } else if (ctx.TABLE() != null) {
@@ -197,7 +228,8 @@ public class DropCommandHandler implements CommandHandler {
                     // Parts come from the parse tree (or the IDENTIFIER() value per dotted level) —
                     // never by re-splitting the joined spelling, which breaks a quoted name
                     // containing a dot.
-                    final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+                    final String[] parts = catalog.withoutAccount(
+                        queryExecutor.resolveObjectNameParts(ctx.objectName()), 3);
                     final Schema schema;
                     final String databaseName;
                     final String tableName;
@@ -208,7 +240,7 @@ public class DropCommandHandler implements CommandHandler {
                         tableName = parts[0];
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         databaseName = catalog.getCurrentDatabase();
                         schema = catalog.getDatabase(databaseName).getSchema(parts[0]);
@@ -228,10 +260,11 @@ public class DropCommandHandler implements CommandHandler {
                             SqlAccessControlError.insufficientPrivileges("view", tableName.toUpperCase()));
                     }
 
+                    rejectWrongKind(schema, tableName, RelationKind.TABLE);
                     final Table table = catalog.resolveTable(QualifiedName.of(parts));
                     checkDrop(SecurableObjectType.TABLE, qualifiedName);
 
-                    final String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                    final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                     // Snapshot table metadata + rows for UNDROP before removing the storage.
                     final List<Row> snapshotRows =
                         new ArrayList<>(queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).scan());
@@ -250,10 +283,13 @@ public class DropCommandHandler implements CommandHandler {
 
                     logger.trace("Dropped table: {}", qualifiedName);
                 } catch (final RuntimeException e) {
-                    // IF EXISTS forgives absence, never an access-control refusal.
-                    if (!ifExists || String.valueOf(e.getMessage()).startsWith(SqlAccessControlError.PREFIX)) {
+                    // IF EXISTS forgives absence, never an access-control refusal and never a name
+                    // another kind holds.
+                    if (!ifExists || String.valueOf(e.getMessage()).startsWith(SqlAccessControlError.PREFIX)
+                            || SqlCompilationError.isWrongObjectType(e.getMessage())) {
                         throw e;
                     }
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Table does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.VIEW() != null && ctx.MATERIALIZED() == null) {
@@ -269,7 +305,7 @@ public class DropCommandHandler implements CommandHandler {
                         viewName = parts[0];
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                         viewName = parts[1];
@@ -280,14 +316,18 @@ public class DropCommandHandler implements CommandHandler {
                         throw new RuntimeException("Invalid view name: " + qualifiedName);
                     }
 
+                    rejectWrongKind(schema, viewName, RelationKind.VIEW);
                     checkDrop(SecurableObjectType.VIEW, qualifiedName);
                     schema.dropView(viewName);
                     logger.trace("Dropped view: {}", qualifiedName);
                 } catch (final RuntimeException e) {
-                    // IF EXISTS forgives absence, never an access-control refusal.
-                    if (!ifExists || String.valueOf(e.getMessage()).startsWith(SqlAccessControlError.PREFIX)) {
+                    // IF EXISTS forgives absence, never an access-control refusal and never a name
+                    // another kind holds.
+                    if (!ifExists || String.valueOf(e.getMessage()).startsWith(SqlAccessControlError.PREFIX)
+                            || SqlCompilationError.isWrongObjectType(e.getMessage())) {
                         throw e;
                     }
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("View does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.VIEW() != null && ctx.MATERIALIZED() != null) {
@@ -303,7 +343,7 @@ public class DropCommandHandler implements CommandHandler {
                         mvName = parts[0];
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                         mvName = parts[1];
@@ -314,11 +354,16 @@ public class DropCommandHandler implements CommandHandler {
                         throw new RuntimeException("Invalid materialized view name: " + qualifiedName);
                     }
 
+                    rejectWrongKind(schema, mvName, RelationKind.MATERIALIZED_VIEW);
                     checkDrop(SecurableObjectType.MATERIALIZED_VIEW, qualifiedName);
                     schema.dropMaterializedView(mvName);
                     logger.trace("Dropped materialized view: {}", qualifiedName);
                 } catch (final RuntimeException e) {
-                    if (!ifExists) throw e;
+                    // IF EXISTS forgives absence, never a name another kind holds.
+                    if (!ifExists || SqlCompilationError.isWrongObjectType(e.getMessage())) {
+                        throw e;
+                    }
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Materialized view does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.STREAM() != null) {
@@ -327,11 +372,16 @@ public class DropCommandHandler implements CommandHandler {
 
                 try {
                     final Schema schema = ddl.resolveSchemaFromQualifiedName(streamQn);
+                    rejectWrongKind(schema, streamName, RelationKind.STREAM);
                     checkDrop(SecurableObjectType.STREAM, streamQn);
                     schema.dropStream(streamName);
                     logger.trace("Dropped stream: {}", streamName);
                 } catch (final RuntimeException e) {
-                    if (!ifExists) throw e;
+                    // IF EXISTS forgives absence, never a name another kind holds.
+                    if (!ifExists || SqlCompilationError.isWrongObjectType(e.getMessage())) {
+                        throw e;
+                    }
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Stream does not exist (IF EXISTS): {}", streamName);
                 }
             } else if (ctx.TASK() != null) {
@@ -345,6 +395,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped task: {}", taskName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Task does not exist (IF EXISTS): {}", taskName);
                 }
             } else if (ctx.PIPE() != null) {
@@ -357,6 +408,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped pipe: {}", pipeName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Pipe does not exist (IF EXISTS): {}", pipeName);
                 }
             } else if (ctx.SEQUENCE() != null) {
@@ -369,6 +421,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped sequence: {}", sequenceName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Sequence does not exist (IF EXISTS): {}", sequenceName);
                 }
             } else if (ctx.CORTEX() != null) {
@@ -391,6 +444,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped compute pool: {}", poolName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Compute pool does not exist (IF EXISTS): {}", poolName);
                 }
             } else if (ctx.WAREHOUSE() != null) {
@@ -401,6 +455,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped warehouse: {}", warehouseName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
                 }
             } else if (ctx.STAGE() != null) {
@@ -412,6 +467,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped stage: {}", stageName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Stage does not exist (IF EXISTS): {}", stageName);
                 }
             } else if (ctx.FILE() != null && ctx.FORMAT() != null) {
@@ -422,6 +478,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped file format: {}", fileFormatName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("File format does not exist (IF EXISTS): {}", fileFormatName);
                 }
             } else if (ctx.FUNCTION() != null) {
@@ -437,7 +494,7 @@ public class DropCommandHandler implements CommandHandler {
                         functionName = parts[0].toUpperCase();
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                         functionName = parts[1].toUpperCase();
@@ -463,6 +520,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped function: {}", qualifiedName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Function does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.PROCEDURE() != null) {
@@ -478,7 +536,7 @@ public class DropCommandHandler implements CommandHandler {
                         procedureName = parts[0].toUpperCase();
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                         procedureName = parts[1].toUpperCase();
@@ -504,6 +562,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped procedure: {}", qualifiedName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Procedure does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.USER() != null) {
@@ -514,6 +573,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped user: {}", userName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("User does not exist (IF EXISTS): {}", userName);
                 }
             } else if (ctx.ROLE() != null) {
@@ -524,6 +584,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped role: {}", roleName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Role does not exist (IF EXISTS): {}", roleName);
                 }
             } else if (ctx.TAG() != null) {
@@ -542,6 +603,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped tag: {}", tagName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Tag does not exist (IF EXISTS): {}", tagName);
                 }
             } else if (ctx.MASKING() != null && ctx.POLICY() != null && ctx.ROW() == null) {
@@ -551,13 +613,20 @@ public class DropCommandHandler implements CommandHandler {
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.MASKING_POLICY, getText(ctx.qualifiedName()));
+                    if (!schema.hasMaskingPolicy(parts[parts.length - 1].toUpperCase())) {
+                        // The "<Kind> '<QUALIFIED>' does not exist or not authorized." family — the
+                        // same sentence the sibling policies already give, live-verified for this one.
+                        throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy",
+                            schema.qualifiedName(parts[parts.length - 1].toUpperCase())));
+                    }
                     if (catalog.isPolicyInUse(parts[parts.length - 1], true)) {
                         throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase()
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
                     schema.dropMaskingPolicy(parts[parts.length - 1].toUpperCase());
                     logger.trace("Dropped masking policy: {}", getText(ctx.qualifiedName()));
-                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+                } catch (final RuntimeException e) { if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped(); }
             } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
                 final String[] parts = qualifiedNameParts(ctx.qualifiedName());
                 try {
@@ -565,13 +634,18 @@ public class DropCommandHandler implements CommandHandler {
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.ROW_ACCESS_POLICY, getText(ctx.qualifiedName()));
+                    if (!schema.hasRowAccessPolicy(parts[parts.length - 1].toUpperCase())) {
+                        throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy",
+                            schema.qualifiedName(parts[parts.length - 1].toUpperCase())));
+                    }
                     if (catalog.isPolicyInUse(parts[parts.length - 1], false)) {
                         throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase()
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
                     schema.dropRowAccessPolicy(parts[parts.length - 1].toUpperCase());
                     logger.trace("Dropped row access policy: {}", getText(ctx.qualifiedName()));
-                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+                } catch (final RuntimeException e) { if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped(); }
             } else if (ctx.JOIN() != null && ctx.POLICY() != null) {
                 final String[] parts = qualifiedNameParts(ctx.qualifiedName());
                 try {
@@ -589,7 +663,8 @@ public class DropCommandHandler implements CommandHandler {
                     }
                     schema.dropJoinPolicy(policyName);
                     logger.trace("Dropped join policy: {}", getText(ctx.qualifiedName()));
-                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+                } catch (final RuntimeException e) { if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped(); }
             } else if (ctx.AGGREGATION() != null && ctx.POLICY() != null) {
                 final String[] parts = qualifiedNameParts(ctx.qualifiedName());
                 try {
@@ -607,7 +682,8 @@ public class DropCommandHandler implements CommandHandler {
                     }
                     schema.dropAggregationPolicy(policyName);
                     logger.trace("Dropped aggregation policy: {}", getText(ctx.qualifiedName()));
-                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+                } catch (final RuntimeException e) { if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped(); }
             } else if (ctx.PROJECTION() != null && ctx.POLICY() != null) {
                 final String[] parts = qualifiedNameParts(ctx.qualifiedName());
                 try {
@@ -626,7 +702,8 @@ public class DropCommandHandler implements CommandHandler {
                     }
                     schema.dropProjectionPolicy(policyName);
                     logger.trace("Dropped projection policy: {}", getText(ctx.qualifiedName()));
-                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+                } catch (final RuntimeException e) { if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped(); }
             } else if (ctx.CONTACT() != null) {
                 final String[] parts = qualifiedNameParts(ctx.qualifiedName());
                 try {
@@ -640,7 +717,8 @@ public class DropCommandHandler implements CommandHandler {
                     }
                     schema.dropContact(contactName);
                     logger.trace("Dropped contact: {}", getText(ctx.qualifiedName()));
-                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+                } catch (final RuntimeException e) { if (!ifExists) throw e;
+                    ConditionalDdlOutcome.dropSkipped(); }
             }
 
             return null;
@@ -651,5 +729,24 @@ public class DropCommandHandler implements CommandHandler {
     }
 
 
+
+
+    /**
+     * Refuse a DROP whose named kind is not the kind holding the name. The five relation kinds share one
+     * name space per schema, so the object is found and the refusal names both kinds; a name the stated
+     * kind does hold - a temporary view a DROP VIEW names while a table of that name also exists - is
+     * left to the ordinary path. Nothing else in the schema is consulted: a sequence keeps its own name
+     * space (live-verified).
+     */
+    private void rejectWrongKind(final Schema schema, final String name, final RelationKind specified) {
+        if (schema == null || schema.holdsRelation(name, specified)) {
+            return;
+        }
+        final RelationKind found = schema.relationKindOf(name);
+        if (found == null) {
+            return;
+        }
+        throw new RuntimeException(SqlCompilationError.objectOfOtherType(found.spelling(), specified.spelling()));
+    }
 
 }

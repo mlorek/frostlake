@@ -1,0 +1,112 @@
+{
+ "suite": "features-string-literal",
+ "description": "String literals carrying newlines and escaped quotes: a single-quoted literal with an embedded newline round-trips through a VARCHAR column, a multi-line literal stores its content, an ordinary literal is unaffected, the doubled-quote escape ('') stores a single quote, and a table COMMENT may carry a newline. Converted 1:1 from features/StringLiteralTest (now retired).",
+ "tags": [
+  "features",
+  "converted"
+ ],
+ "tests": [
+  {
+   "name": "single-quoted-string-with-newline",
+   "steps": [
+    {
+     "sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO test_strings VALUES (1, 'Hello\nWorld')"
+    },
+    {
+     "sql": "SELECT text FROM test_strings WHERE id = 1",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT CONTAINS(text, CHAR(10)) OR CONTAINS(text, '\n') FROM test_strings WHERE id = 1",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "single-quoted-multiline-string",
+   "steps": [
+    {
+     "sql": "CREATE TABLE test_multiline (id INTEGER, content VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO test_multiline VALUES (1, 'First line\nSecond line\nThird line')"
+    },
+    {
+     "sql": "SELECT content FROM test_multiline WHERE id = 1",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT IFF(content IS NULL, 'null', 'set') FROM test_multiline WHERE id = 1",
+     "expect": {
+      "value": "set"
+     }
+    }
+   ]
+  },
+  {
+   "name": "single-quoted-string-without-newline",
+   "steps": [
+    {
+     "sql": "CREATE TABLE test_simple (id INTEGER, name VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO test_simple VALUES (1, 'Alice')"
+    },
+    {
+     "sql": "SELECT name FROM test_simple WHERE id = 1",
+     "expect": {
+      "rowCount": 1,
+      "value": "Alice"
+     }
+    }
+   ]
+  },
+  {
+   "name": "single-quoted-string-with-escaped-quotes",
+   "steps": [
+    {
+     "sql": "CREATE TABLE test_escaped (id INTEGER, text VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO test_escaped VALUES (1, 'She said ''Hello''')"
+    },
+    {
+     "sql": "SELECT text FROM test_escaped WHERE id = 1",
+     "expect": {
+      "rowCount": 1,
+      "value": "She said 'Hello'"
+     }
+    }
+   ]
+  },
+  {
+   "name": "comment-with-newline",
+   "steps": [
+    {
+     "sql": "CREATE TABLE test_comment (id INTEGER) COMMENT = 'This is a comment\nwith a newline'"
+    },
+    {
+     "sql": "SHOW TABLES",
+     "expect": {
+      "rowCount": 1
+     }
+    },
+    {
+     "sql": "SELECT CONTAINS(\"comment\", CHAR(10)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  }
+ ]
+}

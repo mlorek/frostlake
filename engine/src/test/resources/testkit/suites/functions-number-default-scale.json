@@ -1,0 +1,35 @@
+{
+  "suite": "functions-number-default-scale",
+  "description": "A bare NUMBER / DECIMAL / NUMERIC is NUMBER(38,0) in Snowflake, so every conversion to it with no explicit scale ROUNDS the value to a whole number - TO_NUMBER(405.958) is 406, 405.958::NUMBER is 406 - and the rounding is HALF_UP away from zero. An explicit (precision, scale), or a NUMBER(p,s) cast, rounds to that scale instead, and TRY_CAST follows the same rule. A format model governs PARSING only and does not imply a scale, so even '999.999' rounds to a whole number - but the input must FIT the format: live-verified, TO_NUMBER('405.958', '9,999.99') and ('405.958', '9,999') both fail because the value carries more fraction digits than the model does. A rounded value lands in OBJECT_CONSTRUCT as an integer rather than a decimal. Converted 1:1 from functions/NumberDefaultScaleTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-to-number-family-defaults-to-scale-zero", "steps": [
+      {"sql": "SELECT TO_NUMBER(405.958), TO_DECIMAL(405.958), TO_NUMERIC(405.958), TO_NUMBER('102.811')",
+       "expect": {"rows": [["406", "406", "406", "103"]]}}
+    ]},
+    {"name": "a-bare-cast-defaults-to-scale-zero", "steps": [
+      {"sql": "SELECT 405.958::NUMBER, CAST(405.958 AS NUMBER), 405.958::DECIMAL, 405.958::NUMERIC",
+       "expect": {"rows": [["406", "406", "406", "406"]]}}
+    ]},
+    {"name": "try-cast-to-a-bare-number-defaults-to-scale-zero", "steps": [
+      {"sql": "SELECT TRY_CAST('405.958' AS NUMBER), TRY_CAST('405.958' AS DECIMAL)",
+       "expect": {"rows": [["406", "406"]]}}
+    ]},
+    {"name": "half-up-rounds-away-from-zero", "steps": [
+      {"sql": "SELECT TO_NUMBER(2.5), TO_NUMBER(-2.5)", "expect": {"rows": [["3", "-3"]]}}
+    ]},
+    {"name": "an-explicit-scale-is-preserved", "steps": [
+      {"sql": "SELECT '<' || TO_NUMBER(405.958, 38, 3) || '>'", "expect": {"value": "<405.958>"}},
+      {"sql": "SELECT '<' || 405.958::NUMBER(10,2) || '>'", "expect": {"value": "<405.96>"}},
+      {"sql": "SELECT '<' || TRY_CAST('405.958' AS NUMBER(10,2)) || '>'", "expect": {"value": "<405.96>"}}
+    ]},
+    {"name": "a-format-string-does-not-imply-a-scale", "steps": [
+      {"sql": "SELECT TO_NUMBER('405.958', '999.999')", "expect": {"value": "406"}},
+      {"sql": "SELECT TO_NUMBER('405.958', '9,999.99')", "expect": {"error": {}}},
+      {"sql": "SELECT TO_NUMBER('405.958', '9,999')", "expect": {"error": {}}}
+    ]},
+    {"name": "a-rounded-value-feeds-object-construct", "steps": [
+      {"sql": "SELECT OBJECT_CONSTRUCT('score', TO_NUMBER(405.958))", "expect": {"value": "{\"score\":406}"}}
+    ]}
+  ]
+}

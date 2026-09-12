@@ -1,0 +1,38 @@
+{
+  "suite": "functions-conditional-short-circuit",
+  "description": "The conditional functions defined in terms of CASE short-circuit: only the selected branch is evaluated, which is what makes the standard guard idiom work - IFF(x IS NOT NULL, f(x), NULL) must not call f on the NULL rows, and NVL(a, g(b)) must not compute the fallback when a is non-NULL. Evaluating every argument first made such guards fail on exactly the rows they were written to exclude, so each test puts 1/0 in the branch that must not run. Includes the vendor idiom end to end (a Java UDF that rejects NULL, guarded by IFF), a check that ordinary results are unchanged, and the arity rule: COALESCE needs at least TWO arguments, live-verified, while GREATEST(1) and LEAST(1) are fine. Converted 1:1 from functions/ConditionalShortCircuitTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "iff-skips-the-untaken-branch", "steps": [
+      {"sql": "SELECT IFF(FALSE, 1/0, 42)", "expect": {"value": "42"}},
+      {"sql": "SELECT IFF(TRUE, 7, 1/0)", "expect": {"value": "7"}}
+    ]},
+    {"name": "coalesce-stops-at-the-first-non-null", "steps": [
+      {"sql": "SELECT COALESCE(NULL, 7, 1/0)", "expect": {"value": "7"}}
+    ]},
+    {"name": "nvl-and-ifnull-skip-the-fallback-when-the-value-is-present", "steps": [
+      {"sql": "SELECT NVL(3, 1/0)", "expect": {"value": "3"}},
+      {"sql": "SELECT IFNULL(2, 1/0)", "expect": {"value": "2"}},
+      {"sql": "SELECT NVL(NULL, 5)", "expect": {"value": "5"}}
+    ]},
+    {"name": "nvl2-selects-one-branch-only", "steps": [
+      {"sql": "SELECT NVL2(NULL, 1/0, 9)", "expect": {"value": "9"}},
+      {"sql": "SELECT NVL2('x', 4, 1/0)", "expect": {"value": "4"}}
+    ]},
+    {"name": "a-guarded-udf-is-not-called-on-excluded-rows", "steps": [
+      {"sql": "CREATE FUNCTION strict_len(s VARCHAR)\nRETURNS NUMBER\nLANGUAGE JAVA\nHANDLER = 'StrictLen.go'\nAS\n$$\nclass StrictLen {\n  public static int go(String s) {\n    return s.length();\n  }\n}\n$$"},
+      {"sql": "CREATE TABLE guard_src (s VARCHAR)"},
+      {"sql": "INSERT INTO guard_src VALUES ('abc'), (NULL)"},
+      {"sql": "SELECT IFF(s IS NOT NULL, strict_len(s), NULL) AS n FROM guard_src ORDER BY n",
+       "expect": {"rowCount": 2, "rows": [["3"], [null]], "ordered": true}}
+    ]},
+    {"name": "values-stay-correct-when-both-branches-are-safe", "steps": [
+      {"sql": "SELECT IFF(x > 2, 'big', 'small') AS label, COALESCE(NULL, x, 99) AS c, NVL(NULL, x * 2) AS d\nFROM (SELECT 1 AS x UNION ALL SELECT 5) ORDER BY x",
+       "expect": {"rows": [["small", "1", "2"], ["big", "5", "10"]], "ordered": true}}
+    ]},
+    {"name": "a-wrong-arity-still-reports-a-function-error", "steps": [
+      {"sql": "SELECT COALESCE(1)", "expect": {"error": {"messageContains": "not enough arguments"}}},
+      {"sql": "SELECT COALESCE(NULL, 1)", "expect": {"value": "1"}}
+    ]}
+  ]
+}

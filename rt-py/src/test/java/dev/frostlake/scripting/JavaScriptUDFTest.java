@@ -63,11 +63,11 @@ public class JavaScriptUDFTest {
         logger.info("Testing CREATE FUNCTION with LANGUAGE JAVASCRIPT");
 
         engine.execute("""
-            CREATE FUNCTION js_double(x INTEGER)
-            RETURNS INTEGER
+            CREATE FUNCTION js_double(x FLOAT)
+            RETURNS FLOAT
             LANGUAGE JAVASCRIPT
             AS $$
-                return x * 2;
+                return X * 2;
             $$
             """);
 
@@ -78,7 +78,7 @@ public class JavaScriptUDFTest {
         assertEquals("JS_DOUBLE", func.getName());
         assertEquals("JAVASCRIPT", func.getLanguage());
         assertEquals(1, func.getParameters().size());
-        assertTrue(func.getBody().contains("return x * 2"),
+        assertTrue(func.getBody().contains("return X * 2"),
                    "Function body should contain JavaScript code");
     }
 
@@ -87,11 +87,11 @@ public class JavaScriptUDFTest {
         logger.info("Testing JavaScript function with multiple parameters");
 
         engine.execute("""
-            CREATE FUNCTION js_add(a INTEGER, b INTEGER)
-            RETURNS INTEGER
+            CREATE FUNCTION js_add(a FLOAT, b FLOAT)
+            RETURNS FLOAT
             LANGUAGE JAVASCRIPT
             AS $$
-                return a + b;
+                return A + B;
             $$
             """);
 
@@ -113,7 +113,7 @@ public class JavaScriptUDFTest {
             RETURNS VARCHAR
             LANGUAGE JAVASCRIPT
             AS $$
-                return s.toUpperCase();
+                return S.toUpperCase();
             $$
             """);
 
@@ -249,16 +249,16 @@ public class JavaScriptUDFTest {
         logger.info("Testing DROP JavaScript function");
 
         engine.execute("""
-            CREATE FUNCTION js_test(x INTEGER)
-            RETURNS INTEGER
+            CREATE FUNCTION js_test(x FLOAT)
+            RETURNS FLOAT
             LANGUAGE JAVASCRIPT
-            AS 'return x;'
+            AS 'return X;'
             """);
 
         final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNotNull(schema.getFunction("js_test"), "Function should exist");
 
-        engine.execute("DROP FUNCTION js_test(INTEGER)");
+        engine.execute("DROP FUNCTION js_test(FLOAT)");
 
         final RuntimeException exception = Assertions.assertThrows(
             RuntimeException.class,

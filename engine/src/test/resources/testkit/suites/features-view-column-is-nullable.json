@@ -1,0 +1,31 @@
+{
+  "suite": "features-view-column-is-nullable",
+  "description": "INFORMATION_SCHEMA.COLUMNS carries a VIEW column's NOT NULL, on the same rule DESCRIBE VIEW's null? cell uses: a projected column reference keeps it, an expression over that same column loses it, and an outer join clears it on the side it null-extends and only that side. Live-verified against the base table as a control - the two surfaces agree row for row, in this view's spelling (YES/NO) rather than DESCRIBE's (Y/N). Converted 1:1 from features/ViewColumnIsNullableTest (now retired); its setupTest fixture is inlined per test.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-base-table-reports-its-own-nullability", "steps": [
+      {"sql": "CREATE TABLE vn_t (k NUMBER NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "SELECT column_name, is_nullable FROM test_db.information_schema.columns WHERE table_name = 'VN_T' ORDER BY column_name",
+       "expect": {"rows": [["K", "NO"], ["V", "NO"], ["W", "YES"]], "ordered": true}}
+    ]},
+    {"name": "a-view-carries-the-not-null-through", "steps": [
+      {"sql": "CREATE TABLE vn_t (k NUMBER NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE VIEW vn_v AS SELECT k, v, w FROM vn_t"},
+      {"sql": "SELECT column_name, is_nullable FROM test_db.information_schema.columns WHERE table_name = 'VN_V' ORDER BY column_name",
+       "expect": {"rows": [["K", "NO"], ["V", "NO"], ["W", "YES"]], "ordered": true}}
+    ]},
+    {"name": "an-expression-column-is-nullable", "steps": [
+      {"sql": "CREATE TABLE vn_t (k NUMBER NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE VIEW vn_e AS SELECT UPPER(v) AS uv, v || 'x' AS cv FROM vn_t"},
+      {"sql": "SELECT column_name, is_nullable FROM test_db.information_schema.columns WHERE table_name = 'VN_E' ORDER BY column_name",
+       "expect": {"rows": [["CV", "YES"], ["UV", "YES"]], "ordered": true}}
+    ]},
+    {"name": "an-outer-join-clears-the-null-extended-side", "steps": [
+      {"sql": "CREATE TABLE vn_t (k NUMBER NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE TABLE vn_r (k NUMBER NOT NULL, r VARCHAR(4) NOT NULL)"},
+      {"sql": "CREATE VIEW vn_j AS SELECT l.v AS lv, r.r AS rr FROM vn_t l LEFT JOIN vn_r r ON l.k = r.k"},
+      {"sql": "SELECT column_name, is_nullable FROM test_db.information_schema.columns WHERE table_name = 'VN_J' ORDER BY column_name",
+       "expect": {"rows": [["LV", "NO"], ["RR", "YES"]], "ordered": true}}
+    ]}
+  ]
+}

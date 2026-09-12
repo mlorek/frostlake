@@ -78,9 +78,6 @@ public final class StringResultWidths {
         FIXED_WIDTH.put("CHAR", Integer.valueOf(1));
         FIXED_WIDTH.put("DAYNAME", Integer.valueOf(3));
         FIXED_WIDTH.put("MONTHNAME", Integer.valueOf(3));
-        // Both UUID converters answer a ZERO-width string on the account, whatever they are handed.
-        FIXED_WIDTH.put("TO_UUID", Integer.valueOf(0));
-        FIXED_WIDTH.put("TRY_TO_UUID", Integer.valueOf(0));
     }
 
     private StringResultWidths() {

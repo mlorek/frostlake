@@ -252,7 +252,8 @@ public class PersistenceTest {
                 
             }
         });
-        assertTrue(exception.getMessage().contains("Database 'TEST_DB' does not exist or not authorized."));
+        // A USE that resolves nothing answers the sentence every failed USE answers (live-verified).
+        assertTrue(exception.getMessage().contains("Object does not exist, or operation cannot be performed."));
 
         engine2.shutdown();
     }

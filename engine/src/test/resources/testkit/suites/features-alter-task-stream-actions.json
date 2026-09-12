@@ -1,0 +1,114 @@
+{
+  "suite": "features-alter-task-stream-actions",
+  "description": "ALTER TASK SET / UNSET / MODIFY and ALTER STREAM UNSET COMMENT through the SQL surface (SHOW TASKS cells, SHOW PARAMETERS IN TASK rows, SHOW STREAMS): SET SCHEDULE/WAREHOUSE, multiple options in one statement, task parameters, UNSET resetting to defaults (comment to the empty string, timeout to the 1-hour default), MODIFY AS changing the body and MODIFY WHEN the condition, RESUME/SUSPEND still working, stream SET/UNSET COMMENT, and UNSET SCHEDULE clearing it to NULL. Converted 1:1 from features/AlterTaskStreamActionsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "set-schedule-and-warehouse", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh2 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK tk SET SCHEDULE = '10 MINUTE'"},
+      {"sql": "ALTER TASK tk SET WAREHOUSE = wh2"},
+      {"sql": "SHOW TASKS LIKE 'tk'"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'TK', \"schedule\", NULL)), MAX(IFF(\"name\" = 'TK', \"warehouse\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["10 MINUTE", "WH2"]]}},
+      {"sql": "DROP TASK tk"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh2"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]},
+    {"name": "set-multiple-options-in-one-statement", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK tk SET COMMENT = 'hello' USER_TASK_TIMEOUT_MS = 5000"},
+      {"sql": "SHOW TASKS LIKE 'tk'"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'TK', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "hello"}},
+      {"sql": "SHOW PARAMETERS IN TASK tk"},
+      {"sql": "SELECT MAX(IFF(\"key\" = 'USER_TASK_TIMEOUT_MS', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "5000"}},
+      {"sql": "DROP TASK tk"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]},
+    {"name": "set-task-parameters", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK tk SET SUSPEND_TASK_AFTER_NUM_FAILURES = 3 TASK_AUTO_RETRY_ATTEMPTS = 2 ALLOW_OVERLAPPING_EXECUTION = TRUE"},
+      {"sql": "SHOW PARAMETERS IN TASK tk"},
+      {"sql": "SELECT MAX(IFF(\"key\" = 'SUSPEND_TASK_AFTER_NUM_FAILURES', \"value\", NULL)), MAX(IFF(\"key\" = 'TASK_AUTO_RETRY_ATTEMPTS', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["3", "2"]]}},
+      {"sql": "SHOW TASKS LIKE 'tk'"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'TK', \"allow_overlapping_execution\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "DROP TASK tk"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]},
+    {"name": "unset-resets-to-default", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK tk SET COMMENT = 'hello' USER_TASK_TIMEOUT_MS = 5000"},
+      {"sql": "ALTER TASK tk UNSET COMMENT, USER_TASK_TIMEOUT_MS"},
+      {"sql": "SHOW TASKS LIKE 'tk'"},
+      {"sql": "SELECT '<' || MAX(IFF(\"name\" = 'TK', \"comment\", NULL)) || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}},
+      {"sql": "SHOW PARAMETERS IN TASK tk"},
+      {"sql": "SELECT MAX(IFF(\"key\" = 'USER_TASK_TIMEOUT_MS', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "3600000"}},
+      {"sql": "DROP TASK tk"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]},
+    {"name": "modify-as-changes-the-body", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK tk MODIFY AS SELECT 42"},
+      {"sql": "SHOW TASKS LIKE 'tk'"},
+      {"sql": "SELECT TRIM(MAX(IFF(\"name\" = 'TK', \"definition\", NULL))) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "SELECT 42"}},
+      {"sql": "DROP TASK tk"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]},
+    {"name": "modify-when-changes-the-condition", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK tk MODIFY WHEN TRUE"},
+      {"sql": "SHOW TASKS LIKE 'tk'"},
+      {"sql": "SELECT TRIM(MAX(IFF(\"name\" = 'TK', \"condition\", NULL))) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TRUE"}},
+      {"sql": "DROP TASK tk"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]},
+    {"name": "resume-suspend-still-work", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK tk RESUME"},
+      {"sql": "ALTER TASK tk SUSPEND"},
+      {"sql": "SHOW TASKS LIKE 'tk'"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'TK', \"state\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "suspended"}},
+      {"sql": "DROP TASK tk"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]},
+    {"name": "stream-unset-comment", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE STREAM st ON TABLE t COMMENT = 'orig'"},
+      {"sql": "ALTER STREAM st UNSET COMMENT"},
+      {"sql": "SHOW STREAMS LIKE 'st'"},
+      {"sql": "SELECT '<' || MAX(IFF(\"name\" = 'ST', \"comment\", NULL)) || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}}
+    ]},
+    {"name": "stream-set-comment-still-works", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE STREAM st ON TABLE t COMMENT = 'orig'"},
+      {"sql": "ALTER STREAM st SET COMMENT = 'updated'"},
+      {"sql": "SHOW STREAMS LIKE 'st'"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'ST', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "updated"}}
+    ]},
+    {"name": "unset-schedule-clears-it", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK tk UNSET SCHEDULE"},
+      {"sql": "SHOW TASKS LIKE 'tk'"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'TK' AND \"schedule\" IS NULL) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}},
+      {"sql": "DROP TASK tk"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]}
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "suite": "transactions",
+  "description": "BEGIN / COMMIT / ROLLBACK visibility semantics within one session.",
+  "tags": ["transactions"],
+  "tests": [
+    {
+      "name": "rollback-discards-insert",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "BEGIN"},
+        {"sql": "INSERT INTO t VALUES (1)"},
+        {"sql": "ROLLBACK"},
+        {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "commit-keeps-insert",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "BEGIN"},
+        {"sql": "INSERT INTO t VALUES (1)"},
+        {"sql": "COMMIT"},
+        {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "rollback-discards-delete",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2)"},
+        {"sql": "BEGIN"},
+        {"sql": "DELETE FROM t"},
+        {"sql": "ROLLBACK"},
+        {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "changes-visible-inside-open-transaction",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "BEGIN"},
+        {"sql": "INSERT INTO t VALUES (1)"},
+        {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "1"}},
+        {"sql": "COMMIT"}
+      ]
+    }
+  ]
+}

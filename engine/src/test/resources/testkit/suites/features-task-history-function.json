@@ -1,0 +1,37 @@
+{
+  "suite": "features-task-history-function",
+  "description": "INFORMATION_SCHEMA.TASK_HISTORY() - the table function a scheduler polls. Covers the no-argument call's column layout (name, state, scheduled_time), the TASK_NAME => filter answering empty for a task that has never run, the RESULT_LIMIT => cap, and the name resolution rule: TASK_HISTORY lives ONLY under INFORMATION_SCHEMA, so the bare name is an invalid identifier while the database-qualified form works. Converted 1:1 from features/TaskHistoryFunctionTest (now retired); its setupTest fixture (test_wh warehouse + my_task) is inlined per test and the account-level warehouse is dropped again.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "task-history-with-no-arguments-carries-the-live-columns", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh"},
+      {"sql": "CREATE OR REPLACE TASK my_task WAREHOUSE = test_wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "SELECT COUNT(name), COUNT(state), COUNT(scheduled_time) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())",
+       "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "task-history-filtered-by-task-name-is-empty-before-any-run", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh"},
+      {"sql": "CREATE OR REPLACE TASK my_task WAREHOUSE = test_wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(TASK_NAME => 'my_task'))",
+       "expect": {"rowCount": 0}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "task-history-honours-a-result-limit", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh"},
+      {"sql": "CREATE OR REPLACE TASK my_task WAREHOUSE = test_wh SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "SELECT IFF(COUNT(*) <= 10, 'within', 'over') FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(RESULT_LIMIT => 10))",
+       "expect": {"value": "within"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "the-bare-name-is-not-a-function", "steps": [
+      {"sql": "SELECT * FROM TABLE(TASK_HISTORY())",
+       "expect": {"error": {"messageContains": "Invalid identifier TASK_HISTORY"}}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(test_db.INFORMATION_SCHEMA.TASK_HISTORY(RESULT_LIMIT => 1))",
+       "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

@@ -28,7 +28,14 @@ public class Extract extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(1) == null) return null;
-        return SharedFunctionHelpers.datePart(args.get(0).toString(), SharedFunctionHelpers.toLocalDateTime(args.get(1)));
+        if (args.get(1) instanceof java.time.LocalTime) {
+            return SharedFunctionHelpers.datePart(args.get(0).toString(),
+                ((java.time.LocalTime) args.get(1)).atDate(java.time.LocalDate.of(1970, 1, 1)),
+                "EXTRACT");
+        }
+        return SharedFunctionHelpers.datePart(args.get(0).toString(),
+            SharedFunctionHelpers.toLocalDateTime(args.get(1)),
+            args.get(1), "EXTRACT");
     }
 
     @Override

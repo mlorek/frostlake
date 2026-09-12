@@ -133,6 +133,10 @@ public class ShowCommandExecutor {
         return relationalExecutor.showMaterializedViewsInDatabase(databaseName);
     }
 
+    public ResultSet showMaterializedViewsInAccount() {
+        return relationalExecutor.showMaterializedViewsInAccount();
+    }
+
     public ResultSet showColumns(final String tableName) {
         return relationalExecutor.showColumns(tableName);
     }
@@ -227,6 +231,14 @@ public class ShowCommandExecutor {
 
     public ResultSet showUserProceduresInDatabase(final String databaseName) {
         return routineExecutor.showUserProceduresInDatabase(databaseName);
+    }
+
+    public ResultSet showFunctionsInAccount(final boolean userOnly) {
+        return routineExecutor.showFunctionsInAccount(userOnly);
+    }
+
+    public ResultSet showProceduresInAccount(final boolean userOnly) {
+        return routineExecutor.showProceduresInAccount(userOnly);
     }
 
     // ==================== DESCRIBE STATEMENTS ====================

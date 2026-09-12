@@ -1,0 +1,211 @@
+{
+  "suite": "ddl-show-in-database",
+  "description": "SHOW ... IN DATABASE spans every schema (TABLES, VIEWS, OBJECTS, SEQUENCES, TAGS, STAGES, MATERIALIZED VIEWS, FILE FORMATS, the policies, PROCEDURES, FUNCTIONS) while IN SCHEMA scopes to one; SHOW FUNCTIONS IN DATABASE includes the built-in catalog while SHOW USER FUNCTIONS drops it. Plus SHOW PRIMARY/UNIQUE/IMPORTED KEYS' one-row-per-key-column shape with SYS_CONSTRAINT_ auto-names, shared explicit names and key_sequence numbering; and the SYSTEM$ routines listed as FUNCTIONS (is_builtin Y) never procedures, with SHOW USER PROCEDURES/FUNCTIONS excluding builtins. Converted 1:1 from ddl/ShowInDatabaseTest, ShowKeysTest and ShowProceduresTest (all now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "show-tables-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE TABLE s1.t1 (a INTEGER)"},
+      {"sql": "CREATE TABLE s2.t2 (a INTEGER)"},
+      {"sql": "SHOW TABLES IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'T1'), COUNT_IF(\"name\" = 'T2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "SHOW TABLES IN SCHEMA s1"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'T1'), COUNT_IF(\"name\" = 'T2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "0"]]}}
+    ]},
+    {"name": "show-views-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE TABLE s1.base (a INTEGER)"},
+      {"sql": "CREATE VIEW s1.v1 AS SELECT a FROM s1.base"},
+      {"sql": "CREATE TABLE s2.base (a INTEGER)"},
+      {"sql": "CREATE VIEW s2.v2 AS SELECT a FROM s2.base"},
+      {"sql": "SHOW VIEWS IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'V1'), COUNT_IF(\"name\" = 'V2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "show-procedures-in-database-spans-schemas-and-omits-builtins", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE PROCEDURE s1.p1() RETURNS VARCHAR LANGUAGE SQL AS BEGIN RETURN 'a'; END;"},
+      {"sql": "CREATE PROCEDURE s2.p2() RETURNS VARCHAR LANGUAGE SQL AS BEGIN RETURN 'b'; END;"},
+      {"sql": "SHOW PROCEDURES IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'P1'), COUNT_IF(\"name\" = 'P2'), COUNT_IF(\"is_builtin\" != 'N') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1", "0"]]}}
+    ]},
+    {"name": "show-functions-in-database-spans-schemas-and-includes-builtins", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE FUNCTION s1.f1(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "SHOW FUNCTIONS IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'F1'), COUNT_IF(UPPER(\"name\") = 'ABS') > 0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "true"]]}},
+      {"sql": "SHOW USER FUNCTIONS IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'F1'), COUNT_IF(UPPER(\"name\") = 'ABS'), COUNT_IF(\"is_builtin\" != 'N') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "0", "0"]]}}
+    ]},
+    {"name": "show-objects-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE TABLE s1.o1 (a INTEGER)"},
+      {"sql": "CREATE VIEW s2.o2 AS SELECT 1 AS x"},
+      {"sql": "SHOW OBJECTS IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'O1'), COUNT_IF(\"name\" = 'O2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "show-sequences-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE SEQUENCE s1.seq1"},
+      {"sql": "CREATE SEQUENCE s2.seq2"},
+      {"sql": "SHOW SEQUENCES IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'SEQ1'), COUNT_IF(\"name\" = 'SEQ2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "show-tags-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE TAG s1.tag1"},
+      {"sql": "CREATE TAG s2.tag2"},
+      {"sql": "SHOW TAGS IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'TAG1'), COUNT_IF(\"name\" = 'TAG2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "show-stages-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE STAGE s1.stg1"},
+      {"sql": "CREATE STAGE s2.stg2"},
+      {"sql": "SHOW STAGES IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'STG1'), COUNT_IF(\"name\" = 'STG2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "show-materialized-views-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE TABLE s1.base (id INTEGER, amount INTEGER)"},
+      {"sql": "CREATE MATERIALIZED VIEW s1.mv1 AS SELECT id, amount FROM s1.base WHERE amount >= 200"},
+      {"sql": "CREATE TABLE s2.base (id INTEGER, amount INTEGER)"},
+      {"sql": "CREATE MATERIALIZED VIEW s2.mv2 AS SELECT id, amount FROM s2.base WHERE amount >= 200"},
+      {"sql": "SHOW MATERIALIZED VIEWS IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'MV1'), COUNT_IF(\"name\" = 'MV2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "SHOW MATERIALIZED VIEWS IN SCHEMA s1"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'MV1'), COUNT_IF(\"name\" = 'MV2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "0"]]}}
+    ]},
+    {"name": "show-file-formats-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE FILE FORMAT s1.ff1 TYPE = CSV"},
+      {"sql": "CREATE FILE FORMAT s2.ff2 TYPE = CSV"},
+      {"sql": "SHOW FILE FORMATS IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'FF1'), COUNT_IF(\"name\" = 'FF2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "SHOW FILE FORMATS IN SCHEMA s1"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'FF1'), COUNT_IF(\"name\" = 'FF2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "0"]]}}
+    ]},
+    {"name": "show-masking-policies-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE MASKING POLICY s1.mp1 AS (val STRING) RETURNS STRING -> '***'"},
+      {"sql": "CREATE MASKING POLICY s2.mp2 AS (val STRING) RETURNS STRING -> '***'"},
+      {"sql": "SHOW MASKING POLICIES IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'MP1'), COUNT_IF(\"name\" = 'MP2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "SHOW MASKING POLICIES IN SCHEMA s1"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'MP1'), COUNT_IF(\"name\" = 'MP2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "0"]]}}
+    ]},
+    {"name": "show-row-access-policies-in-database-spans-all-schemas", "steps": [
+      {"sql": "CREATE SCHEMA s1"},
+      {"sql": "CREATE SCHEMA s2"},
+      {"sql": "CREATE ROW ACCESS POLICY s1.rap1 AS (v STRING) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE ROW ACCESS POLICY s2.rap2 AS (v STRING) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "SHOW ROW ACCESS POLICIES IN DATABASE test_db"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'RAP1'), COUNT_IF(\"name\" = 'RAP2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "SHOW ROW ACCESS POLICIES IN SCHEMA s1"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'RAP1'), COUNT_IF(\"name\" = 'RAP2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "0"]]}}
+    ]},
+    {"name": "show-primary-keys-for-table", "steps": [
+      {"sql": "CREATE TABLE pk_t (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE pk_t", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"column_name\", \"table_name\", \"schema_name\", \"database_name\", \"key_sequence\", \"rely\", STARTSWITH(\"constraint_name\", 'SYS_CONSTRAINT_') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ID", "PK_T", "TEST_SCHEMA", "TEST_DB", "1", "false", "true"]]}}
+    ]},
+    {"name": "show-primary-keys-numbers-composite-key-columns", "steps": [
+      {"sql": "CREATE TABLE ck_t (a INTEGER, b INTEGER, PRIMARY KEY (a, b))"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE ck_t", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"key_sequence\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"key_sequence\"",
+       "expect": {"rows": [["1"], ["2"]], "ordered": true}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE ck_t"},
+      {"sql": "SELECT COUNT(DISTINCT \"constraint_name\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "show-unique-keys-for-table", "steps": [
+      {"sql": "CREATE TABLE uk_t (id INTEGER, email VARCHAR UNIQUE)"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE uk_t", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"column_name\", \"table_name\", \"key_sequence\", STARTSWITH(\"constraint_name\", 'SYS_CONSTRAINT_') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["EMAIL", "UK_T", "1", "true"]]}}
+    ]},
+    {"name": "show-primary-keys-keeps-one-row-per-column-under-the-explicit-name", "steps": [
+      {"sql": "CREATE TABLE ck (a INTEGER, b INTEGER, c VARCHAR, CONSTRAINT my_pk PRIMARY KEY (a, b), CONSTRAINT my_uq UNIQUE (c))"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE ck", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"key_sequence\", \"column_name\", \"constraint_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"key_sequence\"",
+       "expect": {"rows": [["1", "A", "MY_PK"], ["2", "B", "MY_PK"]], "ordered": true}}
+    ]},
+    {"name": "show-unique-keys-reports-the-explicit-constraint-name", "steps": [
+      {"sql": "CREATE TABLE uq_named (id INTEGER, email VARCHAR, CONSTRAINT my_uq UNIQUE (email))"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE uq_named", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"column_name\", \"constraint_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["EMAIL", "MY_UQ"]]}}
+    ]},
+    {"name": "show-unique-keys-numbers-multi-column-constraint-columns", "steps": [
+      {"sql": "CREATE TABLE uq_multi (a INTEGER, b INTEGER, CONSTRAINT uq_ab UNIQUE (a, b))"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE uq_multi", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"key_sequence\", \"constraint_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"key_sequence\"",
+       "expect": {"rows": [["1", "UQ_AB"], ["2", "UQ_AB"]], "ordered": true}}
+    ]},
+    {"name": "show-imported-keys-reports-explicit-constraint-names", "steps": [
+      {"sql": "CREATE TABLE ik_parent (id INTEGER, CONSTRAINT ik_pk PRIMARY KEY (id))"},
+      {"sql": "CREATE TABLE ik_child (a INTEGER, CONSTRAINT ik_fk FOREIGN KEY (a) REFERENCES ik_parent(id))"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE ik_child", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"fk_name\", \"pk_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["IK_FK", "IK_PK"]]}}
+    ]},
+    {"name": "show-primary-keys-all-tables-in-schema", "steps": [
+      {"sql": "CREATE TABLE ka (x INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE kb (y INTEGER PRIMARY KEY)"},
+      {"sql": "SHOW PRIMARY KEYS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"table_name\" IN ('KA', 'KB')",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "system-routines-are-listed-as-functions-not-procedures", "steps": [
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") = 'SYSTEM$WAIT'",
+       "expect": {"value": "0"}},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT_IF(\"is_builtin\" = 'Y') > 0, COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('SYSTEM$WAIT', 'SYSTEM$SET_RETURN_VALUE', 'SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS')",
+       "expect": {"rows": [["true", "3"]]}}
+    ]},
+    {"name": "show-user-procedures-excludes-builtins", "steps": [
+      {"sql": "CREATE PROCEDURE my_proc()\nRETURNS VARCHAR\nLANGUAGE SQL\nAS\nBEGIN\n  RETURN 'x';\nEND;"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SET fn_all = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
+      {"sql": "SHOW USER FUNCTIONS"},
+      {"sql": "SELECT $fn_all > COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "SHOW USER PROCEDURES"},
+      {"sql": "SELECT COUNT_IF(\"is_builtin\" != 'N'), COUNT_IF(UPPER(\"name\") = 'MY_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["0", "1"]]}}
+    ]},
+    {"name": "show-user-functions-excludes-builtins", "steps": [
+      {"sql": "CREATE FUNCTION my_fn(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "SHOW USER FUNCTIONS"},
+      {"sql": "SELECT COUNT_IF(\"is_builtin\" != 'N'), COUNT_IF(UPPER(\"name\") = 'MY_FN') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["0", "1"]]}}
+    ]}
+  ]
+}

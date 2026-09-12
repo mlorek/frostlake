@@ -1,0 +1,31 @@
+{
+  "suite": "functions-dateadd-trunc-date-type",
+  "description": "DATEADD / DATE_TRUNC on a DATE-only input keep the DATE type for a day-or-larger unit, matching Snowflake, rather than widening to a timestamp; a sub-day unit, or a timestamp input, still yields a timestamp. Converted 1:1 from functions/DateAddTruncDateTypeTest (now retired); its assertInstanceOf(LocalDate.class) / LocalDateTime.class checks become TYPEOF(TO_VARIANT(x)) reading DATE or TIMESTAMP_NTZ, and the Java toString comparisons become TO_VARCHAR so the value is rendered in Snowflake's own form.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "dateadd-of-a-day-or-larger-unit-keeps-date", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(DATEADD(month, 1, '2023-01-31'::DATE)))", "expect": {"value": "DATE"}},
+      {"sql": "SELECT TO_VARCHAR(DATEADD(month, 1, '2023-01-31'::DATE))", "expect": {"value": "2023-02-28"}}
+    ]},
+    {"name": "date-trunc-of-a-day-or-larger-unit-keeps-date", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(DATE_TRUNC('month', '2024-05-09'::DATE)))", "expect": {"value": "DATE"}},
+      {"sql": "SELECT TO_VARCHAR(DATE_TRUNC('month', '2024-05-09'::DATE))", "expect": {"value": "2024-05-01"}}
+    ]},
+    {"name": "a-date-column-input-keeps-date", "steps": [
+      {"sql": "CREATE TABLE d (dt DATE)"},
+      {"sql": "INSERT INTO d VALUES ('2023-01-31')"},
+      {"sql": "SELECT TYPEOF(TO_VARIANT(DATEADD(day, 1, dt))) FROM d", "expect": {"value": "DATE"}},
+      {"sql": "SELECT TO_VARCHAR(DATEADD(day, 1, dt)) FROM d", "expect": {"value": "2023-02-01"}}
+    ]},
+    {"name": "dateadd-of-a-sub-day-unit-widens-to-a-timestamp", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(DATEADD(hour, 2, '2023-01-31'::DATE)))", "expect": {"value": "TIMESTAMP_NTZ"}},
+      {"sql": "SELECT TO_VARCHAR(DATEADD(hour, 2, '2023-01-31'::DATE))", "expect": {"value": "2023-01-31 02:00:00.000"}}
+    ]},
+    {"name": "a-timestamp-input-stays-a-timestamp", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(DATEADD(month, 1, '2023-01-31 10:00:00'::TIMESTAMP)))",
+       "expect": {"value": "TIMESTAMP_NTZ"}},
+      {"sql": "SELECT TO_VARCHAR(DATEADD(month, 1, '2023-01-31 10:00:00'::TIMESTAMP))",
+       "expect": {"value": "2023-02-28 10:00:00.000"}}
+    ]}
+  ]
+}

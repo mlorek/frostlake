@@ -24,10 +24,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.temporal.Temporal;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Every SHOW command's timestamp column is TIMESTAMP_LTZ and carries a temporal VALUE — measured across
@@ -47,10 +50,9 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
  *   mins_to_unlock   VARCHAR   as are days_to_expiry and mins_to_bypass_mfa
  * </pre>
  *
- * <p>The declared type and the cell move together: a TIMESTAMP_LTZ column holds a
- * {@link LocalDateTime}, which is what the engine's other TIMESTAMP_LTZ cells carry and what a live
- * account's own TIMESTAMPLTZ arrives as over JDBC. Declaring the type while leaving pre-rendered text
- * in the cell would make the declaration a lie.
+ * <p>The declared type and the cell move together: a TIMESTAMP_LTZ column holds the engine's LTZ
+ * carrier — an {@link java.time.OffsetDateTime} at the true instant, which the live harness hands back
+ * as a {@link LocalDateTime} — never pre-rendered text, which would make the declaration a lie.
  */
 public class ShowTimestampTypeTest extends BaseDatabaseTest {
 
@@ -112,8 +114,10 @@ public class ShowTimestampTypeTest extends BaseDatabaseTest {
     @Test
     public void theCellIsATemporalValue() {
         final ResultSet tables = engine.executeQuery("SHOW TABLES");
-        assertInstanceOf(LocalDateTime.class,
-            tables.getRows().get(0).getValue(tables.getColumnIndex("created_on")));
+        final Object created = tables.getRows().get(0).getValue(tables.getColumnIndex("created_on"));
+        assertInstanceOf(Temporal.class, created);
+        assertTrue(created instanceof OffsetDateTime || created instanceof LocalDateTime,
+            "the engine's LTZ carrier, or the live harness's local reading of one");
         final ResultSet databases = engine.executeQuery("SHOW DATABASES");
         assertInstanceOf(String.class,
             databases.getRows().get(0).getValue(databases.getColumnIndex("retention_time")));

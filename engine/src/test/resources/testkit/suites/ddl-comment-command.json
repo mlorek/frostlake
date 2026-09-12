@@ -1,0 +1,186 @@
+{
+  "suite": "ddl-comment-command",
+  "description": "COMMENT ON <object-type> ... IS '<text>' across every object kind, read back through SHOW/DESCRIBE cells; updating an existing comment; qualified names; special/quoted payloads; and the live-verified refusal shapes: missing database spelled bare, missing table/view/function fully qualified, missing COLUMN as a bare Object, missing table under a column reference as the qualified Table shape, and a signature matching nothing getting the plain does-not-exist without the argument list. Converted 1:1 from ddl/CommentCommandTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "comment-on-database", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cmd_db"},
+      {"sql": "COMMENT ON DATABASE cmt_cmd_db IS 'Updated comment'"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cmd_db'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Updated comment"}},
+      {"sql": "DROP DATABASE cmt_cmd_db"}
+    ]},
+    {"name": "comment-on-schema", "steps": [
+      {"sql": "CREATE SCHEMA cmt_cmd_schema"},
+      {"sql": "COMMENT ON SCHEMA cmt_cmd_schema IS 'Schema comment'"},
+      {"sql": "SHOW SCHEMAS LIKE 'cmt_cmd_schema'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Schema comment"}}
+    ]},
+    {"name": "comment-on-table", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "COMMENT ON TABLE users IS 'User table comment'"},
+      {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "User table comment"}}
+    ]},
+    {"name": "comment-on-column", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "COMMENT ON COLUMN users.name IS 'User full name'"},
+      {"sql": "COMMENT ON COLUMN users.email IS 'User email address'"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT \"name\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('NAME', 'EMAIL') ORDER BY \"name\"",
+       "expect": {"rows": [["EMAIL", "User email address"], ["NAME", "User full name"]], "ordered": true}}
+    ]},
+    {"name": "comment-on-view", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE VIEW active_users AS SELECT * FROM users"},
+      {"sql": "COMMENT ON VIEW active_users IS 'Active users only'"},
+      {"sql": "SHOW VIEWS LIKE 'active_users'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Active users only"}}
+    ]},
+    {"name": "comment-on-stream", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "COMMENT ON STREAM user_stream IS 'Stream comment'"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Stream comment"}}
+    ]},
+    {"name": "comment-on-task", "steps": [
+      {"sql": "CREATE WAREHOUSE cmt_cmd_wh"},
+      {"sql": "CREATE TASK daily_task\nWAREHOUSE = 'cmt_cmd_wh'\nSCHEDULE = 'USING CRON 0 9 * * * UTC'\nAS SELECT 1"},
+      {"sql": "COMMENT ON TASK daily_task IS 'Daily task comment'"},
+      {"sql": "SHOW TASKS LIKE 'daily_task'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Daily task comment"}},
+      {"sql": "DROP WAREHOUSE cmt_cmd_wh"}
+    ]},
+    {"name": "comment-on-warehouse", "steps": [
+      {"sql": "CREATE OR REPLACE WAREHOUSE cmt_cmd_wh2"},
+      {"sql": "COMMENT ON WAREHOUSE cmt_cmd_wh2 IS 'Warehouse comment'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'cmt_cmd_wh2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Warehouse comment"}},
+      {"sql": "DROP WAREHOUSE cmt_cmd_wh2"}
+    ]},
+    {"name": "comment-on-stage", "steps": [
+      {"sql": "CREATE STAGE cmt_cmd_stage URL = 's3://bucket/path'"},
+      {"sql": "COMMENT ON STAGE cmt_cmd_stage IS 'Stage comment'"},
+      {"sql": "SHOW STAGES LIKE 'cmt_cmd_stage'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Stage comment"}}
+    ]},
+    {"name": "comment-on-function", "steps": [
+      {"sql": "CREATE FUNCTION add_numbers(x INTEGER, y INTEGER)\nRETURNS INTEGER AS 'x + y'"},
+      {"sql": "COMMENT ON FUNCTION add_numbers(INTEGER, INTEGER) IS 'Function comment'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'add_numbers'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Function comment"}}
+    ]},
+    {"name": "comment-on-procedure", "steps": [
+      {"sql": "CREATE PROCEDURE test_proc()\nRETURNS VARCHAR AS 'BEGIN RETURN ''done''; END;'"},
+      {"sql": "COMMENT ON PROCEDURE test_proc() IS 'Procedure comment'"},
+      {"sql": "SHOW PROCEDURES LIKE 'test_proc'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Procedure comment"}}
+    ]},
+    {"name": "comment-on-user", "steps": [
+      {"sql": "CREATE OR REPLACE USER cmt_cmd_user PASSWORD = 'Sekrit!42x'"},
+      {"sql": "COMMENT ON USER cmt_cmd_user IS 'User comment'"},
+      {"sql": "SHOW USERS LIKE 'cmt_cmd_user'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "User comment"}},
+      {"sql": "DROP USER cmt_cmd_user"}
+    ]},
+    {"name": "comment-on-role", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE cmt_cmd_role"},
+      {"sql": "COMMENT ON ROLE cmt_cmd_role IS 'Role comment'"},
+      {"sql": "SHOW ROLES LIKE 'cmt_cmd_role'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Role comment"}},
+      {"sql": "DROP ROLE cmt_cmd_role"}
+    ]},
+    {"name": "update-existing-comment", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cmd_db2 COMMENT = 'Initial comment'"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cmd_db2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Initial comment"}},
+      {"sql": "COMMENT ON DATABASE cmt_cmd_db2 IS 'Updated comment'"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cmd_db2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Updated comment"}},
+      {"sql": "DROP DATABASE cmt_cmd_db2"}
+    ]},
+    {"name": "comment-on-qualified-schema", "steps": [
+      {"sql": "CREATE SCHEMA test_db.cmt_q_schema"},
+      {"sql": "COMMENT ON SCHEMA test_db.cmt_q_schema IS 'Qualified schema comment'"},
+      {"sql": "SHOW SCHEMAS LIKE 'cmt_q_schema'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Qualified schema comment"}}
+    ]},
+    {"name": "comment-on-qualified-table", "steps": [
+      {"sql": "CREATE TABLE test_db.test_schema.users (id INTEGER)"},
+      {"sql": "COMMENT ON TABLE test_db.test_schema.users IS 'Qualified table comment'"},
+      {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Qualified table comment"}}
+    ]},
+    {"name": "comment-on-qualified-column", "steps": [
+      {"sql": "CREATE TABLE test_db.test_schema.users (id INTEGER, name VARCHAR)"},
+      {"sql": "COMMENT ON COLUMN test_db.test_schema.users.name IS 'Qualified column comment'"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'NAME'",
+       "expect": {"value": "Qualified column comment"}}
+    ]},
+    {"name": "comment-with-special-characters", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cmd_db3"},
+      {"sql": "COMMENT ON DATABASE cmt_cmd_db3 IS 'Special chars: @#$%^&*()'"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cmd_db3'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Special chars: @#$%^&*()"}},
+      {"sql": "DROP DATABASE cmt_cmd_db3"}
+    ]},
+    {"name": "comment-with-quotes", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cmd_db4"},
+      {"sql": "COMMENT ON DATABASE cmt_cmd_db4 IS 'Comment with ''quotes'''"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cmd_db4'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Comment with 'quotes'"}},
+      {"sql": "DROP DATABASE cmt_cmd_db4"}
+    ]},
+    {"name": "comment-on-non-existent-database", "steps": [
+      {"sql": "COMMENT ON DATABASE cmt_cmd_nodb IS 'Comment'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDatabase 'CMT_CMD_NODB' does not exist or not authorized."}}}
+    ]},
+    {"name": "comment-on-non-existent-table", "steps": [
+      {"sql": "COMMENT ON TABLE nosuch IS 'Comment'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."}}}
+    ]},
+    {"name": "comment-on-non-existent-column", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER)"},
+      {"sql": "COMMENT ON COLUMN users.nonexistent IS 'Comment'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NONEXISTENT' does not exist or not authorized."}}},
+      {"sql": "COMMENT ON COLUMN notable.name IS 'Comment'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOTABLE' does not exist or not authorized."}}}
+    ]},
+    {"name": "comment-on-function-with-varchar-arguments", "steps": [
+      {"sql": "CREATE FUNCTION concat_strings(a VARCHAR, b VARCHAR, c VARCHAR)\nRETURNS VARCHAR AS 'a || b || c'"},
+      {"sql": "COMMENT ON FUNCTION concat_strings(VARCHAR, VARCHAR, VARCHAR) IS 'Concatenates three strings'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'concat_strings'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Concatenates three strings"}}
+    ]},
+    {"name": "comment-on-function-with-mixed-arguments", "steps": [
+      {"sql": "CREATE FUNCTION format_data(name VARCHAR, age INTEGER, salary DECIMAL)\nRETURNS VARCHAR AS 'name || age || salary'"},
+      {"sql": "COMMENT ON FUNCTION format_data(VARCHAR, INTEGER, DECIMAL) IS 'Formats user data'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'format_data'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Formats user data"}}
+    ]},
+    {"name": "comment-on-function-with-no-arguments", "steps": [
+      {"sql": "CREATE FUNCTION get_timestamp()\nRETURNS VARCHAR AS 'CURRENT_TIMESTAMP::VARCHAR'"},
+      {"sql": "COMMENT ON FUNCTION get_timestamp() IS 'Returns current timestamp'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'get_timestamp'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Returns current timestamp"}}
+    ]},
+    {"name": "comment-on-procedure-with-arguments", "steps": [
+      {"sql": "CREATE PROCEDURE update_user(user_id INTEGER, new_name VARCHAR)\nRETURNS VARCHAR AS 'BEGIN RETURN ''done''; END;'"},
+      {"sql": "COMMENT ON PROCEDURE update_user(INTEGER, VARCHAR) IS 'Updates user name'"},
+      {"sql": "SHOW PROCEDURES LIKE 'update_user'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Updates user name"}}
+    ]},
+    {"name": "comment-on-function-with-wrong-signature", "steps": [
+      {"sql": "CREATE FUNCTION add_numbers(x INTEGER, y INTEGER)\nRETURNS INTEGER AS 'x + y'"},
+      {"sql": "COMMENT ON FUNCTION add_numbers(VARCHAR, VARCHAR) IS 'Wrong signature'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nFunction 'TEST_DB.TEST_SCHEMA.ADD_NUMBERS' does not exist or not authorized."}}}
+    ]},
+    {"name": "comment-on-function-with-wrong-argument-count", "steps": [
+      {"sql": "CREATE FUNCTION add_numbers(x INTEGER, y INTEGER)\nRETURNS INTEGER AS 'x + y'"},
+      {"sql": "COMMENT ON FUNCTION add_numbers(INTEGER) IS 'Wrong count'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nFunction 'TEST_DB.TEST_SCHEMA.ADD_NUMBERS' does not exist or not authorized."}}}
+    ]}
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "suite": "scripting-select-into-coercion",
+  "description": "Typed procedural variables: a value assigned to a DECLAREd variable - through DEFAULT, :=, SELECT INTO or FETCH INTO - is COERCED to the declared type the way Snowflake casts on assignment. Numeric strings parse, fractional values round HALF AWAY FROM ZERO into integral types, a FLOAT holds a double even when assigned an integer, and booleans convert like TO_BOOLEAN. All four assignment paths are pinned, because the coercion is per-path rather than per-variable. SELECT INTO additionally enforces its row and column counts: ZERO rows is NOT an error (verified against live) and simply assigns NULL, which lookup idioms and walk-past-the-end fetch loops rely on; MORE than one row is an error, and an ordinary catchable one; and the number of selected columns must match the number of INTO targets. Converted 1:1 from scripting/SelectIntoCoercionTest (now retired); every coercion claim is read through ::VARCHAR, because the rendered form IS the evidence - 15 rather than 15.0 for an INTEGER target and 1.0 rather than 1 for a FLOAT one - and a JSON number would normalise that distinction away. Its too-many-rows wording test carried an Assumptions.assumeFalse(isLiveSnowflake()) and becomes skip snowflake with the reason kept.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-sum-into-an-integer-is-integral", "steps": [
+      {"sql": "CREATE TABLE fives (n INTEGER)"},
+      {"sql": "INSERT INTO fives VALUES (1),(2),(3),(4),(5)"},
+      {"sql": "DECLARE t INTEGER; BEGIN SELECT SUM(n) INTO t FROM fives; RETURN t::VARCHAR; END", "expect": {"value": "15"}}
+    ]},
+    {"name": "an-avg-into-an-integer-rounds-half-away-from-zero", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2)"},
+      {"sql": "DECLARE t INTEGER; BEGIN SELECT AVG(n) INTO t FROM nums; RETURN t::VARCHAR; END", "expect": {"value": "2"}}
+    ]},
+    {"name": "select-into-a-varchar-yields-a-string", "steps": [
+      {"sql": "CREATE TABLE one (n INTEGER)"},
+      {"sql": "INSERT INTO one VALUES (42)"},
+      {"sql": "DECLARE s VARCHAR; BEGIN SELECT n INTO s FROM one; RETURN s; END", "expect": {"value": "42"}}
+    ]},
+    {"name": "a-declare-default-string-coerces-to-an-integer", "steps": [
+      {"sql": "DECLARE x INTEGER DEFAULT '5'; BEGIN RETURN x + 1; END", "expect": {"value": 6}}
+    ]},
+    {"name": "a-declare-default-string-coerces-to-a-boolean", "steps": [
+      {"sql": "DECLARE b BOOLEAN DEFAULT 'true'; BEGIN IF (b) THEN RETURN 'yes'; ELSE RETURN 'no'; END IF; END", "expect": {"value": "yes"}}
+    ]},
+    {"name": "assignment-coerces-to-the-declared-type", "steps": [
+      {"sql": "DECLARE x INTEGER; BEGIN x := '7'; RETURN x + 1; END", "expect": {"value": 8}}
+    ]},
+    {"name": "a-float-variable-holds-a-double", "steps": [
+      {"sql": "DECLARE f FLOAT; BEGIN f := 1; RETURN f::VARCHAR; END", "expect": {"value": "1.0"}}
+    ]},
+    {"name": "fetch-into-coerces", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2)"},
+      {"sql": "DECLARE t INTEGER; c CURSOR FOR SELECT AVG(n) FROM nums; BEGIN OPEN c; FETCH c INTO t; CLOSE c; RETURN t::VARCHAR; END", "expect": {"value": "2"}}
+    ]},
+    {"name": "select-into-over-zero-rows-assigns-null", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2)"},
+      {"sql": "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums WHERE n > 100; RETURN COALESCE(:t, -1); END", "expect": {"value": -1}}
+    ]},
+    {"name": "select-into-over-several-rows-errors",
+     "skip": {"backends": ["snowflake"], "reason": "matches the exact 'wrong number of rows: 2' wording of the too-many-rows SELECT INTO error; a real account words that failure differently - the sibling test proves the error itself is raised and catchable on both backends"},
+     "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2)"},
+      {"sql": "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums; RETURN t; END", "expect": {"error": {"messageContains": "wrong number of rows: 2"}}}
+    ]},
+    {"name": "the-too-many-rows-error-is-catchable-by-a-handler", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2)"},
+      {"sql": "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums; RETURN t; EXCEPTION WHEN OTHER THEN RETURN 'caught'; END", "expect": {"value": "caught"}}
+    ]},
+    {"name": "a-target-count-mismatch-errors", "steps": [
+      {"sql": "CREATE TABLE one2 (n INTEGER)"},
+      {"sql": "INSERT INTO one2 VALUES (42)"},
+      {"sql": "DECLARE t INTEGER; BEGIN SELECT n, n INTO t FROM one2; RETURN t; END", "expect": {"error": {"messageContains": "does not match"}}}
+    ]}
+  ]
+}

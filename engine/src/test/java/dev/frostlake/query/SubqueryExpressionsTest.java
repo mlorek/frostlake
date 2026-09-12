@@ -256,7 +256,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
         // Test correlated EXISTS - should return rows where t1.i matches t2.i (1 and 2)
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i)"
+            "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i) ORDER BY i"
         );
         assertEquals(2, result.getRowCount());
         assertEquals(1, ((Number) result.getRows().get(0).getValue(0)).intValue());

@@ -1,0 +1,43 @@
+{
+  "suite": "query-temporal-ordering",
+  "description": "GREATEST and LEAST order a MIXED temporal set in its WIDEST member's family: a DATE beside a TIMESTAMP is read at midnight and the answer is a timestamp, whichever side each was written on. Frostlake refused all of these - \"Invalid argument types for function 'GREATEST': (DATE, TIMESTAMP_NTZ(9))\" - because the value channel compared LocalDate with LocalDateTime and found no common ordering. The DATE does not always win: an earlier one loses to the timestamp, which is what shows the comparison is by INSTANT and not by family. Three arguments order the same way, two DATEs stay a DATE (the widening only happens where something wider is present) and a TIME stays OUTSIDE the order - live refuses it beside a timestamp and so does this, which is what keeps the widening honest. Values are read through TO_VARCHAR so the ENGINE renders them: read raw, the two JDBC drivers format timestamps differently and the comparison would measure the driver rather than the answer. Converted 1:1 from query/TemporalOrderingTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-date-beside-a-timestamp-is-read-at-midnight", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE tor (d DATE, dl DATE, ts TIMESTAMP_NTZ, tm TIME)"},
+      {"sql": "INSERT INTO tor SELECT '2020-06-01', '2019-01-01', '2020-01-01 10:00:00', '10:00:00'"},
+      {"sql": "SELECT TO_VARCHAR(GREATEST(d, ts)) FROM tor", "expect": {"value": "2020-06-01 00:00:00.000"}},
+      {"sql": "SELECT TO_VARCHAR(LEAST(d, ts)) FROM tor", "expect": {"value": "2020-01-01 10:00:00.000"}}
+    ]},
+    {"name": "the-written-order-changes-nothing", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE tor (d DATE, dl DATE, ts TIMESTAMP_NTZ, tm TIME)"},
+      {"sql": "INSERT INTO tor SELECT '2020-06-01', '2019-01-01', '2020-01-01 10:00:00', '10:00:00'"},
+      {"sql": "SELECT TO_VARCHAR(GREATEST(ts, d)) FROM tor", "expect": {"value": "2020-06-01 00:00:00.000"}},
+      {"sql": "SELECT TO_VARCHAR(LEAST(ts, d)) FROM tor", "expect": {"value": "2020-01-01 10:00:00.000"}}
+    ]},
+    {"name": "the-earlier-date-loses-to-the-timestamp", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE tor (d DATE, dl DATE, ts TIMESTAMP_NTZ, tm TIME)"},
+      {"sql": "INSERT INTO tor SELECT '2020-06-01', '2019-01-01', '2020-01-01 10:00:00', '10:00:00'"},
+      {"sql": "SELECT TO_VARCHAR(GREATEST(dl, ts)) FROM tor", "expect": {"value": "2020-01-01 10:00:00.000"}},
+      {"sql": "SELECT TO_VARCHAR(LEAST(dl, ts)) FROM tor", "expect": {"value": "2019-01-01 00:00:00.000"}}
+    ]},
+    {"name": "three-arguments-order-the-same-way", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE tor (d DATE, dl DATE, ts TIMESTAMP_NTZ, tm TIME)"},
+      {"sql": "INSERT INTO tor SELECT '2020-06-01', '2019-01-01', '2020-01-01 10:00:00', '10:00:00'"},
+      {"sql": "SELECT TO_VARCHAR(GREATEST(d, ts, dl)) FROM tor", "expect": {"value": "2020-06-01 00:00:00.000"}},
+      {"sql": "SELECT TO_VARCHAR(LEAST(d, ts, dl)) FROM tor", "expect": {"value": "2019-01-01 00:00:00.000"}}
+    ]},
+    {"name": "two-dates-stay-a-date", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE tor (d DATE, dl DATE, ts TIMESTAMP_NTZ, tm TIME)"},
+      {"sql": "INSERT INTO tor SELECT '2020-06-01', '2019-01-01', '2020-01-01 10:00:00', '10:00:00'"},
+      {"sql": "SELECT TO_VARCHAR(GREATEST(d, dl)) FROM tor", "expect": {"value": "2020-06-01"}},
+      {"sql": "SELECT TO_VARCHAR(LEAST(d, dl)) FROM tor", "expect": {"value": "2019-01-01"}},
+      {"sql": "SELECT TO_VARCHAR(GREATEST(tm, tm)) FROM tor", "expect": {"value": "10:00:00"}}
+    ]},
+    {"name": "a-time-stays-outside-the-order", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE tor (d DATE, dl DATE, ts TIMESTAMP_NTZ, tm TIME)"},
+      {"sql": "INSERT INTO tor SELECT '2020-06-01', '2019-01-01', '2020-01-01 10:00:00', '10:00:00'"},
+      {"sql": "SELECT TO_VARCHAR(GREATEST(tm, ts)) FROM tor", "expect": {"error": {"messageContains": "incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]"}}}
+    ]}
+  ]
+}

@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.task.TaskTrigger;
 import java.time.LocalDateTime;
 
 public class TaskExecution {
@@ -25,15 +26,44 @@ public class TaskExecution {
     private final TaskExecutionState state;
     private final String errorMessage;
     private final int rowsAffected;
+    /** What started the run, as TASK_HISTORY's SCHEDULED_FROM reports it. */
+    private final String scheduledFrom;
 
     public TaskExecution(final LocalDateTime scheduledTime, final LocalDateTime startTime,
                        final LocalDateTime endTime, final TaskExecutionState state, final String errorMessage, final int rowsAffected) {
+        this(scheduledTime, startTime, endTime, state, errorMessage, rowsAffected, TaskTrigger.SCHEDULE);
+    }
+
+    /**
+     * The same, recording what started the run.
+     *
+     * @param scheduledTime the time the run was scheduled for
+     * @param startTime     when it began
+     * @param endTime       when it ended
+     * @param state         its outcome
+     * @param errorMessage  the failure's message, or null
+     * @param rowsAffected  the rows its body wrote
+     * @param trigger       what started it
+     */
+    public TaskExecution(final LocalDateTime scheduledTime, final LocalDateTime startTime,
+                       final LocalDateTime endTime, final TaskExecutionState state, final String errorMessage,
+                       final int rowsAffected, final TaskTrigger trigger) {
         this.scheduledTime = scheduledTime;
         this.startTime = startTime;
         this.endTime = endTime;
         this.state = state;
         this.errorMessage = errorMessage;
         this.rowsAffected = rowsAffected;
+        this.scheduledFrom = trigger.reported();
+    }
+
+    /**
+     * What started this run, as TASK_HISTORY prints it.
+     *
+     * @return SCHEDULE or EXECUTE TASK
+     */
+    public String getScheduledFrom() {
+        return scheduledFrom;
     }
 
     public LocalDateTime getScheduledTime() {

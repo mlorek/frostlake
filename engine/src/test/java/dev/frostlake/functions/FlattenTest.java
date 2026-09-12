@@ -41,7 +41,7 @@ public class FlattenTest extends BaseDatabaseTest {
     @Test
     public void testFlattenSimpleObject() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"name\":\"John\",\"age\":30}')))");
+            "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"name\":\"John\",\"age\":30}'))) ORDER BY PATH");
         assertEquals(2, result.getRowCount());
 
         assertEquals(6, result.getColumns().size());
@@ -65,7 +65,7 @@ public class FlattenTest extends BaseDatabaseTest {
     @Test
     public void testFlattenSimpleArray() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[1,2,3]')))");
+            "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[1,2,3]'))) ORDER BY PATH");
         assertEquals(3, result.getRowCount());
 
         for (int i = 0; i < 3; i++) {
@@ -90,7 +90,7 @@ public class FlattenTest extends BaseDatabaseTest {
     public void testFlattenRecursive() {
         final ResultSet result = engine.executeQuery("SELECT SEQ, KEY, PATH, INDEX, VALUE FROM"
             + " TABLE(FLATTEN(INPUT => PARSE_JSON('{\"person\":{\"name\":\"Alice\",\"age\":25}}'),"
-            + " RECURSIVE => TRUE))");
+            + " RECURSIVE => TRUE)) ORDER BY PATH");
         assertEquals(3, result.getRowCount());
         // Depth first, the container before what is under it.
         assertEquals("person", result.getRows().get(0).getValue(2));
@@ -101,7 +101,7 @@ public class FlattenTest extends BaseDatabaseTest {
     @Test
     public void testFlattenArrayOfObjects() {
         final ResultSet result = engine.executeQuery("SELECT * FROM TABLE(FLATTEN(INPUT =>"
-            + " PARSE_JSON('[{\"id\":1,\"name\":\"A\"},{\"id\":2,\"name\":\"B\"}]')))");
+            + " PARSE_JSON('[{\"id\":1,\"name\":\"A\"},{\"id\":2,\"name\":\"B\"}]'))) ORDER BY PATH");
         assertEquals(2, result.getRowCount());
         assertNull(result.getRows().get(0).getValue(1));
         assertEquals(0L, result.getRows().get(0).getValue(3));
@@ -112,7 +112,7 @@ public class FlattenTest extends BaseDatabaseTest {
     @Test
     public void testFlattenModeObject() {
         final ResultSet result = engine.executeQuery("SELECT * FROM TABLE(FLATTEN(INPUT =>"
-            + " PARSE_JSON('{\"a\":1,\"b\":[2,3]}'), MODE => 'OBJECT'))");
+            + " PARSE_JSON('{\"a\":1,\"b\":[2,3]}'), MODE => 'OBJECT')) ORDER BY PATH");
         assertEquals(2, result.getRowCount());   // the object's keys, not the array's elements
         assertEquals("a", result.getRows().get(0).getValue(1));
         assertEquals("b", result.getRows().get(1).getValue(1));
@@ -126,11 +126,11 @@ public class FlattenTest extends BaseDatabaseTest {
     @Test
     public void testFlattenModeArray() {
         assertEquals(0, engine.executeQuery("SELECT * FROM TABLE(FLATTEN(INPUT =>"
-            + " PARSE_JSON('{\"arr\":[1,2,3]}'), MODE => 'ARRAY', RECURSIVE => TRUE))").getRowCount());
+            + " PARSE_JSON('{\"arr\":[1,2,3]}'), MODE => 'ARRAY', RECURSIVE => TRUE)) ORDER BY PATH").getRowCount());
 
         // An array under an array IS reached, because the outer element was emitted.
         final ResultSet nested = engine.executeQuery("SELECT SEQ, KEY, PATH, INDEX, VALUE FROM"
-            + " TABLE(FLATTEN(INPUT => PARSE_JSON('[[1,2],[3]]'), MODE => 'ARRAY', RECURSIVE => TRUE))");
+            + " TABLE(FLATTEN(INPUT => PARSE_JSON('[[1,2],[3]]'), MODE => 'ARRAY', RECURSIVE => TRUE)) ORDER BY PATH");
         assertEquals(5, nested.getRowCount());
         assertEquals("[0]", nested.getRows().get(0).getValue(2));
         assertEquals("[0][0]", nested.getRows().get(1).getValue(2));
@@ -186,10 +186,10 @@ public class FlattenTest extends BaseDatabaseTest {
     @Test
     public void testFlattenPositionalArg() {
         assertEquals(2, engine.executeQuery(
-            "SELECT * FROM TABLE(FLATTEN(PARSE_JSON('{\"name\":\"John\",\"age\":30}')))").getRowCount());
+            "SELECT * FROM TABLE(FLATTEN(PARSE_JSON('{\"name\":\"John\",\"age\":30}'))) ORDER BY PATH").getRowCount());
 
         final ResultSet path = engine.executeQuery("SELECT SEQ, KEY, PATH, INDEX, VALUE FROM"
-            + " TABLE(FLATTEN(PARSE_JSON('{\"a\":[1,2]}'), 'a'))");
+            + " TABLE(FLATTEN(PARSE_JSON('{\"a\":[1,2]}'), 'a')) ORDER BY PATH");
         assertEquals(2, path.getRowCount());
         assertEquals("a[0]", path.getRows().get(0).getValue(2));
         assertEquals("a[1]", path.getRows().get(1).getValue(2));
@@ -208,7 +208,7 @@ public class FlattenTest extends BaseDatabaseTest {
     @Test
     public void aPathArgumentPrefixesTheReportedPath() {
         final ResultSet result = engine.executeQuery("SELECT SEQ, KEY, PATH, INDEX, VALUE FROM"
-            + " TABLE(FLATTEN(INPUT => PARSE_JSON('{\"a\":{\"b\":[1,2]}}'), PATH => 'a.b'))");
+            + " TABLE(FLATTEN(INPUT => PARSE_JSON('{\"a\":{\"b\":[1,2]}}'), PATH => 'a.b')) ORDER BY PATH");
         assertEquals(2, result.getRowCount());
         assertEquals("a.b[0]", result.getRows().get(0).getValue(2));
         assertEquals("a.b[1]", result.getRows().get(1).getValue(2));
@@ -293,7 +293,7 @@ public class FlattenTest extends BaseDatabaseTest {
     public void testFlattenMissingInput() {
         assertEquals("SQL compilation error: error line 1 at position 20\n"
             + "missing required argument [INPUT] for function [FLATTEN]",
-            messageOf("SELECT * FROM TABLE(FLATTEN(MODE => 'OBJECT'))"));
+            messageOf("SELECT * FROM TABLE(FLATTEN(MODE => 'OBJECT')) ORDER BY PATH"));
         assertEquals("SQL compilation error: error line 1 at position 20\n"
             + "invalid argument for function [FLATTEN] unexpected argument [NOSUCH] at position 2,",
             messageOf("SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[1]'), NOSUCH => 1))"));

@@ -1,0 +1,41 @@
+{
+  "suite": "functions-map-insert",
+  "description": "MAP_INSERT(map, key, value [, updateFlag]) - add or replace one entry. Its NULL handling differs from OBJECT_INSERT's on two branches, each measured live rather than carried over: a NULL VALUE is stored as a JSON null member where OBJECT_INSERT OMITS the pair, and a NULL KEY answers NULL where OBJECT_INSERT returns the map unchanged. A duplicate key is \"Duplicate field key 'a'\" for an absent flag, an explicit FALSE and an explicit NULL alike; only TRUE replaces the value. A NULL map answers NULL, a MAP column reads normally, and a plain OBJECT is refused. Converted 1:1 from functions/MapInsertTest (now retired); its shared M1 Java constant is spelled out per step.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-adds-a-new-entry", "steps": [
+      {"sql": "SELECT MAP_INSERT(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT), 'b', 2)",
+       "expect": {"value": "{\"a\":1,\"b\":2}"}}
+    ]},
+    {"name": "a-duplicate-key-is-an-error-unless-the-update-flag-is-true", "steps": [
+      {"sql": "SELECT MAP_INSERT(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT), 'a', 9)",
+       "expect": {"error": {"messageContains": "Duplicate field key 'a'"}}},
+      {"sql": "SELECT MAP_INSERT(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT), 'a', 9, FALSE)",
+       "expect": {"error": {"messageContains": "Duplicate field key 'a'"}}},
+      {"sql": "SELECT MAP_INSERT(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT), 'a', 9, NULL)",
+       "expect": {"error": {"messageContains": "Duplicate field key 'a'"}}},
+      {"sql": "SELECT MAP_INSERT(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT), 'a', 9, TRUE)",
+       "expect": {"value": "{\"a\":9}"}}
+    ]},
+    {"name": "a-null-value-is-stored-as-a-json-null-member", "steps": [
+      {"sql": "SELECT MAP_INSERT(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT), 'b', NULL)",
+       "expect": {"value": "{\"a\":1,\"b\":null}"}}
+    ]},
+    {"name": "a-null-key-answers-null", "steps": [
+      {"sql": "SELECT MAP_INSERT(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT), NULL, 2)",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-null-map-answers-null", "steps": [
+      {"sql": "SELECT MAP_INSERT(NULL::MAP(VARCHAR,INT), 'b', 2)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "it-reads-a-map-column", "steps": [
+      {"sql": "CREATE TABLE mi (m MAP(VARCHAR,INT))"},
+      {"sql": "INSERT INTO mi SELECT OBJECT_CONSTRUCT('z',1,'a',2)::MAP(VARCHAR,INT)"},
+      {"sql": "SELECT MAP_INSERT(m, 'z', 9, TRUE) FROM mi", "expect": {"value": "{\"a\":2,\"z\":9}"}}
+    ]},
+    {"name": "a-plain-object-is-refused", "steps": [
+      {"sql": "SELECT MAP_INSERT(OBJECT_CONSTRUCT('a',1), 'b', 2)",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_INSERT'"}}}
+    ]}
+  ]
+}

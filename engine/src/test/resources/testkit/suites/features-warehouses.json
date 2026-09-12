@@ -1,0 +1,243 @@
+{
+  "suite": "features-warehouses",
+  "description": "WAREHOUSE DDL and state, asserted through the SQL surface - SHOW WAREHOUSES cells (state STARTED/SUSPENDED, size as its display name, auto_suspend, auto_resume, comment) and CURRENT_WAREHOUSE(). Covers creation with quoted, unquoted and session-variable sizes, the option set, initial state and the RESUME / SUSPEND rules (RESUME on a running warehouse is refused, RESUME IF SUSPENDED makes it a no-op, SUSPEND has no IF form, and IF EXISTS forgives only absence), UNSET leaving auto_suspend empty rather than back at its default, ABORT ALL QUERIES, ALTER of size and auto_suspend, USE WAREHOUSE and switching, DROP, and the GENERATION property. Converted 1:1 from features/WarehousesTest (now retired). Live suspends and resumes settle asynchronously, so a state check accepts the transitional spelling toward the expected state (SUSPENDING, STARTING, RESUMING) and never one in the other direction. Warehouses are account-level, so each test drops the ones it creates and restores COMPUTE_WH as the current warehouse.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "the-default-warehouse-exists", "steps": [
+      {"sql": "SHOW WAREHOUSES LIKE 'COMPUTE_WH'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-a-warehouse", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"size\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "Small"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "create-a-warehouse-with-an-unquoted-size", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS uq_wh"},
+      {"sql": "CREATE WAREHOUSE uq_wh WAREHOUSE_SIZE = MEDIUM"},
+      {"sql": "SHOW WAREHOUSES LIKE 'uq_wh'"},
+      {"sql": "SELECT \"size\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'UQ_WH'",
+       "expect": {"value": "Medium"}},
+      {"sql": "DROP WAREHOUSE uq_wh"}
+    ]},
+    {"name": "create-a-warehouse-whose-size-comes-from-a-session-variable", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS sv_wh"},
+      {"sql": "SET whsz = (SELECT 'LARGE')"},
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS sv_wh WAREHOUSE_SIZE = $whsz MAX_CLUSTER_COUNT = 2"},
+      {"sql": "SHOW WAREHOUSES LIKE 'sv_wh'"},
+      {"sql": "SELECT \"size\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'SV_WH'",
+       "expect": {"value": "Large"}},
+      {"sql": "DROP WAREHOUSE sv_wh"}
+    ]},
+    {"name": "create-a-warehouse-with-options", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS analytics_wh"},
+      {"sql": "CREATE WAREHOUSE analytics_wh\nWITH WAREHOUSE_SIZE = 'LARGE'\nAUTO_SUSPEND = 300\nAUTO_RESUME = true"},
+      {"sql": "SHOW WAREHOUSES LIKE 'analytics_wh'"},
+      {"sql": "SELECT \"size\", \"auto_suspend\", \"auto_resume\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ANALYTICS_WH'",
+       "expect": {"rows": [["Large", "300", "true"]]}},
+      {"sql": "DROP WAREHOUSE analytics_wh"}
+    ]},
+    {"name": "every-warehouse-size-reads-back-as-its-display-name", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS wh_xs"}, {"sql": "DROP WAREHOUSE IF EXISTS wh_s"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh_m"}, {"sql": "DROP WAREHOUSE IF EXISTS wh_l"},
+      {"sql": "CREATE WAREHOUSE wh_xs WITH WAREHOUSE_SIZE = 'X-SMALL'"},
+      {"sql": "CREATE WAREHOUSE wh_s WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "CREATE WAREHOUSE wh_m WITH WAREHOUSE_SIZE = 'MEDIUM'"},
+      {"sql": "CREATE WAREHOUSE wh_l WITH WAREHOUSE_SIZE = 'LARGE'"},
+      {"sql": "SHOW WAREHOUSES"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'WH_XS', \"size\", NULL)), MAX(IFF(\"name\" = 'WH_S', \"size\", NULL)), MAX(IFF(\"name\" = 'WH_M', \"size\", NULL)), MAX(IFF(\"name\" = 'WH_L', \"size\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["X-Small", "Small", "Medium", "Large"]]}},
+      {"sql": "DROP WAREHOUSE wh_xs"}, {"sql": "DROP WAREHOUSE wh_s"},
+      {"sql": "DROP WAREHOUSE wh_m"}, {"sql": "DROP WAREHOUSE wh_l"}
+    ]},
+    {"name": "a-new-warehouse-is-running", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('STARTED', 'STARTING', 'RESUMING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "an-initially-suspended-warehouse-is-suspended", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS susp_wh"},
+      {"sql": "CREATE WAREHOUSE susp_wh WITH WAREHOUSE_SIZE = 'SMALL' INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "SHOW WAREHOUSES LIKE 'susp_wh'"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'SUSP_WH'",
+       "expect": {"value": "SUSPENDED"}},
+      {"sql": "DROP WAREHOUSE susp_wh"}
+    ]},
+    {"name": "resume-a-suspended-warehouse", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL' INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "ALTER WAREHOUSE test_wh RESUME"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('STARTED', 'STARTING', 'RESUMING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "resuming-a-running-warehouse-is-refused", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "ALTER WAREHOUSE test_wh RESUME",
+       "expect": {"error": {"messageContains": "cannot be resumed since it is not suspended"}}},
+      {"sql": "ALTER WAREHOUSE test_wh RESUME IF SUSPENDED"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('STARTED', 'STARTING', 'RESUMING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "ALTER WAREHOUSE IF EXISTS test_wh RESUME",
+       "expect": {"error": {"messageContains": "cannot be resumed since it is not suspended"}}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "resume-if-suspended-resumes-a-suspended-warehouse", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL' INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "ALTER WAREHOUSE test_wh RESUME IF SUSPENDED"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('STARTED', 'STARTING', 'RESUMING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "suspending-a-suspended-warehouse-is-refused", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL' INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "ALTER WAREHOUSE test_wh SUSPEND",
+       "expect": {"error": {"messageContains": "cannot be suspended"}}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "unset-leaves-auto-suspend-empty-and-clears-the-comment", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL' AUTO_SUSPEND = 120"},
+      {"sql": "ALTER WAREHOUSE test_wh SET COMMENT = 'to be removed'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"auto_suspend\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"rows": [["120", "to be removed"]]}},
+      {"sql": "ALTER WAREHOUSE test_wh UNSET AUTO_SUSPEND, COMMENT"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT IFF(\"auto_suspend\" IS NULL, 'null', 'set'), '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"rows": [["null", "<>"]]}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "unsetting-an-unknown-property-is-refused", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "ALTER WAREHOUSE test_wh UNSET NO_SUCH_PROP",
+       "expect": {"error": {"messageContains": "invalid property 'NO_SUCH_PROP' for 'WAREHOUSE'"}}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "abort-all-queries-is-accepted", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "ALTER WAREHOUSE test_wh ABORT ALL QUERIES"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('STARTED', 'STARTING', 'RESUMING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "if-exists-forgives-only-absence", "steps": [
+      {"sql": "ALTER WAREHOUSE IF EXISTS no_such_wh SUSPEND"},
+      {"sql": "ALTER WAREHOUSE no_such_wh SUSPEND",
+       "expect": {"error": {"messageContains": "does not exist or not authorized"}}}
+    ]},
+    {"name": "suspend-a-warehouse", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "ALTER WAREHOUSE test_wh SUSPEND"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('SUSPENDED', 'SUSPENDING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "a-resume-suspend-cycle", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('STARTED', 'STARTING', 'RESUMING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "ALTER WAREHOUSE test_wh SUSPEND"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('SUSPENDED', 'SUSPENDING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "ALTER WAREHOUSE test_wh RESUME"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"state\" IN ('STARTED', 'STARTING', 'RESUMING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "alter-a-warehouse-size", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "ALTER WAREHOUSE test_wh SET WAREHOUSE_SIZE = 'LARGE'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"size\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "Large"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "alter-a-warehouse-auto-suspend", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
+      {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "ALTER WAREHOUSE test_wh SET AUTO_SUSPEND = 120"},
+      {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},
+      {"sql": "SELECT \"auto_suspend\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_WH'",
+       "expect": {"value": "120"}},
+      {"sql": "DROP WAREHOUSE test_wh"}
+    ]},
+    {"name": "use-warehouse-sets-the-current-warehouse", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS analytics_wh"},
+      {"sql": "CREATE WAREHOUSE analytics_wh WITH WAREHOUSE_SIZE = 'MEDIUM'"},
+      {"sql": "USE WAREHOUSE analytics_wh"},
+      {"sql": "SELECT CURRENT_WAREHOUSE()", "expect": {"value": "ANALYTICS_WH"}},
+      {"sql": "USE WAREHOUSE COMPUTE_WH"},
+      {"sql": "DROP WAREHOUSE analytics_wh"}
+    ]},
+    {"name": "switching-warehouses", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}, {"sql": "DROP WAREHOUSE IF EXISTS wh2"},
+      {"sql": "CREATE WAREHOUSE wh1 WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "CREATE WAREHOUSE wh2 WITH WAREHOUSE_SIZE = 'LARGE'"},
+      {"sql": "USE WAREHOUSE wh1"},
+      {"sql": "SELECT CURRENT_WAREHOUSE()", "expect": {"value": "WH1"}},
+      {"sql": "USE WAREHOUSE wh2"},
+      {"sql": "SELECT CURRENT_WAREHOUSE()", "expect": {"value": "WH2"}},
+      {"sql": "USE WAREHOUSE COMPUTE_WH"},
+      {"sql": "DROP WAREHOUSE wh1"}, {"sql": "DROP WAREHOUSE wh2"}
+    ]},
+    {"name": "drop-a-warehouse", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS temp_wh"},
+      {"sql": "CREATE WAREHOUSE temp_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "DROP WAREHOUSE temp_wh"},
+      {"sql": "SHOW WAREHOUSES LIKE 'temp_wh'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-warehouse-stays-running-while-queries-execute", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS query_wh"},
+      {"sql": "CREATE WAREHOUSE query_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "USE WAREHOUSE query_wh"},
+      {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'Test')"},
+      {"sql": "SHOW WAREHOUSES LIKE 'query_wh'"},
+      {"sql": "SELECT \"state\" IN ('STARTED', 'STARTING', 'RESUMING') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'QUERY_WH'",
+       "expect": {"value": "true"}},
+      {"sql": "USE WAREHOUSE COMPUTE_WH"},
+      {"sql": "DROP WAREHOUSE query_wh"}
+    ]},
+    {"name": "show-warehouses-lists-them-all", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}, {"sql": "DROP WAREHOUSE IF EXISTS wh2"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh3"},
+      {"sql": "CREATE WAREHOUSE wh1 WITH WAREHOUSE_SIZE = 'SMALL'"},
+      {"sql": "CREATE WAREHOUSE wh2 WITH WAREHOUSE_SIZE = 'MEDIUM'"},
+      {"sql": "CREATE WAREHOUSE wh3 WITH WAREHOUSE_SIZE = 'LARGE'"},
+      {"sql": "SHOW WAREHOUSES"},
+      {"sql": "SELECT IFF(COUNT(*) >= 4, 'enough', 'too few') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "enough"}},
+      {"sql": "DROP WAREHOUSE wh1"}, {"sql": "DROP WAREHOUSE wh2"}, {"sql": "DROP WAREHOUSE wh3"}
+    ]},
+    {"name": "create-a-warehouse-with-a-generation-clause", "steps": [
+      {"sql": "DROP WAREHOUSE IF EXISTS gen_wh"},
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS gen_wh\n    WAREHOUSE_SIZE                      = 'MEDIUM'\n    ENABLE_QUERY_ACCELERATION           = TRUE\n    QUERY_ACCELERATION_MAX_SCALE_FACTOR = 4\n    STATEMENT_TIMEOUT_IN_SECONDS        = 21600\n    GENERATION                          = '1'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'gen_wh'"},
+      {"sql": "SELECT \"size\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'GEN_WH'",
+       "expect": {"value": "Medium"}},
+      {"sql": "DROP WAREHOUSE gen_wh"}
+    ]}
+  ]
+}

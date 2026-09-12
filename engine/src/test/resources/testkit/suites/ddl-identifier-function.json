@@ -1,0 +1,61 @@
+{
+  "suite": "ddl-identifier-function",
+  "description": "IDENTIFIER('<name>') supplies an object name dynamically in DROP TABLE, USE DATABASE, CREATE TABLE, INSERT, UPDATE and DELETE positions; a single-column insert list is NOT misread as IDENTIFIER(expr); the word identifier stays usable as a table and column name; and the plain spellings keep working. Converted 1:1 from ddl/IdentifierFunctionTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "drop-table-via-identifier", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER)"},
+      {"sql": "DROP TABLE IDENTIFIER('dt')"},
+      {"sql": "SELECT COUNT(*) FROM dt", "expect": {"error": {}}}
+    ]},
+    {"name": "use-database-via-identifier", "steps": [
+      {"sql": "CREATE DATABASE db_ident"},
+      {"sql": "USE DATABASE IDENTIFIER('db_ident')"},
+      {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "DB_IDENT"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS db_ident"}
+    ]},
+    {"name": "create-table-via-identifier", "steps": [
+      {"sql": "CREATE TABLE IDENTIFIER('ct_ident') (id INTEGER)"},
+      {"sql": "INSERT INTO ct_ident VALUES (42)"},
+      {"sql": "SELECT id FROM ct_ident", "expect": {"value": "42"}}
+    ]},
+    {"name": "plain-create-table-still-works", "steps": [
+      {"sql": "CREATE TABLE ct_plain (a INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO ct_plain VALUES (1, 'x')"},
+      {"sql": "SELECT a FROM ct_plain", "expect": {"value": "1"}}
+    ]},
+    {"name": "insert-into-via-identifier", "steps": [
+      {"sql": "CREATE TABLE ins_ident (id INTEGER)"},
+      {"sql": "INSERT INTO IDENTIFIER('ins_ident') VALUES (7)"},
+      {"sql": "SELECT id FROM ins_ident", "expect": {"value": "7"}}
+    ]},
+    {"name": "update-via-identifier", "steps": [
+      {"sql": "CREATE TABLE upd_ident (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO upd_ident VALUES (1, 10)"},
+      {"sql": "UPDATE IDENTIFIER('upd_ident') SET v = 99 WHERE id = 1"},
+      {"sql": "SELECT v FROM upd_ident WHERE id = 1", "expect": {"value": "99"}}
+    ]},
+    {"name": "delete-via-identifier", "steps": [
+      {"sql": "CREATE TABLE del_ident (id INTEGER)"},
+      {"sql": "INSERT INTO del_ident VALUES (1), (2)"},
+      {"sql": "DELETE FROM IDENTIFIER('del_ident') WHERE id = 1"},
+      {"sql": "SELECT COUNT(*) FROM del_ident", "expect": {"value": "1"}}
+    ]},
+    {"name": "single-column-insert-list-still-works", "steps": [
+      {"sql": "CREATE TABLE sc (n INTEGER)"},
+      {"sql": "INSERT INTO sc (n) VALUES (5)"},
+      {"sql": "SELECT n FROM sc", "expect": {"value": "5"}}
+    ]},
+    {"name": "identifier-word-still-usable-as-a-name", "steps": [
+      {"sql": "CREATE TABLE identifier (identifier INTEGER, other INTEGER)"},
+      {"sql": "INSERT INTO identifier (identifier, other) VALUES (3, 4)"},
+      {"sql": "SELECT identifier FROM identifier", "expect": {"value": "3"}}
+    ]},
+    {"name": "plain-drop-and-use-still-work", "steps": [
+      {"sql": "CREATE TABLE dt2 (id INTEGER)"},
+      {"sql": "DROP TABLE dt2"},
+      {"sql": "USE DATABASE test_db"}
+    ]}
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "suite": "dml-update",
+  "description": "UPDATE: unfiltered, WHERE-filtered, multi-column, complex predicates, no-match leaves rows untouched, literal-expression SET, multi-row department update, and update-all. Converted 1:1 from dml/UpdateTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "basic-update", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "UPDATE users SET age = 31"},
+      {"sql": "SELECT age FROM users", "expect": {"value": "31"}}
+    ]},
+    {"name": "update-with-where", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "UPDATE users SET age = 26 WHERE id = 2"},
+      {"sql": "SELECT age FROM users WHERE id = 2", "expect": {"value": "26"}},
+      {"sql": "SELECT age FROM users WHERE id = 1", "expect": {"value": "30"}}
+    ]},
+    {"name": "update-multiple-columns", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "UPDATE users SET name = 'Alicia', age = 31 WHERE id = 1"},
+      {"sql": "SELECT name, age FROM users", "expect": {"rows": [["Alicia", "31"]]}}
+    ]},
+    {"name": "update-with-complex-where", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "UPDATE users SET age = 100 WHERE age > 28 AND age < 35"},
+      {"sql": "SELECT * FROM users WHERE age = 100", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "update-no-match", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "UPDATE users SET age = 40 WHERE id = 999"},
+      {"sql": "SELECT age FROM users", "expect": {"value": "30"}}
+    ]},
+    {"name": "update-with-expression", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Widget', 100), (2, 'Gadget', 200)"},
+      {"sql": "UPDATE products SET price = 150 WHERE id = 1"},
+      {"sql": "SELECT price FROM products WHERE id = 1", "expect": {"value": "150"}}
+    ]},
+    {"name": "update-multiple-rows", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Engineering', 100), (2, 'Engineering', 110), (3, 'Sales', 90)"},
+      {"sql": "UPDATE users SET salary = 120 WHERE department = 'Engineering'"},
+      {"sql": "SELECT salary FROM users WHERE department = 'Engineering'",
+       "expect": {"rows": [["120"], ["120"]]}}
+    ]},
+    {"name": "update-all", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'inactive'), (2, 'inactive'), (3, 'inactive')"},
+      {"sql": "UPDATE users SET status = 'active'"},
+      {"sql": "SELECT status FROM users", "expect": {"rows": [["active"], ["active"], ["active"]]}}
+    ]}
+  ]
+}

@@ -16,11 +16,17 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ColumnTypeFamilies;
+import dev.frostlake.executor.DmlWriteTarget;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.ProjectionSlot;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.TransientRetentionLimit;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
@@ -34,9 +40,12 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BinaryWidthSpelling;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
@@ -85,7 +94,7 @@ public class CreateTableHandler implements CommandHandler {
         final String qualifiedName = queryExecutor.resolveObjectName(ctx.objectName());
         // Parts come from the parse tree (or the IDENTIFIER() value per dotted level) — never by
         // re-splitting the joined spelling, which breaks a quoted name containing a dot.
-        final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+        final String[] parts = catalog.withoutAccount(queryExecutor.resolveObjectNameParts(ctx.objectName()), 3);
         final boolean isTransient = ctx.TRANSIENT() != null;
         // Snowflake spells one thing five ways. TEMPORARY, TEMP, LOCAL TEMPORARY, GLOBAL TEMPORARY and
         // VOLATILE all produce a table SHOW TABLES reports as kind=TEMPORARY — measured, each created
@@ -108,7 +117,7 @@ public class CreateTableHandler implements CommandHandler {
                 tableName = parts[0];
             } else if (parts.length == 2) {
                 if (catalog.getCurrentDatabase() == null) {
-                    throw new RuntimeException("No database selected");
+                    throw NoCurrentDatabaseRefusal.forStatement();
                 }
                 databaseName = catalog.getCurrentDatabase();
                 schema = catalog.getDatabase(databaseName).getSchema(parts[0]);
@@ -135,11 +144,23 @@ public class CreateTableHandler implements CommandHandler {
             // of the ordering a VIEW already follows.
             ResultSet ctasSnapshot = null;
             if (ctx.AS() != null && ctx.selectStatement() != null) {
-                ctasSnapshot = queryExecutor.executeCtasSourceSelect(ctx.selectStatement());
+                ProjectionSlot.reset();
+                try {
+                    ctasSnapshot = queryExecutor.executeCtasSourceSelect(ctx.selectStatement());
+                } catch (final RuntimeException failed) {
+                    // Live qualifies the written name one level up: a bare or schema-qualified CTAS
+                    // is named DB.SCHEMA.T, a fully qualified one ACCOUNT.DB.SCHEMA.T.
+                    throw ctasSourceFailure(ctx, (parts.length == 3
+                            ? queryExecutor.getEngineConfig().getAccountId() + "." : "")
+                        + databaseName + "." + schema.getName() + "." + tableName, failed);
+                }
                 if (ctx.columnList() == null && ctx.columnListOptional() == null) {
                     rejectUnnamedCtasColumns(ctx.selectStatement());
                 }
                 rejectWrongColumnCount(ctx, ctasSnapshot);
+                if (ctx.columnList() != null) {
+                    rejectIncompatibleCtasColumns(ctx, ctasSnapshot);
+                }
             }
 
             // Handle OR REPLACE - drop table if it exists
@@ -148,7 +169,7 @@ public class CreateTableHandler implements CommandHandler {
                     final Table existingTable = schema.getTable(tableName);
                     if (existingTable != null) {
                         schema.dropTable(tableName);
-                        final String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                        final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                         queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
                         // Discard buffered writes for the replaced table so pre-replace rows from this same
                         // transaction aren't flushed to (or resurrected in) the new table's storage at commit.
@@ -168,8 +189,11 @@ public class CreateTableHandler implements CommandHandler {
 
             if (ctx.CLONE() != null) {
                 // The table name is now objectName, so CLONE's source is qualifiedName(0) (was (1)).
+                // The source is looked up as a FROM clause looks one up: a missing one is a missing Object,
+                // named as written, and with no current database a schema-qualified one is refused as a
+                // CLONE (live-verified).
                 final String sourceTableName = getText(ctx.qualifiedName(0));
-                final Table sourceTable = catalog.resolveTable(sourceTableName);
+                final Table sourceTable = catalog.resolveTableAsWritten(sourceTableName, "Object", "CLONE");
 
                 // A transient table cannot become a permanent one by cloning (live-verified). The
                 // other three combinations are all legal: transient→transient, permanent→transient
@@ -226,7 +250,7 @@ public class CreateTableHandler implements CommandHandler {
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
 
-                final String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
                 queryExecutor.resetInternalTableStageDir(fullyQualifiedName);
                 queryExecutor.resetCopyLoadHistory(fullyQualifiedName);
@@ -237,9 +261,10 @@ public class CreateTableHandler implements CommandHandler {
                 logger.trace("Cloned table: {} from {}", qualifiedName, sourceTableName);
             } else if (ctx.LIKE() != null) {
                 // CREATE TABLE … LIKE <source> — copy the source's column structure into a new empty
-                // table (structure only, no data — unlike CLONE).
+                // table (structure only, no data — unlike CLONE). The source is looked up as CLONE's is,
+                // and with no current database a schema-qualified one is refused as a DUPLICATE.
                 final String sourceTableName = getText(ctx.qualifiedName(0));
-                final Table sourceTable = catalog.resolveTable(sourceTableName);
+                final Table sourceTable = catalog.resolveTableAsWritten(sourceTableName, "Object", "DUPLICATE");
 
                 final List<TableColumn> likeColumns = new ArrayList<>();
                 for (final TableColumn col : sourceTable.getColumns()) {
@@ -283,7 +308,7 @@ public class CreateTableHandler implements CommandHandler {
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
 
-                final String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
                 queryExecutor.resetInternalTableStageDir(fullyQualifiedName);
                 queryExecutor.resetCopyLoadHistory(fullyQualifiedName);
@@ -311,12 +336,19 @@ public class CreateTableHandler implements CommandHandler {
                             providedNames.add(ParseTreeText.namePartText(id));
                         }
                     }
+                    // A names-only list is still a column list, so a repeated name is refused here too.
+                    ColumnDefinitionParser.rejectDuplicateNames(providedNames);
                     columns = new ArrayList<>();
                     int ctasColIdx = 0;
                     for (final ResultSetColumn rsCol : resultSet.getColumns()) {
                         final String colName = ctasColIdx < providedNames.size()
                             ? providedNames.get(ctasColIdx) : rsCol.getName();
-                        columns.add(new TableColumn(colName, ctasColumnType(rsCol, resultSet, ctasColIdx), true, null, false, false, false));
+                        final TableColumn ctasColumn = new TableColumn(colName,
+                            ctasColumnType(rsCol, resultSet, ctasColIdx), true, null, false, false, false);
+                        // A collated result column makes a collated table column: the created table
+                        // compares, sorts and groups it under the collation the SELECT settled on.
+                        ctasColumn.setCollation(rsCol.getCollation());
+                        columns.add(ctasColumn);
                         ctasColIdx++;
                     }
                 }
@@ -356,7 +388,7 @@ public class CreateTableHandler implements CommandHandler {
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
 
-                final String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
                 queryExecutor.resetInternalTableStageDir(fullyQualifiedName);
                 queryExecutor.resetCopyLoadHistory(fullyQualifiedName);
@@ -367,9 +399,18 @@ public class CreateTableHandler implements CommandHandler {
                 // real timestamps under EXCEPT / EQUAL_NULL despite rendering identically. LENIENTLY —
                 // the SELECT's reported column types are best-effort, so a value that does not fit its
                 // reported type is stored as produced rather than rejected.
+                // A TYPED column list is different: its declared types are the writer's word, so the rows
+                // are written into them strictly, as an INSERT writes, inside the CTAS envelope.
+                final String envelopeName = ((parts.length == 3
+                        ? queryExecutor.getEngineConfig().getAccountId() + "." : "")
+                    + databaseName + "." + schema.getName() + "." + tableName).toUpperCase();
                 for (final Row resultRow : resultSet.getRows()) {
                     final Row typedRow = new Row(new ArrayList<>(resultRow.getValues()));
-                    queryExecutor.coerceRowTypesLenient(table, typedRow);
+                    if (ctx.columnList() != null) {
+                        queryExecutor.writeCtasRow(table, typedRow, envelopeName);
+                    } else {
+                        queryExecutor.coerceRowTypesLenient(table, typedRow);
+                    }
                     queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).insert(typedRow);
                 }
 
@@ -422,7 +463,7 @@ public class CreateTableHandler implements CommandHandler {
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
 
-                final String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
                 queryExecutor.resetInternalTableStageDir(fullyQualifiedName);
                 queryExecutor.resetCopyLoadHistory(fullyQualifiedName);
@@ -482,6 +523,100 @@ public class CreateTableHandler implements CommandHandler {
      * @param ctx      the CREATE TABLE statement
      * @param snapshot the body's result, whose column count is the truth
      */
+    /**
+     * A failure raised while a CTAS's SOURCE QUERY was evaluated, wrapped in live's write envelope. The
+     * rows are on their way into a table, so live reports the failure as a write rather than as the
+     * bare sentence the same SELECT earns on its own:
+     *
+     * <pre>
+     *   CREATE TABLE vout AS SELECT COALESCE(va, d) AS c FROM vf
+     *       DML operation to table TEST_DB.TEST_SCHEMA.VOUT failed on column C with error:
+     *       Failed to cast variant value 1 to DATE
+     * </pre>
+     *
+     * <p>★ A CTAS ALWAYS QUALIFIES THE TABLE, even though the CREATE named it bare — measured beside an
+     * INSERT, which echoes the name it was given. The column is the target of the projection that
+     * stopped, which is its declared name when a column list was written and the item's own alias
+     * otherwise.
+     *
+     * @param ctx the CREATE statement
+     * @param qualifiedName the table's fully-qualified name
+     * @param failed the inner failure
+     * @return the wrapped refusal, or the original when no projection can be attributed
+     */
+    private RuntimeException ctasSourceFailure(final FrostlakeParser.CreateStatementContext ctx,
+                                               final String qualifiedName,
+                                               final RuntimeException failed) {
+        if (!DmlWriteTarget.isRowTimeFailure(failed)) {
+            ProjectionSlot.takeFailedSlot();
+            return failed;
+        }
+        int slot = ProjectionSlot.takeFailedSlot();
+        if (slot < 0) {
+            // A FROM-less source has no projection operator to record a slot, so a single-item select
+            // list attributes itself; anything wider is left unwrapped rather than guessed at.
+            slot = singleSelectItem(ctx) ? 0 : -1;
+        }
+        if (slot < 0) {
+            return failed;
+        }
+        final String column = ctasColumnNameAt(ctx, slot);
+        if (column == null) {
+            return failed;
+        }
+        return DmlWriteTarget.failedOnColumn(qualifiedName.toUpperCase(), column.toUpperCase(),
+            failed);
+    }
+
+    /** Whether the CTAS's source projects exactly one column, so a failure can only be that one. */
+    private boolean singleSelectItem(final FrostlakeParser.CreateStatementContext ctx) {
+        if (ctx.selectStatement() == null || ctx.selectStatement().selectOperand().size() != 1) {
+            return false;
+        }
+        final FrostlakeParser.SelectClauseContext select =
+            ctx.selectStatement().selectOperand(0).selectClause();
+        return select != null && select.selectList() != null
+            && select.selectList().selectItem().size() == 1;
+    }
+
+    /** The name the CTAS gives its {@code slot}-th column: the declared one, else the item's alias. */
+    private String ctasColumnNameAt(final FrostlakeParser.CreateStatementContext ctx, final int slot) {
+        if (ctx.columnListOptional() != null && slot < ctx.columnListOptional().namePart().size()) {
+            return ctx.columnListOptional().namePart(slot).getText();
+        }
+        if (ctx.columnList() != null) {
+            final List<TableColumn> declared = columnParser.parseColumnList(ctx.columnList());
+            return slot < declared.size() ? declared.get(slot).getName() : null;
+        }
+        if (ctx.selectStatement() == null || ctx.selectStatement().selectOperand().size() != 1) {
+            return null;
+        }
+        final FrostlakeParser.SelectClauseContext select =
+            ctx.selectStatement().selectOperand(0).selectClause();
+        if (select == null || select.selectList() == null
+                || slot >= select.selectList().selectItem().size()) {
+            return null;
+        }
+        return SelectItemAccessors.getItemAlias(select.selectList().selectItem(slot));
+    }
+
+    /**
+     * A typed column list takes the source's columns only where their families convert, as a write does
+     * (see {@link ColumnTypeFamilies}), refused with the sentence a CTAS gives before any OR REPLACE drop:
+     * {@code CREATE TABLE t (n NUMBER) AS SELECT 1 = 1} is "incompatible types: [BOOLEAN] and [NUMBER(38,0)]".
+     */
+    private void rejectIncompatibleCtasColumns(final FrostlakeParser.CreateStatementContext ctx,
+                                               final ResultSet snapshot) {
+        if (snapshot == null) {
+            return;
+        }
+        final List<TableColumn> declared = columnParser.parseColumnList(ctx.columnList());
+        for (int i = 0; i < declared.size() && i < snapshot.getColumns().size(); i++) {
+            ColumnTypeFamilies.rejectIncompatible(declared.get(i).getDataType(),
+                snapshot.getColumns().get(i).getStaticType());
+        }
+    }
+
     private void rejectWrongColumnCount(final FrostlakeParser.CreateStatementContext ctx,
                                         final ResultSet snapshot) {
         if (snapshot == null) {
@@ -538,8 +673,31 @@ public class CreateTableHandler implements CommandHandler {
      */
     private DataType ctasColumnType(final ResultSetColumn rsCol, final ResultSet resultSet, final int colIdx) {
         final DataType declared = rsCol.getDataType();
+        if (declared instanceof BinaryType) {
+            // An unsized binary is an EXPRESSION's; stored, it takes the column default — a CTAS over
+            // TO_BINARY(s) stores BINARY(8388608) live, where SYSTEM$TYPEOF over the expression reads BINARY
+            // — and so does a sized one wider than the default, a 16MB concatenation's and a
+            // CAST(x AS BINARY(67108864))'s alike.
+            final BinaryType binary = (BinaryType) declared;
+            return binary.getWidthSpelling() != BinaryWidthSpelling.DECLARED
+                ? new BinaryType(binary.getMaxLength(), binary.isFixed()) : binary.atColumnWidth();
+        }
         if (!(declared instanceof StringType)) {
             return declared;
+        }
+        // A ZERO width is a query's way of saying nothing was named — a bare NULL select item, or a
+        // conditional every branch of which is one. No stored column may hold it (live refuses
+        // CREATE TABLE t (c VARCHAR(0)) outright), so a CTAS widens it to the 16MB default, which is
+        // what live stores for both shapes. Falling through instead would have created a column that
+        // can hold no value at all.
+        if (((StringType) declared).getMaxLength() == 0) {
+            return StringType.VARCHAR;
+        }
+        // The UNKNOWN length is an EXPRESSION'S width, and it clamps to the 16MB storage default the
+        // moment it becomes a column — a CTAS over UPPER(NULL) stores VARCHAR(16777216) live, while
+        // SYSTEM$TYPEOF over the same expression says VARCHAR(134217728).
+        if (((StringType) declared).getMaxLength() == DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR) {
+            return StringType.VARCHAR;
         }
         // A measured numeric STATIC — a literal's own (p,s), a set operation's supertype fold, a
         // string branch's unification — is the live CTAS column type. The value scan below recovers
@@ -556,6 +714,17 @@ public class CreateTableHandler implements CommandHandler {
             }
             if (value instanceof java.time.LocalDateTime) {
                 return DateTimeType.TIMESTAMP_NTZ;
+            }
+            // ★ THE ZONED CARRIERS ARE TEMPORALS TOO, and their absence did not read as a missing
+            // case: with no branch of their own they fell past every temporal test to the declared
+            // fallback, which for a derived column is the 16MB VARCHAR. So a CTAS over a value that
+            // HAS an offset produced a TEXT column, and the refusal only surfaced one statement
+            // later, when a temporal function was handed that column and named its type.
+            if (value instanceof java.time.OffsetDateTime) {
+                return DateTimeType.TIMESTAMP_LTZ;
+            }
+            if (value instanceof java.time.ZonedDateTime) {
+                return DateTimeType.TIMESTAMP_TZ;
             }
             if (value instanceof java.time.LocalDate) {
                 return DateTimeType.DATE;
@@ -616,6 +785,11 @@ public class CreateTableHandler implements CommandHandler {
             if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(key) && valueText.startsWith("-")) {
                 throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
                     valueText, "DATA_RETENTION_TIME_IN_DAYS"));
+            }
+            if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(key)
+                    && valueText.matches("[0-9]+")) {
+                TransientRetentionLimit.requireWithinAccountLimit(valueText);
+                table.setDataRetentionTimeInDays(Integer.valueOf(valueText));
             }
             if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equalsIgnoreCase(key)
                     && valueText.matches("[0-9]+") && Long.parseLong(valueText) > 90L) {

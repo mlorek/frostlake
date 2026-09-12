@@ -1,0 +1,73 @@
+{
+  "suite": "scripting-semicolon-termination",
+  "description": "Every statement inside a Snowflake Scripting block is TERMINATED by its semicolon, and the block is refused when one is missing - live-verified at each position it can be missing from: the last statement before END, a statement mid-block, a nested block's END (both mid-block and as the last statement), END IF, END LOOP, END CASE, a statement inside THEN, an EXCEPTION handler's body, and every DECLARE item including the last one before BEGIN. The refusal is a plain SYNTAX ERROR anchored on the token that FOLLOWS the unterminated statement - BEGIN SELECT 'foo' RETURN :v; END reads as a select with an alias and then dies - and frostlake anchors on the same line but on the statement keyword rather than inside the following expression, so the REFUSAL and not the exact character is the cell these tests pin. A trailing line comment changes nothing: the missing semicolon is still the cause. The mirror image is just as measured: EXTRA semicolons AFTER a statement are TOLERATED - a doubled one, a lone semicolon line between two statements, before END, before END IF, and in a DECLARE section, which real deployment scripts end their declarations with - while a statement list may NOT OPEN with one, in a THEN branch, a loop body or a DECLARE section alike. A properly terminated nested block is the control. Converted 1:1 from scripting/ScriptingSemicolonTerminationTest (now retired); these blocks keep their REAL newlines, written as \n, because the line structure is what the missing terminator is missing from.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-fully-terminated-block-runs", "steps": [
+      {"sql": "BEGIN\n    LET x INT := 1;\n    RETURN x;\nEND;", "expect": {"value": 1}}
+    ]},
+    {"name": "the-last-statement-before-end-needs-its-terminator", "steps": [
+      {"sql": "BEGIN\n    RETURN 1\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-statement-mid-block-needs-its-terminator", "steps": [
+      {"sql": "BEGIN\n    LET x INT := 1\n    RETURN x;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-trailing-line-comment-does-not-stand-in-for-the-terminator", "steps": [
+      {"sql": "BEGIN\n    SELECT 'foo' -- looks terminated, is not\n    RETURN 1;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-nested-blocks-end-needs-its-terminator", "steps": [
+      {"sql": "BEGIN\n    BEGIN\n        RETURN 1;\n    END\n    RETURN 2;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-nested-blocks-end-needs-its-terminator-even-as-the-last-statement", "steps": [
+      {"sql": "BEGIN\n    BEGIN\n        RETURN 1;\n    END\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "end-if-needs-its-terminator", "steps": [
+      {"sql": "BEGIN\n    IF (1 = 1) THEN\n        RETURN 1;\n    END IF\n    RETURN 2;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-statement-inside-then-needs-its-terminator", "steps": [
+      {"sql": "BEGIN\n    IF (1 = 1) THEN\n        RETURN 1\n    END IF;\n    RETURN 2;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "end-loop-needs-its-terminator", "steps": [
+      {"sql": "BEGIN\n    LOOP\n        BREAK;\n    END LOOP\n    RETURN 2;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "end-case-needs-its-terminator", "steps": [
+      {"sql": "BEGIN\n    CASE\n        WHEN (1 = 1) THEN\n            RETURN 1;\n    END\n    RETURN 2;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-exception-handlers-statement-needs-its-terminator", "steps": [
+      {"sql": "BEGIN\n    RETURN 1;\nEXCEPTION\n    WHEN OTHER THEN\n        RETURN 2\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-declaration-needs-its-terminator", "steps": [
+      {"sql": "DECLARE\n    x INT\nBEGIN\n    RETURN 1;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "the-last-declaration-before-begin-needs-its-terminator-too", "steps": [
+      {"sql": "DECLARE\n    x INT;\n    y INT\nBEGIN\n    RETURN 1;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-extra-semicolon-after-a-statement-is-tolerated", "steps": [
+      {"sql": "BEGIN\n    RETURN 1;;\nEND;", "expect": {"value": 1}}
+    ]},
+    {"name": "a-lone-semicolon-between-two-statements-is-tolerated", "steps": [
+      {"sql": "BEGIN\n    LET x INT := 1;\n    ;\n    RETURN x;\nEND;", "expect": {"value": 1}}
+    ]},
+    {"name": "a-lone-semicolon-before-end-is-tolerated", "steps": [
+      {"sql": "BEGIN\n    RETURN 1;\n    ;\nEND;", "expect": {"value": 1}}
+    ]},
+    {"name": "a-lone-semicolon-before-end-if-is-tolerated", "steps": [
+      {"sql": "BEGIN\n    IF (1 = 1) THEN\n        RETURN 1;\n        ;\n    END IF;\n    RETURN 2;\nEND;", "expect": {"value": 1}}
+    ]},
+    {"name": "stray-semicolons-in-the-declare-section-are-tolerated", "steps": [
+      {"sql": "DECLARE\n    x INT DEFAULT 2;;\n    ;\nBEGIN\n    RETURN x;\nEND;", "expect": {"value": 2}}
+    ]},
+    {"name": "a-statement-list-may-not-open-with-a-semicolon", "steps": [
+      {"sql": "BEGIN\n    IF (1 = 1) THEN\n        ;\n        RETURN 1;\n    END IF;\n    RETURN 2;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-loop-body-may-not-open-with-a-semicolon", "steps": [
+      {"sql": "BEGIN\n    LOOP\n        ;\n        BREAK;\n    END LOOP;\n    RETURN 1;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-declare-section-may-not-open-with-a-semicolon", "steps": [
+      {"sql": "DECLARE\n    ;\n    x INT;\nBEGIN\n    RETURN 1;\nEND;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-terminated-nested-block-runs", "steps": [
+      {"sql": "BEGIN\n    LET x INT := 1;\n    BEGIN\n        RETURN x;\n    END;\nEND;", "expect": {"value": 1}}
+    ]}
+  ]
+}

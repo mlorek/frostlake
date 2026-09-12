@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.encoding;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
@@ -28,12 +29,11 @@ public class HexDecode extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final String hex = args.get(0).toString();
-        if (hex.length() % 2 != 0) throw new RuntimeException("Invalid hex string length");
-        final byte[] bytes = new byte[hex.length() / 2];
-        for (int i = 0; i < bytes.length; i++) {
-            bytes[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
-        }
-        return DecodedText.strict(bytes, hex);
+        // The BINARY decoder owns the hex reading AND the account's refusal for text that is not hex.
+        // Parsing the digits here instead produced two messages of Frostlake's own — "Invalid hex
+        // string length" for an odd count, and a raw Java "For input string" for a non-hex digit —
+        // where the account says the same sentence for both.
+        return DecodedText.strict(BinaryValue.fromHex(hex).bytes(), hex);
     }
 
     @Override

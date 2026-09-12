@@ -1,0 +1,42 @@
+{
+  "suite": "functions-vector-trunc",
+  "description": "VECTOR_TRUNC and its alias VECTOR_TRUNCATE - every expectation measured on a real Snowflake account. It keeps the FIRST n dimensions and narrows the STATIC type accordingly, the element type is PRESERVED so an INT vector does not become FLOAT, n = 0 is the empty vector and n = the full dimension is the unchanged vector. An integral DECIMAL dimension such as 2.0 is accepted. A typed NULL vector gives SQL NULL. A dimension beyond the vector names both numbers: 'Requested truncation dimension 4 for VECTOR_TRUNC should be less than or equal to the dimension of the provided vector (3).' - and the alias names ITSELF in that sentence. The dimension must be a CONSTANT: a column reference, an arithmetic expression, a non-integral literal and NULL are all '... needs to be constant', each quoting what it found - live numbers the argument 2 for a column and 1 for an expression, so the steps match the quoted part. A non-vector first argument is the ordinary argument-type list. Converted 1:1 from functions/vector/VectorTruncTest (now retired); every vector is read as a bare cell, as recorded in functions-vector-avg. The Java's assertRejected only asserted that something threw, so the rejection cases pin live's messages - except a negated dimension, which the account answers with an internal error, so that step only requires a refusal.",
+  "tags": ["functions", "vector", "converted"],
+  "tests": [
+    {"name": "it-keeps-the-first-n-dimensions", "steps": [
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 2)", "expect": {"value": "[1.000000,2.000000]"}},
+      {"sql": "SELECT VECTOR_TRUNCATE([1,2,3]::VECTOR(FLOAT,3), 2)", "expect": {"value": "[1.000000,2.000000]"}}
+    ]},
+    {"name": "the-element-type-is-preserved", "steps": [
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(INT,3), 2)", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT VECTOR_TRUNCATE([1,2,3]::VECTOR(INT,3), 2)", "expect": {"value": "[1,2]"}}
+    ]},
+    {"name": "the-boundary-dimensions", "steps": [
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 0)", "expect": {"value": "[]"}},
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 3)", "expect": {"value": "[1.000000,2.000000,3.000000]"}}
+    ]},
+    {"name": "an-integral-decimal-dimension-is-accepted", "steps": [
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 2.0)", "expect": {"value": "[1.000000,2.000000]"}}
+    ]},
+    {"name": "a-typed-null-vector-yields-sql-null", "steps": [
+      {"sql": "SELECT VECTOR_TRUNC(NULL::VECTOR(FLOAT,3), 2)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-dimension-beyond-the-vector-is-rejected", "steps": [
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 4)", "expect": {"error": {"messageContains": "Requested truncation dimension 4 for VECTOR_TRUNC should be less than or equal to the dimension of the provided vector (3)."}}},
+      {"sql": "SELECT VECTOR_TRUNCATE([1,2,3]::VECTOR(FLOAT,3), 9)", "expect": {"error": {"messageContains": "Requested truncation dimension 9 for VECTOR_TRUNCATE should be less than or equal to the dimension of the provided vector (3)."}}},
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), -1)", "expect": {"error": {}}}
+    ]},
+    {"name": "a-non-constant-dimension-is-rejected", "steps": [
+      {"sql": "CREATE TABLE trunc_rows (n INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO trunc_rows SELECT 2, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_TRUNC(v, n) FROM trunc_rows", "expect": {"error": {"messageContains": "argument 2 to function VECTOR_TRUNC needs to be constant, found 'TRUNC_ROWS.N'"}}},
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 1+1)", "expect": {"error": {"messageContains": "needs to be constant, found '1 + 1'"}}},
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 2.5)", "expect": {"error": {"messageContains": "needs to be constant"}}},
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), NULL)", "expect": {"error": {"messageContains": "needs to be constant"}}}
+    ]},
+    {"name": "a-non-vector-first-argument-is-rejected", "steps": [
+      {"sql": "SELECT VECTOR_TRUNC([1,2,3], 2)", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_TRUNC': (ARRAY, NUMBER(1,0))"}}},
+      {"sql": "SELECT VECTOR_TRUNC(NULL, 2)", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_TRUNC': (NULL, NUMBER(1,0))"}}}
+    ]}
+  ]
+}

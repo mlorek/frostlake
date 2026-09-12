@@ -1,0 +1,128 @@
+{
+  "suite": "features-cast-with-type-parameters",
+  "description": "CAST / :: with parameterized types (VARCHAR(n), DECIMAL(p,s), NUMBER(p,s), TIMESTAMP(6)), nested and in expressions. Converted 1:1 from features/CastWithTypeParametersTest.java (now retired); the shared fixture became per-test setup.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "cast-to-varchar-with-length",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(id AS VARCHAR(10)) as id_str FROM test_data WHERE id = 1", "expect": {"value": "1", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-to-varchar-with-large-length",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(name AS VARCHAR(16777216)) as name_str FROM test_data WHERE id = 1", "expect": {"value": "Alice", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-to-decimal-with-precision",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(value AS DECIMAL(10)) as decimal_val FROM test_data WHERE id = 1", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-to-decimal-with-precision-and-scale",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(value AS DECIMAL(10, 2)) as decimal_val FROM test_data WHERE id = 1", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-to-number-with-precision",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(value AS NUMBER(15)) as num_val FROM test_data WHERE id = 1", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-to-number-with-precision-and-scale",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(value AS NUMBER(15, 3)) as num_val FROM test_data WHERE id = 1", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "double-colon-cast-with-varchar-length",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 789.012)"},
+        {"sql": "SELECT id::VARCHAR(50) as id_str FROM test_data WHERE id = 2", "expect": {"value": "2", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "double-colon-cast-with-decimal",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT value::DECIMAL(20, 5) as decimal_val FROM test_data WHERE id = 1", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-with-type-parameters-in-expression",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST((id + 100) AS VARCHAR(100)) as result FROM test_data WHERE id = 1", "expect": {"value": "101", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "multiple-casts-with-type-parameters",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(id AS VARCHAR(20)) as id_str, CAST(value AS DECIMAL(10, 2)) as value_decimal FROM test_data WHERE id = 1", "expect": {"value": "1", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-in-concatenation-with-type-parameters",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT 'ID: ' || CAST(id AS VARCHAR(10)) as result FROM test_data WHERE id = 1", "expect": {"value": "ID: 1", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "nested-cast-with-type-parameters",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(CAST(id AS VARCHAR(50)) AS INTEGER) as result FROM test_data WHERE id = 1", "expect": {"value": "1", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-to-timestamp-with-precision",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST('2024-01-01 12:00:00' AS TIMESTAMP(6)) as ts_val FROM test_data WHERE id = 1", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "cast-mixed-with-and-without-type-parameters",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 123.456)"},
+        {"sql": "SELECT CAST(id AS INTEGER) as int_val, CAST(name AS VARCHAR(100)) as name_str FROM test_data WHERE id = 1",
+         "expect": {"rows": [["1", "Alice"]]}}
+      ]
+    },
+    {
+      "name": "double-colon-cast-with-number",
+      "steps": [
+        {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)"},
+        {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 789.012)"},
+        {"sql": "SELECT value::NUMBER(18, 4) as num_val FROM test_data WHERE id = 2", "expect": {"rowCount": 1}}
+      ]
+    }
+  ]
+}

@@ -22,6 +22,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.FileFormat;
@@ -119,7 +120,7 @@ public class CommentCommandHandler implements CommandHandler {
                 try {
                     if (parts.length == 1) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                     } else if (parts.length == 2) {
@@ -257,7 +258,7 @@ public class CommentCommandHandler implements CommandHandler {
                         funcName = parts[0].toUpperCase();
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                         funcName = parts[1].toUpperCase();
@@ -315,7 +316,7 @@ public class CommentCommandHandler implements CommandHandler {
                         procName = parts[0].toUpperCase();
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                         procName = parts[1].toUpperCase();
@@ -372,7 +373,7 @@ public class CommentCommandHandler implements CommandHandler {
                         strmName = parts[0].toUpperCase();
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                         strmName = parts[1].toUpperCase();
@@ -419,7 +420,7 @@ public class CommentCommandHandler implements CommandHandler {
                         tskName = parts[0].toUpperCase();
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
-                            throw new RuntimeException("No database selected");
+                            throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
                         tskName = parts[1].toUpperCase();

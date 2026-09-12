@@ -16,9 +16,12 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.CollatedKey;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.values.ApproximateValues;
+import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
 import java.util.List;
@@ -63,7 +66,9 @@ public final class ValueComparisons {
      */
     public static Object normalizeValueForDistinct(final Object value) {
         if (value instanceof Number) {
-            return ((Number) value).doubleValue();
+            // Adding a positive zero folds -0.0 into 0.0 and changes nothing else: the two zeros are
+            // ONE distinct value on the account, where Double.equals would count them as two.
+            return ((Number) value).doubleValue() + 0.0;
         }
         return value;
     }
@@ -79,9 +84,10 @@ public final class ValueComparisons {
      */
     public static Object canonicalGroupKeyValue(final Object value) {
         if (value instanceof VariantValue) {
-            // Group semi-structured values by their JSON text so typed and text-carried equal values
-            // fall into one group.
-            return ((VariantValue) value).text();
+            // A semi-structured value groups by the VARIANT order's own equality — numbers by value
+            // whatever their notation, objects whatever their key order — which its equals and
+            // hashCode carry (see VariantOrder); a typed and a text-carried equal value still meet.
+            return value;
         }
         if (!(value instanceof Number)) {
             return value;
@@ -122,13 +128,56 @@ public final class ValueComparisons {
             if (v1 instanceof BigDecimal && v2 instanceof BigDecimal) {
                 return ((BigDecimal) v1).compareTo((BigDecimal) v2);
             }
+            // NaN has a PLACE in Snowflake's order rather than being incomparable: it equals itself and
+            // outranks everything, which is Double.compare's total order and not BigDecimal's (which
+            // cannot hold it at all).
+            if (NonFiniteDoubles.isNonFinite((Number) v1) || NonFiniteDoubles.isNonFinite((Number) v2)) {
+                return Double.compare(((Number) v1).doubleValue(), ((Number) v2).doubleValue());
+            }
+            // A double beside any number orders as a double, the exact side converted as live does —
+            // and this is the SORTING comparator, so the two zeros are told apart: -0 sorts before 0.
+            if (ApproximateValues.isApproximate(v1) || ApproximateValues.isApproximate(v2)) {
+                return ApproximateValues.order(((Number) v1).doubleValue(), ((Number) v2).doubleValue());
+            }
             return new BigDecimal(v1.toString()).compareTo(new BigDecimal(v2.toString()));
+        }
+        // A key that carries a collation orders by it, so one comparator serves every key site. A
+        // collated key beside a plain string still compares under the collation: the key's rules are
+        // the ones the query settled on.
+        if (v1 instanceof CollatedKey && v2 instanceof CollatedKey) {
+            return ((CollatedKey) v1).compareTo((CollatedKey) v2);
+        }
+        if (v1 instanceof CollatedKey && v2 instanceof String) {
+            return ((CollatedKey) v1).compareTo((CollatedKey) CollatedKey.of(v2, ((CollatedKey) v1).rulesOf()));
+        }
+        if (v2 instanceof CollatedKey && v1 instanceof String) {
+            return -((CollatedKey) v2).compareTo((CollatedKey) CollatedKey.of(v1, ((CollatedKey) v2).rulesOf()));
         }
         if (v1 instanceof Comparable && v2 instanceof Comparable && v1.getClass() == v2.getClass()) {
             return ((Comparable) v1).compareTo(v2);
         }
 
         return v1.toString().compareTo(v2.toString());
+    }
+
+    /**
+     * The comparison an EXTREME uses — MIN, MAX, GREATEST and LEAST — which differs from
+     * {@link #compareValues} in one cell: {@code -0.0} and {@code 0.0} are a TIE, so whichever was seen
+     * first is kept. Live answers {@code -0} for {@code GREATEST(-0.0::FLOAT, 0.0::FLOAT)} and for
+     * {@code MAX} over the same pair in that order, and {@code 0} for either written the other way
+     * round; a sort-style comparator that puts {@code -0} first would pick the wrong one half the time.
+     *
+     * @param v1 one value
+     * @param v2 the other
+     * @return negative, zero (a tie) or positive
+     */
+    public static int compareForExtreme(final Object v1, final Object v2) {
+        if (v1 instanceof Number && v2 instanceof Number
+                && (ApproximateValues.isApproximate(v1) || ApproximateValues.isApproximate(v2))
+                && !NonFiniteDoubles.isNonFinite((Number) v1) && !NonFiniteDoubles.isNonFinite((Number) v2)) {
+            return ApproximateValues.compare(((Number) v1).doubleValue(), ((Number) v2).doubleValue());
+        }
+        return compareValues(v1, v2);
     }
 
     private static boolean isIntegral(final Object value) {

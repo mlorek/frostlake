@@ -1,0 +1,134 @@
+{
+  "suite": "functions-aggregate-functions-ext",
+  "description": "The extended aggregate family over a fixed five-row fixture (values 10..40 plus a NULL row): the statistical aliases STDDEV_SAMP/STDDEV_POP/VAR_SAMP/VAR_POP, the boolean aggregates BOOLOR_AGG / BOOLAND_AGG / BOOLXOR_AGG, the bitwise aggregates BITAND_AGG / BITOR_AGG / BITXOR_AGG, COUNT_IF, MEDIAN over odd and even counts, MODE, ANY_VALUE, APPROX_COUNT_DISTINCT, SKEW, KURTOSIS, CORR, COVAR_POP / COVAR_SAMP, and PERCENTILE_CONT / PERCENTILE_DISC. Converted 1:1 from functions/AggregateFunctionsExtTest (now retired); its @BeforeEach nums fixture is inlined per test. The Java class tested PERCENTILE_CONT and PERCENTILE_DISC by driving their accumulator objects directly, with a comment that the WITHIN GROUP syntax was not yet in the grammar; it is now, so both converted tests run the real SQL and the claims hold on every backend. Java tolerances (0.001, 0.01) become ABS(x - expected) < tolerance predicates where the exact value is irrational, and the plain 10-significant-figure normalisation elsewhere.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "stddev-samp-matches-stddev", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT ABS(STDDEV_SAMP(v) - STDDEV(v)) < 0.001 FROM nums", "expect": {"value": "true"}}
+    ]},
+    {"name": "stddev-pop-over-the-fixture", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT ABS(STDDEV_POP(v) - 11.18) < 0.01 FROM nums", "expect": {"value": "true"}}
+    ]},
+    {"name": "var-samp-matches-variance", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT ABS(VAR_SAMP(v) - VARIANCE(v)) < 0.001 FROM nums", "expect": {"value": "true"}}
+    ]},
+    {"name": "var-pop-over-the-fixture", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT VAR_POP(v) FROM nums", "expect": {"value": "125"}}
+    ]},
+    {"name": "boolor-agg", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT BOOLOR_AGG(flag) FROM nums", "expect": {"value": "true"}}
+    ]},
+    {"name": "booland-agg", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT BOOLAND_AGG(flag) FROM nums", "expect": {"value": "false"}}
+    ]},
+    {"name": "booland-agg-over-all-true", "steps": [
+      {"sql": "CREATE TABLE allTrue (f BOOLEAN)"},
+      {"sql": "INSERT INTO allTrue VALUES (true),(true),(true)"},
+      {"sql": "SELECT BOOLAND_AGG(f) FROM allTrue", "expect": {"value": "true"}}
+    ]},
+    {"name": "boolxor-agg-answers", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT IFF(BOOLXOR_AGG(flag) IS NULL, 'null', 'set') FROM nums", "expect": {"value": "set"}}
+    ]},
+    {"name": "bitand-agg", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT BITAND_AGG(id) FROM nums", "expect": {"value": "0"}}
+    ]},
+    {"name": "bitor-agg", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT BITOR_AGG(id) FROM nums", "expect": {"value": "7"}}
+    ]},
+    {"name": "bitxor-agg-answers", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT IFF(BITXOR_AGG(id) IS NULL, 'null', 'set') FROM nums", "expect": {"value": "set"}}
+    ]},
+    {"name": "count-if-over-the-fixture", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT COUNT_IF(flag) FROM nums", "expect": {"value": "3"}}
+    ]},
+    {"name": "count-if-over-a-boolean-column", "steps": [
+      {"sql": "CREATE TABLE flags (active BOOLEAN)"},
+      {"sql": "INSERT INTO flags VALUES (true),(false),(true),(true),(false)"},
+      {"sql": "SELECT COUNT_IF(active) FROM flags", "expect": {"value": "3"}}
+    ]},
+    {"name": "median-over-an-odd-count", "steps": [
+      {"sql": "CREATE TABLE med (v DOUBLE)"},
+      {"sql": "INSERT INTO med VALUES (1),(3),(5)"},
+      {"sql": "SELECT MEDIAN(v) FROM med", "expect": {"value": "3"}}
+    ]},
+    {"name": "median-over-an-even-count", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT MEDIAN(v) FROM nums", "expect": {"value": "25"}}
+    ]},
+    {"name": "mode", "steps": [
+      {"sql": "CREATE TABLE mode_t (v INTEGER)"},
+      {"sql": "INSERT INTO mode_t VALUES (1),(2),(2),(3),(2)"},
+      {"sql": "SELECT MODE(v) FROM mode_t", "expect": {"value": "2"}}
+    ]},
+    {"name": "any-value-answers", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT IFF(ANY_VALUE(id) IS NULL, 'null', 'set') FROM nums", "expect": {"value": "set"}}
+    ]},
+    {"name": "approx-count-distinct-is-exact-for-a-small-cardinality", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(id) FROM nums", "expect": {"value": "5"}}
+    ]},
+    {"name": "skew-of-a-symmetric-distribution-is-zero", "steps": [
+      {"sql": "CREATE TABLE sym (v DOUBLE)"},
+      {"sql": "INSERT INTO sym VALUES (1),(2),(3),(4),(5)"},
+      {"sql": "SELECT ABS(SKEW(v)) < 0.01 FROM sym", "expect": {"value": "true"}}
+    ]},
+    {"name": "kurtosis-answers", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, v DOUBLE, flag BOOLEAN)"},
+      {"sql": "INSERT INTO nums VALUES (1,10.0,true),(2,20.0,false),(3,30.0,true),(4,40.0,true),(5,NULL,NULL)"},
+      {"sql": "SELECT IFF(KURTOSIS(v) IS NULL, 'null', 'set') FROM nums", "expect": {"value": "set"}}
+    ]},
+    {"name": "corr-of-a-perfect-positive-relation", "steps": [
+      {"sql": "CREATE TABLE corr_t (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO corr_t VALUES (1,2),(2,4),(3,6),(4,8)"},
+      {"sql": "SELECT ABS(CORR(x, y) - 1.0) < 0.001 FROM corr_t", "expect": {"value": "true"}}
+    ]},
+    {"name": "covar-pop-is-positive", "steps": [
+      {"sql": "CREATE TABLE cov_t (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO cov_t VALUES (1,2),(2,4),(3,6)"},
+      {"sql": "SELECT COVAR_POP(x, y) > 0 FROM cov_t", "expect": {"value": "true"}}
+    ]},
+    {"name": "covar-samp-is-positive", "steps": [
+      {"sql": "CREATE TABLE covs_t (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO covs_t VALUES (1,2),(2,4),(3,6)"},
+      {"sql": "SELECT COVAR_SAMP(x, y) > 0 FROM covs_t", "expect": {"value": "true"}}
+    ]},
+    {"name": "percentile-cont-at-the-median", "steps": [
+      {"sql": "CREATE TABLE pc (v DOUBLE)"},
+      {"sql": "INSERT INTO pc VALUES (10.0),(20.0),(30.0),(40.0)"},
+      {"sql": "SELECT ABS(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v) - 25.0) < 0.001 FROM pc",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "percentile-disc-at-the-median", "steps": [
+      {"sql": "CREATE TABLE pd (v DOUBLE)"},
+      {"sql": "INSERT INTO pd VALUES (10.0),(20.0),(30.0),(40.0)"},
+      {"sql": "SELECT IFF(PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY v) IS NULL, 'null', 'set') FROM pd",
+       "expect": {"value": "set"}}
+    ]}
+  ]
+}

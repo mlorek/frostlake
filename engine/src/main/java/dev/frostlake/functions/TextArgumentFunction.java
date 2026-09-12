@@ -50,4 +50,10 @@ public abstract class TextArgumentFunction extends BuiltInFunction {
     public SemiStructuredRejection semiStructuredRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
+
+    /** A VECTOR is no text either, and is refused in every position (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

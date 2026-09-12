@@ -1,0 +1,134 @@
+{
+  "suite": "dml-operations",
+  "description": "INSERT / UPDATE / DELETE and their combinations, asserted through query results alone: bulk and column-list inserts, mixed types and NULLs, WHERE-filtered and multi-column and no-match updates, filtered / multi-row / all-rows / complex-predicate deletes, insert-update-delete sequences, bulk operations, and BEGIN/COMMIT/ROLLBACK transactional DML through the SQL surface. Converted 1:1 from dml/DMLOperationsTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "basic-insert", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "bulk-insert", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "insert-with-column-list", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER, city VARCHAR)"},
+      {"sql": "INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)"},
+      {"sql": "SELECT * FROM users", "expect": {"rows": [["1", "Alice", "30", "NULL"]]}}
+    ]},
+    {"name": "insert-with-different-types", "steps": [
+      {"sql": "CREATE TABLE test_types (int_col INTEGER, str_col VARCHAR, bool_col BOOLEAN, float_col FLOAT)"},
+      {"sql": "INSERT INTO test_types VALUES (42, 'hello', true, 3.14)"},
+      {"sql": "SELECT * FROM test_types", "expect": {"rows": [["42", "hello", "true", "3.14"]]}}
+    ]},
+    {"name": "insert-with-nulls", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', null)"},
+      {"sql": "SELECT age FROM users", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "basic-update", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "UPDATE users SET age = 31"},
+      {"sql": "SELECT age FROM users", "expect": {"value": "31"}}
+    ]},
+    {"name": "update-with-where", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "UPDATE users SET age = 26 WHERE id = 2"},
+      {"sql": "SELECT age FROM users WHERE id = 2", "expect": {"value": "26"}},
+      {"sql": "SELECT age FROM users WHERE id = 1", "expect": {"value": "30"}}
+    ]},
+    {"name": "update-multiple-columns", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "UPDATE users SET name = 'Alicia', age = 31 WHERE id = 1"},
+      {"sql": "SELECT name, age FROM users", "expect": {"rows": [["Alicia", "31"]]}}
+    ]},
+    {"name": "update-with-complex-where", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "UPDATE users SET age = 100 WHERE age > 28 AND age < 35"},
+      {"sql": "SELECT * FROM users WHERE age = 100", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "update-no-match", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "UPDATE users SET age = 40 WHERE id = 999"},
+      {"sql": "SELECT age FROM users", "expect": {"value": "30"}}
+    ]},
+    {"name": "update-with-expression", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Widget', 100), (2, 'Gadget', 200)"},
+      {"sql": "UPDATE products SET price = 150 WHERE id = 1"},
+      {"sql": "SELECT price FROM products WHERE id = 1", "expect": {"value": "150"}}
+    ]},
+    {"name": "basic-delete", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "DELETE FROM users WHERE id = 1"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "delete-with-where", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "DELETE FROM users WHERE age < 30"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "delete-multiple-rows", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35), (4, 'Diana', 28)"},
+      {"sql": "DELETE FROM users WHERE age > 25 AND age < 35"},
+      {"sql": "SELECT name FROM users ORDER BY id", "expect": {"rows": [["Bob"], ["Charlie"]]}}
+    ]},
+    {"name": "delete-no-match", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "DELETE FROM users WHERE id = 999"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "delete-all", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "DELETE FROM users"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "delete-with-complex-where", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35), (4, 'Diana', 28)"},
+      {"sql": "DELETE FROM users WHERE age = 30 OR age > 33"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "insert-update-delete", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25)"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 2}},
+      {"sql": "UPDATE users SET age = 31 WHERE id = 1"},
+      {"sql": "SELECT age FROM users WHERE id = 1", "expect": {"value": "31"}},
+      {"sql": "DELETE FROM users WHERE id = 2"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "bulk-operations", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER, stock INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Widget', 100, 50), (2, 'Gadget', 200, 30), (3, 'Doohickey', 150, 20), (4, 'Thingamajig', 175, 40)"},
+      {"sql": "UPDATE products SET price = 120 WHERE price < 150"},
+      {"sql": "SELECT * FROM products WHERE price = 120", "expect": {"rowCount": 1}},
+      {"sql": "DELETE FROM products WHERE stock < 35"},
+      {"sql": "SELECT * FROM products", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "transactional-dml", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "INSERT INTO users VALUES (2, 'Bob')"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 2}},
+      {"sql": "BEGIN"},
+      {"sql": "DELETE FROM users WHERE id = 1"},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 2}}
+    ]}
+  ]
+}

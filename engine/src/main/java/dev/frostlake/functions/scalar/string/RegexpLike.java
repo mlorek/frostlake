@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.BooleanType;
 
@@ -44,4 +45,10 @@ public class RegexpLike extends TextArgumentFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 3; }
+
+    /** A BINARY is no text here: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

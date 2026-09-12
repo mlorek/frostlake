@@ -1,0 +1,22 @@
+{
+  "suite": "scripting-let-untyped",
+  "description": "Snowflake Scripting LET accepts an UNTYPED form, where the type is inferred from the initialiser, and the DEFAULT keyword as a synonym for :=, alongside the typed LET x <type> := <expr> form. All three spellings are pinned by storing the variable through a bind and reading it back. Converted 1:1 from scripting/LetUntypedTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "an-untyped-let-with-colon-equals", "steps": [
+      {"sql": "CREATE TABLE lr (v INTEGER)"},
+      {"sql": "BEGIN LET x := 5; INSERT INTO lr VALUES (:x); END;"},
+      {"sql": "SELECT v FROM lr", "expect": {"value": 5}}
+    ]},
+    {"name": "an-untyped-let-with-the-default-keyword", "steps": [
+      {"sql": "CREATE TABLE lr (v INTEGER)"},
+      {"sql": "BEGIN LET y DEFAULT 7; INSERT INTO lr VALUES (:y); END;"},
+      {"sql": "SELECT v FROM lr", "expect": {"value": 7}}
+    ]},
+    {"name": "a-typed-let-with-the-default-keyword", "steps": [
+      {"sql": "CREATE TABLE lr (v INTEGER)"},
+      {"sql": "BEGIN LET z INTEGER DEFAULT 9; INSERT INTO lr VALUES (:z); END;"},
+      {"sql": "SELECT v FROM lr", "expect": {"value": 9}}
+    ]}
+  ]
+}

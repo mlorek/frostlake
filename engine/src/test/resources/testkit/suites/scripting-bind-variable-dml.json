@@ -1,0 +1,66 @@
+{
+  "suite": "scripting-bind-variable-dml",
+  "description": ":name bind-variable references inside the PLAIN SQL statements of a Snowflake Scripting block - INSERT VALUES, WHERE predicates, UPDATE SET and arbitrary expressions - resolved from the block's procedural scope, a stored procedure's PARAMETERS included. These previously failed at parse time ('bind variable not ported'); only the bare-name form worked. A declared-but-unset variable resolves to NULL rather than erroring, while an UNDECLARED one is an error and not a silent NULL - and live does not call that a bind-variable problem at all: it reports the NAME as an unresolvable identifier, at the COLON's offset. That offset rule is measured across four statement families (INSERT VALUES, UPDATE SET, UPDATE WHERE, DELETE WHERE) and the position is the colon every time. SELECT :1 is grammar-accepted as a numeric bind and, unbound, reports the missing bind rather than a syntax error. The last test is the parser boundary that goes with all this: a variant PATH step may be a KEYWORD the grammar admits as an identifier, and the colon before it is still path syntax and not a bind - so src:value:attributes:core.x reads the nested field instead of refusing ':core' as a dotted bind. Converted 1:1 from scripting/BindVariableDmlTest (now retired); the Java computed each expected offset with sql.indexOf(':nope') so the claim was the RULE rather than four transcribed numbers - the converted steps carry the four numbers that rule produces (32, 24, 39, 32) beside the statements they come from.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "an-insert-values-bind-var-in-a-block-body", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR)"},
+      {"sql": "DECLARE v VARCHAR DEFAULT 'hello'; BEGIN INSERT INTO t VALUES (:v); RETURN 'ok'; END", "expect": {"value": "ok"}},
+      {"sql": "SELECT v FROM t", "expect": {"rows": [["hello"]]}}
+    ]},
+    {"name": "a-procedure-parameter-bind-var-in-an-insert", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$"},
+      {"sql": "CALL log_it('x')", "expect": {"value": "logged"}},
+      {"sql": "SELECT v FROM call_log", "expect": {"rows": [["x"]]}}
+    ]},
+    {"name": "a-bind-var-in-a-where-predicate", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2), (3)"},
+      {"sql": "DECLARE x INTEGER DEFAULT 2; BEGIN DELETE FROM nums WHERE n = :x; RETURN 'ok'; END", "expect": {"value": "ok"}},
+      {"sql": "SELECT n FROM nums ORDER BY n", "expect": {"rows": [[1],[3]], "ordered": true}}
+    ]},
+    {"name": "a-bind-var-in-an-update-set", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'old'), (2, 'keep')"},
+      {"sql": "DECLARE nv VARCHAR DEFAULT 'new'; BEGIN UPDATE t SET s = :nv WHERE id = 1; RETURN 'ok'; END", "expect": {"value": "ok"}},
+      {"sql": "SELECT s FROM t ORDER BY id", "expect": {"rows": [["new"],["keep"]], "ordered": true}}
+    ]},
+    {"name": "a-bind-var-in-an-arithmetic-expression", "steps": [
+      {"sql": "CREATE TABLE t (n INTEGER)"},
+      {"sql": "DECLARE x INTEGER DEFAULT 41; BEGIN INSERT INTO t VALUES (:x + 1); RETURN 'ok'; END", "expect": {"value": "ok"}},
+      {"sql": "SELECT n FROM t", "expect": {"rows": [[42]]}}
+    ]},
+    {"name": "a-declared-but-unset-bind-var-yields-null", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR)"},
+      {"sql": "DECLARE v VARCHAR; BEGIN INSERT INTO t VALUES (:v); RETURN 'ok'; END", "expect": {"value": "ok"}},
+      {"sql": "SELECT v FROM t", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-undefined-bind-var-errors", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR)"},
+      {"sql": "BEGIN INSERT INTO t VALUES (:nope); RETURN 'ok'; END",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 28\ninvalid identifier 'NOPE'"}}}
+    ]},
+    {"name": "a-numeric-bind-parses-and-fails-cleanly-when-unbound", "steps": [
+      {"sql": "SELECT :1", "expect": {"error": {"messageContains": "Bind variable"}}}
+    ]},
+    {"name": "every-dml-family-reports-the-colons-position", "steps": [
+      {"sql": "CREATE TABLE bt (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO bt VALUES (1, 'a')"},
+      {"sql": "BEGIN INSERT INTO bt VALUES (2, :nope); RETURN 'ok'; END",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 32\ninvalid identifier 'NOPE'"}}},
+      {"sql": "BEGIN UPDATE bt SET v = :nope WHERE id = 1; RETURN 'ok'; END",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 24\ninvalid identifier 'NOPE'"}}},
+      {"sql": "BEGIN UPDATE bt SET v = 'z' WHERE id = :nope; RETURN 'ok'; END",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 39\ninvalid identifier 'NOPE'"}}},
+      {"sql": "BEGIN DELETE FROM bt WHERE id = :nope; RETURN 'ok'; END",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 32\ninvalid identifier 'NOPE'"}}}
+    ]},
+    {"name": "a-variant-path-step-after-a-keyword-named-field", "steps": [
+      {"sql": "CREATE TABLE vt (src VARIANT)"},
+      {"sql": "INSERT INTO vt SELECT PARSE_JSON('{\"value\":{\"attributes\":{\"core\":{\"x\":\"deep\"}}}}')"},
+      {"sql": "DECLARE r STRING; BEGIN SELECT src:value:attributes:core.x::STRING INTO :r FROM vt; RETURN :r; END",
+       "expect": {"value": "deep"}}
+    ]}
+  ]
+}

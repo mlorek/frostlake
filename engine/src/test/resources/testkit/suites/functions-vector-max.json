@@ -1,0 +1,46 @@
+{
+  "suite": "functions-vector-max",
+  "description": "VECTOR_MAX - every expectation measured on a real Snowflake account. The maximum is ELEMENT-WISE, not row-wise: over [1,9,3], [4,5,-6] and [7,2,0] the answer is [7.000000,9.000000,3.000000], with each element taken from a different row. NULL rows are skipped. Unlike VECTOR_AVG it KEEPS the INT element type, which is why the INT case renders [4,9,3] rather than [4.000000,9.000000,3.000000]. An empty or all-NULL group is NULL, a single-row group is that row, and a non-vector argument is the compile error 'Invalid argument types for function VECTOR_MAX: (NUMBER(1,0))'. Converted 1:1 from functions/vector/VectorMaxTest (now retired); every vector is read as a bare cell, as recorded in functions-vector-avg.",
+  "tags": ["functions", "vector", "converted"],
+  "tests": [
+    {"name": "the-maximum-is-element-wise-not-row-wise", "steps": [
+      {"sql": "CREATE TABLE max_cross (v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO max_cross SELECT [1,9,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO max_cross SELECT [4,5,-6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO max_cross SELECT [7,2,0]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_MAX(v) FROM max_cross", "expect": {"value": "[7.000000,9.000000,3.000000]"}}
+    ]},
+    {"name": "it-skips-null-rows", "steps": [
+      {"sql": "CREATE TABLE max_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO max_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO max_rows SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO max_rows SELECT 3, NULL"},
+      {"sql": "SELECT VECTOR_MAX(v) FROM max_rows", "expect": {"value": "[4.000000,5.000000,6.000000]"}}
+    ]},
+    {"name": "int-vectors-keep-the-int-element-type", "steps": [
+      {"sql": "CREATE TABLE max_int (v VECTOR(INT,3))"},
+      {"sql": "INSERT INTO max_int SELECT [1,9,3]::VECTOR(INT,3)"},
+      {"sql": "INSERT INTO max_int SELECT [4,5,-6]::VECTOR(INT,3)"},
+      {"sql": "SELECT VECTOR_MAX(v) FROM max_int", "expect": {"value": "[4,9,3]"}}
+    ]},
+    {"name": "empty-and-all-null-groups-are-null", "steps": [
+      {"sql": "CREATE TABLE max_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO max_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO max_rows SELECT 3, NULL"},
+      {"sql": "SELECT VECTOR_MAX(v) FROM max_rows WHERE id = 99", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT VECTOR_MAX(v) FROM max_rows WHERE id = 3", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-single-row-group-is-that-row", "steps": [
+      {"sql": "CREATE TABLE max_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO max_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO max_rows SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_MAX(v) FROM max_rows WHERE id = 1", "expect": {"value": "[1.000000,2.000000,3.000000]"}}
+    ]},
+    {"name": "a-non-vector-argument-is-rejected", "steps": [
+      {"sql": "CREATE TABLE max_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO max_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_MAX(1)", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_MAX': (NUMBER(1,0))"}}},
+      {"sql": "SELECT VECTOR_MAX(id) FROM max_rows", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_MAX'"}}}
+    ]}
+  ]
+}

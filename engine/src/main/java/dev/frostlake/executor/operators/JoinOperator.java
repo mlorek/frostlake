@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.operators;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import dev.frostlake.values.VariantValue;
@@ -313,7 +314,13 @@ public class JoinOperator implements Operator {
 
         try {
             return conditionEvaluator.matches(leftRow, rightRow);
-        } catch (final Exception e) {
+        } catch (final RuntimeException e) {
+            // A compile-time refusal is the statement's rather than this pair's — two collations that
+            // disagree in ON are refused however the rows compare — so it must not read as a condition
+            // that merely failed to hold.
+            if (SqlCompilationError.isCompilationError(e.getMessage())) {
+                throw e;
+            }
             logger.warn("Failed to evaluate join condition: {}", e.getMessage());
             return false;
         }

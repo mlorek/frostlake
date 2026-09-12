@@ -1,0 +1,63 @@
+{
+  "suite": "functions-map-cat",
+  "description": "MAP_CAT and the MAP data type - a MAP is backed by an OBJECT, so a ::MAP(keyType, valueType) cast is a pass-through of the object - and MAP_CAT merges two maps with map2 winning on a shared key. MAP is a STRUCTURED type that must carry its key and value types, so a bare ::MAP or CAST(... AS MAP) is a syntax error, and an UNTYPED NULL is not one of its values (\"Invalid argument types for function 'MAP_CAT': (NULL, MAP(...))\") while a NULL carrying the type is accepted. Live-verified: MAP_CAT PROPAGATES a NULL rather than treating it as an empty map, which is what Frostlake used to do - it merged the other side through and returned it - and the other half of that rule is that an EMPTY map merges normally. The result's declared type is itself a MAP, so it feeds the rest of the family. Converted 1:1 from functions/MapCatTest (now retired); MAP cells are read directly, which renders identically on the engine and over HTTP, while the ARRAY-valued MAP_KEYS is read through TO_JSON.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "map-cat-merges-two-maps", "steps": [
+      {"sql": "SELECT MAP_CAT(OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR), OBJECT_CONSTRUCT('b','2')::MAP(VARCHAR,VARCHAR))",
+       "expect": {"value": "{\"a\":\"1\",\"b\":\"2\"}"}}
+    ]},
+    {"name": "the-second-map-wins-on-a-shared-key", "steps": [
+      {"sql": "SELECT MAP_CAT(OBJECT_CONSTRUCT('a','1','b','x')::MAP(VARCHAR,VARCHAR), OBJECT_CONSTRUCT('b','2','c','3')::MAP(VARCHAR,VARCHAR))",
+       "expect": {"value": "{\"a\":\"1\",\"b\":\"2\",\"c\":\"3\"}"}}
+    ]},
+    {"name": "a-cast-to-map-is-an-object-pass-through", "steps": [
+      {"sql": "SELECT OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR)::MAP(VARCHAR,VARCHAR)",
+       "expect": {"value": "{\"a\":\"1\"}"}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR) AS MAP(VARCHAR,VARCHAR))",
+       "expect": {"value": "{\"a\":\"1\"}"}}
+    ]},
+    {"name": "a-bare-map-cast-is-rejected", "steps": [
+      {"sql": "SELECT NULL::MAP", "expect": {"error": {}}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('a','1') AS MAP)", "expect": {"error": {}}}
+    ]},
+    {"name": "the-loader-shape-map-cat-of-casts-back-to-variant", "steps": [
+      {"sql": "SELECT MAP_CAT(OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR)::MAP(VARCHAR,VARCHAR), OBJECT_CONSTRUCT('b','2')::MAP(VARCHAR,VARCHAR)::MAP(VARCHAR,VARCHAR))::VARIANT",
+       "expect": {"value": "{\"a\":\"1\",\"b\":\"2\"}"}}
+    ]},
+    {"name": "two-typed-nulls-give-null", "steps": [
+      {"sql": "SELECT MAP_CAT(NULL::MAP(VARCHAR,VARCHAR), NULL::MAP(VARCHAR,VARCHAR))",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-null-on-either-side-makes-the-whole-result-null", "steps": [
+      {"sql": "SELECT MAP_CAT(OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR), NULL::MAP(VARCHAR,VARCHAR))",
+       "expect": {"rows": [[null]]}},
+      {"sql": "SELECT MAP_CAT(NULL::MAP(VARCHAR,VARCHAR), OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR))",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-empty-map-is-not-a-null-map", "steps": [
+      {"sql": "SELECT MAP_CAT(OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR), OBJECT_CONSTRUCT()::MAP(VARCHAR,VARCHAR))",
+       "expect": {"value": "{\"a\":\"1\"}"}}
+    ]},
+    {"name": "map-cat-over-columns-propagates-null-per-row", "steps": [
+      {"sql": "CREATE TABLE mc (id INTEGER, a MAP(VARCHAR,VARCHAR), b MAP(VARCHAR,VARCHAR))"},
+      {"sql": "INSERT INTO mc SELECT 1, OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR), OBJECT_CONSTRUCT('b','2')::MAP(VARCHAR,VARCHAR)"},
+      {"sql": "INSERT INTO mc SELECT 2, OBJECT_CONSTRUCT('a','1')::MAP(VARCHAR,VARCHAR), NULL"},
+      {"sql": "SELECT MAP_CAT(a, b) FROM mc WHERE id = 1", "expect": {"value": "{\"a\":\"1\",\"b\":\"2\"}"}},
+      {"sql": "SELECT MAP_CAT(a, b) FROM mc WHERE id = 2", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "the-result-is-itself-a-map", "steps": [
+      {"sql": "SELECT TO_JSON(MAP_KEYS(MAP_CAT(MAP_CONSTRUCT('a',1), MAP_CONSTRUCT('b',2)))::VARIANT)",
+       "expect": {"value": "[\"a\",\"b\"]"}}
+    ]},
+    {"name": "an-untyped-null-argument-is-rejected", "steps": [
+      {"sql": "SELECT MAP_CAT(NULL, OBJECT_CONSTRUCT('b','2')::MAP(VARCHAR,VARCHAR))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_CAT'"}}}
+    ]},
+    {"name": "map-is-usable-as-a-column-type-and-a-column-name", "steps": [
+      {"sql": "CREATE TABLE mt (id INTEGER, map MAP(VARCHAR,VARCHAR))"},
+      {"sql": "INSERT INTO mt SELECT 1, OBJECT_CONSTRUCT('k','v')::MAP(VARCHAR,VARCHAR)"},
+      {"sql": "SELECT map FROM mt", "expect": {"value": "{\"k\":\"v\"}"}}
+    ]}
+  ]
+}

@@ -1,0 +1,164 @@
+{
+  "suite": "ddl-masking-policy-attachment",
+  "description": "Where an attached MASKING POLICY becomes visible (live-verified): DESCRIBE TABLE's policy name cell and GET_DDL's WITH MASKING POLICY clause both spell the policy in FULL under ITS schema however little the attaching statement wrote; UNSET clears; the type rule names no column and spells the POLICY's type in the internal vocabulary (TEXT, FIXED, REAL) while the column keeps its canonical SQL spelling; within a family the parameters are ignored; argument/return mismatch refused at CREATE; missing policy/schema refusals; no-op detach; positioned unknown-column refusal; re-attach a no-op under every spelling that resolves to the same policy; a different policy needs FORCE. Converted 1:1 from ddl/MaskingPolicyAttachmentTest (now retired).",
+  "tags": ["ddl", "policy", "converted"],
+  "tests": [
+    {"name": "a-column-masked-at-create-time-reports-its-policy-in-full", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "DESCRIBE TABLE mask_t"},
+      {"sql": "SELECT \"policy name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'A'",
+       "expect": {"value": "TEST_DB.TEST_SCHEMA.MP1"}}
+    ]},
+    {"name": "an-unmasked-column-reports-nothing", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "DESCRIBE TABLE mask_t"},
+      {"sql": "SELECT \"name\", \"policy name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('B', 'N') ORDER BY \"name\"",
+       "expect": {"rows": [["B", "NULL"], ["N", "NULL"]], "ordered": true}}
+    ]},
+    {"name": "the-alter-form-fills-the-same-cell", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY mp1"},
+      {"sql": "DESCRIBE TABLE mask_t"},
+      {"sql": "SELECT \"policy name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'B'",
+       "expect": {"value": "TEST_DB.TEST_SCHEMA.MP1"}}
+    ]},
+    {"name": "unset-clears-the-cell", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN a UNSET MASKING POLICY"},
+      {"sql": "DESCRIBE TABLE mask_t"},
+      {"sql": "SELECT \"policy name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'A'",
+       "expect": {"value": "NULL"}}
+    ]},
+    {"name": "a-policy-from-another-schema-keeps-its-own-path", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE SCHEMA test_db.pol_s"},
+      {"sql": "USE SCHEMA test_db.test_schema"},
+      {"sql": "CREATE MASKING POLICY pol_s.mpx AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY pol_s.mpx"},
+      {"sql": "DESCRIBE TABLE mask_t"},
+      {"sql": "SELECT \"policy name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'B'",
+       "expect": {"value": "TEST_DB.POL_S.MPX"}}
+    ]},
+    {"name": "get-ddl-renders-the-policy-between-default-and-comment", "steps": [
+      {"sql": "CREATE SCHEMA test_db.pol_s"},
+      {"sql": "USE SCHEMA test_db.test_schema"},
+      {"sql": "CREATE MASKING POLICY pol_s.mpx AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE ddl_t (a VARCHAR NOT NULL DEFAULT 'x' WITH MASKING POLICY pol_s.mpx COMMENT 'c')"},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'ddl_t'), 'NOT NULL DEFAULT ''x'' WITH MASKING POLICY TEST_DB.POL_S.MPX COMMENT ''c''')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "get-ddl-always-spells-the-clause-with-with", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE ddl_t2 (a VARCHAR MASKING POLICY mp1)"},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'ddl_t2'), 'WITH MASKING POLICY TEST_DB.TEST_SCHEMA.MP1')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "a-type-mismatch-names-no-column-and-uses-the-internal-type-name", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE typ_t (s VARCHAR, n NUMBER, m NUMBER(10,2), d DATE, ts TIMESTAMP, f FLOAT, bi BINARY, t TIME)"},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN n SET MASKING POLICY mp1",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type NUMBER(38,0) does not match with masking policy data type TEXT."}}},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN m SET MASKING POLICY mp1",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type NUMBER(10,2) does not match with masking policy data type TEXT."}}},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN d SET MASKING POLICY mp1",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type DATE does not match with masking policy data type TEXT."}}},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN ts SET MASKING POLICY mp1",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type TIMESTAMP_NTZ(9) does not match with masking policy data type TEXT."}}},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN f SET MASKING POLICY mp1",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type FLOAT does not match with masking policy data type TEXT."}}},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN bi SET MASKING POLICY mp1",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type BINARY(8388608) does not match with masking policy data type TEXT."}}},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN t SET MASKING POLICY mp1",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type TIME(9) does not match with masking policy data type TEXT."}}}
+    ]},
+    {"name": "the-policy-type-uses-the-internal-names", "steps": [
+      {"sql": "CREATE TABLE typ_t2 (s VARCHAR)"},
+      {"sql": "CREATE MASKING POLICY mp_n AS (v NUMBER) RETURNS NUMBER -> NULL"},
+      {"sql": "CREATE MASKING POLICY mp_f AS (v FLOAT) RETURNS FLOAT -> NULL"},
+      {"sql": "ALTER TABLE typ_t2 ALTER COLUMN s SET MASKING POLICY mp_n",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type VARCHAR(16777216) does not match with masking policy data type FIXED."}}},
+      {"sql": "ALTER TABLE typ_t2 ALTER COLUMN s SET MASKING POLICY mp_f",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type VARCHAR(16777216) does not match with masking policy data type REAL."}}}
+    ]},
+    {"name": "a-sized-column-matches-an-unsized-policy", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE typ_t3 (s20 VARCHAR(20), m NUMBER(10,2))"},
+      {"sql": "CREATE MASKING POLICY mp_n AS (v NUMBER) RETURNS NUMBER -> NULL"},
+      {"sql": "ALTER TABLE typ_t3 ALTER COLUMN s20 SET MASKING POLICY mp1"},
+      {"sql": "ALTER TABLE typ_t3 ALTER COLUMN m SET MASKING POLICY mp_n"}
+    ]},
+    {"name": "the-column-definition-makes-the-same-check", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE bad_t (n NUMBER WITH MASKING POLICY mp1)",
+       "expect": {"error": {"messageContains": "SQL compilation error: COLUMN data type NUMBER(38,0) does not match with masking policy data type TEXT."}}}
+    ]},
+    {"name": "an-argument-and-return-type-mismatch-is-refused", "steps": [
+      {"sql": "CREATE MASKING POLICY mp_bad AS (v VARCHAR) RETURNS NUMBER -> 1",
+       "expect": {"error": {"messageContains": "SQL compilation error: Masking policy function argument and return type mismatch."}}}
+    ]},
+    {"name": "attaching-a-policy-that-does-not-exist-is-refused", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY no_such_mp",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMasking policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_MP' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-policy-named-in-a-missing-schema-is-refused-as-the-schema", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY no_such_s.mp1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nSchema 'TEST_DB.NO_SUCH_S' does not exist or not authorized."}}}
+    ]},
+    {"name": "the-create-table-form-makes-the-same-check", "steps": [
+      {"sql": "CREATE TABLE bad_t (a VARCHAR WITH MASKING POLICY no_such_mp)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMasking policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_MP' does not exist or not authorized."}}}
+    ]},
+    {"name": "detaching-from-an-unmasked-column-is-a-no-op", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN n UNSET MASKING POLICY"},
+      {"sql": "DESCRIBE TABLE mask_t"},
+      {"sql": "SELECT \"policy name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'N'",
+       "expect": {"value": "NULL"}}
+    ]},
+    {"name": "an-unknown-column-is-refused-at-its-own-position", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN no_such_c UNSET MASKING POLICY",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 32\ninvalid identifier 'NO_SUCH_C'"}}}
+    ]},
+    {"name": "re-attaching-the-same-policy-is-a-no-op-under-every-spelling", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE SCHEMA test_db.pol_s"},
+      {"sql": "USE SCHEMA test_db.test_schema"},
+      {"sql": "CREATE MASKING POLICY pol_s.mpx AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY pol_s.mpx"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY pol_s.mpx"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY test_db.pol_s.mpx"},
+      {"sql": "USE SCHEMA test_db.pol_s"},
+      {"sql": "ALTER TABLE test_schema.mask_t ALTER COLUMN b SET MASKING POLICY mpx"},
+      {"sql": "USE SCHEMA test_db.test_schema"},
+      {"sql": "DESCRIBE TABLE mask_t"},
+      {"sql": "SELECT \"policy name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'B'",
+       "expect": {"value": "TEST_DB.POL_S.MPX"}}
+    ]},
+    {"name": "a-different-policy-needs-force", "steps": [
+      {"sql": "CREATE MASKING POLICY mp1 AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE SCHEMA test_db.pol_s"},
+      {"sql": "USE SCHEMA test_db.test_schema"},
+      {"sql": "CREATE MASKING POLICY pol_s.mpx AS (v VARCHAR) RETURNS VARCHAR -> '###'"},
+      {"sql": "CREATE TABLE mask_t (a VARCHAR WITH MASKING POLICY mp1, b VARCHAR, n NUMBER)"},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN a SET MASKING POLICY pol_s.mpx",
+       "expect": {"error": {"messageContains": "already attached to another masking policy"}}},
+      {"sql": "ALTER TABLE mask_t ALTER COLUMN a SET MASKING POLICY pol_s.mpx FORCE"},
+      {"sql": "DESCRIBE TABLE mask_t"},
+      {"sql": "SELECT \"policy name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'A'",
+       "expect": {"value": "TEST_DB.POL_S.MPX"}}
+    ]}
+  ]
+}

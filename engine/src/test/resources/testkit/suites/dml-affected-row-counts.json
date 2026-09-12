@@ -1,0 +1,78 @@
+{
+  "suite": "dml-affected-row-counts",
+  "description": "DML statements report their affected-row count Snowflake-style: a single-row result whose column is number of rows inserted / updated / deleted (MERGE one column per action), surfaced as the statement's update count; DDL reports zero and a no-match UPDATE reports zero. Converted 1:1 from dml/AffectedRowCountTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "insert-values-reports-count", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1,'a'), (2,'b'), (3,'c')", "expect": {"updateCount": 3}}
+    ]},
+    {"name": "insert-result-set-is-snowflake-shaped",
+     "skip": {"backends": ["js", "php", "python", "ruby", "ada"], "reason": "these drivers surface the DML status grid as a single affected-row count; the grid's own columns and rows are not observable through them"},
+     "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2)",
+       "expect": {"columns": ["number of rows inserted"], "rows": [["2"]]}}
+    ]},
+    {"name": "insert-select-reports-count", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "CREATE TABLE t2 (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t2 SELECT id, v FROM t", "expect": {"updateCount": 3}}
+    ]},
+    {"name": "update-reports-count", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "UPDATE t SET v = 'x' WHERE id <= 2", "expect": {"updateCount": 2}}
+    ]},
+    {"name": "update-from-reports-count", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "CREATE TABLE src (id INTEGER, nv VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'n1'), (2, 'n2')"},
+      {"sql": "UPDATE t SET v = src.nv FROM src WHERE t.id = src.id", "expect": {"updateCount": 2}}
+    ]},
+    {"name": "delete-reports-count", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "DELETE FROM t WHERE id = 2", "expect": {"updateCount": 1}}
+    ]},
+    {"name": "delete-using-reports-count", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "CREATE TABLE gone (id INTEGER)"},
+      {"sql": "INSERT INTO gone VALUES (1), (3)"},
+      {"sql": "DELETE FROM t USING gone WHERE t.id = gone.id", "expect": {"updateCount": 2}}
+    ]},
+    {"name": "merge-reports-per-action-counts",
+     "skip": {"backends": ["snowflake", "js", "php", "python", "ruby", "ada"], "reason": "reads MERGE's PER-ACTION result columns; a live statement reaches the harness over JDBC as a single update count, and the js/php/python/ruby/ada drivers likewise fold the status grid into one affected-row count"},
+     "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'updated'), (9, 'inserted')"},
+      {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN UPDATE SET v = src.v WHEN NOT MATCHED THEN INSERT VALUES (src.id, src.v)",
+       "expect": {"columns": ["number of rows inserted", "number of rows updated"], "rows": [["1", "1"]]}}
+    ]},
+    {"name": "merge-delete-reports-deleted-count",
+     "skip": {"backends": ["snowflake", "js", "php", "python", "ruby", "ada"], "reason": "reads MERGE's PER-ACTION result columns; a live statement reaches the harness over JDBC as a single update count, and the js/php/python/ruby/ada drivers likewise fold the status grid into one affected-row count"},
+     "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (2)"},
+      {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN DELETE",
+       "expect": {"columns": ["number of rows inserted", "number of rows updated", "number of rows deleted"], "rows": [["0", "0", "1"]]}}
+    ]},
+    {"name": "ddl-reports-zero",
+     "skip": {"backends": ["jdbc", "http", "snowflake", "dotnet"], "reason": "DatabaseEngine.executeUpdate answers 0 for DDL; every JDBC-shaped transport reports -1 (the JDBC no-update-count convention), so the zero is an embedded-API surface"},
+     "steps": [
+      {"sql": "CREATE TABLE ddl_only (id INTEGER)", "expect": {"updateCount": 0}}
+    ]},
+    {"name": "update-matching-nothing-reports-zero", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "UPDATE t SET v = 'x' WHERE id = 999", "expect": {"updateCount": 0}}
+    ]}
+  ]
+}

@@ -1,0 +1,599 @@
+{
+ "suite": "features-syntax-breadth-singletons",
+ "description": "One-off grammar and semantic corners: LIMIT NULL means no limit (with OFFSET, over the streaming WHERE+LIMIT path, and on a FROM-less select); a bare DESCRIBE is refused while DESCRIBE TABLE works qualified or not; INSERT OVERWRITE INTO truncates first while the TABLE spelling is refused; ALTER SESSION SET applies every comma-separated assignment; USE SECONDARY ROLES takes a role list; a dollar-quoted column COMMENT; DATE_PART refusing the FROM form; a star function argument parsing (leaving an unknown function a runtime gap, not a grammar one); the VALUES alias inside the parens; FLATTEN over a bare subquery; USING joins merging the column while both sides stay addressable; UPDATE accepting FROM before SET; the curly-brace star select item with EXCLUDE / ILIKE / qualified forms and its source-form column label; TEMPORARY FILE FORMAT; and a CHANGES window whose END point lies in the future. Converted 1:1 from features/SyntaxBreadthSingletonsTest (now retired); the ALTER SESSION test skips snowflake as the Java class did and reads the applied values back through SHOW PARAMETERS instead of the engine's session context. One divergence from the Java class: it granted the two roles to CURRENT_USER, whose name it interpolated into the DDL; a JSON step cannot interpolate, and CURRENT_USER here is the OS account name, so the converted test grants to a user it creates and drops itself - the assertions (every statement accepted, the session still usable) are unchanged.",
+ "tags": [
+  "features",
+  "converted"
+ ],
+ "tests": [
+  {
+   "name": "limit-null-means-no-limit",
+   "steps": [
+    {
+     "sql": "CREATE TABLE ln (a INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO ln VALUES (1), (2), (3)"
+    },
+    {
+     "sql": "SELECT a FROM ln ORDER BY a LIMIT NULL",
+     "expect": {
+      "rowCount": 3
+     }
+    },
+    {
+     "sql": "SELECT a FROM ln ORDER BY a LIMIT NULL OFFSET 1",
+     "expect": {
+      "rowCount": 2
+     }
+    },
+    {
+     "sql": "SELECT a FROM ln WHERE a > 0 LIMIT NULL",
+     "expect": {
+      "rowCount": 3
+     }
+    },
+    {
+     "sql": "SELECT 1 ORDER BY 1 LIMIT NULL OFFSET 0",
+     "expect": {
+      "rowCount": 1
+     }
+    }
+   ]
+  },
+  {
+   "name": "bare-describe-is-rejected-like-snowflake",
+   "steps": [
+    {
+     "sql": "CREATE TABLE bd (id INTEGER, name VARCHAR)"
+    },
+    {
+     "sql": "DESCRIBE bd",
+     "expect": {
+      "error": {}
+     }
+    },
+    {
+     "sql": "DESCRIBE TABLE bd",
+     "expect": {
+      "rowCount": 2
+     }
+    },
+    {
+     "sql": "DESCRIBE TABLE test_db.test_schema.bd",
+     "expect": {
+      "rowCount": 2
+     }
+    }
+   ]
+  },
+  {
+   "name": "insert-overwrite-into-truncates-then-inserts",
+   "steps": [
+    {
+     "sql": "CREATE TABLE io (a INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO io VALUES (1), (2)"
+    },
+    {
+     "sql": "INSERT OVERWRITE INTO io SELECT 9"
+    },
+    {
+     "sql": "SELECT a FROM io",
+     "expect": {
+      "rowCount": 1,
+      "value": "9"
+     }
+    },
+    {
+     "sql": "INSERT OVERWRITE TABLE io SELECT 8",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "alter-session-set-applies-every-comma-separated-assignment",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "the Java class read the applied values back through engine.getSessionContext()/isAutoCommit(), which exist only on the embedded engine"
+   },
+   "steps": [
+    {
+     "sql": "ALTER SESSION SET autocommit = FALSE, QUERY_TAG = 'qtag', JSON_INDENT = 1"
+    },
+    {
+     "sql": "SHOW PARAMETERS LIKE 'QUERY_TAG'"
+    },
+    {
+     "sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "qtag"
+     }
+    },
+    {
+     "sql": "SHOW PARAMETERS LIKE 'JSON_INDENT'"
+    },
+    {
+     "sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "SHOW PARAMETERS LIKE 'AUTOCOMMIT'"
+    },
+    {
+     "sql": "SELECT LOWER(\"value\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "false"
+     }
+    },
+    {
+     "sql": "ALTER SESSION SET autocommit = TRUE"
+    },
+    {
+     "sql": "SHOW PARAMETERS LIKE 'AUTOCOMMIT'"
+    },
+    {
+     "sql": "SELECT LOWER(\"value\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "true"
+     }
+    },
+    {
+     "sql": "ALTER SESSION UNSET QUERY_TAG"
+    },
+    {
+     "sql": "ALTER SESSION UNSET JSON_INDENT"
+    }
+   ]
+  },
+  {
+   "name": "use-secondary-roles-accepts-a-role-list",
+   "steps": [
+    {
+     "sql": "CREATE ROLE IF NOT EXISTS sr_a"
+    },
+    {
+     "sql": "CREATE ROLE IF NOT EXISTS sr_b"
+    },
+    {
+     "sql": "CREATE USER IF NOT EXISTS sr_user"
+    },
+    {
+     "sql": "GRANT ROLE sr_a TO USER sr_user"
+    },
+    {
+     "sql": "GRANT ROLE sr_b TO USER sr_user"
+    },
+    {
+     "sql": "USE SECONDARY ROLES sr_a, sr_b"
+    },
+    {
+     "sql": "SELECT 1",
+     "expect": {
+      "value": "1"
+     }
+    },
+    {
+     "sql": "USE SECONDARY ROLES NONE"
+    },
+    {
+     "sql": "REVOKE ROLE sr_a FROM USER sr_user"
+    },
+    {
+     "sql": "REVOKE ROLE sr_b FROM USER sr_user"
+    },
+    {
+     "sql": "DROP USER IF EXISTS sr_user"
+    },
+    {
+     "sql": "DROP ROLE IF EXISTS sr_a"
+    },
+    {
+     "sql": "DROP ROLE IF EXISTS sr_b"
+    }
+   ]
+  },
+  {
+   "name": "dollar-quoted-column-comment",
+   "steps": [
+    {
+     "sql": "CREATE TABLE dq (id INTEGER COMMENT $$some comment$$)"
+    },
+    {
+     "sql": "DESCRIBE TABLE dq"
+    },
+    {
+     "sql": "SELECT MAX(IFF(\"name\" = 'ID', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "some comment"
+     }
+    }
+   ]
+  },
+  {
+   "name": "date-part-rejects-the-from-form",
+   "steps": [
+    {
+     "sql": "SELECT DATE_PART('month' FROM CAST('2024-04-08' AS DATE))",
+     "expect": {
+      "error": {}
+     }
+    },
+    {
+     "sql": "SELECT DATE_PART('year' FROM CAST('2024-04-08' AS DATE))",
+     "expect": {
+      "error": {}
+     }
+    },
+    {
+     "sql": "SELECT DATE_PART('month', CAST('2024-04-08' AS DATE))",
+     "expect": {
+      "value": "4"
+     }
+    }
+   ]
+  },
+  {
+   "name": "star-function-argument-parses-but-unknown-function-still-fails",
+   "steps": [
+    {
+     "sql": "SELECT MINHASH(5, *)",
+     "expect": {
+      "error": {}
+     }
+    }
+   ]
+  },
+  {
+   "name": "values-alias-inside-the-parens",
+   "steps": [
+    {
+     "sql": "SELECT * FROM (VALUES (0) foo(bar))",
+     "expect": {
+      "columns": [
+       "BAR"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT v1.col1 FROM (VALUES (1, 'one'), (2, 'two') AS v1 (col1, col2))",
+     "expect": {
+      "rowCount": 2
+     }
+    },
+    {
+     "sql": "SELECT bar FROM (VALUES (7) foo(bar)) WHERE foo.bar = 7",
+     "expect": {
+      "value": "7"
+     }
+    },
+    {
+     "sql": "SELECT * FROM (VALUES (1), (2)) t(n)",
+     "expect": {
+      "columns": [
+       "N"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "flatten-accepts-a-bare-subquery-input",
+   "steps": [
+    {
+     "sql": "SELECT value FROM TABLE(FLATTEN(input => SELECT PARSE_JSON('[1,2]')))",
+     "expect": {
+      "rowCount": 2,
+      "columns": [
+       "VALUE"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT value FROM LATERAL FLATTEN(input => SELECT PARSE_JSON('[7,8,9]'))",
+     "expect": {
+      "rowCount": 3
+     }
+    }
+   ]
+  },
+  {
+   "name": "using-join-merges-columns-and-accepts-qualified-names",
+   "steps": [
+    {
+     "sql": "with t1 as (select 1 as c), t2 as (select 1 as c) select * from t1 join t2 using (t2.c)",
+     "expect": {
+      "rowCount": 1,
+      "columns": [
+       "C"
+      ]
+     }
+    },
+    {
+     "sql": "CREATE TABLE uj1 (k INTEGER, x VARCHAR)"
+    },
+    {
+     "sql": "CREATE TABLE uj2 (k INTEGER, y VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO uj1 VALUES (1, 'l')"
+    },
+    {
+     "sql": "INSERT INTO uj2 VALUES (1, 'r')"
+    },
+    {
+     "sql": "SELECT * FROM uj1 JOIN uj2 USING (k)",
+     "expect": {
+      "columns": [
+       "K",
+       "X",
+       "Y"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT * FROM uj1 NATURAL JOIN uj2",
+     "expect": {
+      "columns": [
+       "K",
+       "X",
+       "Y"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT uj1.k, uj2.k, x, y FROM uj1 JOIN uj2 USING (k)",
+     "expect": {
+      "columns": [
+       "K",
+       "K",
+       "X",
+       "Y"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "update-accepts-from-before-set",
+   "steps": [
+    {
+     "sql": "CREATE TABLE upd (sample_query_id VARCHAR, qry_hash_count INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO upd VALUES ('match-id', 0), ('other-id', 0)"
+    },
+    {
+     "sql": "UPDATE upd u FROM (SELECT 5195 AS new_count, 'match-id' AS query_id) b SET qry_hash_count = new_count WHERE u.sample_query_id = b.query_id"
+    },
+    {
+     "sql": "SELECT qry_hash_count FROM upd WHERE sample_query_id = 'match-id'",
+     "expect": {
+      "value": "5195"
+     }
+    },
+    {
+     "sql": "SELECT qry_hash_count FROM upd WHERE sample_query_id = 'other-id'",
+     "expect": {
+      "value": "0"
+     }
+    },
+    {
+     "sql": "UPDATE upd u SET qry_hash_count = 7 FROM (SELECT 'other-id' AS query_id) b WHERE u.sample_query_id = b.query_id"
+    },
+    {
+     "sql": "SELECT qry_hash_count FROM upd WHERE sample_query_id = 'other-id'",
+     "expect": {
+      "value": "7"
+     }
+    }
+   ]
+  },
+  {
+   "name": "curly-brace-star-select-items",
+   "steps": [
+    {
+     "sql": "CREATE TABLE cbs (col1 INTEGER, col2 VARCHAR, other INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO cbs VALUES (1, 'a', 9)"
+    },
+    {
+     "sql": "SELECT {*} FROM cbs",
+     "expect": {
+      "value": "{\"COL1\":1,\"COL2\":\"a\",\"OTHER\":9}"
+     }
+    },
+    {
+     "sql": "SELECT {* EXCLUDE (col1)} FROM cbs",
+     "expect": {
+      "value": "{\"COL2\":\"a\",\"OTHER\":9}"
+     }
+    },
+    {
+     "sql": "SELECT {* EXCLUDE (col1, col2)} FROM cbs",
+     "expect": {
+      "value": "{\"OTHER\":9}"
+     }
+    },
+    {
+     "sql": "SELECT {* ILIKE 'col1%'} FROM cbs",
+     "expect": {
+      "value": "{\"COL1\":1}"
+     }
+    },
+    {
+     "sql": "SELECT {cbs.*} FROM cbs",
+     "expect": {
+      "value": "{\"COL1\":1,\"COL2\":\"a\",\"OTHER\":9}"
+     }
+    },
+    {
+     "sql": "SELECT {* RENAME (col1 AS c1)} FROM cbs",
+     "expect": {
+      "error": {}
+     }
+    },
+    {
+     "sql": "SELECT {* REPLACE (col1 + 100 AS col1)} FROM cbs",
+     "expect": {
+      "error": {}
+     }
+    },
+    {
+     "sql": "SELECT * RENAME (col1 AS c1) FROM cbs",
+     "expect": {
+      "columns": [
+       "C1",
+       "COL2",
+       "OTHER"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT {*}, col1 FROM cbs",
+     "expect": {
+      "columns": [
+       "{*}",
+       "COL1"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT {*}",
+     "expect": {
+      "value": "{}"
+     }
+    },
+    {
+     "sql": "SELECT {* EXCLUDE (col1)}",
+     "expect": {
+      "value": "{}"
+     }
+    },
+    {
+     "sql": "SELECT * FROM cbs",
+     "expect": {
+      "columns": [
+       "COL1",
+       "COL2",
+       "OTHER"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT cbs.* FROM cbs",
+     "expect": {
+      "columns": [
+       "COL1",
+       "COL2",
+       "OTHER"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT {'a': 1}",
+     "expect": {
+      "value": "{\"a\":1}"
+     }
+    }
+   ]
+  },
+  {
+   "name": "curly-brace-star-column-is-labelled-with-its-source-form",
+   "steps": [
+    {
+     "sql": "CREATE TABLE cbl (a INTEGER, b INTEGER, c VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO cbl VALUES (1, 2, 'x')"
+    },
+    {
+     "sql": "SELECT {*} FROM cbl",
+     "expect": {
+      "columns": [
+       "{*}"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT {* EXCLUDE (a)} FROM cbl",
+     "expect": {
+      "columns": [
+       "{* EXCLUDE (A)}"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT {cbl.*} FROM cbl",
+     "expect": {
+      "columns": [
+       "{CBL.*}"
+      ]
+     }
+    },
+    {
+     "sql": "SELECT {*} AS row_obj FROM cbl",
+     "expect": {
+      "columns": [
+       "ROW_OBJ"
+      ],
+      "value": "{\"A\":1,\"B\":2,\"C\":\"x\"}"
+     }
+    },
+    {
+     "sql": "INSERT INTO cbl VALUES (3, NULL, NULL)"
+    },
+    {
+     "sql": "SELECT {*} FROM cbl WHERE a = 3",
+     "expect": {
+      "value": "{\"A\":3}"
+     }
+    }
+   ]
+  },
+  {
+   "name": "temporary-file-format",
+   "steps": [
+    {
+     "sql": "CREATE TEMPORARY FILE FORMAT ff_tmp TYPE=PARQUET COMPRESSION=auto"
+    },
+    {
+     "sql": "CREATE TEMP FILE FORMAT ff_tmp2 TYPE=CSV"
+    },
+    {
+     "sql": "SHOW FILE FORMATS LIKE 'FF_TMP'",
+     "expect": {
+      "rowCount": 1
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-future-changes-end-point-is-rejected",
+   "steps": [
+    {
+     "sql": "CREATE TABLE ct (c1 INTEGER)"
+    },
+    {
+     "sql": "CREATE STREAM s1 ON TABLE ct"
+    },
+    {
+     "sql": "SELECT c1 FROM ct CHANGES (INFORMATION => APPEND_ONLY) AT (STREAM => 's1') END (TIMESTAMP => '2030-01-01'::TIMESTAMP)",
+     "expect": {
+      "error": {
+       "messageContains": "Future data is not yet available for table CT."
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

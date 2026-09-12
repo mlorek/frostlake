@@ -1,0 +1,49 @@
+{
+  "suite": "transaction-truncate-deferred-apply",
+  "description": "TRUNCATE wired through the deferred-apply write set. A TRUNCATE inside an open transaction must clear the rows that SAME transaction has buffered - its not-yet-committed INSERTs - and not just the committed base rows; otherwise a TRUNCATE-then-reload of a table populated earlier in the same transaction leaves the earlier rows behind. It must also stay rollback-safe: committed rows a TRUNCATE removed come back if the transaction rolls back, and are gone for good if it commits. Pinned for buffered inserts, for the full reload pattern (populate, truncate, reload, commit), for committed rows inside a transaction, for a standalone autocommit TRUNCATE, and for the trigger case that motivated the fix - a NESTED CALL running between the INSERTs and the TRUNCATE inside one procedure. Converted 1:1 from transaction/TruncateDeferredApplyTest (now retired); the Java built its own engine with transaction.deferredApply=true and called setAutoCommit(false), both of which the testkit backend supplies through the default engine plus an explicit BEGIN.",
+  "tags": ["transaction", "converted"],
+  "tests": [
+    {"name": "truncate-clears-buffered-inserts-in-the-same-transaction", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 3}},
+      {"sql": "TRUNCATE TABLE t"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 0}},
+      {"sql": "ROLLBACK"}
+    ]},
+    {"name": "truncate-then-reinsert-keeps-only-the-reinserted-rows", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "TRUNCATE TABLE t"},
+      {"sql": "INSERT INTO t VALUES (4, 'd'), (5, 'e')"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}}
+    ]},
+    {"name": "truncate-clears-committed-rows-within-the-transaction", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}},
+      {"sql": "BEGIN"},
+      {"sql": "TRUNCATE TABLE t"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 0}},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 0}}
+    ]},
+    {"name": "a-standalone-autocommit-truncate-clears-the-table", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "TRUNCATE TABLE t"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 0}}
+    ]},
+    {"name": "truncate-after-a-nested-call-clears-buffered-inserts", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "CREATE PROCEDURE noop() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+      {"sql": "CREATE PROCEDURE reload() RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE r VARCHAR; n INTEGER; BEGIN INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c'); r := (CALL noop()); TRUNCATE TABLE t; INSERT INTO t VALUES (4, 'd'), (5, 'e'); n := (SELECT COUNT(*) FROM t); RETURN 'n=' || :n; END $$"},
+      {"sql": "CALL reload()", "expect": {"value": "n=2"}},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}}
+    ]}
+  ]
+}

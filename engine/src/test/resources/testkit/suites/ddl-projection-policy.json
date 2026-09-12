@@ -1,0 +1,140 @@
+{
+  "suite": "ddl-projection-policy",
+  "description": "PROJECTION POLICY - refuses letting a column be SELECTED rather than changing what it returns (all live-verified): PROJECTION_CONSTRAINT is an ordinary callable whose argument must be named; zero-arg/return-type signature rules; SHOW/DESCRIBE shape with comments; duplicate create refused; ALTER SET BODY; per-column attach with FORCE semantics and positioned refusals; a denied column may not appear in the statement's own select list (aliased, wrapped, starred - offending items upper-cased in the message) yet stays usable in WHERE/aggregates/ORDER BY and in inner selects; UNSET releases (idempotent); attachment in the column definition with GET_DDL rendering; attached policies undroppable until released; PROJECTION stays a name. Converted 1:1 from ddl/ProjectionPolicyTest (now retired).",
+  "tags": ["ddl", "policy", "converted"],
+  "tests": [
+    {"name": "the-body-function-is-callable-on-its-own", "steps": [
+      {"sql": "SELECT PROJECTION_CONSTRAINT(ALLOW => TRUE)",
+       "expect": {"value": "{\"allow\":true,\"enforcement\":\"FAIL\"}"}}
+    ]},
+    {"name": "the-argument-must-be-named", "steps": [
+      {"sql": "SELECT PROJECTION_CONSTRAINT(TRUE)",
+       "expect": {"error": {"messageContains": "Invalid argument for function PROJECTION_CONSTRAINT. Please specify allow=>true or allow=>false as the input."}}}
+    ]},
+    {"name": "a-policy-with-arguments-is-refused", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_bad AS (v VARCHAR) RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)",
+       "expect": {"error": {"messageContains": "Projection policy must have exactly zero arguments, got 1 arguments."}}}
+    ]},
+    {"name": "another-return-type-is-refused", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_b AS () RETURNS BOOLEAN -> TRUE",
+       "expect": {"error": {"messageContains": "Projection policy return type 'BOOLEAN' is not PROJECTION_CONSTRAINT."}}}
+    ]},
+    {"name": "show-and-describe-report-the-policy", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_c AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE) COMMENT = 'a comment'"},
+      {"sql": "SHOW PROJECTION POLICIES LIKE 'pp_c'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"kind\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PP_C'",
+       "expect": {"rows": [["PROJECTION_POLICY", "a comment"]]}},
+      {"sql": "DESCRIBE PROJECTION POLICY pp_c",
+       "expect": {"rows": [["PP_C", "()", "PROJECTION_CONSTRAINT", "PROJECTION_CONSTRAINT(ALLOW => TRUE)"]]}}
+    ]},
+    {"name": "creating-one-twice-is-refused", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_allow AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)"},
+      {"sql": "CREATE PROJECTION POLICY pp_allow AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'PP_ALLOW' already exists."}}}
+    ]},
+    {"name": "the-body-can-be-replaced-later", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_allow AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)"},
+      {"sql": "ALTER PROJECTION POLICY pp_allow SET BODY -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "DESCRIBE PROJECTION POLICY pp_allow"},
+      {"sql": "SELECT \"body\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "PROJECTION_CONSTRAINT(ALLOW => FALSE)"}}
+    ]},
+    {"name": "attaching-a-second-policy-needs-force", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_allow AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)"},
+      {"sql": "CREATE PROJECTION POLICY pp_deny AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_deny"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_deny"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_allow",
+       "expect": {"error": {"messageContains": "Specified column already attached to another 'PROJECTION_POLICY'.A column cannot be attached to multiple policies of same kind.please drop the current association in order to attach a new policy."}}},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_allow FORCE"}
+    ]},
+    {"name": "attaching-a-policy-that-does-not-exist-is-refused", "steps": [
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY no_such_pp",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nProjection policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_PP' does not exist or not authorized."}}}
+    ]},
+    {"name": "an-unknown-column-is-refused-at-its-own-position", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_allow AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN no_such_c SET PROJECTION POLICY pp_allow",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 30\ninvalid identifier 'NO_SUCH_C'"}}}
+    ]},
+    {"name": "a-denied-column-may-not-be-projected", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_deny AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "INSERT INTO pj_t VALUES ('x', 1), ('y', 2)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_deny"},
+      {"sql": "SELECT a FROM pj_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: The following columns are restricted by a Projection Policy. Please remove them from the list of projected columns:\n\n A"}}},
+      {"sql": "SELECT a AS aa FROM pj_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: The following columns are restricted by a Projection Policy. Please remove them from the list of projected columns:\n\n A"}}},
+      {"sql": "SELECT UPPER(a) FROM pj_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: The following columns are restricted by a Projection Policy. Please remove them from the list of projected columns:\n\n UPPER(A)"}}},
+      {"sql": "SELECT a, UPPER(a) FROM pj_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: The following columns are restricted by a Projection Policy. Please remove them from the list of projected columns:\n\n A\n UPPER(A)"}}}
+    ]},
+    {"name": "a-star-is-restricted-as-well", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_deny AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_deny"},
+      {"sql": "SELECT * FROM pj_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: The following columns are restricted by a Projection Policy. Please remove them from the list of projected columns:\n\n A"}}}
+    ]},
+    {"name": "the-column-stays-usable-where-it-is-not-projected", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_deny AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "INSERT INTO pj_t VALUES ('x', 1), ('y', 2)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_deny"},
+      {"sql": "SELECT b FROM pj_t WHERE a = 'x'", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(a) FROM pj_t", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM pj_t", "expect": {"value": "2"}},
+      {"sql": "SELECT b FROM pj_t ORDER BY a", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "an-inner-select-may-project-it", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_deny AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "INSERT INTO pj_t VALUES ('x', 1), ('y', 2)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_deny"},
+      {"sql": "SELECT b FROM (SELECT a, b FROM pj_t)", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "an-allowing-policy-changes-nothing", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_allow AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "INSERT INTO pj_t VALUES ('x', 1), ('y', 2)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_allow"},
+      {"sql": "SELECT a FROM pj_t", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "unsetting-releases-the-column", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_deny AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "INSERT INTO pj_t VALUES ('x', 1), ('y', 2)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_deny"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a UNSET PROJECTION POLICY"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a UNSET PROJECTION POLICY"},
+      {"sql": "SELECT a FROM pj_t", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "a-column-may-be-attached-in-its-definition", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_deny AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "CREATE TABLE pj_t2 (a VARCHAR WITH PROJECTION POLICY pp_deny, b NUMBER)"},
+      {"sql": "SELECT a FROM pj_t2",
+       "expect": {"error": {"messageContains": "SQL compilation error: The following columns are restricted by a Projection Policy. Please remove them from the list of projected columns:\n\n A"}}},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'pj_t2'), 'WITH PROJECTION POLICY TEST_DB.TEST_SCHEMA.PP_DENY')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "an-attached-policy-cannot-be-dropped", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pp_deny AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => FALSE)"},
+      {"sql": "CREATE TABLE pj_t (a VARCHAR, b NUMBER)"},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY pp_deny"},
+      {"sql": "DROP PROJECTION POLICY pp_deny",
+       "expect": {"error": {"messageContains": "SQL compilation error: Policy PP_DENY cannot be dropped/replaced as it is associated with one or more entities."}}},
+      {"sql": "ALTER TABLE pj_t ALTER COLUMN a UNSET PROJECTION POLICY"},
+      {"sql": "DROP PROJECTION POLICY pp_deny"}
+    ]},
+    {"name": "projection-remains-usable-as-a-name", "steps": [
+      {"sql": "CREATE TABLE projection (projection NUMBER)"},
+      {"sql": "INSERT INTO projection VALUES (7)"},
+      {"sql": "SELECT projection FROM projection", "expect": {"value": "7"}}
+    ]}
+  ]
+}

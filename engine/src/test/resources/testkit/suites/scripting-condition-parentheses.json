@@ -1,0 +1,39 @@
+{
+  "suite": "scripting-condition-parentheses",
+  "description": "A Snowflake-Scripting condition is PARENTHESISED - IF (<condition>) THEN - and a routine whose body writes it BARE is rejected at CREATE time, live-verified cell by cell. The refusal carries TWO body-relative syntax-error lines, and where they anchor depends on the routine kind: a PROCEDURE anchors the first on the condition's FIRST TOKEN, while a FUNCTION block body anchors on the KEYWORD itself under a 'Compilation of SQL UDF failed:' wrapper. Pinned for IF, ELSEIF, WHILE and UNTIL, with the parenthesised forms of all three loops accepted beside them and CALLed so they are shown to run. IF EXISTS and IF NOT EXISTS inside ORDINARY SQL statements of a body stay legal, which is the boundary that keeps the rule from over-reaching. Converted 1:1 from scripting/ScriptingConditionParenthesesTest (now retired); the Java compared the WHOLE message with assertEquals, and the converted steps pin the same text including both newlines.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-bare-if-condition-is-refused-at-create", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p1(n INTEGER) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN IF n > 10 THEN RETURN 'a'; END IF; RETURN 'b'; END $$",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 10 unexpected 'n'.\nsyntax error line 1 at position 17 unexpected 'THEN'."}}}
+    ]},
+    {"name": "parenthesised-conditions-are-accepted", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p2(n INTEGER) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN IF (n > 10) THEN RETURN 'a'; END IF; RETURN 'b'; END $$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p5(n INTEGER) RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE c INTEGER DEFAULT 0; BEGIN WHILE (c < n) DO c := c + 1; END WHILE; RETURN 'x'; END $$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p7(n INTEGER) RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE c INTEGER DEFAULT 0; BEGIN REPEAT c := c + 1; UNTIL (c >= n) END REPEAT; RETURN 'x'; END $$"},
+      {"sql": "CALL p2(20)", "expect": {"value": "a"}},
+      {"sql": "CALL p5(3)", "expect": {"value": "x"}},
+      {"sql": "CALL p7(3)", "expect": {"value": "x"}}
+    ]},
+    {"name": "a-bare-elseif-condition-is-refused-at-create", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p3(n INTEGER) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN IF (n > 10) THEN RETURN 'a'; ELSEIF n > 5 THEN RETURN 'm'; END IF; RETURN 'b'; END $$",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 43 unexpected 'n'.\nsyntax error line 1 at position 49 unexpected 'THEN'."}}}
+    ]},
+    {"name": "a-bare-while-condition-is-refused-at-create", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p4(n INTEGER) RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE c INTEGER DEFAULT 0; BEGIN WHILE c < n DO c := c + 1; END WHILE; RETURN 'x'; END $$",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 42 unexpected 'c'.\nsyntax error line 1 at position 48 unexpected 'DO'."}}}
+    ]},
+    {"name": "a-bare-until-condition-is-refused-at-create", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p6(n INTEGER) RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE c INTEGER DEFAULT 0; BEGIN REPEAT c := c + 1; UNTIL c >= n END REPEAT; RETURN 'x'; END $$",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 61 unexpected 'c'.\nsyntax error line 1 at position 68 unexpected 'END'."}}}
+    ]},
+    {"name": "a-function-block-body-anchors-on-the-keyword", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION f9(n INTEGER) RETURNS VARCHAR AS $$ BEGIN IF n > 10 THEN RETURN 'a'; END IF; RETURN 'b'; END $$",
+       "expect": {"error": {"messageContains": "Compilation of SQL UDF failed: SQL compilation error:\nsyntax error line 1 at position 8 unexpected 'IF'.\nsyntax error line 1 at position 18 unexpected 'THEN'."}}}
+    ]},
+    {"name": "if-exists-inside-a-body-stays-legal", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p8() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN DROP TABLE IF EXISTS test_db.test_schema.nosuch; RETURN 'x'; END $$"},
+      {"sql": "CALL p8()", "expect": {"value": "x"}}
+    ]}
+  ]
+}

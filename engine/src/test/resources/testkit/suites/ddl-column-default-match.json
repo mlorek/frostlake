@@ -1,0 +1,109 @@
+{
+  "suite": "ddl-column-default-match",
+  "description": "A CREATE TABLE column DEFAULT must be coercible to the column's type, directionally: numeric/datetime families refuse a string literal, string families refuse a numeric one, each takes the other kind; TRUE/FALSE/NULL cross every family; OBJECT/ARRAY/GEOGRAPHY judge nothing; BINARY takes no default at all in its own sentence; a cast retypes the default; computed defaults are judged by their expression type; temporal defaults widen (DATE reaches TIMESTAMP) but never narrow, VARCHAR refuses every temporal while BOOLEAN/NUMBER/VARIANT take one. All live-measured. Converted 1:1 from ddl/ColumnDefaultTypeMatchTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "a-string-default-is-refused-by-numeric-and-datetime-families", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER(5,1) DEFAULT 'abc')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER(5,1) DEFAULT '7')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c FLOAT DEFAULT '7')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c DATE DEFAULT '2026-01-01')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c TIME DEFAULT '12:00:00')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c TIMESTAMP_NTZ DEFAULT '2026-01-01 00:00:00')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}}
+    ]},
+    {"name": "a-numeric-default-is-refused-by-the-string-families", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT 7)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c BOOLEAN DEFAULT 1)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARIANT DEFAULT 7)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}}
+    ]},
+    {"name": "each-family-takes-the-other-kind", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER(5,1) DEFAULT 7)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c DATE DEFAULT 7)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c TIME DEFAULT 7)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT 'z')"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c BOOLEAN DEFAULT 'true')"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARIANT DEFAULT 'z')"}
+    ]},
+    {"name": "boolean-and-null-defaults-cross-every-family", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER(5,1) DEFAULT TRUE)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c DATE DEFAULT TRUE)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT FALSE)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER(5,1) DEFAULT NULL)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c DATE DEFAULT NULL)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT NULL)"}
+    ]},
+    {"name": "object-array-and-geography-judge-nothing", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c OBJECT DEFAULT 7)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c ARRAY DEFAULT 7)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c GEOGRAPHY DEFAULT 7)"}
+    ]},
+    {"name": "a-binary-column-takes-no-default-at-all", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c BINARY(4) DEFAULT X'AB')",
+       "expect": {"error": {"messageContains": "SQL compilation error: Default values are not allowed on 'BINARY' columns."}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c BINARY(4) DEFAULT 'abc')",
+       "expect": {"error": {"messageContains": "SQL compilation error: Default values are not allowed on 'BINARY' columns."}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c BINARY(4) DEFAULT NULL)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Default values are not allowed on 'BINARY' columns."}}}
+    ]},
+    {"name": "a-cast-carries-the-literal-across", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c DATE DEFAULT '2026-01-01'::DATE)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER DEFAULT '7'::NUMBER)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT 7::VARCHAR)"}
+    ]},
+    {"name": "an-overlong-string-default-is-accepted-at-ddl-time", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(2) DEFAULT 'toolong')"}
+    ]},
+    {"name": "a-computed-default-is-judged-by-its-expression-type", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER DEFAULT UPPER('a'))",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER DEFAULT 'a' || 'b')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER DEFAULT LENGTH('abc'))"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER DEFAULT 1 + 1)"}
+    ]},
+    {"name": "a-string-column-refuses-a-computed-number", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT 1 + 1)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT LENGTH('abc'))",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT UPPER('a'))"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT 'a' || 'b')"}
+    ]},
+    {"name": "a-cast-retypes-the-default", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER DEFAULT '7'::NUMBER)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER DEFAULT 7::VARCHAR)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT 7::VARCHAR)"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT '7'::NUMBER)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}}
+    ]},
+    {"name": "a-timestamp-default-does-not-narrow-into-a-date-or-time", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c TIMESTAMP_NTZ DEFAULT CURRENT_DATE())"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c DATE DEFAULT CURRENT_TIMESTAMP())",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c TIME DEFAULT CURRENT_TIMESTAMP())",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c DATE DEFAULT CURRENT_DATE())"}
+    ]},
+    {"name": "a-string-column-refuses-every-temporal-default", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT CURRENT_DATE())",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARCHAR(9) DEFAULT CURRENT_TIMESTAMP())",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column C"}}}
+    ]},
+    {"name": "boolean-and-numeric-columns-take-a-temporal-default", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c BOOLEAN DEFAULT CURRENT_DATE())"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c NUMBER(5,1) DEFAULT CURRENT_DATE())"},
+      {"sql": "CREATE OR REPLACE TABLE dft_t (c VARIANT DEFAULT CURRENT_TIMESTAMP())"}
+    ]}
+  ]
+}

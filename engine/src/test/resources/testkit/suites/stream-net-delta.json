@@ -1,0 +1,104 @@
+{
+  "suite": "stream-net-delta",
+  "description": "A SELECT from a stream returns the NET delta per logical row (Snowflake semantics), not the raw change log: a row inserted then updated inside the window is one INSERT of its FINAL image with METADATA$ISUPDATE false; inserted then deleted cancels out entirely; a PRE-EXISTING row updated (once or repeatedly) nets to one DELETE of the ORIGINAL image plus one INSERT of the FINAL image, both with METADATA$ISUPDATE true; and updated then deleted nets to a plain DELETE of the original image with ISUPDATE false. Offset semantics are pinned alongside - a plain SELECT does not consume while a DML read does, a ROLLBACK restores the offset, CREATE OR REPLACE resets it, and SHOW_INITIAL_ROWS seeds the existing rows as INSERTs after which consumption and accrual behave normally - as is APPEND_ONLY filtering, where only true inserts are recorded so a later delete does NOT remove the captured insert. SHOW STREAMS reports each stream's actual mode (it was once hardcoded to DEFAULT). Converted 1:1 from stream/StreamNetDeltaTest (now retired); the boolean METADATA$ISUPDATE is rendered with TO_VARCHAR and the SHOW STREAMS columns are read back through RESULT_SCAN, which is the SQL surface for what the Java read off the ResultSet by column index.",
+  "tags": ["stream", "converted"],
+  "tests": [
+    {"name": "inserts-are-captured-with-metadata", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "SELECT id || '|' || METADATA$ACTION || '|' || TO_VARCHAR(METADATA$ISUPDATE) AS r FROM st ORDER BY id", "expect": {"rows": [["1|INSERT|false"], ["2|INSERT|false"]], "ordered": true}}
+    ]},
+    {"name": "a-preexisting-row-update-produces-a-delete-insert-pair", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'old')"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "UPDATE src SET v = 'new' WHERE id = 1"},
+      {"sql": "SELECT v || '|' || METADATA$ACTION || '|' || TO_VARCHAR(METADATA$ISUPDATE) AS r FROM st ORDER BY METADATA$ACTION", "expect": {"rows": [["old|DELETE|true"], ["new|INSERT|true"]], "ordered": true}}
+    ]},
+    {"name": "insert-then-update-nets-to-a-single-insert-of-the-final-image", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1, 'a')"},
+      {"sql": "UPDATE src SET v = 'a2' WHERE id = 1"},
+      {"sql": "SELECT v || '|' || METADATA$ACTION || '|' || TO_VARCHAR(METADATA$ISUPDATE) AS r FROM st", "expect": {"rows": [["a2|INSERT|false"]]}}
+    ]},
+    {"name": "insert-then-delete-cancels-out", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1)"},
+      {"sql": "DELETE FROM src WHERE id = 1"},
+      {"sql": "SELECT id FROM st", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "repeated-updates-collapse-to-one-pair-original-to-final", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'v0')"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "UPDATE src SET v = 'v1' WHERE id = 1"},
+      {"sql": "UPDATE src SET v = 'v2' WHERE id = 1"},
+      {"sql": "SELECT v || '|' || METADATA$ACTION AS r FROM st ORDER BY METADATA$ACTION", "expect": {"rows": [["v0|DELETE"], ["v2|INSERT"]], "ordered": true}}
+    ]},
+    {"name": "update-then-delete-nets-to-a-delete-of-the-original", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'orig')"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "UPDATE src SET v = 'mid' WHERE id = 1"},
+      {"sql": "DELETE FROM src WHERE id = 1"},
+      {"sql": "SELECT v || '|' || METADATA$ACTION || '|' || TO_VARCHAR(METADATA$ISUPDATE) AS r FROM st", "expect": {"rows": [["orig|DELETE|false"]]}}
+    ]},
+    {"name": "append-only-keeps-the-captured-insert-after-a-delete", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM st ON TABLE src APPEND_ONLY = TRUE"},
+      {"sql": "INSERT INTO src VALUES (1)"},
+      {"sql": "DELETE FROM src WHERE id = 1"},
+      {"sql": "SELECT id || '|' || METADATA$ACTION AS r FROM st", "expect": {"rows": [["1|INSERT"]]}}
+    ]},
+    {"name": "a-plain-select-does-not-consume-but-dml-does", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE TABLE dst (id INTEGER)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1), (2)"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 2}},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 2}},
+      {"sql": "INSERT INTO dst SELECT id FROM st"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}},
+      {"sql": "INSERT INTO src VALUES (3)"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 1}}
+    ]},
+    {"name": "a-rollback-restores-the-stream-offset", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE TABLE dst (id INTEGER)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1)"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO dst SELECT id FROM st"},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 1}}
+    ]},
+    {"name": "create-or-replace-resets-the-offset", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1)"},
+      {"sql": "CREATE OR REPLACE STREAM st ON TABLE src"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}}
+    ]},
+    {"name": "show-initial-rows-seeds-the-existing-rows", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE TABLE dst (id INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (1), (2)"},
+      {"sql": "CREATE STREAM st ON TABLE src SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "SELECT id || '|' || METADATA$ACTION AS r FROM st ORDER BY id", "expect": {"rows": [["1|INSERT"], ["2|INSERT"]], "ordered": true}},
+      {"sql": "INSERT INTO dst SELECT id FROM st"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}},
+      {"sql": "INSERT INTO src VALUES (3)"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 1}}
+    ]},
+    {"name": "show-streams-reflects-each-streams-mode", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM st_std ON TABLE src"},
+      {"sql": "CREATE STREAM st_ao ON TABLE src APPEND_ONLY = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT \"name\" || '=' || \"mode\" AS r FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY r", "expect": {"rows": [["ST_AO=APPEND_ONLY"], ["ST_STD=DEFAULT"]], "ordered": true}}
+    ]}
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "suite": "query-logical-and-keywords",
+  "description": "AND/OR/NOT combinations and precedence, plus LEFT/RIGHT usable as identifiers/aliases, and nested-CTE scope resolution (parent siblings, triple nesting, outer-wins shadowing). Converted 1:1 from query/LogicalOperatorASTTest, LeftAsIdentifierTest and NestedCteScopeTest (all now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "simple-and", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, city VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'NYC', 'active'), (2, 17, 'LA', 'active'), (3, 30, 'NYC', 'inactive'), (4, 22, 'LA', 'active'), (5, 35, 'Chicago', 'deleted')"},
+      {"sql": "SELECT id FROM users WHERE age > 18 AND status = 'active'", "expect": {"rows": [["1"], ["4"]]}}
+    ]},
+    {"name": "simple-or", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, city VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'NYC', 'active'), (2, 17, 'LA', 'active'), (3, 30, 'NYC', 'inactive'), (4, 22, 'LA', 'active'), (5, 35, 'Chicago', 'deleted')"},
+      {"sql": "SELECT id FROM users WHERE city = 'NYC' OR city = 'LA'", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "not", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, city VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'NYC', 'active'), (2, 17, 'LA', 'active'), (3, 30, 'NYC', 'inactive'), (4, 22, 'LA', 'active'), (5, 35, 'Chicago', 'deleted')"},
+      {"sql": "SELECT id FROM users WHERE NOT (status = 'deleted')", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "nested-and-or", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, city VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'NYC', 'active'), (2, 17, 'LA', 'active'), (3, 30, 'NYC', 'inactive'), (4, 22, 'LA', 'active'), (5, 35, 'Chicago', 'deleted')"},
+      {"sql": "SELECT id FROM users WHERE (city = 'NYC' OR city = 'LA') AND age > 20", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "complex-expression", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, city VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'NYC', 'active'), (2, 17, 'LA', 'active'), (3, 30, 'NYC', 'inactive'), (4, 22, 'LA', 'active'), (5, 35, 'Chicago', 'deleted')"},
+      {"sql": "SELECT id FROM users WHERE NOT (age < 18) AND (city = 'NYC' OR status = 'active')", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "operator-precedence", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, city VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'NYC', 'active'), (2, 17, 'LA', 'active'), (3, 30, 'NYC', 'inactive'), (4, 22, 'LA', 'active'), (5, 35, 'Chicago', 'deleted')"},
+      {"sql": "SELECT id FROM users WHERE age > 18 OR city = 'NYC' AND status = 'active'", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "multiple-not", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, city VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'NYC', 'active'), (2, 17, 'LA', 'active'), (3, 30, 'NYC', 'inactive'), (4, 22, 'LA', 'active'), (5, 35, 'Chicago', 'deleted')"},
+      {"sql": "SELECT id FROM users WHERE NOT (NOT (age > 18))", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "all-three-operators", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, city VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'NYC', 'active'), (2, 17, 'LA', 'active'), (3, 30, 'NYC', 'inactive'), (4, 22, 'LA', 'active'), (5, 35, 'Chicago', 'deleted')"},
+      {"sql": "SELECT id FROM users WHERE NOT (status = 'deleted') AND (age > 25 OR city = 'LA')", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "left-as-column-alias", "steps": [
+      {"sql": "SELECT 1 AS left", "expect": {"value": "1", "columns": ["LEFT"]}}
+    ]},
+    {"name": "left-and-right-as-identifiers", "steps": [
+      {"sql": "SELECT 10 AS left, 20 AS right", "expect": {"rows": [["10", "20"]], "columns": ["LEFT", "RIGHT"]}}
+    ]},
+    {"name": "left-as-table-alias-with-as", "steps": [
+      {"sql": "CREATE TABLE test_table (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'test')"},
+      {"sql": "SELECT * FROM test_table AS left", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "nested-with-sees-parent-sibling-cte", "steps": [
+      {"sql": "CREATE TABLE src (id INT, payload VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'x;y'), (2, 'z')"},
+      {"sql": "WITH outputs AS (SELECT id, SPLIT(payload, ';') AS parts FROM src), records AS (WITH cleaned AS (SELECT id, value::VARCHAR AS part FROM outputs, TABLE(FLATTEN(parts))) SELECT id, part FROM cleaned) SELECT id, part FROM records ORDER BY id, part",
+       "expect": {"rows": [["1", "x"], ["1", "y"], ["2", "z"]], "ordered": true}}
+    ]},
+    {"name": "nested-with-under-insert-sees-parent-sibling-cte", "steps": [
+      {"sql": "CREATE TABLE src (id INT, payload VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'x;y'), (2, 'z')"},
+      {"sql": "CREATE TABLE sink (id INT, part VARCHAR)"},
+      {"sql": "INSERT INTO sink (id, part) WITH outputs AS (SELECT id, SPLIT(payload, ';') AS parts FROM src), records AS (WITH cleaned AS (SELECT id, value::VARCHAR AS part FROM outputs, TABLE(FLATTEN(parts))) SELECT id, part FROM cleaned) SELECT id, part FROM records"},
+      {"sql": "SELECT COUNT(*) FROM sink", "expect": {"value": "3"}}
+    ]},
+    {"name": "triple-nesting-resolves-across-two-levels", "steps": [
+      {"sql": "CREATE TABLE src (id INT, payload VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'x;y'), (2, 'z')"},
+      {"sql": "WITH lvl1 AS (SELECT id FROM src), wrap AS (WITH lvl2 AS (SELECT id FROM lvl1), deeper AS (WITH lvl3 AS (SELECT id FROM lvl2) SELECT id FROM lvl3) SELECT id FROM deeper) SELECT COUNT(*) FROM wrap",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "outer-cte-wins-over-same-named-inner-cte", "steps": [
+      {"sql": "WITH t AS (SELECT 'outer' AS v), u AS (WITH t AS (SELECT 'inner' AS v) SELECT v FROM t) SELECT v FROM u",
+       "expect": {"value": "outer"}}
+    ]}
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "suite": "functions-decoded-text-and-argument-refusal",
+  "description": "Three calls Frostlake used to answer where the account refuses. The first is a ROW-time refusal: a _STRING decoder hands back a VARCHAR, so bytes that spell no UTF-8 string are an error rather than a lossy conversion - Java's decoder substitutes the replacement character, and a one-byte 0xAB came back as a one-character string. Live answers \"Invalid UTF8 detected while decoding 'qw=='\", quoting the INPUT as written, and the TRY_ spellings answer NULL while valid text still decodes and the _BINARY decoders never read the bytes at all. The other two are COMPILE-time argument-type refusals, each keyed to a family the function will not read: JSON_EXTRACT_PATH_TEXT takes JSON text or a VARIANT and refuses an OBJECT, TRY_VALIDATE_UTF8 reads its argument as text and refuses a BINARY. Both name the offending types with the argument list's own widths. Converted 1:1 from functions/DecodedTextAndArgumentRefusalTest (now retired); its @BeforeEach eb fixture is inlined per test, and JSON_EXTRACT_PATH_TEXT over a number is asserted as SQL NULL - the Java read it through String.valueOf, which renders a SQL NULL as the text \"null\".",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-string-decoder-refuses-bytes-that-are-not-text", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE eb (bn BINARY(5), v VARCHAR(20), vt VARIANT, i INT)"},
+      {"sql": "INSERT INTO eb SELECT TO_BINARY('AB'), 'hello', PARSE_JSON('{\"a\": 1}'), 7"},
+      {"sql": "SELECT BASE64_DECODE_STRING('qw==') AS x FROM eb",
+       "expect": {"error": {"messageContains": "Invalid UTF8 detected while decoding 'qw=='"}}},
+      {"sql": "SELECT BASE64_DECODE_STRING(BASE64_ENCODE(bn)) AS x FROM eb",
+       "expect": {"error": {"messageContains": "Invalid UTF8 detected while decoding 'qw=='"}}},
+      {"sql": "SELECT HEX_DECODE_STRING('AB') AS x FROM eb",
+       "expect": {"error": {"messageContains": "Invalid UTF8 detected while decoding 'AB'"}}}
+    ]},
+    {"name": "the-try-forms-answer-null", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE eb (bn BINARY(5), v VARCHAR(20), vt VARIANT, i INT)"},
+      {"sql": "INSERT INTO eb SELECT TO_BINARY('AB'), 'hello', PARSE_JSON('{\"a\": 1}'), 7"},
+      {"sql": "SELECT TRY_BASE64_DECODE_STRING('qw==') AS x FROM eb", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TRY_HEX_DECODE_STRING('AB') AS x FROM eb", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "valid-text-still-decodes", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE eb (bn BINARY(5), v VARCHAR(20), vt VARIANT, i INT)"},
+      {"sql": "INSERT INTO eb SELECT TO_BINARY('AB'), 'hello', PARSE_JSON('{\"a\": 1}'), 7"},
+      {"sql": "SELECT BASE64_DECODE_STRING('aGVsbG8=') AS x FROM eb", "expect": {"value": "hello"}},
+      {"sql": "SELECT BASE64_DECODE_STRING(BASE64_ENCODE(v)) AS x FROM eb", "expect": {"value": "hello"}},
+      {"sql": "SELECT BASE64_DECODE_BINARY(BASE64_ENCODE(bn)) AS x FROM eb", "expect": {"value": "AB"}},
+      {"sql": "SELECT TRY_BASE64_DECODE_STRING('aGVsbG8=') AS x FROM eb", "expect": {"value": "hello"}}
+    ]},
+    {"name": "json-extract-path-text-refuses-an-object", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE eb (bn BINARY(5), v VARCHAR(20), vt VARIANT, i INT)"},
+      {"sql": "INSERT INTO eb SELECT TO_BINARY('AB'), 'hello', PARSE_JSON('{\"a\": 1}'), 7"},
+      {"sql": "SELECT JSON_EXTRACT_PATH_TEXT(OBJECT_CONSTRUCT('a', 1), 'a') AS x FROM eb",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'JSON_EXTRACT_PATH_TEXT': (OBJECT, VARCHAR(1))"}}}
+    ]},
+    {"name": "json-extract-path-text-still-reads-what-it-takes", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE eb (bn BINARY(5), v VARCHAR(20), vt VARIANT, i INT)"},
+      {"sql": "INSERT INTO eb SELECT TO_BINARY('AB'), 'hello', PARSE_JSON('{\"a\": 1}'), 7"},
+      {"sql": "SELECT JSON_EXTRACT_PATH_TEXT(vt, 'a') AS x FROM eb", "expect": {"value": "1"}},
+      {"sql": "SELECT JSON_EXTRACT_PATH_TEXT('{\"a\": 1}', 'a') AS x FROM eb", "expect": {"value": "1"}},
+      {"sql": "SELECT JSON_EXTRACT_PATH_TEXT(i, 'a') AS x FROM eb", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "try-validate-utf8-refuses-a-binary", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE eb (bn BINARY(5), v VARCHAR(20), vt VARIANT, i INT)"},
+      {"sql": "INSERT INTO eb SELECT TO_BINARY('AB'), 'hello', PARSE_JSON('{\"a\": 1}'), 7"},
+      {"sql": "SELECT TRY_VALIDATE_UTF8(bn) AS x FROM eb",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'TRY_VALIDATE_UTF8': (BINARY(5))"}}},
+      {"sql": "SELECT TRY_VALIDATE_UTF8(v) AS x FROM eb", "expect": {"value": "hello"}},
+      {"sql": "SELECT TRY_VALIDATE_UTF8(i) AS x FROM eb", "expect": {"value": "7"}}
+    ]}
+  ]
+}

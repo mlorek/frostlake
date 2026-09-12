@@ -1,0 +1,28 @@
+{
+  "suite": "scripting-null-argument-binding",
+  "description": "Passing NULL as a CALL argument, or through a SET value, must bind a REAL SQL null and not the string 'NULL' - so :param IS NULL is true and :param IS NOT NULL is false. The consequence that matters is the common guard IF (:x IS NOT NULL AND NOT is_allowed(:x)): it must NOT fire when a NULL is passed, which is asserted here through a three-parameter procedure whose optional last argument is NULL. A NULL arriving from a SESSION VARIABLE binds the same way, and a column DEFAULT NULL still reads back as NULL. Converted 1:1 from scripting/NullArgumentBindingTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-null-argument-binds-a-real-null", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE nat(p VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN IFF(:p IS NULL, 'NULL', 'NOT_NULL'); END $$"},
+      {"sql": "CALL nat(NULL)", "expect": {"value": "NULL"}},
+      {"sql": "CALL nat('x')", "expect": {"value": "NOT_NULL"}}
+    ]},
+    {"name": "an-is-not-null-guard-does-not-fire-for-a-null-argument", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION is_allowed(x VARCHAR) RETURNS BOOLEAN LANGUAGE SQL AS $$ UPPER(x) IN ('A','B','C','D','E') $$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE save(p_a VARCHAR, p_b VARCHAR, p_c VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE bad EXCEPTION (-20001, 'not allowed'); BEGIN IF (NOT is_allowed(:p_b)) THEN RAISE bad; END IF; IF (:p_a IS NOT NULL AND NOT is_allowed(:p_a)) THEN RAISE bad; END IF; IF (:p_c IS NOT NULL AND NOT is_allowed(:p_c)) THEN RAISE bad; END IF; RETURN 'ok'; END $$"},
+      {"sql": "CALL save('B', 'A', NULL)", "expect": {"value": "ok"}},
+      {"sql": "CALL save('B', 'A', 'C')", "expect": {"value": "ok"}}
+    ]},
+    {"name": "a-null-from-a-session-variable-binds-a-real-null", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE echo(p VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN IFF(:p IS NULL, 'NULL', 'NOT_NULL'); END $$"},
+      {"sql": "SET v = (SELECT CASE WHEN 1 = 2 THEN 'x' END)"},
+      {"sql": "CALL echo($v)", "expect": {"value": "NULL"}}
+    ]},
+    {"name": "a-default-null-column-still-reads-back-null", "steps": [
+      {"sql": "CREATE TABLE t (a INT, b VARCHAR DEFAULT NULL)"},
+      {"sql": "INSERT INTO t (a) VALUES (1)"},
+      {"sql": "SELECT b FROM t", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

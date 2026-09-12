@@ -1,0 +1,58 @@
+{
+  "suite": "query-oracle-outer-join",
+  "description": "The Oracle legacy (+) outer-join operator, kept for Snowflake compatibility: a.x = b.y(+) in the WHERE of a COMMA join means a LEFT OUTER JOIN b ON a.x = b.y, and the table carrying the (+) is the NULL-SUPPLYING side. Putting the marker on the other operand flips which side is preserved. Conjuncts carrying (+) form the ON condition while the rest stay a RESIDUAL WHERE applied after the outer join - so a non-(+) filter removes a matched row without disturbing the null-extended one. Multiple keys each take their own (+), and the operator works in UPDATE ... FROM, where a target LEFT JOIN source updates every target row and leaves the source columns NULL for the unmatched ones. Converted 1:1 from query/OracleOuterJoinTest (now retired); the equivalence test compared two result sets row by row in a loop, so the converted test pins the ordered rows of both spellings.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "plus-on-the-right-keeps-all-left-rows", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, name VARCHAR, dept_id INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 99)"},
+      {"sql": "CREATE TABLE dept (id INTEGER, dname VARCHAR)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'Eng'), (20, 'Sales')"},
+      {"sql": "SELECT e.name, d.dname FROM emp e, dept d WHERE e.dept_id = d.id(+) ORDER BY e.name",
+       "expect": {"rows": [["Alice","Eng"],["Bob","Sales"],["Carol",null]], "ordered": true}}
+    ]},
+    {"name": "plus-matches-the-equivalent-left-join", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, name VARCHAR, dept_id INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 99)"},
+      {"sql": "CREATE TABLE dept (id INTEGER, dname VARCHAR)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'Eng'), (20, 'Sales')"},
+      {"sql": "SELECT e.name, d.dname FROM emp e, dept d WHERE e.dept_id = d.id(+) ORDER BY e.name",
+       "expect": {"rows": [["Alice","Eng"],["Bob","Sales"],["Carol",null]], "ordered": true}},
+      {"sql": "SELECT e.name, d.dname FROM emp e LEFT JOIN dept d ON e.dept_id = d.id ORDER BY e.name",
+       "expect": {"rows": [["Alice","Eng"],["Bob","Sales"],["Carol",null]], "ordered": true}}
+    ]},
+    {"name": "plus-on-the-left-keeps-all-right-rows", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, name VARCHAR, dept_id INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 99)"},
+      {"sql": "CREATE TABLE dept (id INTEGER, dname VARCHAR)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'Eng'), (20, 'Sales')"},
+      {"sql": "SELECT e.name, d.dname FROM emp e, dept d WHERE e.dept_id(+) = d.id ORDER BY d.dname",
+       "expect": {"rows": [["Alice","Eng"],["Bob","Sales"]], "ordered": true}}
+    ]},
+    {"name": "a-residual-predicate-is-applied-after-the-outer-join", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, name VARCHAR, dept_id INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 99)"},
+      {"sql": "CREATE TABLE dept (id INTEGER, dname VARCHAR)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'Eng'), (20, 'Sales')"},
+      {"sql": "SELECT e.name, d.dname FROM emp e, dept d WHERE e.dept_id = d.id(+) AND e.name <> 'Bob' ORDER BY e.name",
+       "expect": {"rows": [["Alice","Eng"],["Carol",null]], "ordered": true}}
+    ]},
+    {"name": "a-two-key-plus-join", "steps": [
+      {"sql": "CREATE TABLE t (c INTEGER, k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 10, 'x'), (1, 20, 'y')"},
+      {"sql": "CREATE TABLE m (c INTEGER, k INTEGER, w VARCHAR)"},
+      {"sql": "INSERT INTO m VALUES (1, 10, 'M')"},
+      {"sql": "SELECT t.v, m.w FROM t, m WHERE t.c = m.c(+) AND t.k = m.k(+) ORDER BY t.k",
+       "expect": {"rows": [["x","M"],["y",null]], "ordered": true}}
+    ]},
+    {"name": "plus-in-update-from-updates-unmatched-target-rows", "steps": [
+      {"sql": "CREATE TABLE dest (k INTEGER, state VARCHAR)"},
+      {"sql": "INSERT INTO dest VALUES (1, '?'), (2, '?'), (3, '?')"},
+      {"sql": "CREATE TABLE mac (k INTEGER, cluster VARCHAR)"},
+      {"sql": "INSERT INTO mac VALUES (1, 'C1'), (2, 'C2')"},
+      {"sql": "UPDATE dest SET state = IFF(mac.cluster IS NULL, 'Deleted', 'Current') FROM mac WHERE dest.k = mac.k(+)"},
+      {"sql": "SELECT k, state FROM dest ORDER BY k",
+       "expect": {"rows": [[1,"Current"],[2,"Current"],[3,"Deleted"]], "ordered": true}}
+    ]}
+  ]
+}

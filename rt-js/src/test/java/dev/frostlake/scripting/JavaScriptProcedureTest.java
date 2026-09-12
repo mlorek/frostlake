@@ -64,8 +64,8 @@ public class JavaScriptProcedureTest {
         logger.info("Testing CREATE PROCEDURE with LANGUAGE JAVASCRIPT");
 
         engine.execute("""
-            CREATE PROCEDURE js_add_proc(a INTEGER, b INTEGER)
-            RETURNS INTEGER
+            CREATE PROCEDURE js_add_proc(a FLOAT, b FLOAT)
+            RETURNS FLOAT
             LANGUAGE JAVASCRIPT
             AS $$
                 return a + b;
@@ -425,8 +425,8 @@ public class JavaScriptProcedureTest {
             """);
 
         engine.execute("""
-            CREATE PROCEDURE js_proc(x INTEGER)
-            RETURNS INTEGER
+            CREATE PROCEDURE js_proc(x FLOAT)
+            RETURNS FLOAT
             LANGUAGE JAVASCRIPT
             AS $$
                 return x * 2;

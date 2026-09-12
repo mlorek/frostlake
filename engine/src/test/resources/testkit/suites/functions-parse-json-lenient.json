@@ -1,0 +1,144 @@
+{
+  "suite": "functions-parse-json-lenient",
+  "description": "PARSE_JSON / TRY_PARSE_JSON tolerate JSON strings that a strict parser rejects but Snowflake accepts. The SQL string-literal decode runs FIRST and consumes single backslashes, so a backslash-d reaches PARSE_JSON as plain d and keeping a regex backslash requires writing it doubled; an over-escaped quote likewise drops to a literal quote. Truly malformed JSON still errors under PARSE_JSON and yields NULL under TRY_PARSE_JSON. Snowflake's PARSE_JSON also accepts the non-standard JavaScript undefined token, which loaders guard against ingested artifacts with: a bare token in an ARRAY is the VARIANT undefined ELEMENT, so PARSE_JSON('[undefined]') renders [undefined] and EQUALS ARRAY_CONSTRUCT(NULL), which is what makes the guard fire, while in an OBJECT it degrades to a JSON null and the word inside a string value stays untouched. Converted 1:1 from functions/ParseJsonLenientTest (now retired); written through a generator using raw strings so the backslash forms survive both the JSON encoder and the testkit's own parser, and the assertNotNull checks become IFF(x IS NULL, ...) projections.",
+  "tags": [
+    "functions",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "an-invalid-backslash-escape-drops-the-backslash",
+      "steps": [
+        {
+          "sql": "SELECT PARSE_JSON('[\"a\\d+\",\"b\"]')[0]::VARCHAR",
+          "expect": {
+            "value": "ad+"
+          }
+        }
+      ]
+    },
+    {
+      "name": "various-regex-escapes-parse",
+      "steps": [
+        {
+          "sql": "SELECT IFF(PARSE_JSON('[\"foo\\s*bar( baz)?\"]') IS NULL, 'null', 'set')",
+          "expect": {
+            "value": "set"
+          }
+        },
+        {
+          "sql": "SELECT IFF(PARSE_JSON('[\"(?<!skip )target\"]') IS NULL, 'null', 'set')",
+          "expect": {
+            "value": "set"
+          }
+        },
+        {
+          "sql": "SELECT IFF(PARSE_JSON('[\"node \\d+\",\"node (a|p)\\d+\"]') IS NULL, 'null', 'set')",
+          "expect": {
+            "value": "set"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-over-escaped-quote-drops-to-a-literal-quote",
+      "steps": [
+        {
+          "sql": "SELECT PARSE_JSON('[\"it\\'s\"]')[0]::VARCHAR",
+          "expect": {
+            "value": "it's"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-json-is-unaffected",
+      "steps": [
+        {
+          "sql": "SELECT PARSE_JSON('[\"first entry\",\"second entry\"]')[1]::VARCHAR",
+          "expect": {
+            "value": "second entry"
+          }
+        }
+      ]
+    },
+    {
+      "name": "try-parse-json-keeps-the-backslash-and-nulls-on-garbage",
+      "steps": [
+        {
+          "sql": "SELECT IFF(TRY_PARSE_JSON('[\"a\\d+\"]') IS NULL, 'null', 'set')",
+          "expect": {
+            "value": "set"
+          }
+        },
+        {
+          "sql": "SELECT TRY_PARSE_JSON('{ not json at all')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "parse-json-still-throws-on-real-garbage",
+      "steps": [
+        {
+          "sql": "SELECT PARSE_JSON('{ not json at all')",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-query-shape-with-regex-columns",
+      "steps": [
+        {
+          "sql": "SELECT $1, PARSE_JSON($2), PARSE_JSON($2)\nFROM VALUES\n  ('alpha', '[\"widget one\",\"node (a|p|m|q|f|fa|v)\\d+\",\"node \\d+\"]'),\n  ('beta',  '[\"product two\",\"(?<!skip )target\"]'),\n  ('gamma', '[\"foo\\s*bar( baz)?\",\"^alpha\",\"^(?!.*x.*)(.*y.*)\"]'),\n  ('delta', '[\"first entry\",\"second entry\"]')",
+          "expect": {
+            "rowCount": 4
+          }
+        },
+        {
+          "sql": "SELECT COUNT_IF(PARSE_JSON($2) IS NOT NULL) FROM VALUES\n  ('alpha', '[\"widget one\",\"node (a|p|m|q|f|fa|v)\\d+\",\"node \\d+\"]'),\n  ('beta',  '[\"product two\",\"(?<!skip )target\"]'),\n  ('gamma', '[\"foo\\s*bar( baz)?\",\"^alpha\",\"^(?!.*x.*)(.*y.*)\"]'),\n  ('delta', '[\"first entry\",\"second entry\"]')",
+          "expect": {
+            "value": "4"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-undefined-token-parses-as-snowflake-tolerates",
+      "steps": [
+        {
+          "sql": "SELECT TO_VARCHAR(PARSE_JSON('[undefined]')::VARIANT)",
+          "expect": {
+            "value": "[undefined]"
+          }
+        },
+        {
+          "sql": "SELECT PARSE_JSON('[undefined]') = ARRAY_CONSTRUCT(NULL)",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT PARSE_JSON('{\"a\":undefined,\"b\":1}')",
+          "expect": {
+            "value": "{\"a\":null,\"b\":1}"
+          }
+        },
+        {
+          "sql": "SELECT PARSE_JSON('{\"m\":\"is undefined here\"}'):m::VARCHAR",
+          "expect": {
+            "value": "is undefined here"
+          }
+        }
+      ]
+    }
+  ]
+}

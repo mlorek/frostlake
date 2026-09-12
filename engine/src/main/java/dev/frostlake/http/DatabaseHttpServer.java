@@ -41,6 +41,7 @@ public class DatabaseHttpServer {
     private final HttpServer server;
     private final ConcurrentDatabaseEngine engine;
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final String NO_DELAY_PROPERTY = "sun.net.httpserver.nodelay";
     private final int port;
     private final EngineConfig config;
 
@@ -58,6 +59,7 @@ public class DatabaseHttpServer {
         this.config = config;
         this.port = config.getHttpPort();
         this.engine = new ConcurrentDatabaseEngine();
+        enableNoDelay();
 
         final String host = config.getHttpHost();
         this.server = HttpServer.create(new InetSocketAddress(host, port), 0);
@@ -84,6 +86,21 @@ public class DatabaseHttpServer {
         logger.info("  POST /api/execute - Execute SQL");
         logger.info("  GET  /api/health - Health check");
         logger.info("  GET  /api/sessions - Session information");
+        logger.info("  POST /api/sessions - Start a session");
+        logger.info("  DELETE /api/sessions/{id} - Release a session");
+    }
+
+    /**
+     * TCP no-delay for every socket the server accepts. The JDK server leaves Nagle's algorithm on and
+     * writes a response's headers and body as two segments, so on a kept-alive connection the body waits
+     * for the client's delayed ACK — about 40 ms per statement on Linux and macOS. The JDK reads the
+     * property once, when its server configuration first loads, so it is set before the first server is
+     * created; a value the launcher chose is left alone.
+     */
+    private static void enableNoDelay() {
+        if (System.getProperty(NO_DELAY_PROPERTY) == null) {
+            System.setProperty(NO_DELAY_PROPERTY, "true");
+        }
     }
 
     /**

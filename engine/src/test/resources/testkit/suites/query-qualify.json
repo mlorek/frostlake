@@ -1,0 +1,83 @@
+{
+  "suite": "query-qualify",
+  "description": "QUALIFY with ROW_NUMBER/RANK/DENSE_RANK, all comparison operators, partitions, WHERE/ORDER BY/LIMIT/TOP interaction, multiple window functions. Converted 1:1 from query/QualifyTest.java (now retired; the two at-least asserts pinned to the deterministic exact counts).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "qualify-with-row-number", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank\nFROM employees\nQUALIFY rank <= 3", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "qualify-with-row-number-partition", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, department, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as dept_rank\nFROM employees\nQUALIFY dept_rank <= 2", "expect": {"rowCount": 6}}
+    ]},
+    {"name": "qualify-with-rank", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, RANK() OVER (ORDER BY salary DESC) as rank\nFROM employees\nQUALIFY rank <= 2", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "qualify-with-dense-rank", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, DENSE_RANK() OVER (ORDER BY salary DESC) as dense_rank\nFROM employees\nQUALIFY dense_rank = 1", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "qualify-greater-than", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num\nFROM employees\nQUALIFY row_num > 5", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "qualify-equals", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num\nFROM employees\nQUALIFY row_num = 3", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "qualify-with-order-by", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank\nFROM employees\nQUALIFY rank <= 3\nORDER BY name",
+       "expect": {"rows": [["Alice", "1"], ["Bob", "2"], ["Charlie", "3"]], "ordered": true}}
+    ]},
+    {"name": "qualify-with-where", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, department, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank\nFROM employees\nWHERE department = 'Engineering'\nQUALIFY rank <= 2", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "qualify-with-limit", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank\nFROM employees\nQUALIFY rank <= 5\nLIMIT 3", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "qualify-no-match", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num\nFROM employees\nQUALIFY row_num > 100", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "qualify-not-equals", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num\nFROM employees\nQUALIFY row_num != 1", "expect": {"rowCount": 7}}
+    ]},
+    {"name": "qualify-less-than", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num\nFROM employees\nQUALIFY row_num < 4", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "qualify-greater-than-or-equal", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name, ROW_NUMBER() OVER (ORDER BY id DESC) as row_num\nFROM employees\nQUALIFY row_num >= 6", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "qualify-with-top", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT TOP 2 id, name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank\nFROM employees\nQUALIFY rank <= 5", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "multiple-window-functions-with-qualify", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), (2, 'Bob', 'Engineering', 95000), (3, 'Charlie', 'Engineering', 90000), (4, 'David', 'Sales', 85000), (5, 'Eve', 'Sales', 80000), (6, 'Frank', 'Sales', 75000), (7, 'Grace', 'HR', 70000), (8, 'Henry', 'HR', 65000)"},
+      {"sql": "SELECT id, name,\nROW_NUMBER() OVER (ORDER BY salary DESC) as overall_rank,\nROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as dept_rank\nFROM employees\nQUALIFY overall_rank <= 4", "expect": {"rowCount": 4}}
+    ]}
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "suite": "query-select-modifier-surface",
+  "description": "The SELECT row-limiting and star-modifier surface, measured statement by statement against a real account (40 cells, whose verdicts agreed fully). Every part of the ANSI FETCH is optional except the count, so FETCH 2, FETCH FIRST 2, FETCH NEXT 2 ROWS ONLY and FETCH FIRST 2 ROW ONLY are one clause. OFFSET n [ROWS] may PREFIX a fetch but never stand alone - bare OFFSET stays a syntax error with or without ROWS. LIMIT '' and OFFSET '' are the documented empty-string defaults (they mean no limit / no offset) while any OTHER string refuses AT THE LITERAL, quoting it doubled in the message. The star modifiers come in ONE order - ILIKE-or-EXCLUDE, then REPLACE, then RENAME - each at most once, and ILIKE and EXCLUDE are mutually exclusive, so every wrong order is a syntax error naming the token that arrived too late. And TOP beside a LIMIT or a FETCH refuses with 'Duplicate LIMIT: <keyword>.', naming which one it found second. Converted 1:1 from query/SelectModifierSurfaceTest (now retired); two of its assertions compared the WHOLE message including the newline after the header, and those are pinned verbatim here.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "every-fetch-spelling-works", "steps": [
+      {"sql": "CREATE TABLE sm_t (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "INSERT INTO sm_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')"},
+      {"sql": "SELECT a FROM sm_t FETCH 2", "expect": {"rowCount": 2}},
+      {"sql": "SELECT a FROM sm_t FETCH FIRST 2", "expect": {"rowCount": 2}},
+      {"sql": "SELECT a FROM sm_t FETCH NEXT 2 ROWS ONLY", "expect": {"rowCount": 2}},
+      {"sql": "SELECT a FROM sm_t FETCH FIRST 2 ROW ONLY", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "offset-rows-prefixes-a-fetch", "steps": [
+      {"sql": "CREATE TABLE sm_t (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "INSERT INTO sm_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')"},
+      {"sql": "SELECT a FROM sm_t ORDER BY a OFFSET 1 ROWS FETCH NEXT 2 ROWS ONLY", "expect": {"rows": [[2],[3]], "ordered": true}},
+      {"sql": "SELECT a FROM sm_t ORDER BY a OFFSET 2 FETCH 5", "expect": {"rows": [[3]], "ordered": true}}
+    ]},
+    {"name": "a-bare-offset-without-a-fetch-stays-a-syntax-error", "steps": [
+      {"sql": "CREATE TABLE sm_t (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "INSERT INTO sm_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')"},
+      {"sql": "SELECT a FROM sm_t OFFSET 1", "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "SELECT a FROM sm_t OFFSET 1 ROWS", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-empty-string-limit-and-offset-are-the-documented-defaults", "steps": [
+      {"sql": "CREATE TABLE sm_t (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "INSERT INTO sm_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')"},
+      {"sql": "SELECT a FROM sm_t LIMIT ''", "expect": {"rowCount": 3}},
+      {"sql": "SELECT a FROM sm_t LIMIT '' OFFSET ''", "expect": {"rowCount": 3}},
+      {"sql": "SELECT a FROM sm_t ORDER BY a LIMIT 2 OFFSET ''", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]},
+    {"name": "a-non-empty-string-limit-refuses-at-the-literal", "steps": [
+      {"sql": "CREATE TABLE sm_t (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "INSERT INTO sm_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')"},
+      {"sql": "SELECT a FROM sm_t LIMIT '3'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 25 unexpected ''3''."}}},
+      {"sql": "SELECT a FROM sm_t LIMIT 'abc'", "expect": {"error": {"messageContains": "unexpected ''abc''."}}}
+    ]},
+    {"name": "the-star-modifiers-keep-their-fixed-order", "steps": [
+      {"sql": "CREATE TABLE sm_t (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "INSERT INTO sm_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')"},
+      {"sql": "SELECT * EXCLUDE c FROM sm_t", "expect": {"rows": [[1,10],[2,20],[3,30]]}},
+      {"sql": "SELECT * EXCLUDE c RENAME a AS x FROM sm_t", "expect": {"rows": [[1,10],[2,20],[3,30]], "columns": ["X","B"]}},
+      {"sql": "SELECT * REPLACE (a + 1 AS a) RENAME b AS y FROM sm_t", "expect": {"rows": [[2,10,"x"],[3,20,"y"],[4,30,"z"]], "columns": ["A","Y","C"]}},
+      {"sql": "SELECT * RENAME a AS x EXCLUDE c FROM sm_t", "expect": {"error": {"messageContains": "unexpected 'EXCLUDE'"}}},
+      {"sql": "SELECT * RENAME b AS y REPLACE (a + 1 AS a) FROM sm_t", "expect": {"error": {"messageContains": "unexpected 'REPLACE'"}}},
+      {"sql": "SELECT * EXCLUDE a EXCLUDE b FROM sm_t", "expect": {"error": {"messageContains": "unexpected 'EXCLUDE'"}}}
+    ]},
+    {"name": "ilike-and-exclude-are-mutually-exclusive", "steps": [
+      {"sql": "CREATE TABLE sm_t (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "INSERT INTO sm_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')"},
+      {"sql": "SELECT * ILIKE 'a%' FROM sm_t", "expect": {"rows": [[1],[2],[3]], "columns": ["A"]}},
+      {"sql": "SELECT * ILIKE 'a%' EXCLUDE b FROM sm_t", "expect": {"error": {"messageContains": "unexpected 'EXCLUDE'"}}},
+      {"sql": "SELECT * EXCLUDE a ILIKE 'b%' FROM sm_t", "expect": {"error": {"messageContains": "unexpected 'ILIKE'"}}}
+    ]},
+    {"name": "top-beside-a-limit-or-fetch-refuses-as-a-duplicate", "steps": [
+      {"sql": "CREATE TABLE sm_t (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "INSERT INTO sm_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')"},
+      {"sql": "SELECT TOP 2 a FROM sm_t", "expect": {"rowCount": 2}},
+      {"sql": "SELECT TOP 2 a FROM sm_t LIMIT 1", "expect": {"error": {"messageContains": "SQL compilation error:\nDuplicate LIMIT: LIMIT."}}},
+      {"sql": "SELECT TOP 2 a FROM sm_t FETCH FIRST 1 ROWS ONLY", "expect": {"error": {"messageContains": "SQL compilation error:\nDuplicate LIMIT: FETCH."}}}
+    ]}
+  ]
+}

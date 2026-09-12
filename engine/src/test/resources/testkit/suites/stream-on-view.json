@@ -1,0 +1,62 @@
+{
+  "suite": "stream-on-view",
+  "description": "CREATE STREAM ON VIEW as a DDL surface: the stream is created and listed by SHOW STREAMS under its UPPERCASED name, with APPEND_ONLY, with SHOW_INITIAL_ROWS, over a view carrying a WHERE predicate, and alongside a stream on the underlying TABLE in the same schema (both list). IF NOT EXISTS is idempotent - a second CREATE for the same name neither fails nor produces a duplicate. Naming a view that does not exist is refused with Snowflake's own live-verified sentence, View 'NON_EXISTENT_VIEW' does not exist or not authorized. Converted 1:1 from stream/StreamOnViewTest (now retired), which was a JDBC test that scanned the SHOW STREAMS ResultSet row by row for a name; each such scan is expressed here as a COUNT over RESULT_SCAN(LAST_QUERY_ID()) filtered on the quoted lowercase name column, which asserts the same thing including the uppercase normalisation.",
+  "tags": ["stream", "converted"],
+  "tests": [
+    {"name": "a-stream-can-be-created-on-a-view", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name STRING, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "INSERT INTO users VALUES (2, 'Bob', 25)"},
+      {"sql": "CREATE VIEW active_users AS SELECT id, name FROM users WHERE age >= 25"},
+      {"sql": "CREATE STREAM user_stream ON VIEW active_users"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'USER_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-view-stream-can-be-append-only", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name STRING, price DECIMAL)"},
+      {"sql": "CREATE VIEW expensive_products AS SELECT * FROM products WHERE price > 100"},
+      {"sql": "CREATE STREAM product_stream ON VIEW expensive_products APPEND_ONLY = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PRODUCT_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-view-stream-can-show-initial-rows", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount DECIMAL)"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 50.00)"},
+      {"sql": "INSERT INTO orders VALUES (2, 101, 75.00)"},
+      {"sql": "CREATE VIEW large_orders AS SELECT * FROM orders WHERE amount > 60"},
+      {"sql": "CREATE STREAM order_stream ON VIEW large_orders SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ORDER_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-stream-on-a-non-existent-view-is-refused", "steps": [
+      {"sql": "CREATE STREAM test_stream ON VIEW non_existent_view", "expect": {"error": {"messageContains": "does not exist or not authorized"}}}
+    ]},
+    {"name": "a-table-stream-and-a-view-stream-coexist-in-one-schema", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name STRING, salary DECIMAL)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John', 50000)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Jane', 60000)"},
+      {"sql": "CREATE VIEW high_earners AS SELECT * FROM employees WHERE salary > 55000"},
+      {"sql": "CREATE STREAM table_stream ON TABLE employees"},
+      {"sql": "CREATE STREAM view_stream ON VIEW high_earners"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('TABLE_STREAM', 'VIEW_STREAM')", "expect": {"value": 2}}
+    ]},
+    {"name": "a-stream-can-be-created-on-a-view-with-a-where-clause", "steps": [
+      {"sql": "CREATE TABLE inventory (id INTEGER, product_name STRING, quantity INTEGER)"},
+      {"sql": "INSERT INTO inventory VALUES (1, 'Widget', 100)"},
+      {"sql": "INSERT INTO inventory VALUES (2, 'Gadget', 5)"},
+      {"sql": "CREATE VIEW low_stock AS SELECT * FROM inventory WHERE quantity < 10"},
+      {"sql": "CREATE STREAM stock_stream ON VIEW low_stock"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'STOCK_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "if-not-exists-on-a-view-stream-is-idempotent", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, name STRING)"},
+      {"sql": "CREATE VIEW customer_view AS SELECT * FROM customers"},
+      {"sql": "CREATE STREAM customer_stream ON VIEW customer_view"},
+      {"sql": "CREATE STREAM IF NOT EXISTS customer_stream ON VIEW customer_view"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CUSTOMER_STREAM'", "expect": {"value": 1}}
+    ]}
+  ]
+}

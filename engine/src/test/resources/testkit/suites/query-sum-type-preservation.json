@@ -1,0 +1,77 @@
+{
+  "suite": "query-sum-type-preservation",
+  "description": "SUM preserves its argument's INTEGER-ness, matching Snowflake: summing an INTEGER or NUMBER(p,0) column yields a whole number, so SUM(i)::VARCHAR is '13' and not '13.0', while a DECIMAL or FLOAT argument keeps a fractional result. The rule holds through GROUP BY, through DISTINCT, through an expression argument, over a WINDOW, and through arithmetic on the sum. An integer sum that OVERFLOWS a signed long is returned exactly - Snowflake's NUMBER(38,0) - so three times nine quintillion comes back as 27000000000000000000 rather than a wrapped or floated value. SUM over no rows is NULL. Converted 1:1 from query/SumTypePreservationTest (now retired); the Java asserted the boxed carrier with 'instanceof Long', which has no SQL surface, so the converted tests pin SYSTEM$TYPEOF (INTEGER where the Java demanded Long, FLOAT where it allowed a fractional one) beside the ::VARCHAR rendering that shows the same thing in the values.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "the-sum-of-an-integer-is-a-whole-number", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT SUM(i)::VARCHAR FROM t", "expect": {"value": "13"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(SUM(i)) FROM t", "expect": {"value": "NUMBER(38,0)[SB8]"}},
+      {"sql": "SELECT SUM(i) FROM t", "expect": {"value": 13}}
+    ]},
+    {"name": "the-sum-of-a-decimal-stays-fractional", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT SUM(d)::VARCHAR FROM t", "expect": {"value": "14.00"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(SUM(d)) FROM t", "expect": {"value": "NUMBER(22,2)[SB8]"}}
+    ]},
+    {"name": "the-sum-of-a-float-stays-fractional", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT SUM(f)::VARCHAR FROM t", "expect": {"value": "14.0"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(SUM(f)) FROM t", "expect": {"value": "FLOAT[DOUBLE]"}}
+    ]},
+    {"name": "a-sum-under-group-by-is-a-whole-number", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT grp, SUM(i)::VARCHAR AS s FROM t GROUP BY grp ORDER BY grp",
+       "expect": {"rows": [["a","3"],["b","10"]], "ordered": true}}
+    ]},
+    {"name": "distinct-and-expression-arguments-are-whole-too", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT SUM(DISTINCT i)::VARCHAR FROM t", "expect": {"value": "13"}},
+      {"sql": "SELECT SUM(i + 0)::VARCHAR FROM t", "expect": {"value": "13"}}
+    ]},
+    {"name": "a-sum-over-a-window-is-a-whole-number", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT SYSTEM$TYPEOF(SUM(i) OVER ()) FROM t LIMIT 1", "expect": {"value": "NUMBER(38,0)[SB8]"}},
+      {"sql": "SELECT (SUM(i) OVER ())::VARCHAR FROM t LIMIT 1", "expect": {"value": "13"}}
+    ]},
+    {"name": "arithmetic-on-a-sum-stays-whole", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT (SUM(i) * 2)::VARCHAR FROM t", "expect": {"value": "26"}}
+    ]},
+    {"name": "an-integer-sum-beyond-long-range-is-exact", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT SUM(big)::VARCHAR FROM t", "expect": {"value": "27000000000000000000"}}
+    ]},
+    {"name": "a-sum-over-no-rows-is-null", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, i INTEGER, d DECIMAL(10,2), f FLOAT, big NUMBER(38,0))"},
+      {"sql": "INSERT INTO t VALUES ('a', 1, 1.50, 1.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('a', 2, 2.50, 2.5, 9000000000000000000)"},
+      {"sql": "INSERT INTO t VALUES ('b', 10, 10.00, 10.0, 9000000000000000000)"},
+      {"sql": "SELECT SUM(i) FROM t WHERE i > 999", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

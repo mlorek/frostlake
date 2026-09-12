@@ -47,6 +47,7 @@ public class LagLeadTest extends BaseDatabaseTest {
             SELECT product, sale_date, amount,
             LAG(amount) OVER (ORDER BY id) as prev_amount
             FROM sales
+            ORDER BY id
             """);
 
         assertEquals(6, result.getRowCount());
@@ -76,6 +77,7 @@ public class LagLeadTest extends BaseDatabaseTest {
             SELECT product, sale_date, amount,
             LEAD(amount) OVER (ORDER BY id) as next_amount
             FROM sales
+            ORDER BY id
             """);
 
         assertEquals(6, result.getRowCount());
@@ -105,6 +107,7 @@ public class LagLeadTest extends BaseDatabaseTest {
             SELECT id, amount,
             LAG(amount, 2) OVER (ORDER BY id) as lag2_amount
             FROM sales
+            ORDER BY id
             """);
 
         assertEquals(6, result.getRowCount());
@@ -134,6 +137,7 @@ public class LagLeadTest extends BaseDatabaseTest {
             SELECT id, amount,
             LEAD(amount, 2) OVER (ORDER BY id) as lead2_amount
             FROM sales
+            ORDER BY id
             """);
 
         assertEquals(6, result.getRowCount());
@@ -163,6 +167,7 @@ public class LagLeadTest extends BaseDatabaseTest {
             SELECT id, amount,
             LAG(amount, 1, 0) OVER (ORDER BY id) as prev_amount
             FROM sales
+            ORDER BY id
             """);
 
         assertEquals(6, result.getRowCount());
@@ -185,6 +190,7 @@ public class LagLeadTest extends BaseDatabaseTest {
             SELECT id, amount,
             LEAD(amount, 1, -1) OVER (ORDER BY id) as next_amount
             FROM sales
+            ORDER BY id
             """);
 
         assertEquals(6, result.getRowCount());
@@ -208,6 +214,7 @@ public class LagLeadTest extends BaseDatabaseTest {
             LAG(amount) OVER (ORDER BY id) as prev_amount,
             LEAD(amount) OVER (ORDER BY id) as next_amount
             FROM sales
+            ORDER BY id
             """);
 
         assertEquals(6, result.getRowCount());
@@ -227,6 +234,7 @@ public class LagLeadTest extends BaseDatabaseTest {
             SELECT sale_date, amount,
             LAG(sale_date) OVER (ORDER BY id) as prev_date
             FROM sales
+            ORDER BY id
             """);
 
         assertEquals(6, result.getRowCount());

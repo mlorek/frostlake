@@ -1,0 +1,86 @@
+{
+  "suite": "features-ctas",
+  "description": "CTAS behaviours: self-referential OR REPLACE, failure atomicity, type coercion of literals/aggregates (checked via information_schema), CLUSTER BY / COMMENT placement. Converted 1:1 from features/CtasSelfReplaceTest, CtasTypeCoercionTest and CtasWithClusterByTest (all now retired; the LocalDateTime instanceof assert became an information_schema data_type check).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "self-referential-replace-reads-the-old-rows",
+      "steps": [
+        {"sql": "CREATE TABLE roster (id INTEGER, label VARCHAR)"},
+        {"sql": "INSERT INTO roster VALUES (1, 'one'), (2, 'two')"},
+        {"sql": "CREATE OR REPLACE TABLE roster (id INTEGER, label VARCHAR COLLATE 'en-ci') AS SELECT id, label FROM roster"},
+        {"sql": "SELECT COUNT(*), MAX(label) FROM roster", "expect": {"rows": [["2", "two"]]}}
+      ]
+    },
+    {
+      "name": "failing-ctas-source-leaves-the-old-table-intact",
+      "steps": [
+        {"sql": "CREATE TABLE keepme (id INTEGER)"},
+        {"sql": "INSERT INTO keepme VALUES (42)"},
+        {"sql": "CREATE OR REPLACE TABLE keepme AS SELECT id FROM no_such_source", "expect": {"error": {}}},
+        {"sql": "SELECT id FROM keepme", "expect": {"value": "42"}}
+      ]
+    },
+    {
+      "name": "union-of-literals-stores-real-timestamps",
+      "steps": [
+        {"sql": "CREATE TABLE events (grp VARCHAR, happened_at TIMESTAMP_NTZ(9), amount NUMBER)"},
+        {"sql": "INSERT INTO events VALUES ('g', '2024-10-17 18:06:28.071', 1), ('g', '2024-10-17 18:06:27.100', 2)"},
+        {"sql": "CREATE TABLE expected_events AS SELECT grp, happened_at FROM events WHERE FALSE UNION ALL SELECT 'g', '2024-10-17 18:06:28.071'"},
+        {"sql": "SELECT data_type FROM information_schema.columns WHERE table_name = 'EXPECTED_EVENTS' AND column_name = 'HAPPENED_AT'",
+         "expect": {"value": "TIMESTAMP_NTZ"}},
+        {"sql": "SELECT COUNT(*) AS n FROM (SELECT grp, happened_at FROM expected_events EXCEPT SELECT grp, happened_at FROM events)",
+         "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "aggregate-column-gets-timestamp-type-and-joins-back",
+      "steps": [
+        {"sql": "CREATE TABLE events (grp VARCHAR, happened_at TIMESTAMP_NTZ(9), amount NUMBER)"},
+        {"sql": "INSERT INTO events VALUES ('g', '2024-10-17 18:06:28.071', 1), ('g', '2024-10-17 18:06:27.100', 2)"},
+        {"sql": "CREATE TABLE latest_events AS SELECT grp, MAX(happened_at) AS happened_at FROM events GROUP BY grp"},
+        {"sql": "SELECT data_type FROM information_schema.columns WHERE table_name = 'LATEST_EVENTS' AND column_name = 'HAPPENED_AT'",
+         "expect": {"value": "TIMESTAMP_NTZ"}},
+        {"sql": "SELECT COUNT(*) AS n FROM events s INNER JOIN latest_events l ON l.grp = s.grp AND l.happened_at = s.happened_at",
+         "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "aggregate-number-column-keeps-numeric-values",
+      "steps": [
+        {"sql": "CREATE TABLE events (grp VARCHAR, happened_at TIMESTAMP_NTZ(9), amount NUMBER)"},
+        {"sql": "INSERT INTO events VALUES ('g', '2024-10-17 18:06:28.071', 1), ('g', '2024-10-17 18:06:27.100', 2)"},
+        {"sql": "CREATE TABLE totals AS SELECT grp, SUM(amount) AS total FROM events GROUP BY grp"},
+        {"sql": "SELECT total FROM totals WHERE total = 3", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "real-varchar-data-stays-text",
+      "steps": [
+        {"sql": "CREATE TABLE events (grp VARCHAR, happened_at TIMESTAMP_NTZ(9), amount NUMBER)"},
+        {"sql": "INSERT INTO events VALUES ('g', '2024-10-17 18:06:28.071', 1)"},
+        {"sql": "CREATE TABLE names_copy AS SELECT UPPER(grp) AS shout FROM events"},
+        {"sql": "SELECT data_type FROM information_schema.columns WHERE table_name = 'NAMES_COPY' AND column_name = 'SHOUT'",
+         "expect": {"value": "TEXT"}}
+      ]
+    },
+    {
+      "name": "cluster-by-between-column-list-and-as-select",
+      "steps": [
+        {"sql": "CREATE TABLE src_rows (k NUMBER(38,0), label VARCHAR)"},
+        {"sql": "INSERT INTO src_rows VALUES (1, 'one'), (2, 'two')"},
+        {"sql": "CREATE OR REPLACE TABLE ctas_clustered (k NUMBER(38,0) NOT NULL, label VARCHAR(16777216) NULL COLLATE 'en-ci', CONSTRAINT pk_ctas_clustered PRIMARY KEY (k)) CLUSTER BY (k) AS SELECT k, label FROM src_rows"},
+        {"sql": "SELECT COUNT(*) FROM ctas_clustered", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "comment-and-cluster-by-between-column-list-and-as-select",
+      "steps": [
+        {"sql": "CREATE TABLE src_rows2 (k NUMBER(38,0))"},
+        {"sql": "INSERT INTO src_rows2 VALUES (7)"},
+        {"sql": "CREATE OR REPLACE TABLE ctas_commented (k NUMBER(38,0)) COMMENT = 'built by ctas' CLUSTER BY (k) AS SELECT k FROM src_rows2"},
+        {"sql": "SELECT k FROM ctas_commented", "expect": {"value": "7"}}
+      ]
+    }
+  ]
+}

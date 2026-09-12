@@ -1,0 +1,52 @@
+{
+  "suite": "features-default-expression-evaluation",
+  "description": "A column DEFAULT that is a non-literal EXPRESSION (arithmetic, concatenation, function call, CASE) is evaluated per row at INSERT time, instead of the raw expression text being stored as the value - DEFAULT 10 + 5 yields 15, not the string '10 + 5'. Literal defaults are unchanged, CURRENT_TIMESTAMP still resolves to a real value, a default naming a bare identifier is refused at CREATE with 'invalid identifier' (the table never exists), and an explicit value overrides an expression default. Converted 1:1 from features/DefaultExpressionEvaluationTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "arithmetic-default-is-evaluated", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, qty INTEGER DEFAULT 10 + 5)"},
+      {"sql": "INSERT INTO t (id) VALUES (1)"},
+      {"sql": "SELECT qty FROM t WHERE id = 1", "expect": {"value": "15"}}
+    ]},
+    {"name": "concatenation-default-is-evaluated", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR DEFAULT 'Mr. ' || 'Unknown')"},
+      {"sql": "INSERT INTO t (id) VALUES (1)"},
+      {"sql": "SELECT name FROM t WHERE id = 1", "expect": {"value": "Mr. Unknown"}}
+    ]},
+    {"name": "function-call-default-is-evaluated", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, upper_name VARCHAR DEFAULT UPPER('test'))"},
+      {"sql": "INSERT INTO t (id) VALUES (1)"},
+      {"sql": "SELECT upper_name FROM t WHERE id = 1", "expect": {"value": "TEST"}}
+    ]},
+    {"name": "case-expression-default-is-evaluated", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, priority VARCHAR DEFAULT CASE WHEN 1 = 1 THEN 'high' ELSE 'low' END)"},
+      {"sql": "INSERT INTO t (id) VALUES (1)"},
+      {"sql": "SELECT priority FROM t WHERE id = 1", "expect": {"value": "high"}}
+    ]},
+    {"name": "literal-string-default-is-not-re-evaluated", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, status VARCHAR DEFAULT 'active')"},
+      {"sql": "INSERT INTO t (id) VALUES (1)"},
+      {"sql": "SELECT status FROM t WHERE id = 1", "expect": {"value": "active"}}
+    ]},
+    {"name": "literal-number-default-is-unchanged", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, n INTEGER DEFAULT 42)"},
+      {"sql": "INSERT INTO t (id) VALUES (1)"},
+      {"sql": "SELECT n FROM t WHERE id = 1", "expect": {"value": "42"}}
+    ]},
+    {"name": "current-timestamp-default-still-evaluates", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"},
+      {"sql": "INSERT INTO t (id) VALUES (1)"},
+      {"sql": "SELECT COUNT(*) FROM t WHERE id = 1 AND created_at IS NOT NULL", "expect": {"value": "1"}}
+    ]},
+    {"name": "invalid-expression-default-refused-at-create", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, x VARCHAR DEFAULT (badcol))",
+       "expect": {"error": {"messageContains": "invalid identifier 'BADCOL'"}}},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "explicit-value-overrides-expression-default", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, qty INTEGER DEFAULT 10 + 5)"},
+      {"sql": "INSERT INTO t (id, qty) VALUES (1, 99)"},
+      {"sql": "SELECT qty FROM t WHERE id = 1", "expect": {"value": "99"}}
+    ]}
+  ]
+}

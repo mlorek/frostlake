@@ -171,6 +171,19 @@
                 <artifactId>maven-jar-plugin</artifactId>
                 <version>3.5.0</version>
                 <executions>
+                    <!-- The packaged jar leaves logging to the application that embeds it. The build
+                         tree's simplelogger.properties (the log to db-engine.log in the working directory,
+                         for the launch scripts and exec:java runs, which read target/classes) stays out of
+                         it, so an embedder with slf4j-simple on its classpath keeps its own configuration,
+                         or that binding's default of standard error. The test-jar keeps its own copy. -->
+                    <execution>
+                        <id>default-jar</id>
+                        <configuration>
+                            <excludes>
+                                <exclude>simplelogger.properties</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
                     <execution>
                         <id>make-test-jar</id>
                         <phase>test-compile</phase>

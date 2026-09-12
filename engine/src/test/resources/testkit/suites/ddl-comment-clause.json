@@ -1,0 +1,144 @@
+{
+  "suite": "ddl-comment-clause",
+  "description": "The COMMENT clause on CREATE statements, read back through SHOW's comment column (description for functions/procedures) and DESCRIBE TABLE's comment cell: every object kind, the positional '=' (required at object level, forbidden at column level), COMMENT before AS on views/tasks, unset comments spelled '' by SHOW but NULL by DESCRIBE/information_schema (DESCRIBE alone distinguishes '' from unset), uncommented routines described by kind, and special/quoted/long payloads. All live-verified. Converted 1:1 from ddl/CommentClauseTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "create-database-with-comment", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cl_db COMMENT = 'Test database'"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cl_db'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test database"}},
+      {"sql": "DROP DATABASE cmt_cl_db"}
+    ]},
+    {"name": "create-schema-with-comment", "steps": [
+      {"sql": "CREATE SCHEMA cmt_cl_schema COMMENT = 'Test schema'"},
+      {"sql": "SHOW SCHEMAS LIKE 'cmt_cl_schema'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test schema"}}
+    ]},
+    {"name": "create-table-with-comment", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR) COMMENT = 'User table'"},
+      {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "User table"}}
+    ]},
+    {"name": "create-table-with-column-comments", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER COMMENT 'User ID', name VARCHAR COMMENT 'Full name', email VARCHAR COMMENT 'Email address')"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT \"name\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ID", "User ID"], ["NAME", "Full name"], ["EMAIL", "Email address"]], "ordered": true}}
+    ]},
+    {"name": "create-table-with-table-and-column-comments", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER COMMENT 'Product ID', name VARCHAR COMMENT 'Product name') COMMENT = 'Product catalog'"},
+      {"sql": "SHOW TABLES LIKE 'products'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Product catalog"}},
+      {"sql": "DESCRIBE TABLE products"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'", "expect": {"value": "Product ID"}}
+    ]},
+    {"name": "column-comment-rejects-the-equals-sign", "steps": [
+      {"sql": "CREATE TABLE bad_col (id INTEGER COMMENT = 'User ID')",
+       "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "object-comment-requires-the-equals-sign", "steps": [
+      {"sql": "CREATE TABLE bad_tbl (x INTEGER) COMMENT 'no equals'",
+       "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "create-view-with-comment", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE VIEW active_users COMMENT = 'Active users view' AS SELECT * FROM users"},
+      {"sql": "SHOW VIEWS LIKE 'active_users'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Active users view"}}
+    ]},
+    {"name": "create-stream-with-comment", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users COMMENT = 'User change stream'"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "User change stream"}}
+    ]},
+    {"name": "create-task-with-comment", "steps": [
+      {"sql": "CREATE WAREHOUSE cmt_cl_wh"},
+      {"sql": "CREATE TASK daily_task\nWAREHOUSE = 'cmt_cl_wh'\nSCHEDULE = 'USING CRON 0 9 * * * UTC'\nCOMMENT = 'Daily processing task'\nAS SELECT 1"},
+      {"sql": "SHOW TASKS LIKE 'daily_task'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Daily processing task"}},
+      {"sql": "DROP WAREHOUSE cmt_cl_wh"}
+    ]},
+    {"name": "create-warehouse-with-comment", "steps": [
+      {"sql": "CREATE OR REPLACE WAREHOUSE cmt_cl_wh2 COMMENT = 'Test warehouse'"},
+      {"sql": "SHOW WAREHOUSES LIKE 'cmt_cl_wh2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test warehouse"}},
+      {"sql": "DROP WAREHOUSE cmt_cl_wh2"}
+    ]},
+    {"name": "create-stage-with-comment", "steps": [
+      {"sql": "CREATE STAGE cmt_cl_stage URL = 's3://bucket/path' COMMENT = 'Test stage'"},
+      {"sql": "SHOW STAGES LIKE 'cmt_cl_stage'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test stage"}}
+    ]},
+    {"name": "create-function-with-comment", "steps": [
+      {"sql": "CREATE FUNCTION add_numbers(x INTEGER, y INTEGER)\nRETURNS INTEGER\nCOMMENT = 'Adds two numbers'\nAS 'x + y'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'add_numbers'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Adds two numbers"}}
+    ]},
+    {"name": "create-procedure-with-comment", "steps": [
+      {"sql": "CREATE PROCEDURE test_proc()\nRETURNS VARCHAR\nCOMMENT = 'Test procedure'\nAS 'BEGIN RETURN ''done''; END;'"},
+      {"sql": "SHOW PROCEDURES LIKE 'test_proc'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test procedure"}}
+    ]},
+    {"name": "create-user-with-comment", "steps": [
+      {"sql": "CREATE OR REPLACE USER cmt_cl_user PASSWORD = 'Sekrit!42x' COMMENT = 'Test user account'"},
+      {"sql": "SHOW USERS LIKE 'cmt_cl_user'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test user account"}},
+      {"sql": "DROP USER cmt_cl_user"}
+    ]},
+    {"name": "create-role-with-comment", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE cmt_cl_role COMMENT = 'Analyst role'"},
+      {"sql": "SHOW ROLES LIKE 'cmt_cl_role'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Analyst role"}},
+      {"sql": "DROP ROLE cmt_cl_role"}
+    ]},
+    {"name": "create-without-comment-show-spells-empty-string", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cl_db2"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cl_db2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}},
+      {"sql": "DROP DATABASE cmt_cl_db2"}
+    ]},
+    {"name": "unset-and-empty-column-comments-are-distinct-in-describe", "steps": [
+      {"sql": "CREATE TABLE spell (a INTEGER COMMENT 'set', b INTEGER, c INTEGER COMMENT '')"},
+      {"sql": "DESCRIBE TABLE spell"},
+      {"sql": "SELECT \"name\", \"comment\", IFF(\"comment\" IS NULL, 'unset', '<' || \"comment\" || '>') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "set", "<set>"], ["B", "NULL", "unset"], ["C", "", "<>"]], "ordered": true}},
+      {"sql": "SHOW COLUMNS LIKE 'b' IN TABLE spell", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}}
+    ]},
+    {"name": "unset-table-comment-per-surface", "steps": [
+      {"sql": "CREATE TABLE bare (x INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'bare'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}},
+      {"sql": "SELECT comment FROM information_schema.tables WHERE table_name = 'BARE'",
+       "expect": {"rowCount": 1, "value": "NULL"}}
+    ]},
+    {"name": "uncommented-routines-describe-their-kind", "steps": [
+      {"sql": "CREATE FUNCTION fn_bare(x INTEGER) RETURNS INTEGER AS 'x'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'fn_bare'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "user-defined function"}},
+      {"sql": "CREATE PROCEDURE proc_bare() RETURNS VARCHAR AS 'BEGIN RETURN ''x''; END;'"},
+      {"sql": "SHOW PROCEDURES LIKE 'proc_bare'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "user-defined procedure"}}
+    ]},
+    {"name": "comment-with-special-characters", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cl_db3 COMMENT = 'Database with special chars: @#$%'"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cl_db3'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Database with special chars: @#$%"}},
+      {"sql": "DROP DATABASE cmt_cl_db3"}
+    ]},
+    {"name": "comment-with-quotes", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cl_db4 COMMENT = 'Database with ''quotes'''"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cl_db4'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Database with 'quotes'"}},
+      {"sql": "DROP DATABASE cmt_cl_db4"}
+    ]},
+    {"name": "long-comment", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE cmt_cl_db5 COMMENT = 'This is a very long comment that describes the database in great detail. It contains multiple sentences and provides comprehensive documentation about the purpose and usage of this database object.'"},
+      {"sql": "SHOW DATABASES LIKE 'cmt_cl_db5'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "This is a very long comment that describes the database in great detail. It contains multiple sentences and provides comprehensive documentation about the purpose and usage of this database object."}},
+      {"sql": "DROP DATABASE cmt_cl_db5"}
+    ]}
+  ]
+}

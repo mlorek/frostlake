@@ -1,0 +1,116 @@
+{
+  "suite": "query-null-three-valued-logic",
+  "description": "Snowflake three-valued (NULL) logic on the PREDICATE side: a comparison against NULL is UNKNOWN, and UNKNOWN excludes the row exactly as FALSE does - so x <> 'A' drops the NULL row, x = NULL matches nothing, x NOT IN (1, NULL) matches NOTHING at all while x IN (1, NULL) still matches the concrete member, and a NULL join key never finds a partner. The difference between UNKNOWN and FALSE only shows under NOT (NOT of UNKNOWN is UNKNOWN, so the NULL row cannot leak back in) and when the boolean is PROJECTED, where FALSE dominates UNKNOWN under AND and TRUE dominates it under OR. Quantified comparisons follow the same rules: <> ALL over a set containing NULL is the NOT IN twin and is never TRUE, = ANY still matches a concrete member, and a NULL LEFT operand makes the whole comparison UNKNOWN. Ordering is the deliberate opposite of predicate logic - ORDER BY ASC sorts NULLs LAST and DESC sorts them FIRST, with NULLS FIRST / NULLS LAST overriding either default, including on the post-GROUP BY sort path. Grouping and set-operation equality (NULL = NULL for GROUP BY, DISTINCT, UNION) is the other deliberate opposite and lives in query-executor-edge-cases. NULLS / LAST / FIRST stay non-reserved. Converted 1:1 from query/NullThreeValuedLogicTest (now retired); row-index reads became whole ordered row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "where-not-equal-excludes-nulls", "steps": [
+      {"sql": "CREATE TABLE t (x VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('A'), ('B'), (NULL)"},
+      {"sql": "SELECT x FROM t WHERE x <> 'A'", "expect": {"rows": [["B"]]}}
+    ]},
+    {"name": "equality-with-null-is-unknown", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2), (NULL)"},
+      {"sql": "SELECT x FROM t WHERE x = NULL", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "not-in-with-null-returns-no-rows", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+      {"sql": "SELECT x FROM t WHERE x NOT IN (1, NULL)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "in-with-null-still-matches-a-concrete-value", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+      {"sql": "SELECT x FROM t WHERE x IN (1, NULL)", "expect": {"rows": [[1]]}}
+    ]},
+    {"name": "null-join-keys-do-not-match", "steps": [
+      {"sql": "CREATE TABLE a (k INTEGER)"},
+      {"sql": "INSERT INTO a VALUES (1), (NULL)"},
+      {"sql": "CREATE TABLE b (k INTEGER)"},
+      {"sql": "INSERT INTO b VALUES (1), (NULL)"},
+      {"sql": "SELECT a.k FROM a JOIN b ON a.k = b.k", "expect": {"rows": [[1]]}}
+    ]},
+    {"name": "order-by-asc-puts-nulls-last", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (2), (NULL), (1)"},
+      {"sql": "SELECT x FROM t ORDER BY x ASC", "expect": {"rows": [[1],[2],[null]], "ordered": true}}
+    ]},
+    {"name": "not-less-than-with-null-is-unknown", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (10), (NULL)"},
+      {"sql": "SELECT x FROM t WHERE NOT (x < 5)", "expect": {"rows": [[10]]}}
+    ]},
+    {"name": "order-by-desc-puts-nulls-first", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (2), (NULL), (1)"},
+      {"sql": "SELECT x FROM t ORDER BY x DESC", "expect": {"rows": [[null],[2],[1]], "ordered": true}}
+    ]},
+    {"name": "order-by-asc-nulls-first-override", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (2), (NULL), (1)"},
+      {"sql": "SELECT x FROM t ORDER BY x ASC NULLS FIRST", "expect": {"rows": [[null],[1],[2]], "ordered": true}}
+    ]},
+    {"name": "order-by-desc-nulls-last-override", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (2), (NULL), (1)"},
+      {"sql": "SELECT x FROM t ORDER BY x DESC NULLS LAST", "expect": {"rows": [[2],[1],[null]], "ordered": true}}
+    ]},
+    {"name": "the-nulls-clause-applies-on-the-post-group-by-sort-path", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (2), (NULL), (1), (2)"},
+      {"sql": "SELECT x, COUNT(*) FROM t GROUP BY x ORDER BY x ASC NULLS FIRST",
+       "expect": {"rows": [[null,1],[1,1],[2,2]], "ordered": true}}
+    ]},
+    {"name": "not-over-and-with-unknown-is-unknown", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2), (NULL)"},
+      {"sql": "SELECT x FROM t WHERE NOT (x = 1 AND 1 = 1)", "expect": {"rows": [[2]]}}
+    ]},
+    {"name": "not-over-or-with-unknown-is-unknown", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2), (NULL)"},
+      {"sql": "SELECT x FROM t WHERE NOT (x = 1 OR x = 3)", "expect": {"rows": [[2]]}}
+    ]},
+    {"name": "projected-and-or-give-three-valued-results", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (NULL)"},
+      {"sql": "SELECT (x = 1 AND 1 = 1) FROM t", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT (x = 1 AND 1 = 2) FROM t", "expect": {"value": false}},
+      {"sql": "SELECT (x = 1 OR 1 = 2) FROM t", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT (x = 1 OR 1 = 1) FROM t", "expect": {"value": true}}
+    ]},
+    {"name": "not-equal-all-with-null-is-unknown", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+      {"sql": "CREATE TABLE s (v INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (5), (NULL)"},
+      {"sql": "SELECT x FROM t WHERE x <> ALL (SELECT v FROM s)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "equal-any-with-null-still-matches-a-concrete-member", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+      {"sql": "CREATE TABLE s (v INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (2), (NULL)"},
+      {"sql": "SELECT x FROM t WHERE x = ANY (SELECT v FROM s)", "expect": {"rows": [[2]]}}
+    ]},
+    {"name": "not-over-equal-any-with-null-is-unknown",
+     "skip": {"backends": ["snowflake"], "reason": "live Snowflake's semi-join rewrite deviates from its own scalar 3VL here: with no concrete match and a NULL member, = ANY is UNKNOWN, so NOT of it must stay UNKNOWN and answer no rows - live resurrects them"},
+     "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+      {"sql": "CREATE TABLE s (v INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (5), (NULL)"},
+      {"sql": "SELECT x FROM t WHERE NOT (x = ANY (SELECT v FROM s))", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-null-left-operand-makes-the-quantified-comparison-unknown", "steps": [
+      {"sql": "CREATE TABLE t (x INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (NULL), (5)"},
+      {"sql": "SELECT x FROM t WHERE x > ALL (SELECT 1)", "expect": {"rows": [[5]]}}
+    ]},
+    {"name": "nulls-first-and-last-remain-usable-as-column-names", "steps": [
+      {"sql": "CREATE TABLE k (nulls INTEGER, last VARCHAR, first INTEGER)"},
+      {"sql": "INSERT INTO k VALUES (1, 'a', 2)"},
+      {"sql": "SELECT nulls, last, first FROM k ORDER BY nulls", "expect": {"rows": [[1,"a",2]]}}
+    ]}
+  ]
+}

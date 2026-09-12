@@ -60,6 +60,17 @@ public class NumericCastRejectionTest extends BaseDatabaseTest {
             .endsWith("Failed to cast variant value [1,2] to FIXED"));
     }
 
+    /** A padded text is echoed trimmed, a lone space as '' (live-verified). */
+    @Test
+    public void aPaddedTextIsEchoedTrimmed() {
+        assertTrue(failureOf("SELECT '  abc  '::DOUBLE").endsWith("Numeric value 'abc' is not recognized"));
+        assertTrue(failureOf("SELECT ' '::DOUBLE").endsWith("Numeric value '' is not recognized"));
+        assertTrue(failureOf("SELECT ' '::NUMBER").endsWith("Numeric value '' is not recognized"));
+        assertTrue(failureOf("SELECT '  abc  '::NUMBER").endsWith("Numeric value 'abc' is not recognized"));
+        assertTrue(failureOf("SELECT CAST('  abc  ' AS INT)").endsWith("Numeric value 'abc' is not recognized"));
+        assertTrue(failureOf("SELECT '  abc  '::NUMBER(10,2)").endsWith("Numeric value 'abc' is not recognized"));
+    }
+
     @Test
     public void theIntegerAliasesReportTheSameFixedFamilyAsNumber() {
         assertTrue(failureOf("SELECT PARSE_JSON('{}')::INT")

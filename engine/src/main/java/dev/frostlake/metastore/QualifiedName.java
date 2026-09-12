@@ -16,6 +16,9 @@
 
 package dev.frostlake.metastore;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * An object's qualified name as its ordered identifier parts ({@code db.schema.name}).
  *
@@ -40,9 +43,76 @@ public final class QualifiedName {
         return new QualifiedName(parts.clone());
     }
 
-    /** Split a flattened dotted name into its parts — for a name available only as a string. */
+    /**
+     * Split a flattened dotted name into its parts — for a name available only as a string. A dot inside
+     * double quotes belongs to its part: {@code db.s."a.b"} is three parts, the last one {@code a.b}, which
+     * is how {@link #join} spells a part that holds a dot. A quoted part without a dot is kept as written,
+     * quotes and all, exactly as a plain split always kept it.
+     */
     public static QualifiedName parse(final String dotted) {
-        return new QualifiedName(dotted.split("\\."));
+        if (dotted.indexOf('"') < 0) {
+            return new QualifiedName(dotted.split("\\.", -1));
+        }
+        final List<String> parts = new ArrayList<>();
+        final StringBuilder part = new StringBuilder();
+        boolean quoted = false;
+        for (int i = 0; i < dotted.length(); i++) {
+            final char c = dotted.charAt(i);
+            if (c == '"') {
+                quoted = !quoted;
+                part.append(c);
+            } else if (c == '.' && !quoted) {
+                parts.add(unquoteDotted(part.toString()));
+                part.setLength(0);
+            } else {
+                part.append(c);
+            }
+        }
+        parts.add(unquoteDotted(part.toString()));
+        return new QualifiedName(parts.toArray(new String[0]));
+    }
+
+    /** A quoted part that holds a dot, read back to its name; any other part as written. */
+    private static String unquoteDotted(final String part) {
+        if (part.length() > 1 && part.charAt(0) == '"' && part.charAt(part.length() - 1) == '"'
+                && part.indexOf('.') >= 0) {
+            return part.substring(1, part.length() - 1).replace("\"\"", "\"");
+        }
+        return part;
+    }
+
+    /**
+     * Join parts into the dotted form {@link #parse} reads back to the same parts: a part holding a dot
+     * is quoted (an inner quote doubled), so {@code "a.b"} is never mistaken for a schema {@code a} and a
+     * table {@code b}.
+     */
+    public static String join(final String... parts) {
+        final StringBuilder joined = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            if (i > 0) {
+                joined.append('.');
+            }
+            final String part = String.valueOf(parts[i]);
+            if (part.indexOf('.') >= 0) {
+                joined.append('"').append(part.replace("\"", "\"\"")).append('"');
+            } else {
+                joined.append(part);
+            }
+        }
+        return joined.toString();
+    }
+
+    /**
+     * The row-storage key of a relation: its parts as written, joined as {@link #join} joins them. Every
+     * site that creates, finds, drops or snapshots a relation's rows builds its key here, so they agree
+     * for a name that holds a dot too.
+     *
+     * <p>The parts arrive CANONICAL - an unquoted name folded to upper case by the parser, a quoted one
+     * verbatim - so the key is not folded again here: two relations whose names differ only in case are
+     * two relations, and folding would give them one store between them.
+     */
+    public static String key(final String... parts) {
+        return join(parts);
     }
 
     /** Number of parts (1 = name, 2 = schema.name, 3 = db.schema.name). */
@@ -67,6 +137,6 @@ public final class QualifiedName {
 
     @Override
     public String toString() {
-        return String.join(".", parts);
+        return join(parts);
     }
 }

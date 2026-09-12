@@ -242,6 +242,7 @@ public class LateralTableFunctionTest extends BaseDatabaseTest {
             FROM source s
             CROSS JOIN LATERAL SPLIT_TO_TABLE(s.value, ',') sp
             WHERE s.id = 1
+            ORDER BY sp.INDEX
             """);
 
         assertNotNull(result);

@@ -1,0 +1,66 @@
+{
+  "suite": "features-session-variables",
+  "description": "Session variables: SET of a number and a string, the multi-variable SET (x, y, z) = (...) form, UNSET single and multi, and the values coming back through SHOW VARIABLES' name/value cells. A $var reads back through SELECT, works in a WHERE predicate and inside an arithmetic expression, and a second SET overwrites the first. Converted 1:1 from features/SessionVariablesTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "set-and-show-variable", "steps": [
+      {"sql": "SET my_var = 42"},
+      {"sql": "SHOW VARIABLES"},
+      {"sql": "SELECT MAX(IFF(UPPER(\"name\") = 'MY_VAR', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "42"}}
+    ]},
+    {"name": "set-string-variable", "steps": [
+      {"sql": "SET greeting = 'hello'"},
+      {"sql": "SHOW VARIABLES"},
+      {"sql": "SELECT MAX(IFF(UPPER(\"name\") = 'GREETING', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "hello"}}
+    ]},
+    {"name": "set-multiple-variables", "steps": [
+      {"sql": "SET (x, y, z) = (1, 2, 'three')"},
+      {"sql": "SHOW VARIABLES"},
+      {"sql": "SELECT MAX(IFF(UPPER(\"name\") = 'X', \"value\", NULL)), MAX(IFF(UPPER(\"name\") = 'Y', \"value\", NULL)), MAX(IFF(UPPER(\"name\") = 'Z', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "2", "three"]]}}
+    ]},
+    {"name": "unset-variable", "steps": [
+      {"sql": "SET to_remove = 99"},
+      {"sql": "UNSET to_remove"},
+      {"sql": "SHOW VARIABLES"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'TO_REMOVE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "unset-multiple-variables", "steps": [
+      {"sql": "SET (a, b, c) = (1, 2, 3)"},
+      {"sql": "UNSET (a, b)"},
+      {"sql": "SHOW VARIABLES"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'A'), COUNT_IF(UPPER(\"name\") = 'B'), COUNT_IF(UPPER(\"name\") = 'C') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["0", "0", "1"]]}}
+    ]},
+    {"name": "select-session-var", "steps": [
+      {"sql": "SET my_val = 42"},
+      {"sql": "SELECT $my_val", "expect": {"rowCount": 1, "value": "42"}}
+    ]},
+    {"name": "select-session-var-string", "steps": [
+      {"sql": "SET greeting = 'hello'"},
+      {"sql": "SELECT $greeting", "expect": {"value": "hello"}}
+    ]},
+    {"name": "session-var-in-where-clause", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1)"},
+      {"sql": "INSERT INTO nums VALUES (5)"},
+      {"sql": "INSERT INTO nums VALUES (10)"},
+      {"sql": "SET threshold = 5"},
+      {"sql": "SELECT n FROM nums WHERE n >= $threshold", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "session-var-in-expression", "steps": [
+      {"sql": "SET base = 100"},
+      {"sql": "SELECT $base + 50", "expect": {"value": "150"}}
+    ]},
+    {"name": "overwrite-variable", "steps": [
+      {"sql": "SET counter = 10"},
+      {"sql": "SET counter = 20"},
+      {"sql": "SHOW VARIABLES"},
+      {"sql": "SELECT MAX(IFF(UPPER(\"name\") = 'COUNTER', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "20"}}
+    ]}
+  ]
+}

@@ -1,0 +1,706 @@
+{
+  "suite": "functions-compression",
+  "description": "COMPRESS / DECOMPRESS_STRING / DECOMPRESS_BINARY - the contract, everything measured on a live Snowflake account. The method argument is MANDATORY (Frostlake used to default to deflate) and the supported set is exactly snappy | zlib | zstd | bz2, so deflate, raw_deflate and gzip - which Frostlake used to accept - are rejected. Covers a round trip per method, empty input, a table column (COMPRESS is one of the functions live refuses inside a VALUES clause, so INSERT ... SELECT is the route and the rejection is pinned), DECOMPRESS_BINARY, method-name case-insensitivity and surrounding-whitespace trimming, the level suffix with its clamping and malformed forms, NULL propagation from either argument, and the failure modes. Byte-level agreement with Snowflake lives in functions-compression-byte-fidelity. Converted 1:1 from functions/CompressionFunctionsTest (now retired); the Java assertNotEquals and the compare-two-COMPRESS-results assertions become HEX_ENCODE comparisons evaluated server-side.",
+  "tags": [
+    "functions",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "snappy-round-trips",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter.', 'snappy'), 'snappy')",
+          "expect": {
+            "value": "Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter."
+          }
+        }
+      ]
+    },
+    {
+      "name": "zlib-round-trips",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter.', 'zlib'), 'zlib')",
+          "expect": {
+            "value": "Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter."
+          }
+        }
+      ]
+    },
+    {
+      "name": "zstd-round-trips",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter.', 'zstd'), 'zstd')",
+          "expect": {
+            "value": "Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter."
+          }
+        }
+      ]
+    },
+    {
+      "name": "bz2-round-trips",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter.', 'bz2'), 'bz2')",
+          "expect": {
+            "value": "Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter."
+          }
+        }
+      ]
+    },
+    {
+      "name": "empty-input-round-trips-for-every-method",
+      "steps": [
+        {
+          "sql": "SELECT '<' || DECOMPRESS_STRING(COMPRESS('', 'snappy'), 'snappy') || '>'",
+          "expect": {
+            "value": "<>"
+          }
+        },
+        {
+          "sql": "SELECT '<' || DECOMPRESS_STRING(COMPRESS('', 'zlib'), 'zlib') || '>'",
+          "expect": {
+            "value": "<>"
+          }
+        },
+        {
+          "sql": "SELECT '<' || DECOMPRESS_STRING(COMPRESS('', 'zstd'), 'zstd') || '>'",
+          "expect": {
+            "value": "<>"
+          }
+        },
+        {
+          "sql": "SELECT '<' || DECOMPRESS_STRING(COMPRESS('', 'bz2'), 'bz2') || '>'",
+          "expect": {
+            "value": "<>"
+          }
+        }
+      ]
+    },
+    {
+      "name": "it-round-trips-through-a-table-column",
+      "steps": [
+        {
+          "sql": "CREATE TABLE comp_test (compressed BINARY)"
+        },
+        {
+          "sql": "INSERT INTO comp_test SELECT COMPRESS('Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter.', 'zlib')"
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(compressed, 'zlib') FROM comp_test",
+          "expect": {
+            "value": "Frostlake compression round-trip test string, long enough that the compressed form is genuinely shorter."
+          }
+        },
+        {
+          "sql": "INSERT INTO comp_test VALUES (COMPRESS('x', 'zlib'))",
+          "expect": {
+            "error": {
+              "messageContains": "Invalid expression [COMPRESS('x', 'zlib')] in VALUES clause"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "decompress-binary-returns-the-original-bytes",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_BINARY(COMPRESS('AB', 'zstd'), 'zstd')",
+          "expect": {
+            "value": "4142"
+          }
+        }
+      ]
+    },
+    {
+      "name": "binary-input-round-trips",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_BINARY(COMPRESS(TO_BINARY('48454C4C4F', 'HEX'), 'snappy'), 'snappy')",
+          "expect": {
+            "value": "48454C4C4F"
+          }
+        }
+      ]
+    },
+    {
+      "name": "compress-shrinks-repetitive-input",
+      "steps": [
+        {
+          "sql": "SELECT LENGTH(COMPRESS(REPEAT('a', 49), 'zlib')) < 49",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "different-methods-produce-different-output",
+      "steps": [
+        {
+          "sql": "SELECT HEX_ENCODE(COMPRESS('hello world', 'zlib')) = HEX_ENCODE(COMPRESS('hello world', 'zstd'))",
+          "expect": {
+            "value": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "compress-requires-the-method-argument",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello')",
+          "expect": {
+            "error": {
+              "messageContains": "not enough arguments for function [COMPRESS('hello')], expected 2, got 1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "decompress-string-requires-the-method-argument",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(TO_BINARY('051068656C6C6F', 'HEX'))",
+          "expect": {
+            "error": {
+              "messageContains": "not enough arguments for function [DECOMPRESS_STRING(TO_BINARY('051068656C6C6F', 'HEX'))], expected 2, got 1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "decompress-binary-requires-the-method-argument",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_BINARY(TO_BINARY('051068656C6C6F', 'HEX'))",
+          "expect": {
+            "error": {
+              "messageContains": "not enough arguments for function [DECOMPRESS_BINARY(TO_BINARY('051068656C6C6F', 'HEX'))], expected 2, got 1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-third-argument-is-rejected",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello', 'snappy', 'extra')",
+          "expect": {
+            "error": {
+              "messageContains": "too many arguments for function [COMPRESS('hello', 'snappy', 'extra')] expected 2, got 3"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "deflate-is-not-a-compression-method",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello', 'deflate')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'deflate'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(TO_BINARY('051068656C6C6F', 'HEX'), 'deflate')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'deflate'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "raw-deflate-is-not-a-compression-method",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello', 'raw_deflate')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'raw_deflate'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_BINARY(TO_BINARY('051068656C6C6F', 'HEX'), 'raw_deflate')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'raw_deflate'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "gzip-is-not-a-compression-method",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello', 'gzip')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'gzip'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(TO_BINARY('051068656C6C6F', 'HEX'), 'GZIP')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'gzip'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "other-unknown-methods-are-rejected",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello', 'bzip2')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'bzip2'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zstandard')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zstandard'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'lz4')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'lz4'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', '')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method ''"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "method-names-are-case-insensitive",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'SNAPPY'), 'snappy')",
+          "expect": {
+            "value": "hello"
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'ZLib'), 'zLIB')",
+          "expect": {
+            "value": "hello"
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'ZSTD'), 'Zstd')",
+          "expect": {
+            "value": "hello"
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'Bz2'), 'BZ2')",
+          "expect": {
+            "value": "hello"
+          }
+        }
+      ]
+    },
+    {
+      "name": "surrounding-whitespace-is-ignored",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', '  snappy  '), ' snappy ')",
+          "expect": {
+            "value": "hello"
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'sn appy')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'sn appy'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-unknown-method-message-quotes-the-original-untrimmed",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello', '  DEFLATE  ')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method '  deflate  '"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-level-suffix-is-accepted",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'zlib(1)'), 'zlib')",
+          "expect": {
+            "value": "hello"
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'zstd(19)'), 'zstd')",
+          "expect": {
+            "value": "hello"
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'bz2(1)'), 'bz2')",
+          "expect": {
+            "value": "hello"
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'snappy(1)'), 'snappy')",
+          "expect": {
+            "value": "hello"
+          }
+        }
+      ]
+    },
+    {
+      "name": "level-zero-is-the-default-level",
+      "steps": [
+        {
+          "sql": "SELECT HEX_ENCODE(COMPRESS('hello world hello world', 'zlib')) = HEX_ENCODE(COMPRESS('hello world hello world', 'zlib(0)'))",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-oversized-level-clamps",
+      "steps": [
+        {
+          "sql": "SELECT HEX_ENCODE(COMPRESS('hello world hello world', 'zlib(9)')) = HEX_ENCODE(COMPRESS('hello world hello world', 'zlib(10)'))",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT HEX_ENCODE(COMPRESS('hello world hello world', 'zlib(9)')) = HEX_ENCODE(COMPRESS('hello world hello world', 'zlib(2147483647)'))",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-level-tolerates-whitespace-and-leading-zeros",
+      "steps": [
+        {
+          "sql": "SELECT HEX_ENCODE(COMPRESS('hello world hello world', 'zlib(1)')) = HEX_ENCODE(COMPRESS('hello world hello world', 'zlib( 1 )'))",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT HEX_ENCODE(COMPRESS('hello world hello world', 'zlib(1)')) = HEX_ENCODE(COMPRESS('hello world hello world', 'zlib(01)'))",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-malformed-level-is-an-unknown-method",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib(-1)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(-1)'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib( -1 )')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib( -1 )'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'ZLIB(-2)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(-2)'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib(+1)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(+1)'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib(1.5)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(1.5)'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib(x)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(x)'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib()')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib()'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib(1')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(1'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib(1)(2)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(1)(2)'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-level-beyond-int-range-is-an-unknown-method",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib(2147483648)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(2147483648)'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', 'zlib(999999999999999999999)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(999999999999999999999)'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "decompress-ignores-the-level",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello world hello world', 'zlib(1)'), 'zlib(9)')",
+          "expect": {
+            "value": "hello world hello world"
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'zlib'), 'zlib(-1)')",
+          "expect": {
+            "error": {
+              "messageContains": "Unknown compression method 'zlib(-1)'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "null-arguments-yield-null",
+      "steps": [
+        {
+          "sql": "SELECT COMPRESS(NULL, 'snappy')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS('hello', NULL)",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS(NULL, NULL)",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT COMPRESS(NULL, 'deflate')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(NULL, 'snappy')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(TO_BINARY('051068656C6C6F', 'HEX'), NULL)",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(NULL, 'zlib(-1)')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_BINARY(NULL, 'snappy')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_BINARY(TO_BINARY('051068656C6C6F', 'HEX'), NULL)",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-undecodable-payload-fails",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(TO_BINARY('DEADBEEF', 'HEX'), 'ZLIB(9)')",
+          "expect": {
+            "error": {
+              "messageContains": "Can't compress data (too large output or invalid), method: 'ZLIB(9)'"
+            }
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(TO_BINARY('DEADBEEF', 'HEX'), '  Zstd  ')",
+          "expect": {
+            "error": {
+              "messageContains": "Can't compress data (too large output or invalid), method: '  Zstd  '"
+            }
+          }
+        },
+        {
+          "sql": "SELECT DECOMPRESS_STRING(TO_BINARY('DEADBEEF', 'HEX'), 'bz2')",
+          "expect": {
+            "error": {
+              "messageContains": "Can't compress data (too large output or invalid), method: 'bz2'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-wrong-method-fails",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello', 'snappy'), 'zlib')",
+          "expect": {
+            "error": {
+              "messageContains": "Can't compress data (too large output or invalid), method: 'zlib'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "decompress-rejects-varchar-input",
+      "steps": [
+        {
+          "sql": "SELECT DECOMPRESS_STRING('eJzLSM3JyVcozy/KSVEEAB0JBF4=', 'zlib')",
+          "expect": {
+            "error": {
+              "messageContains": "Invalid argument types for function 'DECOMPRESS_STRING'"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -59,4 +59,10 @@ public class ListAgg extends AggregateFunction {
     public SemiStructuredRejection semiStructuredRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
+
+    /** A BINARY value or delimiter is refused with the argument-type list, both declared widths spelled (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

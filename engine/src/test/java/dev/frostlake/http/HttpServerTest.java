@@ -236,7 +236,11 @@ public class HttpServerTest {
 
         final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-        assertEquals(400, response.statusCode());
+        // An empty statement runs and fails as the account fails it; only a body with no sql at all is a 400.
+        assertEquals(200, response.statusCode());
+        final SqlResponse answer = MAPPER.readValue(response.body(), SqlResponse.class);
+        assertFalse(answer.isSuccess(), response.body());
+        assertTrue(answer.getErrorMessage().contains("Empty SQL statement."), response.body());
     }
 
     // Helper method

@@ -72,10 +72,12 @@ import dev.frostlake.functions.scalar.conversion.BinaryAsString;
 import dev.frostlake.functions.scalar.conversion.Cast;
 import dev.frostlake.functions.scalar.conversion.DateFunction;
 import dev.frostlake.functions.scalar.conversion.StringAsBinary;
+import dev.frostlake.functions.scalar.conversion.TimeFunction;
 import dev.frostlake.functions.scalar.conversion.ToBinary;
 import dev.frostlake.functions.scalar.conversion.ToBoolean;
 import dev.frostlake.functions.scalar.conversion.ToChar;
 import dev.frostlake.functions.scalar.conversion.ToDate;
+import dev.frostlake.functions.scalar.conversion.ToDecfloat;
 import dev.frostlake.functions.scalar.conversion.ToDouble;
 import dev.frostlake.functions.scalar.conversion.ToNumber;
 import dev.frostlake.functions.scalar.conversion.ToTime;
@@ -86,6 +88,7 @@ import dev.frostlake.functions.scalar.conversion.TryCast;
 import dev.frostlake.functions.scalar.conversion.TryToBinary;
 import dev.frostlake.functions.scalar.conversion.TryToBoolean;
 import dev.frostlake.functions.scalar.conversion.TryToDate;
+import dev.frostlake.functions.scalar.conversion.TryToDecfloat;
 import dev.frostlake.functions.scalar.conversion.TryToDouble;
 import dev.frostlake.functions.scalar.conversion.TryToNumber;
 import dev.frostlake.functions.scalar.conversion.TryToTime;
@@ -123,6 +126,7 @@ import dev.frostlake.functions.scalar.datetime.PreviousDay;
 import dev.frostlake.functions.scalar.datetime.QuarterFn;
 import dev.frostlake.functions.scalar.datetime.SecondFn;
 import dev.frostlake.functions.scalar.datetime.Sysdate;
+import dev.frostlake.functions.scalar.datetime.Systimestamp;
 import dev.frostlake.functions.scalar.datetime.TimeAdd;
 import dev.frostlake.functions.scalar.datetime.TimeDiff;
 import dev.frostlake.functions.scalar.datetime.TimeFromParts;
@@ -308,6 +312,8 @@ import dev.frostlake.functions.scalar.string.BitLength;
 import dev.frostlake.functions.scalar.string.Char;
 import dev.frostlake.functions.scalar.string.CharIndex;
 import dev.frostlake.functions.scalar.string.Chr;
+import dev.frostlake.functions.scalar.string.Collate;
+import dev.frostlake.functions.scalar.string.Collation;
 import dev.frostlake.functions.scalar.string.Concat;
 import dev.frostlake.functions.scalar.string.ConcatWs;
 import dev.frostlake.functions.scalar.string.Contains;
@@ -358,6 +364,7 @@ import dev.frostlake.functions.scalar.string.TryParseIp;
 import dev.frostlake.functions.scalar.string.TryValidateUtf8;
 import dev.frostlake.functions.scalar.string.Unicode;
 import dev.frostlake.functions.scalar.string.Upper;
+import dev.frostlake.functions.scalar.string.ValidateUtf8;
 import dev.frostlake.functions.scalar.vector.IsVector;
 import dev.frostlake.functions.scalar.vector.VectorCosineSimilarity;
 import dev.frostlake.functions.scalar.vector.VectorInnerProduct;
@@ -382,6 +389,13 @@ import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.functions.aggregate.AnyValue;
 import dev.frostlake.functions.aggregate.ApproxCountDistinct;
 import dev.frostlake.functions.aggregate.ApproxPercentile;
+import dev.frostlake.functions.aggregate.ApproxPercentileAccumulate;
+import dev.frostlake.functions.aggregate.ApproxPercentileCombine;
+import dev.frostlake.functions.aggregate.ApproxPercentileEstimate;
+import dev.frostlake.functions.aggregate.ApproxTopK;
+import dev.frostlake.functions.aggregate.ApproxTopKAccumulate;
+import dev.frostlake.functions.aggregate.ApproxTopKCombine;
+import dev.frostlake.functions.aggregate.ApproxTopKEstimate;
 import dev.frostlake.functions.aggregate.ArrayAgg;
 import dev.frostlake.functions.aggregate.ArrayUnionAgg;
 import dev.frostlake.functions.aggregate.ArrayUniqueAgg;
@@ -479,6 +493,8 @@ public class FunctionRegistry {
         register(new Substring());
         functions.put("SUBSTR", new Substring()); // SUBSTR is an alias for SUBSTRING
         register(new Concat());
+        register(new Collate());
+        register(new Collation());
         register(new Trim());
         register(new Replace());
         register(new LTrim());
@@ -615,7 +631,6 @@ public class FunctionRegistry {
         register(new DayOfYear());
         register(new CurrentTime());
         register(new NowFn("NOW"));
-        register(new NowFn("LOCALTIMESTAMP"));
         register(new TimeAdd());
         register(new TimeDiff());
 
@@ -828,6 +843,14 @@ public class FunctionRegistry {
         registerAggregate(new PercentileCont());
         registerAggregate(new PercentileDisc());
         registerAggregate(new ApproxPercentile());
+        registerAggregate(new ApproxPercentileAccumulate());
+        registerAggregate(new ApproxPercentileCombine());
+        registerAggregate(new ApproxTopK());
+        registerAggregate(new ApproxTopKAccumulate());
+        registerAggregate(new ApproxTopKCombine());
+        // The scalar halves of the two accumulate families.
+        register(new ApproxPercentileEstimate());
+        register(new ApproxTopKEstimate());
         registerAggregate(new RegrSlope());
         registerAggregate(new RegrIntercept());
         registerAggregate(new RegrR2());
@@ -883,12 +906,17 @@ public class FunctionRegistry {
         functions.put("VECTOR_TRUNCATE", new VectorTrunc());   // VECTOR_TRUNCATE == VECTOR_TRUNC
         functions.put("POW", new Power());               // POW == POWER
         functions.put("DATE", new DateFunction());       // DATE == TO_DATE, but it also takes an epoch NUMBER
-        functions.put("TIME", new ToTime());             // TIME == TO_TIME
+        functions.put("TIME", new TimeFunction());       // TIME reads a text as TO_TIME does, the rest its own way
         functions.put("TIMESTAMPADD", new DateAdd());    // TIMESTAMPADD == DATEADD (== TIMEADD)
         functions.put("TIMESTAMPDIFF", new DateDiff());  // TIMESTAMPDIFF == DATEDIFF (== TIMEDIFF)
         functions.put("DAYOFMONTH", new DayFn());        // DAYOFMONTH == DAY
         functions.put("LOCALTIME", new CurrentTime());   // LOCALTIME == CURRENT_TIME
-        functions.put("SYSTIMESTAMP", new Sysdate());    // SYSTIMESTAMP == SYSDATE
+        // LOCALTIMESTAMP is CURRENT_TIMESTAMP, not SYSDATE: it declares TIMESTAMP_LTZ. Registering
+        // it as a NowFn made it TIMESTAMP_NTZ, which is SYSDATE's type and not this one's.
+        functions.put("LOCALTIMESTAMP", new CurrentTimestamp());
+        // SYSTIMESTAMP is NOT SYSDATE: it answers in the session's zone and declares TIMESTAMP_LTZ,
+        // where SYSDATE answers UTC as TIMESTAMP_NTZ (live-verified).
+        functions.put("SYSTIMESTAMP", new Systimestamp());
         aggregateFunctions.put("VARIANCE_POP", new VarPop());    // VARIANCE_POP == VAR_POP
         aggregateFunctions.put("VARIANCE_SAMP", new VarSamp());  // VARIANCE_SAMP == VAR_SAMP
 
@@ -901,6 +929,7 @@ public class FunctionRegistry {
         register(new RandStr());
         register(new NormalizeFn());
         register(new TryValidateUtf8());
+        register(new ValidateUtf8());
         register(new ToUuid());
         register(new TryToUuid());
         register(new BinaryAsString());
@@ -973,8 +1002,8 @@ public class FunctionRegistry {
         functions.put("TIMESTAMPTZFROMPARTS", new TimestampFromParts("TIMESTAMPTZFROMPARTS"));
         functions.put("TIMESTAMP_TZ_FROM_PARTS", new TimestampFromParts("TIMESTAMP_TZ_FROM_PARTS"));
         functions.put("TRY_TO_TIMESTAMP_NTZ", new TryToTimestamp());
-        functions.put("TO_DECFLOAT", new ToDouble());
-        functions.put("TRY_TO_DECFLOAT", new TryToDouble());
+        functions.put("TO_DECFLOAT", new ToDecfloat());
+        functions.put("TRY_TO_DECFLOAT", new TryToDecfloat());
         aggregateFunctions.put("ARRAYAGG", new ArrayAgg());
         aggregateFunctions.put("OBJECTAGG", new ObjectAgg());
         aggregateFunctions.put("HLL", new ApproxCountDistinct());

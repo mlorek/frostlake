@@ -1,0 +1,23 @@
+{
+  "suite": "functions-jarowinkler-similarity",
+  "description": "JAROWINKLER_SIMILARITY(s1, s2) - Jaro-Winkler similarity scaled to an integer 0-100 and case-insensitive: Snowflake's documented example ('Snowflake', 'Oracle') is 61, the classic MARTHA/MARHTA pair (Jaro 0.944 plus a 3-character prefix bonus) is 96, identical strings are 100, case differences do not count, and a NULL argument yields NULL. Converted 1:1 from functions/JarowinklerSimilarityTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "snowflake-versus-oracle", "steps": [
+      {"sql": "SELECT JAROWINKLER_SIMILARITY('Snowflake', 'Oracle')", "expect": {"value": "61"}}
+    ]},
+    {"name": "martha-versus-marhta", "steps": [
+      {"sql": "SELECT JAROWINKLER_SIMILARITY('MARTHA', 'MARHTA')", "expect": {"value": "96"}}
+    ]},
+    {"name": "identical-strings-are-one-hundred", "steps": [
+      {"sql": "SELECT JAROWINKLER_SIMILARITY('Frostlake', 'Frostlake')", "expect": {"value": "100"}}
+    ]},
+    {"name": "the-comparison-is-case-insensitive", "steps": [
+      {"sql": "SELECT JAROWINKLER_SIMILARITY('SNOW', 'snow')", "expect": {"value": "100"}}
+    ]},
+    {"name": "a-null-argument-yields-null", "steps": [
+      {"sql": "SELECT JAROWINKLER_SIMILARITY(NULL, 'x')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT JAROWINKLER_SIMILARITY('x', NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

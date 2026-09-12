@@ -119,9 +119,14 @@ public class WindowKeyScopeTest extends BaseDatabaseTest {
             refusal("SELECT a, ROW_NUMBER() OVER (ORDER BY b) r FROM qe QUALIFY nosuchcol = 1"));
     }
 
+    /**
+     * The two groups' sums are 30 and 5, not 30 and 30: an ORDER BY over the aggregate must be able to
+     * pick a winner. With both groups summing to 30 the key TIED, so which row a window numbered 1 was
+     * unspecified — Frostlake answered in group order every time and live sometimes answered the other.
+     */
     private void createGrouped() {
         engine.execute("CREATE OR REPLACE TABLE g (a INT, b INT, c INT)");
-        engine.execute("INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)");
+        engine.execute("INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 5, 300)");
     }
 
     /** A GROUPED query's window keys are walked too, in the select list and in QUALIFY alike. */
@@ -148,10 +153,12 @@ public class WindowKeyScopeTest extends BaseDatabaseTest {
         createGrouped();
         assertEquals(1, value("SELECT a, SUM(b) s FROM g GROUP BY a"
             + " QUALIFY ROW_NUMBER() OVER (ORDER BY a) = 1"));
-        assertEquals(1, value("SELECT a, SUM(b) s FROM g GROUP BY a"
-            + " QUALIFY ROW_NUMBER() OVER (ORDER BY s) = 1"));
-        assertEquals(1, value("SELECT a, SUM(b) s FROM g GROUP BY a"
-            + " QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(b)) = 1"));
+        assertEquals(2, value("SELECT a, SUM(b) s FROM g GROUP BY a"
+            + " QUALIFY ROW_NUMBER() OVER (ORDER BY s) = 1"),
+            "the smaller sum is group 2, so the alias key picks a DIFFERENT row than the key above");
+        assertEquals(2, value("SELECT a, SUM(b) s FROM g GROUP BY a"
+            + " QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(b)) = 1"),
+            "and the raw aggregate agrees with its alias");
         assertEquals(1, value("SELECT a, SUM(b) s FROM g GROUP BY a"
             + " QUALIFY ROW_NUMBER() OVER (ORDER BY MAX(c)) = 1"));
         assertEquals(30, value("SELECT SUM(b) s FROM g GROUP BY a"

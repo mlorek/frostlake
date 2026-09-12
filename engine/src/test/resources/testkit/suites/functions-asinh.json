@@ -1,0 +1,19 @@
+{
+  "suite": "functions-asinh",
+  "description": "ASINH(x) - inverse hyperbolic sine, ln(x + sqrt(x*x + 1)): zero at 0, the known value at 1, an exact round trip through SINH, and NULL in / NULL out. Converted 1:1 from functions/AsinhTest (now retired); the Java class compared with a 1e-9 tolerance, which the testkit's 10-significant-figure normalisation supplies.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "asinh-of-zero-is-zero", "steps": [
+      {"sql": "SELECT ASINH(0)", "expect": {"value": "0"}}
+    ]},
+    {"name": "asinh-of-one", "steps": [
+      {"sql": "SELECT ASINH(1)", "expect": {"value": "0.881373587"}}
+    ]},
+    {"name": "asinh-inverts-sinh", "steps": [
+      {"sql": "SELECT ASINH(SINH(-1.5))", "expect": {"value": "-1.5"}}
+    ]},
+    {"name": "null-is-null", "steps": [
+      {"sql": "SELECT ASINH(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

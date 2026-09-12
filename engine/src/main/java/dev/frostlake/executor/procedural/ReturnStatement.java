@@ -16,8 +16,12 @@
 
 package dev.frostlake.executor.procedural;
 
+import dev.frostlake.executor.expressions.Expression;
+
 public class ReturnStatement extends Statement {
     private final BaseExpression expression;
+    /** The value read as a SQL expression from the same parse tree, to type the result; null when unreadable. */
+    private Expression sqlExpression;
 
     public ReturnStatement(final BaseExpression expression) {
         super(StatementType.RETURN);
@@ -26,5 +30,13 @@ public class ReturnStatement extends Statement {
 
     public BaseExpression getExpression() {
         return expression;
+    }
+
+    public Expression getSqlExpression() {
+        return sqlExpression;
+    }
+
+    public void setSqlExpression(final Expression sqlExpression) {
+        this.sqlExpression = sqlExpression;
     }
 }

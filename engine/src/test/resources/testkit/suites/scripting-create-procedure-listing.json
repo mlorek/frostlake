@@ -1,0 +1,57 @@
+{
+  "suite": "scripting-create-procedure-listing",
+  "description": "What SHOW PROCEDURES reports after a CREATE PROCEDURE. The rows are SCANNED rather than read positionally, because both backends list the whole built-in library alongside the user-defined procedures, so the one just created is not necessarily the first row. A simple procedure, one with no parameters, a SCHEMA-QUALIFIED one (listed once that schema is in use), one with several parameters, one carrying an IF (which is also CALLed, to show the body is a well-formed scripting block and not merely stored text), and one with a WHILE loop and an OBJECT return are each found by name. DROP PROCEDURE removes it - counted by the user-defined rows, is_builtin = 'N', so the built-ins are not in the way - and DROP PROCEDURE IF EXISTS on the now-missing name does not throw. Creating two leaves two user-defined rows. The bodies here reference tables that mostly do not exist, which is deliberate: CREATE PROCEDURE stores the body without resolving it. This is the listing-side companion of scripting-create-procedure, which CALLs each procedure and checks its effects. Converted 1:1 from scripting/CreateProcedureJdbcTest (now retired); the Java scanned the SHOW PROCEDURES ResultSet row by row through JDBC, which becomes a RESULT_SCAN over the same SHOW.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-simple-procedure-is-listed", "steps": [
+      {"sql": "CREATE PROCEDURE update_data(id INTEGER, value VARCHAR) RETURNS VARCHAR AS 'BEGIN UPDATE data_rows SET label = :value WHERE id = :id; RETURN ''updated''; END'"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'UPDATE_DATA'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-procedure-with-no-parameters-is-listed", "steps": [
+      {"sql": "CREATE PROCEDURE cleanup() RETURNS VARCHAR AS 'BEGIN DELETE FROM temp_table; RETURN ''cleaned''; END'"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CLEANUP'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-procedure-with-a-qualified-name-is-listed-in-that-schema", "steps": [
+      {"sql": "CREATE SCHEMA my_schema"},
+      {"sql": "CREATE PROCEDURE my_schema.process_orders(order_id INTEGER) RETURNS INTEGER AS 'BEGIN RETURN (SELECT COUNT(*) FROM orders); END'"},
+      {"sql": "USE SCHEMA my_schema"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PROCESS_ORDERS'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-procedure-with-several-parameters-is-listed", "steps": [
+      {"sql": "CREATE PROCEDURE insert_record(name VARCHAR, age INTEGER, active BOOLEAN) RETURNS INTEGER AS 'BEGIN INSERT INTO people (name, age, active) VALUES (:name, :age, :active); RETURN 1; END'"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'INSERT_RECORD'", "expect": {"value": 1}}
+    ]},
+    {"name": "drop-procedure-removes-it", "steps": [
+      {"sql": "CREATE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x * 2; END'"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_PROC'", "expect": {"value": 1}},
+      {"sql": "DROP PROCEDURE test_proc(INTEGER)"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"is_builtin\" = 'N'", "expect": {"value": 0}},
+      {"sql": "DROP PROCEDURE IF EXISTS test_proc(INTEGER)"}
+    ]},
+    {"name": "show-procedures-counts-the-user-defined-ones", "steps": [
+      {"sql": "CREATE PROCEDURE proc1(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x; END'"},
+      {"sql": "CREATE PROCEDURE proc2(x INTEGER, y INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x + y; END'"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"is_builtin\" = 'N'", "expect": {"value": 2}}
+    ]},
+    {"name": "a-procedure-with-an-if-statement-is-listed-and-runs", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE PROCEDURE check_value(max_count INTEGER) RETURNS VARCHAR AS 'DECLARE outcome VARCHAR; BEGIN IF (max_count > 2) THEN outcome := ''many''; ELSE outcome := ''few''; END IF; RETURN outcome; END'"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CHECK_VALUE'", "expect": {"value": 1}},
+      {"sql": "CALL check_value(3)", "expect": {"value": "many"}}
+    ]},
+    {"name": "a-procedure-with-a-loop-and-an-object-return-is-listed", "steps": [
+      {"sql": "CREATE PROCEDURE process_with_loop(max_iterations INTEGER) RETURNS OBJECT AS 'DECLARE counter INTEGER := 0; outcome OBJECT; BEGIN WHILE (counter < 10) DO counter := counter + 1; END WHILE; outcome := OBJECT_CONSTRUCT(''count'', counter, ''status'', ''completed''); RETURN outcome; END'"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PROCESS_WITH_LOOP'", "expect": {"value": 1}}
+    ]}
+  ]
+}

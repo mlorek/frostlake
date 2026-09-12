@@ -1,0 +1,99 @@
+{
+  "suite": "query-plan-time-clause-scope",
+  "description": "The scope rejections are COMPILE-time in every clause, measured cell by cell on a real account. Two of them: a qualifier naming no FROM-clause key (\"invalid identifier 'R.V'\") and a bare name carried by BOTH sides of an ON join (\"ambiguous column name 'D'\"). WHERE, GROUP BY keys, HAVING - inside aggregate ARGUMENTS too - and ORDER BY all reject over EMPTY inputs, and ORDER BY rejects regardless of row count, so a single surviving row must not short-circuit the check away. The countervailing rules are measured too: SELECT aliases are legal names in every one of these clauses, WHERE included, so an alias key never trips the rejection even when the join carries same-named duplicates elsewhere; a USING join's left-preference resolution compiles quietly; and ORDER BY resolves against the SELECT OUTPUT first, so only a key matching no output column falls through to the FROM-scope rules - where a bare ON-join duplicate is then ambiguous even though the output-first rule would have saved the same spelling had the column been selected. Three more shapes ride along: a bare name known nowhere is 'invalid identifier' in every clause; exactly the ANSI set of context functions works WITHOUT parentheses while any other bare function name and CONNECT BY's LEVEL outside a hierarchical query do not; a date/time-unit bareword is legal only in ARGUMENT position; and the output-name visibility rules - a star RENAME target is filterable in WHERE, a lateral column alias is visible only to LATER items so a forward reference is invalid, and a window function's arguments may reference an earlier alias. Converted 1:1 from query/PlanTimeClauseScopeTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "where-rejects-over-empty-inputs", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "SELECT aa.k FROM aa JOIN bb ON aa.k = bb.k WHERE d = 1", "expect": {"error": {"messageContains": "ambiguous column name 'D'"}}},
+      {"sql": "SELECT x.v FROM r AS x WHERE r.v = 1", "expect": {"error": {"messageContains": "invalid identifier 'R.V'"}}}
+    ]},
+    {"name": "group-by-keys-reject-over-empty-inputs", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "SELECT max(x.v) FROM r AS x GROUP BY r.k", "expect": {"error": {"messageContains": "invalid identifier 'R.K'"}}},
+      {"sql": "SELECT count(*) FROM aa JOIN bb ON aa.k = bb.k GROUP BY d", "expect": {"error": {"messageContains": "ambiguous column name 'D'"}}}
+    ]},
+    {"name": "having-rejects-inside-aggregate-arguments-over-empty-inputs", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "SELECT max(x.v) FROM r AS x GROUP BY x.k HAVING max(r.v) > 0", "expect": {"error": {"messageContains": "invalid identifier 'R.V'"}}}
+    ]},
+    {"name": "order-by-rejects-over-empty-and-single-row-inputs", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "SELECT x.v FROM r AS x ORDER BY r.v", "expect": {"error": {"messageContains": "invalid identifier 'R.V'"}}},
+      {"sql": "INSERT INTO r VALUES (1, 10), (2, 20)"},
+      {"sql": "SELECT x.v FROM r AS x WHERE x.k = 1 ORDER BY r.v", "expect": {"error": {"messageContains": "invalid identifier 'R.V'"}}}
+    ]},
+    {"name": "an-order-by-duplicate-not-in-the-output-is-ambiguous", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "SELECT aa.k FROM aa JOIN bb ON aa.k = bb.k ORDER BY d", "expect": {"error": {"messageContains": "ambiguous column name 'D'"}}},
+      {"sql": "INSERT INTO aa VALUES (1, 100), (2, 200)"},
+      {"sql": "INSERT INTO bb VALUES (1, 999)"},
+      {"sql": "SELECT aa.k FROM aa JOIN bb ON aa.k = bb.k ORDER BY d", "expect": {"error": {"messageContains": "ambiguous column name 'D'"}}}
+    ]},
+    {"name": "select-aliases-resolve-in-where-and-group-by", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO r VALUES (1, 10), (2, 20)"},
+      {"sql": "SELECT v AS w FROM r WHERE w > 15", "expect": {"rows": [[20]]}},
+      {"sql": "SELECT v AS w, count(*) FROM r GROUP BY w ORDER BY w", "expect": {"rows": [[10,1],[20,1]], "ordered": true}},
+      {"sql": "INSERT INTO aa VALUES (1, 100), (2, 200)"},
+      {"sql": "INSERT INTO bb VALUES (1, 999)"},
+      {"sql": "SELECT aa.d AS q FROM aa JOIN bb ON aa.k = bb.k WHERE q > 0", "expect": {"rows": [[100]]}}
+    ]},
+    {"name": "a-using-joins-left-preference-still-compiles", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "SELECT aa.k FROM aa JOIN bb USING (k) WHERE d = 1", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "unknown-bare-names-reject-in-every-clause", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "SELECT nosuch FROM r", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "SELECT k FROM r WHERE nosuch = 1", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "SELECT count(*) FROM r GROUP BY nosuch", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "SELECT max(v) FROM r GROUP BY k HAVING nosuch > 0", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "SELECT k FROM r GROUP BY k HAVING max(nosuch) > 0", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "SELECT v FROM r ORDER BY nosuch", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}}
+    ]},
+    {"name": "parenless-context-functions-are-exactly-the-ansi-set", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE dts (k INTEGER, dt DATE)"},
+      {"sql": "SELECT k FROM dts WHERE dt < CURRENT_DATE AND dt < CURRENT_TIMESTAMP AND dt < LOCALTIMESTAMP AND CURRENT_USER IS NOT NULL",
+       "expect": {"rowCount": 0}},
+      {"sql": "SELECT k FROM r WHERE uuid_string = 'x'", "expect": {"error": {"messageContains": "invalid identifier 'UUID_STRING'"}}},
+      {"sql": "SELECT v FROM r WHERE LEVEL > 0", "expect": {"error": {"messageContains": "invalid identifier 'LEVEL'"}}}
+    ]},
+    {"name": "date-time-unit-barewords-are-argument-only", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE dts2 (k INTEGER, dt DATE)"},
+      {"sql": "SELECT dateadd(hour, 1, dt) FROM dts2", "expect": {"rowCount": 0}},
+      {"sql": "SELECT k FROM dts2 WHERE year = 1", "expect": {"error": {"messageContains": "invalid identifier 'YEAR'"}}}
+    ]},
+    {"name": "output-name-visibility-rules", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO r VALUES (1, 10), (2, 20)"},
+      {"sql": "SELECT * RENAME (v AS w) FROM r WHERE w > 15", "expect": {"rows": [[2,20]]}},
+      {"sql": "SELECT y + 1 AS x, 1 AS y FROM r", "expect": {"error": {"messageContains": "invalid identifier 'Y'"}}},
+      {"sql": "SELECT v AS w, sum(w) OVER () FROM r ORDER BY 1", "expect": {"rows": [[10,30],[20,30]], "ordered": true}}
+    ]}
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "suite": "functions-encrypt-raw",
+  "description": "ENCRYPT_RAW / DECRYPT_RAW - raw-key AES-GCM. ENCRYPT_RAW returns a VARIANT OBJECT {ciphertext, iv, tag}; DECRYPT_RAW consumes those and returns the decrypted BINARY. Its optionals nest from the LEFT (live-measured): the 4th argument is always the AAD, the 5th the method, and the AEAD tag sits strictly 6th - so a no-AAD round trip passes an EMPTY BINARY AAD, cryptographically identical to none, just to reach the tag position. A call that stops before the sixth position therefore has no tag at all, whatever it passed fourth, and fails \"Decryption mode requires an AEAD tag as parameter\"; a sixth argument of the wrong length reports the byte counts verbatim. Snowflake's raw-crypto functions take BINARY and reject a hex VARCHAR outright, so every argument goes through TO_BINARY, and BINARY values read back as uppercase hex. Converted 1:1 from functions/EncryptRawTest (now retired); the Java class captured the ciphertext and tag from the ENCRYPT_RAW object into Java locals, which the converted suite does with a CTE so the object is produced once and both members are read from it in the same statement.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-object-carries-ciphertext-iv-and-tag-and-round-trips", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('hello world','UTF-8'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX')) AS o) SELECT o:ciphertext IS NOT NULL, o:tag IS NOT NULL, o:iv::VARCHAR FROM e",
+       "expect": {"rows": [["true", "true", "0102030405060708090A0B0C"]]}},
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('hello world','UTF-8'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX')) AS o) SELECT DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR,'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX'), TO_BINARY('','HEX'), 'AES-GCM', TO_BINARY(o:tag::VARCHAR,'HEX')) FROM e",
+       "expect": {"value": "68656C6C6F20776F726C64"}}
+    ]},
+    {"name": "a-tag-in-the-fourth-position-is-a-missing-tag", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('data','UTF-8'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX')) AS o) SELECT DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR,'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX'), TO_BINARY(o:tag::VARCHAR,'HEX')) FROM e",
+       "expect": {"error": {"messageContains": "Decryption mode requires an AEAD tag as parameter"}}}
+    ]},
+    {"name": "a-wrong-tag-size-is-reported", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('data','UTF-8'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX')) AS o) SELECT DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR,'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX'), TO_BINARY('','HEX'), 'AES-GCM', TO_BINARY('AB','HEX')) FROM e",
+       "expect": {"error": {"messageContains": "Wrong AEAD tag size. Expected 16, but got 1"}}}
+    ]},
+    {"name": "it-round-trips-with-additional-authenticated-data", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('top secret','UTF-8'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX'), TO_BINARY('header-v1','UTF-8'), 'AES-GCM') AS o) SELECT DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR,'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX'), TO_BINARY('header-v1','UTF-8'), 'AES-GCM', TO_BINARY(o:tag::VARCHAR,'HEX')) FROM e",
+       "expect": {"value": "746F7020736563726574"}}
+    ]},
+    {"name": "a-wrong-tag-fails-authentication", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('data','UTF-8'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX')) AS o) SELECT DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR,'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX'), TO_BINARY('','HEX'), 'AES-GCM', TO_BINARY(LEFT(o:tag::VARCHAR, 31) || IFF(RIGHT(o:tag::VARCHAR, 1) = '0', '1', '0'), 'HEX')) FROM e",
+       "expect": {"error": {}}}
+    ]},
+    {"name": "a-wrong-key-fails-authentication", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('data','UTF-8'), TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX')) AS o) SELECT DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR,'HEX'), TO_BINARY('FF0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX'), TO_BINARY('','HEX'), 'AES-GCM', TO_BINARY(o:tag::VARCHAR,'HEX')) FROM e",
+       "expect": {"error": {}}}
+    ]},
+    {"name": "a-non-gcm-method-is-rejected", "steps": [
+      {"sql": "SELECT ENCRYPT_RAW('64617461','000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','0102030405060708090A0B0C','','AES-CBC')",
+       "expect": {"error": {}}}
+    ]},
+    {"name": "a-null-value-yields-null", "steps": [
+      {"sql": "SELECT ENCRYPT_RAW(NULL, TO_BINARY('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F','HEX'), TO_BINARY('0102030405060708090A0B0C','HEX'))",
+       "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

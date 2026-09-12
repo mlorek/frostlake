@@ -46,6 +46,16 @@ public final class PythonProcedureExecutor {
      */
     private static final String SNOWPARK_SHIM = loadSnowparkShim();
 
+    /**
+     * Evaluate the snowpark shim into the CURRENT thread's context, so a body's
+     * {@code from snowflake.snowpark…} import resolves locally. FUNCTIONS need it exactly as
+     * procedures do — a scalar UDF importing snowpark types is a shape the vendor schemas use —
+     * and the shim itself is idempotent (guarded on {@code sys.modules}).
+     */
+    static void installSnowparkShim() {
+        PythonRuntime.eval(SNOWPARK_SHIM);
+    }
+
     private static String loadSnowparkShim() {
         try (final InputStream in = PythonProcedureExecutor.class.getResourceAsStream("snowpark_shim.py")) {
             if (in == null) {

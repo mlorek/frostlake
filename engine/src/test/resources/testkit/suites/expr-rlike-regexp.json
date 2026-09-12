@@ -1,0 +1,33 @@
+{
+  "suite": "expr-rlike-regexp",
+  "description": "The <subject> [NOT] RLIKE|REGEXP <pattern> infix operators - both defined as REGEXP_LIKE: a FULL-string regex match (not substring), NOT variants negate, SQL NULL propagates on either side, the operator works over columns, and the pre-existing RLIKE(subject, pattern) function-call form keeps working. Converted 1:1 from expressions/RlikeRegexpOperatorTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "rlike-is-a-full-string-regex-match", "steps": [
+      {"sql": "SELECT 'san francisco' RLIKE 'san.*'", "expect": {"value": "true"}},
+      {"sql": "SELECT 'san francisco' RLIKE 'san'", "expect": {"value": "false"}},
+      {"sql": "SELECT 'foo' RLIKE 'bar'", "expect": {"value": "false"}}
+    ]},
+    {"name": "regexp-is-a-synonym", "steps": [
+      {"sql": "SELECT 'foo' REGEXP 'bar'", "expect": {"value": "false"}},
+      {"sql": "SELECT 'foo' REGEXP 'f.o'", "expect": {"value": "true"}}
+    ]},
+    {"name": "not-variants-negate", "steps": [
+      {"sql": "SELECT 'foo' NOT RLIKE 'bar'", "expect": {"value": "true"}},
+      {"sql": "SELECT 'foo' NOT REGEXP 'f.*'", "expect": {"value": "false"}}
+    ]},
+    {"name": "null-propagates", "steps": [
+      {"sql": "SELECT NULL RLIKE 'a.*'", "expect": {"rows": [["NULL"]]}},
+      {"sql": "SELECT 'a' RLIKE NULL", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "operator-works-over-columns", "steps": [
+      {"sql": "CREATE TABLE rl (s VARCHAR, p VARCHAR)"},
+      {"sql": "INSERT INTO rl VALUES ('abc', 'a.c'), ('abc', 'z.*')"},
+      {"sql": "SELECT COUNT(*) FROM rl WHERE s RLIKE p", "expect": {"value": "1"}}
+    ]},
+    {"name": "function-call-form-still-works", "steps": [
+      {"sql": "SELECT RLIKE('san francisco', 'san.*')", "expect": {"value": "true"}},
+      {"sql": "SELECT RLIKE('san francisco', 'nope')", "expect": {"value": "false"}}
+    ]}
+  ]
+}

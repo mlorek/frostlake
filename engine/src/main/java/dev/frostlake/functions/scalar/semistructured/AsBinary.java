@@ -23,7 +23,7 @@ import java.util.List;
 
 /** AS_BINARY(v) — the value when it is BINARY, else NULL (the engine's variant model carries no binary members). */
 public class AsBinary extends StructuredArgumentFunction {
-    public AsBinary() { super("AS_BINARY", BinaryType.VARBINARY); }
+    public AsBinary() { super("AS_BINARY", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

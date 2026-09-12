@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ShowCommandExecutor;
 import dev.frostlake.executor.SqlCompilationError;
@@ -107,12 +108,22 @@ public class ShowCommandHandler implements CommandHandler {
         }
     }
 
+    /**
+     * The SHOW itself. An UNSCOPED listing — no IN clause — in a session with no current database
+     * lists the whole account, as its IN ACCOUNT form does: tables, views, materialized views, columns,
+     * schemas, objects, sequences, stages, streams, tasks, pipes, dynamic tables, file formats, tags, the
+     * policy kinds, contacts, cortex search services, functions, procedures and keys alike, ordered
+     * database, schema, name, each row naming its own database (live-verified).
+     */
     private ResultSet handleShowStatementInternal(final FrostlakeParser.ShowStatementContext ctx) {
         final ShowCommandExecutor showExecutor = queryExecutor.getShowExecutor();
         if (ctx.DATABASES() != null) {
             return showExecutor.showDatabases();
         } else if (ctx.SCHEMAS() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showSchemasInAccount();
+            }
+            if (ctx.identifier() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showSchemasInAccount();
             }
             String dbName = null;
@@ -122,6 +133,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showSchemas(dbName);
         } else if (ctx.DYNAMIC() != null && ctx.TABLES() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showDynamicTablesInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showDynamicTablesInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -145,6 +159,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.ACCOUNT() != null) {
                 return showExecutor.showTablesInAccount();
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showTablesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showTablesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -159,6 +176,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.ACCOUNT() != null) {
                 return showExecutor.showColumnsInAccount();
             }
+            if (name == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showColumnsInAccount();
+            }
             if (ctx.SCHEMA() != null) {
                 return showExecutor.showColumnsInSchema(name);
             }
@@ -167,6 +187,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showColumnsScoped(name, ctx.VIEW() != null);
         } else if (ctx.MATERIALIZED() != null && ctx.VIEWS() != null) {
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showMaterializedViewsInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showMaterializedViewsInDatabase(getText(ctx.qualifiedName()));
             }
@@ -177,6 +200,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showMaterializedViews(schemaName);
         } else if (ctx.VIEWS() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showViewsInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showViewsInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -201,6 +227,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.CLASS() != null || ctx.APPLICATION() != null) {
                 throw showScopeDoesNotExist(ctx);
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showFunctionsInAccount(ctx.USER() != null);
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return ctx.USER() != null
                     ? showExecutor.showUserFunctionsInDatabase(getText(ctx.qualifiedName()))
@@ -222,6 +251,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.APPLICATION() != null || ctx.CLASS() != null) {
                 throw showScopeDoesNotExist(ctx);
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showProceduresInAccount(ctx.USER() != null);
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return ctx.USER() != null
                     ? showExecutor.showUserProceduresInDatabase(getText(ctx.qualifiedName()))
@@ -236,6 +268,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.ACCOUNT() != null) {
                 return showExecutor.showStreamsInAccount();
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showStreamsInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showStreamsInDatabase(getText(ctx.qualifiedName()));
             }
@@ -246,6 +281,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showStreams(schemaName);
         } else if (ctx.TASKS() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showTasksInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showTasksInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -262,6 +300,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.ACCOUNT() != null) {
                 return showExecutor.showPipesInAccount(like);
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showPipesInAccount(like);
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showPipesInDatabase(getText(ctx.qualifiedName()), like);
             }
@@ -272,6 +313,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showPipes(schemaName, like);
         } else if (ctx.SEQUENCES() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showSequencesInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showSequencesInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -290,6 +334,9 @@ public class ShowCommandHandler implements CommandHandler {
                     ? raw.substring(1, raw.length() - 1) : raw;
             }
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showCortexSearchServicesInAccount(cortexLike);
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showCortexSearchServicesInAccount(cortexLike);
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -311,6 +358,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.ACCOUNT() != null) {
                 return showExecutor.showStagesInAccount();
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showStagesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showStagesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -321,6 +371,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showStages(schemaName);
         } else if (ctx.FILE() != null && ctx.FORMATS() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showFileFormatsInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showFileFormatsInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -335,6 +388,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.ACCOUNT() != null) {
                 return showExecutor.showJoinPoliciesInAccount();
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showJoinPoliciesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showJoinPoliciesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -345,6 +401,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showJoinPolicies(schemaName);
         } else if (ctx.AGGREGATION() != null && ctx.POLICIES() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showAggregationPoliciesInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showAggregationPoliciesInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -359,6 +418,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.ACCOUNT() != null) {
                 return showExecutor.showProjectionPoliciesInAccount();
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showProjectionPoliciesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showProjectionPoliciesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -369,6 +431,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showProjectionPolicies(schemaName);
         } else if (ctx.CONTACTS() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showContactsInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showContactsInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -383,6 +448,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.ACCOUNT() != null) {
                 return showExecutor.showMaskingPoliciesInAccount();
             }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
+                return showExecutor.showMaskingPoliciesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showMaskingPoliciesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -393,6 +461,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showMaskingPolicies(schemaName);
         } else if (ctx.ROW() != null && ctx.POLICIES() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showRowAccessPoliciesInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showRowAccessPoliciesInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -407,7 +478,7 @@ public class ShowCommandHandler implements CommandHandler {
             final String scopeKind;
             final String scopeName;
             if (ctx.IN() == null) {
-                scopeKind = "TABLE";
+                scopeKind = catalog.getCurrentDatabase() == null ? "ACCOUNT" : "TABLE";
                 scopeName = null;
             } else if (ctx.ACCOUNT() != null) {
                 scopeKind = "ACCOUNT";
@@ -428,6 +499,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showKeysScoped(ctx.PRIMARY() != null, scopeKind, scopeName);
         } else if (ctx.TAGS() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showTagsInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showTagsInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -455,6 +529,9 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showParameters(like);
         } else if (ctx.OBJECTS() != null) {
             if (ctx.ACCOUNT() != null) {
+                return showExecutor.showObjectsInAccount();
+            }
+            if (ctx.qualifiedName() == null && catalog.getCurrentDatabase() == null) {
                 return showExecutor.showObjectsInAccount();
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
@@ -486,10 +563,19 @@ public class ShowCommandHandler implements CommandHandler {
         throw new RuntimeException("Unsupported SHOW statement");
     }
 
+    /**
+     * The canonical name a described relation is written as, or the one its {@code IDENTIFIER(...)}
+     * argument names. A string that is no identifier reference is refused at the argument, as live does.
+     */
+    private String describedName(final FrostlakeParser.ObjectNameContext name) {
+        return name.qualifiedName() != null ? getText(name.qualifiedName())
+            : QualifiedName.join(queryExecutor.resolveObjectNameParts(name));
+    }
+
     public ResultSet handleDescribeStatement(final FrostlakeParser.DescribeStatementContext ctx) {
         final ShowCommandExecutor showExecutor = queryExecutor.getShowExecutor();
         if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
-            final String dtName = ctx.qualifiedName() != null ? getText(ctx.qualifiedName()) : getText(ctx.identifier());
+            final String dtName = describedName(ctx.objectName());
             // The column list comes from projecting the dynamic table itself, zero rows needed.
             return showExecutor.describeDynamicTable(dtName, new ResultSetProvider() {
                 @Override
@@ -506,7 +592,7 @@ public class ShowCommandHandler implements CommandHandler {
             // missing ("Materialized view 'X' does not exist or not authorized." — live-verified).
             final String describedKind = ctx.MATERIALIZED() != null ? "Materialized view"
                 : ctx.VIEW() != null ? "View" : "Table";
-            return showExecutor.describeRelation(getText(ctx.qualifiedName()), describedKind);
+            return showExecutor.describeRelation(describedName(ctx.objectName()), describedKind);
         } else if (ctx.PIPE() != null) {
             final String pipeName = getText(ctx.identifier());
             return showExecutor.describePipe(pipeName);
@@ -559,7 +645,7 @@ public class ShowCommandHandler implements CommandHandler {
         }
 
         if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
-            final String dtName = ctx.qualifiedName() != null ? getText(ctx.qualifiedName()) : getText(ctx.identifier());
+            final String dtName = describedName(ctx.objectName());
             // The column list comes from projecting the dynamic table itself, zero rows needed.
             return showExecutor.describeDynamicTable(dtName, new ResultSetProvider() {
                 @Override
@@ -783,8 +869,8 @@ public class ShowCommandHandler implements CommandHandler {
         if (ctx.ON() != null) {
             // SHOW GRANTS ON objectType identifier
             final String objectType = ctx.objectType().getText().toUpperCase();
-            final String objectName = getText(ctx.identifier());
-            return showExecutor.showGrantsOnObject(objectType, objectName);
+            queryExecutor.requireSecurable(objectType, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
+            return showExecutor.showGrantsOnObject(objectType, getText(ctx.qualifiedName()));
         } else if (ctx.TO() != null) {
             // SHOW GRANTS TO USER/ROLE identifier
             final String targetType = ctx.USER() != null ? "USER" : "ROLE";

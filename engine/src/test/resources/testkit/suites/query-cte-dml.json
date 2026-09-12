@@ -1,0 +1,72 @@
+{
+  "suite": "query-cte-dml",
+  "description": "CTEs combined with DML: INSERT ... WITH (plain, multiple, join, aggregation, RECURSIVE, column list) and UPDATE with subqueries. Converted 1:1 from query/CTEUpdateDebugTest and CTEWithDMLTest (both now retired); the try/catch-swallowed smokes were pinned to the engine's measured behaviour (WITH...UPDATE errors; the INSERT forms succeed).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "simple-update", "steps": [
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target VALUES (1, 'X')"},
+      {"sql": "UPDATE target SET value = 'Y'"}
+    ]},
+    {"name": "update-with-subquery", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target VALUES (1, 'X')"},
+      {"sql": "UPDATE target SET value = (SELECT value FROM test_table WHERE id = 1)"},
+      {"sql": "SELECT value FROM target WHERE id = 1", "expect": {"value": "A"}}
+    ]},
+    {"name": "update-with-cte-is-rejected", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target VALUES (1, 'X')"},
+      {"sql": "WITH cte AS (\n    SELECT value FROM test_table WHERE id = 1\n)\nUPDATE target SET value = (SELECT value FROM cte)", "expect": {"error": {}}}
+    ]},
+    {"name": "update-with-cte-and-qualified-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target VALUES (1, 'X')"},
+      {"sql": "WITH cte AS (\n    SELECT id, value FROM test_table WHERE id = 1\n)\nUPDATE target SET value = (SELECT value FROM cte WHERE cte.id = target.id)", "expect": {"error": {}}}
+    ]},
+    {"name": "cte-with-insert-from-select", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'A'), (2, 'B'), (3, 'C')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target WITH filtered AS (SELECT * FROM source WHERE id > 1) SELECT * FROM filtered"},
+      {"sql": "SELECT * FROM target ORDER BY id", "expect": {"rows": [["2", "B"], ["3", "C"]], "ordered": true}}
+    ]},
+    {"name": "multiple-cte-with-insert", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'A'), (2, 'B'), (3, 'C')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target WITH filtered AS (SELECT * FROM source WHERE id <= 2), renamed AS (SELECT id, value FROM filtered) SELECT * FROM renamed"},
+      {"sql": "SELECT COUNT(*) FROM target", "expect": {"value": "2"}}
+    ]},
+    {"name": "cte-with-insert-and-join", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'A'), (2, 'B'), (3, 'C')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "CREATE TABLE lookup (id INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO lookup VALUES (1, 'Cat1'), (2, 'Cat2')"},
+      {"sql": "INSERT INTO target WITH enriched AS (SELECT s.id, s.value FROM source s JOIN lookup l ON s.id = l.id) SELECT * FROM enriched"},
+      {"sql": "SELECT COUNT(*) FROM target", "expect": {"value": "2"}}
+    ]},
+    {"name": "cte-with-insert-and-aggregation", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'A'), (2, 'B'), (3, 'C')"},
+      {"sql": "CREATE TABLE summary (total INTEGER, description VARCHAR)"},
+      {"sql": "INSERT INTO summary WITH stats AS (SELECT COUNT(*) as cnt FROM source WHERE id > 0) SELECT cnt, 'Total records' FROM stats"},
+      {"sql": "SELECT total FROM summary", "expect": {"value": "3", "rowCount": 1}}
+    ]},
+    {"name": "cte-syntax-validation-recursive-and-column-list", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'A')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target \n    WITH RECURSIVE numbers AS (\n        SELECT 1 as n\n        UNION ALL\n        SELECT n + 1 FROM numbers WHERE n < 5\n    )\nSELECT n, 'num' FROM numbers"},
+      {"sql": "INSERT INTO target \n    WITH filtered (id, val) AS (\n        SELECT id, value FROM source WHERE id = 1\n    )\nSELECT * FROM filtered"},
+      {"sql": "SELECT COUNT(*) FROM target", "expect": {"value": "6"}}
+    ]}
+  ]
+}

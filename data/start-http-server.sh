@@ -87,12 +87,15 @@ echo "API Endpoints:"
 echo "  POST http://localhost:$PORT/api/execute  - Execute SQL"
 echo "  GET  http://localhost:$PORT/api/health   - Health check"
 echo "  GET  http://localhost:$PORT/api/sessions - Session info"
+echo "  POST http://localhost:$PORT/api/sessions - Start a session"
+echo "  DELETE http://localhost:$PORT/api/sessions/{id} - Release a session"
 echo ""
 echo "Press Ctrl+C to stop the server"
 echo ""
 
-# Set JVM memory limit to 8GB
-export MAVEN_OPTS="-Xmx8g"
+# Set JVM memory limit to 8GB; TCP no-delay keeps kept-alive clients from waiting ~40 ms per response
+# (the server also sets it itself when the launcher has not)
+export MAVEN_OPTS="-Xmx8g -Dsun.net.httpserver.nodelay=true"
 
 # Build exec args
 EXEC_ARGS="$PORT"

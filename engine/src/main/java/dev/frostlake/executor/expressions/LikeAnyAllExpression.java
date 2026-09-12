@@ -32,6 +32,7 @@ public class LikeAnyAllExpression implements Expression {
     private final boolean all;
     private final boolean caseInsensitive;
     private final Expression escape;
+    private SourcePosition position;
 
     public LikeAnyAllExpression(final Expression subject, final List<Expression> patterns,
                                 final boolean all, final boolean caseInsensitive, final Expression escape) {
@@ -60,6 +61,15 @@ public class LikeAnyAllExpression implements Expression {
 
     public Expression getEscape() {
         return escape;
+    }
+
+    /** Where the LIKE or ILIKE keyword sits, where live points a collation the predicate refuses. */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     @Override

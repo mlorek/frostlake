@@ -1,0 +1,59 @@
+{
+  "suite": "features-variable-shadowing",
+  "description": "Variable shadowing and scoping in nested BEGIN...END blocks, run through EXECUTE IMMEDIATE $$...$$. Snowflake Scripting semantics: a variable declared in an outer scope is visible in inner blocks; a variable ASSIGNED (not declared) in an inner block updates the outer one; a variable DECLARED with LET or DECLARE inside a block shadows the outer one for that block only and is discarded when the block exits. Covers assignment propagation through one, two and three levels, shadowing that leaves the outer value untouched even after the shadow is reassigned, mixed shadow-and-assign in one block, sequential independent inner blocks, IF and IF-ELSE branches, and a FOR-over-cursor loop accumulating into an outer variable. Converted 1:1 from features/VariableShadowingTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "assignment-in-an-inner-block-updates-the-outer-one", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE x INT DEFAULT 0;\nBEGIN\n    BEGIN\n        x := 42;\n    END;\n    RETURN :x;\nEND\n$$",
+       "expect": {"value": "42"}}
+    ]},
+    {"name": "a-declaration-in-an-inner-block-shadows-the-outer-one", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE x INT DEFAULT 10;\nBEGIN\n    BEGIN\n        LET x INT := 99;\n        -- inner x is 99 here\n    END;\n    RETURN :x;\nEND\n$$",
+       "expect": {"value": "10"}}
+    ]},
+    {"name": "an-inner-block-reads-an-outer-variable", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE\n    msg VARCHAR DEFAULT 'hello';\n    result VARCHAR DEFAULT '';\nBEGIN\n    BEGIN\n        result := :msg;\n    END;\n    RETURN :result;\nEND\n$$",
+       "expect": {"value": "hello"}}
+    ]},
+    {"name": "an-assignment-three-levels-deep-bubbles-up", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE v INT DEFAULT 0;\nBEGIN\n    BEGIN\n        BEGIN\n            v := 7;\n        END;\n    END;\n    RETURN :v;\nEND\n$$",
+       "expect": {"value": "7"}}
+    ]},
+    {"name": "a-modified-shadow-does-not-leak-to-the-outer-scope", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE x INT DEFAULT 1;\nBEGIN\n    BEGIN\n        LET x INT := 0;\n        x := 100;\n    END;\n    RETURN :x;\nEND\n$$",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "only-the-assigned-variable-propagates", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE\n    a INT DEFAULT 10;\n    b INT DEFAULT 99;\nBEGIN\n    BEGIN\n        a := 20;\n        -- b is not touched\n    END;\n    RETURN :a || ',' || :b;\nEND\n$$",
+       "expect": {"value": "20,99"}}
+    ]},
+    {"name": "shadow-one-variable-and-assign-the-other", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE\n    a INT DEFAULT 1;\n    b INT DEFAULT 2;\nBEGIN\n    BEGIN\n        LET a INT := 99;\n        b := 20;\n    END;\n    RETURN :a || ',' || :b;\nEND\n$$",
+       "expect": {"value": "1,20"}}
+    ]},
+    {"name": "sequential-inner-blocks-are-independent", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE x INT DEFAULT 0;\nBEGIN\n    BEGIN\n        x := 1;\n    END;\n    BEGIN\n        x := :x + 1;\n    END;\n    RETURN :x;\nEND\n$$",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "an-inner-assignment-to-an-outer-variable-takes-effect", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result VARCHAR DEFAULT 'outer';\nBEGIN\n    BEGIN\n        result := 'inner';\n    END;\n    RETURN :result;\nEND\n$$",
+       "expect": {"value": "inner"}}
+    ]},
+    {"name": "an-if-block-assignment-propagates", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE answer VARCHAR DEFAULT 'no';\nBEGIN\n    IF (1 = 1) THEN\n        answer := 'yes';\n    END IF;\n    RETURN :answer;\nEND\n$$",
+       "expect": {"value": "yes"}}
+    ]},
+    {"name": "if-else-propagates-only-the-executed-branch", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result VARCHAR DEFAULT 'none';\nBEGIN\n    IF (1 = 2) THEN\n        result := 'if-branch';\n    ELSE\n        result := 'else-branch';\n    END IF;\n    RETURN :result;\nEND\n$$",
+       "expect": {"value": "else-branch"}}
+    ]},
+    {"name": "a-for-loop-accumulates-into-an-outer-variable", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE total INT DEFAULT 0;\nBEGIN\n    LET cur CURSOR FOR SELECT 1 AS n UNION ALL SELECT 1 UNION ALL SELECT 1;\n    FOR rec IN cur DO\n        total := :total + rec.N;\n    END FOR;\n    CLOSE cur;\n    RETURN :total;\nEND\n$$",
+       "expect": {"value": "3"}}
+    ]},
+    {"name": "a-deep-shadow-then-an-assignment-to-an-outer-variable", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE\n    x INT DEFAULT 0;\n    z INT DEFAULT 0;\nBEGIN\n    BEGIN\n        LET x INT := 50;\n        BEGIN\n            LET y INT := 10;\n            z := 99;\n        END;\n    END;\n    RETURN :x || ',' || :z;\nEND\n$$",
+       "expect": {"value": "0,99"}}
+    ]}
+  ]
+}

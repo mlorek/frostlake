@@ -1,0 +1,25 @@
+{
+  "suite": "features-vector-type",
+  "description": "The VECTOR(FLOAT|INT, n) column type: declaration, storage round-trip for both element types, and DESCRIBE rendering the type. Converted 1:1 from features/VectorTypeTest (now retired); its assertNotNull on the stored cell is expressed as an IS NOT NULL projection.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-float-vector-column-round-trips", "steps": [
+      {"sql": "CREATE TABLE vt_f (id INTEGER, emb VECTOR(FLOAT, 3))"},
+      {"sql": "INSERT INTO vt_f SELECT 1, [0.1, 0.2, 0.3]::VECTOR(FLOAT, 3)"},
+      {"sql": "SELECT emb FROM vt_f WHERE id = 1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT IFF(emb IS NULL, 'null', 'set') FROM vt_f WHERE id = 1", "expect": {"value": "set"}}
+    ]},
+    {"name": "an-int-vector-column-round-trips", "steps": [
+      {"sql": "CREATE TABLE vt_i (id INTEGER, v VECTOR(INT, 2))"},
+      {"sql": "INSERT INTO vt_i SELECT 1, [7, 9]::VECTOR(INT, 2)"},
+      {"sql": "SELECT v FROM vt_i", "expect": {"rowCount": 1}},
+      {"sql": "SELECT IFF(v IS NULL, 'null', 'set') FROM vt_i", "expect": {"value": "set"}}
+    ]},
+    {"name": "describe-renders-the-vector-type", "steps": [
+      {"sql": "CREATE TABLE vt_d (emb VECTOR(FLOAT, 4))"},
+      {"sql": "DESCRIBE TABLE vt_d", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CONTAINS(UPPER(\"type\"), 'VECTOR') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "true"}}
+    ]}
+  ]
+}

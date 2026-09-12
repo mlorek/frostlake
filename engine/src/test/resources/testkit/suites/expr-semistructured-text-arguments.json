@@ -1,0 +1,254 @@
+{
+  "suite": "expr-semistructured-text-arguments",
+  "description": "A statically OBJECT/ARRAY/MAP-typed value never coerces to text: || refuses on either side (empty inputs too), CONCAT/CONCAT_WS (reporting as CONCAT)/LISTAGG (DISTINCT and WITHIN GROUP forms) refuse in every position naming the declared types, and the whole scalar string family (UPPER/LOWER, measuring/trimming/padding, substring/regex, searching) refuses in every argument position - through conditionals, derived columns and producer functions. The bounds: a VARIANT is never rejected even holding an object, casting/TRY_CASTing to VARIANT re-opens the family (the OBJECT target of each stays refused), explicit conversions to text are legal for the PLAIN types (a STRUCTURED value has none - pinned beside its plain twin) and the converted value flows on, ordinary types still concatenate, path reads pass, SEARCH takes semi-structured data on purpose, and key positions stay open. Converted 1:1 from expressions/SemiStructuredTextArgumentTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "concat-operator-rejects-semi-structured-on-either-side", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT 'x' || o FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), OBJECT)"}}},
+      {"sql": "SELECT o || 'x' FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT o || o FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT 'x' || a FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), ARRAY)"}}},
+      {"sql": "SELECT a || 'x' FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (ARRAY, VARCHAR(1))"}}},
+      {"sql": "SELECT o || a FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (OBJECT, ARRAY)"}}}
+    ]},
+    {"name": "concat-operator-rejects-over-an-empty-input", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT 'x' || o FROM stt WHERE 1 = 0", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), OBJECT)"}}}
+    ]},
+    {"name": "concat-functions-reject-semi-structured-in-any-position", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT CONCAT('x', o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (VARCHAR(1), OBJECT)"}}},
+      {"sql": "SELECT CONCAT('x', a) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (VARCHAR(1), ARRAY)"}}},
+      {"sql": "SELECT CONCAT(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (OBJECT)"}}},
+      {"sql": "SELECT CONCAT(s, s, o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (VARCHAR(16777216), VARCHAR(16777216), OBJECT)"}}}
+    ]},
+    {"name": "concat-ws-reports-itself-as-concat", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT CONCAT_WS(',', s, o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT':"}}},
+      {"sql": "SELECT CONCAT_WS(o, s, s) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT':"}}}
+    ]},
+    {"name": "listagg-rejects-semi-structured-in-both-positions", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT LISTAGG(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (OBJECT)"}}},
+      {"sql": "SELECT LISTAGG(a) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (ARRAY)"}}},
+      {"sql": "SELECT LISTAGG(o, ',') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT LISTAGG(s, o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (VARCHAR(16777216), OBJECT)"}}}
+    ]},
+    {"name": "listagg-rejects-its-distinct-and-within-group-forms", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT LISTAGG(DISTINCT o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (OBJECT)"}}},
+      {"sql": "SELECT LISTAGG(o, ',') WITHIN GROUP (ORDER BY id) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (OBJECT, VARCHAR(1))"}}}
+    ]},
+    {"name": "a-structured-map-is-refused-by-the-text-family-too", "steps": [
+      {"sql": "CREATE TABLE sttm (id INTEGER, sm MAP(VARCHAR, INT))"},
+      {"sql": "INSERT INTO sttm SELECT 1, OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT)"},
+      {"sql": "SELECT 'x' || sm FROM sttm", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), MAP(VARCHAR(16777216), NUMBER(38,0)))"}}},
+      {"sql": "SELECT UPPER(sm) FROM sttm", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (MAP(VARCHAR(16777216), NUMBER(38,0)))"}}},
+      {"sql": "SELECT LISTAGG(sm) FROM sttm", "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (MAP(VARCHAR(16777216), NUMBER(38,0)))"}}}
+    ]},
+    {"name": "a-variant-is-accepted-even-when-it-holds-an-object", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT 'x' || v FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT v || 'x' FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT 'x' || vo FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CONCAT('x', vo) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT LISTAGG(v) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT LISTAGG(vo) FROM stt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "casting-to-variant-makes-it-acceptable-again", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT 'x' || o::VARIANT FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT 'x' || TO_VARIANT(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT 'x' || v::OBJECT FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), OBJECT)"}}}
+    ]},
+    {"name": "the-try-cast-spelling-of-the-widening-is-accepted-too", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT 'x' || TRY_CAST(o AS VARIANT) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT UPPER(TRY_CAST(o AS VARIANT)) FROM stt WHERE id = 1", "expect": {"value": "{\"K\":\"V1\"}"}},
+      {"sql": "SELECT 'x' || TRY_CAST(o AS VARIANT) FROM stt WHERE id = 1", "expect": {"value": "x{\"k\":\"v1\"}"}},
+      {"sql": "SELECT UPPER(TRY_CAST(o AS OBJECT)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "SELECT 'x' || TRY_CAST(o AS OBJECT) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), OBJECT)"}}}
+    ]},
+    {"name": "explicit-conversions-to-text-stay-accepted", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "SELECT CAST(o AS VARCHAR) FROM stt", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TO_VARCHAR(o) FROM stt", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TO_CHAR(o) FROM stt", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT o::VARCHAR FROM stt", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TO_VARCHAR(a) FROM stt", "expect": {"value": "[1,2]"}}
+    ]},
+    {"name": "a-structured-value-has-no-such-text-conversion", "steps": [
+      {"sql": "CREATE TABLE sttc (so OBJECT(x VARCHAR))"},
+      {"sql": "INSERT INTO sttc SELECT OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR)"},
+      {"sql": "SELECT CAST(so AS VARCHAR) FROM sttc", "expect": {"error": {"messageContains": "invalid type [CAST(STTC.SO AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT TO_VARCHAR(so) FROM sttc", "expect": {"error": {"messageContains": "invalid type [TO_VARCHAR(STTC.SO)] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT UPPER(CAST(so AS VARCHAR)) FROM sttc", "expect": {"error": {"messageContains": "for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT UPPER(so::VARIANT::VARCHAR) FROM sttc", "expect": {"value": "{\"X\":\"A\"}"}}
+    ]},
+    {"name": "a-converted-value-flows-on-into-the-text-functions", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT TO_VARCHAR(o) || 'x' FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT 'x' || CAST(o AS VARCHAR) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CONCAT('x', TO_JSON(o)) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT LISTAGG(TO_VARCHAR(o)) FROM stt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "ordinary-types-still-concatenate", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT 'x' || n FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT 'x' || s FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT 'x' || NULL FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CONCAT(s, n) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT LISTAGG(s, ',') FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT LISTAGG(n) FROM stt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "reading-into-the-value-yields-a-variant-that-is-accepted", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT 'x' || o:k FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT 'x' || a[0] FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CONCAT('x', GET(o, 'k')) FROM stt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "upper-and-lower-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT UPPER(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "SELECT UPPER(a) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (ARRAY)"}}},
+      {"sql": "SELECT LOWER(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LOWER': (OBJECT)"}}},
+      {"sql": "SELECT LOWER(a) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LOWER': (ARRAY)"}}}
+    ]},
+    {"name": "the-measuring-and-trimming-functions-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT LENGTH(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LENGTH': (OBJECT)"}}},
+      {"sql": "SELECT LENGTH(a) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LENGTH': (ARRAY)"}}},
+      {"sql": "SELECT LEN(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LEN': (OBJECT)"}}},
+      {"sql": "SELECT OCTET_LENGTH(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'OCTET_LENGTH': (OBJECT)"}}},
+      {"sql": "SELECT TRIM(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'TRIM': (OBJECT)"}}},
+      {"sql": "SELECT LTRIM(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LTRIM': (OBJECT)"}}},
+      {"sql": "SELECT RTRIM(a) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'RTRIM': (ARRAY)"}}},
+      {"sql": "SELECT RPAD(o, 20, '.') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'RPAD': (OBJECT, NUMBER(2,0), VARCHAR(1))"}}},
+      {"sql": "SELECT LPAD(o, 20, '.') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LPAD': (OBJECT, NUMBER(2,0), VARCHAR(1))"}}}
+    ]},
+    {"name": "the-substring-and-regex-functions-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT SUBSTR(o, 1, 1) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUBSTR': (OBJECT, NUMBER(1,0), NUMBER(1,0))"}}},
+      {"sql": "SELECT REPLACE(o, 'a', 'b') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'REPLACE': (OBJECT, VARCHAR(1), VARCHAR(1))"}}},
+      {"sql": "SELECT SPLIT_PART(o, ',', 1) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SPLIT_PART': (OBJECT, VARCHAR(1), NUMBER(1,0))"}}},
+      {"sql": "SELECT SPLIT(o, ',') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SPLIT': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT REGEXP_COUNT(o, 'k') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'REGEXP_COUNT': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT REGEXP_REPLACE(o, 'k', 'z') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'REGEXP_REPLACE': (OBJECT, VARCHAR(1), VARCHAR(1))"}}},
+      {"sql": "SELECT REGEXP_SUBSTR(o, 'k') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'REGEXP_SUBSTR': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT INITCAP(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'INITCAP': (OBJECT)"}}},
+      {"sql": "SELECT REVERSE(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'REVERSE': (OBJECT)"}}},
+      {"sql": "SELECT SOUNDEX(o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SOUNDEX': (OBJECT)"}}}
+    ]},
+    {"name": "the-searching-functions-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT CONTAINS(o, 'k') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONTAINS': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT STARTSWITH(o, 'k') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'STARTSWITH': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT ENDSWITH(o, 'k') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ENDSWITH': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT CHARINDEX(o, 'k') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CHARINDEX': (OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT POSITION('a', o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'POSITION': (VARCHAR(1), OBJECT)"}}},
+      {"sql": "SELECT EDITDISTANCE(o, 'k') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'EDITDISTANCE': (OBJECT, VARCHAR(1))"}}}
+    ]},
+    {"name": "every-argument-position-refuses-semi-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT SPLIT_PART(s, o, 1) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SPLIT_PART': (VARCHAR(16777216), OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT SPLIT_PART(s, ',', o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SPLIT_PART': (VARCHAR(16777216), VARCHAR(1), OBJECT)"}}},
+      {"sql": "SELECT RPAD(s, 20, o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'RPAD': (VARCHAR(16777216), NUMBER(2,0), OBJECT)"}}},
+      {"sql": "SELECT REGEXP_REPLACE(s, o, 'z') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'REGEXP_REPLACE': (VARCHAR(16777216), OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT REGEXP_REPLACE(s, 'x', o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'REGEXP_REPLACE': (VARCHAR(16777216), VARCHAR(1), OBJECT)"}}},
+      {"sql": "SELECT REPLACE(s, o, 'z') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'REPLACE': (VARCHAR(16777216), OBJECT, VARCHAR(1))"}}},
+      {"sql": "SELECT CONTAINS(s, o) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONTAINS': (VARCHAR(16777216), OBJECT)"}}},
+      {"sql": "SELECT TRANSLATE(s, o, 'cd') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'TRANSLATE': (VARCHAR(16777216), OBJECT, VARCHAR(2))"}}}
+    ]},
+    {"name": "the-declared-type-is-read-through-conditionals-and-derived-columns", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT UPPER(IFF(TRUE, o, o)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "SELECT UPPER(COALESCE(o, o)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "SELECT UPPER(CASE WHEN TRUE THEN o ELSE o END) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "SELECT UPPER(x) FROM (SELECT o AS x FROM stt)", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "WITH c AS (SELECT o AS x FROM stt) SELECT UPPER(x) FROM c", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "SELECT UPPER(o) FROM stt WHERE 1 = 0", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}}
+    ]},
+    {"name": "the-semi-structured-producers-are-rejected-as-arguments", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT UPPER(OBJECT_CONSTRUCT('k', 1)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}},
+      {"sql": "SELECT UPPER(ARRAY_CONSTRUCT(1)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (ARRAY)"}}},
+      {"sql": "SELECT UPPER(SPLIT('a,b', ',')) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (ARRAY)"}}},
+      {"sql": "SELECT UPPER(OBJECT_KEYS(o)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (ARRAY)"}}},
+      {"sql": "SELECT UPPER(ARRAY_AGG(v)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (ARRAY)"}}},
+      {"sql": "SELECT UPPER(OBJECT_AGG(s, v)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (OBJECT)"}}}
+    ]},
+    {"name": "the-string-functions-still-take-a-variant", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT UPPER(v) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT UPPER(vo) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT LENGTH(vo) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SPLIT_PART(vo, ',', 1) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT REPLACE(vo, 'x', 'y') FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT UPPER(o::VARIANT) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT UPPER(TO_VARIANT(o)) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT UPPER(PARSE_JSON('{\"a\":1}')) FROM stt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-string-functions-still-take-ordinary-types", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT UPPER(s) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT UPPER(n) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT LENGTH(s) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SPLIT_PART(n, ',', 1) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SUBSTR(s, 1, 1) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT UPPER(NULL) FROM stt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "an-explicit-conversion-reopens-the-string-functions", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT UPPER(o::VARCHAR) FROM stt WHERE id = 1", "expect": {"value": "{\"K\":\"V1\"}"}},
+      {"sql": "SELECT UPPER(TO_VARCHAR(o)) FROM stt WHERE id = 1", "expect": {"value": "{\"K\":\"V1\"}"}},
+      {"sql": "SELECT UPPER(TO_JSON(o)) FROM stt WHERE id = 1", "expect": {"value": "{\"K\":\"V1\"}"}},
+      {"sql": "SELECT LENGTH(CAST(o AS VARCHAR)) FROM stt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-semi-structured-aware-functions-are-untouched", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT SEARCH(o, 'k') FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ARRAY_TO_STRING(a, ',') FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT OBJECT_KEYS(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT TYPEOF(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ARRAY_SIZE(a) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT OBJECT_INSERT(o, 'j', 2) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COALESCE(o, o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT GREATEST(o, o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT HASH(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('k', o) FROM stt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "key-positions-still-accept-semi-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20"},
+      {"sql": "SELECT COUNT(*) FROM stt GROUP BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM stt ORDER BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT DISTINCT o FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(o) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT id FROM stt WHERE o = o", "expect": {"rowCount": 2}}
+    ]}
+  ]
+}

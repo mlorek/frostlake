@@ -1,0 +1,20 @@
+{
+  "suite": "functions-getbit",
+  "description": "GETBIT(integer, position) - the 0/1 bit at the 0-based position counting from the LSB, so bit 0 of 11 (binary 1011) is 1 and bit 2 is 0. A position beyond the set bits reads 0, and either argument being NULL yields NULL. Converted 1:1 from functions/GetbitTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "bit-zero-of-eleven", "steps": [
+      {"sql": "SELECT GETBIT(11, 0)", "expect": {"value": "1"}}
+    ]},
+    {"name": "bit-two-of-eleven", "steps": [
+      {"sql": "SELECT GETBIT(11, 2)", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-position-beyond-the-set-bits-is-zero", "steps": [
+      {"sql": "SELECT GETBIT(11, 100)", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-null-argument-yields-null", "steps": [
+      {"sql": "SELECT GETBIT(NULL, 0)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT GETBIT(11, NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

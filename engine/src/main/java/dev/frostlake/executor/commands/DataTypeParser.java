@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.ArrayType;
@@ -33,6 +34,7 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorElementType;
 import dev.frostlake.types.VectorType;
@@ -79,19 +81,22 @@ public final class DataTypeParser {
                                  final int bareStringDefault) {
         int precision = 9; // Default precision for timestamp types
 
-        // Extract precision if typeParameters present
-        if (typeParams != null && typeParams.INTEGER_LITERAL() != null && typeParams.INTEGER_LITERAL().size() > 0) {
-            precision = Integer.parseInt(typeParams.INTEGER_LITERAL(0).getText());
+        // Extract precision if typeParameters present. The narrowing SATURATES rather than failing:
+        // a width past an int's range is a legal token that live reads and refuses by value, and each
+        // family's own range check below runs before this number is used.
+        if (hasTypeLength(typeParams)) {
+            precision = DeclaredWidthRules.saturatingInt(typeParams.INTEGER_LITERAL(0).getText());
         }
 
         // VECTOR(FLOAT|INT, n) must be classified BEFORE the plain numeric checks: its element-type
         // token (FLOAT / INT) lives in the same context, so the FLOAT/INT branches would shadow it.
         if (ctx.VECTOR() != null) {
+            DeclaredWidthRules.checkVectorDimension(ctx);
             final VectorElementType vectorElem = ctx.INT() != null
                 ? VectorElementType.INT
                 : VectorElementType.FLOAT;
             final int vectorDim = ctx.INTEGER_LITERAL() != null
-                ? Integer.parseInt(ctx.INTEGER_LITERAL().getText())
+                ? DeclaredWidthRules.saturatingInt(ctx.INTEGER_LITERAL().getText())
                 : 1;
             return new VectorType(vectorElem, vectorDim);
         }
@@ -158,9 +163,10 @@ public final class DataTypeParser {
         // `1.5::NUMERIC(8,5)` is `1.50000`. Missing them here made a NUMERIC column a VARCHAR, which
         // silently dropped the declared scale from every arithmetic result over it.
         if (ctx.NUMBER() != null || ctx.DECIMAL() != null || ctx.NUMERIC() != null || ctx.DEC() != null) {
-            if (typeParams != null && typeParams.INTEGER_LITERAL() != null && !typeParams.INTEGER_LITERAL().isEmpty()) {
+            DeclaredWidthRules.checkNumber(typeParams);
+            if (hasTypeLength(typeParams)) {
                 final int numberScale = typeParams.INTEGER_LITERAL().size() > 1
-                    ? Integer.parseInt(typeParams.INTEGER_LITERAL(1).getText()) : 0;
+                    ? DeclaredWidthRules.saturatingInt(typeParams.INTEGER_LITERAL(1).getText()) : 0;
                 return new NumericType("NUMBER", precision, numberScale);
             }
             return NumericType.NUMBER;
@@ -178,6 +184,7 @@ public final class DataTypeParser {
         // name, never the alias: `'x'::NCHAR` is `VARCHAR(1)`, `'x'::CHARACTER VARYING` is `VARCHAR`.
         if (ctx.VARCHAR() != null || ctx.STRING() != null || ctx.TEXT() != null
                 || ctx.NVARCHAR() != null || ctx.NVARCHAR2() != null || ctx.VARYING() != null) {
+            DeclaredWidthRules.checkCharacterLength(typeParams);
             return hasTypeLength(typeParams) ? new StringType("VARCHAR", precision)
                 : bareStringDefault == DDL_STRING_DEFAULT
                     ? StringType.VARCHAR : new StringType("VARCHAR", bareStringDefault);
@@ -186,18 +193,32 @@ public final class DataTypeParser {
         // everywhere and not padded (SHOW COLUMNS says fixed:false for it). Bare CHAR keeps its
         // one-character length.
         if (ctx.CHAR() != null || ctx.CHARACTER() != null || ctx.NCHAR() != null) {
+            DeclaredWidthRules.checkCharacterLength(typeParams);
             return new StringType("VARCHAR", hasTypeLength(typeParams) ? precision : 1);
         }
         if (ctx.BOOLEAN() != null) return BooleanType.BOOLEAN;
         if (ctx.DATE() != null) return DateTimeType.DATE;
-        if (ctx.DATETIME() != null) return new DateTimeType("TIMESTAMP_NTZ", precision, false);
-        if (ctx.TIMESTAMP_NTZ() != null || ctx.TIMESTAMPNTZ() != null) return new DateTimeType("TIMESTAMP_NTZ", precision, false);
-        if (ctx.TIMESTAMP_LTZ() != null || ctx.TIMESTAMPLTZ() != null) return new DateTimeType("TIMESTAMP_LTZ", precision, true);
-        if (ctx.TIMESTAMP_TZ() != null || ctx.TIMESTAMPTZ() != null) return new DateTimeType("TIMESTAMP_TZ", precision, true);
+        if (ctx.DATETIME() != null) {
+            DeclaredWidthRules.checkTimestampScale(typeParams);
+            return new DateTimeType("TIMESTAMP_NTZ", precision, false);
+        }
+        if (ctx.TIMESTAMP_NTZ() != null || ctx.TIMESTAMPNTZ() != null) {
+            DeclaredWidthRules.checkTimestampScale(typeParams);
+            return new DateTimeType("TIMESTAMP_NTZ", precision, false);
+        }
+        if (ctx.TIMESTAMP_LTZ() != null || ctx.TIMESTAMPLTZ() != null) {
+            DeclaredWidthRules.checkTimestampScale(typeParams);
+            return new DateTimeType("TIMESTAMP_LTZ", precision, true);
+        }
+        if (ctx.TIMESTAMP_TZ() != null || ctx.TIMESTAMPTZ() != null) {
+            DeclaredWidthRules.checkTimestampScale(typeParams);
+            return new DateTimeType("TIMESTAMP_TZ", precision, true);
+        }
         // The whole TIMESTAMP family has to precede the bare TIME check: the worded
         // `TIMESTAMP WITH LOCAL TIME ZONE` spelling carries a TIME token of its own, so a TIME-first
         // order classified it as TIME. Live it is TIMESTAMP_LTZ(9).
         if (ctx.TIMESTAMP() != null) {
+            DeclaredWidthRules.checkTimestampScale(typeParams);
             return ctx.LOCAL() != null
                 ? new DateTimeType("TIMESTAMP_LTZ", precision, true)
                 : new DateTimeType("TIMESTAMP", precision, false);
@@ -205,27 +226,40 @@ public final class DataTypeParser {
         // TIME carries its declared precision like the rest of the family — DESCRIBE spells it back
         // as TIME(3) when the column said so, and TIME(9) when it did not.
         if (ctx.TIME() != null) {
+            DeclaredWidthRules.checkTimeScale(typeParams);
             return hasTypeLength(typeParams) ? new DateTimeType("TIME", precision, false)
                 : DateTimeType.TIME;
         }
         if (ctx.VARIANT() != null) return VariantType.VARIANT;
         if (ctx.BINARY() != null) {
+            DeclaredWidthRules.checkBinaryLength(typeParams);
             return hasTypeLength(typeParams) ? new BinaryType("BINARY", precision) : BinaryType.BINARY;
         }
         // VARBINARY stays its own name in the CATALOG even though DESCRIBE and INFORMATION_SCHEMA
         // both spell it BINARY: SHOW COLUMNS reports fixed:true for BINARY and fixed:false for
         // VARBINARY, so the two are not interchangeable here (measured on the account).
         if (ctx.VARBINARY() != null) {
+            DeclaredWidthRules.checkBinaryLength(typeParams);
             return hasTypeLength(typeParams) ? new BinaryType("VARBINARY", precision) : BinaryType.VARBINARY;
         }
-        if (ctx.UUID() != null) return new StringType("UUID", 36);
+        if (ctx.UUID() != null) {
+            // UUID takes no type parameters: live, `UUID(36)` is a syntax error at its '('. The grammar
+            // shares `dataTypeName typeParameters?` across every type, so the parentheses are refused here.
+            if (typeParams != null) {
+                throw new RuntimeException(SqlCompilationError.of("syntax error line "
+                    + typeParams.getStart().getLine() + " at position "
+                    + typeParams.getStart().getCharPositionInLine() + " unexpected '('."));
+            }
+            return UuidType.UUID;
+        }
         // Every `dataTypeName` alternative is classified above, so this is unreachable — and it has to
         // STAY unreachable. It used to `return StringType.VARCHAR`, which turned any grammar token
         // nobody had wired up here into a silent VARCHAR: that is how NUMERIC, CHARACTER, NCHAR,
         // NVARCHAR, TIMESTAMPLTZ and TIMESTAMPTZ all became text columns. Throwing turns the next such
         // omission into a visible failure instead of a wrong-typed column, and Snowflake's own wording
         // for a type name it does not know is "Unsupported data type 'X'." (live).
-        throw new RuntimeException("SQL compilation error:\nUnsupported data type '" + ctx.getText() + "'.");
+        throw new RuntimeException(SqlCompilationError.of(
+            "Unsupported data type '" + ctx.getText() + "'."));
     }
 
     /**
@@ -245,7 +279,12 @@ public final class DataTypeParser {
                 : nameCtx.getText();
             for (final StructuredField existing : fields) {
                 if (existing.getName().equals(name)) {
-                    throw new RuntimeException("Duplicate field name '" + name + "'");
+                    // Positioned at the field's own offset and carrying the compilation prefix, as the
+                    // structured-type reader's refusals do — the capital D and the VERBATIM name are
+                    // this sentence's own, and differ from a table column's on purpose.
+                    throw new RuntimeException(SqlCompilationError.at(
+                        field.getStart().getLine(), field.getStart().getCharPositionInLine(),
+                        "Duplicate field name '" + name + "'"));
                 }
             }
             fields.add(new StructuredField(name,

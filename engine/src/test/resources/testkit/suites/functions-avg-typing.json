@@ -1,0 +1,31 @@
+{
+  "suite": "functions-avg-typing",
+  "description": "AVG result typing, live-verified against Snowflake: fixed-point inputs (INTEGER or NUMBER(p,s)) yield a NUMBER whose scale is (max input scale) + 6, rounded HALF_UP with trailing zeros KEPT - AVG of the integers 90 and 95 is exactly 92.500000 and AVG(2, 2) renders 2.000000 rather than 2 - while any FLOAT input keeps the double average, whose rendering carries no scale-6 zeros. An empty input is NULL. Converted 1:1 from functions/AvgTypingTest (now retired); its assertInstanceOf(Double.class) type check is expressed here as the rendered form, since a fixed-point AVG renders 2.000000 where the double path renders 2 - the results are stringified with '<' || x || '>' so the trailing zeros are part of the assertion.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "integer-inputs-average-to-scale-six", "steps": [
+      {"sql": "CREATE TABLE ints (v INTEGER)"},
+      {"sql": "INSERT INTO ints VALUES (90), (95)"},
+      {"sql": "SELECT '<' || AVG(v) || '>' FROM ints", "expect": {"value": "<92.500000>"}}
+    ]},
+    {"name": "trailing-zeros-are-kept", "steps": [
+      {"sql": "CREATE TABLE twos (v INTEGER)"},
+      {"sql": "INSERT INTO twos VALUES (2), (2)"},
+      {"sql": "SELECT '<' || AVG(v) || '>' FROM twos", "expect": {"value": "<2.000000>"}}
+    ]},
+    {"name": "scaled-decimal-inputs-add-six-to-their-scale", "steps": [
+      {"sql": "CREATE TABLE scaled (v NUMBER(5,1))"},
+      {"sql": "INSERT INTO scaled VALUES (12.3), (45.6)"},
+      {"sql": "SELECT '<' || AVG(v) || '>' FROM scaled", "expect": {"value": "<28.9500000>"}}
+    ]},
+    {"name": "float-inputs-keep-the-double-average", "steps": [
+      {"sql": "CREATE TABLE dbls (v DOUBLE)"},
+      {"sql": "INSERT INTO dbls SELECT 1.5::DOUBLE UNION ALL SELECT 2.5::DOUBLE"},
+      {"sql": "SELECT '<' || AVG(v) || '>' FROM dbls", "expect": {"value": "<2>"}}
+    ]},
+    {"name": "an-empty-input-is-null", "steps": [
+      {"sql": "CREATE TABLE none (v INTEGER)"},
+      {"sql": "SELECT AVG(v) FROM none", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

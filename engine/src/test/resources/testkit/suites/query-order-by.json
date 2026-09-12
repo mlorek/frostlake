@@ -1,0 +1,36 @@
+{
+  "suite": "query-order-by",
+  "description": "ORDER BY asc/desc, multiple keys, with WHERE and LIMIT. Converted 1:1 from query/OrderByTest.java (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "order-by-ascending", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT salary FROM employees ORDER BY salary ASC",
+       "expect": {"rows": [["65000"], ["70000"], ["75000"], ["85000"], ["90000"], ["95000"]], "ordered": true}}
+    ]},
+    {"name": "order-by-descending", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT age FROM employees ORDER BY age DESC",
+       "expect": {"rowCount": 6, "rows": [["40"], ["35"], ["32"], ["30"], ["29"], ["28"]], "ordered": true}}
+    ]},
+    {"name": "order-by-multiple-columns", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, salary FROM employees ORDER BY department ASC, salary DESC",
+       "expect": {"rows": [["Engineering", "95000"], ["Engineering", "90000"], ["Engineering", "85000"], ["HR", "65000"], ["Sales", "75000"], ["Sales", "70000"]], "ordered": true}}
+    ]},
+    {"name": "order-by-with-where", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT salary FROM employees WHERE salary > 70000 ORDER BY salary DESC",
+       "expect": {"rows": [["95000"], ["90000"], ["85000"], ["75000"]], "ordered": true}}
+    ]},
+    {"name": "order-by-with-limit", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT salary FROM employees ORDER BY salary DESC LIMIT 2", "expect": {"rows": [["95000"], ["90000"]], "ordered": true}}
+    ]}
+  ]
+}

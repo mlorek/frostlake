@@ -1,0 +1,75 @@
+{
+  "suite": "features-select-into",
+  "description": "Scripting SELECT ... INTO variables (single/multiple vars, LIMIT/OFFSET/FETCH FIRST/QUALIFY, zero-rows-assigns-NULL, RESULT_SCAN read, more-than-one-row error) plus := assignment from UDF calls. Converted 1:1 from features/SelectIntoTest and UdfAssignTest (both now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "select-into-returns-one",
+      "steps": [
+        {"sql": "DECLARE\n    s STRING DEFAULT '';\n    b BOOLEAN DEFAULT TRUE;\n    i INTEGER;\nBEGIN\n    CREATE OR REPLACE TABLE t(i INTEGER);\n    INSERT INTO t VALUES (1);\n\n    SELECT i\n    INTO i\n    FROM t;\n\n    RETURN i;\nEND", "expect": {"value": "1", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "select-into-multiple-vars",
+      "steps": [
+        {"sql": "DECLARE\n    a INTEGER;\n    b VARCHAR;\nBEGIN\n    CREATE OR REPLACE TABLE t2(n INTEGER, s VARCHAR);\n    INSERT INTO t2 VALUES (42, 'hello');\n    SELECT n, s INTO a, b FROM t2;\n    RETURN a;\nEND", "expect": {"value": "42"}}
+      ]
+    },
+    {
+      "name": "select-into-with-limit",
+      "steps": [
+        {"sql": "DECLARE\n    v INTEGER;\nBEGIN\n    CREATE OR REPLACE TABLE nums(n INTEGER);\n    INSERT INTO nums VALUES (10), (20), (30);\n    SELECT n INTO v FROM nums ORDER BY n DESC LIMIT 1;\n    RETURN v;\nEND", "expect": {"value": "30"}}
+      ]
+    },
+    {
+      "name": "select-into-with-limit-offset",
+      "steps": [
+        {"sql": "DECLARE\n    v INTEGER;\nBEGIN\n    CREATE OR REPLACE TABLE nums(n INTEGER);\n    INSERT INTO nums VALUES (10), (20), (30);\n    SELECT n INTO v FROM nums ORDER BY n ASC LIMIT 1 OFFSET 1;\n    RETURN v;\nEND", "expect": {"value": "20"}}
+      ]
+    },
+    {
+      "name": "select-into-with-fetch-first",
+      "steps": [
+        {"sql": "DECLARE\n    v INTEGER;\nBEGIN\n    CREATE OR REPLACE TABLE nums(n INTEGER);\n    INSERT INTO nums VALUES (10), (20), (30);\n    SELECT n INTO v FROM nums ORDER BY n DESC FETCH FIRST 1 ROW ONLY;\n    RETURN v;\nEND", "expect": {"value": "30"}}
+      ]
+    },
+    {
+      "name": "select-into-with-qualify",
+      "steps": [
+        {"sql": "DECLARE\n    v INTEGER;\nBEGIN\n    CREATE OR REPLACE TABLE nums(n INTEGER);\n    INSERT INTO nums VALUES (10), (20), (30);\n    SELECT n INTO v FROM nums QUALIFY ROW_NUMBER() OVER (ORDER BY n DESC) = 1;\n    RETURN v;\nEND", "expect": {"value": "30"}}
+      ]
+    },
+    {
+      "name": "select-into-zero-rows-assigns-null",
+      "steps": [
+        {"sql": "DECLARE\n    col_type STRING;\nBEGIN\n    CREATE OR REPLACE TABLE cols(name STRING, data_type STRING);\n    SELECT data_type INTO :col_type FROM cols WHERE name = 'missing' LIMIT 1;\n    RETURN COALESCE(:col_type, 'was-null');\nEND", "expect": {"value": "was-null"}}
+      ]
+    },
+    {
+      "name": "select-into-zero-rows-lets-a-probe-block-complete",
+      "steps": [
+        {"sql": "DECLARE\n    stale_flag BOOLEAN DEFAULT FALSE;\nBEGIN\n    SHOW STREAMS LIKE 'NO_SUCH_STREAM';\n    SELECT \"stale\" INTO :stale_flag FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)));\n    IF (:stale_flag) THEN\n        RETURN 'dropped stale';\n    END IF;\n    RETURN 'not stale';\nEND", "expect": {"value": "not stale"}}
+      ]
+    },
+    {
+      "name": "select-into-more-than-one-row-still-errors",
+      "steps": [
+        {"sql": "DECLARE\n    v STRING;\nBEGIN\n    CREATE OR REPLACE TABLE two_rows(x STRING);\n    INSERT INTO two_rows VALUES ('a'), ('b');\n    SELECT x INTO :v FROM two_rows;\n    RETURN :v;\nEND", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "assign-function-call",
+      "steps": [
+        {"sql": "CREATE OR REPLACE FUNCTION f() RETURNS OBJECT AS '{}'"},
+        {"sql": "DECLARE o OBJECT DEFAULT NULL; BEGIN o := f(); RETURN o; END", "expect": {"value": "{}", "rowCount": 1}}
+      ]
+    },
+    {
+      "name": "assign-paren-function-call",
+      "steps": [
+        {"sql": "CREATE OR REPLACE FUNCTION f() RETURNS OBJECT AS '{}'"},
+        {"sql": "DECLARE o OBJECT DEFAULT NULL; BEGIN o := (f()); RETURN o; END", "expect": {"value": "{}", "rowCount": 1}}
+      ]
+    }
+  ]
+}

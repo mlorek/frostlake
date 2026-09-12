@@ -1,0 +1,116 @@
+{
+  "suite": "features-keyword-and-syntax-coverage",
+  "description": "Snowflake grammar constructs each previously rejected as an SQL syntax error: ALTER SESSION UNSET (single and comma-list), table aliases in UPDATE/DELETE (AS and bare), the NUMERIC(p,s) type and cast, PIVOT over a parenthesized subquery, CREATE TABLE ... LIKE (structure only, no data), keyword tokens as plain column names (CLUSTER/IDENTITY/CHANGES/STREAM/NETWORK/NUMERIC; START truly reserved - bare refused, quoted works; NEXT usable as column and alias), UNPIVOT as a CTE name, IS [NOT] DISTINCT FROM null-safe comparison, reserved words as bare table aliases, START TRANSACTION ... COMMIT, PARTITION BY (a, b) parenthesized key lists, ALTER TABLE ADD without the COLUMN keyword (single and multi-column), keywords as VARIANT path keys (:, ., with casts, inside function arguments), and INSERT as the string function. Converted 1:1 from features/KeywordAndSyntaxCoverageTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "alter-session-unset", "steps": [
+      {"sql": "ALTER SESSION SET QUERY_TAG = 'x'"},
+      {"sql": "ALTER SESSION UNSET QUERY_TAG"},
+      {"sql": "ALTER SESSION UNSET QUERY_TAG, TIMEZONE"}
+    ]},
+    {"name": "update-with-table-alias", "steps": [
+      {"sql": "CREATE TABLE ua (x INT, y INT)"},
+      {"sql": "INSERT INTO ua VALUES (1, 10), (2, 20)"},
+      {"sql": "UPDATE ua AS t SET t.x = 99 WHERE t.y = 20"},
+      {"sql": "SELECT x FROM ua WHERE y = 20", "expect": {"value": "99"}},
+      {"sql": "UPDATE ua u SET u.x = 5 WHERE u.y = 10"},
+      {"sql": "SELECT x FROM ua WHERE y = 10", "expect": {"value": "5"}}
+    ]},
+    {"name": "delete-with-table-alias", "steps": [
+      {"sql": "CREATE TABLE da (x INT)"},
+      {"sql": "INSERT INTO da VALUES (1), (2), (3)"},
+      {"sql": "DELETE FROM da AS d WHERE d.x = 2"},
+      {"sql": "SELECT COUNT(*) FROM da", "expect": {"value": "2"}}
+    ]},
+    {"name": "numeric-type-and-cast", "steps": [
+      {"sql": "CREATE TABLE nt (a NUMERIC(18,5))"},
+      {"sql": "INSERT INTO nt VALUES (1.5)"},
+      {"sql": "SELECT a FROM nt", "expect": {"value": "1.5"}},
+      {"sql": "SELECT 7::NUMERIC(38,0)", "expect": {"value": "7"}}
+    ]},
+    {"name": "pivot-over-subquery", "steps": [
+      {"sql": "CREATE TABLE pv (k INT, cat INT, v INT)"},
+      {"sql": "INSERT INTO pv VALUES (1, 10, 5), (1, 20, 7)"},
+      {"sql": "SELECT * FROM (SELECT cat, v FROM pv) PIVOT(SUM(v) FOR cat IN (10, 20)) p", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-table-like-copies-structure-only", "steps": [
+      {"sql": "CREATE TABLE src_like (a INT, b VARCHAR)"},
+      {"sql": "INSERT INTO src_like VALUES (1, 'x'), (2, 'y')"},
+      {"sql": "CREATE OR REPLACE TEMPORARY TABLE cp_like LIKE src_like"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CP_LIKE'", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM cp_like", "expect": {"value": "0"}}
+    ]},
+    {"name": "reserved-words-as-column-names", "steps": [
+      {"sql": "CREATE TABLE rw (cluster INT, identity INT, changes INT, stream INT, network INT, numeric INT)"},
+      {"sql": "INSERT INTO rw VALUES (2, 3, 4, 5, 6, 7)"},
+      {"sql": "SELECT stream FROM rw", "expect": {"value": "5"}},
+      {"sql": "CREATE TABLE rw_start (start INT)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE rw_q (\"START\" INT)"}
+    ]},
+    {"name": "next-as-column-name-and-alias", "steps": [
+      {"sql": "CREATE TABLE nx (next INT)"},
+      {"sql": "INSERT INTO nx VALUES (7)"},
+      {"sql": "SELECT next FROM nx", "expect": {"value": "7"}},
+      {"sql": "SELECT next + 1 AS next FROM nx", "expect": {"value": "8"}}
+    ]},
+    {"name": "unpivot-as-cte-name", "steps": [
+      {"sql": "WITH unpivot AS (SELECT 1 AS x) SELECT x FROM unpivot", "expect": {"value": "1"}}
+    ]},
+    {"name": "is-distinct-from-is-null-safe", "steps": [
+      {"sql": "SELECT 1 IS DISTINCT FROM 2, 1 IS DISTINCT FROM 1, NULL IS DISTINCT FROM 1, NULL IS NOT DISTINCT FROM NULL, NULL IS DISTINCT FROM NULL",
+       "expect": {"rows": [["true", "false", "true", "true", "false"]]}}
+    ]},
+    {"name": "reserved-words-as-bare-table-aliases", "steps": [
+      {"sql": "CREATE TABLE ta (x INT)"},
+      {"sql": "INSERT INTO ta VALUES (9)"},
+      {"sql": "SELECT stream.x FROM ta stream", "expect": {"value": "9"}},
+      {"sql": "SELECT identity.x FROM ta identity", "expect": {"value": "9"}}
+    ]},
+    {"name": "start-transaction-begins-and-commits", "steps": [
+      {"sql": "CREATE TABLE tx (x INT)"},
+      {"sql": "START TRANSACTION"},
+      {"sql": "INSERT INTO tx VALUES (1)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM tx", "expect": {"value": "1"}}
+    ]},
+    {"name": "partition-by-parenthesized-list", "steps": [
+      {"sql": "CREATE TABLE pw (a INT, b INT, x INT)"},
+      {"sql": "INSERT INTO pw VALUES (1, 1, 5), (1, 1, 6), (2, 2, 9)"},
+      {"sql": "SELECT x FROM pw QUALIFY ROW_NUMBER() OVER (PARTITION BY (a, b) ORDER BY x) = 1 ORDER BY x",
+       "expect": {"rowCount": 2}}
+    ]},
+    {"name": "alter-table-add-column-without-keyword", "steps": [
+      {"sql": "CREATE TABLE ac (x INT)"},
+      {"sql": "INSERT INTO ac VALUES (1)"},
+      {"sql": "ALTER TABLE ac ADD checksum_group VARCHAR"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'AC'", "expect": {"value": "2"}}
+    ]},
+    {"name": "keyword-as-variant-path-field", "steps": [
+      {"sql": "CREATE TABLE vp (v VARIANT)"},
+      {"sql": "INSERT INTO vp SELECT PARSE_JSON('{\"database\":\"d1\",\"update\":\"u1\"}')"},
+      {"sql": "SELECT v:database::string FROM vp", "expect": {"value": "d1"}},
+      {"sql": "SELECT UPPER(v:database::string) FROM vp", "expect": {"value": "D1"}},
+      {"sql": "SELECT v:update::VARCHAR FROM vp", "expect": {"value": "u1"}},
+      {"sql": "SELECT v:database::VARCHAR AS a, v:update::VARCHAR AS b FROM vp",
+       "expect": {"rows": [["d1", "u1"]]}}
+    ]},
+    {"name": "reserved-keywords-as-variant-path-keys", "steps": [
+      {"sql": "WITH r AS (SELECT {'create': 1, 'drop': 2, 'alter': {'show': 1}} AS j) SELECT j:create::int AS c, j:drop AS d, j:alter.show AS s1, j:alter:show AS s2 FROM r",
+       "expect": {"rows": [["1", "2", "1", "1"]]}}
+    ]},
+    {"name": "more-reserved-keyword-path-keys", "steps": [
+      {"sql": "CREATE TABLE vp2 (v VARIANT)"},
+      {"sql": "INSERT INTO vp2 SELECT PARSE_JSON('{\"from\":\"f\",\"group\":\"g\",\"order\":\"o\",\"where\":\"w\",\"case\":\"c\"}')"},
+      {"sql": "SELECT v:from::VARCHAR, v:group::VARCHAR, v:order::VARCHAR, v:where::VARCHAR, v:case::VARCHAR FROM vp2",
+       "expect": {"rows": [["f", "g", "o", "w", "c"]]}}
+    ]},
+    {"name": "insert-string-function", "steps": [
+      {"sql": "SELECT INSERT('abcdef', 2, 3, 'zzz')", "expect": {"value": "azzzef"}}
+    ]},
+    {"name": "alter-table-add-multiple-columns", "steps": [
+      {"sql": "CREATE TABLE mc (a INT)"},
+      {"sql": "ALTER TABLE mc ADD b VARCHAR, c VARCHAR"},
+      {"sql": "SELECT * FROM mc", "expect": {"columns": ["A", "B", "C"]}}
+    ]}
+  ]
+}

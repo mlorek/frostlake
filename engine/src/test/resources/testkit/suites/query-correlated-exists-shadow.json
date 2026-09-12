@@ -1,0 +1,61 @@
+{
+  "suite": "query-correlated-exists-shadow",
+  "description": "A correlated reference whose alias-qualified name collides with a column of the INNER table: WHERE EXISTS (SELECT 1 FROM stage t WHERE t.id = s.id) where BOTH tables have an id. The subquery's outer-row context was keyed only by TABLE name (SRC.ID), so the alias-qualified s.id missed it and the strip-qualifier fallback bound it to the inner table's own column - turning the correlation into t.id = t.id, always true: EXISTS matched every outer row, NOT EXISTS none, and the ubiquitous dedup-guarded INSERT either inserted nothing or, where the guard erred the other way, inserted duplicates. Proper SQL scoping is preserved in the other direction too: with NO qualifier, a bare id really is the INNER table's column. Also covers a SELECT-list alias referenced in a JOIN's ON condition, which failed to resolve and silently matched no rows, and its mirror - a REAL column of the same name must win over such an alias. Converted 1:1 from query/CorrelatedExistsShadowTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "not-exists-keeps-only-the-unmatched-outer-row", "steps": [
+      {"sql": "CREATE TABLE stage (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO stage VALUES ('x', 'seeded')"},
+      {"sql": "CREATE TABLE src (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('x', 'src-x'), ('y', 'src-y')"},
+      {"sql": "SELECT s.id FROM src s WHERE NOT EXISTS (SELECT 1 FROM stage t WHERE t.id = s.id)", "expect": {"rows": [["y"]]}}
+    ]},
+    {"name": "exists-keeps-only-the-matched-outer-row", "steps": [
+      {"sql": "CREATE TABLE stage (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO stage VALUES ('x', 'seeded')"},
+      {"sql": "CREATE TABLE src (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('x', 'src-x'), ('y', 'src-y')"},
+      {"sql": "SELECT s.id FROM src s WHERE EXISTS (SELECT 1 FROM stage t WHERE t.id = s.id)", "expect": {"rows": [["x"]]}}
+    ]},
+    {"name": "a-bare-inner-reference-still-binds-to-the-inner-table", "steps": [
+      {"sql": "CREATE TABLE stage (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO stage VALUES ('x', 'seeded')"},
+      {"sql": "CREATE TABLE src (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('x', 'src-x'), ('y', 'src-y')"},
+      {"sql": "SELECT s.id FROM src s WHERE EXISTS (SELECT 1 FROM stage t WHERE t.id = id) ORDER BY s.id", "expect": {"rows": [["x"],["y"]], "ordered": true}}
+    ]},
+    {"name": "the-dedup-guarded-insert-inserts-exactly-the-missing-rows", "steps": [
+      {"sql": "CREATE TABLE stage (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO stage VALUES ('x', 'seeded')"},
+      {"sql": "CREATE TABLE src (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('x', 'src-x'), ('y', 'src-y')"},
+      {"sql": "INSERT INTO stage (id, tag) SELECT s.id, s.tag FROM src s WHERE NOT EXISTS (SELECT 1 FROM stage t WHERE t.id = s.id)"},
+      {"sql": "SELECT id, tag FROM stage ORDER BY id", "expect": {"rows": [["x", "seeded"], ["y", "src-y"]], "ordered": true}}
+    ]},
+    {"name": "the-guard-sees-rows-buffered-by-the-same-transaction", "steps": [
+      {"sql": "CREATE TABLE src (id VARCHAR, tag VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('x', 'src-x'), ('y', 'src-y')"},
+      {"sql": "CREATE TABLE stage2 (id VARCHAR, tag VARCHAR)"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO stage2 VALUES ('x', 'from-01a')"},
+      {"sql": "INSERT INTO stage2 (id, tag) SELECT s.id, s.tag FROM src s WHERE NOT EXISTS (SELECT 1 FROM stage2 t WHERE t.id = s.id)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM stage2 WHERE id = 'x'", "expect": {"value": "1"}},
+      {"sql": "SELECT id, tag FROM stage2 ORDER BY id", "expect": {"rows": [["x", "from-01a"], ["y", "src-y"]], "ordered": true}}
+    ]},
+    {"name": "a-select-list-alias-resolves-inside-a-join-on-condition", "steps": [
+      {"sql": "CREATE TABLE l (k VARCHAR, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k VARCHAR, chk INTEGER)"},
+      {"sql": "INSERT INTO l VALUES ('a', 5)"},
+      {"sql": "INSERT INTO r VALUES ('a', 5), ('a', 6)"},
+      {"sql": "SELECT l.k, HASH(l.v) AS _chk FROM l INNER JOIN r ON r.k = l.k AND r.chk != _chk", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "a-real-column-wins-over-an-alias-of-the-same-name-in-on", "steps": [
+      {"sql": "CREATE TABLE l2 (k VARCHAR, chk INTEGER)"},
+      {"sql": "CREATE TABLE r2 (k VARCHAR, chk INTEGER)"},
+      {"sql": "INSERT INTO l2 VALUES ('a', 5)"},
+      {"sql": "INSERT INTO r2 VALUES ('a', 5), ('a', 6)"},
+      {"sql": "SELECT l2.k, 999 AS chk FROM l2 INNER JOIN r2 ON r2.k = l2.k AND r2.chk = l2.chk", "expect": {"rows": [["a", 999]]}}
+    ]}
+  ]
+}

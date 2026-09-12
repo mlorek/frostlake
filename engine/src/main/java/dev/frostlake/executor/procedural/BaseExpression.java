@@ -17,4 +17,23 @@
 package dev.frostlake.executor.procedural;
 
 public abstract class BaseExpression {
+
+    /** 1-based line the expression starts on in the script's source, or -1 when unknown. */
+    private int sourceLine = -1;
+
+    /** 0-based column the expression starts at, or -1 when unknown. */
+    private int sourcePosition = -1;
+
+    public int getSourceLine() {
+        return sourceLine;
+    }
+
+    public int getSourcePosition() {
+        return sourcePosition;
+    }
+
+    public void setSourcePosition(final int line, final int position) {
+        this.sourceLine = line;
+        this.sourcePosition = position;
+    }
 }

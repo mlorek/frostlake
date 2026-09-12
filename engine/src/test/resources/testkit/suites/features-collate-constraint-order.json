@@ -1,0 +1,101 @@
+{
+  "suite": "features-collate-constraint-order",
+  "description": "The COLLATE clause's position among column constraints, through the SQL surface: the DESCRIBE TABLE type cell carries COLLATE '<spec>' and the constraint cells carry their marks. COLLATE moves freely around NOT NULL, UNIQUE, PRIMARY KEY and COMMENT, with one live-verified exception: it may not FOLLOW a DEFAULT - the default was already typed without the collation, so the refusal reads 'Default value data type does not match data type for column ...'. COLLATE before the DEFAULT is fine. Converted 1:1 from features/CollateConstraintOrderTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "collate-before-not-null", "steps": [
+      {"sql": "CREATE TABLE test1 (id INTEGER, name VARCHAR COLLATE 'utf8' NOT NULL)"},
+      {"sql": "DESCRIBE TABLE test1"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "N"]]}}
+    ]},
+    {"name": "collate-after-not-null", "steps": [
+      {"sql": "CREATE TABLE test2 (id INTEGER, name VARCHAR NOT NULL COLLATE 'utf8')"},
+      {"sql": "DESCRIBE TABLE test2"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "N"]]}}
+    ]},
+    {"name": "collate-before-unique", "steps": [
+      {"sql": "CREATE TABLE test3 (id INTEGER, email VARCHAR COLLATE 'en-cs' UNIQUE)"},
+      {"sql": "DESCRIBE TABLE test3"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'EMAIL', \"type\", NULL))), 'COLLATE ''EN-CS'''), MAX(IFF(\"name\" = 'EMAIL', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "Y"]]}}
+    ]},
+    {"name": "collate-after-unique", "steps": [
+      {"sql": "CREATE TABLE test4 (id INTEGER, email VARCHAR UNIQUE COLLATE 'en-cs')"},
+      {"sql": "DESCRIBE TABLE test4"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'EMAIL', \"type\", NULL))), 'COLLATE ''EN-CS'''), MAX(IFF(\"name\" = 'EMAIL', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "Y"]]}}
+    ]},
+    {"name": "collate-before-default", "steps": [
+      {"sql": "CREATE TABLE test5 (id INTEGER, status VARCHAR COLLATE 'utf8' DEFAULT 'active')"},
+      {"sql": "DESCRIBE TABLE test5"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'STATUS', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'STATUS', \"default\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "'active'"]]}}
+    ]},
+    {"name": "collate-after-default-is-refused", "steps": [
+      {"sql": "CREATE TABLE test6 (id INTEGER, status VARCHAR DEFAULT 'active' COLLATE 'utf8')",
+       "expect": {"error": {"messageContains": "Default value data type does not match data type for column STATUS"}}}
+    ]},
+    {"name": "collate-between-constraints", "steps": [
+      {"sql": "CREATE TABLE test7 (id INTEGER, name VARCHAR NOT NULL COLLATE 'utf8' UNIQUE)"},
+      {"sql": "DESCRIBE TABLE test7"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)), MAX(IFF(\"name\" = 'NAME', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "N", "Y"]]}}
+    ]},
+    {"name": "collate-first-among-multiple", "steps": [
+      {"sql": "CREATE TABLE test8 (id INTEGER, name VARCHAR COLLATE 'utf8' NOT NULL UNIQUE DEFAULT 'unknown')"},
+      {"sql": "DESCRIBE TABLE test8"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)), MAX(IFF(\"name\" = 'NAME', \"unique key\", NULL)), MAX(IFF(\"name\" = 'NAME', \"default\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "N", "Y", "'unknown'"]]}}
+    ]},
+    {"name": "collate-last-among-multiple", "steps": [
+      {"sql": "CREATE TABLE test9 (id INTEGER, name VARCHAR NOT NULL UNIQUE COLLATE 'utf8')"},
+      {"sql": "DESCRIBE TABLE test9"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)), MAX(IFF(\"name\" = 'NAME', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "N", "Y"]]}}
+    ]},
+    {"name": "collate-middle-among-multiple", "steps": [
+      {"sql": "CREATE TABLE test10 (id INTEGER, name VARCHAR NOT NULL COLLATE 'utf8' DEFAULT 'test' UNIQUE)"},
+      {"sql": "DESCRIBE TABLE test10"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)), MAX(IFF(\"name\" = 'NAME', \"unique key\", NULL)), MAX(IFF(\"name\" = 'NAME', \"default\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "N", "Y", "'test'"]]}}
+    ]},
+    {"name": "collate-with-primary-key", "steps": [
+      {"sql": "CREATE TABLE test11 (id INTEGER, name VARCHAR PRIMARY KEY COLLATE 'utf8')"},
+      {"sql": "DESCRIBE TABLE test11"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"primary key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "Y"]]}}
+    ]},
+    {"name": "collate-before-primary-key", "steps": [
+      {"sql": "CREATE TABLE test12 (id INTEGER, name VARCHAR COLLATE 'utf8' PRIMARY KEY)"},
+      {"sql": "DESCRIBE TABLE test12"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"primary key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "Y"]]}}
+    ]},
+    {"name": "multiple-columns-with-collate-in-different-positions", "steps": [
+      {"sql": "CREATE TABLE test13 (id INTEGER, col1 VARCHAR COLLATE 'utf8' NOT NULL, col2 VARCHAR NOT NULL COLLATE 'en-cs', col3 VARCHAR UNIQUE COLLATE 'en-ci', col4 VARCHAR COLLATE 'utf8' DEFAULT 'test')"},
+      {"sql": "DESCRIBE TABLE test13"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL1', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL2', \"type\", NULL))), 'COLLATE ''EN-CS'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL3', \"type\", NULL))), 'COLLATE ''EN-CI'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL4', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true", "true"]]}}
+    ]},
+    {"name": "collate-with-comment", "steps": [
+      {"sql": "CREATE TABLE test14 (id INTEGER, name VARCHAR COLLATE 'utf8' COMMENT 'User name')"},
+      {"sql": "DESCRIBE TABLE test14"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "User name"]]}}
+    ]},
+    {"name": "collate-after-all-constraints-before-comment", "steps": [
+      {"sql": "CREATE TABLE test15 (id INTEGER, name VARCHAR NOT NULL UNIQUE COLLATE 'utf8' DEFAULT 'test' COMMENT 'Test column')"},
+      {"sql": "DESCRIBE TABLE test15"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"comment\", NULL)), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)), MAX(IFF(\"name\" = 'NAME', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "Test column", "N", "Y"]]}}
+    ]},
+    {"name": "collate-flexibility-all-positions", "steps": [
+      {"sql": "CREATE TABLE test16 (col1 VARCHAR COLLATE 'utf8', col2 VARCHAR NOT NULL COLLATE 'utf8', col3 VARCHAR COLLATE 'utf8' NOT NULL, col4 VARCHAR UNIQUE COLLATE 'utf8', col5 VARCHAR COLLATE 'utf8' UNIQUE, col6 VARCHAR COLLATE 'utf8' DEFAULT 'x', col7 VARCHAR COLLATE 'utf8' COMMENT 'c')"},
+      {"sql": "DESCRIBE TABLE test16"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL1', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL2', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL3', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL4', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL5', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL6', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'COL7', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true", "true", "true", "true", "true"]]}}
+    ]}
+  ]
+}

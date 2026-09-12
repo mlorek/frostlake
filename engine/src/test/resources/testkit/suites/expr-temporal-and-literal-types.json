@@ -1,0 +1,88 @@
+{
+  "suite": "expr-temporal-and-literal-types",
+  "description": "Three temporal/type surfaces, all live-measured: the narrow temporal-arithmetic boundary (a DATE shifts by numbers and subtracts from a DATE, TIMESTAMPs subtract from each other - TIMESTAMP/TIME never shift by numbers, TIMEs never combine, TIMESTAMP-and-DATE never subtract, all refused at compile time with both types in written order); the spelled-out type-name aliases (NVARCHAR with empty parens, CHAR/CHARACTER/NCHAR VARYING, DECFLOAT approximated by DOUBLE, TIMESTAMPLTZ/TIMESTAMPTZ and TIMESTAMP WITH LOCAL TIME ZONE); and typed date/time literals (DATE/TIME/TIMESTAMP '<string>' composing with arithmetic, WHERE and INSERT, only those three keywords - TIMESTAMP_NTZ '...' is a syntax error - and the bare keywords still resolving as column names). Converted 1:1 from expressions/TemporalArgumentTypeTest + expressions/TypeNameVariantCastTest + expressions/TypedDateTimeLiteralTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "a-timestamp-does-not-shift-by-a-number", "steps": [
+      {"sql": "CREATE TABLE tr_s (d DATE, d2 DATE, t TIME, t2 TIME, s TIMESTAMP_NTZ, s2 TIMESTAMP_NTZ, l TIMESTAMP_LTZ)"},
+      {"sql": "SELECT s + 1 AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_NTZ(9), NUMBER(1,0))"}}},
+      {"sql": "SELECT s - 1 AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (TIMESTAMP_NTZ(9), NUMBER(1,0))"}}},
+      {"sql": "SELECT l + 1 AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_LTZ(9), NUMBER(1,0))"}}},
+      {"sql": "SELECT d + 1 AS c FROM tr_s", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-time-does-not-shift-by-a-number", "steps": [
+      {"sql": "CREATE TABLE tr_s (d DATE, d2 DATE, t TIME, t2 TIME, s TIMESTAMP_NTZ, s2 TIMESTAMP_NTZ, l TIMESTAMP_LTZ)"},
+      {"sql": "SELECT t + 1 AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIME(9), NUMBER(1,0))"}}},
+      {"sql": "SELECT t - 1 AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (TIME(9), NUMBER(1,0))"}}}
+    ]},
+    {"name": "two-times-do-not-combine", "steps": [
+      {"sql": "CREATE TABLE tr_s (d DATE, d2 DATE, t TIME, t2 TIME, s TIMESTAMP_NTZ, s2 TIMESTAMP_NTZ, l TIMESTAMP_LTZ)"},
+      {"sql": "SELECT t - t2 AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (TIME(9), TIME(9))"}}},
+      {"sql": "SELECT t + t2 AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIME(9), TIME(9))"}}},
+      {"sql": "SELECT d - d2 AS c FROM tr_s", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-timestamp-and-a-date-do-not-subtract", "steps": [
+      {"sql": "CREATE TABLE tr_s (d DATE, d2 DATE, t TIME, t2 TIME, s TIMESTAMP_NTZ, s2 TIMESTAMP_NTZ, l TIMESTAMP_LTZ)"},
+      {"sql": "SELECT s - d AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (TIMESTAMP_NTZ(9), DATE)"}}},
+      {"sql": "SELECT d - s AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (DATE, TIMESTAMP_NTZ(9))"}}},
+      {"sql": "SELECT l - d AS c FROM tr_s", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (TIMESTAMP_LTZ(9), DATE)"}}},
+      {"sql": "SELECT s - s2 AS c FROM tr_s", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "the-refusal-is-at-compile-time", "steps": [
+      {"sql": "CREATE TABLE tr_s (d DATE, d2 DATE, t TIME, t2 TIME, s TIMESTAMP_NTZ, s2 TIMESTAMP_NTZ, l TIMESTAMP_LTZ)"},
+      {"sql": "SELECT s + 1 AS c FROM tr_s", "expect": {"error": {"messageContains": "SQL compilation error:"}}}
+    ]},
+    {"name": "string-aliases", "steps": [
+      {"sql": "SELECT 42::nvarchar()", "expect": {"value": "42"}},
+      {"sql": "SELECT 42::NVARCHAR", "expect": {"value": "42"}},
+      {"sql": "SELECT CAST('x' AS CHAR VARYING)", "expect": {"value": "x"}},
+      {"sql": "SELECT CAST('x' AS CHARACTER VARYING)", "expect": {"value": "x"}},
+      {"sql": "SELECT CAST('x' AS NCHAR VARYING)", "expect": {"value": "x"}},
+      {"sql": "SELECT CAST('x' AS CHARACTER)", "expect": {"value": "x"}}
+    ]},
+    {"name": "decfloat-maps-to-double", "steps": [
+      {"sql": "SELECT CAST(1.5 AS DECFLOAT)", "expect": {"value": "1.5"}},
+      {"sql": "CREATE TABLE dfl (x DECFLOAT)"},
+      {"sql": "INSERT INTO dfl VALUES (2.5)"},
+      {"sql": "SELECT x FROM dfl", "expect": {"value": "2.5"}}
+    ]},
+    {"name": "timestamp-aliases", "steps": [
+      {"sql": "SELECT STARTSWITH('' || ('2024-04-08 10:00:00'::TIMESTAMPLTZ), '2024-04-08')", "expect": {"value": "true"}},
+      {"sql": "SELECT STARTSWITH('' || ('2024-04-08 10:00:00'::timestamptz), '2024-04-08')", "expect": {"value": "true"}},
+      {"sql": "SELECT STARTSWITH('' || ('2024-04-08 10:00:00'::TIMESTAMP WITH LOCAL TIME ZONE), '2024-04-08')", "expect": {"value": "true"}}
+    ]},
+    {"name": "date-literal", "steps": [
+      {"sql": "SELECT DATE '2020-01-15'", "expect": {"value": "2020-01-15"}}
+    ]},
+    {"name": "timestamp-literal", "steps": [
+      {"sql": "SELECT '<' || TIMESTAMP '2020-01-15 10:30:00' || '>'", "expect": {"value": "<2020-01-15 10:30:00.000>"}}
+    ]},
+    {"name": "timestamp-ntz-literal", "steps": [
+      {"sql": "SELECT TIMESTAMP_NTZ '2020-01-15 10:30:00'", "expect": {"error": {}}},
+      {"sql": "SELECT '<' || '2020-01-15 10:30:00'::TIMESTAMP_NTZ || '>'", "expect": {"value": "<2020-01-15 10:30:00.000>"}}
+    ]},
+    {"name": "keyword-is-case-insensitive", "steps": [
+      {"sql": "SELECT date '2020-01-15'", "expect": {"value": "2020-01-15"}}
+    ]},
+    {"name": "composes-with-date-arithmetic", "steps": [
+      {"sql": "SELECT DATE '2020-01-15' + 5", "expect": {"value": "2020-01-20"}},
+      {"sql": "SELECT DATE '2020-03-01' - DATE '2020-01-01'", "expect": {"value": "60"}}
+    ]},
+    {"name": "works-in-where", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, d DATE)"},
+      {"sql": "INSERT INTO t VALUES (1, '2020-01-10'), (2, '2020-02-20')"},
+      {"sql": "SELECT id FROM t WHERE d > DATE '2020-01-31'", "expect": {"value": "2"}}
+    ]},
+    {"name": "works-in-insert-values", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, d DATE)"},
+      {"sql": "INSERT INTO t VALUES (1, DATE '2020-12-25')"},
+      {"sql": "SELECT d FROM t WHERE id = 1", "expect": {"value": "2020-12-25"}}
+    ]},
+    {"name": "date-as-column-name-still-resolves", "steps": [
+      {"sql": "CREATE TABLE c (date VARCHAR, timestamp VARCHAR)"},
+      {"sql": "INSERT INTO c VALUES ('a', 'b')"},
+      {"sql": "SELECT date FROM c", "expect": {"value": "a"}},
+      {"sql": "SELECT timestamp FROM c", "expect": {"value": "b"}}
+    ]}
+  ]
+}

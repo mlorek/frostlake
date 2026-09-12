@@ -1,0 +1,49 @@
+{
+  "suite": "dml-default-marker",
+  "description": "The bare word DEFAULT as a DML value writes the column's DECLARED default: NULL for a column without one (refused only by a NOT NULL constraint, as a NULL), the next sequence value for AUTOINCREMENT; it works positionally, per row of a multi-row VALUES, in UPDATE SET and in both MERGE clauses - and it is a marker ONLY where it stands alone, resolving as an invalid identifier inside any larger expression. Converted 1:1 from dml/DefaultMarkerTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "insert-writes-the-declared-default", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dm (a INT DEFAULT 9, b INT, c INT NOT NULL, s VARCHAR(5) DEFAULT 'x')"},
+      {"sql": "INSERT INTO dm (a, b, c, s) VALUES (DEFAULT, DEFAULT, 1, DEFAULT)"},
+      {"sql": "SELECT a, b, c, s FROM dm", "expect": {"rows": [["9", "NULL", "1", "x"]]}}
+    ]},
+    {"name": "a-not-null-column-refuses-the-null", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dm (a INT DEFAULT 9, b INT, c INT NOT NULL, s VARCHAR(5) DEFAULT 'x')"},
+      {"sql": "INSERT INTO dm (a, b, c, s) VALUES (1, 2, DEFAULT, 'y')",
+       "expect": {"error": {"messageContains": "failed on column C with error: NULL result in a non-nullable column"}}}
+    ]},
+    {"name": "it-works-positionally-and-per-row", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dm (a INT DEFAULT 9, b INT, c INT NOT NULL, s VARCHAR(5) DEFAULT 'x')"},
+      {"sql": "INSERT INTO dm VALUES (DEFAULT, 5, 6, 'z')"},
+      {"sql": "INSERT INTO dm (a, b, c, s) VALUES (DEFAULT, 1, 7, 'p'), (2, DEFAULT, 8, 'q')"},
+      {"sql": "SELECT a, b, c, s FROM dm ORDER BY c",
+       "expect": {"rows": [["9", "5", "6", "z"], ["9", "1", "7", "p"], ["2", "NULL", "8", "q"]], "ordered": true}}
+    ]},
+    {"name": "update-takes-it-too", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dm (a INT DEFAULT 9, b INT, c INT NOT NULL, s VARCHAR(5) DEFAULT 'x')"},
+      {"sql": "INSERT INTO dm VALUES (1, 2, 6, 'z')"},
+      {"sql": "UPDATE dm SET a = DEFAULT WHERE c = 6"},
+      {"sql": "UPDATE dm SET b = DEFAULT WHERE c = 6"},
+      {"sql": "SELECT a, b, c, s FROM dm WHERE c = 6", "expect": {"rows": [["9", "NULL", "6", "z"]]}}
+    ]},
+    {"name": "an-autoincrement-column-takes-its-next-value", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dmi (id INT AUTOINCREMENT, v INT DEFAULT 4)"},
+      {"sql": "INSERT INTO dmi (id, v) VALUES (DEFAULT, DEFAULT)"},
+      {"sql": "SELECT id, v FROM dmi", "expect": {"rows": [["1", "4"]]}}
+    ]},
+    {"name": "both-merge-clauses-take-it", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dms (k INT, v INT DEFAULT 3)"},
+      {"sql": "MERGE INTO dms t USING (SELECT 1 AS k) s ON t.k = s.k WHEN NOT MATCHED THEN INSERT (k, v) VALUES (s.k, DEFAULT)"},
+      {"sql": "SELECT k, v FROM dms", "expect": {"rows": [["1", "3"]]}},
+      {"sql": "MERGE INTO dms t USING (SELECT 1 AS k) s ON t.k = s.k WHEN MATCHED THEN UPDATE SET t.v = DEFAULT"},
+      {"sql": "SELECT k, v FROM dms", "expect": {"rows": [["1", "3"]]}}
+    ]},
+    {"name": "it-is-a-marker-only-when-it-stands-alone", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE dm (a INT DEFAULT 9, b INT, c INT NOT NULL, s VARCHAR(5) DEFAULT 'x')"},
+      {"sql": "INSERT INTO dm VALUES (1, 2, 6, 'z')"},
+      {"sql": "UPDATE dm SET a = DEFAULT + 1 WHERE c = 6",
+       "expect": {"error": {"messageContains": "invalid identifier 'DEFAULT'"}}}
+    ]}
+  ]
+}

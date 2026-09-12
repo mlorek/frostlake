@@ -1,0 +1,22 @@
+{
+  "suite": "query-group-by-complex-projection",
+  "description": "A complex (non-aggregate) expression projected alongside an aggregate in a GROUP BY query must be EVALUATED, not column-looked-up. The grouped-evaluation path previously resolved a select item by column NAME and returned null for anything that was not a bare column - arithmetic, a boolean, a function of the group keys - and these now evaluate on a representative group row through the AST evaluator, which is sound because the group keys are constant within a group. Converted 1:1 from query/GroupByComplexProjectionTest (now retired); the Java collected the projected column into a HashSet and compared unordered, discarding both the row order and the aggregate beside it, so the converted tests add an ORDER BY and state the whole ordered row set including the counts.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-function-projection", "steps": [
+      {"sql": "CREATE TABLE gp (a INT, b INT, name VARCHAR)"},
+      {"sql": "INSERT INTO gp VALUES (1, 1, 'x'), (1, 0, 'x'), (0, 0, 'y')"},
+      {"sql": "SELECT UPPER(name), COUNT(*) FROM gp GROUP BY name ORDER BY 1", "expect": {"rows": [["X", 2], ["Y", 1]], "ordered": true}}
+    ]},
+    {"name": "an-arithmetic-projection", "steps": [
+      {"sql": "CREATE TABLE gp (a INT, b INT, name VARCHAR)"},
+      {"sql": "INSERT INTO gp VALUES (1, 1, 'x'), (1, 0, 'x'), (0, 0, 'y')"},
+      {"sql": "SELECT a + b, COUNT(*) FROM gp GROUP BY a, b ORDER BY 1", "expect": {"rows": [[0, 1], [1, 1], [2, 1]], "ordered": true}}
+    ]},
+    {"name": "a-boolean-projection", "steps": [
+      {"sql": "CREATE TABLE gp (a INT, b INT, name VARCHAR)"},
+      {"sql": "INSERT INTO gp VALUES (1, 1, 'x'), (1, 0, 'x'), (0, 0, 'y')"},
+      {"sql": "SELECT a > 0 AND b > 0 AS flag, COUNT(*) FROM gp GROUP BY a, b ORDER BY flag, 2", "expect": {"rows": [[false, 1], [false, 1], [true, 1]], "ordered": true}}
+    ]}
+  ]
+}

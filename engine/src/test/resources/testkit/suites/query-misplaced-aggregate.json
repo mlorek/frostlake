@@ -1,0 +1,41 @@
+{
+  "suite": "query-misplaced-aggregate",
+  "description": "An aggregate belongs to the SELECT list and to HAVING - never to WHERE, to a join's ON condition, or to a GROUP BY key, all three of which are evaluated BEFORE the grouping that would give it rows. Each clause names itself in the refusal: 'Invalid aggregate function in where clause', 'Invalid aggregate function in ON clause', and the grouped-validation sentence 'is not a valid group by expression'; a WINDOW function inside an aggregate has a sentence of its own. Nesting the aggregate inside another call changes nothing - ABS(SUM(b)) in WHERE is refused the same way. Frostlake once answered 'Unknown function SUM.' for the WHERE cases and ACCEPTED the ON and GROUP BY ones outright, because an aggregate reaching a place the aggregate machinery does not run falls through to the SCALAR resolver. Live prints the call canonicalised where the engine prints it as written, so these assert the sentence AROUND the brackets. Converted 1:1 from query/MisplacedAggregateTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "where-names-the-clause", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g WHERE SUM(b) > 0", "expect": {"error": {"messageContains": "Invalid aggregate function in where clause"}}},
+      {"sql": "SELECT a FROM g WHERE COUNT(*) > 0", "expect": {"error": {"messageContains": "Invalid aggregate function in where clause"}}}
+    ]},
+    {"name": "nesting-it-inside-another-call-changes-nothing", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g WHERE ABS(SUM(b)) > 0", "expect": {"error": {"messageContains": "Invalid aggregate function in where clause"}}}
+    ]},
+    {"name": "an-on-condition-names-its-own-clause", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT g.a FROM g JOIN g g2 ON SUM(g.b) = g2.a", "expect": {"error": {"messageContains": "Invalid aggregate function in ON clause"}}}
+    ]},
+    {"name": "a-group-by-key-gets-the-grouped-sentence", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT COUNT(*) FROM g GROUP BY SUM(b)", "expect": {"error": {"messageContains": "is not a valid group by expression"}}}
+    ]},
+    {"name": "a-window-inside-an-aggregate-is-refused", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT SUM(ROW_NUMBER() OVER (ORDER BY b)) FROM g", "expect": {"error": {"messageContains": "may not appear inside an aggregate function."}}},
+      {"sql": "SELECT a FROM g WHERE a = (SELECT MAX(ROW_NUMBER() OVER (ORDER BY b)) FROM g)", "expect": {"error": {"messageContains": "may not appear inside an aggregate function."}}}
+    ]},
+    {"name": "the-places-it-belongs-are-untouched", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT SUM(b) FROM g", "expect": {"value": 60}},
+      {"sql": "SELECT COUNT(*) FROM g HAVING SUM(b) > 0", "expect": {"value": 3}},
+      {"sql": "SELECT COUNT(*) FROM g GROUP BY a HAVING SUM(b) > 0 ORDER BY a", "expect": {"rows": [[2],[1]], "ordered": true}}
+    ]}
+  ]
+}

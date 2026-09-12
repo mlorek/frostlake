@@ -1,0 +1,70 @@
+{
+  "suite": "features-snowflake-verified-fidelity",
+  "description": "Behaviors verified against live Snowflake in the replay campaign: CREATE SCHEMA activates the new schema and CREATE DATABASE activates it with PUBLIC current (USE DATABASE resets the current schema to PUBLIC), a bare INSERT requires the exact column count, ADD FOREIGN KEY validates the LOCAL column, SELECT ALL is DISTINCT's counterpart, FORMAT is usable as a function name, DROP SCHEMA accepts PUBLIC and RESTRICT, snappy COMPRESS round-trips, and a parenthesized join may sit on the right side of a join. Converted 1:1 from features/SnowflakeVerifiedFidelityTest (now retired). The context tests restore test_db / test_schema and drop the databases they create.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "create-schema-activates-the-new-schema", "steps": [
+      {"sql": "CREATE TABLE ctx_t (id INTEGER)"},
+      {"sql": "CREATE SCHEMA ctx_other"},
+      {"sql": "SELECT CURRENT_SCHEMA()", "expect": {"value": "CTX_OTHER"}},
+      {"sql": "CREATE TABLE ctx_t (id INTEGER)"},
+      {"sql": "USE SCHEMA test_schema"}
+    ]},
+    {"name": "create-database-activates-it-with-public-schema", "steps": [
+      {"sql": "CREATE DATABASE ctx_db"},
+      {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "CTX_DB"}},
+      {"sql": "SELECT CURRENT_SCHEMA()", "expect": {"value": "PUBLIC"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "SELECT CURRENT_SCHEMA()", "expect": {"value": "PUBLIC"}},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS ctx_db"}
+    ]},
+    {"name": "bare-insert-requires-the-exact-column-count", "steps": [
+      {"sql": "CREATE TABLE arity_t (a INTEGER, b INTEGER, c INTEGER)"},
+      {"sql": "INSERT INTO arity_t VALUES (1, 2)",
+       "expect": {"error": {"messageContains": "expecting 3 but got 2"}}},
+      {"sql": "INSERT INTO arity_t VALUES (1, 2, 3, 4)", "expect": {"error": {}}},
+      {"sql": "INSERT INTO arity_t (a, b) VALUES (1, 2)"},
+      {"sql": "SELECT COUNT(*) FROM arity_t", "expect": {"value": "1"}}
+    ]},
+    {"name": "add-foreign-key-validates-the-local-column", "steps": [
+      {"sql": "CREATE TABLE fk_dept (dept_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE fk_emp (emp_id INTEGER)"},
+      {"sql": "ALTER TABLE fk_emp ADD FOREIGN KEY (dept_id) REFERENCES fk_dept (dept_id)",
+       "expect": {"error": {"messageContains": "invalid identifier 'DEPT_ID'"}}}
+    ]},
+    {"name": "select-all-is-the-distinct-counterpart", "steps": [
+      {"sql": "CREATE TABLE all_t (n INTEGER)"},
+      {"sql": "INSERT INTO all_t VALUES (1), (1), (2)"},
+      {"sql": "SELECT ALL n FROM all_t", "expect": {"rowCount": 3}},
+      {"sql": "SELECT DISTINCT n FROM all_t", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "format-is-usable-as-a-function-name", "steps": [
+      {"sql": "CREATE FUNCTION format(v VARCHAR) RETURNS VARCHAR AS $$ v $$"},
+      {"sql": "SELECT format('x')", "expect": {"value": "x"}}
+    ]},
+    {"name": "drop-schema-matches-live-semantics", "steps": [
+      {"sql": "CREATE DATABASE drop_sem_db"},
+      {"sql": "USE SCHEMA information_schema"},
+      {"sql": "DROP SCHEMA drop_sem_db.PUBLIC"},
+      {"sql": "CREATE SCHEMA drop_sem_db.rs"},
+      {"sql": "CREATE TABLE drop_sem_db.rs.t (id INTEGER)"},
+      {"sql": "DROP SCHEMA drop_sem_db.rs RESTRICT"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS drop_sem_db"}
+    ]},
+    {"name": "snappy-compress-round-trips", "steps": [
+      {"sql": "SELECT DECOMPRESS_STRING(COMPRESS('hello snappy', 'snappy'), 'snappy')",
+       "expect": {"value": "hello snappy"}}
+    ]},
+    {"name": "parenthesized-join-on-the-right-side-of-a-join", "steps": [
+      {"sql": "CREATE TABLE pj_orders (order_id INTEGER)"},
+      {"sql": "CREATE TABLE pj_ship (order_id INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO pj_orders VALUES (1), (2)"},
+      {"sql": "INSERT INTO pj_ship VALUES (1, 'a')"},
+      {"sql": "SELECT COUNT(*) FROM pj_orders o JOIN ( pj_ship s JOIN pj_orders o2 ON s.order_id = o2.order_id ) ON o.order_id = s.order_id",
+       "expect": {"value": "1"}}
+    ]}
+  ]
+}

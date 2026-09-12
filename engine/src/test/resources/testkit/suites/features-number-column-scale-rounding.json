@@ -1,0 +1,33 @@
+{
+  "suite": "features-number-column-scale-rounding",
+  "description": "Writes into fixed-point columns round to the COLUMN's scale: a bare NUMBER column is NUMBER(38,0), so an INSERT of 10.5 stores 11 and 2.71828 stores 3 (HALF_UP, away from zero for negatives), the INTEGER aliases behave the same, a scaled column rounds to its own scale and renders with it, FLOAT/DOUBLE columns keep the fraction, and UPDATE rounds exactly as INSERT does. Converted 1:1 from features/NumberColumnScaleRoundingTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "bare-number-column-rounds-fractional-writes", "steps": [
+      {"sql": "CREATE TABLE nr_bare (v NUMBER)"},
+      {"sql": "INSERT INTO nr_bare VALUES (10.5), (2.71828), (-5.7)"},
+      {"sql": "SELECT LISTAGG(v, ',') WITHIN GROUP (ORDER BY v DESC) FROM nr_bare", "expect": {"value": "11,3,-6"}}
+    ]},
+    {"name": "integer-alias-columns-round-the-same-way", "steps": [
+      {"sql": "CREATE TABLE nr_int (v INTEGER)"},
+      {"sql": "INSERT INTO nr_int VALUES (10.5)"},
+      {"sql": "SELECT v FROM nr_int", "expect": {"value": "11"}}
+    ]},
+    {"name": "scaled-column-rounds-to-its-own-scale", "steps": [
+      {"sql": "CREATE TABLE nr_scaled (v NUMBER(10,2))"},
+      {"sql": "INSERT INTO nr_scaled VALUES (1.005), (1.2)"},
+      {"sql": "SELECT LISTAGG(v, ',') WITHIN GROUP (ORDER BY v) FROM nr_scaled", "expect": {"value": "1.01,1.20"}}
+    ]},
+    {"name": "double-columns-keep-the-fraction", "steps": [
+      {"sql": "CREATE TABLE nr_double (v DOUBLE)"},
+      {"sql": "INSERT INTO nr_double VALUES (10.5)"},
+      {"sql": "SELECT v FROM nr_double", "expect": {"value": "10.5"}}
+    ]},
+    {"name": "updates-round-like-inserts", "steps": [
+      {"sql": "CREATE TABLE nr_upd (v NUMBER)"},
+      {"sql": "INSERT INTO nr_upd VALUES (1)"},
+      {"sql": "UPDATE nr_upd SET v = 2.6"},
+      {"sql": "SELECT v FROM nr_upd", "expect": {"value": "3"}}
+    ]}
+  ]
+}

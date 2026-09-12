@@ -1,0 +1,90 @@
+{
+  "suite": "ddl-alter-rename",
+  "description": "ALTER TABLE ... RENAME TO forms, converted 1:1 from ddl/AlterRenameToTest.java (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "rename-table-with-to",
+      "steps": [
+        {"sql": "CREATE TABLE r1 (id INTEGER)"},
+        {"sql": "INSERT INTO r1 VALUES (7)"},
+        {"sql": "ALTER TABLE r1 RENAME TO r2"},
+        {"sql": "SELECT COUNT(*) FROM r2", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "rename-column-with-to",
+      "steps": [
+        {"sql": "CREATE TABLE rc (a INTEGER)"},
+        {"sql": "INSERT INTO rc VALUES (5)"},
+        {"sql": "ALTER TABLE rc RENAME COLUMN a TO b"},
+        {"sql": "SELECT b FROM rc", "expect": {"value": "5"}}
+      ]
+    },
+    {
+      "name": "rename-without-to-still-parses",
+      "steps": [
+        {"sql": "CREATE TABLE r3 (id INTEGER)"},
+        {"sql": "ALTER TABLE r3 RENAME TO r4"},
+        {"sql": "SELECT COUNT(*) FROM r4", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "rename-to-qualified-same-schema",
+      "steps": [
+        {"sql": "CREATE TABLE q1 (id INTEGER)"},
+        {"sql": "INSERT INTO q1 VALUES (7)"},
+        {"sql": "ALTER TABLE test_schema.q1 RENAME TO test_schema.q2"},
+        {"sql": "SELECT COUNT(*) FROM q2", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "rename-to-other-schema-moves-table-with-data",
+      "steps": [
+        {"sql": "CREATE SCHEMA s2"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "CREATE TABLE m1 (id INTEGER)"},
+        {"sql": "INSERT INTO m1 VALUES (1), (2)"},
+        {"sql": "ALTER TABLE test_schema.m1 RENAME TO s2.m2"},
+        {"sql": "SELECT COUNT(*) FROM s2.m2", "expect": {"value": "2"}},
+        {"sql": "SELECT COUNT(*) FROM test_schema.m1", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "if-exists-qualified-rename-moves-table",
+      "steps": [
+        {"sql": "CREATE SCHEMA s2"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "CREATE TABLE t1 (id INTEGER)"},
+        {"sql": "INSERT INTO t1 VALUES (9)"},
+        {"sql": "ALTER TABLE IF EXISTS test_schema.t1 RENAME TO s2.t2"},
+        {"sql": "SELECT COUNT(*) FROM s2.t2", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "if-exists-missing-source-is-no-op",
+      "steps": [
+        {"sql": "CREATE SCHEMA s2"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "ALTER TABLE IF EXISTS test_schema.nope RENAME TO s2.whatever"}
+      ]
+    },
+    {
+      "name": "move-to-missing-schema-errors",
+      "steps": [
+        {"sql": "CREATE TABLE mm (id INTEGER)"},
+        {"sql": "ALTER TABLE test_schema.mm RENAME TO no_such_schema.x", "expect": {"error": {"messageContains": "schema"}}}
+      ]
+    },
+    {
+      "name": "move-onto-existing-name-errors",
+      "steps": [
+        {"sql": "CREATE SCHEMA s2"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "CREATE TABLE dup (id INTEGER)"},
+        {"sql": "CREATE TABLE s2.dup (id INTEGER)"},
+        {"sql": "ALTER TABLE test_schema.dup RENAME TO s2.dup", "expect": {"error": {"messageContains": "already exists"}}}
+      ]
+    }
+  ]
+}

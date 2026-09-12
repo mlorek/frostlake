@@ -27,6 +27,10 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.SignStyle;
+import java.time.temporal.ChronoField;
+import java.util.Locale;
 
 /**
  * How {@code getString} renders a temporal cell, per DECLARED type — measured against a real account's
@@ -53,19 +57,39 @@ import java.time.format.DateTimeFormatter;
  */
 public final class TemporalText {
 
-    private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final DateTimeFormatter DATE = eraYearFormat("-MM-dd");
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
-    private static final DateTimeFormatter NAIVE =
-        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
-    private static final DateTimeFormatter ZONED =
-        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS Z");
+    private static final DateTimeFormatter NAIVE = eraYearFormat("-MM-dd HH:mm:ss.SSS");
+    private static final DateTimeFormatter ZONED = eraYearFormat("-MM-dd HH:mm:ss.SSS Z");
+    private static final DateTimeFormatter SECONDS = eraYearFormat("-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter OFFSET = DateTimeFormatter.ofPattern("Z");
 
     private TemporalText() {
     }
 
     /**
+     * A pattern led by the YEAR as the account prints it: {@code 20201-01-15} for a date past 9999,
+     * where the pattern letters {@code yyyy} print {@code +20201-01-15} (live-verified).
+     */
+    private static DateTimeFormatter eraYearFormat(final String rest) {
+        return appendEraYear(new DateTimeFormatterBuilder()).appendPattern(rest).toFormatter();
+    }
+
+    /**
+     * The YEAR element as the account prints it in every text of a date or a timestamp: the year of the
+     * era, four digits at least, never signed — see SharedFunctionHelpers#yearText for the same rule
+     * as a text.
+     *
+     * @param builder the formatter under construction
+     * @return the same builder
+     */
+    public static DateTimeFormatterBuilder appendEraYear(final DateTimeFormatterBuilder builder) {
+        return builder.appendValue(ChronoField.YEAR_OF_ERA, 4, 19, SignStyle.NORMAL);
+    }
+
+    /**
      * The value a JSON wire should carry for a column of {@code declared}: a temporal cell as its
-     * rendered TEXT, and anything else UNTOUCHED.
+     * {@linkplain #wireText transport text}, and anything else UNTOUCHED.
      *
      * <p>Untouched matters. Rendering every cell would cross a number as the string {@code "42.0"},
      * and the far side would fail to read it as an int — the wire keeps JSON's own types for
@@ -75,7 +99,113 @@ public final class TemporalText {
         if (value == null || declared == null || declared.getCategory() != TypeCategory.DATE_TIME) {
             return value;
         }
-        return render(value, declared);
+        return wireText(value, declared);
+    }
+
+    /**
+     * The TRANSPORT text of a temporal cell: {@link #render}'s shape with nothing cut from the fraction
+     * of a second. A timestamp carries three, six or nine fractional digits — as many as its value
+     * needs and never fewer than three, so a whole millisecond crosses exactly as its display text —
+     * and a TIME with a fraction carries it after the seconds. The display form is a lossy rendering;
+     * a transport that carried it could never hand a client the value. {@link #displayOfWire} cuts the
+     * text back to what {@code getString} shows.
+     */
+    public static String wireText(final Object value, final DataType declared) {
+        final String type = declared.getName().toUpperCase();
+        if ("TIME".equals(type) && value instanceof LocalTime) {
+            final LocalTime time = (LocalTime) value;
+            return time.getNano() == 0 ? TIME.format(time) : TIME.format(time) + "." + fraction(time.getNano());
+        }
+        if (!type.startsWith("TIMESTAMP")) {
+            return render(value, declared);
+        }
+        final boolean zoned = "TIMESTAMP_LTZ".equals(type) || "TIMESTAMP_TZ".equals(type);
+        final ZonedDateTime at = zoned ? zonedValue(value) : null;
+        final LocalDateTime local = zoned ? (at == null ? null : at.toLocalDateTime()) : localValue(value);
+        if (local == null) {
+            return render(value, declared);
+        }
+        final String text = SECONDS.format(local) + "." + fraction(local.getNano());
+        return zoned ? text + " " + OFFSET.format(at) : text;
+    }
+
+    /**
+     * The display text of a temporal cell as the wire carries it ({@link #wireText}): the fraction cut
+     * back to what {@code getString} shows — three digits for a timestamp, none for a TIME. Text of any
+     * other shape passes through.
+     *
+     * @param wire the cell's transport text
+     * @param typeName the column's declared type name
+     * @return the display text
+     */
+    public static String displayOfWire(final String wire, final String typeName) {
+        if (wire == null || typeName == null) {
+            return wire;
+        }
+        final String type = typeName.toUpperCase();
+        if ("TIME".equals(type)) {
+            return wire.length() > 8 && wire.charAt(8) == '.' ? wire.substring(0, 8) : wire;
+        }
+        if (!type.startsWith("TIMESTAMP") || wire.length() < 20 || wire.charAt(19) != '.') {
+            return wire;
+        }
+        int end = 20;
+        while (end < wire.length() && Character.isDigit(wire.charAt(end))) {
+            end++;
+        }
+        return wire.substring(0, 20) + (wire.substring(20, end) + "000").substring(0, 3) + wire.substring(end);
+    }
+
+    /** Three, six or nine digits of a fraction of a second — as many as {@code nanos} needs, at least three. */
+    private static String fraction(final int nanos) {
+        final String nine = String.format(Locale.ROOT, "%09d", nanos);
+        if (nanos % 1_000_000 == 0) {
+            return nine.substring(0, 3);
+        }
+        return nanos % 1_000 == 0 ? nine.substring(0, 6) : nine;
+    }
+
+    /** A naive timestamp's wall clock, for the classes {@link #format} widens; null for anything else. */
+    private static LocalDateTime localValue(final Object value) {
+        if (value instanceof LocalDateTime) {
+            return (LocalDateTime) value;
+        }
+        if (value instanceof LocalDate) {
+            return ((LocalDate) value).atStartOfDay();
+        }
+        if (value instanceof ZonedDateTime) {
+            return ((ZonedDateTime) value).toLocalDateTime();
+        }
+        if (value instanceof OffsetDateTime) {
+            return ((OffsetDateTime) value).toLocalDateTime();
+        }
+        if (value instanceof Instant) {
+            return LocalDateTime.ofInstant((Instant) value, ZoneId.systemDefault());
+        }
+        if (value instanceof java.sql.Timestamp) {
+            return ((java.sql.Timestamp) value).toLocalDateTime();
+        }
+        return null;
+    }
+
+    /** A zoned timestamp, read as {@link #zoned} reads it; null for a class it cannot place. */
+    private static ZonedDateTime zonedValue(final Object value) {
+        if (value instanceof ZonedDateTime) {
+            return (ZonedDateTime) value;
+        }
+        if (value instanceof OffsetDateTime) {
+            return ((OffsetDateTime) value).toZonedDateTime();
+        }
+        if (value instanceof Instant) {
+            return ((Instant) value).atZone(ZoneId.systemDefault());
+        }
+        if (value instanceof LocalDateTime) {
+            return ((LocalDateTime) value).atZone(ZoneId.systemDefault());
+        }
+        if (value instanceof java.sql.Timestamp) {
+            return ((java.sql.Timestamp) value).toLocalDateTime().atZone(ZoneId.systemDefault());
+        }
+        return null;
     }
 
     /**

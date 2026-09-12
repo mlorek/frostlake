@@ -1,0 +1,30 @@
+{
+  "suite": "query-lateral-flatten-correlated",
+  "description": "LATERAL FLATTEN whose input is a FUNCTION-WRAPPED correlated column, as in FLATTEN(input => PARSE_JSON(tags)). The correlated column lives on the OUTER row, so the whole input expression must be evaluated with the lateral context in scope - a bare input => tags always worked, but the wrapped form previously failed with 'column not found'. The pipeline test stacks what a real loader does: a source over VALUES with auto-named columns, a FLATTEN of a parse_json'd correlated column that FANS OUT one outer row into several, a DENSE_RANK whose ORDER BY tie-breaks on the cast FLATTEN output, and string building over the result. A LATERAL join whose LEFT side has ZERO rows must return an empty result rather than crash: the right side's schema was only captured inside the per-left-row loop, so an empty left left the right table null and NPE'd downstream - covered for the comma form, the LEFT JOIN LATERAL form, and an empty lateral feeding an outer join. Converted 1:1 from query/LateralFlattenCorrelatedTest (now retired); the VALUES source is wrapped in a view so the auto-named COLUMN1..n reference the Java's CTE relied on is preserved.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-flatten-over-parse-json-of-a-correlated-column", "steps": [
+      {"sql": "CREATE TABLE machines (name VARCHAR, tags VARCHAR)"},
+      {"sql": "INSERT INTO machines VALUES ('d1', '[\"a\",\"b\"]'), ('d2', '[\"c\"]')"},
+      {"sql": "SELECT name, f.value::VARCHAR AS tag FROM machines, LATERAL FLATTEN(input => parse_json(tags)) f ORDER BY name, tag", "expect": {"rows": [["d1","a"],["d1","b"],["d2","c"]], "ordered": true}}
+    ]},
+    {"name": "a-values-flatten-dense-rank-pipeline", "steps": [
+      {"sql": "CREATE OR REPLACE VIEW orders_v AS SELECT * FROM VALUES ('ORD1', 'alpha_team', '[\"red_hat\",\"blue_sky\"]', '50'), ('ORD2', 'beta_team', '[\"green_field\"]', '75')"},
+      {"sql": "SELECT UPPER(REPLACE(column2,'_','-')) || '#' || UPPER(REPLACE(t.value::VARCHAR,'_','-')) || '#' || LPAD(TO_VARCHAR(DENSE_RANK() OVER (ORDER BY column2, t.value::VARCHAR)), 3, '0') AS tag_id, column1 AS order_id, t.value::VARCHAR AS tag, column4::NUMBER AS score FROM orders_v, LATERAL FLATTEN(input => parse_json(column3)) t ORDER BY tag_id", "expect": {"rows": [["ALPHA-TEAM#BLUE-SKY#001","ORD1","blue_sky",50],["ALPHA-TEAM#RED-HAT#002","ORD1","red_hat",50],["BETA-TEAM#GREEN-FIELD#003","ORD2","green_field",75]], "ordered": true}}
+    ]},
+    {"name": "a-comma-lateral-flatten-over-an-empty-left-is-empty", "steps": [
+      {"sql": "CREATE TABLE empty_dev (id INT, installs ARRAY)"},
+      {"sql": "SELECT b.value FROM empty_dev r, LATERAL FLATTEN(input => r.installs) AS b", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-left-join-lateral-flatten-over-an-empty-left-is-empty", "steps": [
+      {"sql": "CREATE TABLE empty_dev2 (id INT, installs ARRAY)"},
+      {"sql": "SELECT b.value FROM empty_dev2 r LEFT JOIN LATERAL FLATTEN(input => r.installs) AS b", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "an-empty-lateral-then-an-outer-join-is-empty", "steps": [
+      {"sql": "CREATE TABLE dim_sw (software_key VARCHAR, name VARCHAR)"},
+      {"sql": "INSERT INTO dim_sw VALUES ('k1', 'n1')"},
+      {"sql": "CREATE TABLE empty_src (id INT, installs ARRAY)"},
+      {"sql": "SELECT dest.name FROM (SELECT b.value::VARCHAR AS software_key FROM empty_src r, LATERAL FLATTEN(input => r.installs) AS b) source_data LEFT JOIN dim_sw AS dest ON dest.software_key = source_data.software_key", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

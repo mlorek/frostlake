@@ -1,0 +1,19 @@
+{
+  "suite": "functions-array-unique-agg",
+  "description": "ARRAY_UNIQUE_AGG(expr) collects DISTINCT non-NULL scalar inputs (one element per row) into an ARRAY: duplicates collapse, NULLs are dropped, and an all-NULL group yields the empty array. Element order is not guaranteed, so the Java class compared the sorted set of numeric elements - the converted suite does the same server-side with ARRAY_SORT, reading the result through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell. Converted 1:1 from functions/ArrayUniqueAggTest (now retired); its @BeforeEach fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "distinct-non-null-values", "steps": [
+      {"sql": "CREATE TABLE u (g INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO u VALUES (1,1),(1,2),(1,2),(1,NULL),(1,3)"},
+      {"sql": "INSERT INTO u VALUES (2,5),(2,5)"},
+      {"sql": "SELECT g, TO_JSON(ARRAY_SORT(ARRAY_UNIQUE_AGG(v))) FROM u GROUP BY g ORDER BY g",
+       "expect": {"rowCount": 2, "rows": [["1", "[1,2,3]"], ["2", "[5]"]], "ordered": true}}
+    ]},
+    {"name": "an-all-null-group-yields-an-empty-array", "steps": [
+      {"sql": "CREATE TABLE u_n (g INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO u_n VALUES (9, NULL), (9, NULL)"},
+      {"sql": "SELECT TO_JSON(ARRAY_UNIQUE_AGG(v)) FROM u_n GROUP BY g", "expect": {"value": "[]"}}
+    ]}
+  ]
+}

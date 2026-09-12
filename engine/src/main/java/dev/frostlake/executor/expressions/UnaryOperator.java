@@ -20,5 +20,5 @@ package dev.frostlake.executor.expressions;
  * The operator of a {@link UnaryOperationExpression} — logical NOT, arithmetic NEGATE, or EXISTS.
  */
 public enum UnaryOperator {
-    NOT, NEGATE, EXISTS
+    NOT, NEGATE, PLUS, EXISTS
 }

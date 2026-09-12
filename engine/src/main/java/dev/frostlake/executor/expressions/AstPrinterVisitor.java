@@ -75,6 +75,8 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
                 return "(NOT " + expr.getOperand().accept(this) + ")";
             case NEGATE:
                 return "(- " + expr.getOperand().accept(this) + ")";
+            case PLUS:
+                return "(+ " + expr.getOperand().accept(this) + ")";
             case EXISTS:
                 return "(EXISTS " + expr.getOperand().accept(this) + ")";
             default:
@@ -332,7 +334,8 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
         return "** " + expr.getInner().accept(this);
     }
 
-    private String symbol(final BinaryOperator op) {
+    /** Package-visible so the message-only printer can build the bare form. */
+    String symbol(final BinaryOperator op) {
         switch (op) {
             case ADD: return "+";
             case SUBTRACT: return "-";

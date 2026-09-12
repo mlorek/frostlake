@@ -25,8 +25,10 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 
 /**
@@ -41,10 +43,13 @@ class HttpClient {
         .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
         .build();
     private String sessionId;
+    // A session the caller named may be shared, so closing this client never releases it.
+    private final boolean callerNamedSession;
 
     public HttpClient(final String baseUrl, final String sessionId) {
         this.baseUrl = baseUrl;
         this.sessionId = sessionId;
+        this.callerNamedSession = sessionId != null && !sessionId.isEmpty();
         this.client = java.net.http.HttpClient.newHttpClient();
     }
 
@@ -52,9 +57,23 @@ class HttpClient {
      * Execute SQL and return response
      */
     public SqlResponse execute(final String sql) throws SQLException {
+        return execute(sql, null);
+    }
+
+    /**
+     * Execute SQL, declaring how many statements it holds so the server applies the gate this driver
+     * applies. A null declares none, leaving the session's MULTI_STATEMENT_COUNT to answer.
+     *
+     * @param sql the statement, or a pack of them
+     * @param multiStatementCount the count this statement declares, or null
+     * @return the server's answer
+     * @throws SQLException when the request fails or the server refuses it
+     */
+    public SqlResponse execute(final String sql, final Integer multiStatementCount) throws SQLException {
         final SqlRequest request = new SqlRequest();
         request.setSql(sql);
         request.setSessionId(sessionId);
+        request.setMultiStatementCount(multiStatementCount);
 
         final String requestJson;
         try {
@@ -105,6 +124,29 @@ class HttpClient {
      */
     public String getSessionId() {
         return sessionId;
+    }
+
+    /**
+     * Release the server session this client was handed, so it does not linger until the idle sweep. A
+     * session the caller named is left alone, and a failure is ignored: the connection is closing
+     * either way.
+     */
+    public void releaseSession() {
+        if (callerNamedSession || sessionId == null) {
+            return;
+        }
+        final HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(baseUrl + "/api/sessions/"
+                + URLEncoder.encode(sessionId, StandardCharsets.UTF_8).replace("+", "%20")))
+            .DELETE()
+            .build();
+        try {
+            client.send(request, HttpResponse.BodyHandlers.discarding());
+        } catch (final IOException e) {
+            // The server is gone, and the session went with it.
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**

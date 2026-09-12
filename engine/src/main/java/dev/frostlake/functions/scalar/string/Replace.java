@@ -16,6 +16,9 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.functions.CollationMatching;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
@@ -35,9 +38,26 @@ public class Replace extends TextArgumentFunction {
         return str.replace(search, replacement);
     }
 
+    /** Under a collation every substring the collation calls equal to the search text is replaced. */
+    @Override
+    public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        if (collation == null || args.get(0) == null) {
+            return evaluate(args);
+        }
+        return CollationMatching.replaceUnder(collation, args.get(0).toString(),
+            args.get(1) != null ? args.get(1).toString() : "",
+            args.size() > 2 && args.get(2) != null ? args.get(2).toString() : "");
+    }
+
     @Override
     public int getMinArgCount() { return 2; }
 
     @Override
     public int getMaxArgCount() { return 3; }
+
+    /** A BINARY is no text here: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

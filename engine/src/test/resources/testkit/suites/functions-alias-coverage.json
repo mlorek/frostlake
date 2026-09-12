@@ -1,0 +1,49 @@
+{
+  "suite": "functions-alias-coverage",
+  "description": "Each Snowflake alias resolves to, and matches, its already-implemented base function: POW/POWER, TRUNCATE/TRUNC, DATE/TO_DATE, TIME/TO_TIME, TIMESTAMPADD/DATEADD, TIMESTAMPDIFF/DATEDIFF, DAYOFMONTH/DAY, VARIANCE_POP/VAR_POP and VARIANCE_SAMP/VAR_SAMP, plus LOCALTIME and SYSTIMESTAMP answering at all. Converted 1:1 from functions/AliasCoverageTest (now retired); each Java assertEquals over two result objects becomes an EQUAL_NULL comparison in SQL so the two spellings are compared server-side.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "pow-aliases-power", "steps": [
+      {"sql": "SELECT POW(2, 3)", "expect": {"value": "8"}},
+      {"sql": "SELECT EQUAL_NULL(POWER(2, 3), POW(2, 3))", "expect": {"value": "true"}}
+    ]},
+    {"name": "truncate-aliases-trunc", "steps": [
+      {"sql": "SELECT EQUAL_NULL(TRUNC(10.567, 1), TRUNCATE(10.567, 1))", "expect": {"value": "true"}}
+    ]},
+    {"name": "date-aliases-to-date", "steps": [
+      {"sql": "SELECT EQUAL_NULL(TO_DATE('2024-01-01'), DATE('2024-01-01'))", "expect": {"value": "true"}}
+    ]},
+    {"name": "time-aliases-to-time", "steps": [
+      {"sql": "SELECT EQUAL_NULL(TO_TIME('13:30:00'), TIME('13:30:00'))", "expect": {"value": "true"}}
+    ]},
+    {"name": "timestampadd-aliases-dateadd", "steps": [
+      {"sql": "SELECT EQUAL_NULL(DATEADD('day', 5, '2024-01-10'), TIMESTAMPADD('day', 5, '2024-01-10'))",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "timestampdiff-aliases-datediff", "steps": [
+      {"sql": "SELECT EQUAL_NULL(DATEDIFF('day', '2024-01-01', '2024-01-10'), TIMESTAMPDIFF('day', '2024-01-01', '2024-01-10'))",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "dayofmonth-aliases-day", "steps": [
+      {"sql": "SELECT DAYOFMONTH('2024-03-15'::DATE)", "expect": {"value": "15"}},
+      {"sql": "SELECT EQUAL_NULL(DAY('2024-03-15'::DATE), DAYOFMONTH('2024-03-15'::DATE))",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "localtime-aliases-current-time", "steps": [
+      {"sql": "SELECT IFF(LOCALTIME() IS NULL, 'null', 'set')", "expect": {"value": "set"}}
+    ]},
+    {"name": "systimestamp-aliases-sysdate", "steps": [
+      {"sql": "SELECT IFF(SYSTIMESTAMP() IS NULL, 'null', 'set')", "expect": {"value": "set"}}
+    ]},
+    {"name": "variance-pop-aliases-var-pop", "steps": [
+      {"sql": "CREATE TABLE nums (x NUMBER)"},
+      {"sql": "INSERT INTO nums VALUES (2), (4), (4), (6)"},
+      {"sql": "SELECT EQUAL_NULL(VAR_POP(x), VARIANCE_POP(x)) FROM nums", "expect": {"value": "true"}}
+    ]},
+    {"name": "variance-samp-aliases-var-samp", "steps": [
+      {"sql": "CREATE TABLE nums (x NUMBER)"},
+      {"sql": "INSERT INTO nums VALUES (2), (4), (4), (6)"},
+      {"sql": "SELECT EQUAL_NULL(VAR_SAMP(x), VARIANCE_SAMP(x)) FROM nums", "expect": {"value": "true"}}
+    ]}
+  ]
+}

@@ -29,7 +29,7 @@ import java.util.List;
 public class TryToBinary extends BuiltInFunction {
     private final ToBinary base = new ToBinary();
 
-    public TryToBinary() { super("TRY_TO_BINARY", BinaryType.VARBINARY); }
+    public TryToBinary() { super("TRY_TO_BINARY", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

@@ -1,0 +1,12 @@
+{
+  "suite": "functions-current-client",
+  "description": "CURRENT_CLIENT() answers a fixed, stable client identifier for the engine. Converted 1:1 from functions/CurrentClientTest (now retired), keeping the class's live exemption: the client identity differs on live Snowflake, so the value is pinned on the embedded engine only.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-returns-the-stable-client-identifier",
+     "skip": {"backends": ["snowflake"], "reason": "the client identity differs on live Snowflake"},
+     "steps": [
+      {"sql": "SELECT CURRENT_CLIENT()", "expect": {"value": "Frostlake"}}
+    ]}
+  ]
+}

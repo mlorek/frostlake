@@ -1,0 +1,39 @@
+{
+  "suite": "query-grouped-window-key",
+  "description": "Over a GROUPED query a window call settles NOTHING about its own references: its ARGUMENTS and its OVER keys alike must be grouped, aggregated, a SELECT alias, or constant. A window is computed AFTER the grouping, so it can only see what the grouping left. Frostlake used to let the OVER keys through - the grouped walk stopped at a window call, treating it as settled - and refused one shape live accepts, because a window ARGUMENT was judged against the projected shape rather than the relation the rows come from. A WINDOWED aggregate is not an aggregate here, so SUM(b) OVER (ORDER BY a) names G.B; but an aggregate NESTED in a window argument settles its own subtree, so LAG(MAX(c)) OVER (...) reads. QUALIFY's own windows are held to the same rule. Note the sentence: live answers with the BRACKETED, positionless form even under an explicit GROUP BY, where an ordinary ungrouped select item gets the positioned 'in select clause is neither an aggregate nor in the group by clause' instead. Converted 1:1 from query/GroupedWindowKeyTest (now retired); the Java counted rows for the accepted shapes, which the converted tests state as whole ordered row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-ungrouped-over-key-is-refused", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, ROW_NUMBER() OVER (ORDER BY c) r FROM g GROUP BY a", "expect": {"error": {"messageContains": "[G.C] is not a valid group by expression"}}},
+      {"sql": "SELECT a, ROW_NUMBER() OVER (PARTITION BY c ORDER BY a) r FROM g GROUP BY a", "expect": {"error": {"messageContains": "[G.C] is not a valid group by expression"}}}
+    ]},
+    {"name": "an-ungrouped-argument-is-refused", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, LAG(c) OVER (ORDER BY a) r FROM g GROUP BY a", "expect": {"error": {"messageContains": "[G.C] is not a valid group by expression"}}},
+      {"sql": "SELECT a, SUM(b) OVER (ORDER BY a) r FROM g GROUP BY a", "expect": {"error": {"messageContains": "[G.B] is not a valid group by expression"}}}
+    ]},
+    {"name": "qualifys-windows-are-held-to-the-same-rule", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, SUM(b) s FROM g GROUP BY a QUALIFY ROW_NUMBER() OVER (ORDER BY c) = 1", "expect": {"error": {"messageContains": "[G.C] is not a valid group by expression"}}}
+    ]},
+    {"name": "every-grouped-form-still-reads", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, ROW_NUMBER() OVER (ORDER BY a) r FROM g GROUP BY a ORDER BY a", "expect": {"rows": [[1,1],[2,2]], "ordered": true}},
+      {"sql": "SELECT a, SUM(b) s, ROW_NUMBER() OVER (ORDER BY s) r FROM g GROUP BY a ORDER BY a", "expect": {"rowCount": 2}},
+      {"sql": "SELECT a, ROW_NUMBER() OVER (ORDER BY MAX(c)) r FROM g GROUP BY a ORDER BY a", "expect": {"rows": [[1,1],[2,2]], "ordered": true}},
+      {"sql": "SELECT a, LAG(a) OVER (ORDER BY a) r FROM g GROUP BY a ORDER BY a", "expect": {"rows": [[1,null],[2,1]], "ordered": true}},
+      {"sql": "SELECT a, ROW_NUMBER() OVER (ORDER BY a + 1) r FROM g GROUP BY a ORDER BY a", "expect": {"rows": [[1,1],[2,2]], "ordered": true}},
+      {"sql": "SELECT a, ROW_NUMBER() OVER (ORDER BY 1) r FROM g GROUP BY a ORDER BY a", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "an-aggregate-nested-in-a-window-argument-reads", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, LAG(MAX(c)) OVER (ORDER BY a) r FROM g GROUP BY a ORDER BY a", "expect": {"rows": [[1,null],[2,200]], "ordered": true}}
+    ]}
+  ]
+}

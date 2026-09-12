@@ -1,0 +1,131 @@
+{
+  "suite": "features-drop-column-if-exists",
+  "description": "The IF EXISTS clause of ALTER TABLE ... DROP COLUMN, through the SQL surface - DESCRIBE TABLE rows for column presence and SHOW TABLES cells (kind, comment, cluster_by) for the table properties a drop must preserve: dropping an existing column, a clean no-op on a missing one (idempotent, any number of times), the bare form erroring instead, qualified names, case-insensitive column matching, sequences of drops, both IF EXISTS clauses together, columns carrying constraints/DEFAULT/COLLATE, TRANSIENT and clustered and commented tables preserved, and drops mixed with ADD/RENAME COLUMN. Converted 1:1 from features/DropColumnIfExistsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "drop-column-if-exists-when-column-exists", "steps": [
+      {"sql": "CREATE TABLE test1 (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "ALTER TABLE test1 DROP COLUMN IF EXISTS email"},
+      {"sql": "DESCRIBE TABLE test1", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'ID'), COUNT_IF(\"name\" = 'NAME'), COUNT_IF(\"name\" = 'EMAIL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1", "0"]]}}
+    ]},
+    {"name": "drop-column-if-exists-when-column-does-not-exist", "steps": [
+      {"sql": "CREATE TABLE test2 (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE test2 DROP COLUMN IF EXISTS nonexistent"},
+      {"sql": "DESCRIBE TABLE test2", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'ID'), COUNT_IF(\"name\" = 'NAME') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "drop-column-without-if-exists-throws-error", "steps": [
+      {"sql": "CREATE TABLE test3 (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE test3 DROP COLUMN nonexistent", "expect": {"error": {}}}
+    ]},
+    {"name": "drop-column-if-exists-is-idempotent", "steps": [
+      {"sql": "CREATE TABLE test4 (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "ALTER TABLE test4 DROP COLUMN IF EXISTS email"},
+      {"sql": "DESCRIBE TABLE test4", "expect": {"rowCount": 2}},
+      {"sql": "ALTER TABLE test4 DROP COLUMN IF EXISTS email"},
+      {"sql": "DESCRIBE TABLE test4", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "drop-column-if-exists-with-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA drop_col_schema"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE drop_col_schema.test5 (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "ALTER TABLE drop_col_schema.test5 DROP COLUMN IF EXISTS email"},
+      {"sql": "DESCRIBE TABLE drop_col_schema.test5", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'EMAIL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+    ]},
+    {"name": "drop-column-if-exists-case-insensitive", "steps": [
+      {"sql": "CREATE TABLE test6 (id INTEGER, Name VARCHAR, EMAIL VARCHAR)"},
+      {"sql": "ALTER TABLE test6 DROP COLUMN IF EXISTS email"},
+      {"sql": "DESCRIBE TABLE test6", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'EMAIL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+    ]},
+    {"name": "drop-multiple-columns-with-if-exists", "steps": [
+      {"sql": "CREATE TABLE test7 (id INTEGER, col1 VARCHAR, col2 VARCHAR, col3 VARCHAR)"},
+      {"sql": "ALTER TABLE test7 DROP COLUMN IF EXISTS col1"},
+      {"sql": "ALTER TABLE test7 DROP COLUMN IF EXISTS col2"},
+      {"sql": "ALTER TABLE test7 DROP COLUMN IF EXISTS nonexistent"},
+      {"sql": "DESCRIBE TABLE test7", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'ID'), COUNT_IF(\"name\" = 'COL3') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "drop-column-if-exists-with-table-if-exists", "steps": [
+      {"sql": "CREATE TABLE test8 (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "ALTER TABLE IF EXISTS test8 DROP COLUMN IF EXISTS email"},
+      {"sql": "DESCRIBE TABLE test8", "expect": {"rowCount": 2}},
+      {"sql": "ALTER TABLE IF EXISTS nonexistent_table DROP COLUMN IF EXISTS email"}
+    ]},
+    {"name": "drop-column-if-exists-with-constraints", "steps": [
+      {"sql": "CREATE TABLE test9 (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL, email VARCHAR UNIQUE)"},
+      {"sql": "ALTER TABLE test9 DROP COLUMN IF EXISTS email"},
+      {"sql": "DESCRIBE TABLE test9", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'EMAIL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+    ]},
+    {"name": "drop-column-if-exists-with-default", "steps": [
+      {"sql": "CREATE TABLE test10 (id INTEGER, status VARCHAR DEFAULT 'active', created_at TIMESTAMP)"},
+      {"sql": "ALTER TABLE test10 DROP COLUMN IF EXISTS status"},
+      {"sql": "DESCRIBE TABLE test10", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'STATUS') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+    ]},
+    {"name": "drop-column-if-exists-with-collation", "steps": [
+      {"sql": "CREATE TABLE test11 (id INTEGER, name VARCHAR COLLATE 'utf8', description VARCHAR)"},
+      {"sql": "ALTER TABLE test11 DROP COLUMN IF EXISTS name"},
+      {"sql": "DESCRIBE TABLE test11", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'NAME') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+    ]},
+    {"name": "drop-column-if-exists-multiple-times", "steps": [
+      {"sql": "CREATE TABLE test12 (id INTEGER, col1 VARCHAR, col2 VARCHAR)"},
+      {"sql": "ALTER TABLE test12 DROP COLUMN IF EXISTS col1"},
+      {"sql": "DESCRIBE TABLE test12", "expect": {"rowCount": 2}},
+      {"sql": "ALTER TABLE test12 DROP COLUMN IF EXISTS col1"},
+      {"sql": "DESCRIBE TABLE test12", "expect": {"rowCount": 2}},
+      {"sql": "ALTER TABLE test12 DROP COLUMN IF EXISTS col1"},
+      {"sql": "DESCRIBE TABLE test12", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "drop-column-with-and-without-if-exists", "steps": [
+      {"sql": "CREATE TABLE test13 (id INTEGER, col1 VARCHAR, col2 VARCHAR, col3 VARCHAR)"},
+      {"sql": "ALTER TABLE test13 DROP COLUMN col1"},
+      {"sql": "DESCRIBE TABLE test13", "expect": {"rowCount": 3}},
+      {"sql": "ALTER TABLE test13 DROP COLUMN IF EXISTS col2"},
+      {"sql": "DESCRIBE TABLE test13", "expect": {"rowCount": 2}},
+      {"sql": "ALTER TABLE test13 DROP COLUMN col1", "expect": {"error": {}}},
+      {"sql": "ALTER TABLE test13 DROP COLUMN IF EXISTS col1"}
+    ]},
+    {"name": "drop-column-if-exists-in-transient-table", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE test14 (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "ALTER TABLE test14 DROP COLUMN IF EXISTS email"},
+      {"sql": "SHOW TABLES LIKE 'test14'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TRANSIENT"}},
+      {"sql": "DESCRIBE TABLE test14", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'EMAIL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+    ]},
+    {"name": "drop-column-if-exists-with-clustered-table", "steps": [
+      {"sql": "CREATE TABLE test15 (id INTEGER, name VARCHAR, date DATE) CLUSTER BY (date)"},
+      {"sql": "ALTER TABLE test15 DROP COLUMN IF EXISTS name"},
+      {"sql": "DESCRIBE TABLE test15", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'NAME') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}},
+      {"sql": "SHOW TABLES LIKE 'test15'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(date)"}}
+    ]},
+    {"name": "drop-column-if-exists-preserves-table-comment", "steps": [
+      {"sql": "CREATE TABLE test16 (id INTEGER, name VARCHAR, email VARCHAR) COMMENT = 'Test table'"},
+      {"sql": "ALTER TABLE test16 DROP COLUMN IF EXISTS email"},
+      {"sql": "DESCRIBE TABLE test16", "expect": {"rowCount": 2}},
+      {"sql": "SHOW TABLES LIKE 'test16'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test table"}}
+    ]},
+    {"name": "drop-column-if-exists-with-mixed-operations", "steps": [
+      {"sql": "CREATE TABLE test17 (id INTEGER, col1 VARCHAR, col2 VARCHAR, col3 VARCHAR)"},
+      {"sql": "ALTER TABLE test17 DROP COLUMN IF EXISTS col1"},
+      {"sql": "ALTER TABLE test17 ADD COLUMN col4 INTEGER"},
+      {"sql": "ALTER TABLE test17 DROP COLUMN IF EXISTS col2"},
+      {"sql": "ALTER TABLE test17 RENAME COLUMN col3 TO col3_renamed"},
+      {"sql": "ALTER TABLE test17 DROP COLUMN IF EXISTS nonexistent"},
+      {"sql": "DESCRIBE TABLE test17", "expect": {"rowCount": 3}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'ID'), COUNT_IF(\"name\" = 'COL3_RENAMED'), COUNT_IF(\"name\" = 'COL4'), COUNT_IF(\"name\" = 'COL1'), COUNT_IF(\"name\" = 'COL2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1", "1", "0", "0"]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "suite": "ddl-udf-return-type-compat",
+  "description": "The declared-vs-actual return-type check on scalar LANGUAGE SQL UDFs at CREATE time, live-verified cell by cell: incompatibility is decided by type FAMILY (fixed vs floating point split, each timestamp flavor its own, VARIANT/ARRAY/OBJECT match only themselves, BOOLEAN/TIME/BINARY their own), parameters never matter (narrowing accepted), a body cast changes the verdict, a NULL body matches anything, parameter references carry their declared types, a single-item FROM-less SELECT body is checked like an expression, and neither procedures nor JavaScript handlers are checked. The refusal is the bare sentence Declared return type 'X' is incompatible with actual return type 'Y' with parameters spelled on both sides. Converted 1:1 from ddl/UdfReturnTypeCompatibilityTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "varchar-from-current-timestamp-is-refused", "steps": [
+      {"sql": "CREATE FUNCTION rt_a1() RETURNS VARCHAR AS 'CURRENT_TIMESTAMP'",
+       "expect": {"error": {"messageContains": "Declared return type 'VARCHAR(134217728)' is incompatible with actual return type 'TIMESTAMP_LTZ(9)'"}}}
+    ]},
+    {"name": "a-cast-in-the-body-changes-the-verdict", "steps": [
+      {"sql": "CREATE FUNCTION rt_a2() RETURNS VARCHAR AS 'CURRENT_TIMESTAMP::VARCHAR'"},
+      {"sql": "CREATE FUNCTION rt_a3() RETURNS TIMESTAMP_LTZ AS 'CURRENT_TIMESTAMP'"}
+    ]},
+    {"name": "timestamp-flavors-are-separate-families", "steps": [
+      {"sql": "CREATE FUNCTION rt_a4() RETURNS TIMESTAMP_NTZ AS 'CURRENT_TIMESTAMP'",
+       "expect": {"error": {"messageContains": "Declared return type 'TIMESTAMP_NTZ(9)' is incompatible with actual return type 'TIMESTAMP_LTZ(9)'"}}},
+      {"sql": "CREATE FUNCTION rt_a5() RETURNS DATE AS 'CURRENT_TIMESTAMP'",
+       "expect": {"error": {"messageContains": "Declared return type 'DATE' is incompatible with actual return type 'TIMESTAMP_LTZ(9)'"}}}
+    ]},
+    {"name": "the-timestamp-alias-spells-its-ntz-flavor", "steps": [
+      {"sql": "CREATE FUNCTION rt_d14() RETURNS TIMESTAMP AS 'CURRENT_TIMESTAMP'",
+       "expect": {"error": {"messageContains": "Declared return type 'TIMESTAMP_NTZ(9)' is incompatible with actual return type 'TIMESTAMP_LTZ(9)'"}}}
+    ]},
+    {"name": "varchar-from-date-is-refused", "steps": [
+      {"sql": "CREATE FUNCTION rt_a6() RETURNS VARCHAR AS 'CURRENT_DATE'",
+       "expect": {"error": {"messageContains": "Declared return type 'VARCHAR(134217728)' is incompatible with actual return type 'DATE'"}}}
+    ]},
+    {"name": "literals-carry-their-own-measured-types", "steps": [
+      {"sql": "CREATE FUNCTION rt_b1() RETURNS VARCHAR AS '42'",
+       "expect": {"error": {"messageContains": "Declared return type 'VARCHAR(134217728)' is incompatible with actual return type 'NUMBER(2,0)'"}}},
+      {"sql": "CREATE FUNCTION rt_b2() RETURNS NUMBER AS '''abc'''",
+       "expect": {"error": {"messageContains": "Declared return type 'NUMBER(38,0)' is incompatible with actual return type 'VARCHAR(3)'"}}}
+    ]},
+    {"name": "narrowing-inside-a-family-is-accepted", "steps": [
+      {"sql": "CREATE FUNCTION rt_b3() RETURNS INTEGER AS '1.5'"},
+      {"sql": "CREATE FUNCTION rt_b4() RETURNS NUMBER(3,0) AS '12345'"},
+      {"sql": "CREATE FUNCTION rt_b5() RETURNS VARCHAR(5) AS '''abcdefgh'''"}
+    ]},
+    {"name": "boolean-is-its-own-family", "steps": [
+      {"sql": "CREATE FUNCTION rt_b6() RETURNS BOOLEAN AS '1'",
+       "expect": {"error": {"messageContains": "Declared return type 'BOOLEAN' is incompatible with actual return type 'NUMBER(1,0)'"}}},
+      {"sql": "CREATE FUNCTION rt_b7() RETURNS VARCHAR AS 'TRUE'",
+       "expect": {"error": {"messageContains": "Declared return type 'VARCHAR(134217728)' is incompatible with actual return type 'BOOLEAN'"}}}
+    ]},
+    {"name": "variant-does-not-absorb-other-families", "steps": [
+      {"sql": "CREATE FUNCTION rt_b8() RETURNS VARIANT AS '42'",
+       "expect": {"error": {"messageContains": "Declared return type 'VARIANT' is incompatible with actual return type 'NUMBER(2,0)'"}}},
+      {"sql": "CREATE FUNCTION rt_d6() RETURNS VARIANT AS 'ARRAY_CONSTRUCT(1)'",
+       "expect": {"error": {"messageContains": "Declared return type 'VARIANT' is incompatible with actual return type 'ARRAY'"}}},
+      {"sql": "CREATE FUNCTION rt_d7() RETURNS OBJECT AS 'PARSE_JSON(''{}'')'",
+       "expect": {"error": {"messageContains": "Declared return type 'OBJECT' is incompatible with actual return type 'VARIANT'"}}},
+      {"sql": "CREATE FUNCTION rt_d8() RETURNS ARRAY AS 'PARSE_JSON(''[]'')'",
+       "expect": {"error": {"messageContains": "Declared return type 'ARRAY' is incompatible with actual return type 'VARIANT'"}}},
+      {"sql": "CREATE FUNCTION rt_d4() RETURNS VARIANT AS 'PARSE_JSON(''{}'')'"},
+      {"sql": "CREATE FUNCTION rt_d5() RETURNS ARRAY AS 'ARRAY_CONSTRUCT(1)'"}
+    ]},
+    {"name": "a-null-body-is-compatible-with-anything", "steps": [
+      {"sql": "CREATE FUNCTION rt_b9() RETURNS NUMBER AS 'NULL'"}
+    ]},
+    {"name": "parameter-references-carry-their-declared-types", "steps": [
+      {"sql": "CREATE FUNCTION rt_b10(x VARCHAR) RETURNS NUMBER AS 'x'",
+       "expect": {"error": {"messageContains": "Declared return type 'NUMBER(38,0)' is incompatible with actual return type 'VARCHAR(134217728)'"}}},
+      {"sql": "CREATE FUNCTION rt_b11(x NUMBER) RETURNS NUMBER AS 'x'"},
+      {"sql": "CREATE FUNCTION rt_b12(x VARCHAR, y VARCHAR) RETURNS VARCHAR AS 'x || y'"},
+      {"sql": "CREATE FUNCTION rt_b13(x NUMBER) RETURNS NUMBER AS 'x + 1'"}
+    ]},
+    {"name": "fixed-and-floating-point-are-separate-families", "steps": [
+      {"sql": "CREATE FUNCTION rt_d1() RETURNS FLOAT AS '42'",
+       "expect": {"error": {"messageContains": "Declared return type 'FLOAT' is incompatible with actual return type 'NUMBER(2,0)'"}}},
+      {"sql": "CREATE FUNCTION rt_d2() RETURNS NUMBER AS '1.5::FLOAT'",
+       "expect": {"error": {"messageContains": "Declared return type 'NUMBER(38,0)' is incompatible with actual return type 'FLOAT'"}}},
+      {"sql": "CREATE FUNCTION rt_d3() RETURNS DOUBLE AS '1.5'",
+       "expect": {"error": {"messageContains": "Declared return type 'FLOAT' is incompatible with actual return type 'NUMBER(2,1)'"}}}
+    ]},
+    {"name": "time-is-its-own-family", "steps": [
+      {"sql": "CREATE FUNCTION rt_d9() RETURNS TIME AS 'CURRENT_TIME'"},
+      {"sql": "CREATE FUNCTION rt_d10() RETURNS VARCHAR AS 'CURRENT_TIME'",
+       "expect": {"error": {"messageContains": "Declared return type 'VARCHAR(134217728)' is incompatible with actual return type 'TIME(9)'"}}}
+    ]},
+    {"name": "binary-is-its-own-family", "steps": [
+      {"sql": "CREATE FUNCTION rt_d12() RETURNS BINARY AS 'TO_BINARY(''AB'',''HEX'')'"},
+      {"sql": "CREATE FUNCTION rt_d13() RETURNS VARCHAR AS 'TO_BINARY(''AB'',''HEX'')'",
+       "expect": {"error": {"messageContains": "Declared return type 'VARCHAR(134217728)' is incompatible with actual return type 'BINARY(67108864)'"}}}
+    ]},
+    {"name": "a-single-item-select-body-is-checked-like-an-expression", "steps": [
+      {"sql": "CREATE FUNCTION rt_c3() RETURNS DATE AS 'SELECT CURRENT_TIMESTAMP'",
+       "expect": {"error": {"messageContains": "Declared return type 'DATE' is incompatible with actual return type 'TIMESTAMP_LTZ(9)'"}}}
+    ]},
+    {"name": "procedures-are-not-checked", "steps": [
+      {"sql": "CREATE PROCEDURE rt_c1() RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN CURRENT_TIMESTAMP; END'"}
+    ]},
+    {"name": "javascript-handlers-are-not-checked", "steps": [
+      {"sql": "CREATE FUNCTION rt_c2() RETURNS VARCHAR LANGUAGE JAVASCRIPT AS 'return 42;'"}
+    ]}
+  ]
+}

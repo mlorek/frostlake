@@ -16,7 +16,11 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.http.ResultSetData;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.values.ClientValueText;
+import dev.frostlake.values.TemporalText;
 
 import java.io.InputStream;
 import java.io.Reader;
@@ -86,7 +90,47 @@ public class DatabaseResultSet implements ResultSet {
     public String getString(final int columnIndex) throws SQLException {
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
+        if (value instanceof Boolean && isBooleanColumn(columnIndex)) {
+            // A BOOLEAN cell crosses the wire as the JSON boolean; the driver's text is upper-case.
+            // A boolean inside a VARIANT column keeps that column's lower-case JSON text.
+            return ClientValueText.booleanText(((Boolean) value).booleanValue());
+        }
+        if (value instanceof Number && isApproximateColumn(columnIndex)) {
+            // A FLOAT's text is Snowflake's own width — ten significant digits growing to fifteen —
+            // and not the JSON wire's spelling; the in-process driver already answered this way.
+            return SharedFunctionHelpers.floatText(((Number) value).doubleValue());
+        }
+        if (value instanceof BigDecimal) {
+            // The digits in place, never BigDecimal's scientific 1E-8 / 0E-20 — see ClientValueText.
+            return ((BigDecimal) value).toPlainString();
+        }
+        if (value instanceof String && isTimeOrTimestampColumn(columnIndex)) {
+            // The wire carries a temporal cell's whole fraction of a second; getString is the display
+            // text, three digits for a timestamp and none for a TIME.
+            return TemporalText.displayOfWire((String) value, data.getColumns().get(columnIndex - 1).getDataType());
+        }
         return value == null ? null : value.toString();
+    }
+
+    /** Whether a 1-based column is declared TIME or a TIMESTAMP, read off the wire metadata. */
+    private boolean isTimeOrTimestampColumn(final int columnIndex) {
+        if (columnIndex < 1 || columnIndex > data.getColumns().size()) {
+            return false;
+        }
+        final String type = data.getColumns().get(columnIndex - 1).getDataType();
+        return type != null && ("TIME".equalsIgnoreCase(type) || type.toUpperCase().startsWith("TIMESTAMP"));
+    }
+
+    /** Whether a 1-based column is declared BOOLEAN, read off the wire metadata. */
+    private boolean isBooleanColumn(final int columnIndex) {
+        return columnIndex >= 1 && columnIndex <= data.getColumns().size()
+            && "BOOLEAN".equalsIgnoreCase(data.getColumns().get(columnIndex - 1).getDataType());
+    }
+
+    /** Whether a 1-based column is declared FLOAT or one of its aliases, read off the wire metadata. */
+    private boolean isApproximateColumn(final int columnIndex) {
+        return columnIndex >= 1 && columnIndex <= data.getColumns().size()
+            && NumericType.isApproximateName(data.getColumns().get(columnIndex - 1).getDataType());
     }
 
     @Override
@@ -314,6 +358,16 @@ public class DatabaseResultSet implements ResultSet {
                 // BINARY crosses the JSON wire as hex text; getObject restores the JDBC byte[] form.
                 return JdbcMarshaling.toBytes(value);
             }
+        }
+        if (value instanceof Number && !(value instanceof Double) && isApproximateColumn(columnIndex)) {
+            // The wire parses every JSON fraction as a BigDecimal to keep NUMBER exact; a FLOAT column's
+            // cell is the double it spells, which is what getObject promises for the type.
+            return Double.valueOf(((Number) value).doubleValue());
+        }
+        if (value instanceof String && isTimeOrTimestampColumn(columnIndex)) {
+            // getObject keeps the display text it always answered; getTimestamp and getTime read the
+            // whole fraction.
+            return TemporalText.displayOfWire((String) value, data.getColumns().get(columnIndex - 1).getDataType());
         }
         return value;
     }

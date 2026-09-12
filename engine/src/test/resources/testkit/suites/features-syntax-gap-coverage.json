@@ -1,0 +1,281 @@
+{
+  "suite": "features-syntax-gap-coverage",
+  "description": "Grammar shapes that used to be syntax errors: a lambda body carrying NOT, AND or a NOT-of-function-call; CASE arms whose THEN or ELSE is a bare boolean expression (searched and simple forms alike) beside the ordinary value-returning CASE; a WITH clause before SELECT ... INTO inside a procedure; CTAS with a TYPED column list, a multi-column typed list and the names-only list; a reserved keyword as a VARIANT path key; DO usable as a table alias and column qualifier without breaking WHILE ... DO; and trailing commas in the FROM list and in the select list together. Converted 1:1 from features/SyntaxGapCoverageTest (now retired).",
+  "tags": [
+    "features",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "lambda-body-with-not",
+      "steps": [
+        {
+          "sql": "SELECT FILTER([1, 2, 3, 4], x -> NOT (x > 2))",
+          "expect": {
+            "value": "[1,2]"
+          }
+        }
+      ],
+      "skip": {
+        "backends": [
+          "http"
+        ],
+        "reason": "the HTTP transport re-serialises an ARRAY cell through its own JSON writer, which emits '[1, 2]' with a space after each comma where the engine and JDBC render the compact '[1,2]'; the FILTER result itself is identical, only its transport rendering differs"
+      }
+    },
+    {
+      "name": "lambda-body-with-and",
+      "steps": [
+        {
+          "sql": "SELECT FILTER([1, 2, 3, 4], x -> x > 1 AND x < 4)",
+          "expect": {
+            "value": "[2,3]"
+          }
+        }
+      ],
+      "skip": {
+        "backends": [
+          "http"
+        ],
+        "reason": "the HTTP transport re-serialises an ARRAY cell through its own JSON writer, which emits '[1, 2]' with a space after each comma where the engine and JDBC render the compact '[1,2]'; the FILTER result itself is identical, only its transport rendering differs"
+      }
+    },
+    {
+      "name": "lambda-body-with-not-function",
+      "steps": [
+        {
+          "sql": "SELECT FILTER([1, 2, 3], p -> NOT IS_NULL_VALUE(p))",
+          "expect": {
+            "value": "[1,2,3]"
+          }
+        }
+      ],
+      "skip": {
+        "backends": [
+          "http"
+        ],
+        "reason": "the HTTP transport re-serialises an ARRAY cell through its own JSON writer, which emits '[1, 2]' with a space after each comma where the engine and JDBC render the compact '[1,2]'; the FILTER result itself is identical, only its transport rendering differs"
+      }
+    },
+    {
+      "name": "case-else-is-bare-boolean-or",
+      "steps": [
+        {
+          "sql": "SELECT CASE WHEN 1 = 2 THEN TRUE ELSE 3 != 4 OR 5 != 5 END",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "case-then-is-bare-boolean-and",
+      "steps": [
+        {
+          "sql": "SELECT CASE WHEN 1 = 1 THEN 2 = 2 AND 3 = 3 ELSE FALSE END",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "simple-case-then-is-bare-boolean",
+      "steps": [
+        {
+          "sql": "SELECT CASE 1 WHEN 1 THEN 'a' != 'b' ELSE FALSE END",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "case-returning-value-still-works",
+      "steps": [
+        {
+          "sql": "SELECT CASE WHEN 1 = 1 THEN 100 ELSE 200 END",
+          "expect": {
+            "value": "100"
+          }
+        }
+      ]
+    },
+    {
+      "name": "with-clause-before-select-into",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE p_with_into() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n    x INTEGER;\n    y INTEGER;\nBEGIN\n    WITH cte AS (SELECT 10 AS a, 20 AS b) SELECT a, b INTO :x, :y FROM cte;\n    RETURN :x || '/' || :y;\nEND $$"
+        },
+        {
+          "sql": "CALL p_with_into()",
+          "expect": {
+            "value": "10/20"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctas-with-typed-column-list",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TEMPORARY TABLE ct_typed (ITEM_CODE VARCHAR) AS SELECT UPPER('abc') AS x"
+        },
+        {
+          "sql": "SELECT ITEM_CODE FROM ct_typed",
+          "expect": {
+            "value": "ABC"
+          }
+        },
+        {
+          "sql": "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_TYPED'",
+          "expect": {
+            "rows": [
+              [
+                "ITEM_CODE",
+                "TEXT"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctas-with-typed-multi-column-list",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_multi (a NUMBER(10,0), b VARCHAR) AS SELECT 5, 'hi'"
+        },
+        {
+          "sql": "SELECT a, b FROM ct_multi",
+          "expect": {
+            "rows": [
+              [
+                "5",
+                "hi"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ctas-names-only-list-still-works",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE ct_names (nm, tot) AS SELECT 'x', 9"
+        },
+        {
+          "sql": "SELECT nm, tot FROM ct_names",
+          "expect": {
+            "rows": [
+              [
+                "x",
+                "9"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "variant-path-key-may-be-a-reserved-keyword",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE vk (src VARIANT)"
+        },
+        {
+          "sql": "INSERT INTO vk SELECT OBJECT_CONSTRUCT('account', OBJECT_CONSTRUCT('status', 'OK'))"
+        },
+        {
+          "sql": "SELECT src:account.status::VARCHAR FROM vk",
+          "expect": {
+            "value": "OK"
+          }
+        }
+      ]
+    },
+    {
+      "name": "do-usable-as-table-alias-and-column-qualifier",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE dt (region_id INTEGER, item_code INTEGER)"
+        },
+        {
+          "sql": "INSERT INTO dt VALUES (1, 10), (2, 20)"
+        },
+        {
+          "sql": "SELECT do.region_id, do.item_code FROM dt do WHERE do.region_id = 1",
+          "expect": {
+            "rows": [
+              [
+                "1",
+                "10"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "trailing-comma-in-from-list",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE tca (id INTEGER)"
+        },
+        {
+          "sql": "CREATE OR REPLACE TABLE tcb (id INTEGER)"
+        },
+        {
+          "sql": "INSERT INTO tca VALUES (1), (2)"
+        },
+        {
+          "sql": "INSERT INTO tcb VALUES (1)"
+        },
+        {
+          "sql": "SELECT tca.id FROM tca, tcb, WHERE tca.id = tcb.id",
+          "expect": {
+            "rowCount": 1,
+            "value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "trailing-comma-in-select-and-from-together",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE tcc (a INTEGER, b INTEGER)"
+        },
+        {
+          "sql": "INSERT INTO tcc VALUES (7, 8)"
+        },
+        {
+          "sql": "SELECT a, b, FROM tcc, WHERE a = 7",
+          "expect": {
+            "rows": [
+              [
+                "7",
+                "8"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "do-as-identifier-does-not-break-while-do-loop",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE p_while_do() RETURNS INTEGER LANGUAGE SQL AS $$\nDECLARE i INTEGER DEFAULT 0;\nBEGIN\n  WHILE (i < 3) DO i := i + 1; END WHILE;\n  RETURN i;\nEND $$"
+        },
+        {
+          "sql": "CALL p_while_do()",
+          "expect": {
+            "value": "3"
+          }
+        }
+      ]
+    }
+  ]
+}

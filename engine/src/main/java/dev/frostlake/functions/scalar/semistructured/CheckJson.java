@@ -39,7 +39,12 @@ public class CheckJson extends BuiltInFunction {
             VariantUndefined.readTree(MAPPER, input);
             return null;
         } catch (final Exception e) {
-            return e.getMessage();
+            // The same sentence PARSE_JSON raises, without its "Error parsing JSON: " prefix — live
+            // reports CHECK_JSON('cdefg') as `unknown keyword "cdefg", pos 6`.
+            // Positioned against the ORIGINAL text, leading whitespace included, exactly as PARSE_JSON
+            // reports it — trimming for the parse must not move the number.
+            final String fault = JsonFaultReader.faultOf(args.get(0).toString());
+            return fault != null ? fault : e.getMessage();
         }
     }
 

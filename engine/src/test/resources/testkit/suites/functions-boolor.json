@@ -1,0 +1,20 @@
+{
+  "suite": "functions-boolor",
+  "description": "BOOLOR(x, y) over three-valued logic: both false is FALSE, either true is TRUE, TRUE dominates even against NULL, and FALSE with NULL is NULL. BOOLOR takes numeric or variant truthiness rather than a BOOLEAN, so BOOLOR(FALSE, TRUE) is rejected (live-verified). Converted 1:1 from functions/BoolOrTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "both-false-is-false", "steps": [
+      {"sql": "SELECT BOOLOR(0, 0)", "expect": {"value": "false"}}
+    ]},
+    {"name": "either-true-is-true-and-a-boolean-argument-is-rejected", "steps": [
+      {"sql": "SELECT BOOLOR(1, 0)", "expect": {"value": "true"}},
+      {"sql": "SELECT BOOLOR(false, true)", "expect": {"error": {}}}
+    ]},
+    {"name": "true-with-null-is-true", "steps": [
+      {"sql": "SELECT BOOLOR(1, NULL)", "expect": {"value": "true"}}
+    ]},
+    {"name": "false-with-null-is-null", "steps": [
+      {"sql": "SELECT BOOLOR(0, NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

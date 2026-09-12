@@ -19,22 +19,27 @@ package dev.frostlake.functions.scalar.math;
 import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
+/**
+ * CEIL(n [, scale]) — the input rounded UP, to whole numbers by default and to {@code scale} decimal
+ * places when one is given. A negative scale rounds up to a power of ten.
+ *
+ * <p>The scale argument is not optional decoration: it becomes the RESULT's declared scale as well as
+ * the value's, so {@code CEIL(<NUMBER(10,2)>, 1)} is a NUMBER(11,1). See
+ * {@link RoundedValue} for what the argument accepts and where it refuses.
+ */
 public class Ceil extends NumericArgumentFunction {
     public Ceil() { super("CEIL", NumericType.INTEGER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        final BigDecimal num = new BigDecimal(args.get(0).toString());
-        return num.setScale(0, RoundingMode.CEILING).longValue();
+        return RoundedValue.of(args, RoundingMode.CEILING);
     }
 
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

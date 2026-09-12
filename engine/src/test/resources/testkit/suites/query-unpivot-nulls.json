@@ -1,0 +1,26 @@
+{
+  "suite": "query-unpivot-nulls",
+  "description": "UNPIVOT EXCLUDES rows with a NULL unpivoted value by DEFAULT (Snowflake semantics), and the optional INCLUDE NULLS / EXCLUDE NULLS modifier controls it. Previously NULL rows were always emitted and the modifier failed to parse. The fixture has one NULL cell, so the default and EXCLUDE NULLS both answer seven rows with no NULL among them while INCLUDE NULLS answers all eight and carries the NULL through. Converted 1:1 from query/UnpivotNullsTest (now retired); the Java asserted a row COUNT and scanned for a null with a Java loop, so the converted tests pin the whole row set - which shows WHICH row is missing, not merely that one is.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "nulls-are-excluded-by-default", "steps": [
+      {"sql": "CREATE TABLE monthly_sales (empid NUMBER, jan NUMBER, feb NUMBER, mar NUMBER, apr NUMBER)"},
+      {"sql": "INSERT INTO monthly_sales VALUES (1, 10, 20, 30, 40), (2, 50, NULL, 70, 80)"},
+      {"sql": "SELECT * FROM monthly_sales UNPIVOT (sales FOR month IN (jan, feb, mar, apr))",
+       "expect": {"rows": [[1,"JAN",10],[1,"FEB",20],[1,"MAR",30],[1,"APR",40],[2,"JAN",50],[2,"MAR",70],[2,"APR",80]],
+                  "columns": ["EMPID","MONTH","SALES"]}}
+    ]},
+    {"name": "the-exclude-nulls-modifier-matches-the-default", "steps": [
+      {"sql": "CREATE TABLE monthly_sales (empid NUMBER, jan NUMBER, feb NUMBER, mar NUMBER, apr NUMBER)"},
+      {"sql": "INSERT INTO monthly_sales VALUES (1, 10, 20, 30, 40), (2, 50, NULL, 70, 80)"},
+      {"sql": "SELECT * FROM monthly_sales UNPIVOT EXCLUDE NULLS (sales FOR month IN (jan, feb, mar, apr))",
+       "expect": {"rows": [[1,"JAN",10],[1,"FEB",20],[1,"MAR",30],[1,"APR",40],[2,"JAN",50],[2,"MAR",70],[2,"APR",80]]}}
+    ]},
+    {"name": "include-nulls-keeps-the-null-rows", "steps": [
+      {"sql": "CREATE TABLE monthly_sales (empid NUMBER, jan NUMBER, feb NUMBER, mar NUMBER, apr NUMBER)"},
+      {"sql": "INSERT INTO monthly_sales VALUES (1, 10, 20, 30, 40), (2, 50, NULL, 70, 80)"},
+      {"sql": "SELECT * FROM monthly_sales UNPIVOT INCLUDE NULLS (sales FOR month IN (jan, feb, mar, apr))",
+       "expect": {"rows": [[1,"JAN",10],[1,"FEB",20],[1,"MAR",30],[1,"APR",40],[2,"JAN",50],[2,"FEB",null],[2,"MAR",70],[2,"APR",80]]}}
+    ]}
+  ]
+}

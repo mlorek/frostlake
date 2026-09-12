@@ -1,0 +1,10 @@
+{
+  "suite": "functions-current-version",
+  "description": "CURRENT_VERSION() answers the running engine version. That it tracks the build - the value equals BuildInfo.version() - is a Java-side identity with no SQL surface and stays in functions/CurrentVersionTest, which is trimmed to that one test. Converted from that class.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-returns-a-non-null-version", "steps": [
+      {"sql": "SELECT IFF(CURRENT_VERSION() IS NULL, 'null', 'set')", "expect": {"value": "set"}}
+    ]}
+  ]
+}

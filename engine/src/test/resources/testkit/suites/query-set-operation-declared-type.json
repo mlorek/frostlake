@@ -1,0 +1,41 @@
+{
+  "suite": "query-set-operation-declared-type",
+  "description": "The DECLARED column type of a set operation combines its branches' types the way Snowflake does, live-verified on a real account. NUMBERs fold to the numeric SUPERTYPE: the widest INTEGER PART meets the widest SCALE, so 208 with 0.3 declares NUMBER(4,1) - not the max-precision/max-scale NUMBER(3,1), which could not even hold 208 - and the same rule holds for UNION, UNION ALL and EXCEPT, and through a CTE or a view. This is a VALUE-correctness rule, not a metadata nicety: treating a (3,0) branch and a (4,1) branch as 'agreeing' used to keep the LEADING branch's scale-0 type, and a CTAS through a CTE then stored 183 for the 182.5 the other branch produced. That exact shape - an expected-data fixture built as CREATE TABLE ... AS WITH q (...) AS (SELECT ... UNION ALL SELECT ...) SELECT * FROM q - is how a downstream integration suite seeds its comparison tables, and the corruption surfaced there as a silent EXCEPT mismatch rather than an error. A negative branch counts its DIGITS and not its sign, an undetermined branch (a NULL literal) leaves the column to the value scan but every value must still survive, and an all-OBJECT union keeps OBJECT. Converted 1:1 from query/SetOperationDeclaredTypeTest (now retired); the Java already read the declared type out of INFORMATION_SCHEMA, so the conversion is direct.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-later-decimal-branch-keeps-its-value-through-a-cte-ctas", "steps": [
+      {"sql": "CREATE TABLE sla AS WITH q (a, b, c) AS (SELECT 1, 208, 0.3 UNION ALL SELECT 2, 30, 0.3 UNION ALL SELECT 3, 182.5, 0.333333) SELECT * FROM q WHERE TRUE"},
+      {"sql": "SELECT b FROM sla WHERE a = 3", "expect": {"value": 182.5}},
+      {"sql": "SELECT c FROM sla WHERE a = 3", "expect": {"value": 0.333333}},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'SLA' AND column_name = 'A'", "expect": {"value": "NUMBER(1,0)"}},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'SLA' AND column_name = 'B'", "expect": {"value": "NUMBER(4,1)"}},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'SLA' AND column_name = 'C'", "expect": {"value": "NUMBER(7,6)"}}
+    ]},
+    {"name": "the-supertype-is-the-widest-integer-part-plus-the-widest-scale", "steps": [
+      {"sql": "CREATE TABLE ps AS WITH q (x) AS (SELECT 208 UNION ALL SELECT 0.3) SELECT * FROM q"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'PS' AND column_name = 'X'", "expect": {"value": "NUMBER(4,1)"}},
+      {"sql": "SELECT x::VARCHAR FROM ps WHERE x > 1", "expect": {"value": "208.0"}}
+    ]},
+    {"name": "two-fractions-fold-to-the-wider-scale", "steps": [
+      {"sql": "CREATE TABLE sc AS WITH q (x) AS (SELECT 0.3 UNION ALL SELECT 0.33333) SELECT * FROM q"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'SC' AND column_name = 'X'", "expect": {"value": "NUMBER(6,5)"}}
+    ]},
+    {"name": "a-negative-branch-counts-its-digits-not-its-sign", "steps": [
+      {"sql": "CREATE TABLE ng AS WITH q (x) AS (SELECT -208 UNION ALL SELECT 1.25) SELECT * FROM q"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'NG' AND column_name = 'X'", "expect": {"value": "NUMBER(5,2)"}},
+      {"sql": "SELECT x::VARCHAR FROM ng WHERE x < 0", "expect": {"value": "-208.00"}}
+    ]},
+    {"name": "except-combines-branch-types-like-union", "steps": [
+      {"sql": "CREATE TABLE ex AS WITH q (x) AS (SELECT 208 EXCEPT SELECT 0.3) SELECT * FROM q"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'EX' AND column_name = 'X'", "expect": {"value": "NUMBER(4,1)"}}
+    ]},
+    {"name": "an-undetermined-branch-still-keeps-every-value", "steps": [
+      {"sql": "CREATE TABLE un AS WITH q (x) AS (SELECT 182.5 UNION ALL SELECT NULL) SELECT * FROM q"},
+      {"sql": "SELECT x::VARCHAR FROM un WHERE x IS NOT NULL", "expect": {"value": "182.5"}}
+    ]},
+    {"name": "agreeing-semi-structured-branches-keep-their-type", "steps": [
+      {"sql": "CREATE TABLE ob AS WITH q (x) AS (SELECT OBJECT_CONSTRUCT('k', 1) UNION ALL SELECT OBJECT_CONSTRUCT('k', 2)) SELECT * FROM q"},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'OB' AND column_name = 'X'", "expect": {"value": "OBJECT"}}
+    ]}
+  ]
+}

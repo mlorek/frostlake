@@ -1,0 +1,16 @@
+{
+  "suite": "functions-to-object",
+  "description": "TO_OBJECT(expr) returns an OBJECT unchanged, answers NULL for NULL, and errors for a non-object input. Converted 1:1 from functions/ToObjectTest (now retired); the OBJECT result is read directly, which renders identically on the engine and over HTTP.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-returns-an-object-unchanged", "steps": [
+      {"sql": "SELECT TO_OBJECT(PARSE_JSON('{\"a\":1}'))", "expect": {"value": "{\"a\":1}"}}
+    ]},
+    {"name": "a-null-input-is-null", "steps": [
+      {"sql": "SELECT TO_OBJECT(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-non-object-input-throws", "steps": [
+      {"sql": "SELECT TO_OBJECT(5)", "expect": {"error": {}}}
+    ]}
+  ]
+}

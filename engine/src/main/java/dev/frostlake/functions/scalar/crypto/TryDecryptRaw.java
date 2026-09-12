@@ -25,7 +25,7 @@ public class TryDecryptRaw extends BuiltInFunction {
 
     private static final DecryptRaw BASE = new DecryptRaw();
 
-    public TryDecryptRaw() { super("TRY_DECRYPT_RAW", BinaryType.VARBINARY); }
+    public TryDecryptRaw() { super("TRY_DECRYPT_RAW", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

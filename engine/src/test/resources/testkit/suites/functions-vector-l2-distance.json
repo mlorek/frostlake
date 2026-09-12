@@ -1,0 +1,41 @@
+{
+  "suite": "functions-vector-l2-distance",
+  "description": "VECTOR_L2_DISTANCE - every expectation measured on a real Snowflake account. The [1,2,3]/[4,5,6] pair is sqrt(27) = 5.196152422706632, the VECTOR(INT,3) pair gives the same value because the result stays FLOAT, a vector against itself is 0.0, and against the zero vector it is sqrt(14) = 3.7416573867739413. Float32 ELEMENTS feed float64 ARITHMETIC: over [0.1,0.2,0.3] and [0.4,0.5,0.6] the answer is 0.5196152500135338 rather than the exact-decimal 0.5196152422706632. A TYPED NULL operand gives SQL NULL. It works in WHERE and ORDER BY. VECTOR_TRUNC narrows the STATIC type, so truncating BOTH operands is legal and gives sqrt(18) = 4.242640687119285, while truncating only one side is a dimension mismatch rejected at compile time. Converted 1:1 from functions/vector/VectorL2DistanceTest (now retired); the Java's assertFloat64 compared Java doubles, so each converted case pins the full rendered double AND asserts equality against the literal in SQL, and the Java's assertRejected becomes the exact live message.",
+  "tags": ["functions", "vector", "converted"],
+  "tests": [
+    {"name": "the-euclidean-distance-of-known-vectors", "steps": [
+      {"sql": "SELECT VECTOR_L2_DISTANCE([1,2,3]::VECTOR(FLOAT,3), [4,5,6]::VECTOR(FLOAT,3))", "expect": {"value": "5.196152422706632"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([1,2,3]::VECTOR(FLOAT,3), [4,5,6]::VECTOR(FLOAT,3)) = 5.196152422706632", "expect": {"value": "true"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([1,2,3]::VECTOR(INT,3), [4,5,6]::VECTOR(INT,3))", "expect": {"value": "5.196152422706632"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([1,2,3]::VECTOR(FLOAT,3), [1,2,3]::VECTOR(FLOAT,3))", "expect": {"value": "0.0"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([0,0,0]::VECTOR(FLOAT,3), [1,2,3]::VECTOR(FLOAT,3))", "expect": {"value": "3.7416573867739413"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([0,0,0]::VECTOR(FLOAT,3), [1,2,3]::VECTOR(FLOAT,3)) = 3.7416573867739413", "expect": {"value": "true"}}
+    ]},
+    {"name": "float32-elements-feed-float64-arithmetic", "steps": [
+      {"sql": "SELECT VECTOR_L2_DISTANCE([0.1,0.2,0.3]::VECTOR(FLOAT,3), [0.4,0.5,0.6]::VECTOR(FLOAT,3))", "expect": {"value": "0.5196152500135338"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([0.1,0.2,0.3]::VECTOR(FLOAT,3), [0.4,0.5,0.6]::VECTOR(FLOAT,3)) = 0.5196152500135338", "expect": {"value": "true"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([0.1,0.2,0.3]::VECTOR(FLOAT,3), [0.4,0.5,0.6]::VECTOR(FLOAT,3)) = 0.5196152422706632", "expect": {"value": "false"}}
+    ]},
+    {"name": "a-typed-null-yields-sql-null", "steps": [
+      {"sql": "SELECT VECTOR_L2_DISTANCE(NULL::VECTOR(FLOAT,3), [1,2,3]::VECTOR(FLOAT,3))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "it-works-in-where-and-order-by", "steps": [
+      {"sql": "CREATE TABLE l2_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO l2_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO l2_rows SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT id FROM l2_rows WHERE VECTOR_L2_DISTANCE(v, [1,2,3]::VECTOR(FLOAT,3)) < 1", "expect": {"rows": [[1]]}},
+      {"sql": "SELECT id FROM l2_rows ORDER BY VECTOR_L2_DISTANCE(v, [1,2,3]::VECTOR(FLOAT,3))", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]},
+    {"name": "nested-vector-results-still-type-check", "steps": [
+      {"sql": "SELECT VECTOR_L2_DISTANCE(VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 2), VECTOR_TRUNC([4,5,6]::VECTOR(FLOAT,3), 2))", "expect": {"value": "4.242640687119285"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE(VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 2), VECTOR_TRUNC([4,5,6]::VECTOR(FLOAT,3), 2)) = 4.242640687119285", "expect": {"value": "true"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE(VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 2), [4,5,6]::VECTOR(FLOAT,3))", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_L2_DISTANCE': (VECTOR(FLOAT, 2), VECTOR(FLOAT, 3))"}}}
+    ]},
+    {"name": "mismatched-or-non-vector-arguments-are-rejected", "steps": [
+      {"sql": "SELECT VECTOR_L2_DISTANCE([1,2,3]::VECTOR(FLOAT,3), [1,2,3]::VECTOR(INT,3))", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_L2_DISTANCE': (VECTOR(FLOAT, 3), VECTOR(INT, 3))"}}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([1,2]::VECTOR(FLOAT,2), [1,2,3]::VECTOR(FLOAT,3))", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_L2_DISTANCE': (VECTOR(FLOAT, 2), VECTOR(FLOAT, 3))"}}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([1,2,3], [1,2,3]::VECTOR(FLOAT,3))", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_L2_DISTANCE': (ARRAY, VECTOR(FLOAT, 3))"}}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE([1,2,3]::VECTOR(FLOAT,3), NULL)", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_L2_DISTANCE': (VECTOR(FLOAT, 3), NULL)"}}}
+    ]}
+  ]
+}

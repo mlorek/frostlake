@@ -1,0 +1,54 @@
+{
+  "suite": "dml-cte-coverage",
+  "description": "CTE (WITH clause) coverage across the DML/DDL combinations the core CTE suites do not exercise: CREATE TABLE AS SELECT from a CTE and from a recursive CTE, CREATE VIEW over a CTE, UPDATE ... FROM and DELETE ... USING a CTE-shaped derived table, an empty CTE, and a CTE inside an UPDATE SET subquery. Converted 1:1 from dml/CteDmlCoverageTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "ctas-from-cte", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (1,10),(2,20)"},
+      {"sql": "CREATE TABLE dst AS WITH c AS (SELECT id, v * 2 AS v2 FROM src) SELECT id, v2 FROM c"},
+      {"sql": "SELECT COUNT(*) FROM dst", "expect": {"value": "2"}},
+      {"sql": "SELECT v2 FROM dst WHERE id = 1", "expect": {"value": "20"}}
+    ]},
+    {"name": "ctas-from-recursive-cte", "steps": [
+      {"sql": "CREATE TABLE nums AS WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT n FROM r"},
+      {"sql": "SELECT COUNT(*) FROM nums", "expect": {"value": "5"}},
+      {"sql": "SELECT MAX(n) FROM nums", "expect": {"value": "5"}}
+    ]},
+    {"name": "create-view-from-cte", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (1,10),(2,20)"},
+      {"sql": "CREATE VIEW vw AS WITH c AS (SELECT id, v FROM src WHERE v > 15) SELECT * FROM c"},
+      {"sql": "SELECT COUNT(*) FROM vw", "expect": {"value": "1"}},
+      {"sql": "SELECT id FROM vw", "expect": {"value": "2"}}
+    ]},
+    {"name": "update-from-cte", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1,0),(2,0)"},
+      {"sql": "CREATE TABLE s (id INTEGER, nv INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1,100),(2,200)"},
+      {"sql": "UPDATE t SET v = c.nv FROM (WITH c AS (SELECT id, nv FROM s) SELECT * FROM c) c WHERE t.id = c.id"},
+      {"sql": "SELECT v FROM t WHERE id = 1", "expect": {"value": "100"}},
+      {"sql": "SELECT v FROM t WHERE id = 2", "expect": {"value": "200"}}
+    ]},
+    {"name": "delete-using-cte", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1),(2),(3)"},
+      {"sql": "CREATE TABLE removals (id INTEGER)"},
+      {"sql": "INSERT INTO removals VALUES (2)"},
+      {"sql": "DELETE FROM t USING (WITH c AS (SELECT id FROM removals) SELECT * FROM c) c WHERE t.id = c.id"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM t WHERE id = 2", "expect": {"value": "0"}}
+    ]},
+    {"name": "empty-cte", "steps": [
+      {"sql": "CREATE TABLE e (id INTEGER)"},
+      {"sql": "WITH c AS (SELECT * FROM e) SELECT COUNT(*) FROM c", "expect": {"value": "0"}}
+    ]},
+    {"name": "update-set-from-cte-subquery", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 0)"},
+      {"sql": "UPDATE t SET v = (WITH c AS (SELECT 99 AS x) SELECT x FROM c) WHERE id = 1"},
+      {"sql": "SELECT v FROM t WHERE id = 1", "expect": {"value": "99"}}
+    ]}
+  ]
+}

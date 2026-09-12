@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.CollatedKey;
+import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -35,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -169,15 +172,23 @@ public final class SetOperations {
             if (!isStringCoercionTarget(target)) {
                 continue;
             }
-            boolean anyStringBranch = false;
-            for (final List<ResultSetColumn> columns : branchColumns) {
-                if (col < columns.size() && columns.get(col).getStaticType() instanceof StringType) {
-                    anyStringBranch = true;
-                    break;
+            // A NUMERIC unified type applies to EVERY branch, not only to the string ones: live
+            // renders an INT branch's 1 as 1.00 under a unified NUMBER(38,2), and a NUMBER(10,2)
+            // branch's 2.50 as 2.5000 under NUMBER(12,4). The gate below used to skip the whole
+            // column unless some branch was a string, so a column declared with a scale handed back
+            // values that did not carry it.
+            if (!(target instanceof NumericType) && !isTimestampTarget(target)) {
+                boolean anyStringBranch = false;
+                for (final List<ResultSetColumn> columns : branchColumns) {
+                    if (col < columns.size()
+                            && columns.get(col).getStaticType() instanceof StringType) {
+                        anyStringBranch = true;
+                        break;
+                    }
                 }
-            }
-            if (!anyStringBranch) {
-                continue;
+                if (!anyStringBranch) {
+                    continue;
+                }
             }
             for (final List<Row> rows : branchRows) {
                 for (int r = 0; r < rows.size(); r++) {
@@ -197,12 +208,19 @@ public final class SetOperations {
         }
     }
 
+    /** Whether the unified type is a naive TIMESTAMP, which a DATE branch's value widens into. */
+    private static boolean isTimestampTarget(final DataType target) {
+        return target instanceof DateTimeType && "TIMESTAMP_NTZ".equalsIgnoreCase(target.getName());
+    }
+
     /** Whether {@code target} is a unified type string-branch values convert INTO. */
     private static boolean isStringCoercionTarget(final DataType target) {
         if (target instanceof NumericType) {
             return true;
         }
-        return target instanceof DateTimeType && "DATE".equalsIgnoreCase(target.getName());
+        return target instanceof DateTimeType
+            && ("DATE".equalsIgnoreCase(target.getName())
+                || "TIMESTAMP_NTZ".equalsIgnoreCase(target.getName()));
     }
 
     /** One value converted to the unified column type ({@code null} and already-fitting values pass). */
@@ -220,6 +238,11 @@ public final class SetOperations {
                         throw new RuntimeException("Numeric value '" + value + "' is not recognized");
                     }
                 }
+                // An EXACT branch beside a FLOAT one becomes a float too: live gives
+                // NUMBER(10,2) 2.50 back as 2.5 under a unified FLOAT, not as the scaled decimal.
+                if (value instanceof Number && !(value instanceof Double) && !(value instanceof Float)) {
+                    return Double.valueOf(((Number) value).doubleValue());
+                }
                 return value;
             }
             if (value instanceof CharSequence) {
@@ -236,10 +259,25 @@ public final class SetOperations {
             }
             if (value instanceof Number) {
                 // The unified scale applies to every branch's values — live renders the NUMBER
-                // branch's 1 as 1.00 under a unified NUMBER(10,2).
-                return new BigDecimal(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
+                // branch's 1 as 1.00 under a unified NUMBER(10,2). A SCALE-0 target changes nothing
+                // about an integral value, so it is left as the Long or Integer it already was:
+                // re-wrapping it as a BigDecimal would alter what the driver hands back without
+                // altering a single rendered digit.
+                final BigDecimal scaled =
+                    new BigDecimal(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
+                if (numeric.getScale() == 0 && !(value instanceof BigDecimal)
+                        && scaled.compareTo(new BigDecimal(value.toString())) == 0) {
+                    return value;
+                }
+                return scaled;
             }
             return value;
+        }
+        // A DATE branch beside a TIMESTAMP one becomes a timestamp at midnight, which is the value
+        // live hands back — the DATE branch of d UNION ts reads 2020-01-01T00:00 and not 2020-01-01.
+        if (target instanceof DateTimeType && "TIMESTAMP_NTZ".equalsIgnoreCase(target.getName())
+                && value instanceof LocalDate) {
+            return ((LocalDate) value).atStartOfDay();
         }
         if (value instanceof CharSequence) {
             return toDateBranchValue(value.toString());
@@ -363,10 +401,12 @@ public final class SetOperations {
      * Apply INTERSECT operation. ALL keeps min(count_left, count_right) occurrences via a right-side
      * count map; the distinct variant uses hash-set membership — both O(n) instead of O(n^2).
      */
-    public static List<Row> applyIntersect(final List<Row> leftRows, final List<Row> rightRows, final boolean all) {
+    public static List<Row> applyIntersect(final List<Row> leftRows, final List<Row> rightRowsRaw, final boolean all) {
         if (leftRows.isEmpty()) {
             return emptyLeftResult();
         }
+        // Converted past the short-circuit, for the reason given on applyExcept.
+        final List<Row> rightRows = coerceToFirstBranchTypes(leftRows, rightRowsRaw, null);
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
         final List<Row> result = new ArrayList<>();
 
@@ -400,10 +440,15 @@ public final class SetOperations {
      * Apply EXCEPT operation. ALL keeps count_left - count_right occurrences via a right-side count
      * map; the distinct variant uses hash-set membership — both O(n) instead of O(n^2).
      */
-    public static List<Row> applyExcept(final List<Row> leftRows, final List<Row> rightRows, final boolean all) {
+    public static List<Row> applyExcept(final List<Row> leftRows, final List<Row> rightRowsRaw, final boolean all) {
         if (leftRows.isEmpty()) {
             return emptyLeftResult();
         }
+        // PAST the short-circuit, and only there: a left row exists to compare against, so the right
+        // branch is CONVERTED to the leading types exactly as a UNION converts it, and a value that
+        // cannot convert refuses the statement. Live does both — it answers over an empty left and
+        // refuses over a non-empty one — so the conversion belongs after this return and not before it.
+        final List<Row> rightRows = coerceToFirstBranchTypes(leftRows, rightRowsRaw, null);
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
         final List<Row> result = new ArrayList<>();
 
@@ -439,15 +484,62 @@ public final class SetOperations {
      * hash set on normalized row keys.
      */
     public static List<Row> applyDistinct(final List<Row> rows) {
+        return applyDistinct(rows, null);
+    }
+
+    /**
+     * Apply DISTINCT where some columns compare under a collation: values that differ only below the
+     * collation's strength are ONE row, and the row reports the smallest of them by raw text.
+     *
+     * @param rows       the rows to de-duplicate
+     * @param collations the collation of each column, null entries for the columns with none; null for
+     *                   a projection where no column carries one
+     * @return the distinct rows, first occurrence kept and order preserved
+     */
+    public static List<Row> applyDistinct(final List<Row> rows, final CollationSpec[] collations) {
         final SetOpColumnCoercion[] coercions = columnCoercions(rows, null);
-        final List<Row> distinctRows = new ArrayList<>();
-        final Set<List<Object>> seen = new HashSet<>();
+        if (!anyCollation(collations)) {
+            final List<Row> distinctRows = new ArrayList<>();
+            final Set<List<Object>> seen = new HashSet<>();
+            for (final Row row : rows) {
+                if (seen.add(rowKey(row, coercions))) {
+                    distinctRows.add(row);
+                }
+            }
+            return distinctRows;
+        }
+        final Map<List<Object>, List<Object>> reported = new LinkedHashMap<>();
         for (final Row row : rows) {
-            if (seen.add(rowKey(row, coercions))) {
-                distinctRows.add(row);
+            final List<Object> key = rowKey(row, coercions, collations);
+            final List<Object> kept = reported.get(key);
+            if (kept == null) {
+                reported.put(key, new ArrayList<>(row.getValues()));
+                continue;
+            }
+            for (int i = 0; i < kept.size() && i < collations.length; i++) {
+                if (collations[i] != null) {
+                    kept.set(i, CollatedKey.leastOf(kept.get(i), row.getValues().get(i)));
+                }
             }
         }
+        final List<Row> distinctRows = new ArrayList<>(reported.size());
+        for (final Map.Entry<List<Object>, List<Object>> entry : reported.entrySet()) {
+            distinctRows.add(new Row(entry.getValue()));
+        }
         return distinctRows;
+    }
+
+    /** Whether any column of a projection compares under a collation. */
+    static boolean anyCollation(final CollationSpec[] collations) {
+        if (collations == null) {
+            return false;
+        }
+        for (final CollationSpec rules : collations) {
+            if (rules != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -457,11 +549,18 @@ public final class SetOperations {
      * hashCode is consistent with that equality, so it is a drop-in dedup key.
      */
     static List<Object> rowKey(final Row row, final SetOpColumnCoercion[] coercions) {
+        return rowKey(row, coercions, null);
+    }
+
+    /** {@link #rowKey(Row, SetOpColumnCoercion[])} with the collated columns keyed under their rules. */
+    static List<Object> rowKey(final Row row, final SetOpColumnCoercion[] coercions,
+                               final CollationSpec[] collations) {
         final List<Object> values = row.getValues();
         final List<Object> key = new ArrayList<>(values.size());
         for (int i = 0; i < values.size(); i++) {
             final SetOpColumnCoercion coercion = i < coercions.length ? coercions[i] : SetOpColumnCoercion.NONE;
-            key.add(normalizeValue(coercion, values.get(i)));
+            final CollationSpec rules = collations != null && i < collations.length ? collations[i] : null;
+            key.add(CollatedKey.of(normalizeValue(coercion, values.get(i)), rules));
         }
         return key;
     }
@@ -597,8 +696,16 @@ public final class SetOperations {
             // dedups/intersects against a text-carried equal one.
             return ((VariantValue) value).text();
         }
-        if (value == null || coercion == SetOpColumnCoercion.NONE) {
-            return value;
+        if (value == null) {
+            return null;
+        }
+        if (coercion == SetOpColumnCoercion.NONE) {
+            // A column of doubles keeps its values as its keys, with one adjustment: the two zeros are
+            // ONE distinct value on the account — SELECT DISTINCT over -0.0::FLOAT and 0.0::FLOAT is a
+            // single row there, the FIRST one — where Double.equals tells them apart. Adding a positive
+            // zero folds -0.0 into 0.0 and leaves every other double alone. A column that mixes a
+            // double with an exact number is NUMERIC below, whose decimal key has no sign of zero.
+            return value instanceof Double ? Double.valueOf(((Double) value).doubleValue() + 0.0) : value;
         }
         switch (coercion) {
             case TIMESTAMP:

@@ -1,0 +1,103 @@
+{
+  "suite": "scripting-doc-examples",
+  "description": "The Snowflake Scripting developer guide's own worked examples, run and asserted: variables and block scoping, branching (IF / ELSEIF / ELSE and a searched CASE), the four loops (FOR range, WHILE, REPEAT ... UNTIL, LOOP with BREAK), cursors (OPEN / FETCH / CLOSE, the FOR-row form, and a cursor over a RESULTSET variable), SELECT ... INTO, exceptions (a named DECLAREd exception and WHEN OTHER), and procedure bodies in all three spellings - dollar-quoted, unquoted AS BEGIN ... END, and unquoted AS DECLARE ... BEGIN ... END. Two parts previously diverged and are pinned carefully. Nested DECLARE sections SHADOW and RESTORE a same-named variable, including one shadowing a procedure PARAMETER, which the suite records as the five-row trail outer/middle/inner/middle/outer. And loop LABELS do not exist in Snowflake Scripting: a leading label on a LOOP is a syntax error on a real account, so the labelled form is refused here while the bare LOOP beside it still counts to 5. The CONTINUE exception handler resumes at the statement AFTER the failure, which the suite shows twice - once as the a/caught/b trail through a block and once inside a loop, where i=2's increment still runs so the total is 10 rather than 8. Converted 1:1 from scripting/ScriptingDocExamplesTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "variables-declare-default-and-assignment", "steps": [
+      {"sql": "DECLARE profit NUMBER(38, 2) DEFAULT 0.0; BEGIN LET revenue NUMBER(38, 2) DEFAULT 110.0; LET cost NUMBER(38, 2) DEFAULT 100.0; profit := revenue - cost; RETURN profit::VARCHAR; END;",
+       "expect": {"value": "10.00"}}
+    ]},
+    {"name": "let-without-an-explicit-type", "steps": [
+      {"sql": "BEGIN LET a := 6; LET b := 8; RETURN a + b; END;", "expect": {"value": 14}}
+    ]},
+    {"name": "nested-declare-sections-shadow-and-restore", "steps": [
+      {"sql": "CREATE TABLE r (seq INTEGER, v VARCHAR)"},
+      {"sql": "DECLARE PV_NAME VARCHAR DEFAULT 'outer'; BEGIN INSERT INTO r VALUES (1, :PV_NAME); DECLARE PV_NAME VARCHAR DEFAULT 'middle'; BEGIN INSERT INTO r VALUES (2, :PV_NAME); DECLARE PV_NAME VARCHAR DEFAULT 'inner'; BEGIN INSERT INTO r VALUES (3, :PV_NAME); END; INSERT INTO r VALUES (4, :PV_NAME); END; INSERT INTO r VALUES (5, :PV_NAME); END;"},
+      {"sql": "SELECT v FROM r ORDER BY seq", "expect": {"rows": [["outer"],["middle"],["inner"],["middle"],["outer"]], "ordered": true}}
+    ]},
+    {"name": "a-nested-declare-shadows-a-procedure-parameter", "steps": [
+      {"sql": "CREATE TABLE r (seq INTEGER, v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE scope_test(PV_NAME VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO r VALUES (1, :PV_NAME); DECLARE PV_NAME VARCHAR DEFAULT 'middle'; BEGIN INSERT INTO r VALUES (2, :PV_NAME); DECLARE PV_NAME VARCHAR DEFAULT 'inner'; BEGIN INSERT INTO r VALUES (3, :PV_NAME); END; INSERT INTO r VALUES (4, :PV_NAME); END; INSERT INTO r VALUES (5, :PV_NAME); RETURN 'done'; END; $$"},
+      {"sql": "CALL scope_test('parameter')", "expect": {"value": "done"}},
+      {"sql": "SELECT v FROM r ORDER BY seq", "expect": {"rows": [["parameter"],["middle"],["inner"],["middle"],["parameter"]], "ordered": true}}
+    ]},
+    {"name": "an-unquoted-begin-end-procedure-body", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE greet() RETURNS VARCHAR LANGUAGE SQL AS BEGIN RETURN 'ok'; END;"},
+      {"sql": "CALL greet()", "expect": {"value": "ok"}}
+    ]},
+    {"name": "an-unquoted-declare-begin-end-procedure-body", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE doubler(n INTEGER) RETURNS INTEGER LANGUAGE SQL AS DECLARE result INTEGER DEFAULT 0; BEGIN result := n * 2; RETURN result; END;"},
+      {"sql": "CALL doubler(21)", "expect": {"value": 42}}
+    ]},
+    {"name": "a-dollar-quoted-procedure-body", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE add_one(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN x + 1; END; $$"},
+      {"sql": "CALL add_one(41)", "expect": {"value": 42}}
+    ]},
+    {"name": "if-elseif-else", "steps": [
+      {"sql": "DECLARE n INTEGER DEFAULT 5; BEGIN IF (n < 0) THEN RETURN 'negative'; ELSEIF (n = 0) THEN RETURN 'zero'; ELSE RETURN 'positive'; END IF; END;",
+       "expect": {"value": "positive"}}
+    ]},
+    {"name": "a-searched-case", "steps": [
+      {"sql": "DECLARE score INTEGER DEFAULT 75; BEGIN CASE WHEN score >= 90 THEN RETURN 'high'; WHEN score >= 50 THEN RETURN 'medium'; ELSE RETURN 'low'; END; END;",
+       "expect": {"value": "medium"}}
+    ]},
+    {"name": "a-for-range-loop", "steps": [
+      {"sql": "DECLARE total INTEGER DEFAULT 0; BEGIN FOR i IN 1 TO 5 DO total := total + i; END FOR; RETURN total; END;", "expect": {"value": 15}}
+    ]},
+    {"name": "a-while-loop", "steps": [
+      {"sql": "DECLARE counter INTEGER DEFAULT 0; BEGIN WHILE (counter < 3) DO counter := counter + 1; END WHILE; RETURN counter; END;", "expect": {"value": 3}}
+    ]},
+    {"name": "a-repeat-until-loop", "steps": [
+      {"sql": "DECLARE counter INTEGER DEFAULT 0; BEGIN REPEAT counter := counter + 1; UNTIL (counter >= 3) END REPEAT; RETURN counter; END;", "expect": {"value": 3}}
+    ]},
+    {"name": "a-loop-with-break", "steps": [
+      {"sql": "DECLARE counter INTEGER DEFAULT 0; BEGIN LOOP counter := counter + 1; IF (counter >= 4) THEN BREAK; END IF; END LOOP; RETURN counter; END;", "expect": {"value": 4}}
+    ]},
+    {"name": "cursor-open-fetch-close", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2), (3)"},
+      {"sql": "DECLARE c CURSOR FOR SELECT n FROM nums ORDER BY n; s INTEGER DEFAULT 0; v INTEGER; BEGIN OPEN c; FETCH c INTO v; s := s + v; FETCH c INTO v; s := s + v; CLOSE c; RETURN s; END;",
+       "expect": {"value": 3}}
+    ]},
+    {"name": "a-cursor-for-loop", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2), (3)"},
+      {"sql": "DECLARE total INTEGER DEFAULT 0; c CURSOR FOR SELECT n FROM nums; BEGIN FOR rec IN c DO total := total + rec.n; END FOR; RETURN total; END;",
+       "expect": {"value": 6}}
+    ]},
+    {"name": "select-into", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2), (3)"},
+      {"sql": "DECLARE mx INTEGER; BEGIN SELECT MAX(n) INTO mx FROM nums; RETURN mx; END;", "expect": {"value": 3}}
+    ]},
+    {"name": "raise-and-catch-a-named-exception", "steps": [
+      {"sql": "DECLARE my_exception EXCEPTION (-20001, 'Raised on purpose'); BEGIN RAISE my_exception; RETURN 'not reached'; EXCEPTION WHEN my_exception THEN RETURN 'caught'; END;",
+       "expect": {"value": "caught"}}
+    ]},
+    {"name": "a-when-other-handler", "steps": [
+      {"sql": "BEGIN LET x INTEGER := 1 / 0; RETURN 'not reached'; EXCEPTION WHEN OTHER THEN RETURN 'handled'; END;", "expect": {"value": "handled"}}
+    ]},
+    {"name": "a-cursor-over-a-resultset-variable", "steps": [
+      {"sql": "CREATE TABLE nums (n INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1), (2), (3)"},
+      {"sql": "DECLARE res RESULTSET DEFAULT (SELECT n FROM nums ORDER BY n); c CURSOR FOR res; total INTEGER DEFAULT 0; v INTEGER; BEGIN OPEN c; FETCH c INTO v; total := total + v; FETCH c INTO v; total := total + v; FETCH c INTO v; total := total + v; CLOSE c; RETURN total; END;",
+       "expect": {"value": 6}}
+    ]},
+    {"name": "a-labelled-loop-is-rejected-and-the-bare-loop-stands", "steps": [
+      {"sql": "DECLARE counter INTEGER DEFAULT 0; BEGIN my_loop: LOOP counter := counter + 1; IF (counter >= 5) THEN BREAK my_loop; END IF; END LOOP my_loop; RETURN counter; END;",
+       "expect": {"error": {}}},
+      {"sql": "DECLARE counter INTEGER DEFAULT 0; BEGIN LOOP counter := counter + 1; IF (counter >= 5) THEN BREAK; END IF; END LOOP; RETURN counter; END;",
+       "expect": {"value": 5}}
+    ]},
+    {"name": "a-continue-handler-resumes-at-the-next-statement", "steps": [
+      {"sql": "CREATE TABLE log (seq INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN INSERT INTO log VALUES (1, 'a'); INSERT INTO no_such_table VALUES (99); INSERT INTO log VALUES (3, 'b'); RETURN 'done'; EXCEPTION WHEN OTHER CONTINUE THEN INSERT INTO log VALUES (2, 'caught'); END;",
+       "expect": {"value": "done"}},
+      {"sql": "SELECT v FROM log ORDER BY seq", "expect": {"rows": [["a"],["caught"],["b"]], "ordered": true}}
+    ]},
+    {"name": "a-continue-handler-in-a-loop-resumes-at-the-next-statement", "steps": [
+      {"sql": "DECLARE total INTEGER DEFAULT 0; BEGIN FOR i IN 1 TO 4 DO IF (i = 2) THEN LET bad INTEGER := 10 / 0; END IF; total := total + i; END FOR; RETURN total; EXCEPTION WHEN OTHER CONTINUE THEN total := total; END;",
+       "expect": {"value": 10}}
+    ]}
+  ]
+}

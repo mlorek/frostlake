@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.executor.ShowResultHelpers;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.table.QueryRunner;
@@ -25,7 +26,10 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
+import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.MaterializedView;
+import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Table;
@@ -82,6 +86,10 @@ public class GetDdl extends BuiltInFunction {
                 return materializedViewDdl(schemaOf(objectName).getMaterializedView(simpleName(objectName)));
             case "SEQUENCE":
                 return sequenceDdl(schemaOf(objectName).getSequence(simpleName(objectName)));
+            case "FUNCTION":
+                return functionDdl(args.get(1).toString().trim());
+            case "PROCEDURE":
+                return procedureDdl(args.get(1).toString().trim());
             default:
                 throw new RuntimeException("GET_DDL does not support object type: " + objectType);
         }
@@ -91,7 +99,7 @@ public class GetDdl extends BuiltInFunction {
 
     private String tableDdl(final Table table) {
         final StringBuilder sb = new StringBuilder();
-        sb.append("create or replace TABLE ").append(table.getName()).append(" (");
+        sb.append("create or replace TABLE ").append(SqlIdentifiers.spellCanonical(table.getName())).append(" (");
 
         // A UNIQUE constraint spanning several columns is ONE constraint, so it renders as a table-level
         // line; re-emitting it as an inline UNIQUE per column would recreate it as several independent
@@ -295,4 +303,134 @@ public class GetDdl extends BuiltInFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 3; }
+
+    // ─────────────────────────── FUNCTION / PROCEDURE ───────────────────────────
+
+    /**
+     * A routine's DDL, as a real account renders it: the name and every parameter double-quoted, the
+     * types canonical, LANGUAGE always spelled even where the CREATE left it out, STRICT and IMMUTABLE
+     * each on a line of their own when set, MEMOIZABLE prefixing whatever line follows it, and the body
+     * re-quoted as ONE single-quoted literal whatever quoting the CREATE used. CALLED ON NULL INPUT, a
+     * NOT NULL return and TEMPORARY are not rendered at all (live-verified).
+     */
+    private String functionDdl(final String written) {
+        final Function function = (Function) routine(written, false);
+        final StringBuilder sb = new StringBuilder("CREATE OR REPLACE ");
+        if (function.isSecure()) {
+            sb.append("SECURE ");
+        }
+        sb.append("FUNCTION ").append(quotedName(function.getName()))
+          .append(routineParameters(function.getParameters())).append("\n");
+        sb.append("RETURNS ").append(function.isTableFunction()
+            ? "TABLE (" + returnColumns(function.getReturnColumns()) + ")"
+            : routineTypeText(function.getReturnType())).append("\n");
+        sb.append("LANGUAGE ").append(function.getLanguage().toUpperCase()).append("\n");
+        if ("RETURNS NULL ON NULL INPUT".equals(function.getNullHandling())) {
+            sb.append("STRICT\n");
+        }
+        if ("IMMUTABLE".equals(function.getVolatility())) {
+            sb.append("IMMUTABLE\n");
+        }
+        final String memoizable = function.isMemoizable() ? "MEMOIZABLE " : "";
+        if (function.getComment() != null && !function.getComment().isEmpty()) {
+            sb.append(memoizable).append("COMMENT='").append(function.getComment().replace("'", "''"))
+              .append("'\n").append("AS ");
+        } else {
+            sb.append(memoizable).append("AS ");
+        }
+        return sb.append(quotedBody(function.getBody())).append(";").toString();
+    }
+
+    /** A procedure's DDL, which adds EXECUTE AS where a function has nothing (live-verified). */
+    private String procedureDdl(final String written) {
+        final Procedure procedure = (Procedure) routine(written, true);
+        final StringBuilder sb = new StringBuilder("CREATE OR REPLACE PROCEDURE ");
+        sb.append(quotedName(procedure.getName())).append(routineParameters(procedure.getParameters()))
+          .append("\n");
+        sb.append("RETURNS ").append(procedure.getReturnColumns() != null && !procedure.getReturnColumns().isEmpty()
+            ? "TABLE (" + returnColumns(procedure.getReturnColumns()) + ")"
+            : routineTypeText(procedure.getReturnType())).append("\n");
+        sb.append("LANGUAGE ").append(procedure.getLanguage().toUpperCase()).append("\n");
+        sb.append("EXECUTE AS ").append(procedure.getExecuteAs() == null ? "OWNER"
+            : procedure.getExecuteAs().toUpperCase()).append("\n");
+        if (procedure.getComment() != null && !procedure.getComment().isEmpty()) {
+            sb.append("COMMENT='").append(procedure.getComment().replace("'", "''")).append("'\n");
+        }
+        return sb.append("AS ").append(quotedBody(procedure.getBody())).append(";").toString();
+    }
+
+    /**
+     * The routine a {@code name(TYPES)} argument names. The name resolves as an identifier reference
+     * does, and the overload is chosen by how many types the argument lists; a name nothing holds is
+     * refused echoing the argument AS WRITTEN, which is how the account echoes it.
+     */
+    private Object routine(final String written, final boolean procedure) {
+        final int paren = written.indexOf('(');
+        final String namePart = paren < 0 ? written : written.substring(0, paren);
+        final String argumentPart = paren < 0 ? "" : written.substring(paren + 1).replace(")", "");
+        final int arity = argumentPart.trim().isEmpty() ? 0 : argumentPart.split(",").length;
+        final String canonical = SqlIdentifiers.canonicalText(namePart.trim());
+        final List<Parameter> none = new ArrayList<Parameter>();
+        for (final Object overload : procedure
+                ? new ArrayList<Object>(schemaOf(canonical).getProcedureOverloads(simpleName(canonical)))
+                : new ArrayList<Object>(schemaOf(canonical).getFunctionOverloads(simpleName(canonical)))) {
+            final List<Parameter> parameters = overload instanceof Function
+                ? ((Function) overload).getParameters() : ((Procedure) overload).getParameters();
+            if ((parameters == null ? none : parameters).size() == arity) {
+                return overload;
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.of(
+            "Object '" + written + "' does not exist or not authorized."));
+    }
+
+    /** {@code ("X" NUMBER(38,0) DEFAULT 1, …)} — every parameter quoted, its default kept. */
+    private String routineParameters(final List<Parameter> parameters) {
+        final StringBuilder out = new StringBuilder("(");
+        for (int i = 0; parameters != null && i < parameters.size(); i++) {
+            if (i > 0) {
+                out.append(", ");
+            }
+            final Parameter parameter = parameters.get(i);
+            out.append(quotedName(parameter.getName())).append(" ")
+               .append(routineTypeText(parameter.getDataType()));
+            if (parameter.hasDefault()) {
+                out.append(" DEFAULT ").append(parameter.getDefaultValue());
+            }
+        }
+        return out.append(")").toString();
+    }
+
+    /** A table return's columns, quoted and typed as the parameters are. */
+    private String returnColumns(final List<Parameter> columns) {
+        final StringBuilder out = new StringBuilder();
+        for (int i = 0; columns != null && i < columns.size(); i++) {
+            if (i > 0) {
+                out.append(", ");
+            }
+            out.append(quotedName(columns.get(i).getName())).append(" ")
+               .append(routineTypeText(columns.get(i).getDataType()));
+        }
+        return out.toString();
+    }
+
+    /**
+     * A routine's type as the account spells it: the canonical name, except that a string of the
+     * default width is spelled BARE - live renders {@code RETURNS VARCHAR} for a bare declaration and
+     * {@code VARCHAR(10)} for a sized one.
+     */
+    private String routineTypeText(final DataType type) {
+        return SqlTypeNames.routineType(type);
+    }
+
+    /** The body as one single-quoted literal, its own quotes doubled, whatever quoting the CREATE used. */
+    private String quotedBody(final String body) {
+        return "'" + (body == null ? "" : body).replace("'", "''") + "'";
+    }
+
+    /** A routine's name and parameter names are always double-quoted in its DDL. */
+    private String quotedName(final String name) {
+        return "\"" + name + "\"";
+    }
+
 }

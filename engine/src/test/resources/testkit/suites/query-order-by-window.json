@@ -1,0 +1,44 @@
+{
+  "suite": "query-order-by-window",
+  "description": "A window call may be the ORDER BY key ITSELF, without appearing in the SELECT list. Frostlake used to REFUSE every such query - the whole call TEXT reached the column resolver, so ORDER BY ROW_NUMBER() OVER (ORDER BY b) came back \"invalid identifier 'ROW_NUMBER() OVER (ORDER BY b)'\" - which is the worst direction: valid SQL a real account runs. The cause was upstream of the sort: whether a query needs the window stage was decided from the SELECT clause alone, and ORDER BY hangs off the STATEMENT, so a window written only there left the stage switched off and the key was never computed by anything that understands partitions. The suite pins the key ascending and descending, over several window functions, mixed with ordinary keys on either side, inside a larger expression, alongside a QUALIFY window, and in the alias forms that always worked including under DISTINCT - plus the rejection that must survive: the keys inside the OVER clause are still checked, at the reference's own offset. The fixture orders DIFFERENTLY by each key (a is 3, 1, 2 while b ascends with the insertion order) so no assertion can pass by accident. Converted 1:1 from query/OrderByWindowTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-window-call-can-be-the-sort-key", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g ORDER BY ROW_NUMBER() OVER (ORDER BY b)", "expect": {"rows": [[3],[1],[2]], "ordered": true}},
+      {"sql": "SELECT a FROM g ORDER BY ROW_NUMBER() OVER (ORDER BY b) DESC", "expect": {"rows": [[2],[1],[3]], "ordered": true}},
+      {"sql": "SELECT a FROM g ORDER BY LAG(a) OVER (ORDER BY b) NULLS FIRST", "expect": {"rows": [[3],[2],[1]], "ordered": true}},
+      {"sql": "SELECT a FROM g ORDER BY SUM(b) OVER (PARTITION BY a)", "expect": {"rows": [[3],[1],[2]], "ordered": true}}
+    ]},
+    {"name": "it-mixes-with-ordinary-keys", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g ORDER BY RANK() OVER (ORDER BY b), a", "expect": {"rows": [[3],[1],[2]], "ordered": true}},
+      {"sql": "SELECT a FROM g ORDER BY a, RANK() OVER (ORDER BY b)", "expect": {"rows": [[1],[2],[3]], "ordered": true}}
+    ]},
+    {"name": "it-may-sit-inside-a-larger-expression", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g ORDER BY ROW_NUMBER() OVER (ORDER BY b) + 1", "expect": {"rows": [[3],[1],[2]], "ordered": true}}
+    ]},
+    {"name": "it-coexists-with-qualify", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g QUALIFY ROW_NUMBER() OVER (ORDER BY b) > 0 ORDER BY RANK() OVER (ORDER BY b)",
+       "expect": {"rows": [[3],[1],[2]], "ordered": true}}
+    ]},
+    {"name": "the-windows-own-keys-are-still-checked", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g ORDER BY ROW_NUMBER() OVER (ORDER BY nosuchcol)",
+       "expect": {"error": {"messageContains": "error line 1 at position 53\ninvalid identifier 'NOSUCHCOL'"}}}
+    ]},
+    {"name": "the-alias-forms-still-work", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a, ROW_NUMBER() OVER (ORDER BY b) r FROM g ORDER BY r", "expect": {"rows": [[3,1],[1,2],[2,3]], "ordered": true}},
+      {"sql": "SELECT DISTINCT a, ROW_NUMBER() OVER (ORDER BY a) r FROM g ORDER BY r", "expect": {"rows": [[1,1],[2,2],[3,3]], "ordered": true}}
+    ]}
+  ]
+}

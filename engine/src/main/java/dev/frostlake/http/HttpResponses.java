@@ -45,6 +45,11 @@ final class HttpResponses {
         os.close();
     }
 
+    /** The sentence for a session id the server holds no session under. */
+    static String unknownSession(final String sessionId) {
+        return "Session '" + sessionId + "' does not exist or has expired.";
+    }
+
     /** The "wrong verb" response every handler answers for a method it does not serve. */
     static void methodNotAllowed(final HttpExchange exchange) throws IOException {
         send(exchange, 405, "{\"error\":\"Method not allowed\"}");

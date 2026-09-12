@@ -1,0 +1,85 @@
+{
+  "suite": "features-data-metric-references",
+  "description": "INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES - the readback for metric attachments: a column metric names the metric and its overload (TABLE(NUMBER) / NUMBER(38,0)), a table-level metric has an EMPTY signature, the string overload carries its length, the entity trio with the domain spelled in mixed case (Table), the fixed status cells (DISABLED/DISABLED/MEDIUM with empty USE_ROLE and EXCLUDE_TABLE_TYPES), DATA_METRIC_SCHEDULE read back as cron (minutes below an hour, hours above), SUSPEND moving one attachment's status only, the metric-name call shape listing measured objects (FULL name required - a bare name is refused), a missing object refused, and the no-argument call refused with the two accepted shapes spelled out. REF_ID and REF_ARGUMENTS are deliberately not asserted (per-attachment UUID / internal column id). Converted 1:1 from features/DataMetricReferencesTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-column-metric-names-the-metric-and-its-overload", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+      {"sql": "SELECT METRIC_DATABASE_NAME, METRIC_SCHEMA_NAME, METRIC_NAME, METRIC_SIGNATURE, METRIC_DATA_TYPE FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_NAME = 'NULL_COUNT'",
+       "expect": {"rows": [["SNOWFLAKE", "CORE", "NULL_COUNT", "TABLE(NUMBER)", "NUMBER(38,0)"]]}}
+    ]},
+    {"name": "a-table-metric-has-no-signature", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+      {"sql": "SELECT METRIC_NAME, '<' || METRIC_SIGNATURE || '>' FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_NAME = 'ROW_COUNT'",
+       "expect": {"rows": [["ROW_COUNT", "<>"]]}}
+    ]},
+    {"name": "the-string-overload-carries-its-length", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (txt)"},
+      {"sql": "SELECT METRIC_NAME, METRIC_SIGNATURE FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_SIGNATURE = 'TABLE(VARCHAR(16777216))'",
+       "expect": {"rows": [["NULL_COUNT", "TABLE(VARCHAR(16777216))"]]}}
+    ]},
+    {"name": "the-entity-is-named-in-mixed-case-domain", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+      {"sql": "SELECT REF_ENTITY_DATABASE_NAME, REF_ENTITY_SCHEMA_NAME, REF_ENTITY_NAME, REF_ENTITY_DOMAIN, LEVEL FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_NAME = 'NULL_COUNT'",
+       "expect": {"rows": [["TEST_DB", "TEST_SCHEMA", "DR_T", "Table", "Table"]]}}
+    ]},
+    {"name": "the-fixed-status-cells-are-all-disabled", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+      {"sql": "SELECT DATA_QUALITY_NOTIFICATION_STATUS, ANOMALY_DETECTION_STATUS, ANOMALY_DETECTION_SENSITIVITY_LEVEL, '<' || USE_ROLE || '>', '<' || EXCLUDE_TABLE_TYPES || '>' FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_NAME = 'NULL_COUNT'",
+       "expect": {"rows": [["DISABLED", "DISABLED", "MEDIUM", "<>", "<>"]]}}
+    ]},
+    {"name": "the-schedule-is-rendered-as-cron", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+      {"sql": "ALTER TABLE dr_t SET DATA_METRIC_SCHEDULE = '60 MINUTE'"},
+      {"sql": "SELECT SCHEDULE FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_NAME = 'NULL_COUNT'",
+       "expect": {"value": "0 */1 * * * UTC"}},
+      {"sql": "ALTER TABLE dr_t SET DATA_METRIC_SCHEDULE = '30 MINUTE'"},
+      {"sql": "SELECT SCHEDULE FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_NAME = 'NULL_COUNT'",
+       "expect": {"value": "*/30 * * * * UTC"}}
+    ]},
+    {"name": "suspending-one-attachment-moves-only-its-status", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+      {"sql": "ALTER TABLE dr_t MODIFY DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id) SUSPEND"},
+      {"sql": "SELECT METRIC_NAME, SCHEDULE_STATUS FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_NAME = 'NULL_COUNT'",
+       "expect": {"rows": [["NULL_COUNT", "SUSPENDED_BY_USER_ACTION"]]}},
+      {"sql": "SELECT METRIC_NAME, SCHEDULE_STATUS FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) WHERE METRIC_NAME = 'ROW_COUNT'",
+       "expect": {"rows": [["ROW_COUNT", "STARTED"]]}}
+    ]},
+    {"name": "a-metric-lists-the-objects-it-measures", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+      {"sql": "SELECT REF_ENTITY_NAME FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(METRIC_NAME => 'SNOWFLAKE.CORE.NULL_COUNT'))",
+       "expect": {"rowCount": 1, "rows": [["DR_T"]]}}
+    ]},
+    {"name": "a-bare-metric-name-is-refused", "steps": [
+      {"sql": "CREATE TABLE dr_t (id NUMBER, txt VARCHAR, d DATE)"},
+      {"sql": "ALTER TABLE dr_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(METRIC_NAME => 'NULL_COUNT'))",
+       "expect": {"error": {"messageContains": "Data Metric Function 'NULL_COUNT' does not exist or not authorized."}}}
+    ]},
+    {"name": "an-object-that-does-not-exist-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 'NO_SUCH_T', REF_ENTITY_DOMAIN => 'TABLE'))",
+       "expect": {"error": {"messageContains": "Table 'NO_SUCH_T' does not exist or not authorized."}}}
+    ]},
+    {"name": "one-of-the-two-argument-shapes-is-required", "steps": [
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES())",
+       "expect": {"error": {"messageContains": "expects argument (metric_name=>'metricName') or (ref_entity_name=>'name', ref_entity_domain=>'domain')."}}}
+    ]}
+  ]
+}

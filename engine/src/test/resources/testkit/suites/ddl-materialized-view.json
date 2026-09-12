@@ -1,0 +1,59 @@
+{
+  "suite": "ddl-materialized-view",
+  "description": "CREATE / DROP / ALTER MATERIALIZED VIEW: SHOW MATERIALIZED VIEWS listing and text cell, DROP with and without IF EXISTS, SUSPEND / RESUME / REFRESH accepted (their suspended-flag effect has no SQL read surface - SHOW carries no such cell, live-verified - so the Java class's embedded-internal flag asserts are represented here as statement acceptance), COMMENT before AS, and ALTER SET COMMENT. Converted from ddl/CreateMaterializedViewTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "create-simple-materialized-view", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, username VARCHAR)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_users AS SELECT * FROM users"},
+      {"sql": "SHOW MATERIALIZED VIEWS LIKE 'mv_users'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-materialized-view-with-filter", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Widget', 100), (2, 'Gadget', 200)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_expensive AS SELECT * FROM products WHERE price > 150"},
+      {"sql": "SHOW MATERIALIZED VIEWS LIKE 'mv_expensive'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CONTAINS(LOWER(\"text\"), 'price > 150') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "drop-materialized-view", "steps": [
+      {"sql": "CREATE TABLE items (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_items AS SELECT * FROM items"},
+      {"sql": "SHOW MATERIALIZED VIEWS LIKE 'mv_items'", "expect": {"rowCount": 1}},
+      {"sql": "DROP MATERIALIZED VIEW mv_items"},
+      {"sql": "SHOW MATERIALIZED VIEWS LIKE 'mv_items'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "drop-materialized-view-if-exists", "steps": [
+      {"sql": "DROP MATERIALIZED VIEW IF EXISTS nonexistent_mv"}
+    ]},
+    {"name": "alter-materialized-view-suspend-is-accepted", "steps": [
+      {"sql": "CREATE TABLE data (id INTEGER, value VARCHAR)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_data AS SELECT * FROM data"},
+      {"sql": "ALTER MATERIALIZED VIEW mv_data SUSPEND"}
+    ]},
+    {"name": "alter-materialized-view-resume-is-accepted", "steps": [
+      {"sql": "CREATE TABLE data (id INTEGER, value VARCHAR)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_data AS SELECT * FROM data"},
+      {"sql": "ALTER MATERIALIZED VIEW mv_data SUSPEND"},
+      {"sql": "ALTER MATERIALIZED VIEW mv_data RESUME"}
+    ]},
+    {"name": "alter-materialized-view-refresh-is-accepted", "steps": [
+      {"sql": "CREATE TABLE data (id INTEGER, value VARCHAR)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_data AS SELECT * FROM data"},
+      {"sql": "ALTER MATERIALIZED VIEW mv_data REFRESH"}
+    ]},
+    {"name": "create-materialized-view-with-comment", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, amount INTEGER)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_sales COMMENT = 'Sales data' AS SELECT * FROM sales"},
+      {"sql": "SHOW MATERIALIZED VIEWS LIKE 'mv_sales'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Sales data"}}
+    ]},
+    {"name": "alter-materialized-view-set-comment", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, total INTEGER)"},
+      {"sql": "CREATE MATERIALIZED VIEW mv_orders AS SELECT * FROM orders"},
+      {"sql": "ALTER MATERIALIZED VIEW mv_orders SET COMMENT = 'Order summary'"},
+      {"sql": "SHOW MATERIALIZED VIEWS LIKE 'mv_orders'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Order summary"}}
+    ]}
+  ]
+}

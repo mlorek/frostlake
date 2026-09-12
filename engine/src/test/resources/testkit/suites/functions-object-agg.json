@@ -1,0 +1,42 @@
+{
+  "suite": "functions-object-agg",
+  "description": "OBJECT_AGG(key, value) aggregates key/value pairs into a single OBJECT. Pairs with a NULL key or a NULL value are omitted, scalar value TYPES survive so a boolean stays true rather than the string \"true\", and the result is canonical JSON with keys sorted. Covers the loader round trip - FLATTEN an OBJECT into key/value rows then OBJECT_AGG them back, where the boolean and number values must not return quoted - and the two-argument aggregate working as a WINDOW function over a partition, which the single-argument feed used to answer as an empty object. Converted 1:1 from functions/ObjectAggTest (now retired); its @BeforeEach kv fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-aggregates-pairs-into-a-sorted-object", "steps": [
+      {"sql": "CREATE TABLE kv (grp INTEGER, k VARCHAR, v VARIANT)"},
+      {"sql": "INSERT INTO kv SELECT 1, 'beta', TO_VARIANT(2)"},
+      {"sql": "INSERT INTO kv SELECT 1, 'alpha', TO_VARIANT('s')"},
+      {"sql": "INSERT INTO kv SELECT 1, NULL, TO_VARIANT('dropped')"},
+      {"sql": "INSERT INTO kv SELECT 1, 'nul', NULL"},
+      {"sql": "SELECT OBJECT_AGG(k, v) FROM kv WHERE grp = 1", "expect": {"value": "{\"alpha\":\"s\",\"beta\":2}"}}
+    ]},
+    {"name": "a-null-key-or-value-drops-the-pair", "steps": [
+      {"sql": "CREATE TABLE kv (grp INTEGER, k VARCHAR, v VARIANT)"},
+      {"sql": "INSERT INTO kv SELECT 2, 'only', TO_VARIANT(TRUE)"},
+      {"sql": "SELECT OBJECT_AGG(k, v) FROM kv WHERE grp = 2", "expect": {"value": "{\"only\":true}"}}
+    ]},
+    {"name": "group-by-produces-one-object-per-group", "steps": [
+      {"sql": "CREATE TABLE kv (grp INTEGER, k VARCHAR, v VARIANT)"},
+      {"sql": "INSERT INTO kv SELECT 1, 'beta', TO_VARIANT(2)"},
+      {"sql": "INSERT INTO kv SELECT 1, 'alpha', TO_VARIANT('s')"},
+      {"sql": "INSERT INTO kv SELECT 2, 'only', TO_VARIANT(TRUE)"},
+      {"sql": "SELECT grp, OBJECT_AGG(k, v) FROM kv GROUP BY grp", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "flattened-object-entries-reaggregate-with-types-intact", "steps": [
+      {"sql": "SELECT OBJECT_AGG(f.key::VARCHAR, f.value)\nFROM (SELECT 1 AS i), LATERAL FLATTEN(input => OBJECT_CONSTRUCT('b', TRUE, 'n', 5, 's', 'x')) f",
+       "expect": {"value": "{\"b\":true,\"n\":5,\"s\":\"x\"}"}}
+    ]},
+    {"name": "it-works-as-a-window-function-over-a-partition", "steps": [
+      {"sql": "CREATE TABLE kv (grp INTEGER, k VARCHAR, v VARIANT)"},
+      {"sql": "INSERT INTO kv SELECT 1, 'beta', TO_VARIANT(2)"},
+      {"sql": "INSERT INTO kv SELECT 1, 'alpha', TO_VARIANT('s')"},
+      {"sql": "SELECT OBJECT_AGG(k, v) OVER (PARTITION BY grp) FROM kv WHERE grp = 1 LIMIT 1",
+       "expect": {"value": "{\"alpha\":\"s\",\"beta\":2}"}},
+      {"sql": "SELECT LISTAGG(k, '-') OVER (PARTITION BY grp2) FROM (SELECT 1 AS grp2, 'x' AS k UNION ALL SELECT 1, 'y') LIMIT 1",
+       "expect": {"value": "x-y"}},
+      {"sql": "SELECT MAX_BY(k, srt) OVER (PARTITION BY g) FROM (SELECT 1 AS g, 's' AS k, 9 AS srt UNION ALL SELECT 1, 't', 1) LIMIT 1",
+       "expect": {"value": "s"}}
+    ]}
+  ]
+}

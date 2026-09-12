@@ -1,0 +1,24 @@
+{
+  "suite": "functions-array-position",
+  "description": "ARRAY_POSITION(value, array) - the 0-based index of the first matching element, or NULL when there is no match or the array is NULL. The first argument must be a VARIANT: numbers coerce fine but a bare VARCHAR is rejected at compile time with \"Invalid argument types for function 'ARRAY_POSITION'\". Converted 1:1 from functions/ArrayPositionTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-finds-a-text-element", "steps": [
+      {"sql": "SELECT ARRAY_POSITION('b'::VARIANT, ARRAY_CONSTRUCT('a', 'b', 'c'))", "expect": {"value": "1"}}
+    ]},
+    {"name": "it-finds-a-numeric-element", "steps": [
+      {"sql": "SELECT ARRAY_POSITION(1, ARRAY_CONSTRUCT(1, 2, 3))", "expect": {"value": "0"}},
+      {"sql": "SELECT ARRAY_POSITION(3, ARRAY_CONSTRUCT(1, 2, 3))", "expect": {"value": "2"}}
+    ]},
+    {"name": "a-value-that-is-not-there-is-null", "steps": [
+      {"sql": "SELECT ARRAY_POSITION('z'::VARIANT, ARRAY_CONSTRUCT('a', 'b', 'c'))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-null-array-is-null", "steps": [
+      {"sql": "SELECT ARRAY_POSITION('a'::VARIANT, NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-bare-varchar-first-argument-is-rejected", "steps": [
+      {"sql": "SELECT ARRAY_POSITION('b', ARRAY_CONSTRUCT('a', 'b', 'c'))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_POSITION'"}}}
+    ]}
+  ]
+}

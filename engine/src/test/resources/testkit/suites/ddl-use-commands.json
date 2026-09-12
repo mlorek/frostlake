@@ -1,0 +1,53 @@
+{
+  "suite": "ddl-use-commands",
+  "description": "USE DATABASE / USE SCHEMA switching and per-schema name resolution, converted 1:1 from ddl/UseCommandsTest.java (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "use-database",
+      "steps": [
+        {"sql": "CREATE DATABASE use_test_db"},
+        {"sql": "USE DATABASE use_test_db"},
+        {"sql": "USE DATABASE test_db"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "DROP DATABASE IF EXISTS use_test_db"}
+      ]
+    },
+    {
+      "name": "use-schema",
+      "steps": [
+        {"sql": "CREATE SCHEMA use_test_schema"},
+        {"sql": "USE SCHEMA use_test_schema"}
+      ]
+    },
+    {
+      "name": "use-database-then-schema",
+      "steps": [
+        {"sql": "CREATE DATABASE another_db"},
+        {"sql": "USE DATABASE another_db"},
+        {"sql": "CREATE SCHEMA another_schema"},
+        {"sql": "USE SCHEMA another_schema"},
+        {"sql": "CREATE TABLE test_table (id INTEGER)"},
+        {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 0}},
+        {"sql": "USE DATABASE test_db"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "DROP DATABASE IF EXISTS another_db"}
+      ]
+    },
+    {
+      "name": "switch-between-schemas",
+      "steps": [
+        {"sql": "CREATE SCHEMA schema1"},
+        {"sql": "CREATE SCHEMA schema2"},
+        {"sql": "USE SCHEMA schema1"},
+        {"sql": "CREATE TABLE users (id INTEGER)"},
+        {"sql": "USE SCHEMA schema2"},
+        {"sql": "CREATE TABLE products (id INTEGER)"},
+        {"sql": "USE SCHEMA schema1"},
+        {"sql": "SELECT * FROM users", "expect": {"rowCount": 0}},
+        {"sql": "USE SCHEMA schema2"},
+        {"sql": "SELECT * FROM products", "expect": {"rowCount": 0}}
+      ]
+    }
+  ]
+}

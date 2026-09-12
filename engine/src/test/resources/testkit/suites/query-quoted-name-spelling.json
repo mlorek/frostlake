@@ -1,0 +1,49 @@
+{
+  "suite": "query-quoted-name-spelling",
+  "description": "How a refusal SPELLS a name, on the surfaces that name an OBJECT or a GROUPED reference. One rule runs through all of them, measured spelling by spelling: the name is the CANONICAL one - resolved, not as written - and it carries quotes only when it could not have been written WITHOUT them. So a missing relation written \"kw\" is reported as '\"kw\"' because lower case needs quoting, while \"NOSUCHTABLE\" and the bare nosuchtable are both reported as 'NOSUCHTABLE'; a space or a leading digit cannot be written bare, so '\"no such\"' and '\"1t\"' keep their quotes. The grouped sentence is the one that shows the rule is about the RESOLVED name rather than the written one: A, \"A\", kw.\"A\" and \"KW\".\"A\" are four spellings of ONE column and every one of them prints [KW.A] - and a column that really IS lower case keeps its quotes there, [Q2.\"a\"]. An unknown function is named without quotes when it needs none, whichever way it was spelled. The names that DO resolve still read, so none of the spelling rules narrowed resolution. This is the companion of query-quoted-identifier-echo, which covers the OTHER rule: an unresolvable COLUMN reference is echoed as WRITTEN. Converted 1:1 from query/QuotedNameSpellingTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-missing-relation-is-named-canonically", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT * FROM \"nosuchtable\"", "expect": {"error": {"messageContains": "Object '\"nosuchtable\"' does not exist"}}},
+      {"sql": "SELECT * FROM \"NOSUCHTABLE\"", "expect": {"error": {"messageContains": "Object 'NOSUCHTABLE' does not exist"}}},
+      {"sql": "SELECT * FROM nosuchtable", "expect": {"error": {"messageContains": "Object 'NOSUCHTABLE' does not exist"}}},
+      {"sql": "SELECT * FROM \"no such\"", "expect": {"error": {"messageContains": "Object '\"no such\"' does not exist"}}},
+      {"sql": "SELECT * FROM \"1t\"", "expect": {"error": {"messageContains": "Object '\"1t\"' does not exist"}}},
+      {"sql": "SELECT * FROM \"Q\"", "expect": {"error": {"messageContains": "Object 'Q' does not exist"}}},
+      {"sql": "SELECT * FROM \"kw\"", "expect": {"error": {"messageContains": "Object '\"kw\"' does not exist"}}}
+    ]},
+    {"name": "the-grouped-sentence-names-the-resolved-column", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT COUNT(*), \"A\" FROM kw", "expect": {"error": {"messageContains": "[KW.A] is not a valid group by expression"}}},
+      {"sql": "SELECT COUNT(*), a FROM kw", "expect": {"error": {"messageContains": "[KW.A] is not a valid group by expression"}}},
+      {"sql": "SELECT COUNT(*), kw.\"A\" FROM kw", "expect": {"error": {"messageContains": "[KW.A] is not a valid group by expression"}}},
+      {"sql": "SELECT COUNT(*), \"KW\".\"A\" FROM kw", "expect": {"error": {"messageContains": "[KW.A] is not a valid group by expression"}}},
+      {"sql": "SELECT COUNT(*), UPPER(\"A\") FROM kw", "expect": {"error": {"messageContains": "[KW.A] is not a valid group by expression"}}},
+      {"sql": "SELECT COUNT(*), \"A\" + 1 FROM kw", "expect": {"error": {"messageContains": "[KW.A] is not a valid group by expression"}}}
+    ]},
+    {"name": "a-lower-case-column-keeps-its-quotes", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE q2 (\"a\" INT, b INT)"},
+      {"sql": "INSERT INTO q2 VALUES (1, 2)"},
+      {"sql": "SELECT COUNT(*), \"a\" FROM q2", "expect": {"error": {"messageContains": "[Q2.\"a\"] is not a valid group by expression"}}},
+      {"sql": "SELECT COUNT(*), q2.\"a\" FROM q2", "expect": {"error": {"messageContains": "[Q2.\"a\"] is not a valid group by expression"}}}
+    ]},
+    {"name": "an-unknown-function-is-named-plainly", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT nosuchfn(1) FROM kw", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}},
+      {"sql": "SELECT \"NOSUCHFN\"(1) FROM kw", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}}
+    ]},
+    {"name": "the-resolving-names-still-read", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "CREATE OR REPLACE TABLE q2 (\"a\" INT, b INT)"},
+      {"sql": "INSERT INTO q2 VALUES (1, 2)"},
+      {"sql": "SELECT * FROM \"KW\"", "expect": {"rows": [[1,2]]}},
+      {"sql": "SELECT \"a\" FROM q2", "expect": {"value": 1}},
+      {"sql": "SELECT COUNT(*), a FROM kw GROUP BY a", "expect": {"rows": [[1,1]]}}
+    ]}
+  ]
+}

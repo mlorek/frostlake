@@ -1,0 +1,74 @@
+{
+  "suite": "types-bare-timestamp-binary",
+  "description": "VARBINARY is a spelling, not a type: every surface that names a type says BINARY (DESCRIBE, information_schema, a CAST's declared column type via CTAS), and only SHOW COLUMNS' data_type fixed flag tells the spellings apart - fixedness travels through CTAS. A bare TIMESTAMP is a CHOICE resolved at CREATE against TIMESTAMP_TYPE_MAPPING and kept afterwards: existing columns ignore later mapping changes, explicit spellings ignore the mapping (a bare precision like TIMESTAMP(3) still takes the mapped flavour), and GET_DDL writes the RESOLVED flavour. Converted 1:1 from ddl/BareTimestampAndBinaryAliasTest (now retired); result-column type asserts expressed via DESCRIBE (and CTAS for CAST results) since the engine returns an empty result for SYSTEM$TYPEOF. Each mapping test restores TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ' (shared session).",
+  "tags": ["types", "converted"],
+  "tests": [
+    {"name": "both-binary-spellings-report-binary", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ali_b (b BINARY(8), vb VARBINARY(8))"},
+      {"sql": "DESCRIBE TABLE ali_b"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["B", "BINARY(8)"], ["VB", "BINARY(8)"]], "ordered": true}},
+      {"sql": "CREATE TABLE cast_vb AS SELECT CAST(NULL AS VARBINARY(8)) AS c FROM ali_b"},
+      {"sql": "DESCRIBE TABLE cast_vb"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'C'", "expect": {"value": "BINARY(8)"}},
+      {"sql": "CREATE TABLE cast_b AS SELECT CAST(NULL AS BINARY(8)) AS c FROM ali_b"},
+      {"sql": "DESCRIBE TABLE cast_b"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'C'", "expect": {"value": "BINARY(8)"}},
+      {"sql": "SELECT data_type FROM information_schema.columns WHERE table_name = 'ALI_B' ORDER BY ordinal_position",
+       "expect": {"rows": [["BINARY"], ["BINARY"]], "ordered": true}}
+    ]},
+    {"name": "only-the-fixed-flag-tells-them-apart", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ali_b (b BINARY(8), vb VARBINARY(8))"},
+      {"sql": "SHOW COLUMNS IN TABLE ali_b"},
+      {"sql": "SELECT \"column_name\", \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [
+         ["B", "{\"type\":\"BINARY\",\"length\":8,\"byteLength\":8,\"nullable\":true,\"fixed\":true}"],
+         ["VB", "{\"type\":\"BINARY\",\"length\":8,\"byteLength\":8,\"nullable\":true,\"fixed\":false}"]], "ordered": true}}
+    ]},
+    {"name": "fixedness-travels-through-a-derived-relation", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ali_b (b BINARY(8), vb VARBINARY(8))"},
+      {"sql": "CREATE OR REPLACE TABLE ali_c AS SELECT vb, b FROM ali_b"},
+      {"sql": "SHOW COLUMNS IN TABLE ali_c"},
+      {"sql": "SELECT \"column_name\", \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [
+         ["VB", "{\"type\":\"BINARY\",\"length\":8,\"byteLength\":8,\"nullable\":true,\"fixed\":false}"],
+         ["B", "{\"type\":\"BINARY\",\"length\":8,\"byteLength\":8,\"nullable\":true,\"fixed\":true}"]], "ordered": true}}
+    ]},
+    {"name": "a-bare-timestamp-takes-the-sessions-mapping", "steps": [
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ'"},
+      {"sql": "CREATE OR REPLACE TABLE ali_t (c TIMESTAMP)"},
+      {"sql": "DESCRIBE TABLE ali_t"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TIMESTAMP_NTZ(9)"}},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ'"},
+      {"sql": "CREATE OR REPLACE TABLE ali_t (c TIMESTAMP)"},
+      {"sql": "DESCRIBE TABLE ali_t"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TIMESTAMP_LTZ(9)"}},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_TZ'"},
+      {"sql": "CREATE OR REPLACE TABLE ali_t (c TIMESTAMP)"},
+      {"sql": "DESCRIBE TABLE ali_t"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TIMESTAMP_TZ(9)"}},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ'"}
+    ]},
+    {"name": "an-existing-column-does-not-follow-a-later-change", "steps": [
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ'"},
+      {"sql": "CREATE OR REPLACE TABLE ali_u (c TIMESTAMP)"},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ'"},
+      {"sql": "DESCRIBE TABLE ali_u"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TIMESTAMP_LTZ(9)"}}
+    ]},
+    {"name": "an-explicit-spelling-ignores-the-mapping", "steps": [
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ'"},
+      {"sql": "CREATE OR REPLACE TABLE ali_v (a TIMESTAMP_NTZ, b TIMESTAMP(3), c TIMESTAMP_TZ)"},
+      {"sql": "DESCRIBE TABLE ali_v"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "TIMESTAMP_NTZ(9)"], ["B", "TIMESTAMP_LTZ(3)"], ["C", "TIMESTAMP_TZ(9)"]], "ordered": true}},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ'"}
+    ]},
+    {"name": "the-written-ddl-names-the-resolved-flavour", "steps": [
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ'"},
+      {"sql": "CREATE OR REPLACE TABLE ali_w (c TIMESTAMP)"},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'ali_w'), 'TIMESTAMP_LTZ(9)')", "expect": {"value": "true"}},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ'"}
+    ]}
+  ]
+}

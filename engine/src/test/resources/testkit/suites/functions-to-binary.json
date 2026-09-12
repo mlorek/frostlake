@@ -1,0 +1,26 @@
+{
+  "suite": "functions-to-binary",
+  "description": "TO_BINARY(string [, format]) decodes to bytes - HEX by default, or BASE64 or UTF-8 - and the result renders as UPPERCASE hex, so a lowercase hex input is normalised. A NULL input yields NULL, an odd-length hex string is refused, and an unsupported format name is refused. Converted 1:1 from functions/ToBinaryTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "hex-is-the-default-and-is-normalised-to-uppercase", "steps": [
+      {"sql": "SELECT TO_BINARY('ab12')", "expect": {"value": "AB12"}},
+      {"sql": "SELECT TO_BINARY('534e4f57', 'HEX')", "expect": {"value": "534E4F57"}}
+    ]},
+    {"name": "utf-8-encodes-the-string-bytes", "steps": [
+      {"sql": "SELECT TO_BINARY('SNOW', 'UTF-8')", "expect": {"value": "534E4F57"}}
+    ]},
+    {"name": "base64-decodes", "steps": [
+      {"sql": "SELECT TO_BINARY('U05PVw==', 'BASE64')", "expect": {"value": "534E4F57"}}
+    ]},
+    {"name": "a-null-input-yields-null", "steps": [
+      {"sql": "SELECT TO_BINARY(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-invalid-hex-length-throws", "steps": [
+      {"sql": "SELECT TO_BINARY('abc')", "expect": {"error": {}}}
+    ]},
+    {"name": "an-unsupported-format-throws", "steps": [
+      {"sql": "SELECT TO_BINARY('abc', 'OCTAL')", "expect": {"error": {}}}
+    ]}
+  ]
+}

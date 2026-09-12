@@ -1,0 +1,47 @@
+{
+  "suite": "query-in-subquery-membership",
+  "description": "Correctness of value IN (uncorrelated subquery) after the membership test was changed from a per-outer-row linear scan to a hash index. The index must reproduce the engine's IN equality EXACTLY: scale-insensitive numeric equality across types, so an integer 4 matches a double 4.0; toString equality for strings; and NULLs that never match a non-NULL value. NOT IN carries three-valued logic - a set containing a NULL makes every miss UNKNOWN, so NOT IN is never TRUE and filters every row, while excluding the NULL member makes the misses definite. Converted 1:1 from query/InSubqueryMembershipTest (now retired); the Java counted rows only, so a filter that kept the WRONG row would have passed - each converted test names the rows it keeps.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "integer-membership", "steps": [
+      {"sql": "CREATE TABLE dim (i INTEGER, d DOUBLE, s VARCHAR)"},
+      {"sql": "INSERT INTO dim VALUES (10, 4.0, 'banana'), (20, 8.0, 'cherry'), (NULL, 16.0, 'date')"},
+      {"sql": "CREATE TABLE facts (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO facts VALUES (1, 10), (2, 4), (3, 99)"},
+      {"sql": "SELECT id FROM facts WHERE n IN (SELECT i FROM dim)", "expect": {"rows": [[1]]}}
+    ]},
+    {"name": "numeric-membership-is-scale-insensitive-across-types", "steps": [
+      {"sql": "CREATE TABLE dim (i INTEGER, d DOUBLE, s VARCHAR)"},
+      {"sql": "INSERT INTO dim VALUES (10, 4.0, 'banana'), (20, 8.0, 'cherry'), (NULL, 16.0, 'date')"},
+      {"sql": "CREATE TABLE facts (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO facts VALUES (1, 10), (2, 4), (3, 99)"},
+      {"sql": "SELECT id FROM facts WHERE n IN (SELECT d FROM dim)", "expect": {"rows": [[2]]}}
+    ]},
+    {"name": "not-in-over-a-set-containing-a-null-is-never-true", "steps": [
+      {"sql": "CREATE TABLE dim (i INTEGER, d DOUBLE, s VARCHAR)"},
+      {"sql": "INSERT INTO dim VALUES (10, 4.0, 'banana'), (20, 8.0, 'cherry'), (NULL, 16.0, 'date')"},
+      {"sql": "CREATE TABLE facts (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO facts VALUES (1, 10), (2, 4), (3, 99)"},
+      {"sql": "SELECT id FROM facts WHERE n NOT IN (SELECT i FROM dim)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "not-in-without-null-members-gives-definite-misses", "steps": [
+      {"sql": "CREATE TABLE dim (i INTEGER, d DOUBLE, s VARCHAR)"},
+      {"sql": "INSERT INTO dim VALUES (10, 4.0, 'banana'), (20, 8.0, 'cherry'), (NULL, 16.0, 'date')"},
+      {"sql": "CREATE TABLE facts (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO facts VALUES (1, 10), (2, 4), (3, 99)"},
+      {"sql": "SELECT id FROM facts WHERE n NOT IN (SELECT i FROM dim WHERE i IS NOT NULL) ORDER BY id", "expect": {"rows": [[2],[3]], "ordered": true}}
+    ]},
+    {"name": "string-membership", "steps": [
+      {"sql": "CREATE TABLE dim (i INTEGER, d DOUBLE, s VARCHAR)"},
+      {"sql": "INSERT INTO dim VALUES (10, 4.0, 'banana'), (20, 8.0, 'cherry'), (NULL, 16.0, 'date')"},
+      {"sql": "SELECT s FROM dim WHERE s IN (SELECT s FROM dim) ORDER BY s", "expect": {"rows": [["banana"],["cherry"],["date"]], "ordered": true}}
+    ]},
+    {"name": "a-null-in-the-subquery-result-does-not-match-a-non-null", "steps": [
+      {"sql": "CREATE TABLE dim (i INTEGER, d DOUBLE, s VARCHAR)"},
+      {"sql": "INSERT INTO dim VALUES (10, 4.0, 'banana'), (20, 8.0, 'cherry'), (NULL, 16.0, 'date')"},
+      {"sql": "CREATE TABLE facts (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO facts VALUES (1, 10), (2, 4), (3, 99)"},
+      {"sql": "SELECT id, n FROM facts WHERE n IN (SELECT i FROM dim)", "expect": {"rows": [[1, 10]]}}
+    ]}
+  ]
+}

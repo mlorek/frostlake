@@ -1,0 +1,161 @@
+{
+  "suite": "features-information-schema-catalog",
+  "description": "The INFORMATION_SCHEMA catalog matches a real account's, view for view: every name a real account exposes is queryable (populated where the engine models the objects, empty with the live column shape where it does not), names Snowflake does NOT expose (STREAMS, TASKS, TAGS, TAG_REFERENCES, DYNAMIC_TABLES) are refused, and TABLES lists exactly the live view set. FILE_FORMATS/HYBRID_TABLES/INFORMATION_SCHEMA_CATALOG_NAME/TABLE_STORAGE_METRICS report their objects; TABLES/VIEWS/DATABASES/STAGES/ENABLED_ROLES/PROCEDURES carry live's FULL column lists in live's order; routines report live's return shape (exact-numeric radix 10, table functions identified by DATA_TYPE 'TABLE (...)' with no numeric precision); booleans spell YES/NO (never SHOW's Y/N); SEQUENCES reports the next value without consuming it; an unmodeled view (CHECK_CONSTRAINTS) is empty with its live shape. Converted 1:1 from features/InformationSchemaCatalogTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "every-live-view-is-queryable", "steps": [
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.APPLICABLE_ROLES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.APPLICATION_CONFIGURATIONS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.APPLICATION_SPECIFICATIONS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.BACKUPS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.BACKUP_POLICIES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.BACKUP_SETS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CLASSES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CLASS_INSTANCES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CLASS_INSTANCE_FUNCTIONS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CLASS_INSTANCE_PROCEDURES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.COLUMNS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CORTEX_SEARCH_SERVICES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CORTEX_SEARCH_SERVICE_SCORING_PROFILES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CURRENT_PACKAGES_POLICY"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.DATABASES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.ELEMENT_TYPES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.ENABLED_ROLES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.EVENT_TABLES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.EXTERNAL_TABLES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.FIELDS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.FILE_FORMATS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.FUNCTIONS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.GIT_REPOSITORIES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.HYBRID_TABLES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.INDEXES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.INDEX_COLUMNS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.INFORMATION_SCHEMA_CATALOG_NAME"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.LISTINGS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.LOAD_HISTORY"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.MODEL_VERSIONS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.NOTEBOOKS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.OBJECT_PRIVILEGES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.PACKAGES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.PIPES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.PROCEDURES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.REPLICATION_DATABASES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.REPLICATION_GROUPS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SCHEMATA"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SEMANTIC_DIMENSIONS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SEMANTIC_FACTS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SEMANTIC_METRICS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SEMANTIC_RELATIONSHIPS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SEMANTIC_TABLES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SEMANTIC_VARIABLES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SEMANTIC_VIEWS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SEQUENCES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SERVICES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SHARES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SNAPSHOTS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SNAPSHOT_POLICIES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.SNAPSHOT_SETS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.STAGES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.STREAMLITS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TABLES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TABLE_STORAGE_METRICS"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TYPES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.USAGE_PRIVILEGES"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.VIEWS"}
+    ]},
+    {"name": "names-snowflake-does-not-expose-are-rejected", "steps": [
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.STREAMS", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TASKS", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TAGS", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TAG_REFERENCES", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.DYNAMIC_TABLES", "expect": {"error": {"messageContains": "does not exist"}}}
+    ]},
+    {"name": "the-catalog-lists-exactly-the-live-view-set", "steps": [
+      {"sql": "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'INFORMATION_SCHEMA' ORDER BY TABLE_NAME",
+       "expect": {"rowCount": 62, "rows": [
+         ["APPLICABLE_ROLES"], ["APPLICATION_CONFIGURATIONS"], ["APPLICATION_SPECIFICATIONS"],
+         ["BACKUPS"], ["BACKUP_POLICIES"], ["BACKUP_SETS"], ["CHECK_CONSTRAINTS"], ["CLASSES"],
+         ["CLASS_INSTANCES"], ["CLASS_INSTANCE_FUNCTIONS"], ["CLASS_INSTANCE_PROCEDURES"],
+         ["COLUMNS"], ["CORTEX_SEARCH_SERVICES"], ["CORTEX_SEARCH_SERVICE_SCORING_PROFILES"],
+         ["CURRENT_PACKAGES_POLICY"], ["DATABASES"], ["ELEMENT_TYPES"], ["ENABLED_ROLES"],
+         ["EVENT_TABLES"], ["EXTERNAL_TABLES"], ["FIELDS"], ["FILE_FORMATS"], ["FUNCTIONS"],
+         ["GIT_REPOSITORIES"], ["HYBRID_TABLES"], ["INDEXES"], ["INDEX_COLUMNS"],
+         ["INFORMATION_SCHEMA_CATALOG_NAME"], ["LISTINGS"], ["LOAD_HISTORY"], ["MODEL_VERSIONS"],
+         ["NOTEBOOKS"], ["OBJECT_PRIVILEGES"], ["PACKAGES"], ["PIPES"], ["PROCEDURES"],
+         ["REFERENTIAL_CONSTRAINTS"], ["REPLICATION_DATABASES"], ["REPLICATION_GROUPS"],
+         ["SCHEMATA"], ["SEMANTIC_DIMENSIONS"], ["SEMANTIC_FACTS"], ["SEMANTIC_METRICS"],
+         ["SEMANTIC_RELATIONSHIPS"], ["SEMANTIC_TABLES"], ["SEMANTIC_VARIABLES"], ["SEMANTIC_VIEWS"],
+         ["SEQUENCES"], ["SERVICES"], ["SHARES"], ["SNAPSHOTS"], ["SNAPSHOT_POLICIES"],
+         ["SNAPSHOT_SETS"], ["STAGES"], ["STREAMLITS"], ["TABLES"], ["TABLE_CONSTRAINTS"],
+         ["TABLE_PRIVILEGES"], ["TABLE_STORAGE_METRICS"], ["TYPES"], ["USAGE_PRIVILEGES"],
+         ["VIEWS"]], "ordered": true}}
+    ]},
+    {"name": "file-formats-reports-the-format-and-its-options", "steps": [
+      {"sql": "CREATE FILE FORMAT ff TYPE = CSV SKIP_HEADER = 2 FIELD_DELIMITER = '|'"},
+      {"sql": "SELECT FILE_FORMAT_NAME, FILE_FORMAT_TYPE FROM INFORMATION_SCHEMA.FILE_FORMATS",
+       "expect": {"rowCount": 1, "rows": [["FF", "CSV"]]}}
+    ]},
+    {"name": "hybrid-tables-lists-only-hybrid-tables",
+     "skip": {"backends": ["snowflake"], "reason": "hybrid tables are unavailable on trial-edition accounts; the view's queryability is covered by every-live-view-is-queryable"},
+     "steps": [
+      {"sql": "CREATE TABLE plain_t (id INTEGER)"},
+      {"sql": "CREATE HYBRID TABLE hybrid_t (id INTEGER PRIMARY KEY)"},
+      {"sql": "SELECT NAME FROM INFORMATION_SCHEMA.HYBRID_TABLES",
+       "expect": {"rowCount": 1, "rows": [["HYBRID_T"]]}}
+    ]},
+    {"name": "catalog-name-view-names-the-database", "steps": [
+      {"sql": "SELECT UPPER(CATALOG_NAME) FROM INFORMATION_SCHEMA.INFORMATION_SCHEMA_CATALOG_NAME",
+       "expect": {"rowCount": 1, "rows": [["TEST_DB"]]}}
+    ]},
+    {"name": "storage-metrics-carries-a-row-per-table", "steps": [
+      {"sql": "CREATE TABLE metrics_t (id INTEGER)"},
+      {"sql": "SELECT TABLE_NAME, ACTIVE_BYTES FROM INFORMATION_SCHEMA.TABLE_STORAGE_METRICS WHERE TABLE_NAME = 'METRICS_T' AND TABLE_DROPPED IS NULL AND SCHEMA_DROPPED IS NULL AND CATALOG_DROPPED IS NULL",
+       "expect": {"rowCount": 1, "rows": [["METRICS_T", "0"]]}}
+    ]},
+    {"name": "populated-views-carry-lives-column-list", "steps": [
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TABLES",
+       "expect": {"columns": ["TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "TABLE_OWNER", "TABLE_TYPE", "IS_TRANSIENT", "CLUSTERING_KEY", "ROW_COUNT", "BYTES", "RETENTION_TIME", "SELF_REFERENCING_COLUMN_NAME", "REFERENCE_GENERATION", "USER_DEFINED_TYPE_CATALOG", "USER_DEFINED_TYPE_SCHEMA", "USER_DEFINED_TYPE_NAME", "IS_INSERTABLE_INTO", "IS_TYPED", "COMMIT_ACTION", "CREATED", "LAST_ALTERED", "LAST_DDL", "LAST_DDL_BY", "AUTO_CLUSTERING_ON", "COMMENT", "IS_TEMPORARY", "IS_ICEBERG", "IS_DYNAMIC", "IS_IMMUTABLE", "IS_HYBRID", "ROW_TIMESTAMP_ON", "ERROR_LOGGING", "IS_INTERACTIVE"]}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.VIEWS",
+       "expect": {"columns": ["TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "TABLE_OWNER", "VIEW_DEFINITION", "CHECK_OPTION", "IS_UPDATABLE", "INSERTABLE_INTO", "IS_SECURE", "CREATED", "LAST_ALTERED", "LAST_DDL", "LAST_DDL_BY", "COMMENT"]}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.DATABASES",
+       "expect": {"columns": ["DATABASE_NAME", "DATABASE_OWNER", "IS_TRANSIENT", "COMMENT", "CREATED", "LAST_ALTERED", "RETENTION_TIME", "TYPE", "REPLICABLE_WITH_FAILOVER_GROUPS", "OWNER_ROLE_TYPE"]}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.STAGES",
+       "expect": {"columns": ["STAGE_CATALOG", "STAGE_SCHEMA", "STAGE_NAME", "STAGE_URL", "STAGE_REGION", "STAGE_TYPE", "STAGE_OWNER", "COMMENT", "CREATED", "LAST_ALTERED", "ENDPOINT", "DIRECTORY_ENABLED"]}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.ENABLED_ROLES",
+       "expect": {"columns": ["ROLE_NAME", "ROLE_OWNER"]}}
+    ]},
+    {"name": "routine-views-report-lives-return-shape", "steps": [
+      {"sql": "CREATE FUNCTION scalar_fn(n INTEGER) RETURNS INTEGER AS $$ SELECT 1 $$"},
+      {"sql": "CREATE FUNCTION table_fn() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'a' $$"},
+      {"sql": "SELECT NUMERIC_PRECISION_RADIX, IS_SECURE, IS_EXTERNAL FROM INFORMATION_SCHEMA.FUNCTIONS WHERE FUNCTION_NAME = 'SCALAR_FN'",
+       "expect": {"rowCount": 1, "rows": [["10", "NO", "NO"]]}},
+      {"sql": "SELECT STARTSWITH(DATA_TYPE, 'TABLE ('), IFF(NUMERIC_PRECISION IS NULL, 'null', 'set') FROM INFORMATION_SCHEMA.FUNCTIONS WHERE FUNCTION_NAME = 'TABLE_FN'",
+       "expect": {"rowCount": 1, "rows": [["true", "null"]]}}
+    ]},
+    {"name": "procedures-carry-lives-column-list", "steps": [
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.PROCEDURES",
+       "expect": {"columns": ["PROCEDURE_CATALOG", "PROCEDURE_SCHEMA", "PROCEDURE_NAME", "PROCEDURE_OWNER", "ARGUMENT_SIGNATURE", "DATA_TYPE", "CHARACTER_MAXIMUM_LENGTH", "CHARACTER_OCTET_LENGTH", "NUMERIC_PRECISION", "NUMERIC_PRECISION_RADIX", "NUMERIC_SCALE", "PROCEDURE_LANGUAGE", "PROCEDURE_DEFINITION", "CREATED", "LAST_ALTERED", "COMMENT", "EXTERNAL_ACCESS_INTEGRATIONS", "SECRETS", "RUNTIME_VERSION", "PACKAGES", "INSTALLED_PACKAGES", "ARTIFACT_REPOSITORY"]}}
+    ]},
+    {"name": "boolean-flags-use-the-yes-no-spelling", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE flag_t (id INTEGER)"},
+      {"sql": "SELECT IS_TRANSIENT, IS_INSERTABLE_INTO, IS_TYPED, IS_HYBRID FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'FLAG_T'",
+       "expect": {"rowCount": 1, "rows": [["YES", "YES", "YES", "NO"]]}}
+    ]},
+    {"name": "sequences-reports-next-value", "steps": [
+      {"sql": "CREATE SEQUENCE nv_seq START = 5 INCREMENT = 2"},
+      {"sql": "SELECT TO_NUMBER(NEXT_VALUE) FROM INFORMATION_SCHEMA.SEQUENCES WHERE SEQUENCE_NAME = 'NV_SEQ'",
+       "expect": {"rowCount": 1, "rows": [["5"]]}},
+      {"sql": "SELECT nv_seq.NEXTVAL"},
+      {"sql": "SELECT TO_NUMBER(NEXT_VALUE) > 5 FROM INFORMATION_SCHEMA.SEQUENCES WHERE SEQUENCE_NAME = 'NV_SEQ'",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "an-unmodeled-view-is-empty-with-its-live-shape", "steps": [
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS",
+       "expect": {"rowCount": 0, "columns": ["CONSTRAINT_CATALOG", "CONSTRAINT_SCHEMA", "CONSTRAINT_TABLE", "CONSTRAINT_NAME", "CHECK_CLAUSE"]}}
+    ]}
+  ]
+}

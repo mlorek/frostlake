@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
@@ -52,6 +54,20 @@ public class Position extends TextArgumentFunction {
         final String haystack = args.get(1).toString();
         final int idx = haystack.indexOf(needle, startPos);
         return idx < 0 ? 0L : (long) (idx + 1);
+    }
+
+    /** Under a collation the needle is found where the collation matches it, not byte for byte. */
+    @Override
+    public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        if (collation == null || args.get(0) == null || args.get(1) == null
+                || args.get(0) instanceof BinaryValue || args.get(1) instanceof BinaryValue) {
+            return evaluate(args);
+        }
+        int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
+        startPos = Math.max(0, startPos);
+        final int[] found = CollationMatching.findUnder(collation, args.get(1).toString(),
+            args.get(0).toString(), startPos);
+        return found == null ? 0L : (long) (found[0] + 1);
     }
 
     @Override

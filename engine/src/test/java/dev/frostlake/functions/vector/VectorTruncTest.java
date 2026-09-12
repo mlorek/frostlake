@@ -29,9 +29,9 @@ public class VectorTruncTest extends BaseVectorFunctionTest {
     @Test
     public void keepsTheFirstNDimensions() {
         // Live: VECTOR_TRUNC([1,2,3]::VECTOR(FLOAT,3), 2) => [1.0,2.0], SYSTEM$TYPEOF VECTOR(FLOAT, 2)
-        assertVector("[1.0,2.0]", "SELECT VECTOR_TRUNC(" + V123 + ", 2)");
+        assertVector("[1.000000,2.000000]", "SELECT VECTOR_TRUNC(" + V123 + ", 2)");
         // Live: VECTOR_TRUNCATE is the same function under its other name.
-        assertVector("[1.0,2.0]", "SELECT VECTOR_TRUNCATE(" + V123 + ", 2)");
+        assertVector("[1.000000,2.000000]", "SELECT VECTOR_TRUNCATE(" + V123 + ", 2)");
     }
 
     @Test
@@ -46,13 +46,13 @@ public class VectorTruncTest extends BaseVectorFunctionTest {
     public void boundaryDimensions() {
         // Live: n = 0 is the empty vector [] and n = the full dimension is the unchanged vector.
         assertVector("[]", "SELECT VECTOR_TRUNC(" + V123 + ", 0)");
-        assertVector("[1.0,2.0,3.0]", "SELECT VECTOR_TRUNC(" + V123 + ", 3)");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT VECTOR_TRUNC(" + V123 + ", 3)");
     }
 
     @Test
     public void integralDecimalDimensionIsAccepted() {
         // Live: VECTOR_TRUNC(v, 2.0) works (=> [1.0,2.0]) while 2.5 is rejected below.
-        assertVector("[1.0,2.0]", "SELECT VECTOR_TRUNC(" + V123 + ", 2.0)");
+        assertVector("[1.000000,2.000000]", "SELECT VECTOR_TRUNC(" + V123 + ", 2.0)");
     }
 
     @Test

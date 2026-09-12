@@ -1,0 +1,41 @@
+{
+  "suite": "scripting-sql-error-variables",
+  "description": "The Snowflake Scripting error variables SQLCODE, SQLERRM and SQLSTATE, available inside an EXCEPTION handler. A user-defined exception exposes its DECLARED code and message with SQLSTATE 'P0001'; division by zero maps to its Snowflake code 100051 and state '22012'; a missing object reports SQLSTATE '42S02' and an SQLERRM naming the failing object. SQLCODE carries no declared type, so RETURNing it directly makes the result TEXT - which is why the code assertions here are strings. The variables are usable in DML inside the handler through the BIND form, :SQLCODE and :SQLERRM: written bare inside an INSERT they would be column names. And their values are HANDLER-SCOPED, so a nested handled block restores the enclosing handler's values rather than leaving the inner exception's behind. Converted 1:1 from scripting/SqlErrorVariablesTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-user-exceptions-sqlcode", "steps": [
+      {"sql": "DECLARE e EXCEPTION (-20001, 'boom'); BEGIN RAISE e; EXCEPTION WHEN e THEN RETURN SQLCODE; END", "expect": {"value": "-20001"}}
+    ]},
+    {"name": "a-user-exceptions-sqlerrm", "steps": [
+      {"sql": "DECLARE e EXCEPTION (-20001, 'boom'); BEGIN RAISE e; EXCEPTION WHEN e THEN RETURN SQLERRM; END", "expect": {"value": "boom"}}
+    ]},
+    {"name": "a-user-exceptions-sqlstate", "steps": [
+      {"sql": "DECLARE e EXCEPTION (-20001, 'boom'); BEGIN RAISE e; EXCEPTION WHEN e THEN RETURN SQLSTATE; END", "expect": {"value": "P0001"}}
+    ]},
+    {"name": "division-by-zero-sqlstate", "steps": [
+      {"sql": "BEGIN RETURN 1 / 0; EXCEPTION WHEN OTHER THEN RETURN SQLSTATE; END", "expect": {"value": "22012"}}
+    ]},
+    {"name": "division-by-zero-sqlcode", "steps": [
+      {"sql": "BEGIN RETURN 1 / 0; EXCEPTION WHEN OTHER THEN RETURN SQLCODE; END", "expect": {"value": "100051"}}
+    ]},
+    {"name": "division-by-zero-sqlerrm", "steps": [
+      {"sql": "BEGIN RETURN 1 / 0; EXCEPTION WHEN OTHER THEN RETURN SQLERRM; END", "expect": {"value": "Division by zero"}}
+    ]},
+    {"name": "a-missing-objects-sqlstate-is-42s02", "steps": [
+      {"sql": "BEGIN SELECT * FROM no_such_table_xyz; EXCEPTION WHEN OTHER THEN RETURN SQLSTATE; END", "expect": {"value": "42S02"}}
+    ]},
+    {"name": "a-missing-objects-sqlerrm-mentions-the-object", "steps": [
+      {"sql": "BEGIN SELECT * FROM no_such_table_xyz; EXCEPTION WHEN OTHER THEN RETURN REPLACE(UPPER(SQLERRM), CHAR(10), ' '); END",
+       "expect": {"value": "SQL COMPILATION ERROR: OBJECT 'NO_SUCH_TABLE_XYZ' DOES NOT EXIST OR NOT AUTHORIZED."}}
+    ]},
+    {"name": "a-handler-logs-sqlerrm-through-the-bind-form", "steps": [
+      {"sql": "CREATE TABLE err_log (code INTEGER, msg VARCHAR)"},
+      {"sql": "DECLARE e EXCEPTION (-20007, 'kaput'); BEGIN RAISE e; EXCEPTION WHEN e THEN INSERT INTO err_log VALUES (:SQLCODE, :SQLERRM); RETURN 'ok'; END", "expect": {"value": "ok"}},
+      {"sql": "SELECT code, msg FROM err_log", "expect": {"rows": [[-20007, "kaput"]]}}
+    ]},
+    {"name": "a-nested-handler-restores-the-outer-error-info", "steps": [
+      {"sql": "DECLARE e1 EXCEPTION (-20001, 'outer'); e2 EXCEPTION (-20002, 'inner'); BEGIN RAISE e1; EXCEPTION WHEN e1 THEN BEGIN RAISE e2; EXCEPTION WHEN e2 THEN NULL; END; RETURN SQLCODE || ':' || SQLERRM; END",
+       "expect": {"value": "-20001:outer"}}
+    ]}
+  ]
+}

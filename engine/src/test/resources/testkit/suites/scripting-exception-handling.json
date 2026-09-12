@@ -1,0 +1,49 @@
+{
+  "suite": "scripting-exception-handling",
+  "description": "EXCEPTION sections in anonymous blocks: WHEN OTHER catch-all over a NOT NULL violation, handler skipped when no error, WHEN STATEMENT_ERROR matched before WHEN OTHER, nested blocks with inner handler containing the error, unhandled errors propagating out of the block, and multi-statement handlers. Converted 1:1 from scripting/ExceptionHandlingTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "basic-exception-handling", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER NOT NULL)"},
+      {"sql": "BEGIN\n    INSERT INTO test VALUES (1);\n    INSERT INTO test VALUES (NULL);\nEXCEPTION\n    WHEN OTHER THEN\n        INSERT INTO test VALUES (2);\nEND;"},
+      {"sql": "SELECT COUNT(*) as cnt FROM test", "expect": {"value": "2"}}
+    ]},
+    {"name": "handler-not-run-without-error", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER)"},
+      {"sql": "BEGIN\n    INSERT INTO test VALUES (1);\n    INSERT INTO test VALUES (2);\nEXCEPTION\n    WHEN OTHER THEN\n        INSERT INTO test VALUES (999);\nEND;"},
+      {"sql": "SELECT COUNT(*) as cnt FROM test", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) as cnt FROM test WHERE id = 999", "expect": {"value": "0"}}
+    ]},
+    {"name": "statement-error-handler-matches-first", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER NOT NULL)"},
+      {"sql": "BEGIN\n    INSERT INTO test VALUES (1);\n    INSERT INTO test VALUES (NULL);\nEXCEPTION\n    WHEN STATEMENT_ERROR THEN\n        INSERT INTO test VALUES (2);\n    WHEN OTHER THEN\n        INSERT INTO test VALUES (3);\nEND;"},
+      {"sql": "SELECT id FROM test ORDER BY id", "expect": {"rows": [["1"], ["2"]], "ordered": true}}
+    ]},
+    {"name": "nested-exception-handling", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER NOT NULL)"},
+      {"sql": "BEGIN\n    INSERT INTO test VALUES (1);\n    BEGIN\n        INSERT INTO test VALUES (2);\n        INSERT INTO test VALUES (NULL);\n    EXCEPTION\n        WHEN OTHER THEN\n            INSERT INTO test VALUES (3);\n    END;\n    INSERT INTO test VALUES (4);\nEXCEPTION\n    WHEN OTHER THEN\n        INSERT INTO test VALUES (999);\nEND;"},
+      {"sql": "SELECT COUNT(*) as cnt FROM test", "expect": {"value": "4"}}
+    ]},
+    {"name": "unhandled-exception-propagates", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER NOT NULL)"},
+      {"sql": "BEGIN\n    INSERT INTO test VALUES (1);\n    INSERT INTO test VALUES (NULL);\nEND;", "expect": {"error": {}}}
+    ]},
+    {"name": "handler-with-multiple-statements", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER NOT NULL)"},
+      {"sql": "CREATE TABLE error_log (error_msg VARCHAR)"},
+      {"sql": "BEGIN\n    INSERT INTO test VALUES (1);\n    INSERT INTO test VALUES (NULL);\nEXCEPTION\n    WHEN OTHER THEN\n        INSERT INTO error_log VALUES ('Error occurred');\n        INSERT INTO test VALUES (2);\nEND;"},
+      {"sql": "SELECT COUNT(*) as cnt FROM test", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) as cnt FROM error_log", "expect": {"value": "1"}}
+    ]},
+    {"name": "semicolon-before-exception-and-end", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER NOT NULL)"},
+      {"sql": "BEGIN\n    INSERT INTO test VALUES (1);\n    INSERT INTO test VALUES (NULL);\nEXCEPTION\n    WHEN OTHER THEN\n        INSERT INTO test VALUES (2);\nEND;"},
+      {"sql": "SELECT COUNT(*) as cnt FROM test", "expect": {"value": "2"}}
+    ]},
+    {"name": "simple-catch-all", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER NOT NULL)"},
+      {"sql": "BEGIN\n    INSERT INTO test VALUES (1);\n    INSERT INTO test VALUES (NULL);\nEXCEPTION\n    WHEN OTHER THEN\n        INSERT INTO test VALUES (2);\nEND;"},
+      {"sql": "SELECT COUNT(*) as cnt FROM test", "expect": {"value": "2"}}
+    ]}
+  ]
+}

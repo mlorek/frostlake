@@ -1,0 +1,192 @@
+{
+  "suite": "query-subquery-expressions",
+  "description": "Subqueries used as EXPRESSIONS. The EXISTS half: non-correlated EXISTS over a non-empty and an empty table, both negated, EXISTS with a condition that matches and one that does not, and EXISTS beside another predicate. The SCALAR half: a constant subquery in arithmetic, an aggregate subquery in a comparison, MAX in an equality, an aggregate over an EMPTY table answering NULL, a subquery used as the whole comparison, one and then several in the SELECT list, and one in the SELECT list evaluated for every row. The CORRELATED half: a correlated COUNT and a correlated SUM in the SELECT list (including the customer with no orders, whose COUNT is 0 while its SUM is NULL), correlated EXISTS and NOT EXISTS, a correlated EXISTS on the employee-department relationship, one with two correlated conditions, one with an inequality, and a FOUR-level nested chain where only the row with a complete path through all four tables survives. Converted 1:1 from query/SubqueryExpressionsTest (now retired); the Java asserted row COUNTS almost throughout and read cells by column index, so each converted test pins the actual rows.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "exists-over-a-non-empty-table", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM departments)", "expect": {"rows": [["Alice"],["Bob"],["Charlie"],["Diana"]]}}
+    ]},
+    {"name": "exists-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "CREATE TABLE empty_table (id INTEGER)"},
+      {"sql": "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM empty_table)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "not-exists-over-a-non-empty-table", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE NOT EXISTS (SELECT 1 FROM departments)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "not-exists-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "CREATE TABLE empty_table (id INTEGER)"},
+      {"sql": "SELECT name FROM employees WHERE NOT EXISTS (SELECT 1 FROM empty_table)", "expect": {"rows": [["Alice"],["Bob"],["Charlie"],["Diana"]]}}
+    ]},
+    {"name": "exists-with-a-condition-that-matches", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM departments WHERE name = 'Engineering')", "expect": {"rows": [["Alice"],["Bob"],["Charlie"],["Diana"]]}}
+    ]},
+    {"name": "exists-with-a-condition-that-matches-nothing", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM departments WHERE name = 'NonExistent')", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "exists-beside-another-predicate", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE salary > 55000 AND EXISTS (SELECT 1 FROM departments)", "expect": {"rows": [["Bob"],["Diana"]]}}
+    ]},
+    {"name": "a-constant-scalar-subquery-in-arithmetic", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name, salary + (SELECT 1000) AS new_salary FROM employees WHERE id = 1", "expect": {"rows": [["Alice",51000]], "columns": ["NAME","NEW_SALARY"]}}
+    ]},
+    {"name": "an-aggregate-scalar-subquery-in-a-comparison", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE salary > (SELECT AVG(salary) FROM employees)", "expect": {"rows": [["Bob"],["Diana"]]}}
+    ]},
+    {"name": "a-max-scalar-subquery-in-an-equality", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE salary = (SELECT MAX(salary) FROM employees)", "expect": {"rows": [["Diana"]]}}
+    ]},
+    {"name": "a-scalar-subquery-over-an-empty-table-is-null", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "CREATE TABLE empty_test (val INTEGER)"},
+      {"sql": "SELECT name, (SELECT MAX(val) FROM empty_test) AS max_val FROM employees WHERE id = 1", "expect": {"rows": [["Alice",null]], "columns": ["NAME","MAX_VAL"]}}
+    ]},
+    {"name": "a-scalar-subquery-as-the-whole-comparison", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE (SELECT COUNT(*) FROM departments) > 2", "expect": {"rows": [["Alice"],["Bob"],["Charlie"],["Diana"]]}}
+    ]},
+    {"name": "a-scalar-subquery-in-the-select-list", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name, (SELECT COUNT(*) FROM departments) AS dept_count FROM employees WHERE id = 1", "expect": {"rows": [["Alice",3]], "columns": ["NAME","DEPT_COUNT"]}}
+    ]},
+    {"name": "several-scalar-subqueries-in-the-select-list", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name, (SELECT COUNT(*) FROM departments) AS dept_count, (SELECT MAX(salary) FROM employees) AS max_salary FROM employees WHERE id = 1",
+       "expect": {"rows": [["Alice",3,70000]], "columns": ["NAME","DEPT_COUNT","MAX_SALARY"]}}
+    ]},
+    {"name": "a-scalar-subquery-in-the-select-list-over-many-rows", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name, (SELECT COUNT(*) FROM departments) AS dept_count FROM employees ORDER BY name",
+       "expect": {"rows": [["Alice",3],["Bob",3],["Charlie",3],["Diana",3]], "ordered": true}}
+    ]},
+    {"name": "a-correlated-count-in-the-select-list", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount NUMBER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 1, 100), (2, 1, 150), (3, 2, 200)"},
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.customer_id = customers.id) AS order_count FROM customers ORDER BY id",
+       "expect": {"rows": [["Alice",2],["Bob",1],["Charlie",0]], "ordered": true, "columns": ["NAME","ORDER_COUNT"]}}
+    ]},
+    {"name": "a-correlated-sum-in-the-select-list", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount NUMBER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 1, 100), (2, 1, 150), (3, 2, 200)"},
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "SELECT name, (SELECT SUM(amount) FROM orders WHERE orders.customer_id = customers.id) AS total FROM customers ORDER BY id",
+       "expect": {"rows": [["Alice",250],["Bob",200]], "ordered": true, "columns": ["NAME","TOTAL"]}}
+    ]},
+    {"name": "a-correlated-exists", "steps": [
+      {"sql": "CREATE TABLE t1 (i INTEGER, val VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (i INTEGER, val VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'x'), (2, 'y')"},
+      {"sql": "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i) ORDER BY i",
+       "expect": {"rows": [[1,"a"],[2,"b"]], "ordered": true}}
+    ]},
+    {"name": "a-correlated-not-exists", "steps": [
+      {"sql": "CREATE TABLE t1 (i INTEGER, val VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (i INTEGER, val VARCHAR)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "INSERT INTO t2 VALUES (1, 'x'), (2, 'y')"},
+      {"sql": "SELECT * FROM t1 WHERE NOT EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i)",
+       "expect": {"rows": [[3,"c"]]}}
+    ]},
+    {"name": "a-correlated-exists-on-the-employee-department-relationship", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM departments WHERE departments.id = employees.dept_id)",
+       "expect": {"rows": [["Alice"],["Bob"],["Charlie"]]}}
+    ]},
+    {"name": "a-correlated-exists-with-two-conditions", "steps": [
+      {"sql": "CREATE TABLE t1 (i INTEGER, j INTEGER)"},
+      {"sql": "CREATE TABLE t2 (i INTEGER, j INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "INSERT INTO t2 VALUES (1, 10), (2, 99)"},
+      {"sql": "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i AND t1.j = t2.j)",
+       "expect": {"rows": [[1,10]]}}
+    ]},
+    {"name": "a-correlated-exists-with-an-inequality", "steps": [
+      {"sql": "CREATE TABLE t1 (salary NUMBER)"},
+      {"sql": "CREATE TABLE t2 (min_salary NUMBER)"},
+      {"sql": "INSERT INTO t1 VALUES (50000), (60000), (70000)"},
+      {"sql": "INSERT INTO t2 VALUES (55000), (65000)"},
+      {"sql": "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.salary > t2.min_salary) ORDER BY salary",
+       "expect": {"rows": [[60000],[70000]], "ordered": true}}
+    ]},
+    {"name": "a-four-level-nested-correlated-exists", "steps": [
+      {"sql": "CREATE TABLE level1 (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE level2 (id INTEGER, parent_id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE level3 (id INTEGER, parent_id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE level4 (id INTEGER, parent_id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO level1 VALUES (1, 'A'), (2, 'B'), (3, 'C')"},
+      {"sql": "INSERT INTO level2 VALUES (1, 1, 'A1'), (2, 2, 'B1')"},
+      {"sql": "INSERT INTO level3 VALUES (1, 1, 'A11')"},
+      {"sql": "INSERT INTO level4 VALUES (1, 1, 'A111')"},
+      {"sql": "SELECT * FROM level1 WHERE EXISTS (SELECT * FROM level2 WHERE level2.parent_id = level1.id AND EXISTS (SELECT * FROM level3 WHERE level3.parent_id = level2.id AND EXISTS (SELECT * FROM level4 WHERE level4.parent_id = level3.id)))",
+       "expect": {"rows": [[1,"A"]]}}
+    ]},
+    {"name": "a-multi-row-scalar-subquery-in-the-select-list-errors", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary NUMBER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (40, 'Marketing')"},
+      {"sql": "SELECT name, (SELECT name FROM departments) AS dept_name FROM employees WHERE id = 1", "expect": {"error": {}}}
+    ]}
+  ]
+}

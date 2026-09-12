@@ -1,0 +1,19 @@
+{
+  "suite": "functions-to-array",
+  "description": "TO_ARRAY(expr) wraps a scalar in a singleton array and passes an existing array through unchanged; a NULL input is NULL. Converted 1:1 from functions/ToArrayTest (now retired); the ARRAY results are read through TO_JSON so the assertion lands on a VARCHAR no transport reformats.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-wraps-a-scalar-in-a-singleton-array", "steps": [
+      {"sql": "SELECT TO_JSON(TO_ARRAY(1))", "expect": {"value": "[1]"}}
+    ]},
+    {"name": "it-wraps-a-string-as-a-single-element", "steps": [
+      {"sql": "SELECT TO_JSON(TO_ARRAY('hello'))", "expect": {"value": "[\"hello\"]"}}
+    ]},
+    {"name": "an-existing-array-is-unchanged", "steps": [
+      {"sql": "SELECT TO_JSON(TO_ARRAY(ARRAY_CONSTRUCT(1, 2, 3)))", "expect": {"value": "[1,2,3]"}}
+    ]},
+    {"name": "a-null-input-is-null", "steps": [
+      {"sql": "SELECT TO_ARRAY(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

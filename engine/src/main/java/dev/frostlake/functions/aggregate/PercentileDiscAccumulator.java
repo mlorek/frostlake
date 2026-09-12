@@ -17,30 +17,42 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
-import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
-/** Accumulator for {@link PercentileDisc}. */
-public class PercentileDiscAccumulator implements AggregateFunction.Accumulator {
-    private final List<Double> values = new ArrayList<>();
-    private final double percentile;
+/**
+ * Accumulator for {@link PercentileDisc}, delegating to
+ * {@link AggregateNumerics#percentileDisc(Iterable, double)}. It PICKS an input rather than computing
+ * one, so the value is handed back as it arrived and keeps its column's own scale — collapsing it to a
+ * double lost that, turning a NUMBER(10,2)'s 2.00 into 2.0. A VARCHAR or VARIANT key is the one
+ * exception: live converts it to a whole number, and the declaration says so
+ * ({@link CoercedNumericArgumentAccumulator}).
+ */
+public class PercentileDiscAccumulator implements AggregateFunction.Accumulator, CoercedNumericArgumentAccumulator {
+    private final List<Object> values = new ArrayList<>();
+    private double percentile;
+    private boolean coercedArgument;
 
     public PercentileDiscAccumulator(final double p) { this.percentile = p; }
 
+    /** The fraction, for the window path where the accumulator is built before the call is read. */
+    public void setPercentile(final double p) { this.percentile = p; }
+
+    @Override
+    public void setCoercedNumericArgument(final boolean coerced) {
+        this.coercedArgument = coerced;
+    }
+
     @Override
     public void accumulate(final Object v) {
-        if (v != null) values.add(new BigDecimal(v.toString()).doubleValue());
+        if (v != null) values.add(v);
     }
 
     @Override
     public Object getResult() {
-        if (values.isEmpty()) return null;
-        final List<Double> sorted = new ArrayList<>(values);
-        Collections.sort(sorted);
-        final int idx = (int) Math.ceil(percentile * sorted.size()) - 1;
-        return sorted.get(Math.max(0, Math.min(idx, sorted.size() - 1)));
+        return coercedArgument
+            ? AggregateNumerics.percentileDiscOverCoerced(values, percentile)
+            : AggregateNumerics.percentileDisc(values, percentile);
     }
 
     @Override

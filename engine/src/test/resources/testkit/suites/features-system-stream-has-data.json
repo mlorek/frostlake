@@ -1,0 +1,62 @@
+{
+  "suite": "features-system-stream-has-data",
+  "description": "SYSTEM$STREAM_HAS_DATA - the boolean a task's WHEN clause polls. Covers the FALSE answer on a fresh stream, a non-null answer after an insert, that the call may be repeated, name resolution in the schema-qualified and database.schema-qualified forms and for a stream living in another schema, and the refusals: an unknown stream (bare or qualified) and an unknown SYSTEM$ function. Converted 1:1 from features/SystemStreamHasDataTest (now retired); its setupTest fixture (events + events_stream) is inlined per test.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "false-when-the-source-table-is-empty", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test_db"}, {"sql": "USE DATABASE test_db"},
+      {"sql": "CREATE OR REPLACE SCHEMA test_schema"}, {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE events (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM events_stream ON TABLE events"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('events_stream')",
+       "expect": {"rowCount": 1, "value": "false"}}
+    ]},
+    {"name": "a-non-null-answer-after-an-insert", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test_db"}, {"sql": "USE DATABASE test_db"},
+      {"sql": "CREATE OR REPLACE SCHEMA test_schema"}, {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE events (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM events_stream ON TABLE events"},
+      {"sql": "INSERT INTO events VALUES (1, 'click')"},
+      {"sql": "SELECT IFF(SYSTEM$STREAM_HAS_DATA('events_stream') IS NULL, 'null', 'set')",
+       "expect": {"rowCount": 1, "value": "set"}}
+    ]},
+    {"name": "the-function-may-be-called-more-than-once", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test_db"}, {"sql": "USE DATABASE test_db"},
+      {"sql": "CREATE OR REPLACE SCHEMA test_schema"}, {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE events (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM events_stream ON TABLE events"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('events_stream')"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('events_stream')", "expect": {"value": "false"}}
+    ]},
+    {"name": "a-qualified-stream-name-resolves", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test_db"}, {"sql": "USE DATABASE test_db"},
+      {"sql": "CREATE OR REPLACE SCHEMA test_schema"}, {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE events (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM events_stream ON TABLE events"},
+      {"sql": "INSERT INTO events VALUES (1, 'click')"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('test_schema.events_stream')", "expect": {"value": "true"}},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('test_db.test_schema.events_stream')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "a-stream-in-another-schema-resolves-by-its-qualified-name", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test_db"}, {"sql": "USE DATABASE test_db"},
+      {"sql": "CREATE OR REPLACE SCHEMA test_schema"}, {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE SCHEMA other_schema"},
+      {"sql": "CREATE TABLE other_schema.t2 (id INTEGER)"},
+      {"sql": "CREATE STREAM other_schema.s2 ON TABLE other_schema.t2"},
+      {"sql": "INSERT INTO other_schema.t2 VALUES (1)"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('other_schema.s2')", "expect": {"value": "true"}},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('other_schema.no_such')",
+       "expect": {"error": {"messageContains": "must be a valid stream name"}}}
+    ]},
+    {"name": "an-unknown-stream-is-refused", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE test_db"}, {"sql": "USE DATABASE test_db"},
+      {"sql": "CREATE OR REPLACE SCHEMA test_schema"}, {"sql": "USE SCHEMA test_schema"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('no_such_stream')",
+       "expect": {"error": {"messageContains": "Invalid value ['no_such_stream'] for function 'SYSTEM$STREAM_HAS_DATA', parameter 1: must be a valid stream name"}}}
+    ]},
+    {"name": "an-unknown-system-function-errors", "steps": [
+      {"sql": "SELECT SYSTEM$THIS_IS_NOT_A_REAL_FUNCTION()", "expect": {"error": {}}}
+    ]}
+  ]
+}

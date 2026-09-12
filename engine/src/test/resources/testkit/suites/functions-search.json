@@ -1,0 +1,37 @@
+{
+  "suite": "functions-search",
+  "description": "SEARCH(data, query [, ANALYZER => ...] [, SEARCH_MODE => 'OR'|'AND']) - token-based full-text search: whole-TOKEN matching rather than substring (so 'kingdom' does not match 'king'), case-insensitive, OR semantics by default and AND requiring every query token, with a tuple first argument searching across several columns at once and matching in either. Snowflake ships exactly three analyzers - live-verified, ANALYZER => 'PATTERN_ANALYZER' or any other name fails \"Object 'PATTERN_ANALYZER' does not exist or not authorized.\" while UNICODE_ANALYZER, NO_OP_ANALYZER and DEFAULT_ANALYZER resolve. A NULL data or query yields NULL. Converted 1:1 from functions/SearchTest (now retired); its @BeforeEach lines fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "or-mode-matches-any-token", "steps": [
+      {"sql": "SELECT SEARCH('the king is dead', 'king')", "expect": {"value": "true"}},
+      {"sql": "SELECT SEARCH('the king is dead', 'king queen')", "expect": {"value": "true"}},
+      {"sql": "SELECT SEARCH('the king is dead', 'queen')", "expect": {"value": "false"}},
+      {"sql": "SELECT SEARCH('kingdom', 'king')", "expect": {"value": "false"}},
+      {"sql": "SELECT SEARCH('The KING is dead', 'king')", "expect": {"value": "true"}}
+    ]},
+    {"name": "and-mode-requires-every-token", "steps": [
+      {"sql": "SELECT SEARCH('the king and queen', 'king queen', SEARCH_MODE => 'AND')", "expect": {"value": "true"}},
+      {"sql": "SELECT SEARCH('the king is dead', 'king queen', SEARCH_MODE => 'AND')", "expect": {"value": "false"}}
+    ]},
+    {"name": "the-analyzer-named-argument-is-accepted", "steps": [
+      {"sql": "SELECT SEARCH('the king', 'king', ANALYZER => 'UNICODE_ANALYZER')", "expect": {"value": "true"}},
+      {"sql": "SELECT SEARCH('the king', 'king', ANALYZER => 'UNICODE_ANALYZER', SEARCH_MODE => 'OR')",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT SEARCH('the king', 'king queen', SEARCH_MODE => 'AND', ANALYZER => 'DEFAULT_ANALYZER')",
+       "expect": {"value": "false"}},
+      {"sql": "SELECT SEARCH('the king', 'king', ANALYZER => 'PATTERN_ANALYZER')", "expect": {"error": {}}}
+    ]},
+    {"name": "a-tuple-first-argument-searches-across-columns", "steps": [
+      {"sql": "CREATE TABLE lines (play VARCHAR, line VARCHAR)"},
+      {"sql": "INSERT INTO lines VALUES ('Hamlet', 'To sleep, perchance to dream'), ('Macbeth', 'The king is dead')"},
+      {"sql": "SELECT COUNT(*) FROM lines WHERE SEARCH((play, line), 'dream')", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM lines WHERE SEARCH((play, line), 'macbeth')", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM lines WHERE SEARCH((play, line), 'queen')", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-null-data-or-query-yields-null", "steps": [
+      {"sql": "SELECT SEARCH(NULL, 'king')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT SEARCH('king', NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

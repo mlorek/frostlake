@@ -1,0 +1,117 @@
+{
+  "suite": "features-system-roles",
+  "description": "The six Snowflake system roles through the SQL surface - SHOW ROLES cells (name, comment), SHOW GRANTS TO ROLE for the hierarchy edges, and the CREATE/DROP refusals that guard them: all six exist with their own comments, ACCOUNTADMIN holds SECURITYADMIN and SYSADMIN while SECURITYADMIN holds USERADMIN, ORGADMIN stands outside the hierarchy holding no role grants, none of the six may be dropped (in any spelling) or created, and custom roles are freely created and dropped. Converted 1:1 from features/SystemRolesTest (now retired). Roles are account-level, so each test drops the ones it creates.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "all-system-roles-exist", "steps": [
+      {"sql": "SHOW ROLES"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'ORGADMIN'), COUNT_IF(\"name\" = 'ACCOUNTADMIN'), COUNT_IF(\"name\" = 'SECURITYADMIN'), COUNT_IF(\"name\" = 'USERADMIN'), COUNT_IF(\"name\" = 'SYSADMIN'), COUNT_IF(\"name\" = 'PUBLIC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1", "1", "1", "1", "1"]]}}
+    ]},
+    {"name": "org-admin-role-exists", "steps": [
+      {"sql": "SHOW ROLES LIKE 'orgadmin'"},
+      {"sql": "SELECT \"name\", CONTAINS(\"comment\", 'Organization administrator') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ORGADMIN", "true"]]}}
+    ]},
+    {"name": "account-admin-role-exists", "steps": [
+      {"sql": "SHOW ROLES LIKE 'accountadmin'"},
+      {"sql": "SELECT \"name\", CONTAINS(\"comment\", 'Account administrator') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ACCOUNTADMIN", "true"]]}}
+    ]},
+    {"name": "security-admin-role-exists", "steps": [
+      {"sql": "SHOW ROLES LIKE 'securityadmin'"},
+      {"sql": "SELECT \"name\", CONTAINS(\"comment\", 'Security administrator') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["SECURITYADMIN", "true"]]}}
+    ]},
+    {"name": "user-admin-role-exists", "steps": [
+      {"sql": "SHOW ROLES LIKE 'useradmin'"},
+      {"sql": "SELECT \"name\", CONTAINS(\"comment\", 'User administrator') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["USERADMIN", "true"]]}}
+    ]},
+    {"name": "sys-admin-role-exists", "steps": [
+      {"sql": "SHOW ROLES LIKE 'sysadmin'"},
+      {"sql": "SELECT \"name\", CONTAINS(\"comment\", 'System administrator') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["SYSADMIN", "true"]]}}
+    ]},
+    {"name": "public-role-exists", "steps": [
+      {"sql": "SHOW ROLES LIKE 'public'"},
+      {"sql": "SELECT \"name\", CONTAINS(\"comment\", 'Public role') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["PUBLIC", "true"]]}}
+    ]},
+    {"name": "role-hierarchy",
+     "skip": {"backends": ["snowflake"], "reason": "SHOW GRANTS TO ROLE ACCOUNTADMIN exceeds the shared account's statement timeout"},
+     "steps": [
+      {"sql": "SHOW GRANTS TO ROLE ACCOUNTADMIN"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"granted_on\") = 'ROLE' AND UPPER(\"name\") = 'SECURITYADMIN'), COUNT_IF(UPPER(\"granted_on\") = 'ROLE' AND UPPER(\"name\") = 'SYSADMIN') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "SHOW GRANTS TO ROLE SECURITYADMIN"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"granted_on\") = 'ROLE' AND UPPER(\"name\") = 'USERADMIN') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "org-admin-stands-outside-the-hierarchy", "steps": [
+      {"sql": "SHOW GRANTS TO ROLE ORGADMIN"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"granted_on\") = 'ROLE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "cannot-drop-org-admin", "steps": [
+      {"sql": "DROP ROLE ORGADMIN", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-drop-account-admin", "steps": [
+      {"sql": "DROP ROLE ACCOUNTADMIN", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-drop-security-admin", "steps": [
+      {"sql": "DROP ROLE SECURITYADMIN", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-drop-user-admin", "steps": [
+      {"sql": "DROP ROLE USERADMIN", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-drop-sys-admin", "steps": [
+      {"sql": "DROP ROLE SYSADMIN", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-drop-public-role", "steps": [
+      {"sql": "DROP ROLE PUBLIC", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-drop-system-role-in-lower-case", "steps": [
+      {"sql": "DROP ROLE sysadmin", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-drop-system-role-in-mixed-case", "steps": [
+      {"sql": "DROP ROLE SysAdmin", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-create-role-named-after-a-system-role", "steps": [
+      {"sql": "CREATE ROLE SYSADMIN", "expect": {"error": {}}}
+    ]},
+    {"name": "cannot-create-role-named-after-a-system-role-in-lower-case", "steps": [
+      {"sql": "CREATE ROLE accountadmin", "expect": {"error": {}}}
+    ]},
+    {"name": "can-create-a-custom-role", "steps": [
+      {"sql": "DROP ROLE IF EXISTS my_custom_role"},
+      {"sql": "CREATE ROLE my_custom_role"},
+      {"sql": "SHOW ROLES LIKE 'my_custom_role'"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'MY_CUSTOM_ROLE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}},
+      {"sql": "DROP ROLE my_custom_role"}
+    ]},
+    {"name": "can-drop-a-custom-role", "steps": [
+      {"sql": "DROP ROLE IF EXISTS test_role"},
+      {"sql": "CREATE ROLE test_role"},
+      {"sql": "DROP ROLE test_role"},
+      {"sql": "SHOW ROLES LIKE 'test_role'"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'TEST_ROLE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "a-custom-role-may-carry-a-system-role-like-name", "steps": [
+      {"sql": "DROP ROLE IF EXISTS admin"},
+      {"sql": "CREATE ROLE admin"},
+      {"sql": "SHOW ROLES LIKE 'admin'"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'ADMIN') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}},
+      {"sql": "DROP ROLE admin"}
+    ]},
+    {"name": "creating-a-duplicate-custom-role-fails", "steps": [
+      {"sql": "DROP ROLE IF EXISTS my_role"},
+      {"sql": "CREATE ROLE my_role"},
+      {"sql": "CREATE ROLE my_role", "expect": {"error": {}}},
+      {"sql": "DROP ROLE my_role"}
+    ]}
+  ]
+}

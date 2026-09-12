@@ -1,0 +1,54 @@
+{
+  "suite": "transaction-drop-table-deferred-apply",
+  "description": "DROP TABLE and CREATE OR REPLACE TABLE wired through the deferred-apply write set. When a table is dropped or replaced AFTER the same transaction has buffered INSERT/UPDATE/DELETEs against it, those buffered writes must be discarded: otherwise COMMIT tries to flush them to storage that no longer exists and fails with Failed to commit transaction (cause: Table storage does not exist), and a drop-then-recreate of the same name in ONE transaction would resurrect the pre-drop rows in the new table. The trigger in practice is a stored procedure - the whole CALL is one deferred transaction - that seeds a scratch or temporary table and DROPs it before returning, a very common test-proc cleanup shape, which crashed at commit before the fix. Converted 1:1 from transaction/DropTableDeferredApplyTest (now retired); the Java built its own engine with transaction.deferredApply=true and called setAutoCommit(false), both of which the testkit backend supplies through the default engine plus an explicit BEGIN.",
+  "tags": ["transaction", "converted"],
+  "tests": [
+    {"name": "insert-then-drop-in-one-transaction-commits-cleanly", "steps": [
+      {"sql": "CREATE TABLE keep (id INTEGER)"},
+      {"sql": "BEGIN"},
+      {"sql": "CREATE TEMPORARY TABLE scratch (a INTEGER)"},
+      {"sql": "INSERT INTO scratch VALUES (1), (2), (3)"},
+      {"sql": "DROP TABLE scratch"},
+      {"sql": "INSERT INTO keep VALUES (10)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM keep", "expect": {"value": 1}}
+    ]},
+    {"name": "drop-then-recreate-of-the-same-name-does-not-resurrect-rows", "steps": [
+      {"sql": "CREATE TABLE keep (id INTEGER)"},
+      {"sql": "BEGIN"},
+      {"sql": "CREATE TEMPORARY TABLE scratch (a INTEGER)"},
+      {"sql": "INSERT INTO scratch VALUES (1), (2)"},
+      {"sql": "DROP TABLE scratch"},
+      {"sql": "CREATE TEMPORARY TABLE scratch (a INTEGER)"},
+      {"sql": "INSERT INTO scratch VALUES (99)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT a FROM scratch", "expect": {"rows": [[99]]}}
+    ]},
+    {"name": "create-or-replace-after-buffered-inserts-starts-empty", "steps": [
+      {"sql": "CREATE TABLE keep (id INTEGER)"},
+      {"sql": "BEGIN"},
+      {"sql": "CREATE TEMPORARY TABLE scratch (a INTEGER)"},
+      {"sql": "INSERT INTO scratch VALUES (1), (2), (3)"},
+      {"sql": "CREATE OR REPLACE TEMPORARY TABLE scratch (a INTEGER)"},
+      {"sql": "SELECT COUNT(*) FROM scratch", "expect": {"value": 0}},
+      {"sql": "INSERT INTO scratch VALUES (7)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT a FROM scratch", "expect": {"rows": [[7]]}}
+    ]},
+    {"name": "a-procedure-that-seeds-then-drops-a-temp-table-commits-its-durable-write", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS s"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "CREATE TABLE keep (id INTEGER)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE publish() RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE n INTEGER; BEGIN CREATE OR REPLACE TEMPORARY TABLE s.expected (a INTEGER); INSERT INTO s.expected VALUES (1), (2), (3); n := (SELECT COUNT(*) FROM s.expected); INSERT INTO keep VALUES (:n); DROP TABLE IF EXISTS s.expected; RETURN 'ok'; END $$"},
+      {"sql": "CALL publish()", "expect": {"value": "ok"}},
+      {"sql": "SELECT id FROM keep", "expect": {"rows": [[3]]}}
+    ]},
+    {"name": "a-procedure-that-drops-and-recreates-one-name-keeps-only-the-new-rows", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS s"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "CREATE OR REPLACE PROCEDURE churn() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN CREATE OR REPLACE TEMPORARY TABLE s.tmp (a INTEGER); INSERT INTO s.tmp VALUES (10), (20); DROP TABLE IF EXISTS s.tmp; CREATE OR REPLACE TEMPORARY TABLE s.tmp (a INTEGER); INSERT INTO s.tmp VALUES (99); RETURN 'ok'; END $$"},
+      {"sql": "CALL churn()", "expect": {"value": "ok"}},
+      {"sql": "SELECT a FROM s.tmp", "expect": {"rows": [[99]]}}
+    ]}
+  ]
+}

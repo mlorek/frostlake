@@ -1,0 +1,25 @@
+{
+  "suite": "functions-to-date",
+  "description": "TO_DATE / TRY_TO_DATE parsing: an explicit Snowflake format is honoured and an ISO string parses without one, where the format argument used to be ignored. A numeric argument is a Unix epoch ONLY under the DATE() spelling - live-verified, TO_DATE(1631711999) and TRY_TO_DATE(1631711999) both fail \"invalid type [TO_DATE(1631711999)] for parameter 'TO_DATE'\" while the DATE() alias of the very same function reads the epoch, and a numeric STRING is fine either way. TRY_TO_DATE answers NULL on unparseable text. Converted 1:1 from functions/ToDateTest (now retired); the Java compared LocalDate toString values, which TO_VARCHAR reproduces.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "an-iso-string-without-a-format", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_DATE('2021-01-15'))", "expect": {"value": "2021-01-15"}}
+    ]},
+    {"name": "an-explicit-format-is-honoured", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_DATE('01/15/2021', 'MM/DD/YYYY'))", "expect": {"value": "2021-01-15"}}
+    ]},
+    {"name": "a-numeric-argument-is-epoch-seconds-only-for-the-date-spelling", "steps": [
+      {"sql": "SELECT TO_DATE(1631711999)", "expect": {"error": {}}},
+      {"sql": "SELECT TRY_TO_DATE(1631711999)", "expect": {"error": {}}},
+      {"sql": "SELECT TO_VARCHAR(DATE(1631711999))", "expect": {"value": "2021-09-15"}},
+      {"sql": "SELECT TO_VARCHAR(TO_DATE('1631711999'))", "expect": {"value": "2021-09-15"}}
+    ]},
+    {"name": "try-to-date-with-a-valid-format", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TRY_TO_DATE('01/15/2021', 'MM/DD/YYYY'))", "expect": {"value": "2021-01-15"}}
+    ]},
+    {"name": "try-to-date-returns-null-on-unparseable-text", "steps": [
+      {"sql": "SELECT TRY_TO_DATE('not-a-date', 'MM/DD/YYYY') AS r", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

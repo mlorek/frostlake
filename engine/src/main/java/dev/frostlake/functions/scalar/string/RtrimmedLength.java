@@ -17,12 +17,12 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import java.util.List;
 
 /** RTRIMMED_LENGTH(s) — the length of the string without trailing blanks. */
 public class RtrimmedLength extends TextArgumentFunction {
-    public RtrimmedLength() { super("RTRIMMED_LENGTH", NumericType.INTEGER); }
+    public RtrimmedLength() { super("RTRIMMED_LENGTH", IntegerResultWidths.COUNTER); }
 
     @Override
     public Object evaluate(final List<Object> args) {

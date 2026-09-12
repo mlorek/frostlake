@@ -1,0 +1,42 @@
+{
+  "suite": "types-decimal-varchar",
+  "description": "Parameterized column types: DECIMAL(p,s), DECIMAL(p), NUMBER(p,s), VARCHAR(n), CHAR(n), a mixed multi-column table, and bare DECIMAL/VARCHAR defaults (bare DECIMAL has scale 0, so 123.45 rounds to 123 — engine-pinned). Converted 1:1 from types/DecimalTypeTest (now retired).",
+  "tags": ["types", "converted"],
+  "tests": [
+    {"name": "decimal-with-precision-and-scale", "steps": [
+      {"sql": "CREATE TABLE prices (id INTEGER, amount DECIMAL(10, 2))"},
+      {"sql": "INSERT INTO prices VALUES (1, 123.45)"},
+      {"sql": "SELECT * FROM prices", "expect": {"rows": [["1", "123.45"]]}}
+    ]},
+    {"name": "decimal-with-precision-only", "steps": [
+      {"sql": "CREATE TABLE counts (id INTEGER, value DECIMAL(5))"},
+      {"sql": "INSERT INTO counts VALUES (1, 12345)"},
+      {"sql": "SELECT * FROM counts", "expect": {"rows": [["1", "12345"]]}}
+    ]},
+    {"name": "number-with-precision-and-scale", "steps": [
+      {"sql": "CREATE TABLE measurements (id INTEGER, value NUMBER(15, 4))"},
+      {"sql": "INSERT INTO measurements VALUES (1, 1234.5678)"},
+      {"sql": "SELECT * FROM measurements", "expect": {"rows": [["1", "1234.5678"]]}}
+    ]},
+    {"name": "varchar-with-length", "steps": [
+      {"sql": "CREATE TABLE names (id INTEGER, name VARCHAR(50))"},
+      {"sql": "INSERT INTO names VALUES (1, 'Alice')"},
+      {"sql": "SELECT * FROM names", "expect": {"rows": [["1", "Alice"]]}}
+    ]},
+    {"name": "char-with-length", "steps": [
+      {"sql": "CREATE TABLE codes (id INTEGER, code CHAR(10))"},
+      {"sql": "INSERT INTO codes VALUES (1, 'ABC123')"},
+      {"sql": "SELECT * FROM codes", "expect": {"rows": [["1", "ABC123"]]}}
+    ]},
+    {"name": "multiple-columns-with-types", "steps": [
+      {"sql": "CREATE TABLE products (\n    id INTEGER,\n    name VARCHAR(100),\n    price DECIMAL(10, 2),\n    quantity NUMBER(8),\n    discount DECIMAL(5, 2)\n)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Widget', 99.99, 100, 5.50)"},
+      {"sql": "SELECT * FROM products", "expect": {"rows": [["1", "Widget", "99.99", "100", "5.50"]]}}
+    ]},
+    {"name": "bare-decimal-and-varchar-defaults", "steps": [
+      {"sql": "CREATE TABLE mixed (id INTEGER, amount DECIMAL, name VARCHAR)"},
+      {"sql": "INSERT INTO mixed VALUES (1, 123.45, 'Test')"},
+      {"sql": "SELECT * FROM mixed", "expect": {"rows": [["1", "123", "Test"]]}}
+    ]}
+  ]
+}

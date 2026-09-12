@@ -149,6 +149,36 @@ public class HttpMetadataParityTest {
         assertEquals(nullabilityOn(direct, expression), nullabilityOn(http, expression));
     }
 
+    /** Each column's precision and display size on one connection, as "precision/display" joined by "|". */
+    private String lengthsOn(final Connection connection, final String query) throws SQLException {
+        try (final Statement s = connection.createStatement()) {
+            final ResultSet rs = s.executeQuery(query);
+            final ResultSetMetaData md = rs.getMetaData();
+            final StringBuilder out = new StringBuilder();
+            for (int i = 1; i <= md.getColumnCount(); i++) {
+                out.append(i == 1 ? "" : "|").append(md.getPrecision(i)).append('/')
+                    .append(md.getColumnDisplaySize(i));
+            }
+            return out.toString();
+        }
+    }
+
+    /**
+     * A text or binary column's length crosses the wire, so both transports answer it as the column's
+     * precision and display size alike; the HTTP transport used to read 0 and 255.
+     */
+    @Test
+    public void textAndBinaryLengthsAgreeAcrossTransports() throws SQLException {
+        for (final Connection c : new Connection[] { http, direct }) {
+            try (final Statement s = c.createStatement()) {
+                s.execute("CREATE OR REPLACE TABLE len_t (u VARCHAR, v9 VARCHAR(9), b BINARY, b5 BINARY(5))");
+            }
+        }
+        final String query = "SELECT u, v9, b, b5, TO_BINARY(u) AS tb FROM len_t";
+        assertEquals("16777216/16777216|9/9|8388608/8388608|5/5|67108864/67108864", lengthsOn(direct, query));
+        assertEquals(lengthsOn(direct, query), lengthsOn(http, query));
+    }
+
     /** Render selected columns of a metadata result set for order-insensitive comparison. */
     private List<String> render(final ResultSet rs, final String... columns) throws SQLException {
         final List<String> rows = new ArrayList<>();

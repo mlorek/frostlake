@@ -1,0 +1,103 @@
+{
+  "suite": "query-implicit-lateral-table-function",
+  "description": "A table function in a comma-separated FROM list is implicitly LATERAL in Snowflake - it may reference columns of the tables written BEFORE it, and the LATERAL keyword is optional. The ubiquitous FROM t, TABLE(FLATTEN(input => t.col)) f form was executed once with no lateral context, so the correlated reference failed with 'Column not found'; only the explicit LATERAL FLATTEN spelling worked. The lateral may also reference a SELECT-LIST ALIAS of the same query, which is not a column of any FROM table - and a REAL column of the same name wins over such an alias. After an explicit JOIN the per-row context must follow the COMBINED row's layout, not the alias map's hash order, or the lateral reads the wrong slots and silently empties the query. A bare JOIN to a table function, with no LATERAL keyword and no ON, still correlates to the left row. Correlation is per row, so N source rows with M elements each produce N*M rows, an empty source yields none, and a table function referencing nothing outside itself still cross-joins. Converted 1:1 from query/ImplicitLateralTableFunctionTest (now retired); the Java counted rows for eleven of its seventeen tests, and the converted tests name the rows.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-lateral-flatten-resolves-a-select-list-alias", "steps": [
+      {"sql": "CREATE TABLE stage (id INTEGER, src VARIANT)"},
+      {"sql": "INSERT INTO stage SELECT 1, PARSE_JSON('{\"a\":{\"n\":\"first\"},\"b\":{\"n\":\"second\"}}')"},
+      {"sql": "INSERT INTO stage SELECT 2, PARSE_JSON('{\"a\":{\"n\":\"only\"}}')"},
+      {"sql": "SELECT id, ex.value:n::VARCHAR AS extra_name FROM stage s, TABLE(FLATTEN(ARRAY_CONSTRUCT_COMPACT(src:a, src:b), OUTER => TRUE)) AS ex ORDER BY id, extra_name", "expect": {"rows": [[1,"first"],[1,"second"],[2,"only"]], "ordered": true}}
+    ]},
+    {"name": "the-explicit-lateral-keyword-also-sees-a-select-list-alias", "steps": [
+      {"sql": "CREATE TABLE stage2 (id INTEGER, src VARIANT)"},
+      {"sql": "INSERT INTO stage2 SELECT 1, PARSE_JSON('{\"a\":{\"n\":\"x\"},\"b\":{\"n\":\"y\"}}')"},
+      {"sql": "SELECT id, f.value:n::VARCHAR AS nm FROM stage2 s, LATERAL FLATTEN(input => ARRAY_CONSTRUCT_COMPACT(src:a, src:b)) f ORDER BY nm", "expect": {"rows": [[1,"x"],[1,"y"]], "ordered": true}}
+    ]},
+    {"name": "a-real-column-wins-over-a-select-alias-of-the-same-name", "steps": [
+      {"sql": "CREATE TABLE stage3 (id INTEGER, src VARIANT)"},
+      {"sql": "INSERT INTO stage3 SELECT 1, PARSE_JSON('[{\"n\":\"fromColumn\"}]')"},
+      {"sql": "SELECT id, f.value:n::VARCHAR AS v FROM stage3 s, TABLE(FLATTEN(input => src)) f", "expect": {"rows": [[1,"fromColumn"]]}}
+    ]},
+    {"name": "a-lateral-after-an-inner-join-reads-the-joined-tables-columns", "steps": [
+      {"sql": "CREATE TABLE orders (oid INTEGER, aid INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (10, 1)"},
+      {"sql": "CREATE TABLE vendors2 (aid INTEGER, plans VARIANT)"},
+      {"sql": "INSERT INTO vendors2 SELECT 1, PARSE_JSON('{\"GOLD\":{\"ok\":1},\"SILVER\":{\"ok\":0}}')"},
+      {"sql": "SELECT f.oid, l.key FROM orders f INNER JOIN vendors2 a ON a.aid = f.aid, LATERAL FLATTEN(input => a.plans) l WHERE l.key = 'GOLD'", "expect": {"rows": [[10,"GOLD"]]}}
+    ]},
+    {"name": "table-flatten-resolves-an-alias-qualified-input", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "SELECT f.value:n::VARCHAR FROM t, TABLE(FLATTEN(INPUT => t.src:items)) f ORDER BY 1", "expect": {"rows": [["a"],["b"]], "ordered": true}}
+    ]},
+    {"name": "table-flatten-resolves-an-unqualified-input", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "SELECT f.value:n::VARCHAR FROM t, TABLE(FLATTEN(INPUT => src:items)) f ORDER BY 1", "expect": {"rows": [["a"],["b"]], "ordered": true}}
+    ]},
+    {"name": "table-flatten-resolves-through-a-table-alias", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "SELECT f.value:n::VARCHAR FROM t x, TABLE(FLATTEN(INPUT => x.src:items)) f ORDER BY 1", "expect": {"rows": [["a"],["b"]], "ordered": true}}
+    ]},
+    {"name": "table-flatten-over-a-plain-array-column", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "SELECT f.value::VARCHAR FROM t x, TABLE(FLATTEN(x.arr)) f ORDER BY 1", "expect": {"rows": [["x"],["y"]], "ordered": true}}
+    ]},
+    {"name": "table-flatten-with-a-positional-input-and-a-named-outer", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "SELECT f.value::VARCHAR FROM t x, TABLE(FLATTEN(x.arr, outer => TRUE)) f ORDER BY 1", "expect": {"rows": [["x"],["y"]], "ordered": true}}
+    ]},
+    {"name": "table-flatten-correlates-to-the-second-table-of-a-join", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "SELECT f.value::VARCHAR FROM t x JOIN t y ON x.id = y.id, TABLE(FLATTEN(y.arr)) f ORDER BY 1", "expect": {"rows": [["x"],["y"]], "ordered": true}}
+    ]},
+    {"name": "one-output-row-per-source-row-per-element", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "INSERT INTO t SELECT 2, PARSE_JSON('{}'), ARRAY_CONSTRUCT('p', 'q')"},
+      {"sql": "SELECT x.id, f.value::VARCHAR FROM t x, TABLE(FLATTEN(x.arr)) f ORDER BY 1, 2", "expect": {"rows": [[1,"x"],[1,"y"],[2,"p"],[2,"q"]], "ordered": true}}
+    ]},
+    {"name": "an-explicit-lateral-flatten-still-works", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "SELECT f.value::VARCHAR FROM t x, LATERAL FLATTEN(INPUT => x.arr) f ORDER BY 1", "expect": {"rows": [["x"],["y"]], "ordered": true}}
+    ]},
+    {"name": "a-non-correlated-table-function-still-cross-joins", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, src VARIANT, arr ARRAY)"},
+      {"sql": "INSERT INTO t SELECT 1, PARSE_JSON('{\"items\":[{\"n\":\"a\"},{\"n\":\"b\"}]}'), ARRAY_CONSTRUCT('x', 'y')"},
+      {"sql": "INSERT INTO t SELECT 2, PARSE_JSON('{}'), ARRAY_CONSTRUCT('p')"},
+      {"sql": "SELECT t.id FROM t, TABLE(GENERATOR(ROWCOUNT => 3)) g ORDER BY 1", "expect": {"rows": [[1],[1],[1],[2],[2],[2]], "ordered": true}}
+    ]},
+    {"name": "a-lateral-after-a-join-sees-the-joined-table", "steps": [
+      {"sql": "CREATE TABLE oc (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO oc VALUES (1, 'x')"},
+      {"sql": "CREATE TABLE d2 (k INTEGER, pairs ARRAY, sz INTEGER)"},
+      {"sql": "INSERT INTO d2 SELECT 1, ARRAY_CONSTRUCT('p', 'q'), 2"},
+      {"sql": "SELECT f.value::VARCHAR FROM oc JOIN d2 ON oc.k = d2.k, LATERAL FLATTEN(d2.pairs) f ORDER BY 1", "expect": {"rows": [["p"],["q"]], "ordered": true}}
+    ]},
+    {"name": "a-lateral-after-a-join-using-resolves-an-unqualified-input", "steps": [
+      {"sql": "CREATE TABLE oc (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO oc VALUES (1, 'x')"},
+      {"sql": "CREATE TABLE d2 (k INTEGER, pairs ARRAY, sz INTEGER)"},
+      {"sql": "INSERT INTO d2 SELECT 1, ARRAY_CONSTRUCT('p', 'q'), 2"},
+      {"sql": "SELECT f.value::VARCHAR FROM oc JOIN d2 USING (k), LATERAL FLATTEN(pairs) f WHERE d2.sz > 1 ORDER BY 1", "expect": {"rows": [["p"],["q"]], "ordered": true}},
+      {"sql": "SELECT f.value::VARCHAR FROM oc JOIN d2 USING (k), TABLE(FLATTEN(d2.pairs)) f ORDER BY 1", "expect": {"rows": [["p"],["q"]], "ordered": true}}
+    ]},
+    {"name": "an-empty-source-yields-no-rows", "steps": [
+      {"sql": "CREATE TABLE empty_t (id INTEGER, arr ARRAY)"},
+      {"sql": "SELECT f.value::VARCHAR FROM empty_t e, TABLE(FLATTEN(e.arr)) f", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-bare-join-to-a-table-function-is-implicitly-lateral", "steps": [
+      {"sql": "CREATE TABLE jb (k INTEGER, attrs OBJECT)"},
+      {"sql": "INSERT INTO jb SELECT 1, OBJECT_CONSTRUCT('tags', ARRAY_CONSTRUCT('a', 'b'))"},
+      {"sql": "INSERT INTO jb SELECT 2, OBJECT_CONSTRUCT('tags', ARRAY_CONSTRUCT('c'))"},
+      {"sql": "INSERT INTO jb SELECT 3, OBJECT_CONSTRUCT('other', 1)"},
+      {"sql": "SELECT k, value::VARCHAR AS tag FROM jb JOIN TABLE(FLATTEN(attrs:tags)) WHERE attrs:tags IS NOT NULL ORDER BY k, tag", "expect": {"rows": [[1,"a"],[1,"b"],[2,"c"]], "ordered": true}}
+    ]}
+  ]
+}

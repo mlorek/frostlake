@@ -17,13 +17,13 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import java.math.BigDecimal;
 import java.util.List;
 
 /** BITCOUNT(n) — the number of set bits in the integer value. */
 public class BitCount extends BuiltInFunction {
-    public BitCount() { super("BITCOUNT", NumericType.INTEGER); }
+    public BitCount() { super("BITCOUNT", IntegerResultWidths.WIDEST); }
 
     @Override
     public Object evaluate(final List<Object> args) {

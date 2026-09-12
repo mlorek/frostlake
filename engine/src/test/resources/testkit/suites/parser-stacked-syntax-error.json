@@ -1,0 +1,30 @@
+{
+  "suite": "parser-stacked-syntax-error",
+  "description": "A refusal carries ONE line per problem. Several genuinely independent problems stack, each at its own place and in text order - three stray commas are three lines - while a statement with a single problem stays a single line however many alternatives the parser tried before giving up. What must never stack is the wreckage of recovery: an end-of-input error following an error already reported at a real token is the parse running off the end of the statement, not a second problem, and the same sentence repeated at the same position is one problem reported twice. An unterminated literal is the LEXER's own sentence, alone, positioned at the end of the input wherever in the statement the quote was opened. Measured but deliberately not asserted: for a call left open with no arguments live adds a second, BACKWARDS line naming the '(' it never closed (SELECT MAX( is '<EOF>' at 11 then '(' at 10) and Frostlake reports the first line only; and an unterminated quoted IDENTIFIER is two lines on live where this engine reports the lexer's only. Converted 1:1 from parser/StackedSyntaxErrorTest (now retired).",
+  "tags": ["parser", "converted"],
+  "tests": [
+    {"name": "two-independent-problems-are-two-lines", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT a FROM kw GROUP BY , ORDER BY ,", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 26 unexpected ','.\nsyntax error line 1 at position 37 unexpected ','."}}},
+      {"sql": "SELECT a FROM kw GROUP BY , HAVING ,", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 26 unexpected ','.\nsyntax error line 1 at position 35 unexpected ','."}}}
+    ]},
+    {"name": "three-independent-problems-are-three-lines", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT a FROM kw GROUP BY , ORDER BY , LIMIT ,", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 26 unexpected ','.\nsyntax error line 1 at position 37 unexpected ','.\nsyntax error line 1 at position 45 unexpected ','."}}}
+    ]},
+    {"name": "one-problem-stays-one-line", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT MAX((1)", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 14 unexpected '<EOF>'."}}},
+      {"sql": "SELECT (", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 8 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM (", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 15 unexpected '<EOF>'."}}},
+      {"sql": "SELECT MAX(MIN(a)", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 17 unexpected '<EOF>'."}}},
+      {"sql": "SELECT COALESCE(1, 2", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 20 unexpected '<EOF>'."}}}
+    ]},
+    {"name": "an-unterminated-literal-is-a-lexer-line", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT 'abc", "expect": {"error": {"messageContains": "SQL compilation error:\nparse error line 1 at position 11 near '<EOF>'."}}},
+      {"sql": "SELECT 'abc' || 'de", "expect": {"error": {"messageContains": "SQL compilation error:\nparse error line 1 at position 19 near '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw WHERE b = 'x", "expect": {"error": {"messageContains": "SQL compilation error:\nparse error line 1 at position 29 near '<EOF>'."}}}
+    ]}
+  ]
+}

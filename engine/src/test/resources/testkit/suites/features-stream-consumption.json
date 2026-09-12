@@ -1,0 +1,88 @@
+{
+  "suite": "features-stream-consumption",
+  "description": "Stream-consumption semantics: a stream is queryable as a table source and SELECT reads it NON-destructively (repeatedly, with its METADATA$ columns beside the source columns), while a consuming DML advances the offset - INSERT ... SELECT FROM stream, MERGE USING stream and CTAS from a stream all consume it. SYSTEM$STREAM_HAS_DATA reflects the unconsumed state (false on a fresh stream, true after a change, false once consumed, true again after the next change), consumption lands on COMMIT inside an explicit transaction, and a ROLLBACK leaves the stream unconsumed. Converted 1:1 from features/StreamConsumptionTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "select-from-stream-is-non-destructive-and-exposes-metadata", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM s ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1,'a'),(2,'b')"},
+      {"sql": "SELECT * FROM s", "expect": {"rowCount": 2, "columns": ["ID", "NAME", "METADATA$ACTION", "METADATA$ISUPDATE", "METADATA$ROW_ID"]}},
+      {"sql": "SELECT METADATA$ACTION FROM s WHERE id = 1", "expect": {"value": "INSERT"}},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": "2"}},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}}
+    ]},
+    {"name": "consuming-dml-advances-the-offset", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM s ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1,'a'),(2,'b')"},
+      {"sql": "CREATE TABLE sink (id INTEGER, name VARCHAR)"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}},
+      {"sql": "INSERT INTO sink SELECT id, name FROM s"},
+      {"sql": "SELECT COUNT(*) FROM sink", "expect": {"value": "2"}},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "false"}},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": "0"}},
+      {"sql": "INSERT INTO src VALUES (3,'c')"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": "1"}}
+    ]},
+    {"name": "plain-select-does-not-consume", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM s ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1),(2)"},
+      {"sql": "SELECT * FROM s"},
+      {"sql": "SELECT COUNT(*) FROM s"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": "2"}}
+    ]},
+    {"name": "has-data-reflects-unconsumed-state", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM s ON TABLE src"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "false"}},
+      {"sql": "INSERT INTO src VALUES (1)"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}}
+    ]},
+    {"name": "merge-using-stream-consumes", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM s ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1,'a'),(2,'b')"},
+      {"sql": "CREATE TABLE tgt (id INTEGER, name VARCHAR)"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}},
+      {"sql": "MERGE INTO tgt USING s ON tgt.id = s.id WHEN NOT MATCHED THEN INSERT (id, name) VALUES (s.id, s.name)"},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "2"}},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "false"}}
+    ]},
+    {"name": "explicit-transaction-commit-consumes", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM s ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1),(2)"},
+      {"sql": "CREATE TABLE sink (id INTEGER)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO sink SELECT id FROM s"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "false"}}
+    ]},
+    {"name": "explicit-transaction-rollback-does-not-consume", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM s ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1),(2)"},
+      {"sql": "CREATE TABLE sink (id INTEGER)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO sink SELECT id FROM s"},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": "2"}}
+    ]},
+    {"name": "ctas-from-stream-consumes", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM s ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES (1,'a'),(2,'b')"},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "true"}},
+      {"sql": "CREATE TABLE snapshot AS SELECT id, name FROM s"},
+      {"sql": "SELECT COUNT(*) FROM snapshot", "expect": {"value": "2"}},
+      {"sql": "SELECT SYSTEM$STREAM_HAS_DATA('s')", "expect": {"value": "false"}}
+    ]}
+  ]
+}

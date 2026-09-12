@@ -17,12 +17,15 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -37,8 +40,10 @@ public class ToJson extends StructuredArgumentFunction {
         final Object value = args.get(0);
         if (value == null) return null;
         if (value instanceof VariantValue) {
-            // TO_JSON of a semi-structured value is its JSON text (a JSON null yields the text null).
-            return ((VariantValue) value).text();
+            // TO_JSON of a semi-structured value is its JSON text (a JSON null yields the text null) —
+            // the CONVERSION text, which rewrites every DOUBLE and leaves the rest as it displays.
+            final String converted = VariantJsonText.convertedTextOf(value);
+            return converted != null ? converted : ((VariantValue) value).text();
         }
         if (value instanceof String) {
             final String text = ((String) value).trim();
@@ -58,6 +63,10 @@ public class ToJson extends StructuredArgumentFunction {
                 return value.toString();
             }
         }
+        if (value instanceof Double || value instanceof Float) {
+            // A DOUBLE converts to JSON in the same fifteen-decimal form it takes inside a container.
+            return VariantJsonText.doubleText(((Number) value).doubleValue());
+        }
         if (value instanceof Number || value instanceof Boolean
                 || value instanceof List || value instanceof Map) {
             try {
@@ -66,9 +75,11 @@ public class ToJson extends StructuredArgumentFunction {
                 return value.toString();
             }
         }
-        // Temporals and any other scalar: a variant STRING of the value's text form.
+        // Temporals and any other scalar: a variant STRING of the value's text form — a DATE's as a
+        // VARIANT holds it, so a year past 9999 is its digits (live: "20201-01-15").
         try {
-            return MAPPER.writeValueAsString(value.toString());
+            return MAPPER.writeValueAsString(value instanceof LocalDate
+                ? SharedFunctionHelpers.variantDateText((LocalDate) value) : value.toString());
         } catch (final Exception e) {
             return value.toString();
         }

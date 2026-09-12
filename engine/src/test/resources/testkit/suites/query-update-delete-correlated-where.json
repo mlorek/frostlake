@@ -1,0 +1,44 @@
+{
+  "suite": "query-update-delete-correlated-where",
+  "description": "An UPDATE or DELETE with an ALIASED target must bind that alias for correlated subqueries in its WHERE, so UPDATE tgt t ... WHERE EXISTS (SELECT 1 FROM src s WHERE t.k = s.k) correlates PER TARGET ROW. Without the alias binding the alias-qualified OUTER reference fell back to the INNER table's same-named column, which turned the correlation into a tautology: EXISTS then matched every row and NOT EXISTS none, so the disappeared-row-marking idiom updated nothing at all. Pinned four ways - the NOT EXISTS marking idiom, a plain correlated EXISTS, the two combined so only one row qualifies, and the same correlation under DELETE. Converted 1:1 from query/UpdateDeleteCorrelatedWhereTest (now retired); the Java collected the target's states into a Java HashMap keyed by k/sid, so the converted tests read the same key expression back as an ordered row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "update-marks-only-the-rows-missing-from-the-feed", "steps": [
+      {"sql": "CREATE TABLE tracked (k VARCHAR, sid VARCHAR, st VARCHAR)"},
+      {"sql": "CREATE TABLE feed (k VARCHAR, sid VARCHAR)"},
+      {"sql": "INSERT INTO tracked VALUES ('a','s1','CURRENT'), ('a','s2','CURRENT'), ('b','s9','CURRENT')"},
+      {"sql": "INSERT INTO feed VALUES ('a','s1')"},
+      {"sql": "UPDATE tracked t SET t.st = 'DELETED' WHERE t.st != 'DELETED' AND NOT EXISTS (SELECT 1 FROM feed s WHERE t.k = s.k AND t.sid = s.sid)"},
+      {"sql": "SELECT k || '/' || sid AS id, st FROM tracked ORDER BY id",
+       "expect": {"rows": [["a/s1","CURRENT"],["a/s2","DELETED"],["b/s9","DELETED"]], "ordered": true}}
+    ]},
+    {"name": "update-with-exists-touches-only-the-correlated-rows", "steps": [
+      {"sql": "CREATE TABLE tracked (k VARCHAR, sid VARCHAR, st VARCHAR)"},
+      {"sql": "CREATE TABLE feed (k VARCHAR, sid VARCHAR)"},
+      {"sql": "INSERT INTO tracked VALUES ('a','s1','CURRENT'), ('a','s2','CURRENT'), ('b','s9','CURRENT')"},
+      {"sql": "INSERT INTO feed VALUES ('a','s1')"},
+      {"sql": "UPDATE tracked t SET t.st = 'SEEN' WHERE EXISTS (SELECT 1 FROM feed s WHERE t.k = s.k)"},
+      {"sql": "SELECT k || '/' || sid AS id, st FROM tracked ORDER BY id",
+       "expect": {"rows": [["a/s1","SEEN"],["a/s2","SEEN"],["b/s9","CURRENT"]], "ordered": true}}
+    ]},
+    {"name": "exists-and-not-exists-together-match-the-disappeared-row-only", "steps": [
+      {"sql": "CREATE TABLE tracked (k VARCHAR, sid VARCHAR, st VARCHAR)"},
+      {"sql": "CREATE TABLE feed (k VARCHAR, sid VARCHAR)"},
+      {"sql": "INSERT INTO tracked VALUES ('a','s1','CURRENT'), ('a','s2','CURRENT'), ('b','s9','CURRENT')"},
+      {"sql": "INSERT INTO feed VALUES ('a','s1')"},
+      {"sql": "CREATE TABLE scope (k VARCHAR, kind VARCHAR)"},
+      {"sql": "INSERT INTO scope VALUES ('a', 'plain')"},
+      {"sql": "UPDATE tracked t SET t.st = 'DELETED' WHERE t.st != 'DELETED' AND EXISTS (SELECT 1 FROM scope s WHERE t.k = s.k AND s.kind != 'excluded') AND NOT EXISTS (SELECT 1 FROM feed s WHERE t.k = s.k AND t.sid = s.sid)"},
+      {"sql": "SELECT k || '/' || sid AS id, st FROM tracked ORDER BY id",
+       "expect": {"rows": [["a/s1","CURRENT"],["a/s2","DELETED"],["b/s9","CURRENT"]], "ordered": true}}
+    ]},
+    {"name": "delete-with-a-correlated-not-exists-removes-only-the-missing-rows", "steps": [
+      {"sql": "CREATE TABLE tracked (k VARCHAR, sid VARCHAR, st VARCHAR)"},
+      {"sql": "CREATE TABLE feed (k VARCHAR, sid VARCHAR)"},
+      {"sql": "INSERT INTO tracked VALUES ('a','s1','CURRENT'), ('a','s2','CURRENT'), ('b','s9','CURRENT')"},
+      {"sql": "INSERT INTO feed VALUES ('a','s1')"},
+      {"sql": "DELETE FROM tracked t WHERE NOT EXISTS (SELECT 1 FROM feed s WHERE t.k = s.k AND t.sid = s.sid)"},
+      {"sql": "SELECT k, sid FROM tracked", "expect": {"rows": [["a","s1"]]}}
+    ]}
+  ]
+}

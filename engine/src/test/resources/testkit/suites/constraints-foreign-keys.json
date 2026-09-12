@@ -1,0 +1,206 @@
+{
+  "suite": "constraints-foreign-keys",
+  "description": "FOREIGN KEY / PRIMARY KEY / UNIQUE constraint metadata (parsed, not enforced) through SHOW IMPORTED/PRIMARY/UNIQUE KEYS and DESCRIBE TABLE, with cell reads via RESULT_SCAN(LAST_QUERY_ID()): auto-named SYS_CONSTRAINT_ keys, multi-column keys one row per column, referential actions other than NO ACTION silently dropping the whole constraint (live-verified), RELY/NORELY metadata, and non-enforcement of FK/cascade semantics on DML. Converted 1:1 from constraints/ForeignKeyConstraintsTest (now retired).",
+  "tags": ["constraints", "converted"],
+  "tests": [
+    {"name": "column-level-foreign-key", "steps": [
+      {"sql": "CREATE TABLE parent_table (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE child_table (id INTEGER, parent_id INTEGER REFERENCES parent_table(id))"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE child_table", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"pk_table_name\", \"pk_column_name\", \"delete_rule\", \"update_rule\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'PARENT_ID'",
+       "expect": {"rows": [["PARENT_TABLE", "ID", "NO ACTION", "NO ACTION"]]}}
+    ]},
+    {"name": "referential-actions-drop-the-whole-constraint", "steps": [
+      {"sql": "CREATE TABLE departments (dept_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE employees (\n    emp_id INTEGER PRIMARY KEY,\n    dept_id INTEGER REFERENCES departments(dept_id) ON DELETE CASCADE ON UPDATE CASCADE\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE employees", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "table-level-foreign-key-auto-named", "steps": [
+      {"sql": "CREATE TABLE customers (customer_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE orders (\n    order_id INTEGER PRIMARY KEY,\n    customer_id INTEGER,\n    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE orders", "expect": {"rowCount": 1}},
+      {"sql": "SELECT (\"fk_name\" LIKE 'SYS_CONSTRAINT_%'), \"fk_column_name\", \"pk_table_name\", \"pk_column_name\", \"key_sequence\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "CUSTOMER_ID", "CUSTOMERS", "CUSTOMER_ID", "1"]]}}
+    ]},
+    {"name": "table-level-foreign-key-with-constraint-name", "steps": [
+      {"sql": "CREATE TABLE products (product_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE inventory (\n    inv_id INTEGER,\n    product_id INTEGER,\n    CONSTRAINT fk_product FOREIGN KEY (product_id) REFERENCES products(product_id)\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE inventory", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"fk_column_name\", \"pk_table_name\", \"pk_column_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_name\" = 'FK_PRODUCT'",
+       "expect": {"rows": [["PRODUCT_ID", "PRODUCTS", "PRODUCT_ID"]]}}
+    ]},
+    {"name": "multi-column-foreign-key", "steps": [
+      {"sql": "CREATE TABLE person (first_name VARCHAR, last_name VARCHAR, PRIMARY KEY (first_name, last_name))"},
+      {"sql": "CREATE TABLE contact (\n    contact_id INTEGER,\n    first_name VARCHAR,\n    last_name VARCHAR,\n    FOREIGN KEY (first_name, last_name) REFERENCES person(first_name, last_name)\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE contact", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"key_sequence\", \"fk_column_name\", \"pk_column_name\", \"pk_table_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"key_sequence\"",
+       "expect": {"rows": [["1", "FIRST_NAME", "FIRST_NAME", "PERSON"], ["2", "LAST_NAME", "LAST_NAME", "PERSON"]], "ordered": true}},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE contact", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(DISTINCT \"fk_name\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "on-delete-set-null-drops-the-constraint", "steps": [
+      {"sql": "CREATE TABLE wallets (wallet_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE transactions (\n    txn_id INTEGER,\n    wallet_id INTEGER,\n    FOREIGN KEY (wallet_id) REFERENCES wallets(wallet_id) ON DELETE SET NULL\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE transactions", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "on-update-restrict-drops-the-constraint", "steps": [
+      {"sql": "CREATE TABLE categories (category_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE items (\n    item_id INTEGER,\n    category_id INTEGER,\n    FOREIGN KEY (category_id) REFERENCES categories(category_id) ON UPDATE RESTRICT\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE items", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "on-delete-no-action-is-kept", "steps": [
+      {"sql": "CREATE TABLE vendors (vendor_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE purchases (\n    purchase_id INTEGER,\n    vendor_id INTEGER,\n    FOREIGN KEY (vendor_id) REFERENCES vendors(vendor_id) ON DELETE NO ACTION\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE purchases", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"delete_rule\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'VENDOR_ID'",
+       "expect": {"value": "NO ACTION"}}
+    ]},
+    {"name": "on-delete-set-default-drops-the-constraint", "steps": [
+      {"sql": "CREATE TABLE groups (group_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE members (\n    member_id INTEGER,\n    group_id INTEGER DEFAULT 1,\n    FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE SET DEFAULT\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE members", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "multiple-foreign-keys-only-action-free-kept", "steps": [
+      {"sql": "CREATE TABLE users (user_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE departments (dept_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE employees (\n    emp_id INTEGER PRIMARY KEY,\n    manager_id INTEGER,\n    dept_id INTEGER,\n    FOREIGN KEY (manager_id) REFERENCES users(user_id),\n    FOREIGN KEY (dept_id) REFERENCES departments(dept_id) ON DELETE CASCADE\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE employees", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"pk_table_name\", \"pk_column_name\", \"delete_rule\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'MANAGER_ID'",
+       "expect": {"rows": [["USERS", "USER_ID", "NO ACTION"]]}}
+    ]},
+    {"name": "foreign-key-not-enforced-on-insert", "steps": [
+      {"sql": "CREATE TABLE parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child (id INTEGER, parent_id INTEGER REFERENCES parent(id))"},
+      {"sql": "INSERT INTO parent VALUES (1)"},
+      {"sql": "INSERT INTO child VALUES (100, 1)"},
+      {"sql": "INSERT INTO child VALUES (200, 999)"},
+      {"sql": "SELECT * FROM child ORDER BY id", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "on-delete-cascade-not-enforced", "steps": [
+      {"sql": "CREATE TABLE parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child (\n    id INTEGER,\n    parent_id INTEGER,\n    FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE\n)"},
+      {"sql": "INSERT INTO parent VALUES (1)"},
+      {"sql": "INSERT INTO child VALUES (100, 1)"},
+      {"sql": "DELETE FROM parent WHERE id = 1"},
+      {"sql": "SELECT * FROM parent", "expect": {"rowCount": 0}},
+      {"sql": "SELECT * FROM child", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "on-update-cascade-not-enforced", "steps": [
+      {"sql": "CREATE TABLE parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child (\n    id INTEGER,\n    parent_id INTEGER,\n    FOREIGN KEY (parent_id) REFERENCES parent(id) ON UPDATE CASCADE\n)"},
+      {"sql": "INSERT INTO parent VALUES (1)"},
+      {"sql": "INSERT INTO child VALUES (100, 1)"},
+      {"sql": "UPDATE parent SET id = 2 WHERE id = 1"},
+      {"sql": "SELECT id FROM parent", "expect": {"value": "2"}},
+      {"sql": "SELECT parent_id FROM child", "expect": {"value": "1"}}
+    ]},
+    {"name": "qualified-table-name-in-foreign-key", "steps": [
+      {"sql": "CREATE SCHEMA other_schema"},
+      {"sql": "CREATE TABLE other_schema.lookup (lookup_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE main_table (\n    id INTEGER,\n    lookup_id INTEGER REFERENCES other_schema.lookup(lookup_id)\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE main_table", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"pk_schema_name\", \"pk_table_name\", \"pk_column_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'LOOKUP_ID'",
+       "expect": {"rows": [["OTHER_SCHEMA", "LOOKUP", "LOOKUP_ID"]]}}
+    ]},
+    {"name": "unique-constraint-with-foreign-key", "steps": [
+      {"sql": "CREATE TABLE parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child (\n    id INTEGER PRIMARY KEY,\n    parent_id INTEGER UNIQUE REFERENCES parent(id)\n)"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE child", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'PARENT_ID'", "expect": {"value": "1"}},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE child", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"pk_table_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'PARENT_ID'",
+       "expect": {"value": "PARENT"}}
+    ]},
+    {"name": "foreign-key-with-not-null", "steps": [
+      {"sql": "CREATE TABLE parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child (\n    id INTEGER PRIMARY KEY,\n    parent_id INTEGER NOT NULL REFERENCES parent(id)\n)"},
+      {"sql": "DESCRIBE TABLE child"},
+      {"sql": "SELECT \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PARENT_ID'", "expect": {"value": "N"}},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE child", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'PARENT_ID'", "expect": {"value": "1"}}
+    ]},
+    {"name": "show-columns-displays-foreign-key-columns", "steps": [
+      {"sql": "CREATE TABLE parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child (id INTEGER, parent_id INTEGER REFERENCES parent(id))"},
+      {"sql": "SHOW COLUMNS IN TABLE child", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "primary-key-with-rely", "steps": [
+      {"sql": "CREATE TABLE test_rely (id INTEGER PRIMARY KEY RELY, name VARCHAR)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE test_rely", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'ID'", "expect": {"value": "true"}}
+    ]},
+    {"name": "primary-key-with-norely", "steps": [
+      {"sql": "CREATE TABLE test_norely (id INTEGER PRIMARY KEY NORELY, name VARCHAR)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE test_norely", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'ID'", "expect": {"value": "false"}}
+    ]},
+    {"name": "unique-with-rely", "steps": [
+      {"sql": "CREATE TABLE test_unique_rely (id INTEGER, email VARCHAR UNIQUE RELY)"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE test_unique_rely", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'EMAIL'", "expect": {"value": "true"}}
+    ]},
+    {"name": "not-null-rejects-norely", "steps": [
+      {"sql": "CREATE TABLE test_notnull (id INTEGER, name VARCHAR NOT NULL NORELY)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE test_notnull_ok (id INTEGER, name VARCHAR NOT NULL)"},
+      {"sql": "DESCRIBE TABLE test_notnull_ok"},
+      {"sql": "SELECT \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'NAME'", "expect": {"value": "N"}}
+    ]},
+    {"name": "foreign-key-with-rely", "steps": [
+      {"sql": "CREATE TABLE parent_rely (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child_rely (id INTEGER, parent_id INTEGER REFERENCES parent_rely(id) RELY)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE child_rely", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"pk_table_name\", \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'PARENT_ID'",
+       "expect": {"rows": [["PARENT_RELY", "true"]]}}
+    ]},
+    {"name": "foreign-key-with-norely", "steps": [
+      {"sql": "CREATE TABLE parent_norely (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child_norely (id INTEGER, parent_id INTEGER REFERENCES parent_norely(id) NORELY)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE child_norely", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'PARENT_ID'", "expect": {"value": "false"}}
+    ]},
+    {"name": "table-level-foreign-key-with-rely", "steps": [
+      {"sql": "CREATE TABLE parent_tbl (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child_tbl (\n    id INTEGER,\n    parent_id INTEGER,\n    FOREIGN KEY (parent_id) REFERENCES parent_tbl(id) RELY\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE child_tbl", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "table-level-fk-with-cascade-and-norely-dropped", "steps": [
+      {"sql": "CREATE TABLE accounts_tbl (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE transactions_tbl (\n    id INTEGER,\n    wallet_id INTEGER,\n    CONSTRAINT fk_account FOREIGN KEY (wallet_id) REFERENCES accounts_tbl(id) ON DELETE CASCADE NORELY\n)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE transactions_tbl", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "table-level-compound-primary-key-with-rely", "steps": [
+      {"sql": "CREATE TABLE compound_key (\n    first_name VARCHAR,\n    last_name VARCHAR,\n    PRIMARY KEY (first_name, last_name) RELY\n)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE compound_key", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"key_sequence\", \"column_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"key_sequence\"",
+       "expect": {"rows": [["1", "FIRST_NAME"], ["2", "LAST_NAME"]], "ordered": true}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE compound_key", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(DISTINCT \"constraint_name\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "constraints-without-rely-option-report-false", "steps": [
+      {"sql": "CREATE TABLE no_rely_option (id INTEGER PRIMARY KEY, name VARCHAR UNIQUE)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE no_rely_option", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'ID'", "expect": {"value": "false"}},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE no_rely_option", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'NAME'", "expect": {"value": "false"}}
+    ]},
+    {"name": "mixed-rely-options", "steps": [
+      {"sql": "CREATE TABLE parent_mixed (id INTEGER PRIMARY KEY RELY)"},
+      {"sql": "CREATE TABLE mixed_rely (\n    id INTEGER PRIMARY KEY RELY,\n    code VARCHAR UNIQUE NORELY,\n    parent_id INTEGER REFERENCES parent_mixed(id) RELY,\n    status VARCHAR NOT NULL\n)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE mixed_rely", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'ID'", "expect": {"value": "true"}},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE mixed_rely", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'CODE'", "expect": {"value": "false"}},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE mixed_rely", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"fk_column_name\" = 'PARENT_ID'", "expect": {"value": "true"}},
+      {"sql": "DESCRIBE TABLE mixed_rely"},
+      {"sql": "SELECT \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'STATUS'", "expect": {"value": "N"}}
+    ]},
+    {"name": "rely-is-metadata-only-not-enforced", "steps": [
+      {"sql": "CREATE TABLE parent_enforce (id INTEGER PRIMARY KEY RELY)"},
+      {"sql": "CREATE TABLE child_enforce (id INTEGER, parent_id INTEGER REFERENCES parent_enforce(id) RELY)"},
+      {"sql": "INSERT INTO child_enforce VALUES (1, 999)"},
+      {"sql": "SELECT * FROM child_enforce", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

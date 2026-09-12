@@ -1,0 +1,35 @@
+{
+  "suite": "scripting-loop-label",
+  "description": "Snowflake Scripting LOOP LABELS. The label is declared by the TRAILING label - END LOOP my_loop, END FOR sum_loop, END WHILE w - and referenced by BREAK <label> / CONTINUE <label>, which propagate OUTWARD through nested loops. All live-verified. The proof that the labelled forms are real syntax is that a BREAK naming no trailing label fails SEMANTICALLY there (Label 'MY_LOOP' not found) rather than as a syntax error. The one spelling Snowflake does NOT have is the LEADING declaration my_loop:, which stops at the colon - so that form is refused here. A trailing label needs no reference at all, a labelled BREAK naming the OUTER loop stops both loops, and a bare BREAK stops only the innermost, which is the pair that shows the label is doing the work. Converted 1:1 from scripting/LoopLabelTest (now retired); the blocks are written on one line here, which the scripting parser reads identically.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-leading-label-declaration-is-rejected", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; my_loop: LOOP i := i + 1; IF (i >= 5) THEN BREAK; END IF; END LOOP; RETURN i; END;",
+       "expect": {"error": {}}}
+    ]},
+    {"name": "a-trailing-label-on-a-loop-is-accepted", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; LOOP i := i + 1; IF (i >= 5) THEN BREAK my_loop; END IF; END LOOP my_loop; RETURN i; END;",
+       "expect": {"value": 5}}
+    ]},
+    {"name": "a-trailing-label-on-a-for-loop-drives-a-labelled-continue", "steps": [
+      {"sql": "BEGIN LET total INTEGER := 0; FOR i IN 1 TO 6 DO IF (MOD(i, 2) = 1) THEN CONTINUE sum_loop; END IF; total := total + i; END FOR sum_loop; RETURN total; END;",
+       "expect": {"value": 12}}
+    ]},
+    {"name": "a-trailing-label-needs-no-reference", "steps": [
+      {"sql": "BEGIN LET total INTEGER := 0; FOR i IN 1 TO 3 DO total := total + i; END FOR any_name; RETURN total; END;",
+       "expect": {"value": 6}}
+    ]},
+    {"name": "a-trailing-label-on-a-while-loop-is-accepted", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; WHILE (i < 3) DO i := i + 1; END WHILE w_loop; RETURN i; END;",
+       "expect": {"value": 3}}
+    ]},
+    {"name": "a-labelled-break-leaves-the-outer-loop", "steps": [
+      {"sql": "BEGIN LET outerCount INTEGER := 0; FOR i IN 1 TO 3 DO outerCount := outerCount + 1; FOR j IN 1 TO 3 DO BREAK outer_loop; END FOR; END FOR outer_loop; RETURN outerCount; END;",
+       "expect": {"value": 1}}
+    ]},
+    {"name": "an-unlabelled-break-breaks-the-innermost-loop-only", "steps": [
+      {"sql": "BEGIN LET outerCount INTEGER := 0; FOR i IN 1 TO 3 DO outerCount := outerCount + 1; LOOP BREAK; END LOOP; END FOR; RETURN outerCount; END;",
+       "expect": {"value": 3}}
+    ]}
+  ]
+}

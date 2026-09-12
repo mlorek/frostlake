@@ -87,8 +87,27 @@ public final class AutoTemporalParser {
         return !ISO_WIDTHS.matcher(text).matches();
     }
 
-    /** Parse a date + optional time (+ optional, ignored zone offset); null if unrecognised. */
+    /** The value {@link #parseDateTime(String, int[])} writes when the text carries no zone at all. */
+    public static final int NO_OFFSET = Integer.MIN_VALUE;
+
+    /** Parse a date + optional time (+ optional zone offset, discarded); null if unrecognised. */
     public static LocalDateTime parseDateTime(final String raw) {
+        return parseDateTime(raw, new int[1]);
+    }
+
+    /**
+     * Parse a date + optional time + optional zone, reporting the zone's offset in MINUTES through
+     * {@code offsetOut} — {@link #NO_OFFSET} when the text carries none. The scanner still yields the
+     * WALL CLOCK; what the offset means is the caller's business, because it depends on the target:
+     * a TIMESTAMP_NTZ drops it and a TIMESTAMP_TZ or _LTZ moves the instant by it.
+     *
+     * <p>The accepted spellings are narrow and were measured one at a time: {@code +HHMM},
+     * {@code +HH:MM}, {@code +HH}, {@code +H} and an UPPER-CASE {@code Z}, with or without a space
+     * before them. A lower-case {@code z}, a seconds field ({@code +03:00:30}), and the zone NAMES
+     * {@code UTC}, {@code GMT} and {@code America/Los_Angeles} are all refused on a real account —
+     * the last three despite reading like the most obvious spellings of all.
+     */
+    public static LocalDateTime parseDateTime(final String raw, final int[] offsetOut) {
         if (raw == null) {
             return null;
         }
@@ -96,6 +115,7 @@ public final class AutoTemporalParser {
         if (s.isEmpty()) {
             return null;
         }
+        offsetOut[0] = NO_OFFSET;
         final int[] pos = {0};
         final LocalDate date = scanDate(s, pos);
         if (date == null) {
@@ -108,7 +128,7 @@ public final class AutoTemporalParser {
                 return null;
             }
         }
-        skipZone(s, pos);
+        readZone(s, pos, offsetOut);
         if (pos[0] != s.length()) {
             return null;   // trailing text that is not a zone designator
         }
@@ -233,10 +253,11 @@ public final class AutoTemporalParser {
     }
 
     /**
-     * Step over a trailing zone designator — {@code Z}, {@code UTC}, or {@code +HH[:MM]} / {@code -HH[:MM]}
-     * — and any blanks around it. The offset is discarded: the scanner yields the wall-clock value.
+     * Step over a trailing zone designator, reporting its offset in minutes through {@code offsetOut}.
+     * See {@link #parseDateTime(String, int[])} for the spellings, which are measured rather than
+     * guessed — the zone NAMES are refused, and so is a lower-case {@code z}.
      */
-    private static void skipZone(final String s, final int[] pos) {
+    private static void readZone(final String s, final int[] pos, final int[] offsetOut) {
         final int start = pos[0];
         while (pos[0] < s.length() && isBlank(s.charAt(pos[0]))) {
             pos[0]++;
@@ -245,36 +266,39 @@ public final class AutoTemporalParser {
             return;
         }
         final char c = s.charAt(pos[0]);
-        if (c == 'Z' || c == 'z') {
+        if (c == 'Z') {
             pos[0]++;
+            offsetOut[0] = 0;
             return;
         }
-        if (c == 'U' || c == 'u') {
-            if (s.regionMatches(true, pos[0], "UTC", 0, 3)) {
-                pos[0] += 3;
-                return;
-            }
+        if (c != '+' && c != '-') {
             pos[0] = start;
             return;
         }
-        if (c == '+' || c == '-') {
-            final int afterSign = pos[0] + 1;
-            final int[] probe = {afterSign};
-            if (scanDigits(s, probe, 2) < 0) {
+        final int[] probe = {pos[0] + 1};
+        final int hours = scanDigits(s, probe, 2);
+        if (hours < 0) {
+            pos[0] = start;
+            return;
+        }
+        int minutes = 0;
+        if (probe[0] < s.length() && s.charAt(probe[0]) == ':') {
+            probe[0]++;
+            minutes = scanDigits(s, probe, 2);
+            if (minutes < 0) {
                 pos[0] = start;
                 return;
             }
-            if (probe[0] < s.length() && s.charAt(probe[0]) == ':') {
-                probe[0]++;
-                if (scanDigits(s, probe, 2) < 0) {
-                    pos[0] = start;
-                    return;
-                }
+        } else if (probe[0] < s.length() && isDigit(s.charAt(probe[0]))) {
+            // The colon-less +HHMM form: the two hour digits are followed straight by two more.
+            minutes = scanDigits(s, probe, 2);
+            if (minutes < 0) {
+                pos[0] = start;
+                return;
             }
-            pos[0] = probe[0];
-            return;
         }
-        pos[0] = start;
+        pos[0] = probe[0];
+        offsetOut[0] = (c == '-' ? -1 : 1) * (hours * 60 + minutes);
     }
 
     /**

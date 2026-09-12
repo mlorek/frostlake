@@ -1,0 +1,120 @@
+{
+  "suite": "ddl-drop-releases-storage",
+  "description": "Dropping (or replacing) a database or schema RELEASES the storage of its tables exactly as DROP TABLE does: re-created names start empty, a CLONE into a re-created database replaces rather than appends, CREATE OR REPLACE discards old rows - while UNDROP of database/schema/table still restores the snapshotted rows; DROP SCHEMA ... CASCADE and RESTRICT both parse and drop a non-empty schema (live-verified). Converted 1:1 from ddl/DropReleasesStorageTest (now retired). The seed database is account-level, created per test and dropped at the end along with every other database the test makes.",
+  "tags": ["ddl", "storage", "converted"],
+  "tests": [
+    {"name": "recreating-table-after-drop-database-starts-empty", "steps": [
+      {"sql": "CREATE DATABASE d"},
+      {"sql": "CREATE SCHEMA d.s"},
+      {"sql": "CREATE TABLE d.s.t (id INTEGER)"},
+      {"sql": "INSERT INTO d.s.t VALUES (7), (8)"},
+      {"sql": "DROP DATABASE d"},
+      {"sql": "CREATE DATABASE d"},
+      {"sql": "CREATE SCHEMA d.s"},
+      {"sql": "CREATE TABLE d.s.t (id INTEGER)"},
+      {"sql": "SELECT COUNT(*) FROM d.s.t", "expect": {"value": "0"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS d"}
+    ]},
+    {"name": "recreating-table-after-drop-schema-starts-empty", "steps": [
+      {"sql": "CREATE DATABASE seed"},
+      {"sql": "CREATE SCHEMA seed.s3"},
+      {"sql": "CREATE TABLE seed.s3.t (id INTEGER)"},
+      {"sql": "INSERT INTO seed.s3.t VALUES (4)"},
+      {"sql": "DROP SCHEMA seed.s3 CASCADE"},
+      {"sql": "CREATE SCHEMA seed.s3"},
+      {"sql": "CREATE TABLE seed.s3.t (id INTEGER)"},
+      {"sql": "SELECT COUNT(*) FROM seed.s3.t", "expect": {"value": "0"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS seed"}
+    ]},
+    {"name": "clone-into-dropped-database-name-replaces-rather-than-appends", "steps": [
+      {"sql": "CREATE DATABASE seed"},
+      {"sql": "CREATE SCHEMA seed.s"},
+      {"sql": "CREATE TABLE seed.s.t (id INTEGER)"},
+      {"sql": "INSERT INTO seed.s.t VALUES (1), (2)"},
+      {"sql": "CREATE DATABASE shared CLONE seed"},
+      {"sql": "INSERT INTO shared.s.t VALUES (99)"},
+      {"sql": "DROP DATABASE shared"},
+      {"sql": "CREATE DATABASE shared CLONE seed"},
+      {"sql": "SELECT COUNT(*) FROM shared.s.t", "expect": {"value": "2"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS shared"},
+      {"sql": "DROP DATABASE IF EXISTS seed"}
+    ]},
+    {"name": "create-or-replace-database-clone-replaces-rather-than-appends", "steps": [
+      {"sql": "CREATE DATABASE seed"},
+      {"sql": "CREATE SCHEMA seed.s"},
+      {"sql": "CREATE TABLE seed.s.t (id INTEGER)"},
+      {"sql": "INSERT INTO seed.s.t VALUES (1), (2)"},
+      {"sql": "CREATE DATABASE d2 CLONE seed"},
+      {"sql": "CREATE OR REPLACE DATABASE d2 CLONE seed"},
+      {"sql": "SELECT COUNT(*) FROM d2.s.t", "expect": {"value": "2"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS d2"},
+      {"sql": "DROP DATABASE IF EXISTS seed"}
+    ]},
+    {"name": "create-or-replace-schema-discards-old-rows", "steps": [
+      {"sql": "CREATE DATABASE seed"},
+      {"sql": "CREATE SCHEMA seed.s4"},
+      {"sql": "CREATE TABLE seed.s4.t (id INTEGER)"},
+      {"sql": "INSERT INTO seed.s4.t VALUES (1), (2), (3)"},
+      {"sql": "CREATE OR REPLACE SCHEMA seed.s4"},
+      {"sql": "CREATE TABLE seed.s4.t (id INTEGER)"},
+      {"sql": "SELECT COUNT(*) FROM seed.s4.t", "expect": {"value": "0"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS seed"}
+    ]},
+    {"name": "undrop-database-restores-rows", "steps": [
+      {"sql": "CREATE DATABASE d3"},
+      {"sql": "CREATE SCHEMA d3.s"},
+      {"sql": "CREATE TABLE d3.s.t (id INTEGER)"},
+      {"sql": "INSERT INTO d3.s.t VALUES (1), (2), (3)"},
+      {"sql": "DROP DATABASE d3"},
+      {"sql": "UNDROP DATABASE d3"},
+      {"sql": "SELECT COUNT(*) FROM d3.s.t", "expect": {"value": "3"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS d3"}
+    ]},
+    {"name": "undrop-schema-restores-rows", "steps": [
+      {"sql": "CREATE DATABASE seed"},
+      {"sql": "CREATE SCHEMA seed.s2"},
+      {"sql": "CREATE TABLE seed.s2.t (id INTEGER)"},
+      {"sql": "INSERT INTO seed.s2.t VALUES (7), (8)"},
+      {"sql": "DROP SCHEMA seed.s2 CASCADE"},
+      {"sql": "UNDROP SCHEMA seed.s2"},
+      {"sql": "SELECT COUNT(*) FROM seed.s2.t", "expect": {"value": "2"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS seed"}
+    ]},
+    {"name": "undrop-table-still-restores-rows", "steps": [
+      {"sql": "CREATE DATABASE seed"},
+      {"sql": "CREATE SCHEMA seed.s"},
+      {"sql": "CREATE TABLE seed.s.t (id INTEGER)"},
+      {"sql": "INSERT INTO seed.s.t VALUES (1), (2)"},
+      {"sql": "DROP TABLE seed.s.t"},
+      {"sql": "UNDROP TABLE seed.s.t"},
+      {"sql": "SELECT COUNT(*) FROM seed.s.t", "expect": {"value": "2"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS seed"}
+    ]},
+    {"name": "drop-schema-cascade-drops-a-non-empty-schema", "steps": [
+      {"sql": "CREATE DATABASE seed"},
+      {"sql": "CREATE SCHEMA seed.s5"},
+      {"sql": "CREATE TABLE seed.s5.t (id INTEGER)"},
+      {"sql": "DROP SCHEMA seed.s5 CASCADE"},
+      {"sql": "SHOW SCHEMAS LIKE 's5' IN DATABASE seed", "expect": {"rowCount": 0}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS seed"}
+    ]},
+    {"name": "drop-schema-restrict-drops-a-non-empty-schema", "steps": [
+      {"sql": "CREATE DATABASE seed"},
+      {"sql": "CREATE SCHEMA seed.s6"},
+      {"sql": "CREATE TABLE seed.s6.t (id INTEGER)"},
+      {"sql": "DROP SCHEMA seed.s6 RESTRICT"},
+      {"sql": "SHOW SCHEMAS LIKE 's6' IN DATABASE seed", "expect": {"rowCount": 0}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS seed"}
+    ]}
+  ]
+}

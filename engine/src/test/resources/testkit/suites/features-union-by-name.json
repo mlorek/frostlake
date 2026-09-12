@@ -1,0 +1,49 @@
+{
+  "suite": "features-union-by-name",
+  "description": "UNION [ALL] BY NAME - the set operator that aligns the two branches by column name instead of by position. Columns present in only one branch are filled with NULL, and the result column layout is the first branch's columns followed by any columns unique to later branches. Covers identical branches, reordered branches, disjoint columns, the DISTINCT variant collapsing rows that match once aligned, a three-branch chain, SELECT * over tables whose columns are declared in a different order, differing column counts (which positional UNION rejects), the refusal of any other BY token, and a positional UNION ALL regression. Converted 1:1 from features/UnionByNameTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "same-columns-keeps-rows-and-order", "steps": [
+      {"sql": "SELECT 1 AS a, 2 AS b UNION ALL BY NAME SELECT 3 AS a, 4 AS b",
+       "expect": {"columns": ["A", "B"], "rowCount": 2, "rows": [["1", "2"], ["3", "4"]], "ordered": true}}
+    ]},
+    {"name": "reordered-columns-are-aligned-by-name", "steps": [
+      {"sql": "SELECT 1 AS a, 2 AS b UNION ALL BY NAME SELECT 4 AS b, 3 AS a",
+       "expect": {"columns": ["A", "B"], "rows": [["1", "2"], ["3", "4"]], "ordered": true}}
+    ]},
+    {"name": "disjoint-columns-are-null-filled", "steps": [
+      {"sql": "SELECT '<' || a || '>' AS a, '<' || b || '>' AS b, '<' || c || '>' AS c FROM (SELECT 1 AS a, 2 AS b UNION ALL BY NAME SELECT 3 AS a, 5 AS c)",
+       "expect": {"rows": [["<1>", "<2>", null], ["<3>", null, "<5>"]], "ordered": true}},
+      {"sql": "SELECT 1 AS a, 2 AS b UNION ALL BY NAME SELECT 3 AS a, 5 AS c",
+       "expect": {"columns": ["A", "B", "C"]}}
+    ]},
+    {"name": "the-distinct-variant-dedupes-by-name", "steps": [
+      {"sql": "SELECT 1 AS a, 2 AS b UNION BY NAME SELECT 2 AS b, 1 AS a",
+       "expect": {"rowCount": 1, "rows": [["1", "2"]]}}
+    ]},
+    {"name": "a-chain-merges-all-branch-columns", "steps": [
+      {"sql": "SELECT 1 AS a UNION ALL BY NAME SELECT 2 AS b UNION ALL BY NAME SELECT 3 AS c",
+       "expect": {"columns": ["A", "B", "C"], "rowCount": 3}}
+    ]},
+    {"name": "select-star-aligns-by-name", "steps": [
+      {"sql": "CREATE TABLE ubn1 (x INT, y INT)"},
+      {"sql": "INSERT INTO ubn1 VALUES (1, 2)"},
+      {"sql": "CREATE TABLE ubn2 (y INT, x INT)"},
+      {"sql": "INSERT INTO ubn2 VALUES (20, 10)"},
+      {"sql": "SELECT * FROM ubn1 UNION ALL BY NAME SELECT * FROM ubn2",
+       "expect": {"columns": ["X", "Y"], "rows": [["1", "2"], ["10", "20"]], "ordered": true}}
+    ]},
+    {"name": "differing-column-counts-are-allowed", "steps": [
+      {"sql": "SELECT 1 AS a, 2 AS b UNION ALL BY NAME SELECT 9 AS a",
+       "expect": {"columns": ["A", "B"]}},
+      {"sql": "SELECT '<' || a || '>' AS a, '<' || b || '>' AS b FROM (SELECT 1 AS a, 2 AS b UNION ALL BY NAME SELECT 9 AS a)",
+       "expect": {"rows": [["<1>", "<2>"], ["<9>", null]], "ordered": true}}
+    ]},
+    {"name": "only-by-name-is-accepted", "steps": [
+      {"sql": "SELECT 1 AS a UNION BY FOO SELECT 2 AS a", "expect": {"error": {}}}
+    ]},
+    {"name": "a-positional-union-still-works", "steps": [
+      {"sql": "SELECT 1, 2 UNION ALL SELECT 3, 4", "expect": {"rowCount": 2, "rows": [["1", "2"], ["3", "4"]], "ordered": true}}
+    ]}
+  ]
+}

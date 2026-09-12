@@ -45,7 +45,11 @@ public class DerivedWidthTest extends BaseDatabaseTest {
     protected void setupTest() {
         engine.execute("CREATE TABLE dw (s4 VARCHAR(4), s100 VARCHAR(100), s VARCHAR,"
             + " b4 BINARY(4), b100 BINARY(100), t TIMESTAMP_NTZ, n NUMBER)");
-        engine.execute("INSERT INTO dw VALUES ('4142', '4142', '4142', TO_BINARY('41424344'),"
+        // s holds a value SHORT enough for the narrowest cast written below: the value-time width
+        // refusal ('4142'::VARCHAR(3) is "String '4142' is too long and would be truncated",
+        // live-verified) would otherwise fire while the view body is evaluated, and this class
+        // asserts DECLARED widths, not values.
+        engine.execute("INSERT INTO dw VALUES ('4142', '4142', '41', TO_BINARY('41424344'),"
             + " TO_BINARY('4142'), '2026-01-01', 1)");
     }
 

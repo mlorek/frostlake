@@ -1,0 +1,34 @@
+{
+  "suite": "query-bare-lateral-table-function",
+  "description": "A table function may be used directly as a FROM source only under LATERAL: FROM t, LATERAL SPLIT_TO_TABLE(t.s, ','). Live-measured: without the LATERAL keyword - a bare FROM fn(...) or FROM t, fn(...) - Snowflake raises a syntax error, and only the TABLE(fn(...)) wrapper works in that position. Frostlake matches both sides. The bare LATERAL form correlates per row and produces exactly what the TABLE()-wrapped form produces; GENERATOR takes no left correlation but still needs the keyword in the bare form, so FROM t, LATERAL GENERATOR(ROWCOUNT => 2) is a 3x2 cross product. Converted 1:1 from query/BareLateralTableFunctionTest (now retired); the Java compared the bare and wrapped forms row by row in Java, which the converted test states as EXCEPT in both directions plus a row-count equality - a set comparison that cannot pass by both sides being empty.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-bare-lateral-split-to-table-correlates-per-row", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a,b,c'), (2, 'd'), (3, 'e,f')"},
+      {"sql": "SELECT t.id, f.value FROM t, LATERAL SPLIT_TO_TABLE(t.s, ',') f ORDER BY t.id, f.index", "expect": {"rows": [[1,"a"],[1,"b"],[1,"c"],[2,"d"],[3,"e"],[3,"f"]], "ordered": true}}
+    ]},
+    {"name": "the-bare-lateral-form-equals-the-table-wrapped-form", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a,b,c'), (2, 'd'), (3, 'e,f')"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT t.id, f.value FROM t, LATERAL SPLIT_TO_TABLE(t.s, ',') f EXCEPT SELECT t.id, f.value FROM t, TABLE(SPLIT_TO_TABLE(t.s, ',')) f)", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT t.id, f.value FROM t, TABLE(SPLIT_TO_TABLE(t.s, ',')) f EXCEPT SELECT t.id, f.value FROM t, LATERAL SPLIT_TO_TABLE(t.s, ',') f)", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(*) FROM t, LATERAL SPLIT_TO_TABLE(t.s, ',') f", "expect": {"value": "6"}},
+      {"sql": "SELECT COUNT(*) FROM t, TABLE(SPLIT_TO_TABLE(t.s, ',')) f", "expect": {"value": "6"}}
+    ]},
+    {"name": "a-lateral-generator-with-a-named-argument", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a,b,c'), (2, 'd'), (3, 'e,f')"},
+      {"sql": "SELECT COUNT(*) FROM t, LATERAL GENERATOR(ROWCOUNT => 2)", "expect": {"value": "6"}}
+    ]},
+    {"name": "without-lateral-the-bare-form-is-rejected", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a,b,c'), (2, 'd'), (3, 'e,f')"},
+      {"sql": "SELECT COUNT(*) FROM t, SPLIT_TO_TABLE(t.s, ',') f", "expect": {"error": {}}}
+    ]},
+    {"name": "a-standalone-bare-table-function-is-rejected", "steps": [
+      {"sql": "SELECT value FROM SPLIT_TO_TABLE('x,y,z', ',')", "expect": {"error": {}}},
+      {"sql": "SELECT value FROM TABLE(SPLIT_TO_TABLE('x,y,z', ',')) ORDER BY index", "expect": {"rows": [["x"],["y"],["z"]], "ordered": true}}
+    ]}
+  ]
+}

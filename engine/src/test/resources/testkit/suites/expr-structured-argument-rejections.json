@@ -1,0 +1,339 @@
+{
+  "suite": "expr-structured-argument-rejections",
+  "description": "Where a STRUCTURED type may not go although the plain one may, every cell live-measured with its paired plain-type guard: text casts (every spelling, TRY_CAST and the TO_VARCHAR/TO_CHAR functions) refuse a structured source quoting the call back while plain values still render; TRY_CAST family rules (VARIANT target takes every semi-structured source, plain OBJECT/ARRAY targets take only their own family, a VARIANT source reaches only VARIANT, scalar pairs stay rejected, CAST/:: stay looser, the laundering escape works); ARRAY_AGG/ARRAY_UNIQUE_AGG/OBJECT_AGG refuse structured values in every written form; the VARIANT-reading scalars and their aliases refuse structured; the constructors refuse in every position with the for-keys tail; while KEY positions, non-collecting aggregates, accessors and explicit conversions all keep working, the rule reading the declared type through wrappers, cast-produced values and every structured shape naming itself in full. Converted 1:1 from expressions/StructuredTypeArgumentRejectionTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "casting-a-structured-object-to-varchar-is-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT CAST(so AS VARCHAR) FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [CAST(STT.SO AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT so::VARCHAR FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [CAST(STT.SO AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}}
+    ]},
+    {"name": "casting-a-structured-array-or-map-to-varchar-is-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT CAST(sa AS VARCHAR) FROM stt", "expect": {"error": {"messageContains": "invalid type [CAST(STT.SA AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT CAST(sm AS VARCHAR) FROM stt", "expect": {"error": {"messageContains": "invalid type [CAST(STT.SM AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT sm::VARCHAR FROM stt", "expect": {"error": {"messageContains": "invalid type [CAST(STT.SM AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}}
+    ]},
+    {"name": "every-text-target-spelling-is-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT CAST(so AS TEXT) FROM stt", "expect": {"error": {"messageContains": "CAST(STT.SO AS VARCHAR(134217728))"}}},
+      {"sql": "SELECT CAST(so AS STRING) FROM stt", "expect": {"error": {"messageContains": "CAST(STT.SO AS VARCHAR(134217728))"}}},
+      {"sql": "SELECT CAST(so AS NVARCHAR) FROM stt", "expect": {"error": {"messageContains": "CAST(STT.SO AS VARCHAR(134217728))"}}},
+      {"sql": "SELECT CAST(so AS VARCHAR(20)) FROM stt", "expect": {"error": {"messageContains": "CAST(STT.SO AS VARCHAR(20))"}}},
+      {"sql": "SELECT CAST(so AS CHAR(5)) FROM stt", "expect": {"error": {"messageContains": "CAST(STT.SO AS VARCHAR(5))"}}},
+      {"sql": "SELECT CAST(so AS CHARACTER(3)) FROM stt", "expect": {"error": {"messageContains": "CAST(STT.SO AS VARCHAR(3))"}}}
+    ]},
+    {"name": "try-cast-to-varchar-over-structured-is-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT TRY_CAST(so AS VARCHAR) FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [TRY_CAST(STT.SO)] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT TRY_CAST(sm AS VARCHAR) FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [TRY_CAST(STT.SM)] for parameter 'TO_VARCHAR'"}}}
+    ]},
+    {"name": "to-varchar-and-to-char-over-structured-are-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT TO_VARCHAR(so) FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [TO_VARCHAR(STT.SO)] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT TO_CHAR(so) FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [TO_CHAR(STT.SO)] for parameter 'TO_CHAR'"}}},
+      {"sql": "SELECT TO_VARCHAR(sa) FROM stt", "expect": {"error": {"messageContains": "invalid type [TO_VARCHAR(STT.SA)]"}}},
+      {"sql": "SELECT TO_CHAR(sm) FROM stt", "expect": {"error": {"messageContains": "invalid type [TO_CHAR(STT.SM)]"}}}
+    ]},
+    {"name": "plain-semi-structured-still-casts-to-text", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT CAST(o AS VARCHAR) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT o::VARCHAR FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TO_VARCHAR(o) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TO_CHAR(a) FROM stt WHERE id = 1", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT CAST(a AS VARCHAR) FROM stt WHERE id = 1", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT TO_VARCHAR(v) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":1}"}}
+    ]},
+    {"name": "casts-to-semi-structured-and-structured-targets-stay-legal", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('x', 'b')::OBJECT(x VARCHAR), [3, 4]::ARRAY(INT), OBJECT_CONSTRUCT('k', 2)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), PARSE_JSON('{\"x\":2}'), 'bb', 20"},
+      {"sql": "SELECT CAST(so AS VARIANT) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(so AS OBJECT) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(sa AS ARRAY) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(sm AS OBJECT) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(so AS OBJECT(x VARCHAR)) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(sa AS ARRAY(INT)) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(sm AS MAP(VARCHAR, INT)) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(so::VARIANT AS VARCHAR) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT TO_VARCHAR(TO_VARIANT(so)) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":\"a\"}"}}
+    ]},
+    {"name": "try-cast-to-variant-takes-every-semi-structured-source", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT TRY_CAST(o AS VARIANT) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TRY_CAST(a AS VARIANT) FROM stt WHERE id = 1", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT TRY_CAST(v AS VARIANT) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":1}"}},
+      {"sql": "SELECT TRY_CAST(so AS VARIANT) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT TRY_CAST(sa AS VARIANT) FROM stt WHERE id = 1", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT TRY_CAST(sm AS VARIANT) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":1}"}}
+    ]},
+    {"name": "try-cast-to-plain-object-takes-the-object-family-only", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT TRY_CAST(o AS OBJECT) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TRY_CAST(so AS OBJECT) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT TRY_CAST(sm AS OBJECT) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":1}"}},
+      {"sql": "SELECT TRY_CAST(a AS OBJECT) FROM stt", "expect": {"error": {"messageContains": "invalid type [TRY_CAST(STT.A)] for parameter 'TO_OBJECT'"}}},
+      {"sql": "SELECT TRY_CAST(sa AS OBJECT) FROM stt", "expect": {"error": {"messageContains": "Unsupported data type 'STRUCTURED_ARRAY'."}}},
+      {"sql": "SELECT TRY_CAST(v AS OBJECT) FROM stt", "expect": {"error": {"messageContains": "Function TRY_CAST cannot be used with arguments of types VARIANT and OBJECT"}}}
+    ]},
+    {"name": "try-cast-to-plain-array-takes-the-array-family-only", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT TRY_CAST(a AS ARRAY) FROM stt WHERE id = 1", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT TRY_CAST(sa AS ARRAY) FROM stt WHERE id = 1", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT TRY_CAST(o AS ARRAY) FROM stt", "expect": {"error": {"messageContains": "Function TRY_CAST cannot be used with arguments of types OBJECT and ARRAY"}}},
+      {"sql": "SELECT TRY_CAST(v AS ARRAY) FROM stt", "expect": {"error": {"messageContains": "Function TRY_CAST cannot be used with arguments of types VARIANT and ARRAY"}}},
+      {"sql": "SELECT TRY_CAST(so AS ARRAY) FROM stt", "expect": {"error": {"messageContains": "Unsupported data type 'STRUCTURED_OBJECT'."}}}
+    ]},
+    {"name": "a-variant-source-reaches-only-a-variant-target", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT TRY_CAST(PARSE_JSON('{\"k\":1}') AS VARIANT) AS r", "expect": {"value": "{\"k\":1}"}},
+      {"sql": "SELECT TRY_CAST(PARSE_JSON('{\"k\":1}') AS OBJECT) AS r", "expect": {"error": {"messageContains": "Function TRY_CAST cannot be used with arguments of types VARIANT and OBJECT"}}},
+      {"sql": "SELECT TRY_CAST(TRY_CAST(o AS VARIANT) AS VARIANT) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}}
+    ]},
+    {"name": "an-accepted-semi-structured-try-cast-returns-the-value-unchanged", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT TYPEOF(TRY_CAST(o AS VARIANT)) FROM stt WHERE id = 1", "expect": {"value": "OBJECT"}},
+      {"sql": "SELECT TYPEOF(TRY_CAST(a AS VARIANT)) FROM stt WHERE id = 1", "expect": {"value": "ARRAY"}},
+      {"sql": "SELECT TRY_CAST(o AS VARIANT) = o FROM stt WHERE id = 1", "expect": {"value": "true"}},
+      {"sql": "SELECT ARRAY_SIZE(TRY_CAST(a AS ARRAY)) FROM stt WHERE id = 1", "expect": {"value": "2"}},
+      {"sql": "SELECT GET(TRY_CAST(o AS OBJECT), 'k') FROM stt WHERE id = 1", "expect": {"value": "v1"}}
+    ]},
+    {"name": "try-cast-still-yields-null-when-the-structured-conversion-fails", "steps": [
+      {"sql": "SELECT TRY_CAST(OBJECT_CONSTRUCT('x', 'notanumber') AS OBJECT(x INT)) AS r", "expect": {"value": "null"}},
+      {"sql": "SELECT TRY_CAST(OBJECT_CONSTRUCT('x', '5') AS OBJECT(x INT)) AS r", "expect": {"value": "{\"x\":5}"}},
+      {"sql": "SELECT TRY_CAST(NULL AS OBJECT) AS r", "expect": {"value": "null"}},
+      {"sql": "SELECT TRY_CAST(NULL AS ARRAY) AS r", "expect": {"value": "null"}},
+      {"sql": "SELECT TRY_CAST(NULL AS VARIANT) AS r", "expect": {"value": "null"}}
+    ]},
+    {"name": "scalar-targets-and-scalar-sources-stay-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT TRY_CAST(o AS NUMBER) FROM stt", "expect": {"error": {"messageContains": "invalid type [TRY_CAST(STT.O)] for parameter 'TO_NUMBER'"}}},
+      {"sql": "SELECT TRY_CAST(v AS NUMBER) FROM stt", "expect": {"error": {"messageContains": "Function TRY_CAST cannot be used with arguments of types VARIANT and NUMBER(38,0)"}}},
+      {"sql": "SELECT TRY_CAST(a AS VARCHAR) FROM stt", "expect": {"error": {"messageContains": "Function TRY_CAST cannot be used with arguments of types ARRAY and VARCHAR(134217728)"}}},
+      {"sql": "SELECT TRY_CAST(n AS VARIANT) FROM stt", "expect": {"error": {"messageContains": "Function TRY_CAST cannot be used with arguments of types NUMBER(38,0) and VARIANT"}}},
+      {"sql": "SELECT TRY_CAST(n AS OBJECT) FROM stt", "expect": {"error": {"messageContains": "invalid type [TRY_CAST(STT.N)] for parameter 'TO_OBJECT'"}}},
+      {"sql": "SELECT TRY_CAST(n AS ARRAY) FROM stt", "expect": {"error": {"messageContains": "Function TRY_CAST cannot be used with arguments of types NUMBER(38,0) and ARRAY"}}}
+    ]},
+    {"name": "the-structured-text-sentence-still-wins-over-the-try-cast-one", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT TRY_CAST(so AS VARCHAR) FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [TRY_CAST(STT.SO)] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT TRY_CAST(sa AS VARCHAR) FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [TRY_CAST(STT.SA)] for parameter 'TO_VARCHAR'"}}}
+    ]},
+    {"name": "plain-cast-is-looser-than-try-cast-over-the-same-pairs", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT CAST(o AS ARRAY) FROM stt WHERE id = 1", "expect": {"value": "[{\"k\":\"v1\"}]"}},
+      {"sql": "SELECT o::ARRAY FROM stt WHERE id = 1", "expect": {"value": "[{\"k\":\"v1\"}]"}},
+      {"sql": "SELECT CAST(v AS OBJECT) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":1}"}},
+      {"sql": "SELECT TRY_CAST(o AS ARRAY) FROM stt", "expect": {"error": {"messageContains": "cannot be used with arguments of types"}}},
+      {"sql": "SELECT TRY_CAST(v AS OBJECT) FROM stt", "expect": {"error": {"messageContains": "cannot be used with arguments of types"}}}
+    ]},
+    {"name": "a-try-cast-out-of-a-structured-type-launders-it-into-the-plain-one", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT ARRAY_AGG(TRY_CAST(so AS OBJECT)) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_AGG(TRY_CAST(so AS VARIANT)) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT TO_VARCHAR(TRY_CAST(so AS OBJECT)) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT TO_VARCHAR(TRY_CAST(so AS VARIANT)) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT TYPEOF(TRY_CAST(so AS OBJECT)) FROM stt WHERE id = 1", "expect": {"value": "OBJECT"}}
+    ]},
+    {"name": "expression-sources-and-lower-case-targets-behave-the-same", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT TRY_CAST(OBJECT_CONSTRUCT('k', 1) AS OBJECT) AS r", "expect": {"value": "{\"k\":1}"}},
+      {"sql": "SELECT TRY_CAST(OBJECT_CONSTRUCT('k', 1) AS VARIANT) AS r", "expect": {"value": "{\"k\":1}"}},
+      {"sql": "SELECT TRY_CAST(ARRAY_CONSTRUCT(1, 2) AS ARRAY) AS r", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT TRY_CAST(ARRAY_CONSTRUCT(1, 2) AS VARIANT) AS r", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT try_cast(o as object) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TRY_CAST(o AS Object) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}}
+    ]},
+    {"name": "array-agg-over-structured-is-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ARRAY_AGG(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(sa) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (ARRAY(NUMBER(38,0)))"}}},
+      {"sql": "SELECT ARRAY_AGG(sm) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (MAP(VARCHAR(16777216), NUMBER(38,0)))"}}}
+    ]},
+    {"name": "every-written-form-of-array-agg-is-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT ARRAY_AGG(DISTINCT so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(so) WITHIN GROUP (ORDER BY id) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(so) OVER () FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(so) FROM stt GROUP BY id", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(so) FROM stt WHERE 1 = 0", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(n) WITHIN GROUP (ORDER BY so) FROM stt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "array-unique-agg-and-object-agg-value-over-structured-are-rejected", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ARRAY_UNIQUE_AGG(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_UNIQUE_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_UNIQUE_AGG(sm) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_UNIQUE_AGG': (MAP(VARCHAR(16777216), NUMBER(38,0)))"}}},
+      {"sql": "SELECT OBJECT_AGG(s, so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_AGG': (VARCHAR(16777216), OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT OBJECT_AGG(s, sa) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_AGG': (VARCHAR(16777216), ARRAY(NUMBER(38,0)))"}}}
+    ]},
+    {"name": "object-agg-refuses-a-semi-structured-key-of-either-kind", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT OBJECT_AGG(o, n) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_AGG': (OBJECT, NUMBER(38,0))"}}},
+      {"sql": "SELECT OBJECT_AGG(so, n) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_AGG': (OBJECT(x VARCHAR(16777216)), NUMBER(38,0))"}}},
+      {"sql": "SELECT OBJECT_AGG(sa, n) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_AGG': (ARRAY(NUMBER(38,0)), NUMBER(38,0))"}}}
+    ]},
+    {"name": "plain-semi-structured-still-collects", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('x', 'b')::OBJECT(x VARCHAR), [3, 4]::ARRAY(INT), OBJECT_CONSTRUCT('k', 2)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), PARSE_JSON('{\"x\":2}'), 'bb', 20"},
+      {"sql": "SELECT ARRAY_AGG(o) FROM stt", "expect": {"value": "[{\"k\":\"v1\"},{\"k\":\"v2\"}]"}},
+      {"sql": "SELECT ARRAY_AGG(a) FROM stt", "expect": {"value": "[[1,2],[3,4]]"}},
+      {"sql": "SELECT ARRAY_AGG(v) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_UNIQUE_AGG(o) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_AGG(s, o) FROM stt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-variant-reading-scalars-reject-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT TO_JSON(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'TO_JSON': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT TO_XML(sa) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'TO_XML': (ARRAY(NUMBER(38,0)))"}}},
+      {"sql": "SELECT TYPEOF(sm) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'TYPEOF': (MAP(VARCHAR(16777216), NUMBER(38,0)))"}}},
+      {"sql": "SELECT IS_OBJECT(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_OBJECT': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT IS_ARRAY(sa) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_ARRAY': (ARRAY(NUMBER(38,0)))"}}},
+      {"sql": "SELECT IS_NULL_VALUE(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_NULL_VALUE': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT AS_OBJECT(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'AS_OBJECT': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT AS_ARRAY(sa) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'AS_ARRAY': (ARRAY(NUMBER(38,0)))"}}},
+      {"sql": "SELECT AS_VARCHAR(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'AS_VARCHAR': (OBJECT(x VARCHAR(16777216)))"}}}
+    ]},
+    {"name": "the-aliases-of-those-scalars-reject-structured-too", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT IS_CHAR(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_CHAR': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT IS_REAL(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_REAL': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT IS_DATE_VALUE(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_DATE_VALUE': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT AS_CHAR(so) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'AS_CHAR': (OBJECT(x VARCHAR(16777216)))"}}}
+    ]},
+    {"name": "array-to-string-refuses-a-structured-array", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT ARRAY_TO_STRING(sa, ',') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_TO_STRING': (ARRAY(NUMBER(38,0)), VARCHAR(1))"}}},
+      {"sql": "SELECT ARRAY_TO_STRING(sm, ',') FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_TO_STRING': (MAP(VARCHAR(16777216), NUMBER(38,0)), VARCHAR(1))"}}},
+      {"sql": "SELECT ARRAY_TO_STRING(a, ',') FROM stt WHERE id = 1", "expect": {"value": "1,2"}}
+    ]},
+    {"name": "the-same-scalars-still-read-plain-semi-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('x', 'b')::OBJECT(x VARCHAR), [3, 4]::ARRAY(INT), OBJECT_CONSTRUCT('k', 2)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), PARSE_JSON('{\"x\":2}'), 'bb', 20"},
+      {"sql": "SELECT TO_JSON(o) FROM stt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TYPEOF(o) FROM stt WHERE id = 1", "expect": {"value": "OBJECT"}},
+      {"sql": "SELECT TYPEOF(a) FROM stt WHERE id = 1", "expect": {"value": "ARRAY"}},
+      {"sql": "SELECT TO_XML(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT IS_OBJECT(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT IS_ARRAY(a) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT AS_OBJECT(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT AS_VARCHAR(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT IS_NULL_VALUE(o) FROM stt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-constructors-reject-structured-in-any-position", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ARRAY_CONSTRUCT(so) FROM stt", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction ARRAY_CONSTRUCT does not support OBJECT(x VARCHAR(16777216)) argument type"}}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(1, so) FROM stt", "expect": {"error": {"messageContains": "Function ARRAY_CONSTRUCT does not support OBJECT(x VARCHAR(16777216)) argument type"}}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(so, 1) FROM stt", "expect": {"error": {"messageContains": "Function ARRAY_CONSTRUCT does not support OBJECT(x VARCHAR(16777216)) argument type"}}},
+      {"sql": "SELECT ARRAY_CONSTRUCT_COMPACT(sa) FROM stt", "expect": {"error": {"messageContains": "Function ARRAY_CONSTRUCT_COMPACT does not support ARRAY(NUMBER(38,0)) argument type"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', so) FROM stt", "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support OBJECT(x VARCHAR(16777216)) argument type"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT_KEEP_NULL('a', sm) FROM stt", "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT_KEEP_NULL does not support MAP(VARCHAR(16777216), NUMBER(38,0)) argument type"}}}
+    ]},
+    {"name": "a-structured-object-construct-key-names-the-key-half", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT OBJECT_CONSTRUCT(so, 1) FROM stt", "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support OBJECT(x VARCHAR(16777216)) argument type for keys"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', 1, sa, 2) FROM stt", "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support ARRAY(NUMBER(38,0)) argument type for keys"}}}
+    ]},
+    {"name": "the-constructors-still-nest-plain-semi-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('x', 'b')::OBJECT(x VARCHAR), [3, 4]::ARRAY(INT), OBJECT_CONSTRUCT('k', 2)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), PARSE_JSON('{\"x\":2}'), 'bb', 20"},
+      {"sql": "SELECT ARRAY_CONSTRUCT(1, o) FROM stt WHERE id = 1", "expect": {"value": "[1,{\"k\":\"v1\"}]"}},
+      {"sql": "SELECT ARRAY_CONSTRUCT_COMPACT(o) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', o) FROM stt WHERE id = 1", "expect": {"value": "{\"a\":{\"k\":\"v1\"}}"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT_KEEP_NULL('a', a) FROM stt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-key-positions-still-accept-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('x', 'b')::OBJECT(x VARCHAR), [3, 4]::ARRAY(INT), OBJECT_CONSTRUCT('k', 2)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), PARSE_JSON('{\"x\":2}'), 'bb', 20"},
+      {"sql": "SELECT COUNT(*) FROM stt GROUP BY so", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*) FROM stt GROUP BY sa", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*) FROM stt GROUP BY sm", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM stt ORDER BY so", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM stt ORDER BY sa", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM stt ORDER BY sm", "expect": {"rowCount": 2}},
+      {"sql": "SELECT DISTINCT so FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT DISTINCT sm FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY sa ORDER BY id) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY so) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT so FROM stt UNION SELECT so FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*) FROM stt t1 JOIN stt t2 ON t1.sa = t2.sa", "expect": {"rowCount": 1}},
+      {"sql": "SELECT id FROM stt WHERE sm IN (SELECT sm FROM stt)", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(DISTINCT so) FROM stt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-non-collecting-aggregates-still-accept-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('x', 'b')::OBJECT(x VARCHAR), [3, 4]::ARRAY(INT), OBJECT_CONSTRUCT('k', 2)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), PARSE_JSON('{\"x\":2}'), 'bb', 20"},
+      {"sql": "SELECT ANY_VALUE(so) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT HASH_AGG(sa) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX_BY(sm, n) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MIN_BY(so, n) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(so) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(sa) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT FIRST_VALUE(so) OVER (ORDER BY id) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT LAG(so) OVER (ORDER BY id) FROM stt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(so) OVER () FROM stt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-accessors-still-read-structured", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "SELECT GET(so, 'x') FROM stt WHERE id = 1", "expect": {"value": "a"}},
+      {"sql": "SELECT so:x FROM stt WHERE id = 1", "expect": {"value": "a"}},
+      {"sql": "SELECT sa[0] FROM stt WHERE id = 1", "expect": {"value": "1"}},
+      {"sql": "SELECT OBJECT_KEYS(so) FROM stt WHERE id = 1", "expect": {"value": "[\"x\"]"}},
+      {"sql": "SELECT ARRAY_SIZE(sa) FROM stt WHERE id = 1", "expect": {"value": "2"}},
+      {"sql": "SELECT OBJECT_INSERT(so, 'y', 1) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":\"a\",\"y\":1}"}}
+    ]},
+    {"name": "an-explicit-conversion-escapes-the-rule", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "INSERT INTO stt SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), [1, 2]::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"x\":1}'), 'aa', 10"},
+      {"sql": "INSERT INTO stt SELECT 2, OBJECT_CONSTRUCT('x', 'b')::OBJECT(x VARCHAR), [3, 4]::ARRAY(INT), OBJECT_CONSTRUCT('k', 2)::MAP(VARCHAR, INT), OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), PARSE_JSON('{\"x\":2}'), 'bb', 20"},
+      {"sql": "SELECT ARRAY_AGG(so::VARIANT) FROM stt", "expect": {"value": "[{\"x\":\"a\"},{\"x\":\"b\"}]"}},
+      {"sql": "SELECT ARRAY_AGG(so::OBJECT) FROM stt", "expect": {"value": "[{\"x\":\"a\"},{\"x\":\"b\"}]"}},
+      {"sql": "SELECT ARRAY_AGG(TO_VARIANT(so)) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT TO_JSON(so::OBJECT) FROM stt WHERE id = 1", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT ARRAY_AGG(sa::ARRAY) FROM stt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_AGG(sm::OBJECT) FROM stt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-rule-reads-through-derived-tables-views-and-conditionals", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ARRAY_AGG(so) FROM (SELECT so FROM stt) q", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "WITH c AS (SELECT so FROM stt) SELECT ARRAY_AGG(so) FROM c", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(IFF(TRUE, so, so)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(COALESCE(so, so)) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(CASE WHEN id = 1 THEN so ELSE so END) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "CREATE VIEW sov AS SELECT so, sa, sm FROM stt"},
+      {"sql": "SELECT ARRAY_AGG(so) FROM sov", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT CAST(so AS VARCHAR) FROM sov", "expect": {"error": {"messageContains": "for parameter 'TO_VARCHAR'"}}}
+    ]},
+    {"name": "a-cast-produced-structured-value-is-rejected-too", "steps": [
+      {"sql": "CREATE TABLE stt (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT), o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ARRAY_AGG(CAST(OBJECT_CONSTRUCT('x', 'a') AS OBJECT(x VARCHAR))) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(134217728)))"}}},
+      {"sql": "SELECT TO_JSON(CAST([1, 2] AS ARRAY(INT))) FROM stt", "expect": {"error": {"messageContains": "Invalid argument types for function 'TO_JSON': (ARRAY(NUMBER(38,0)))"}}}
+    ]},
+    {"name": "every-structured-shape-names-itself-in-full", "steps": [
+      {"sql": "CREATE TABLE shapes (z OBJECT(), n2 OBJECT(x INT, y VARCHAR), na ARRAY(OBJECT(x INT)), mm MAP(VARCHAR, ARRAY(INT)), nn OBJECT(x VARCHAR NOT NULL) NOT NULL)"},
+      {"sql": "SELECT ARRAY_AGG(z) FROM shapes", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT())"}}},
+      {"sql": "SELECT ARRAY_AGG(n2) FROM shapes", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x NUMBER(38,0), y VARCHAR(16777216)))"}}},
+      {"sql": "SELECT ARRAY_AGG(na) FROM shapes", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (ARRAY(OBJECT(x NUMBER(38,0))))"}}},
+      {"sql": "SELECT ARRAY_AGG(mm) FROM shapes", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (MAP(VARCHAR(16777216), ARRAY(NUMBER(38,0))))"}}},
+      {"sql": "SELECT ARRAY_AGG(nn) FROM shapes", "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216) NOT NULL))"}}},
+      {"sql": "SELECT CAST(na AS VARCHAR) FROM shapes", "expect": {"error": {"messageContains": "invalid type [CAST(SHAPES.NA AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT COUNT(*) FROM shapes GROUP BY z", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

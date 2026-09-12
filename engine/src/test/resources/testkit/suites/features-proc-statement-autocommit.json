@@ -1,0 +1,55 @@
+{
+  "suite": "features-proc-statement-autocommit",
+  "description": "Statements inside a stored procedure each run in their OWN autocommit transaction - a procedure body does not wrap its statements into one implicit transaction. Three observable consequences: an APPEND_ONLY stream keeps an INSERT even when a later statement deletes the row (one shared transaction would consolidate the pair away and the stream would miss it), a failed statement rolls back only itself and keeps earlier committed work, and an explicit BEGIN TRANSACTION inside the body still suspends autocommit until COMMIT (a STANDARD stream then nets insert+delete of the same row to nothing). Also here: ALTER SESSION at the top level is not transaction-committing DDL, so a second stream read inside the same explicit transaction still shares its window; and an IDENTIFIER() join source sees writes made earlier in the same transaction. Converted 1:1 from features/ProcStatementAutocommitTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "append-only-stream-keeps-insert-deleted-by-later-statement", "steps": [
+      {"sql": "CREATE TABLE ao_t (id INTEGER, v VARCHAR)"},
+      {"sql": "CREATE STREAM ao_s ON TABLE ao_t APPEND_ONLY = TRUE"},
+      {"sql": "CREATE OR REPLACE PROCEDURE stage_and_clear() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  INSERT INTO ao_t VALUES (1, 'staged');\n  DELETE FROM ao_t WHERE id = 1;\n  RETURN 'done';\nEND $$"},
+      {"sql": "CALL stage_and_clear()"},
+      {"sql": "SELECT COUNT(*) FROM ao_t", "expect": {"value": "0"}},
+      {"sql": "SELECT id, \"METADATA$ACTION\" FROM ao_s", "expect": {"rowCount": 1, "rows": [["1", "INSERT"]]}}
+    ]},
+    {"name": "failed-statement-keeps-earlier-statements-committed", "steps": [
+      {"sql": "CREATE TABLE pc_t (id INTEGER NOT NULL)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE partial_work() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  INSERT INTO pc_t VALUES (1);\n  INSERT INTO pc_t SELECT NULL;\n  RETURN 'unreachable';\nEXCEPTION\n  WHEN OTHER THEN\n    RETURN 'handled';\nEND $$"},
+      {"sql": "CALL partial_work()", "expect": {"value": "handled"}},
+      {"sql": "SELECT COUNT(*) FROM pc_t", "expect": {"value": "1"}}
+    ]},
+    {"name": "alter-session-does-not-commit-an-open-transaction", "steps": [
+      {"sql": "CREATE TABLE as_t (id INTEGER)"},
+      {"sql": "INSERT INTO as_t VALUES (1), (2)"},
+      {"sql": "CREATE STREAM as_s ON TABLE as_t"},
+      {"sql": "INSERT INTO as_t VALUES (3)"},
+      {"sql": "CREATE TABLE sink1 (id INTEGER)"},
+      {"sql": "CREATE TABLE sink2 (id INTEGER)"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO sink1 SELECT id FROM as_s"},
+      {"sql": "ALTER SESSION SET QUERY_TAG = 'mid-transaction'"},
+      {"sql": "INSERT INTO sink2 SELECT id FROM as_s"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM sink1", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM sink2", "expect": {"value": "1"}},
+      {"sql": "ALTER SESSION UNSET QUERY_TAG"}
+    ]},
+    {"name": "identifier-join-source-sees-same-transaction-writes", "steps": [
+      {"sql": "CREATE TABLE base_rows (grp_id VARCHAR, v INTEGER)"},
+      {"sql": "INSERT INTO base_rows VALUES ('c1', 1), ('c2', 2)"},
+      {"sql": "CREATE TABLE aff (grp_id VARCHAR)"},
+      {"sql": "CREATE TABLE joined_out (grp_id VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE fill_and_join() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  BEGIN TRANSACTION;\n  INSERT INTO IDENTIFIER('aff') SELECT 'c1';\n  INSERT INTO joined_out SELECT s.grp_id\n    FROM base_rows s JOIN IDENTIFIER('aff') t ON t.grp_id = s.grp_id;\n  COMMIT;\n  RETURN 'done';\nEND $$"},
+      {"sql": "CALL fill_and_join()"},
+      {"sql": "SELECT COUNT(*) FROM joined_out", "expect": {"value": "1"}},
+      {"sql": "SELECT grp_id FROM joined_out", "expect": {"value": "c1"}}
+    ]},
+    {"name": "explicit-transaction-inside-proc-still-spans-statements", "steps": [
+      {"sql": "CREATE TABLE tx_t (id INTEGER)"},
+      {"sql": "CREATE STREAM tx_s ON TABLE tx_t"},
+      {"sql": "CREATE OR REPLACE PROCEDURE tx_block() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  BEGIN TRANSACTION;\n  INSERT INTO tx_t VALUES (1);\n  DELETE FROM tx_t WHERE id = 1;\n  COMMIT;\n  RETURN 'done';\nEND $$"},
+      {"sql": "CALL tx_block()"},
+      {"sql": "SELECT COUNT(*) FROM tx_t", "expect": {"value": "0"}},
+      {"sql": "SELECT * FROM tx_s", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

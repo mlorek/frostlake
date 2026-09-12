@@ -1,0 +1,50 @@
+{
+  "suite": "query-ambiguous-column",
+  "description": "Whether a bare column name carried by BOTH sides of a join is ambiguous depends on the JOIN FORM, measured cell by cell on a real account: an ON join REJECTS the duplicate with \"SQL compilation error: ambiguous column name 'D'\", inner and left alike, in the SELECT list and in WHERE; a USING (or NATURAL) join instead resolves EVERY same-named pair to the LEFT side - keys and non-keys both - so SELECT d FROM aa JOIN bb USING (k) answers aa.d where the ON spelling of the same join is rejected. ORDER BY resolves against the SELECT output first and so never trips either way. The integration loaders lean on the USING form heavily, which is what exposed the rule. The SELECT-list rejection is PLAN-time and fires over an empty join, like live's compile-time error; the WHERE form still needs rows to flow through resolution, so those cases use matching rows. Converted 1:1 from query/AmbiguousColumnTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-on-join-rejects-the-bare-duplicate", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO aa VALUES (1, 100), (2, 200)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO bb VALUES (1, 999)"},
+      {"sql": "SELECT d FROM aa JOIN bb ON aa.k = bb.k", "expect": {"error": {"messageContains": "ambiguous column name 'D'"}}},
+      {"sql": "SELECT d FROM aa LEFT JOIN bb ON aa.k = bb.k", "expect": {"error": {"messageContains": "ambiguous column name 'D'"}}},
+      {"sql": "SELECT aa.k FROM aa JOIN bb ON aa.k = bb.k WHERE d = 100", "expect": {"error": {"messageContains": "ambiguous column name 'D'"}}}
+    ]},
+    {"name": "a-using-join-resolves-every-duplicate-to-the-left-side", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO aa VALUES (1, 100), (2, 200)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO bb VALUES (1, 999)"},
+      {"sql": "SELECT d FROM aa JOIN bb USING (k) ORDER BY d", "expect": {"rows": [[100]], "ordered": true}},
+      {"sql": "SELECT d FROM aa LEFT JOIN bb USING (k) ORDER BY 1", "expect": {"rows": [[100], [200]], "ordered": true}},
+      {"sql": "SELECT k FROM aa LEFT JOIN bb USING (k) WHERE d > 0 ORDER BY 1", "expect": {"rows": [[1], [2]], "ordered": true}},
+      {"sql": "WITH gf AS (SELECT k, d FROM aa) SELECT d FROM gf LEFT JOIN bb USING (k) ORDER BY 1", "expect": {"rows": [[100], [200]], "ordered": true}}
+    ]},
+    {"name": "the-select-list-ambiguity-fires-over-an-empty-join", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO aa VALUES (1, 100), (2, 200)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO bb VALUES (1, 999)"},
+      {"sql": "SELECT COUNT(*) FROM aa JOIN bb ON aa.d = bb.d", "expect": {"value": "0"}},
+      {"sql": "SELECT d FROM aa JOIN bb ON aa.d = bb.d", "expect": {"error": {"messageContains": "ambiguous column name 'D'"}}}
+    ]},
+    {"name": "order-by-resolves-against-the-select-output-first", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO aa VALUES (1, 100), (2, 200)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO bb VALUES (1, 999)"},
+      {"sql": "SELECT aa.d FROM aa JOIN bb ON aa.k = bb.k ORDER BY d", "expect": {"rows": [[100]], "ordered": true}}
+    ]},
+    {"name": "unique-bare-and-qualified-names-still-resolve", "steps": [
+      {"sql": "CREATE TABLE aa (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO aa VALUES (1, 100), (2, 200)"},
+      {"sql": "CREATE TABLE bb (k INTEGER, d INTEGER)"},
+      {"sql": "INSERT INTO bb VALUES (1, 999)"},
+      {"sql": "SELECT k FROM aa JOIN bb USING (k) ORDER BY 1", "expect": {"rows": [[1]], "ordered": true}},
+      {"sql": "SELECT bb.d FROM aa JOIN bb ON aa.k = bb.k", "expect": {"rows": [[999]]}},
+      {"sql": "SELECT aa.d FROM aa JOIN bb ON aa.k = bb.k", "expect": {"rows": [[100]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,114 @@
+{
+  "suite": "features-column-collation",
+  "description": "The COLLATE clause in column definitions through the SQL surface - a collated column carries COLLATE '<spec>' inside its DESCRIBE TABLE type cell: single and multiple columns, type parameters, constraints/DEFAULT/COMMENT alongside, case-insensitive spec spelling, qualified names, CLONE preservation, IF NOT EXISTS, a retype must RESTATE the collation (dropping, changing or adding one is refused with both types QUOTED in the message), CLUSTER BY and table COMMENT alongside. Converted from features/ColumnCollationTest (now retired). ",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "single-column-with-collation", "steps": [
+      {"sql": "CREATE TABLE test1 (id INTEGER, name VARCHAR COLLATE 'utf8')"},
+      {"sql": "DESCRIBE TABLE test1"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "multiple-columns-with-collation", "steps": [
+      {"sql": "CREATE TABLE test2 (id INTEGER, name VARCHAR COLLATE 'utf8', description VARCHAR COLLATE 'en-ci', code VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test2"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'DESCRIPTION', \"type\", NULL))), 'COLLATE ''EN-CI'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'CODE', \"type\", NULL))), 'COLLATE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "false"]]}}
+    ]},
+    {"name": "collation-with-type-parameters", "steps": [
+      {"sql": "CREATE TABLE test3 (id INTEGER, name VARCHAR(100) COLLATE 'en-cs')"},
+      {"sql": "DESCRIBE TABLE test3"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''EN-CS''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "collation-with-constraints", "steps": [
+      {"sql": "CREATE TABLE test4 (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL COLLATE 'utf8', email VARCHAR UNIQUE COLLATE 'fr-ci')"},
+      {"sql": "DESCRIBE TABLE test4"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)), CONTAINS(UPPER(MAX(IFF(\"name\" = 'EMAIL', \"type\", NULL))), 'COLLATE ''FR-CI'''), MAX(IFF(\"name\" = 'EMAIL', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "N", "true", "Y"]]}}
+    ]},
+    {"name": "collation-with-default", "steps": [
+      {"sql": "CREATE TABLE test5 (id INTEGER, status VARCHAR COLLATE 'utf8' DEFAULT 'active')"},
+      {"sql": "DESCRIBE TABLE test5"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'STATUS', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'STATUS', \"default\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "'active'"]]}}
+    ]},
+    {"name": "collation-with-comment", "steps": [
+      {"sql": "CREATE TABLE test6 (id INTEGER, name VARCHAR COLLATE 'utf8' COMMENT 'User name')"},
+      {"sql": "DESCRIBE TABLE test6"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "User name"]]}}
+    ]},
+    {"name": "collation-case-insensitive", "steps": [
+      {"sql": "CREATE TABLE test7 (id INTEGER, name VARCHAR COLLATE 'EN-CI')"},
+      {"sql": "DESCRIBE TABLE test7"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''EN-CI''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "collation-with-qualified-table-name", "steps": [
+      {"sql": "CREATE SCHEMA collation_schema"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE collation_schema.test8 (id INTEGER, name VARCHAR COLLATE 'utf8')"},
+      {"sql": "DESCRIBE TABLE collation_schema.test8"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "collation-clone-table", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, name VARCHAR COLLATE 'utf8', description VARCHAR COLLATE 'en-cs')"},
+      {"sql": "CREATE TABLE test9 CLONE source"},
+      {"sql": "DESCRIBE TABLE test9"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'DESCRIPTION', \"type\", NULL))), 'COLLATE ''EN-CS''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "collation-with-if-not-exists", "steps": [
+      {"sql": "CREATE TABLE IF NOT EXISTS test10 (id INTEGER, name VARCHAR COLLATE 'utf8')"},
+      {"sql": "DESCRIBE TABLE test10"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "collation-with-all-constraints", "steps": [
+      {"sql": "CREATE TABLE test11 (id INTEGER PRIMARY KEY, name VARCHAR(200) NOT NULL UNIQUE COLLATE 'utf8' DEFAULT 'unknown' COMMENT 'User name')"},
+      {"sql": "DESCRIBE TABLE test11"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8'''), MAX(IFF(\"name\" = 'NAME', \"null?\", NULL)), MAX(IFF(\"name\" = 'NAME', \"unique key\", NULL)), MAX(IFF(\"name\" = 'NAME', \"default\", NULL)), MAX(IFF(\"name\" = 'NAME', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "N", "Y", "'unknown'", "User name"]]}}
+    ]},
+    {"name": "no-collation-specified", "steps": [
+      {"sql": "CREATE TABLE test12 (id INTEGER, name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test12"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "false"}}
+    ]},
+    {"name": "collation-with-multiple-types", "steps": [
+      {"sql": "CREATE TABLE test13 (id INTEGER, varchar_col VARCHAR COLLATE 'utf8', text_col VARCHAR(1000) COLLATE 'en-cs', number_col NUMBER)"},
+      {"sql": "DESCRIBE TABLE test13"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'VARCHAR_COL', \"type\", NULL))), 'COLLATE ''UTF8'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'TEXT_COL', \"type\", NULL))), 'COLLATE ''EN-CS'''), CONTAINS(UPPER(MAX(IFF(\"name\" = 'NUMBER_COL', \"type\", NULL))), 'COLLATE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "false"]]}}
+    ]},
+    {"name": "collation-preserved-during-alter-column-by-restating", "steps": [
+      {"sql": "CREATE TABLE test14 (id INTEGER, name VARCHAR(100) COLLATE 'utf8')"},
+      {"sql": "DESCRIBE TABLE test14"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "ALTER TABLE test14 ALTER COLUMN name VARCHAR(200) COLLATE 'utf8'"},
+      {"sql": "DESCRIBE TABLE test14"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "retype-without-restating-collation-is-refused", "steps": [
+      {"sql": "CREATE TABLE test17 (id INTEGER, name VARCHAR(100) COLLATE 'utf8')"},
+      {"sql": "ALTER TABLE test17 ALTER COLUMN name SET DATA TYPE VARCHAR(200)",
+       "expect": {"error": {"messageContains": "cannot change column NAME from type \"VARCHAR(100) COLLATE 'utf8'\" to \"VARCHAR(200)\" because they have incompatible collations."}}},
+      {"sql": "ALTER TABLE test17 ALTER COLUMN name SET DATA TYPE VARCHAR(300) COLLATE 'en-ci'",
+       "expect": {"error": {"messageContains": "because they have incompatible collations."}}},
+      {"sql": "CREATE TABLE test18 (id INTEGER, name VARCHAR(100))"},
+      {"sql": "ALTER TABLE test18 ALTER COLUMN name SET DATA TYPE VARCHAR(200) COLLATE 'utf8'",
+       "expect": {"error": {"messageContains": "cannot change column NAME from type \"VARCHAR(100)\" to \"VARCHAR(200) COLLATE 'utf8'\" because they have incompatible collations."}}}
+    ]},
+    {"name": "collation-with-cluster-by", "steps": [
+      {"sql": "CREATE TABLE test15 (id INTEGER, name VARCHAR COLLATE 'utf8', date DATE) CLUSTER BY (date)"},
+      {"sql": "DESCRIBE TABLE test15"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "SHOW TABLES LIKE 'test15'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(date)"}}
+    ]},
+    {"name": "collation-with-table-comment", "steps": [
+      {"sql": "CREATE TABLE test16 (id INTEGER, name VARCHAR COLLATE 'utf8') COMMENT = 'Test table'"},
+      {"sql": "DESCRIBE TABLE test16"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'NAME', \"type\", NULL))), 'COLLATE ''UTF8''') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "SHOW TABLES LIKE 'test16'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test table"}}
+    ]}
+  ]
+}

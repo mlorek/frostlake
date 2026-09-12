@@ -1,0 +1,47 @@
+{
+  "suite": "functions-try-to-file",
+  "description": "TRY_TO_FILE is TO_FILE with every failure turned into NULL. Every expectation was measured against live Snowflake. Valid input gives the IDENTICAL descriptor, so the ONLY difference between the two functions is what happens on bad input - which is why each case below asserts the NULL and the matching TO_FILE error side by side. The structural failures (an unknown field, a missing required field, no identity) and the resolution failure (a stage path naming no file) are covered. LAST_MODIFIED is NOT one of them: the RFC-1123 shape, an ISO timestamp and even free text all round-trip verbatim through both constructors, because the leniency lives in FL_GET_LAST_MODIFIED, which parses what it can and yields NULL for the rest. Converted 1:1 from functions/file/TryToFileTest (now retired). The Java's stage-path test carried an assumeFalse(isLiveSnowflake()) guard because it staged through a file:// stage, a Frostlake local-testing extension; the converted test stages with COPY INTO into an ordinary INTERNAL stage, which is standard Snowflake, so the guard is not carried over and the case now has cross-backend reach it did not have in Java.",
+  "tags": ["functions", "file", "converted"],
+  "tests": [
+    {"name": "a-valid-metadata-object-gives-the-same-descriptor-as-to-file", "steps": [
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TRY_TO_FILE(OBJECT_CONSTRUCT('CONTENT_TYPE', 'text/plain', 'ETAG', 'b7dddf722cfdc51710087d369f8d9e6b', 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'STAGE', '@PROBE135_DB.S.SSE')))", "expect": {"value": "hello.txt"}},
+      {"sql": "SELECT FL_GET_SIZE(TRY_TO_FILE(OBJECT_CONSTRUCT('CONTENT_TYPE', 'text/plain', 'ETAG', 'b7dddf722cfdc51710087d369f8d9e6b', 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'STAGE', '@PROBE135_DB.S.SSE')))", "expect": {"value": "24"}},
+      {"sql": "SELECT FL_GET_CONTENT_TYPE(TRY_TO_FILE(OBJECT_CONSTRUCT('CONTENT_TYPE', 'text/plain', 'ETAG', 'b7dddf722cfdc51710087d369f8d9e6b', 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'STAGE', '@PROBE135_DB.S.SSE')))", "expect": {"value": "text/plain"}},
+      {"sql": "SELECT FL_GET_STAGE(TRY_TO_FILE(OBJECT_CONSTRUCT('CONTENT_TYPE', 'text/plain', 'ETAG', 'b7dddf722cfdc51710087d369f8d9e6b', 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'STAGE', '@PROBE135_DB.S.SSE')))", "expect": {"value": "@PROBE135_DB.S.SSE"}}
+    ]},
+    {"name": "null-in-null-out", "steps": [
+      {"sql": "SELECT TRY_TO_FILE(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-unknown-field-is-null-instead-of-an-error", "steps": [
+      {"sql": "SELECT TRY_TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1', 'A', 1))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1', 'A', 1))", "expect": {"error": {"messageContains": "Invalid file metadata field A."}}}
+    ]},
+    {"name": "missing-required-fields-are-null-instead-of-an-error", "steps": [
+      {"sql": "SELECT TRY_TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"error": {"messageContains": "Invalid file metadata. Missing required fields:"}}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"error": {"messageContains": "LAST_MODIFIED"}}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"error": {"messageContains": "CONTENT_TYPE"}}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"error": {"messageContains": "ETAG"}}}
+    ]},
+    {"name": "a-missing-identity-is-null-instead-of-an-error", "steps": [
+      {"sql": "SELECT TRY_TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'))", "expect": {"error": {"messageContains": "Invalid file metadata. Must provide (STAGE and RELATIVE_PATH), SCOPED_FILE_URL, or STAGE_FILE_URL."}}}
+    ]},
+    {"name": "last-modified-is-accepted-verbatim", "steps": [
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TRY_TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')))", "expect": {"value": "x.txt"}},
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TRY_TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', '2026-08-03 11:24:13', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')))", "expect": {"value": "x.txt"}},
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TRY_TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'not a date', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')))", "expect": {"value": "x.txt"}},
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'not a date', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')))", "expect": {"value": "x.txt"}}
+    ]},
+    {"name": "it-resolves-a-staged-file-and-nulls-a-missing-one", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "CREATE TABLE src (a VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('hello world'),('second line')"},
+      {"sql": "COPY INTO @st/hello.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TRY_TO_FILE('@st/hello.txt'))", "expect": {"value": "hello.txt"}},
+      {"sql": "SELECT FL_GET_SIZE(TRY_TO_FILE('@st/hello.txt'))", "expect": {"value": "24"}},
+      {"sql": "SELECT TRY_TO_FILE('@st/missing.txt')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_FILE('@st/missing.txt')", "expect": {"error": {"messageContains": "Remote file '@st/missing.txt' was not found."}}}
+    ]}
+  ]
+}

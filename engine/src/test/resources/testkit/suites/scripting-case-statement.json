@@ -1,0 +1,27 @@
+{
+  "suite": "scripting-case-statement",
+  "description": "CASE ... WHEN ... END CASE as a procedural STATEMENT (Snowflake Scripting), run in anonymous BEGIN...END blocks. Covers the SEARCHED form (CASE WHEN <cond> THEN ...) and the SIMPLE form (CASE <operand> WHEN <value> THEN ...), the ELSE fallback when nothing matches, FIRST-MATCH-WINS when two branches are both true, and the no-match-without-ELSE case, where the statement is a no-op and the variable keeps its initial value. This is distinct from CASE as an EXPRESSION, which the procedural-expression tests cover. Converted 1:1 from scripting/CaseStatementTest (now retired); the blocks are written on one line here, which the scripting parser reads identically.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-searched-case-takes-the-first-true-branch", "steps": [
+      {"sql": "BEGIN LET x INTEGER := 2; LET result INTEGER := 0; CASE WHEN x = 1 THEN result := 10; WHEN x = 2 THEN result := 20; ELSE result := 99; END CASE; RETURN result; END",
+       "expect": {"value": 20}}
+    ]},
+    {"name": "a-searched-case-falls-to-else-when-nothing-matches", "steps": [
+      {"sql": "BEGIN LET x INTEGER := 7; LET result INTEGER := 0; CASE WHEN x = 1 THEN result := 10; WHEN x = 2 THEN result := 20; ELSE result := 99; END CASE; RETURN result; END",
+       "expect": {"value": 99}}
+    ]},
+    {"name": "a-simple-case-matches-the-operand-value", "steps": [
+      {"sql": "BEGIN LET x INTEGER := 2; LET result INTEGER := 0; CASE x WHEN 1 THEN result := 10; WHEN 2 THEN result := 20; ELSE result := 99; END CASE; RETURN result; END",
+       "expect": {"value": 20}}
+    ]},
+    {"name": "no-match-without-an-else-is-a-no-op", "steps": [
+      {"sql": "BEGIN LET x INTEGER := 7; LET result INTEGER := 0; CASE WHEN x = 1 THEN result := 10; WHEN x = 2 THEN result := 20; END CASE; RETURN result; END",
+       "expect": {"value": 0}}
+    ]},
+    {"name": "the-first-matching-branch-wins", "steps": [
+      {"sql": "BEGIN LET x INTEGER := 5; LET result INTEGER := 0; CASE WHEN x > 0 THEN result := 1; WHEN x > 1 THEN result := 2; END CASE; RETURN result; END",
+       "expect": {"value": 1}}
+    ]}
+  ]
+}

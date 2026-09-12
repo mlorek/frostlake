@@ -1,0 +1,41 @@
+{
+  "suite": "types-numeric-literal",
+  "description": "A numeric literal carries its OWN precision and scale, not a blanket NUMBER(38,0). This is a data-integrity claim before it is a metadata one: the inferred type becomes a derived relation's real column type, so while it said NUMBER(38,0) the engine did not merely misreport 0.05 - CREATE TABLE t AS SELECT x FROM (SELECT 0.05 AS x FROM s) STORED it as 0, and 100.25 as 100. Pinned: integer digits plus scale with the sign not counting as a digit; a value below one keeping its leading zero, so 0.05 is NUMBER(3,2) and not NUMBER(2,2); trailing zeros not being significant, so 1.50 is NUMBER(2,1) and 0.000 is NUMBER(1,0); an exponent folded in BEFORE measuring, so 1.5e2 is the NUMBER(3,0) holding 150; and the two regressions - a decimal surviving a derived-table round trip, and a cast target's declared scale being part of the type so 1.5::NUMBER(5,2) holds 1.50. Converted from types/NumericLiteralTypeTest (now retired). The Java called the NumericLiteralTypes helper directly; each literal is measured here by declaring it into a VIEW and reading INFORMATION_SCHEMA.COLUMNS back, which is the instrument the class's own javadoc says every expectation was taken from on a real account.",
+  "tags": ["types", "converted"],
+  "tests": [
+    {"name": "a-literal-reports-its-own-precision-and-scale", "steps": [
+      {"sql": "CREATE OR REPLACE VIEW nlv AS SELECT 1.5 AS a, 100.25 AS b, 1 AS c, 100 AS d, 12345678901234567890 AS e, -1.5 AS f"},
+      {"sql": "SELECT column_name || '=' || data_type || '(' || numeric_precision || ',' || numeric_scale || ')' AS r FROM information_schema.columns WHERE table_name = 'NLV' ORDER BY ordinal_position", "expect": {"rows": [["A=NUMBER(2,1)"], ["B=NUMBER(5,2)"], ["C=NUMBER(1,0)"], ["D=NUMBER(3,0)"], ["E=NUMBER(20,0)"], ["F=NUMBER(2,1)"]], "ordered": true}}
+    ]},
+    {"name": "a-value-below-one-keeps-its-leading-zero", "steps": [
+      {"sql": "CREATE OR REPLACE VIEW nlv AS SELECT 0.5 AS a, 0.05 AS b, 0.0000000001 AS c"},
+      {"sql": "SELECT column_name || '=' || data_type || '(' || numeric_precision || ',' || numeric_scale || ')' AS r FROM information_schema.columns WHERE table_name = 'NLV' ORDER BY ordinal_position", "expect": {"rows": [["A=NUMBER(2,1)"], ["B=NUMBER(3,2)"], ["C=NUMBER(11,10)"]], "ordered": true}}
+    ]},
+    {"name": "trailing-zeros-do-not-count", "steps": [
+      {"sql": "CREATE OR REPLACE VIEW nlv AS SELECT 1.50 AS a, 0.000 AS b, 0 AS c"},
+      {"sql": "SELECT column_name || '=' || data_type || '(' || numeric_precision || ',' || numeric_scale || ')' AS r FROM information_schema.columns WHERE table_name = 'NLV' ORDER BY ordinal_position", "expect": {"rows": [["A=NUMBER(2,1)"], ["B=NUMBER(1,0)"], ["C=NUMBER(1,0)"]], "ordered": true}}
+    ]},
+    {"name": "an-exponent-is-folded-in-first", "steps": [
+      {"sql": "CREATE OR REPLACE VIEW nlv AS SELECT 1.5e2 AS a, 5e0 AS b"},
+      {"sql": "SELECT column_name || '=' || data_type || '(' || numeric_precision || ',' || numeric_scale || ')' AS r FROM information_schema.columns WHERE table_name = 'NLV' ORDER BY ordinal_position", "expect": {"rows": [["A=NUMBER(3,0)"], ["B=NUMBER(1,0)"]], "ordered": true}},
+      {"sql": "SELECT 1.5e2 AS a", "expect": {"value": 150}}
+    ]},
+    {"name": "an-integer-literal-is-measured-too", "steps": [
+      {"sql": "CREATE OR REPLACE VIEW nlv AS SELECT 100 AS a"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' AS r FROM information_schema.columns WHERE table_name = 'NLV'", "expect": {"value": "NUMBER(3,0)"}}
+    ]},
+    {"name": "a-decimal-survives-a-derived-table", "steps": [
+      {"sql": "CREATE TABLE num_src (id INTEGER)"},
+      {"sql": "INSERT INTO num_src VALUES (1)"},
+      {"sql": "CREATE TABLE num_out AS SELECT x FROM (SELECT 0.05 AS x FROM num_src)"},
+      {"sql": "SELECT TO_VARCHAR(x) FROM num_out", "expect": {"value": "0.05"}},
+      {"sql": "SELECT numeric_precision || ',' || numeric_scale AS r FROM information_schema.columns WHERE table_name = 'NUM_OUT'", "expect": {"value": "3,2"}}
+    ]},
+    {"name": "a-cast-target-keeps-its-declared-scale", "steps": [
+      {"sql": "CREATE TABLE cast_src (id INTEGER)"},
+      {"sql": "INSERT INTO cast_src VALUES (1)"},
+      {"sql": "CREATE TABLE cast_out AS SELECT x FROM (SELECT 1.5::NUMBER(5,2) AS x FROM cast_src)"},
+      {"sql": "SELECT TO_VARCHAR(x) FROM cast_out", "expect": {"value": "1.50"}}
+    ]}
+  ]
+}

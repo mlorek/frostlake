@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -157,11 +158,41 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
      * The measured value refusals: an unknown TYPE, a negative SKIP_HEADER (echoed UNQUOTED), and
      * a compression outside the codec set (echoed quoted). Unmeasured values pass.
      */
+    /** How long a FIELD_DELIMITER or RECORD_DELIMITER may be: twenty characters is accepted, 21 refused. */
+    private static final int DELIMITER_LIMIT = 20;
+
+    /** The parameters that take a delimiter of up to {@link #DELIMITER_LIMIT} characters. */
+    private static final Set<String> DELIMITERS =
+        new HashSet<>(Arrays.asList("FIELD_DELIMITER", "RECORD_DELIMITER"));
+
+    /** The parameters that take exactly one character. */
+    private static final Set<String> ESCAPES =
+        new HashSet<>(Arrays.asList("ESCAPE", "ESCAPE_UNENCLOSED_FIELD"));
+
+    /** What may enclose a field: the account takes these three and refuses every other character. */
+    private static final Set<String> ENCLOSERS = new HashSet<>(Arrays.asList("\"", "'", "NONE"));
+
     public static void requireLegalValue(final String name, final String value) {
+        requireLegalValue(name, value, value);
+    }
+
+    /**
+     * Judge a parameter's value and refuse it in the account's own words. The value is judged DECODED,
+     * as the reader will see it - a doubled quote is ONE quote and an escaped backslash ONE backslash -
+     * while the refusal echoes the text AS WRITTEN: a bare word bare, a string literal with its quotes.
+     *
+     * @param name    the parameter
+     * @param value   its value, decoded
+     * @param written its value as the statement spells it
+     */
+    public static void requireLegalValue(final String name, final String value, final String written) {
+        if (value == null) {
+            return;
+        }
         final String upper = name.toUpperCase();
         if ("TYPE".equals(upper) && !isKnownType(value)) {
             throw new RuntimeException(SqlCompilationError.of(
-                "invalid value ['" + value + "'] for parameter 'TYPE'"));
+                "invalid value [" + written + "] for parameter 'TYPE'"));
         }
         if ("SKIP_HEADER".equals(upper)) {
             try {
@@ -175,7 +206,30 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
         }
         if ("COMPRESSION".equals(upper) && !COMPRESSION_VALUES.contains(value.toUpperCase())) {
             throw new RuntimeException(SqlCompilationError.of(
-                "invalid value ['" + value + "'] for parameter 'COMPRESSION'"));
+                "invalid value [" + written + "] for parameter 'COMPRESSION'"));
         }
+        if (DELIMITERS.contains(upper) && !isDelimiter(value)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter '" + upper + "'"));
+        }
+        if (ESCAPES.contains(upper) && !isOneCharacter(value)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter '" + upper + "'"));
+        }
+        if ("FIELD_OPTIONALLY_ENCLOSED_BY".equals(upper) && !ENCLOSERS.contains(value.toUpperCase())) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter 'FIELD_OPTIONALLY_ENCLOSED_BY'"));
+        }
+    }
+
+
+    /** A field or record delimiter: one to twenty characters, or the word NONE (live-verified). */
+    private static boolean isDelimiter(final String value) {
+        return "NONE".equalsIgnoreCase(value) || value.length() >= 1 && value.length() <= DELIMITER_LIMIT;
+    }
+
+    /** An escape: exactly one character, or the word NONE (live-verified). */
+    private static boolean isOneCharacter(final String value) {
+        return "NONE".equalsIgnoreCase(value) || value.length() == 1;
     }
 }

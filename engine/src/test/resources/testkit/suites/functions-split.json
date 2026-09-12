@@ -1,0 +1,26 @@
+{
+  "suite": "functions-split",
+  "description": "SPLIT(string, delimiter) splits into a VARIANT ARRAY of substrings. The delimiter is LITERAL, not a regex, so '.' splits on a dot rather than on any character; trailing empty parts are kept; an empty delimiter yields the whole string as one element; a multi-character delimiter works; and a NULL argument on either side yields NULL. Converted 1:1 from functions/SplitTest (now retired); the ARRAY results are read through TO_JSON so the assertion lands on a VARCHAR no transport reformats.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-splits-on-a-comma", "steps": [
+      {"sql": "SELECT TO_JSON(SPLIT('a,b,c', ','))", "expect": {"value": "[\"a\",\"b\",\"c\"]"}}
+    ]},
+    {"name": "the-delimiter-is-literal-not-a-regex", "steps": [
+      {"sql": "SELECT TO_JSON(SPLIT('x.y', '.'))", "expect": {"value": "[\"x\",\"y\"]"}}
+    ]},
+    {"name": "trailing-empty-parts-are-kept", "steps": [
+      {"sql": "SELECT TO_JSON(SPLIT('a,b,', ','))", "expect": {"value": "[\"a\",\"b\",\"\"]"}}
+    ]},
+    {"name": "an-empty-delimiter-yields-the-whole-string-as-one-element", "steps": [
+      {"sql": "SELECT TO_JSON(SPLIT('abc', ''))", "expect": {"value": "[\"abc\"]"}}
+    ]},
+    {"name": "a-null-argument-yields-null", "steps": [
+      {"sql": "SELECT SPLIT(NULL, ',')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT SPLIT('a,b', NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-multi-character-delimiter", "steps": [
+      {"sql": "SELECT TO_JSON(SPLIT('a::b', '::'))", "expect": {"value": "[\"a\",\"b\"]"}}
+    ]}
+  ]
+}

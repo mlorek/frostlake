@@ -21,15 +21,24 @@ import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
+/**
+ * TRY_TO_DOUBLE(expr [, format]) — {@link ToDouble} answering NULL where TO_DOUBLE fails on the value. It
+ * reads what TO_DOUBLE reads: TRY_TO_DOUBLE('inf') is inf and TRY_TO_DOUBLE('NaN') NaN, while a text that
+ * spells no number, a text its format model cannot read, and a model that is not one are NULL
+ * (live-verified).
+ */
 public class TryToDouble extends BuiltInFunction {
+
+    private static final ToDouble BASE = new ToDouble();
+
     public TryToDouble() { super("TRY_TO_DOUBLE", NumericType.DOUBLE); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         try {
-            return Double.parseDouble(args.get(0).toString().trim());
-        } catch (final Exception e) {
+            return BASE.evaluate(args);
+        } catch (final RuntimeException unreadable) {
             return null;
         }
     }
@@ -37,5 +46,5 @@ public class TryToDouble extends BuiltInFunction {
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

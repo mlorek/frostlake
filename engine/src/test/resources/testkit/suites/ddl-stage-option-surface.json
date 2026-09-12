@@ -1,0 +1,99 @@
+{
+  "suite": "ddl-stage-option-surface",
+  "description": "The STAGE option surface, measured cell by cell against a real account: every internal option accepted (inline and named formats, DIRECTORY, both Snowflake encryptions, COPY_OPTIONS, TAG, TEMPORARY); duplicated FILE_FORMAT, unknown option, bogus format TYPE, credentials-without-location and non-Snowflake encryption each refuse with live's exact message; ALTER supports SET FILE_FORMAT/COPY_OPTIONS and RENAME TO while UNSET is an unsupported feature; DESC STAGE answers live's property tree (declared options overlaid on per-type defaults); SHOW STAGES reports the INTERNAL row. Plus the DEFAULT stage-URL policy: file:// and bare-path URLs refuse with live's three shapes while cloud spellings and URL-less internal stages stay legal (the testkit engine backend runs the default config, so the out-of-the-box surface is what this pins; the config opt-in that re-enables file:// URLs stays in the trimmed StageUrlPolicyTest). Converted 1:1 from ddl/StageOptionSurfaceTest + ddl/StageUrlPolicyTest (trimmed).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "every-internal-option-is-accepted", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_named TYPE = CSV"},
+      {"sql": "CREATE TAG stage_tag"},
+      {"sql": "CREATE STAGE so_plain"},
+      {"sql": "CREATE STAGE so_fmt FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)"},
+      {"sql": "CREATE STAGE so_named FILE_FORMAT = (FORMAT_NAME = 'ff_named')"},
+      {"sql": "CREATE STAGE so_named2 FILE_FORMAT = 'ff_named'"},
+      {"sql": "CREATE STAGE so_dir DIRECTORY = (ENABLE = TRUE)"},
+      {"sql": "CREATE STAGE so_sse ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
+      {"sql": "CREATE STAGE so_full ENCRYPTION = (TYPE = 'SNOWFLAKE_FULL')"},
+      {"sql": "CREATE STAGE so_copy COPY_OPTIONS = (ON_ERROR = 'SKIP_FILE')"},
+      {"sql": "CREATE STAGE so_tag TAG (stage_tag = 'v')"},
+      {"sql": "CREATE TEMPORARY STAGE so_temp"},
+      {"sql": "SHOW STAGES LIKE 'so_dir'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "duplicate-file-format-refuses-naming-the-parameter", "steps": [
+      {"sql": "CREATE STAGE so_dup FILE_FORMAT = (TYPE = CSV) FILE_FORMAT = (TYPE = JSON)",
+       "expect": {"error": {"messageContains": "SQL compilation error: conflicting values file format parameter 'TYPE'"}}}
+    ]},
+    {"name": "unknown-option-refuses-as-invalid-stage-property", "steps": [
+      {"sql": "CREATE STAGE so_bad NO_SUCH_OPT = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid property 'NO_SUCH_OPT' for 'STAGE'"}}}
+    ]},
+    {"name": "bogus-format-type-refuses-as-invalid-value", "steps": [
+      {"sql": "CREATE STAGE so_bogus FILE_FORMAT = (TYPE = 'BOGUS')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['BOGUS'] for parameter 'TYPE'"}}}
+    ]},
+    {"name": "credentials-without-a-location-refuse", "steps": [
+      {"sql": "CREATE STAGE so_cred CREDENTIALS = (AWS_KEY_ID='x' AWS_SECRET_KEY='y')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid stage (SO_CRED): location not specified"}}}
+    ]},
+    {"name": "non-snowflake-encryption-on-an-internal-stage-refuses", "steps": [
+      {"sql": "CREATE STAGE so_enc ENCRYPTION = (TYPE = 'AWS_SSE_S3')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nCannot set URL, credentials, or encryption key of an internal or temporary stage."}}}
+    ]},
+    {"name": "alter-supports-format-copy-options-and-rename", "steps": [
+      {"sql": "CREATE STAGE so_alter"},
+      {"sql": "ALTER STAGE so_alter SET FILE_FORMAT = (TYPE = JSON)"},
+      {"sql": "DESC STAGE so_alter"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"parent_property\" = 'STAGE_FILE_FORMAT' AND \"property\" = 'TYPE'", "expect": {"value": "JSON"}},
+      {"sql": "ALTER STAGE so_alter SET COPY_OPTIONS = (ON_ERROR = 'CONTINUE')"},
+      {"sql": "DESC STAGE so_alter"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"parent_property\" = 'STAGE_COPY_OPTIONS' AND \"property\" = 'ON_ERROR'", "expect": {"value": "CONTINUE"}},
+      {"sql": "ALTER STAGE so_alter RENAME TO so_renamed"},
+      {"sql": "SHOW STAGES LIKE 'so_renamed'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW STAGES LIKE 'so_alter'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-unset-is-an-unsupported-feature", "steps": [
+      {"sql": "CREATE STAGE so_unset"},
+      {"sql": "ALTER STAGE so_unset UNSET COMMENT",
+       "expect": {"error": {"messageContains": "Unsupported feature 'UNSET'."}}}
+    ]},
+    {"name": "describe-answers-the-property-tree", "steps": [
+      {"sql": "CREATE STAGE so_desc FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)"},
+      {"sql": "DESC STAGE so_desc"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"parent_property\" = 'STAGE_FILE_FORMAT' AND \"property\" = 'TYPE'", "expect": {"value": "CSV"}},
+      {"sql": "DESC STAGE so_desc"},
+      {"sql": "SELECT \"property_value\", \"property_default\", \"property_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"parent_property\" = 'STAGE_FILE_FORMAT' AND \"property\" = 'SKIP_HEADER'",
+       "expect": {"rows": [["1", "0", "Integer"]]}},
+      {"sql": "DESC STAGE so_desc"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"parent_property\" = 'STAGE_COPY_OPTIONS' AND \"property\" = 'ON_ERROR'", "expect": {"value": "ABORT_STATEMENT"}},
+      {"sql": "DESC STAGE so_desc"},
+      {"sql": "SELECT '<' || \"property_value\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"parent_property\" = 'STAGE_LOCATION' AND \"property\" = 'URL'", "expect": {"value": "<>"}},
+      {"sql": "DESC STAGE so_desc"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"parent_property\" = 'DIRECTORY' AND \"property\" = 'ENABLE'", "expect": {"value": "false"}}
+    ]},
+    {"name": "describe-renders-the-full-embedded-tree",
+     "skip": {"backends": ["snowflake"], "reason": "a new release may append property rows live, so the 34-row count stays embedded-only"},
+     "steps": [
+      {"sql": "CREATE STAGE so_desc FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)"},
+      {"sql": "DESC STAGE so_desc", "expect": {"rowCount": 34}}
+    ]},
+    {"name": "show-stages-reports-the-internal-row", "steps": [
+      {"sql": "CREATE STAGE so_show DIRECTORY = (ENABLE = TRUE)"},
+      {"sql": "SHOW STAGES LIKE 'so_show'"},
+      {"sql": "SELECT \"type\", \"has_credentials\", \"has_encryption_key\", \"directory_enabled\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["INTERNAL", "N", "N", "Y"]]}}
+    ]},
+    {"name": "well-formed-local-url-refuses-with-the-quoted-prefix-shape", "steps": [
+      {"sql": "CREATE STAGE s1 URL='file:///tmp/x'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid URL prefix found in: 'file:///tmp/x'"}}}
+    ]},
+    {"name": "malformed-local-url-and-bare-path-refuse-unquoted", "steps": [
+      {"sql": "CREATE STAGE s2 URL='file://tmp/x'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid URL: file://tmp/x"}}},
+      {"sql": "CREATE STAGE s3 URL='/tmp/x'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid URL: /tmp/x"}}}
+    ]},
+    {"name": "cloud-spellings-and-internal-stages-stay-legal", "steps": [
+      {"sql": "CREATE STAGE s4 URL='s3://bucket/path/'"},
+      {"sql": "CREATE STAGE s5"}
+    ]}
+  ]
+}

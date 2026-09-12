@@ -22,6 +22,8 @@ package dev.frostlake.executor.expressions;
 public class LiteralExpression implements Expression {
     private final Object value;
     private final LiteralType type;
+    /** Where the literal was written, for the refusals that point AT an argument. */
+    private SourcePosition position;
 
     public LiteralExpression(final Object value, final LiteralType type) {
         this.value = value;
@@ -30,6 +32,25 @@ public class LiteralExpression implements Expression {
 
     public Object getValue() {
         return value;
+    }
+
+    /**
+     * Where this literal was written, or null when it was synthesised. Metadata only — it takes no
+     * part in equality, so the by-text AST cache is unaffected.
+     *
+     * @return the position, or null
+     */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    /**
+     * Note where the literal was written.
+     *
+     * @param where the literal's own place in the fragment it was parsed from
+     */
+    public void setPosition(final SourcePosition where) {
+        this.position = where;
     }
 
     public LiteralType getType() {

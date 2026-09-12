@@ -1,0 +1,87 @@
+{
+  "suite": "query-lateral",
+  "description": "Lateral alias/column precedence in projections (swaps, unbacked aliases, group-key vs aggregate alias) and LEFT JOIN LATERAL null-extension vs comma/CROSS/INNER forms. Converted 1:1 from query/LateralAliasColumnPrecedenceTest and LateralLeftJoinNullExtendTest (both now retired). The INNER JOIN LATERAL cell skips snowflake per the original assumption (aborts live with an internal-error incident).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "swap-projection-reads-both-values-from-the-input-row", "steps": [
+      {"sql": "CREATE TABLE hops (start_key VARCHAR, end_key VARCHAR, start_kind VARCHAR, end_kind VARCHAR)"},
+      {"sql": "INSERT INTO hops VALUES ('K1', 'K2', 'ALPHA', 'BETA')"},
+      {"sql": "SELECT end_key AS start_key, start_key AS end_key FROM hops", "expect": {"rows": [["K2", "K1"]]}}
+    ]},
+    {"name": "four-column-swap-keeps-every-pair-independent", "steps": [
+      {"sql": "CREATE TABLE hops (start_key VARCHAR, end_key VARCHAR, start_kind VARCHAR, end_kind VARCHAR)"},
+      {"sql": "INSERT INTO hops VALUES ('K1', 'K2', 'ALPHA', 'BETA')"},
+      {"sql": "SELECT end_key   AS start_key,\n       start_key  AS end_key,\n       end_kind   AS start_kind,\n       start_kind AS end_kind\nFROM hops",
+       "expect": {"rows": [["K2", "K1", "BETA", "ALPHA"]]}}
+    ]},
+    {"name": "swap-projection-through-a-view-mirror-branch", "steps": [
+      {"sql": "CREATE TABLE hops (start_key VARCHAR, end_key VARCHAR, start_kind VARCHAR, end_kind VARCHAR)"},
+      {"sql": "INSERT INTO hops VALUES ('K1', 'K2', 'ALPHA', 'BETA')"},
+      {"sql": "CREATE VIEW mirrored AS SELECT start_key, end_key FROM hops UNION ALL SELECT end_key AS start_key, start_key AS end_key FROM hops"},
+      {"sql": "SELECT start_key, end_key FROM mirrored ORDER BY start_key",
+       "expect": {"rows": [["K1", "K2"], ["K2", "K1"]], "ordered": true}}
+    ]},
+    {"name": "alias-not-backed-by-a-column-still-resolves-laterally", "steps": [
+      {"sql": "CREATE TABLE hops (start_key VARCHAR, end_key VARCHAR, start_kind VARCHAR, end_kind VARCHAR)"},
+      {"sql": "INSERT INTO hops VALUES ('K1', 'K2', 'ALPHA', 'BETA')"},
+      {"sql": "SELECT UPPER(start_key) || '!' AS shouted, shouted AS again FROM hops", "expect": {"rows": [["K1!", "K1!"]]}}
+    ]},
+    {"name": "derived-item-over-an-unbacked-alias-resolves-laterally", "steps": [
+      {"sql": "CREATE TABLE hops (start_key VARCHAR, end_key VARCHAR, start_kind VARCHAR, end_kind VARCHAR)"},
+      {"sql": "INSERT INTO hops VALUES ('K1', 'K2', 'ALPHA', 'BETA')"},
+      {"sql": "SELECT LENGTH(start_key) + 1 AS n, n * 10 AS n10 FROM hops", "expect": {"rows": [["3", "30"]]}}
+    ]},
+    {"name": "group-by-key-column-wins-over-same-named-aggregate-alias", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO readings VALUES ('g1', 5), ('g1', 7)"},
+      {"sql": "SELECT MAX(amount) AS grp, grp AS grp_again FROM readings GROUP BY grp", "expect": {"rows": [["7", "g1"]]}}
+    ]},
+    {"name": "left-join-lateral-null-extends-unmatched-rows", "steps": [
+      {"sql": "CREATE TABLE lat_left (x INTEGER)"},
+      {"sql": "INSERT INTO lat_left VALUES (1), (2)"},
+      {"sql": "CREATE TABLE lat_right (k INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO lat_right VALUES (1, 10)"},
+      {"sql": "SELECT t.x, l.y FROM lat_left t LEFT JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l ON TRUE ORDER BY t.x",
+       "expect": {"rows": [["1", "10"], ["2", null]], "ordered": true}}
+    ]},
+    {"name": "left-join-lateral-over-a-cte-null-extends", "steps": [
+      {"sql": "CREATE TABLE lat_left (x INTEGER)"},
+      {"sql": "INSERT INTO lat_left VALUES (1), (2)"},
+      {"sql": "CREATE TABLE lat_right (k INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO lat_right VALUES (1, 10)"},
+      {"sql": "WITH tt AS (SELECT x FROM lat_left) SELECT tt.x, l.y FROM tt LEFT JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = tt.x) l ON TRUE ORDER BY tt.x",
+       "expect": {"rows": [["1", "10"], ["2", null]], "ordered": true}}
+    ]},
+    {"name": "aggregate-over-a-null-extended-lateral-counts-only-matches", "steps": [
+      {"sql": "CREATE TABLE lat_left (x INTEGER)"},
+      {"sql": "INSERT INTO lat_left VALUES (1), (2)"},
+      {"sql": "CREATE TABLE lat_right (k INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO lat_right VALUES (1, 10)"},
+      {"sql": "SELECT t.x, COUNT(DISTINCT l.y) AS c FROM lat_left t LEFT JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l ON TRUE GROUP BY t.x ORDER BY t.x",
+       "expect": {"rows": [["1", "1"], ["2", "0"]], "ordered": true}}
+    ]},
+    {"name": "inner-join-lateral-keeps-only-matches",
+     "skip": {"backends": ["snowflake"], "reason": "INNER JOIN LATERAL ... ON TRUE aborts live with 'SQL execution internal error' (raises an incident) rather than failing compilation - an account-side defect"},
+     "steps": [
+      {"sql": "CREATE TABLE lat_left (x INTEGER)"},
+      {"sql": "INSERT INTO lat_left VALUES (1), (2)"},
+      {"sql": "CREATE TABLE lat_right (k INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO lat_right VALUES (1, 10)"},
+      {"sql": "SELECT t.x, l.y FROM lat_left t INNER JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l ON TRUE", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "comma-lateral-drops-unmatched", "steps": [
+      {"sql": "CREATE TABLE lat_left (x INTEGER)"},
+      {"sql": "INSERT INTO lat_left VALUES (1), (2)"},
+      {"sql": "CREATE TABLE lat_right (k INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO lat_right VALUES (1, 10)"},
+      {"sql": "SELECT t.x, l.y FROM lat_left t, LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "cross-join-lateral-drops-unmatched", "steps": [
+      {"sql": "CREATE TABLE lat_left (x INTEGER)"},
+      {"sql": "INSERT INTO lat_left VALUES (1), (2)"},
+      {"sql": "CREATE TABLE lat_right (k INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO lat_right VALUES (1, 10)"},
+      {"sql": "SELECT t.x, l.y FROM lat_left t CROSS JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

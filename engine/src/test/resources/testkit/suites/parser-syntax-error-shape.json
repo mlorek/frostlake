@@ -1,0 +1,107 @@
+{
+  "suite": "parser-syntax-error-shape",
+  "description": "The live-verified surface of parser refusals and tolerances. A refused statement reads 'SQL compilation error:' followed by one line per error - 'syntax error line L at position P unexpected TOK.' with the token echoed VERBATIM including case, '<EOF>' at end of input, positions 0-based on their line - and an unterminated literal instead reads 'parse error line L at position P near <EOF>.' positioned at the END of the input. A trailing comma is TOLERATED in the select list and the FROM list (and inside a CTE subquery, and after a star) and REFUSED in GROUP BY, ORDER BY, function arguments and INSERT column lists. GROUP BY, HAVING and WHERE all work without a FROM, while QUALIFY without a window function and CONNECT BY without a FROM each have their own sentence. A statement that RUNS OUT of input names '<EOF>' at the very end of the text, never at the clause keyword that started the unfinished part; trailing JUNK after an already-complete statement names the junk token instead; and a construct-leading keyword written where a column was meant is reported ONCE, at the token the construct could not swallow. Where the two parsers' error POINTS differ - the embedded one keeps a bare identifier viable as a statement start, so a leading typo fails one token later - only the shape is pinned, exactly as the Java did. Converted 1:1 from parser/SyntaxErrorShapeTest (now retired).",
+  "tags": ["parser", "converted"],
+  "tests": [
+    {"name": "a-keyword-typo-at-the-start-keeps-the-refusal-shape", "steps": [
+      {"sql": "SELEC 1", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position "}}}
+    ]},
+    {"name": "a-missing-from-item-names-the-following-keyword", "steps": [
+      {"sql": "SELECT * FROM WHERE x = 1", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 14 unexpected 'WHERE'."}}}
+    ]},
+    {"name": "the-token-is-echoed-verbatim-including-case", "steps": [
+      {"sql": "SELECT COALESCE(1, from)", "expect": {"error": {"messageContains": "syntax error line 1 at position 19 unexpected 'from'."}}}
+    ]},
+    {"name": "a-mid-statement-typo-keeps-the-refusal-shape", "steps": [
+      {"sql": "SELECT * FORM users", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position "}}}
+    ]},
+    {"name": "an-unexpected-end-of-input-names-eof", "steps": [
+      {"sql": "SELECT (1", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 9 unexpected '<EOF>'."}}}
+    ]},
+    {"name": "an-unterminated-string-is-a-parse-error-at-the-end", "steps": [
+      {"sql": "SELECT 'abc", "expect": {"error": {"messageContains": "SQL compilation error:\nparse error line 1 at position 11 near '<EOF>'."}}}
+    ]},
+    {"name": "an-unterminated-string-on-the-second-line-names-that-line", "steps": [
+      {"sql": "SELECT\n'abc", "expect": {"error": {"messageContains": "parse error line 2 at position 4 near '<EOF>'."}}}
+    ]},
+    {"name": "the-first-of-multiple-errors-matches", "steps": [
+      {"sql": "SELECT 1 1 FROM (SELECT 1) 2 2", "expect": {"error": {"messageContains": "syntax error line 1 at position 9 unexpected '1'."}}}
+    ]},
+    {"name": "a-trailing-comma-in-the-select-list-is-tolerated", "steps": [
+      {"sql": "SELECT 1, 2,", "expect": {"rowCount": 1, "columns": ["1", "2"]}}
+    ]},
+    {"name": "a-trailing-comma-before-from-is-tolerated", "steps": [
+      {"sql": "SELECT 1, FROM (SELECT 1)", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "a-star-with-a-trailing-comma-before-from-is-tolerated", "steps": [
+      {"sql": "SELECT *, FROM (SELECT 1)", "expect": {"rowCount": 1, "columns": ["1"]}}
+    ]},
+    {"name": "a-trailing-comma-in-a-cte-subquery-is-tolerated", "steps": [
+      {"sql": "WITH a AS (SELECT 1,) SELECT * FROM a", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "a-trailing-comma-in-the-from-list-is-tolerated", "steps": [
+      {"sql": "CREATE TABLE t1 (a INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (7)"},
+      {"sql": "SELECT * FROM t1,", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "a-trailing-comma-is-refused-in-group-by", "steps": [
+      {"sql": "SELECT 1 GROUP BY 1,", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position "}}}
+    ]},
+    {"name": "a-trailing-comma-is-refused-in-order-by", "steps": [
+      {"sql": "SELECT 1 ORDER BY 1,", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position "}}}
+    ]},
+    {"name": "group-by-works-without-a-from", "steps": [
+      {"sql": "SELECT 1 GROUP BY 1", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "having-without-a-from-filters", "steps": [
+      {"sql": "SELECT 1 HAVING 1 = 1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 1 HAVING 1 = 0", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "where-without-a-from-filters", "steps": [
+      {"sql": "SELECT 1 WHERE 1 = 0", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "qualify-without-a-window-function-is-refused-without-a-from", "steps": [
+      {"sql": "SELECT 1 QUALIFY 1 = 1", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 9\nfound QUALIFY clause but no window function."}}}
+    ]},
+    {"name": "qualify-without-a-window-function-is-refused-with-a-from", "steps": [
+      {"sql": "CREATE TABLE qt (a INTEGER)"},
+      {"sql": "INSERT INTO qt VALUES (1), (2)"},
+      {"sql": "SELECT a FROM qt QUALIFY a > 1", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 17\nfound QUALIFY clause but no window function."}}}
+    ]},
+    {"name": "connect-by-without-a-from-is-refused", "steps": [
+      {"sql": "SELECT 1 CONNECT BY 1 = 1", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 0 missing FROM clause"}}}
+    ]},
+    {"name": "a-trailing-comma-is-refused-in-function-arguments", "steps": [
+      {"sql": "SELECT COALESCE(1,)", "expect": {"error": {"messageContains": "syntax error line 1 at position 18 unexpected ')'."}}}
+    ]},
+    {"name": "a-trailing-comma-is-refused-in-an-insert-column-list", "steps": [
+      {"sql": "INSERT INTO t1 (a,) VALUES (1)", "expect": {"error": {"messageContains": "syntax error line 1 at position 18 unexpected ')'."}}}
+    ]},
+    {"name": "an-unfinished-statement-names-end-of-input", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT a FROM kw GROUP BY", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 25 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw ORDER BY", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 25 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw WHERE", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 22 unexpected '<EOF>'."}}},
+      {"sql": "SELECT a FROM kw ORDER", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 22 unexpected '<EOF>'."}}},
+      {"sql": "SELECT MAX(", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 11 unexpected '<EOF>'."}}}
+    ]},
+    {"name": "trailing-junk-names-the-junk-token", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT '{}'::OBJECT(x VARCHAR) RENAME FIELDS", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 38 unexpected 'FIELDS'."}}},
+      {"sql": "SELECT a FROM kw RENAME FIELDS", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 24 unexpected 'FIELDS'."}}},
+      {"sql": "SELECT a FROM kw zz yy", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 20 unexpected 'yy'."}}}
+    ]},
+    {"name": "a-construct-keyword-is-reported-once-at-its-dead-end", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT case", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 11 unexpected '<EOF>'."}}},
+      {"sql": "SELECT case FROM kw", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 12 unexpected 'FROM'."}}},
+      {"sql": "SELECT case cast FROM kw", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 17 unexpected 'FROM'."}}}
+    ]},
+    {"name": "consumable-trailing-words-stay-accepted", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE kw (a INT, b INT)"},
+      {"sql": "SELECT a FROM kw fields", "expect": {"rowCount": 0}},
+      {"sql": "SELECT a FROM kw LIMIT", "expect": {"rowCount": 0}},
+      {"sql": "SELECT 1,", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

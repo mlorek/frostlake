@@ -1,0 +1,24 @@
+{
+  "suite": "functions-strtok-to-array",
+  "description": "STRTOK_TO_ARRAY(string [, delimiters]) tokenises into a VARIANT ARRAY of NON-EMPTY tokens: every character of the delimiters argument separates independently (the documented example treats both '.' and '@' as delimiters), the default delimiter is a space, consecutive delimiters produce no empty tokens, and a NULL string or a NULL delimiter yields NULL. Converted 1:1 from functions/StrtokToArrayTest (now retired); the ARRAY results are read through TO_JSON so the assertion lands on a VARCHAR no transport reformats.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "each-delimiter-character-separates", "steps": [
+      {"sql": "SELECT TO_JSON(STRTOK_TO_ARRAY('user@snowflake.com', '.@'))",
+       "expect": {"value": "[\"user\",\"snowflake\",\"com\"]"}}
+    ]},
+    {"name": "the-default-delimiter-is-a-space", "steps": [
+      {"sql": "SELECT TO_JSON(STRTOK_TO_ARRAY('hello world test'))",
+       "expect": {"value": "[\"hello\",\"world\",\"test\"]"}}
+    ]},
+    {"name": "consecutive-delimiters-produce-no-empty-tokens", "steps": [
+      {"sql": "SELECT TO_JSON(STRTOK_TO_ARRAY('a,,b', ','))", "expect": {"value": "[\"a\",\"b\"]"}}
+    ]},
+    {"name": "a-null-string-yields-null", "steps": [
+      {"sql": "SELECT STRTOK_TO_ARRAY(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-null-delimiter-yields-null", "steps": [
+      {"sql": "SELECT STRTOK_TO_ARRAY('a b', NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

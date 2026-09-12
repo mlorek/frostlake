@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.encoding;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
@@ -24,7 +25,7 @@ import java.util.Base64;
 import java.util.List;
 
 /**
- * BASE64_ENCODE(expr) — the base64 encoding of the input's bytes.
+ * BASE64_ENCODE(expr [, max_line_length [, alphabet]]) — the base64 encoding of the input's bytes.
  *
  * <p>A BINARY argument contributes its OWN bytes, so
  * {@code BASE64_ENCODE(COMPRESS('hello','snappy'))} is {@code BRBoZWxsbw==}. Encoding
@@ -35,12 +36,24 @@ public class Base64Encode extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        return Base64.getEncoder().encodeToString(SharedFunctionHelpers.toUtf8(args.get(0)));
+        // A NULL max line length makes the whole call NULL, rather than meaning "do not wrap" —
+        // live-verified, and the two are easy to confuse because an ABSENT one does mean that.
+        if (args.get(0) == null || args.size() > 1 && args.get(1) == null) return null;
+        final String standard =
+            Base64.getEncoder().encodeToString(SharedFunctionHelpers.toUtf8(args.get(0)));
+        return Base64Options.wrap(
+            Base64Options.toCustomAlphabet(standard, Base64Options.alphabetOf(args, 2)),
+            Base64Options.lineLengthOf(args, 1));
+    }
+
+    /** A VECTOR is refused by its argument type, in every position (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 3; }
 }

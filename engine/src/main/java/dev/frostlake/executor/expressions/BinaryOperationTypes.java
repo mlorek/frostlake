@@ -17,6 +17,7 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BinaryWidthSpelling;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
@@ -25,6 +26,8 @@ import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
+import java.util.Map;
 
 /**
  * The type an arithmetic or concatenation expression is statically KNOWN to produce. Every rule below
@@ -71,11 +74,12 @@ public final class BinaryOperationTypes {
      */
     private static final int MAX_LENGTH = StringResultWidths.UNBOUNDED;
 
-    /** A BINARY's maximum length. */
-    private static final int MAX_BINARY_LENGTH = 8388608;
-
     /** Division gains this much scale over the dividend's own. */
     private static final int DIVISION_SCALE_GAIN = 6;
+    /** The scale a product keeps at least once its operands' scales no longer add within the cap. */
+    private static final int MULTIPLICATION_SCALE_FLOOR = 12;
+    /** The most a quotient's scale grows to from its dividend's, unless the dividend already had more. */
+    private static final int DIVISION_SCALE_CAP = 12;
 
     /** A modulo result never has fewer leading digits than this, however narrow its operands are. */
     private static final int MIN_MODULO_LEADING = 2;
@@ -96,11 +100,21 @@ public final class BinaryOperationTypes {
      */
     public static DataType resultOf(final BinaryOperator operator, final DataType left,
                                     final DataType right) {
-        if (operator == null || left == null || right == null) {
+        if (operator == null) {
             return null;
         }
         if (operator == BinaryOperator.CONCAT) {
+            // Concatenation alone survives ONE untyped operand — the width is unknown, not the type.
             return concatenation(left, right);
+        }
+        if (isPredicate(operator)) {
+            // A comparison, AND, OR and the LIKE family answer a BOOLEAN whatever their operands —
+            // live declares NULL = 1, 1 AND 0, NOT 1 and a VARIANT beside a number as BOOLEAN alike —
+            // so an untyped operand does not untype the predicate the way it does an arithmetic result.
+            return BooleanType.BOOLEAN;
+        }
+        if (left == null || right == null) {
+            return null;
         }
         if (!isArithmetic(operator)) {
             return null;
@@ -146,6 +160,30 @@ public final class BinaryOperationTypes {
             // sites drift apart.
             return left instanceof BinaryType ^ right instanceof BinaryType
                 ? invalidArguments("||", left, right) : null;
+        }
+        if (operator == BinaryOperator.AND || operator == BinaryOperator.OR) {
+            // A logical operator reads a BOOLEAN, a NUMBER, or a text it converts at run time; every
+            // other family is an argument-type refusal at compile time, so it lands over no rows too.
+            return isLogicalOperand(left) && isLogicalOperand(right) ? null
+                : invalidArguments(operator == BinaryOperator.AND ? "AND" : "OR", left, right);
+        }
+        final String matching = MATCHING_NAMES.get(operator);
+        if (matching != null && (left instanceof VectorType || right instanceof VectorType)) {
+            // A VECTOR is no text for a pattern match either — refused by the argument types, under
+            // the name the NOT spellings share with their plain form (live-verified).
+            return invalidArguments(matching, left, right);
+        }
+        final String arithmetic = ARITHMETIC_SYMBOLS.get(operator);
+        if (arithmetic != null && isScaling(operator)
+                && (left instanceof DateTimeType || right instanceof DateTimeType)) {
+            // A temporal value is shifted, never scaled: only + and - take one, and which pairs they
+            // take is the measured table below.
+            return invalidArguments(arithmetic, left, right);
+        }
+        if (arithmetic != null && (!isArithmeticOperand(left) || !isArithmeticOperand(right))) {
+            // A family arithmetic does not read at all. A text is NOT one of them: it converts where
+            // it is read, and an unreadable one is a run-time conversion on the account too.
+            return invalidArguments(arithmetic, left, right);
         }
         if (operator != BinaryOperator.ADD && operator != BinaryOperator.SUBTRACT) {
             return null;
@@ -200,6 +238,54 @@ public final class BinaryOperationTypes {
     }
 
     /** Live's argument-type sentence: the operator quoted, both types spelled, in written order. */
+    /** The name each matching operator is refused under — a NOT spelling reports its plain form. */
+    private static final Map<BinaryOperator, String> MATCHING_NAMES = Map.of(
+        BinaryOperator.LIKE, "LIKE",
+        BinaryOperator.NOT_LIKE, "LIKE",
+        BinaryOperator.ILIKE, "ILIKE",
+        BinaryOperator.NOT_ILIKE, "ILIKE");
+
+    /** The symbol each arithmetic operator is named by in a refusal. */
+    private static final Map<BinaryOperator, String> ARITHMETIC_SYMBOLS = Map.of(
+        BinaryOperator.ADD, "+",
+        BinaryOperator.SUBTRACT, "-",
+        BinaryOperator.MULTIPLY, "*",
+        BinaryOperator.DIVIDE, "/",
+        BinaryOperator.MODULO, "%");
+
+    /** Whether an operator SCALES rather than shifts — the three no temporal value may stand beside. */
+    private static boolean isScaling(final BinaryOperator operator) {
+        return operator == BinaryOperator.MULTIPLY || operator == BinaryOperator.DIVIDE
+            || operator == BinaryOperator.MODULO;
+    }
+
+    /**
+     * Whether a family may stand beside an arithmetic operator: a number, a text or a VARIANT it
+     * converts, or a temporal value the measured temporal table then judges. BOOLEAN, BINARY, ARRAY and
+     * OBJECT are refused before any row (live-verified).
+     *
+     * @param type the operand's type, or null when it could not be typed
+     * @return whether arithmetic takes it
+     */
+    public static boolean isArithmeticOperand(final DataType type) {
+        return type == null || type instanceof NumericType || type instanceof StringType
+            || type instanceof VariantType || type instanceof DateTimeType;
+    }
+
+    /**
+     * Whether a family may stand beside a logical operator. BOOLEAN and NUMBER are read directly, and a
+     * text is converted where it is READ — {@code TRUE OR 'a'} is true on the account because OR never
+     * reads the second operand, while {@code 'a' OR 'a'} raises the conversion at run time. Everything
+     * else — BINARY, ARRAY, OBJECT and the temporal families — is refused before any row (live-verified).
+     *
+     * @param type the operand's type, or null when it could not be typed
+     * @return whether the operator takes it
+     */
+    public static boolean isLogicalOperand(final DataType type) {
+        return type == null || type instanceof BooleanType || type instanceof NumericType
+            || type instanceof StringType || type instanceof VariantType;
+    }
+
     private static String invalidArguments(final String operator, final DataType left,
                                            final DataType right) {
         return "Invalid argument types for function '" + operator + "': ("
@@ -214,6 +300,15 @@ public final class BinaryOperationTypes {
     /** Any of the TIMESTAMP variants. */
     private static boolean isTimestamp(final DataType type) {
         return type instanceof DateTimeType && SqlTypeNames.canonical(type).startsWith("TIMESTAMP");
+    }
+
+    private static boolean isPredicate(final BinaryOperator operator) {
+        return operator == BinaryOperator.EQUAL || operator == BinaryOperator.NOT_EQUAL
+            || operator == BinaryOperator.LESS_THAN || operator == BinaryOperator.LESS_THAN_OR_EQUAL
+            || operator == BinaryOperator.GREATER_THAN || operator == BinaryOperator.GREATER_THAN_OR_EQUAL
+            || operator == BinaryOperator.AND || operator == BinaryOperator.OR
+            || operator == BinaryOperator.LIKE || operator == BinaryOperator.ILIKE
+            || operator == BinaryOperator.NOT_LIKE || operator == BinaryOperator.NOT_ILIKE;
     }
 
     private static boolean isArithmetic(final BinaryOperator operator) {
@@ -232,14 +327,29 @@ public final class BinaryOperationTypes {
         final int leadingRight = right.getPrecision() - right.getScale();
         if (operator == BinaryOperator.ADD || operator == BinaryOperator.SUBTRACT) {
             final int scale = Math.max(left.getScale(), right.getScale());
-            return number(Math.max(leadingLeft, leadingRight) + 1 + scale, scale);
+            // Operands at DIFFERENT scales give an integer part of three digits at least: live types
+            // 2 + 3.5 as NUMBER(4,1), 1.5 + 2.25 as NUMBER(5,2) and NUMBER(1,1) + NUMBER(2,2) as
+            // NUMBER(5,2), where equal scales keep the plain width — 2 + 3 is NUMBER(2,0) and
+            // NUMBER(1,1) + NUMBER(1,1) NUMBER(2,1). Live-verified over every pair of eighteen declared
+            // types, sums and differences alike; wider operands follow the plain rule either way.
+            final int floor = left.getScale() != right.getScale() ? 2 : 0;
+            return number(Math.max(Math.max(leadingLeft, leadingRight), floor) + 1 + scale, scale);
         }
         if (operator == BinaryOperator.MULTIPLY) {
-            return number(left.getPrecision() + right.getPrecision(),
-                left.getScale() + right.getScale());
+            // The scales add until the sum runs past twelve, and then the wider operand's scale is
+            // kept, twelve at least: NUMBER(38,12) * 1.5 is NUMBER(38,12), NUMBER(20,10) squared
+            // NUMBER(32,12), NUMBER(30,20) squared NUMBER(38,20), NUMBER(38,35) squared NUMBER(38,35)
+            // (live-verified); the integer digits add, and the whole saturates at 38.
+            final int scale = Math.min(left.getScale() + right.getScale(),
+                Math.max(Math.max(left.getScale(), right.getScale()), MULTIPLICATION_SCALE_FLOOR));
+            return number(leadingLeft + leadingRight + scale, scale);
         }
         if (operator == BinaryOperator.DIVIDE) {
-            final int scale = left.getScale() + DIVISION_SCALE_GAIN;
+            // The dividend's scale gains six, capped at twelve, and never loses what it had:
+            // NUMBER(38,12) / 0.5 is NUMBER(38,12), NUMBER(30,20) / 3 NUMBER(30,20), NUMBER(10,2) / 0.5
+            // NUMBER(17,8) (live-verified).
+            final int scale = Math.max(left.getScale(),
+                Math.min(left.getScale() + DIVISION_SCALE_GAIN, DIVISION_SCALE_CAP));
             return number(leadingLeft + right.getScale() + scale, scale);
         }
         if (operator == BinaryOperator.MODULO) {
@@ -268,23 +378,44 @@ public final class BinaryOperationTypes {
      * here rather than being given a type Frostlake would then happily evaluate.
      */
     private static DataType concatenation(final DataType left, final DataType right) {
+        // A string beside an UNTYPED operand — a bare NULL — is a width nothing bounds, and live
+        // spells that as the 128MB unknown length: SYSTEM$TYPEOF(NULL || 'x') is VARCHAR(134217728).
+        if (left instanceof StringType && right == null || right instanceof StringType && left == null) {
+            return new StringType("VARCHAR", MAX_LENGTH);
+        }
+        if (left == null || right == null) {
+            return null;
+        }
         if (left instanceof StringType && right instanceof StringType) {
             return new StringType("VARCHAR", Math.min(((StringType) left).getMaxLength()
                 + ((StringType) right).getMaxLength(), MAX_LENGTH));
         }
         if (left instanceof BinaryType && right instanceof BinaryType) {
-            // A binary pair saturates at BINARY's own maximum, exactly as a string pair saturates at
-            // VARCHAR's: BINARY(8388608) || BINARY(4) is BINARY(8388608), not an error (live-verified).
-            final int combined = ((BinaryType) left).getMaxLength() + ((BinaryType) right).getMaxLength();
-            // Not the fixed spelling: a concatenation is a width nobody declared, and live reads it
-            // fixed false even when both operands are declared BINARY columns.
-            return new BinaryType("VARBINARY", Math.min(combined, MAX_BINARY_LENGTH));
+            // A binary pair adds its widths up to BINARY's 64MB maximum and is unsized past it:
+            // BINARY(8388608) || BINARY(5) is BINARY(8388613) and two 8MB binaries BINARY(16777216)
+            // (live-verified). An unsized operand leaves nothing to add, and the pair is unsized itself.
+            long sized = 0;
+            boolean unsizedOperand = false;
+            for (final BinaryType operand : new BinaryType[] {(BinaryType) left, (BinaryType) right}) {
+                if (operand.getWidthSpelling() == BinaryWidthSpelling.DECLARED) {
+                    sized += operand.getMaxLength();
+                } else {
+                    unsizedOperand = true;
+                }
+            }
+            return BinaryType.concatenation(sized, unsizedOperand);
         }
         if (left instanceof BinaryType || right instanceof BinaryType) {
             return null;
         }
         if (left instanceof StringType && convertsToFullWidthText(right)
                 || right instanceof StringType && convertsToFullWidthText(left)) {
+            return new StringType("VARCHAR", MAX_LENGTH);
+        }
+        // A VARIANT beside a number converts both to text and answers the same full width: live declares
+        // 0 || PARSE_JSON('1') and 1.5::FLOAT || PARSE_JSON('1') VARCHAR(134217728).
+        if (left instanceof VariantType && right instanceof NumericType
+                || left instanceof NumericType && right instanceof VariantType) {
             return new StringType("VARCHAR", MAX_LENGTH);
         }
         return null;

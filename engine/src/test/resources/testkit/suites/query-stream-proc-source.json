@@ -1,0 +1,80 @@
+{
+  "suite": "query-stream-proc-source",
+  "description": "Streams reject AT/BEFORE time travel while plain reads and table time travel work; table procedures (RETURNS TABLE + RESULTSET) as FROM sources incl. INSERT-SELECT, nesting, and explicit transactions inside procedures. Converted 1:1 from query/StreamTimeTravelUnsupportedTest and TableProcSourceTest (both now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "plain-stream-read-still-works", "steps": [
+      {"sql": "CREATE TABLE base (id INTEGER)"},
+      {"sql": "INSERT INTO base VALUES (1), (2)"},
+      {"sql": "CREATE STREAM strm ON TABLE base"},
+      {"sql": "INSERT INTO base VALUES (3)"},
+      {"sql": "SELECT COUNT(*) AS c FROM strm", "expect": {"value": "1"}}
+    ]},
+    {"name": "at-clause-on-stream-is-rejected", "steps": [
+      {"sql": "CREATE TABLE base (id INTEGER)"},
+      {"sql": "CREATE STREAM strm ON TABLE base"},
+      {"sql": "SELECT * FROM strm AT(OFFSET => -60)", "expect": {"error": {}}}
+    ]},
+    {"name": "before-clause-on-stream-is-rejected", "steps": [
+      {"sql": "CREATE TABLE base (id INTEGER)"},
+      {"sql": "CREATE STREAM strm ON TABLE base"},
+      {"sql": "SELECT * FROM strm BEFORE(STATEMENT => 'x')", "expect": {"error": {}}}
+    ]},
+    {"name": "time-travel-on-regular-table-is-unaffected", "steps": [
+      {"sql": "CREATE TABLE base (id INTEGER)"},
+      {"sql": "INSERT INTO base VALUES (1), (2)"},
+      {"sql": "SELECT * FROM base AT(OFFSET => 0)", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "proc-as-from-source-uses-declared-column-names", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO readings VALUES ('g1', 5), ('g1', 7), ('g2', 11)"},
+      {"sql": "CREATE PROCEDURE grouped_totals(src_name VARCHAR)\nRETURNS TABLE (BUCKET VARCHAR, TOTAL NUMBER(32,0))\nLANGUAGE SQL\nAS\n$$\nDECLARE\n  res RESULTSET;\nBEGIN\n  res := (\n      -- leading comment must not hide the query from the RESULTSET path\n      SELECT grp, SUM(amount) AS total FROM IDENTIFIER(:src_name) GROUP BY grp);\n  RETURN TABLE(res);\nEND;\n$$"},
+      {"sql": "SELECT f.bucket, f.total FROM TABLE(grouped_totals('readings')) f ORDER BY f.bucket",
+       "expect": {"rows": [["g1", "12"], ["g2", "11"]], "ordered": true}}
+    ]},
+    {"name": "works-with-where-and-aggregation-over-the-source", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO readings VALUES ('g1', 5), ('g1', 7), ('g2', 11)"},
+      {"sql": "CREATE PROCEDURE grouped_totals(src_name VARCHAR)\nRETURNS TABLE (BUCKET VARCHAR, TOTAL NUMBER(32,0))\nLANGUAGE SQL\nAS\n$$\nDECLARE\n  res RESULTSET;\nBEGIN\n  res := (\n      SELECT grp, SUM(amount) AS total FROM IDENTIFIER(:src_name) GROUP BY grp);\n  RETURN TABLE(res);\nEND;\n$$"},
+      {"sql": "SELECT COUNT(*) AS n FROM TABLE(grouped_totals('readings')) f WHERE f.total > 11", "expect": {"value": "1"}}
+    ]},
+    {"name": "empty-result-keeps-declared-columns-queryable", "steps": [
+      {"sql": "CREATE TABLE empty_readings (grp VARCHAR, amount NUMBER)"},
+      {"sql": "CREATE PROCEDURE grouped_totals(src_name VARCHAR)\nRETURNS TABLE (BUCKET VARCHAR, TOTAL NUMBER(32,0))\nLANGUAGE SQL\nAS\n$$\nDECLARE\n  res RESULTSET;\nBEGIN\n  res := (\n      SELECT grp, SUM(amount) AS total FROM IDENTIFIER(:src_name) GROUP BY grp);\n  RETURN TABLE(res);\nEND;\n$$"},
+      {"sql": "SELECT f.bucket FROM TABLE(grouped_totals('empty_readings')) f", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "insert-select-from-proc-source-at-top-level", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO readings VALUES ('g1', 5), ('g1', 7), ('g2', 11)"},
+      {"sql": "CREATE PROCEDURE grouped_totals(src_name VARCHAR)\nRETURNS TABLE (BUCKET VARCHAR, TOTAL NUMBER(32,0))\nLANGUAGE SQL\nAS\n$$\nDECLARE\n  res RESULTSET;\nBEGIN\n  res := (\n      SELECT grp, SUM(amount) AS total FROM IDENTIFIER(:src_name) GROUP BY grp);\n  RETURN TABLE(res);\nEND;\n$$"},
+      {"sql": "CREATE TABLE totals_out (bucket VARCHAR, total NUMBER)"},
+      {"sql": "INSERT INTO totals_out (bucket, total) SELECT f.bucket, f.total FROM TABLE(grouped_totals('readings')) f"},
+      {"sql": "SELECT COUNT(*) AS n FROM totals_out", "expect": {"value": "2"}}
+    ]},
+    {"name": "insert-select-from-proc-source-nested-inside-another-procedure", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO readings VALUES ('g1', 5), ('g1', 7), ('g2', 11)"},
+      {"sql": "CREATE PROCEDURE grouped_totals(src_name VARCHAR)\nRETURNS TABLE (BUCKET VARCHAR, TOTAL NUMBER(32,0))\nLANGUAGE SQL\nAS\n$$\nDECLARE\n  res RESULTSET;\nBEGIN\n  res := (\n      SELECT grp, SUM(amount) AS total FROM IDENTIFIER(:src_name) GROUP BY grp);\n  RETURN TABLE(res);\nEND;\n$$"},
+      {"sql": "CREATE TABLE totals_out2 (bucket VARCHAR, total NUMBER)"},
+      {"sql": "CREATE PROCEDURE load_totals()\nRETURNS VARCHAR LANGUAGE SQL AS\n$$\nBEGIN\n  INSERT INTO totals_out2 (bucket, total)\n  SELECT f.bucket, f.total FROM TABLE(grouped_totals('readings')) f;\n  RETURN 'ok';\nEND;\n$$"},
+      {"sql": "CALL load_totals()"},
+      {"sql": "SELECT bucket, total FROM totals_out2 ORDER BY bucket", "expect": {"rows": [["g1", "12"], ["g2", "11"]], "ordered": true}}
+    ]},
+    {"name": "enclosing-explicit-transaction-survives-the-proc-call", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO readings VALUES ('g1', 5), ('g1', 7), ('g2', 11)"},
+      {"sql": "CREATE PROCEDURE grouped_totals(src_name VARCHAR)\nRETURNS TABLE (BUCKET VARCHAR, TOTAL NUMBER(32,0))\nLANGUAGE SQL\nAS\n$$\nDECLARE\n  res RESULTSET;\nBEGIN\n  res := (\n      SELECT grp, SUM(amount) AS total FROM IDENTIFIER(:src_name) GROUP BY grp);\n  RETURN TABLE(res);\nEND;\n$$"},
+      {"sql": "CREATE TABLE txn_out (bucket VARCHAR, total NUMBER)"},
+      {"sql": "CREATE PROCEDURE load_in_txn()\nRETURNS VARCHAR LANGUAGE SQL AS\n$$\nBEGIN\n  BEGIN TRANSACTION;\n  INSERT INTO txn_out (bucket, total)\n  SELECT f.bucket, f.total FROM TABLE(grouped_totals('readings')) f;\n  UPDATE txn_out t SET t.total = t.total + 100 WHERE t.bucket = 'g1';\n  COMMIT;\n  RETURN 'ok';\nEND;\n$$"},
+      {"sql": "CALL load_in_txn()"},
+      {"sql": "SELECT total FROM txn_out WHERE bucket = 'g1'", "expect": {"value": "112"}}
+    ]},
+    {"name": "nested-call-of-table-procedure-returns-the-full-table", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO readings VALUES ('g1', 5), ('g1', 7), ('g2', 11)"},
+      {"sql": "CREATE PROCEDURE grouped_totals(src_name VARCHAR)\nRETURNS TABLE (BUCKET VARCHAR, TOTAL NUMBER(32,0))\nLANGUAGE SQL\nAS\n$$\nDECLARE\n  res RESULTSET;\nBEGIN\n  res := (\n      SELECT grp, SUM(amount) AS total FROM IDENTIFIER(:src_name) GROUP BY grp);\n  RETURN TABLE(res);\nEND;\n$$"},
+      {"sql": "CREATE PROCEDURE relay_totals()\nRETURNS TABLE (BUCKET VARCHAR, TOTAL NUMBER(32,0)) LANGUAGE SQL AS\n$$\nDECLARE\n  res RESULTSET;\nBEGIN\n  res := (SELECT f.bucket, f.total FROM TABLE(grouped_totals('readings')) f);\n  RETURN TABLE(res);\nEND;\n$$"},
+      {"sql": "SELECT COUNT(*) AS n FROM TABLE(relay_totals()) r", "expect": {"value": "2"}}
+    ]}
+  ]
+}

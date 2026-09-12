@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
+import java.math.BigDecimal;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -92,5 +93,39 @@ public class PreparedStatementGapsTest extends BaseJdbcTest {
         final ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM bt");
         rs.next();
         assertEquals(1, rs.getInt(1));
+    }
+
+    /**
+     * A bound negative number stays a number beside a minus: spliced bare, {@code 3-?} with -5 read as
+     * {@code 3--5} — a comment — and answered 3 under a column named 3. The account binds server-side, so
+     * these answers are the account's own.
+     */
+    @Test
+    public void aNegativeBindBesideAMinusStaysANumber() throws SQLException {
+        try (final PreparedStatement ps = connection.prepareStatement("SELECT 3-? AS r")) {
+            ps.setInt(1, -5);
+            try (final ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals("R", rs.getMetaData().getColumnLabel(1).toUpperCase());
+                assertEquals("8", rs.getString(1));
+            }
+            ps.setBigDecimal(1, new BigDecimal("-1.5"));
+            try (final ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals("4.5", rs.getString(1));
+            }
+            ps.setLong(1, Long.MIN_VALUE);
+            try (final ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals("9223372036854775811", rs.getString(1));
+            }
+        }
+        try (final PreparedStatement ps = connection.prepareStatement("SELECT 10-? AS r")) {
+            ps.setDouble(1, -2.5);
+            try (final ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(12.5, rs.getDouble(1), 0.0);
+            }
+        }
     }
 }

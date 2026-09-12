@@ -1,0 +1,53 @@
+{
+  "suite": "dml-multi-table-insert",
+  "description": "Snowflake multi-table INSERT: unconditional INSERT ALL fans every source row into every target, INSERT FIRST routes each row to its first matching WHEN (ELSE catches the rest), INSERT ALL applies every matching WHEN, the per-target VALUES clause evaluates expressions against the source row, and INSERT OVERWRITE truncates the target first. Converted 1:1 from dml/MultiTableInsertTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "unconditional-all-fans-out-to-every-target", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (1, 10), (2, 20)"},
+      {"sql": "CREATE TABLE a (id INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE b (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT ALL INTO a INTO b SELECT id, v FROM src"},
+      {"sql": "SELECT COUNT(*) FROM a", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM b", "expect": {"value": "2"}}
+    ]},
+    {"name": "first-routes-to-first-matching-when", "steps": [
+      {"sql": "CREATE TABLE n (x INTEGER)"},
+      {"sql": "INSERT INTO n VALUES (5), (50), (500)"},
+      {"sql": "CREATE TABLE big (x INTEGER)"},
+      {"sql": "CREATE TABLE mid (x INTEGER)"},
+      {"sql": "CREATE TABLE small (x INTEGER)"},
+      {"sql": "INSERT FIRST WHEN x > 100 THEN INTO big WHEN x > 10 THEN INTO mid ELSE INTO small SELECT x FROM n"},
+      {"sql": "SELECT COUNT(*) FROM big", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM mid", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM small", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM big", "expect": {"value": "500"}}
+    ]},
+    {"name": "all-applies-every-matching-when", "steps": [
+      {"sql": "CREATE TABLE n (x INTEGER)"},
+      {"sql": "INSERT INTO n VALUES (5), (50), (500)"},
+      {"sql": "CREATE TABLE big (x INTEGER)"},
+      {"sql": "CREATE TABLE mid (x INTEGER)"},
+      {"sql": "INSERT ALL WHEN x > 100 THEN INTO big WHEN x > 10 THEN INTO mid SELECT x FROM n"},
+      {"sql": "SELECT COUNT(*) FROM big", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM mid", "expect": {"value": "2"}}
+    ]},
+    {"name": "values-clause-evaluates-expressions-against-source-row", "steps": [
+      {"sql": "CREATE TABLE s2 (a INTEGER, b INTEGER)"},
+      {"sql": "INSERT INTO s2 VALUES (1, 2)"},
+      {"sql": "CREATE TABLE t3 (total INTEGER)"},
+      {"sql": "INSERT ALL INTO t3 (total) VALUES (a + b) SELECT a, b FROM s2"},
+      {"sql": "SELECT total FROM t3", "expect": {"value": "3"}}
+    ]},
+    {"name": "overwrite-truncates-target-first", "steps": [
+      {"sql": "CREATE TABLE ov (x INTEGER)"},
+      {"sql": "INSERT INTO ov VALUES (99)"},
+      {"sql": "CREATE TABLE src2 (x INTEGER)"},
+      {"sql": "INSERT INTO src2 VALUES (1), (2)"},
+      {"sql": "INSERT OVERWRITE ALL INTO ov SELECT x FROM src2"},
+      {"sql": "SELECT COUNT(*) FROM ov", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM ov WHERE x = 99", "expect": {"value": "0"}}
+    ]}
+  ]
+}

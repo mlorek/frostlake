@@ -16,6 +16,8 @@
 
 package dev.frostlake.storage;
 
+import dev.frostlake.values.RelationStatistics;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,6 +26,13 @@ public class ResultSet {
     private final List<ResultSetColumn> columns;
     private final List<Row> rows;
     private int currentRow;
+    // The affected-row count when this result is a DML statement's count grid, else null. The grid alone
+    // cannot say so: a query may name its columns the same way ("number of rows inserted"), and a
+    // RESULT_SCAN over a DML result is a query — only the statement that built the grid knows.
+    private Long updateCount;
+    // The statistics this result still carries of the catalog table beneath it, when it is a projection
+    // of one filtered at most by a WHERE; null otherwise. See RelationStatistics.
+    private RelationStatistics relationStatistics;
 
     public ResultSet(final List<ResultSetColumn> columns, final List<Row> rows) {
         this.columns = new ArrayList<>(columns);
@@ -83,5 +92,30 @@ public class ResultSet {
 
     public void reset() {
         currentRow = -1;
+    }
+
+    /** The affected-row count when this result is a DML statement's count grid, else null. */
+    public Long getUpdateCount() {
+        return updateCount;
+    }
+
+    /**
+     * Mark this result as a DML statement's count grid reporting {@code count} affected rows.
+     *
+     * @param count the affected-row total
+     * @return this result
+     */
+    public ResultSet markUpdateCount(final long count) {
+        this.updateCount = Long.valueOf(count);
+        return this;
+    }
+
+    /** The statistics this result carries of the catalog table beneath it, or null. */
+    public RelationStatistics getRelationStatistics() {
+        return relationStatistics;
+    }
+
+    public void setRelationStatistics(final RelationStatistics relationStatistics) {
+        this.relationStatistics = relationStatistics;
     }
 }

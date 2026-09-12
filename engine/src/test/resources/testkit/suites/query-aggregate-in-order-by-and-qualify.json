@@ -1,0 +1,55 @@
+{
+  "suite": "query-aggregate-in-order-by-and-qualify",
+  "description": "An aggregate written in ORDER BY or in QUALIFY makes the WHOLE QUERY aggregate, exactly as one in the select list would - and the refusal that follows is about the SELECT LIST, not about the aggregate: 'SELECT a FROM g ORDER BY SUM(b)' is refused with '[G.A] is not a valid group by expression', while 'SELECT 1 FROM g ORDER BY SUM(b)' and 'SELECT MAX(a) FROM g ORDER BY SUM(b)' both run, because nothing in their lists is ungrouped. Frostlake used to read the aggregate as an unresolvable NAME in ORDER BY (\"invalid identifier 'SUM(b)'\") and to answer the QUALIFY-without-a-window sentence before looking at the list at all. That QUALIFY sentence is live's own and it SURVIVES - it is simply asked SECOND, so a query whose list IS valid still reaches it while one whose list is not never gets that far. WHERE and DISTINCT do not change the rule, and HAVING answers the same way. Converted 1:1 from query/AggregateInOrderByAndQualifyTest (now retired); the fixture's per-group sums differ (30 and 5) so an ordering by them is never a tie.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-order-by-aggregate-groups-the-query", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 5)"},
+      {"sql": "SELECT a FROM g ORDER BY SUM(b)", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}},
+      {"sql": "SELECT b FROM g ORDER BY SUM(b)", "expect": {"error": {"messageContains": "[G.B] is not a valid group by expression"}}},
+      {"sql": "SELECT a FROM g ORDER BY COUNT(*)", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}},
+      {"sql": "SELECT a FROM g ORDER BY MAX(b) DESC", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}},
+      {"sql": "SELECT a FROM g ORDER BY a + SUM(b)", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}}
+    ]},
+    {"name": "a-qualify-aggregate-groups-the-query", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 5)"},
+      {"sql": "SELECT a FROM g QUALIFY SUM(b) > 0", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}},
+      {"sql": "SELECT a FROM g QUALIFY COUNT(*) > 0", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}}
+    ]},
+    {"name": "the-other-clauses-do-not-change-it", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 5)"},
+      {"sql": "SELECT a FROM g WHERE b > 0 ORDER BY SUM(b)", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}},
+      {"sql": "SELECT DISTINCT a FROM g ORDER BY SUM(b)", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}},
+      {"sql": "SELECT a FROM g HAVING SUM(b) > 0", "expect": {"error": {"messageContains": "[G.A] is not a valid group by expression"}}}
+    ]},
+    {"name": "an-aggregated-list-runs", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 5)"},
+      {"sql": "SELECT SUM(b) FROM g ORDER BY SUM(a)", "expect": {"rows": [[35]]}},
+      {"sql": "SELECT COUNT(*) FROM g ORDER BY SUM(b)", "expect": {"rows": [[3]]}},
+      {"sql": "SELECT 1 FROM g ORDER BY SUM(b)", "expect": {"rows": [[1]]}},
+      {"sql": "SELECT MAX(a) FROM g ORDER BY SUM(b)", "expect": {"rows": [[2]]}}
+    ]},
+    {"name": "a-grouped-query-orders-by-its-aggregate", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 5)"},
+      {"sql": "SELECT a FROM g GROUP BY a ORDER BY SUM(b)", "expect": {"rows": [[2], [1]], "ordered": true}},
+      {"sql": "SELECT a FROM g GROUP BY a ORDER BY SUM(b) DESC", "expect": {"rows": [[1], [2]], "ordered": true}}
+    ]},
+    {"name": "the-missing-window-sentence-survives", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 5)"},
+      {"sql": "SELECT SUM(b) FROM g QUALIFY SUM(b) > 0", "expect": {"error": {"messageContains": "found QUALIFY clause but no window function."}}},
+      {"sql": "SELECT a, SUM(b) FROM g GROUP BY a QUALIFY SUM(b) > 0", "expect": {"error": {"messageContains": "found QUALIFY clause but no window function."}}},
+      {"sql": "SELECT a FROM g QUALIFY a > 0", "expect": {"error": {"messageContains": "found QUALIFY clause but no window function."}}}
+    ]},
+    {"name": "a-windowed-qualify-still-runs", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (1, 20), (2, 5)"},
+      {"sql": "SELECT a FROM g QUALIFY ROW_NUMBER() OVER (ORDER BY a) = 1", "expect": {"rows": [[1]]}}
+    ]}
+  ]
+}

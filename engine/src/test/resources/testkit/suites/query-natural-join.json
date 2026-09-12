@@ -1,0 +1,50 @@
+{
+  "suite": "query-natural-join",
+  "description": "NATURAL JOIN - an implicit equi-join on the columns COMMON to both inputs, with no ON and no USING. The inner form keeps only the matching keys, NATURAL LEFT keeps the unmatched left row with NULLs on the right, ALL common columns take part (both k1 AND k2 must match, not just one), and the standard-SQL rule that NO common column degrades the join to a CROSS join is asserted directly. The DIRECTED join modifier rides along here: it is a no-op annotation, so INNER DIRECTED JOIN with USING or with ON gives exactly the plain join's rows, LEFT DIRECTED JOIN still keeps the unmatched left row, and DIRECTED itself remains usable as an ordinary identifier. Converted 1:1 from query/NaturalJoinTest (now retired); the Java read rows by index, so the converted tests assert the whole ordered row set instead.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "natural-inner-join-matches-on-the-common-column", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')"},
+      {"sql": "CREATE TABLE dept (id INTEGER, dname VARCHAR)"},
+      {"sql": "INSERT INTO dept VALUES (1, 'Eng'), (2, 'Sales'), (4, 'HR')"},
+      {"sql": "SELECT name, dname FROM emp NATURAL JOIN dept ORDER BY name",
+       "expect": {"rows": [["Alice","Eng"],["Bob","Sales"]], "ordered": true}}
+    ]},
+    {"name": "natural-left-join-keeps-unmatched-left-rows", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')"},
+      {"sql": "CREATE TABLE dept (id INTEGER, dname VARCHAR)"},
+      {"sql": "INSERT INTO dept VALUES (1, 'Eng'), (2, 'Sales')"},
+      {"sql": "SELECT COUNT(*) FROM emp NATURAL LEFT JOIN dept", "expect": {"value": 3}},
+      {"sql": "SELECT name, dname FROM emp NATURAL LEFT JOIN dept ORDER BY name",
+       "expect": {"rows": [["Alice","Eng"],["Bob","Sales"],["Carol",null]], "ordered": true}}
+    ]},
+    {"name": "natural-join-uses-all-common-columns", "steps": [
+      {"sql": "CREATE TABLE a (k1 INTEGER, k2 INTEGER, va VARCHAR)"},
+      {"sql": "INSERT INTO a VALUES (1, 1, 'A'), (1, 2, 'B')"},
+      {"sql": "CREATE TABLE b (k1 INTEGER, k2 INTEGER, vb VARCHAR)"},
+      {"sql": "INSERT INTO b VALUES (1, 1, 'X'), (1, 3, 'Y')"},
+      {"sql": "SELECT va, vb FROM a NATURAL JOIN b", "expect": {"rows": [["A","X"]]}}
+    ]},
+    {"name": "natural-join-with-no-common-columns-is-a-cross-join", "steps": [
+      {"sql": "CREATE TABLE x (a INTEGER)"},
+      {"sql": "INSERT INTO x VALUES (1), (2)"},
+      {"sql": "CREATE TABLE y (b INTEGER)"},
+      {"sql": "INSERT INTO y VALUES (3), (4)"},
+      {"sql": "SELECT COUNT(*) FROM x NATURAL JOIN y", "expect": {"value": 4}},
+      {"sql": "SELECT a, b FROM x NATURAL JOIN y ORDER BY a, b",
+       "expect": {"rows": [[1,3],[1,4],[2,3],[2,4]], "ordered": true}}
+    ]},
+    {"name": "directed-is-a-no-op-join-modifier", "steps": [
+      {"sql": "CREATE TABLE aa (id INTEGER, x VARCHAR)"},
+      {"sql": "INSERT INTO aa VALUES (1, 'A'), (2, 'B'), (3, 'C')"},
+      {"sql": "CREATE TABLE bb (id INTEGER, y VARCHAR)"},
+      {"sql": "INSERT INTO bb VALUES (1, 'P'), (2, 'Q')"},
+      {"sql": "SELECT COUNT(*) FROM aa INNER DIRECTED JOIN bb USING (id)", "expect": {"value": 2}},
+      {"sql": "SELECT COUNT(*) FROM aa INNER DIRECTED JOIN bb ON aa.id = bb.id", "expect": {"value": 2}},
+      {"sql": "SELECT COUNT(*) FROM aa LEFT DIRECTED JOIN bb ON aa.id = bb.id", "expect": {"value": 3}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT 1 AS directed) z WHERE z.directed = 1", "expect": {"value": 1}}
+    ]}
+  ]
+}

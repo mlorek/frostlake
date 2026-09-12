@@ -63,8 +63,8 @@ public final class VariantJsonFormat {
     }
 
     /**
-     * {@code node} rendered at the width in force. {@code compactText} is returned unchanged at
-     * width zero, which is also the canonical text, so the common case costs nothing.
+     * {@code node} rendered at the width in force. {@code compactText}, the value's compact display
+     * text, is returned unchanged at width zero, so the common case costs nothing.
      */
     public static String render(final JsonNode node, final String compactText) {
         final int indent = indent();
@@ -83,7 +83,9 @@ public final class VariantJsonFormat {
         } else if (node.isObject()) {
             writeObject(node, indent, depth, out);
         } else {
-            out.append(node.toString());
+            // A DOUBLE takes the account's fifteen-decimal form at every width, as it does compact.
+            out.append(VariantJsonText.isRewritableDouble(node)
+                ? VariantJsonText.doubleText(node.doubleValue()) : node.toString());
         }
     }
 

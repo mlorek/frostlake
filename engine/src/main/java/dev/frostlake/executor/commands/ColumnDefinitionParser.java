@@ -17,10 +17,15 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.IntegerLiteralRange;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.expressions.BinaryLiteralText;
+import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.ConstraintNames;
@@ -50,6 +55,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
 
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.math.BigDecimal;
@@ -126,8 +132,17 @@ public class ColumnDefinitionParser implements CommandHandler {
         return null;
     }
 
-    /** A {@code x::T} cast written back as {@code CAST(x AS T)}; every other expression as written. */
+    /**
+     * A {@code x::T} cast written back as {@code CAST(x AS T)}, and an infix {@code x COLLATE 's'} as
+     * the call it is, {@code COLLATE(x, 's')}; every other expression as written.
+     */
     private String castSpelling(final FrostlakeParser.ExpressionContext expr) {
+        if (expr instanceof FrostlakeParser.CollateExprContext) {
+            final FrostlakeParser.CollateExprContext collated = (FrostlakeParser.CollateExprContext) expr;
+            final String spec = collated.STRING_LITERAL() != null
+                ? collated.STRING_LITERAL().getText() : collated.DOLLAR_QUOTED_STRING().getText();
+            return "COLLATE(" + getOriginalText(collated.expression()) + ", " + spec + ")";
+        }
         if (expr instanceof FrostlakeParser.CastExpr2Context) {
             final FrostlakeParser.CastExpr2Context cast = (FrostlakeParser.CastExpr2Context) expr;
             return "CAST(" + getOriginalText(cast.expression()) + " AS "
@@ -212,8 +227,8 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (literal.HEX_LITERAL() != null) {
             // X'AB' is one byte per two hex digits, and live reports it BINARY(1) — spelled as the
             // non-fixed variant, since a literal is not a declared width.
-            return new BinaryType(
-                "VARBINARY", Math.max((literal.HEX_LITERAL().getText().length() - 3) / 2, 1));
+            return new BinaryType("VARBINARY",
+                BinaryLiteralText.declaredWidth(BinaryLiteralText.decode(literal.HEX_LITERAL().getText())));
         }
         return null;
     }
@@ -232,7 +247,8 @@ public class ColumnDefinitionParser implements CommandHandler {
      *       {@code NUMBER DEFAULT UPPER('a')} are out while {@code LENGTH('abc')} is fine, and
      *       {@code DATE DEFAULT 7} is legal in the other direction.</li>
      *   <li>DATE and TIME refuse a string AND a TIMESTAMP — a timestamp does not narrow into either,
-     *       though {@code TIMESTAMP DEFAULT CURRENT_DATE()} widens happily.</li>
+     *       though {@code TIMESTAMP DEFAULT CURRENT_DATE()} widens happily — and between two temporal
+     *       types the flavour and the fractional precision decide ({@link #temporalDefaultFits}).</li>
      *   <li>A BOOLEAN or BINARY default, and NULL, are taken by every family; OBJECT, ARRAY and
      *       GEOGRAPHY judge nothing at all.</li>
      * </ul>
@@ -246,6 +262,28 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (source == null || defaultAccepts(dataType, source)) {
             return;
         }
+        throw new RuntimeException(SqlCompilationError.of(
+            "Default value data type does not match data type for column " + colName.toUpperCase()));
+    }
+
+    /**
+     * A DEFAULT that carries an explicit collation is refused as a mismatched type — written infix or
+     * as a call, in parentheses or inside a concatenation, before or after NOT NULL, and even beside a
+     * column of the SAME collation; COLLATE '' carries none and is taken (all live-verified). A
+     * non-string operand is refused for the operand first, as it is anywhere else.
+     */
+    private void rejectCollatedDefault(final String colName,
+            final FrostlakeParser.DefaultExpressionContext defaultExpression) {
+        if (defaultExpression == null || defaultExpression.expression() == null) {
+            return;
+        }
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(null,
+            queryExecutor.getFunctionRegistry(), catalog, queryExecutor);
+        final Expression parsed = ExpressionEvaluator.parse(getOriginalText(defaultExpression.expression()));
+        if (evaluator.collationOf(parsed) == null) {
+            return;
+        }
+        evaluator.inferStaticType(parsed);
         throw new RuntimeException(SqlCompilationError.of(
             "Default value data type does not match data type for column " + colName.toUpperCase()));
     }
@@ -265,14 +303,59 @@ public class ColumnDefinitionParser implements CommandHandler {
         return staticDefaultType(expr);
     }
 
-    /** The static type of a computed default, or null when the channel cannot determine one. */
+    /**
+     * The static type of a computed default, or null when the channel cannot determine one.
+     *
+     * <p>A COMPILATION error is not "undetermined": a real account compiles a DEFAULT where it stands
+     * and refuses it there, so an unknown function, a wrong argument count and a TRY_CAST between
+     * types it will not convert all stop the CREATE (live-verified). Anything else the channel cannot
+     * read leaves the type unknown, as before - a value-time fault such as {@code 1/0} or
+     * {@code TO_NUMBER('x')} is the row's, and live creates those columns.
+     */
     private DataType staticDefaultType(final FrostlakeParser.ExpressionContext expr) {
         try {
             final ExpressionEvaluator evaluator = new ExpressionEvaluator(null,
                 queryExecutor.getFunctionRegistry(), catalog, queryExecutor);
             return evaluator.inferStaticType(ExpressionEvaluator.parse(getOriginalText(expr)));
         } catch (final RuntimeException undetermined) {
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+                throw undetermined;
+            }
             return null;
+        }
+    }
+
+    /**
+     * Refuse the two shapes a DEFAULT may not have at all, each in the account's own words and at the
+     * offending node's own position: a sub-query and an aggregate call. Both are refused at CREATE
+     * even where the column's type would take the value (live-verified).
+     */
+    private void rejectUnsupportedDefaultShape(final FrostlakeParser.DefaultExpressionContext defaultExpression) {
+        if (defaultExpression == null || defaultExpression.expression() == null) {
+            return;
+        }
+        rejectDefaultShape(defaultExpression.expression());
+    }
+
+    /** The walk behind {@link #rejectUnsupportedDefaultShape}, in source order. */
+    private void rejectDefaultShape(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            final Token at = ((ParserRuleContext) node).getStart();
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                "sub-queries are not supported as part of the specification of a default value clause."));
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
+            final String name = call.functionName().getText().toUpperCase();
+            if (queryExecutor.getFunctionRegistry().hasAggregateFunction(name)) {
+                final Token at = call.getStart();
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    "aggregate functions are not allowed as part of the specification of a default value clause."));
+            }
+            rejectDefaultCallArity(call, name);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rejectDefaultShape(node.getChild(i));
         }
     }
 
@@ -291,38 +374,61 @@ public class ColumnDefinitionParser implements CommandHandler {
             return !(source instanceof StringType);
         }
         if (dataType instanceof DateTimeType) {
-            return !(source instanceof StringType) && (!isTimestamp(source) || isTimestamp(dataType));
+            if (source instanceof StringType) {
+                return false;
+            }
+            return !(source instanceof DateTimeType)
+                || temporalDefaultFits((DateTimeType) dataType, (DateTimeType) source);
         }
         return true;
     }
 
-    /** Whether a type is one of the TIMESTAMP variants rather than a DATE or a TIME. */
-    private boolean isTimestamp(final DataType type) {
-        return type instanceof DateTimeType && SqlTypeNames.canonical(type).startsWith("TIMESTAMP");
-    }
-
     /**
-     * CURRENT_TIMESTAMP carries the maximum fractional-second precision, so a datetime column that
-     * declares a SMALLER one cannot take it as a default: Snowflake answers "Default value data
-     * type does not match data type for column X" (live-verified — TIMESTAMP_LTZ(3) and
-     * TIMESTAMP_NTZ(3) are refused while the unparameterized spelling and (9) are accepted).
+     * Whether a temporal column takes a temporal DEFAULT, judged on the DEFAULT's static type — a cast
+     * is its target, a clock call its precision — by flavour and fractional precision (the whole table
+     * live-measured). A DATE fits every temporal column. A TIMESTAMP fits neither a DATE nor a TIME.
+     * Within one flavour the DEFAULT may be narrower than the column but never wider. A TIMESTAMP_TZ
+     * fits an NTZ or an LTZ column at any precision. Every other change of flavour, a TIME into a
+     * TIMESTAMP included, needs the two precisions to be equal. So a TIMESTAMP_NTZ(3) column takes
+     * {@code SYSDATE()::TIMESTAMP_NTZ(3)}, {@code SYSDATE()::TIMESTAMP_LTZ(3)} and
+     * {@code CURRENT_TIMESTAMP(3)}, but neither {@code SYSDATE()} (NTZ(9)) nor
+     * {@code CURRENT_TIMESTAMP()} (LTZ(9)).
      */
-    private static void rejectDefaultBelowDeclaredPrecision(final String colName, final DataType dataType,
-            final Object defaultValue) {
-        if (!(dataType instanceof DateTimeType) || defaultValue == null) {
-            return;
+    private static boolean temporalDefaultFits(final DateTimeType column, final DateTimeType source) {
+        final String columnFlavour = temporalFlavour(column);
+        final String sourceFlavour = temporalFlavour(source);
+        if ("DATE".equals(sourceFlavour)) {
+            return true;
         }
-        final String defaultText = String.valueOf(defaultValue).trim().toUpperCase();
-        final boolean nowDefault = defaultText.startsWith("CURRENT_TIMESTAMP")
-            || defaultText.startsWith("LOCALTIMESTAMP") || defaultText.startsWith("SYSDATE");
-        if (nowDefault && ((DateTimeType) dataType).getPrecision() < MAX_FRACTIONAL_PRECISION) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Default value data type does not match data type for column " + colName.toUpperCase()));
+        if ("DATE".equals(columnFlavour)) {
+            return "TIME".equals(sourceFlavour);
         }
+        if ("TIME".equals(columnFlavour)) {
+            return "TIME".equals(sourceFlavour) && source.getPrecision() <= column.getPrecision();
+        }
+        if ("TZ".equals(sourceFlavour)) {
+            return !"TZ".equals(columnFlavour) || source.getPrecision() <= column.getPrecision();
+        }
+        if (sourceFlavour.equals(columnFlavour)) {
+            return source.getPrecision() <= column.getPrecision();
+        }
+        return source.getPrecision() == column.getPrecision();
     }
 
-    /** Snowflake's maximum fractional-second precision, which the CURRENT_* functions return. */
-    private static final int MAX_FRACTIONAL_PRECISION = 9;
+    /** A temporal type's flavour: DATE, TIME, or a TIMESTAMP's NTZ, LTZ or TZ. */
+    private static String temporalFlavour(final DateTimeType type) {
+        final String name = type.getName().toUpperCase();
+        if ("DATE".equals(name) || "TIME".equals(name)) {
+            return name;
+        }
+        if (name.endsWith("_LTZ")) {
+            return "LTZ";
+        }
+        if (name.endsWith("_TZ")) {
+            return "TZ";
+        }
+        return "NTZ";
+    }
 
     private final Catalog catalog;
     private final QueryExecutor queryExecutor;
@@ -456,13 +562,23 @@ public class ColumnDefinitionParser implements CommandHandler {
             }
         }
 
+        if (collation != null) {
+            // A collation needs a string column, refused naming the declared type before the
+            // specification itself is judged; one that parses is kept lower-cased.
+            if (!(dataType instanceof StringType)) {
+                throw new RuntimeException(SqlCompilationError.of("Cannot specify column collation for data type '"
+                    + SqlTypeNames.canonical(dataType) + "' for column '" + colName.toUpperCase() + "'"));
+            }
+            collation = CollationSpec.parse(collation).getText();
+        }
         rejectDefaultOnBinaryColumn(dataType, sawDefault);
         if (addColumn) {
             rejectComputedDefaultOnAddColumn(defaultExpression);
             rejectMistypedLiteralOnAddColumn(colName, dataType, defaultExpression, defaultValue);
         }
+        rejectUnsupportedDefaultShape(defaultExpression);
+        rejectCollatedDefault(colName, defaultExpression);
         rejectUncoercibleDefault(colName, dataType, defaultExpression, defaultValue);
-        rejectDefaultBelowDeclaredPrecision(colName, dataType, defaultValue);
         rejectNonNullableFieldsInNullableStructure(colName, dataType, notNull);
 
         final TableColumn column = new TableColumn(colName, dataType, !notNull, defaultValue,
@@ -513,6 +629,47 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
 
         return column;
+    }
+
+    /**
+     * A name used TWICE in one column list, which live refuses:
+     * {@code duplicate column name 'C'} — unpositioned, lower-cased, and the name quoted in its
+     * CANONICAL spelling rather than as written.
+     *
+     * <p>★ THE QUOTED PAIR IS THE WHOLE RULE, and it is why the comparison is over canonical names
+     * rather than written text:
+     *
+     * <pre>
+     *   (c INT, "c" INT)     ACCEPTED — a quoted lowercase c is a DIFFERENT column
+     *   ("C" INT, c INT)     duplicate column name 'C'
+     *   ("c" INT, "c" INT)   duplicate column name 'c'   ← the echo keeps the quoted case
+     * </pre>
+     *
+     * <p>★ IT RUNS AFTER THE COLUMNS ARE PARSED, so a bad WIDTH still outranks it:
+     * {@code (c VARCHAR(0), c INT)} reports the character-length refusal, which is measured.
+     *
+     * <p>★ THREE OF THE SAME NAME REPORT ONCE, not once per pair — the first repeat wins.
+     */
+    private void rejectDuplicateColumnNames(final List<TableColumn> columns) {
+        final List<String> names = new ArrayList<>();
+        for (final TableColumn column : columns) {
+            names.add(column.getName());
+        }
+        rejectDuplicateNames(names);
+    }
+
+    /**
+     * The same rule over bare NAMES, for the lists that carry no types — a CTAS's names-only list and a
+     * view's column list, both of which live refuses with this same sentence.
+     */
+    public static void rejectDuplicateNames(final List<String> names) {
+        final Set<String> seen = new HashSet<>();
+        for (final String name : names) {
+            if (!seen.add(name)) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "duplicate column name '" + name + "'"));
+            }
+        }
     }
 
     public List<TableColumn> parseColumnList(final FrostlakeParser.ColumnListContext ctx) {
@@ -609,6 +766,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             columns = updatedColumns;
         }
 
+        rejectDuplicateColumnNames(columns);
         return columns;
     }
 
@@ -1133,6 +1291,9 @@ public class ColumnDefinitionParser implements CommandHandler {
 
     public Object parseLiteral(final FrostlakeParser.LiteralContext ctx) {
         if (ctx.INTEGER_LITERAL() != null) {
+            // A DEFAULT reads its literal here rather than through the expression AST, so it needs the
+            // reader's width refusal of its own.
+            IntegerLiteralRange.reject(ctx.INTEGER_LITERAL().getSymbol());
             return Long.parseLong(ctx.INTEGER_LITERAL().getText());
         } else if (ctx.FLOAT_LITERAL() != null) {
             return Double.parseDouble(ctx.FLOAT_LITERAL().getText());
@@ -1157,10 +1318,29 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     private String extractCollation(final FrostlakeParser.CollateClauseContext ctx) {
-        if (ctx == null || ctx.STRING_LITERAL() == null) {
+        return writtenCollation(ctx);
+    }
+
+    /** A COLLATE clause's specification as written, in either quoting, or null without a clause. */
+    static String writtenCollation(final FrostlakeParser.CollateClauseContext ctx) {
+        if (ctx == null) {
             return null;
         }
-        return extractStringLiteral(ctx.STRING_LITERAL());
+        if (ctx.STRING_LITERAL() != null) {
+            return SqlStringLiterals.decode(ctx.STRING_LITERAL().getText());
+        }
+        final String dollar = ctx.DOLLAR_QUOTED_STRING().getText();
+        return dollar.substring(2, dollar.length() - 2);
+    }
+
+    /**
+     * A COLLATE clause's specification validated and lower-cased, as the catalog keeps it — live
+     * reports a column declared COLLATE 'EN-CI' as 'en-ci' in COLLATION, DESCRIBE and GET_DDL alike —
+     * or null without a clause.
+     */
+    static String storedCollation(final FrostlakeParser.CollateClauseContext ctx) {
+        final String written = writtenCollation(ctx);
+        return written == null ? null : CollationSpec.parse(written).getText();
     }
 
     private String extractStringLiteral(final TerminalNode node) {
@@ -1180,6 +1360,34 @@ public class ColumnDefinitionParser implements CommandHandler {
     private static long parseSignedInteger(final FrostlakeParser.SignedIntegerContext ctx) {
         final long value = Long.parseLong(ctx.INTEGER_LITERAL().getText());
         return ctx.MINUS() != null ? -value : value;
+    }
+
+
+    /**
+     * A DEFAULT's call is counted where it stands. A real account refuses a wrong argument count at
+     * CREATE, in the two sentences it uses everywhere else - the too-FEW form carries a comma after
+     * the bracket and the too-many form does not, both live-verified - and the engine's own evaluation
+     * path already builds them; a DEFAULT never reached it, because a default is typed, not evaluated.
+     * Only a built-in the registry knows is counted: an unknown name is refused by the type channel.
+     */
+    private void rejectDefaultCallArity(final FrostlakeParser.FunctionCallExprContext call, final String name) {
+        final BuiltInFunction function = queryExecutor.getFunctionRegistry().getFunction(name);
+        if (function == null) {
+            return;
+        }
+        final int given = call.functionArgList() == null ? 0 : call.functionArgList().functionArg().size();
+        final Token at = call.getStart();
+        final String echoed = ParseTreeText.getOriginalText(call);
+        if (given < function.getMinArgCount()) {
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                "not enough arguments for function [" + echoed + "], expected "
+                    + function.getMinArgCount() + ", got " + given));
+        }
+        if (!function.isVariadic() && function.getMaxArgCount() >= 0 && given > function.getMaxArgCount()) {
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                "too many arguments for function [" + echoed + "] expected "
+                    + function.getMaxArgCount() + ", got " + given));
+        }
     }
 
 }

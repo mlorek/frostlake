@@ -22,6 +22,8 @@ import dev.frostlake.types.VectorType;
 import tools.jackson.databind.JsonNode;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -48,10 +50,19 @@ import java.util.List;
  * So: read the 32-bit elements, compute in {@code double}, and narrow only the ELEMENTS of a vector
  * RESULT — {@link #of}. A scalar result keeps full {@code double} precision.
  *
- * <p>Rendering matches the account exactly, because Snowflake prints the shortest text that
- * round-trips at the element's width, which is what {@link Float#toString} does:
- * {@code [1.0,2.0,3.0]}, {@code [0.57735026,...]}, {@code [1.0,1.0E-20,1.0E-20]}, and {@code [1,2,3]}
- * for INT.
+ * <p><b>Rendering is a FIXED SIX DECIMAL PLACES for FLOAT</b> — {@code %.6f}, rounded, never
+ * scientific and never trimmed — while INT prints plainly. It is the element's own value that is
+ * rendered, so the float32 narrowing above shows through: {@code [1,2,3]} reads
+ * {@code [1.000000,2.000000,3.000000]}, {@code VECTOR_NORMALIZE([1,2,3])} reads
+ * {@code [0.267261,0.534522,0.801784]}, {@code 1e-20} reads {@code 0.000000} and {@code 1e20} reads
+ * {@code 100000002004087734272.000000} — the float32's exact value written out in full.
+ *
+ * <p>This class previously claimed the shortest round-tripping text ({@link Float#toString}) and cited
+ * three values as live-verified; all three were wrong about the TEXT, though right about the VALUE.
+ * Six places is a THIRD float spelling in this engine, sharing nothing with the two beside it: a FLOAT
+ * cast to VARCHAR is ten SIGNIFICANT digits ({@code SharedFunctionHelpers.floatText}) and a DOUBLE
+ * inside a VARIANT keeps its own. A vector's SCALAR results — {@code VECTOR_L1_DISTANCE} and the rest
+ * — follow the ten-significant-digit rule and not this one, because they are floats and not vectors.
  */
 public final class VectorValue implements Comparable<VectorValue>, Serializable {
 
@@ -201,6 +212,23 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
         return new VectorType(elementType, elements.length);
     }
 
+    /**
+     * One FLOAT element at six decimal places, from the element's EXACT binary value.
+     *
+     * <p>{@code String.format("%.6f", …)} is not the same thing: Java stops at the digits that
+     * round-trip the double and zero-pads the rest, so a float32 1e20 comes out
+     * {@code 100000002004087730000.000000} where live writes {@code 100000002004087734272.000000} —
+     * the value the bits actually name. Only magnitudes past about seventeen significant digits can
+     * tell the two apart, which is why one cell of the fixed-width evidence is a huge number.
+     *
+     * @param element the element, already narrowed to its declared width
+     * @return the element's text
+     */
+    private static String sixPlaces(final float element) {
+        return new BigDecimal(Double.valueOf(element).doubleValue())
+            .setScale(6, RoundingMode.HALF_UP).toPlainString();
+    }
+
     @Override
     public String toString() {
         final StringBuilder text = new StringBuilder("[");
@@ -210,7 +238,7 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
             }
             text.append(elementType == VectorElementType.INT
                 ? Integer.toString((int) elements[i])
-                : Float.toString((float) elements[i]));
+                : sixPlaces((float) elements[i]));
         }
         return text.append(']').toString();
     }

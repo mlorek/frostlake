@@ -1,0 +1,23 @@
+{
+  "suite": "features-large-integer-literal",
+  "description": "Integer literals wider than a 64-bit long (Snowflake NUMBER(38,0) allows up to 38 digits): a 22-digit literal parses as an exact decimal in SELECT, survives arithmetic (+1 lands on the exact neighbour), inserts into and compares against NUMBER(38,0) columns, and ordinary literals are unaffected. Exact-value pins are stringified with '<...>' so the harness's significant-figure normalization cannot mask a low-digit drift. Converted 1:1 from features/LargeIntegerLiteralTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "oversized-integer-literal-in-select", "steps": [
+      {"sql": "SELECT '<' || 9000000000000000000001 || '>'", "expect": {"value": "<9000000000000000000001>"}}
+    ]},
+    {"name": "oversized-integer-arithmetic", "steps": [
+      {"sql": "SELECT '<' || (9000000000000000000001 + 1) || '>'", "expect": {"value": "<9000000000000000000002>"}}
+    ]},
+    {"name": "oversized-integer-insert-and-compare", "steps": [
+      {"sql": "CREATE TABLE t (row_id NUMBER(38,0), c INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (9000000000000000000001, 5)"},
+      {"sql": "INSERT INTO t VALUES (9000000000000000000002, 6)"},
+      {"sql": "SELECT '<' || row_id || '>' FROM t WHERE c = 5", "expect": {"value": "<9000000000000000000001>"}},
+      {"sql": "SELECT c FROM t WHERE row_id = 9000000000000000000002", "expect": {"value": "6"}}
+    ]},
+    {"name": "ordinary-integer-literal-unaffected", "steps": [
+      {"sql": "SELECT 42 + 8 AS n", "expect": {"value": "50"}}
+    ]}
+  ]
+}

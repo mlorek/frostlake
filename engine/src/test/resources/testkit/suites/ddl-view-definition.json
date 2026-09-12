@@ -1,0 +1,56 @@
+{
+  "suite": "ddl-view-definition",
+  "description": "INFORMATION_SCHEMA.VIEWS.VIEW_DEFINITION and SHOW VIEWS' text carry a view's FULL executable CREATE statement exactly as typed (original case, no normalization, no qualification, no added OR REPLACE) - deployment tooling EXECUTE IMMEDIATEs that text, so a bare SELECT there silently no-ops the recreate. The verbatim text re-executes when the original said OR REPLACE, SECURE and explicit column lists survive, SHOW MATERIALIZED VIEWS' text is the full DDL too, GET_DDL stays bare-named with its rendered output column list, and the scripting fetch-into-variable + EXECUTE IMMEDIATE recreate loop works. Converted 1:1 from ddl/ViewDefinitionDdlTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "view-definition-is-the-original-create-statement-verbatim", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, amount NUMBER(10,2))"},
+      {"sql": "CREATE VIEW big_orders AS SELECT id, amount FROM orders WHERE amount > 100"},
+      {"sql": "SELECT view_definition FROM information_schema.views WHERE table_name = 'BIG_ORDERS'",
+       "expect": {"rows": [["CREATE VIEW big_orders AS SELECT id, amount FROM orders WHERE amount > 100"]]}}
+    ]},
+    {"name": "view-definition-is-executable-and-recreates-the-view", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO customers VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE OR REPLACE VIEW customer_names AS SELECT name FROM customers"},
+      {"sql": "SET ddl = (SELECT view_definition FROM information_schema.views WHERE table_name = 'CUSTOMER_NAMES')"},
+      {"sql": "EXECUTE IMMEDIATE $ddl"},
+      {"sql": "SELECT COUNT(*) FROM customer_names", "expect": {"value": "2"}}
+    ]},
+    {"name": "secure-view-and-explicit-column-list-survive-in-the-ddl", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, price NUMBER)"},
+      {"sql": "CREATE OR REPLACE SECURE VIEW priced (pid, cost) AS SELECT id, price FROM products"},
+      {"sql": "SELECT view_definition FROM information_schema.views WHERE table_name = 'PRICED'",
+       "expect": {"rows": [["CREATE OR REPLACE SECURE VIEW priced (pid, cost) AS SELECT id, price FROM products"]]}},
+      {"sql": "SET ddl = (SELECT view_definition FROM information_schema.views WHERE table_name = 'PRICED')"},
+      {"sql": "EXECUTE IMMEDIATE $ddl"}
+    ]},
+    {"name": "show-views-text-matches-the-full-ddl", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER)"},
+      {"sql": "CREATE VIEW emp_view AS SELECT id FROM emp"},
+      {"sql": "SHOW VIEWS"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'EMP_VIEW', \"text\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "CREATE VIEW emp_view AS SELECT id FROM emp"}}
+    ]},
+    {"name": "show-materialized-views-text-is-the-full-ddl", "steps": [
+      {"sql": "CREATE TABLE dept (id INTEGER)"},
+      {"sql": "CREATE MATERIALIZED VIEW dept_mv AS SELECT id FROM dept"},
+      {"sql": "SHOW MATERIALIZED VIEWS"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'DEPT_MV', \"text\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "CREATE MATERIALIZED VIEW dept_mv AS SELECT id FROM dept"}}
+    ]},
+    {"name": "get-ddl-stays-bare-named", "steps": [
+      {"sql": "CREATE TABLE items (id INTEGER)"},
+      {"sql": "CREATE VIEW item_view AS SELECT id FROM items"},
+      {"sql": "SELECT GET_DDL('VIEW', 'item_view')",
+       "expect": {"value": "create or replace view ITEM_VIEW(\n\tID\n) as SELECT id FROM items;"}}
+    ]},
+    {"name": "scripted-recreate-loop-over-view-definition-works", "steps": [
+      {"sql": "CREATE TABLE clients (id INTEGER)"},
+      {"sql": "CREATE OR REPLACE VIEW client_view AS SELECT id FROM clients"},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE\n  d VARCHAR;\nBEGIN\n  SELECT view_definition INTO :d FROM information_schema.views WHERE table_name = 'CLIENT_VIEW';\n  EXECUTE IMMEDIATE d;\n  RETURN 'recreated';\nEND;\n$$",
+       "expect": {"value": "recreated"}},
+      {"sql": "SELECT * FROM client_view", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

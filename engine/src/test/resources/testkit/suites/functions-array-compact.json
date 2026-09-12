@@ -1,0 +1,17 @@
+{
+  "suite": "functions-array-compact",
+  "description": "ARRAY_COMPACT(array) removes null elements: a mixed array keeps only its values, an all-null array becomes empty, and a NULL input answers NULL. Converted 1:1 from functions/ArrayCompactTest (now retired); the array cells are read through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "null-elements-are-removed", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_COMPACT(ARRAY_CONSTRUCT(1, NULL, 2, NULL, 3)))",
+       "expect": {"value": "[1,2,3]"}}
+    ]},
+    {"name": "an-all-null-array-becomes-empty", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_COMPACT(ARRAY_CONSTRUCT(NULL, NULL)))", "expect": {"value": "[]"}}
+    ]},
+    {"name": "a-null-input-is-null", "steps": [
+      {"sql": "SELECT ARRAY_COMPACT(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

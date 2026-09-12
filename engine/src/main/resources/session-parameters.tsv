@@ -1,0 +1,162 @@
+# The session parameters SHOW PARAMETERS lists, transcribed from a real account.
+# name<TAB>default<TAB>description<TAB>type   (\n in a description is a real newline)
+ABORT_DETACHED_QUERY	false	If true, Snowflake will automatically abort queries when it detects that the client has disappeared.	BOOLEAN
+ACTIVE_PYTHON_PROFILER		Which profiler is currently active to analyze user code for Python sprocs. Possible values are "LINE" and "MEMORY".	STRING
+AI_SQL_EMBED_SIMILARITY_ERROR_HANDLING_USE_FAIL_ON_ERROR	true	When enabled, old fail on error behavior will be observed for AI_EMBED and AI_SIMILARITY	BOOLEAN
+AI_SQL_ERROR_HANDLING_USE_FAIL_ON_ERROR	false	When enabled, old fail on error behavior will be observed	BOOLEAN
+AUTOCOMMIT	true	The autocommit property determines whether is statement should to be implicitly\nwrapped within a transaction or not. If autocommit is set to true, then a \nstatement that requires a transaction is executed within a transaction \nimplicitly. If autocommit is off then an explicit commit or rollback is required\nto close a transaction. The default autocommit value is true.	BOOLEAN
+AUTOCOMMIT_API_SUPPORTED	true	Whether autocommit feature is enabled for this client. This parameter is for\nSnowflake use only.	BOOLEAN
+BINARY_INPUT_FORMAT	HEX	input format for binary	STRING
+BINARY_OUTPUT_FORMAT	HEX	display format for binary	STRING
+CLIENT_ENABLE_CONSERVATIVE_MEMORY_USAGE	true	Enables conservative memory usage for JDBC	BOOLEAN
+CLIENT_ENABLE_DEFAULT_OVERWRITE_IN_PUT	false	Set default value of overwrite option to true for put command, if overwrite option is not specified in the sql command.	BOOLEAN
+CLIENT_ENABLE_LOG_INFO_STATEMENT_PARAMETERS	false	Enable info-level logging for Prepared Statement binding parameters	BOOLEAN
+CLIENT_MEMORY_LIMIT	1536	Limit the amount of memory used by the client in MB	NUMBER
+CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX	false	For client metadata request(getTables()), use session catalog and schema if set to true	BOOLEAN
+CLIENT_METADATA_USE_SESSION_DATABASE	false	For client metadata request(getTables()), use session catalog but multiple schemas if set to true (in conjunction with CLIENT_METADATA_REQUEST_USE_CONNECTION_CTX	BOOLEAN
+CLIENT_PREFETCH_THREADS	4	Customer parameter to control threads, 0=auto	NUMBER
+CLIENT_RESULT_CHUNK_SIZE	160	Set the max result chunk size in MB on the client side	NUMBER
+CLIENT_RESULT_COLUMN_CASE_INSENSITIVE	false	Column name search is case insensitive in clients	BOOLEAN
+CLIENT_SESSION_CLONE	false	If true, client clones a new session from the previously used tokens for the account and user.	BOOLEAN
+CLIENT_SESSION_KEEP_ALIVE	false	If true, client session will not expire automatically	BOOLEAN
+CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY	3600	Heartbeat frequency in seconds for CLIENT_SESSION_KEEP_ALIVE.	NUMBER
+CLIENT_TIMESTAMP_TYPE_MAPPING	TIMESTAMP_LTZ	If a variable is bound to the TIMESTAMP data type using the bind API, determines which TIMESTAMP* type it should map to:\n  TIMESTAMP_LTZ (default), TIMESTAMP_NTZ	STRING
+CORTEX_CLIENT_READ_ONLY	false	Client-settable strict read-only mode. When enabled, only SELECT, EXPLAIN, SHOW, and DESCRIBE statements are allowed. Cannot be disabled once set.	BOOLEAN
+CSV_TIMESTAMP_FORMAT		Display format for TIMESTAMP values in Snowsight downloaded CSV files. If empty, TIMESTAMP_LTZ_OUTPUT_FORMAT will be used for TIMESTAMP_LTZ values, TIMESTAMP_TZ_OUTPUT_FORMAT will be used for TIMESTAMP_TZ and TIMESTAMP_NTZ_OUTPUT_FORMAT for TIMESTAMP_NTZ values.	STRING
+C_API_QUERY_RESULT_FORMAT	JSON	Format used to serialize query result to send back to C API	STRING
+DATAFRAME_PROCESSOR_PKG_VERSION	latest	The version of the Dataframe processor package. e.g., local means the package is built locally from a stage; latest means use the latest version imported from the Anaconda channel. 0.0.3 means the exact version from the channel.	STRING
+DATE_INPUT_FORMAT	AUTO	input format for date	STRING
+DATE_OUTPUT_FORMAT	YYYY-MM-DD	display format for date	STRING
+DEFAULT_NULL_ORDERING	LAST	User-visible parameter that allows customizing null ordering:- FIRST: nulls are ordered first in ASC order and last in DESC order- LAST: nulls are ordered last in ASC order and first in ASC order	STRING
+DOTNET_QUERY_RESULT_FORMAT	JSON	Format used to serialize query result to send back to .NET driver	STRING
+DYNAMIC_TABLES_VIEW_VERSION	12	INFORMATION_SCHEMA.DYNAMIC_TABLES table function definition version	NUMBER
+DYNAMIC_TABLE_GRAPH_HISTORY_VIEW_VERSION	11	INFORMATION_SCHEMA.DYNAMIC_TABLE_GRAPH_HISTORY view definition version	NUMBER
+DYNAMIC_TABLE_REFRESH_HISTORY_VIEW_VERSION	12	INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY view definition version	NUMBER
+ENABLE_CONSOLE_OUTPUT	false	Enable stdout/stderr fast path logging for anonyous stored procs. This is a public parameter (similar to LOG_LEVEL).	BOOLEAN
+ENABLE_FBE_GET_EXACT_FILE_MATCH	false	When set, a file GET on a versioned (FBE) stage matches the requested path exactly (equals) instead of by prefix, returning exactly one file or none. Intended for single-file downloads: it stops a single-file GET from over-matching prefix siblings (e.g. profiles.yml vs profiles.yml.template) and folder children (SNOW-3637888). Set it only on sessions issuing single-file requests -- while set, a directory/prefix GET matches no files. No effect on non-versioned stages.	BOOLEAN
+ENABLE_GET_DDL_USE_DATA_TYPE_ALIAS	false	If true, GET_DDL will return data type alias instead of canonical data type when alias is available	BOOLEAN
+ENABLE_NATIVE_TABLE_OVERRIDE_DEFAULT	false	If true, suppresses implicit DEFAULT_METADATA_WRITE_FORMAT and ADDITIONAL_METADATA_READ_FORMATS augmentation for the current session. CREATE TABLE creates a plain FDN table regardless of schema-level defaults. Explicit CREATE ICEBERG TABLE is unaffected. No-op for catalog-linked databases (CLDs), which cannot create FDN tables.	BOOLEAN
+ENABLE_PROVIDER_LISTING_PROGRAMMATIC_ACCESS_DESCRIBE_LISTING	true	If true, describe listing returns based on the listing programmatic access design.	BOOLEAN
+ENABLE_SCOS_FEATURE	false	Enables SCOS feature for Snowpark Connect	BOOLEAN
+ENABLE_SNOW_API_FOR_COMPUTE_POOL	enable	Enable compute pool resource	STRING
+ENABLE_SNOW_API_FOR_COPILOT	enable	Enable copilot resource	STRING
+ENABLE_SNOW_API_FOR_DATABASE	enable	Enable database resource	STRING
+ENABLE_SNOW_API_FOR_FUNCTION	enable	Enable function resource	STRING
+ENABLE_SNOW_API_FOR_GRANT	enable	Enable grant resource	STRING
+ENABLE_SNOW_API_FOR_ICEBERG	enable	Enable Iceberg resource	STRING
+ENABLE_SNOW_API_FOR_IMAGE_REPOSITORY	enable	Enable image repository resource	STRING
+ENABLE_SNOW_API_FOR_RESULT	enable	Enable result resource	STRING
+ENABLE_SNOW_API_FOR_ROLE	enable	Enable role resource	STRING
+ENABLE_SNOW_API_FOR_SCHEMA	enable	Enable schema resource	STRING
+ENABLE_SNOW_API_FOR_SERVICE	enable	Enable service resource	STRING
+ENABLE_SNOW_API_FOR_SESSION	enable	Enable session resource	STRING
+ENABLE_SNOW_API_FOR_STAGE	enable	Enable stage resource	STRING
+ENABLE_SNOW_API_FOR_TABLE	enable	Enable table resource	STRING
+ENABLE_SNOW_API_FOR_TASK	enable	Enable task resource	STRING
+ENABLE_SNOW_API_FOR_USER	enable	Enable user resource	STRING
+ENABLE_SNOW_API_FOR_WAREHOUSE	enable	Enable warehouse resource	STRING
+ENABLE_SPARK_APPLICATION_PUSHDOWN_OVERRIDES	false	Enable Spark integration. When enabled, configures parameters required for Spark connectivity. When disabled, restores those parameters to their default values.	BOOLEAN
+ENABLE_STRUCTURED_TYPES_IN_SNOWPARK_CONNECT_RESPONSE	false	If enabled, it will act as though ENABLE_STRUCTURED_TYPES_IN_CLIENT_RESPONSE and ENABLE_STRUCTURED_TYPES_NATIVE_ARROW_FORMAT are also enabled, bypassing the driver version check. This parameter is temporary and intended solely for use in Snowpark sessions. Note that there is no validation that the request is initiated from Snowpark when this parameter is on	BOOLEAN
+ENABLE_STRUCTURED_TYPES_NATIVE_ARROW_FORMAT	false	If true, in the Arrow ResultSet format, a result column of a structured type would become a column of a corresponding native Arrow structured type (subject to client feature support check). Otherwise, the column would become a string Arrow column that contains JSON representation of its contents. See http://go/structured-types-arrow-resultset .	BOOLEAN
+ENABLE_TRY_CAST_STRUCTURED_TYPES	false	Enable TRY_CAST for variant to structured type conversions	BOOLEAN
+ENABLE_UNHANDLED_EXCEPTIONS_REPORTING	true	Enables reporting of unhandled exceptions thrown by UDFs and procedures	BOOLEAN
+ENABLE_UNLOAD_PHYSICAL_TYPE_OPTIMIZATION	true	Enable physical-type optimizations used in Snowflake to affect the Parquet output	BOOLEAN
+ENABLE_USE_STABLE_PATH	false	Add support for stable path	BOOLEAN
+ERROR_ON_NONDETERMINISTIC_MERGE	true	raise an error when attempting to merge-update a row that joins many rows	BOOLEAN
+ERROR_ON_NONDETERMINISTIC_UPDATE	false	raise an error when attempting to update a row that joins many rows	BOOLEAN
+GEOGRAPHY_OUTPUT_FORMAT	GeoJSON	GEOGRAPHY display format: GeoJSON, WKT, or WKB(case-insensitive)	STRING
+GEOMETRY_OUTPUT_FORMAT	GeoJSON	GEOMETRY display format: GeoJSON, WKT, or WKB(case-insensitive)	STRING
+GO_QUERY_RESULT_FORMAT	ARROW	Format used to serialize query result to send back to golang driver	STRING
+HYBRID_TABLE_LOCK_TIMEOUT	3600	Number of seconds to wait while trying to acquire locks, before timing out and\naborting the statement. A value of 0 turns off lock waiting i.e. the statement\nmust acquire the lock immediately or abort.	NUMBER
+ICEBERG_TIMESTAMP_DEFAULT_PRECISION	6	Default precision for iceberg timestamps when no precision is specified. Valid values are 6 (microseconds) and 9 (nanoseconds).	NUMBER
+INCLUDE_DT_WITH_TABLE_KIND_IN_SHOW_OBJECTS	true	Whether to include dynamic tables, is_dynamic column, table kind in show objects	BOOLEAN
+INCLUDE_DYNAMIC_TABLES_WITH_TABLE_KIND	true	Whether to include dynamic tables, is_dynamic column, table kind in show commands	BOOLEAN
+JDBC_FORMAT_DATE_WITH_TIMEZONE	true	When true, ResultSet#getDate(int columnIndex, Calendar cal) and getDate(String columnName, Calendar cal) will display the date using the Calendar's output.	BOOLEAN
+JDBC_QUERY_RESULT_FORMAT	ARROW	Format used to serialize query result to send back to jdbc	STRING
+JDBC_TREAT_DECIMAL_AS_INT	true	When scale is 0, whether to treat Decimal as Int in JDBC	BOOLEAN
+JDBC_TREAT_TIMESTAMP_NTZ_AS_UTC	false	When true, Timestamp_NTZ values are always stored in UTC timezone	BOOLEAN
+JDBC_USE_SESSION_TIMEZONE	true	When true, JDBC driver will not display timezone offset between JVM and session.	BOOLEAN
+JSON_INDENT	2	Width of indentation in JSON output (0 for compact)	NUMBER
+JS_TREAT_INTEGER_AS_BIGINT	false	If true, the nodejs client will convert all integer columns to bigint type	BOOLEAN
+LANGUAGE	en	The selected language that will be used by UI, GS, Query Coordination and XP. The input languages should be in BCP-47 format. AKA. dash format.See LocaleUtil.java for the details.	STRING
+LOCK_TIMEOUT	43200	Number of seconds to wait while trying to lock a resource, before timing out \nand aborting the statement. A value of 0 turns off lock waiting i.e. the \nstatement must acquire the lock immediately or abort. If multiple resources \nneed to be locked by the statement, the timeout applies separately to each \nlock attempt.	NUMBER
+LOG_EVENT_LEVEL	OFF	LOG_EVENT_LEVEL to use when filtering log events	STRING
+LOG_LEVEL	OFF	LOG_LEVEL to use when filtering events	STRING
+METRIC_LEVEL	NONE	METRIC_LEVEL value to control whether to emit metrics to Event Table	STRING
+MULTI_STATEMENT_COUNT	1	Number of statement included in submitted query text.\nThis parameter is submitted by user to avoid sql injection.\nValue 1 means one statement, value > 1 means n statement\ncan be executed, if not equal to the value will raise the\nexception. Value 0 means any number of statement can be\n executed	NUMBER
+NOORDER_SEQUENCE_AS_DEFAULT	true	Whether we make NOORDER the default option for creating new sequences	BOOLEAN
+ODBC_QUERY_RESULT_FORMAT	ARROW	Format used to serialize query result to send back to odbc	STRING
+ODBC_SCHEMA_CACHING	false	When true, enables schema caching in ODBC. This can speed up SQLColumns API calls.	BOOLEAN
+ODBC_TREAT_DECIMAL_AS_INT	false	When scale is 0, whether to treat Decimal as Int in ODBC	BOOLEAN
+ODBC_USE_CUSTOM_SQL_DATA_TYPES	false	ODBC return snowflake specific sql data types in result set metadata	BOOLEAN
+OPT_OUT_ERROR_LOGGING	false	This is a customer-facing STATEMENT_LINEAGE parameter, the default value is false. When true, ignore the error_logging property specified on the table and do not log errors on the ingestion path (fall back to the original behavior).	BOOLEAN
+PYTHON_CONNECTOR_QUERY_RESULT_FORMAT	ARROW	Format used to serialize query result to send back to python connector 	STRING
+PYTHON_CONNECTOR_USE_NANOARROW	true	True = Python Connector will use nanoarrow to convert data. False =  client will use vendored pyarrow to convert data.Only affects Python Connector >= 3.3.0	BOOLEAN
+PYTHON_PROFILER_MODULES		A comma separated list of modules to profile in addition to the user code, which is always profiled	STRING
+PYTHON_PROFILER_TARGET_STAGE		The fully qualified stage name where the profiler output will be saved.	STRING
+PYTHON_SNOWPARK_AUTO_CLEAN_UP_TEMP_TABLE_ENABLED	false	When True, Snowpark Python client will automatically clean up unused temp tables in the current session. When False, unused temp tables will not be cleaned up until the end of session.	BOOLEAN
+PYTHON_SNOWPARK_AUTO_CLEAN_UP_TEMP_TABLE_ENABLED_VERSION		The minimum Snowpark-Python version required for enabling auto clean up of unused temp tables in the current session. If it's an empty string, this improvment is disabled.	STRING
+PYTHON_SNOWPARK_COLLECT_TELEMETRY_AT_CRITICAL_PATH_VERSION	1.28.0	The minimum Snowpark Python version required for enabling reporting telemetry for all SnowflakePlans being executed in the client. If it's an empty string, this improvement is disabled.	STRING
+PYTHON_SNOWPARK_COMPILATION_STAGE_ENABLED	true	When True, Snowpark Python client will enable the extra compilation stage that appliesoptimizations like repeated subquery elimination, large query breakdown etc.	BOOLEAN
+PYTHON_SNOWPARK_DATAFRAME_JOIN_ALIAS_FIX_VERSION		The minimum Snowpark-Python version required for resovling conflicting alias. If it's an empty string, this improvment is disabled.	STRING
+PYTHON_SNOWPARK_ELIMINATE_NUMERIC_SQL_VALUE_CAST_ENABLED	false	True = Snowpark Python client will try to eliminate the type cast for numeric literals during query generation for binary expression and in expression. False = Snowpark Python client will always add a type cast for numeric literals for query generation.	BOOLEAN
+PYTHON_SNOWPARK_ENABLE_THREAD_SAFE_SESSION	true	When True, Snowpark Python client will use locks and thread local objects to protect updates of session object.	BOOLEAN
+PYTHON_SNOWPARK_GENERATE_MULTILINE_QUERIES	true	True = Snowpark Python client will generate multi-line SQL queries. False= Snowpark Python client will not generate multi-line SQL queries.	BOOLEAN
+PYTHON_SNOWPARK_LARGE_QUERY_BREAKDOWN_COMPLEXITY_LOWER_BOUND	10000000	Parameter to control the complexity score lower bound used by large query breakdown. When the plan complexity is below this complexity bound, the plan node will not be considered a valid candidate for the optimization.	NUMBER
+PYTHON_SNOWPARK_LARGE_QUERY_BREAKDOWN_COMPLEXITY_UPPER_BOUND	12000000	Parameter to control the complexity score upper bound used by large query breakdown. When the plan complexity is above this bound, the plan will be broken down util plan complexity is below is bound, or no valid nodes can be found.	NUMBER
+PYTHON_SNOWPARK_REDUCE_DESCRIBE_QUERY_ENABLED	false	True = Snowpark Python client will reduce unnecessary describe queries. False = Snowpark Python client will not reduce unnecessary describe queries.	BOOLEAN
+PYTHON_SNOWPARK_REDUCE_DESCRIBE_QUERY_VERSION		The minimum snowpark-python client version for which the reduce describe query optimization is enabled. If it's an empty string, this improvement is disabled.	STRING
+PYTHON_SNOWPARK_USE_CTE_OPTIMIZATION_VERSION	1.31.1	The minimum Snowpark-Python version required for enabling cte optimization in the current session. If it's an empty string, this improvment is disabled.	STRING
+PYTHON_SNOWPARK_USE_LARGE_QUERY_BREAKDOWN_OPTIMIZATION_VERSION		The minimum Snowpark-Python version required to use the large query breakdown optimization for breaking down complex snowpark dataframe queries into smaller ones for achieving higher performance. When False, do not breakdown the generated sql queries. If it's an empty string, this improvement is disabled.	STRING
+PYTHON_SNOWPARK_USE_LOGICAL_TYPE_FOR_CREATE_DATAFRAME	true	True = Snowpark Python client will use logical type by default in session.create_dataframe to infer timestamp types correctly. False = Snowpark client will fallback to the old behavior. Only affects Python Snowpark version > 1.10.0	BOOLEAN
+PYTHON_SNOWPARK_USE_OPTIMIZED_SQL_FEATURES_VERSION		The minimum Snowpark-Python version required for enabling optimized SQL features in the current session. If it's an empty string, this improvement is disabled.	STRING
+PYTHON_SNOWPARK_USE_SCOPED_TEMP_OBJECTS	true	True = Python Snowpark will create job scoped temp objects. False = Snowpark will create session temp objects. Only affects Python Snowpark versions > 0.9.0	BOOLEAN
+PYTHON_SNOWPARK_USE_SQL_SIMPLIFIER	true	True = Snowpark Python client will use the SQL simplifier. False = Snowpark Python client will not use SQL simplifier.	BOOLEAN
+PYTHON_UDF_PROFILER_MODULES		A comma separated list of user-imported modules to profile in addition to the handler code in Python UDF, which is always profiled.	STRING
+QA_TEST_NAME		Test name if running in QA mode. Used as a diversifier for shared pools	STRING
+QUERY_CLIENT_TAG		String (up to 2000 characters) used to tag and index queries	STRING
+QUERY_RESULT_FORMAT	JSON	Format used to serialize query result to send back to client 	STRING
+QUERY_TAG		String (up to 2000 characters) used to tag statements executed by the session	STRING
+QUOTED_IDENTIFIERS_IGNORE_CASE	false	If true, the case of quoted identifiers is ignored	BOOLEAN
+READ_LATEST_WRITES	false	If true, queries that read hybrid tables will always see the latest committed writes	BOOLEAN
+ROWS_PER_RESULTSET	0	maxium number of rows in a result set	NUMBER
+S3_STAGE_VPCE_DNS_NAME		S3 VPCE DNS name to access internal stage bucket over privatelink	STRING
+SEARCH_PATH	$current, $public	Search path for unqualified object references.	STRING
+SHOW_EXTERNAL_TABLE_KIND_AS_TABLE	true	Change the way external table KIND info is displayed by SHOW TABLES and SHOW OBJECTS. The KIND column of external tables is displayed as TABLE if true, EXTERNAL_TABLE otherwise.	BOOLEAN
+SHOW_TERSE_BY_DEFAULT	false	When enabled, SHOW commands route to MD Fetch SHOW TERSE implementation. Use SHOW FULL to get all columns.	BOOLEAN
+SIMULATED_DATA_SHARING_CONSUMER		Data sharing views will return rows as if executed in the specified consumer account.	STRING
+SNOWPARK_CONNECT_USE_CTE_OPTIMIZATION_VERSION	1.27.0	The minimum Snowpark-Connect version required for enabling cte optimization in the current session. If it's an empty string, this improvement is disabled.	STRING
+SNOWPARK_HIDE_INTERNAL_ALIAS	true	Display the original column names after automatic aliased by Snowpark client. e.g. Join two dataframes with conflicting column names.	BOOLEAN
+SNOWPARK_LAZY_ANALYSIS	true	Enable lazy result schema analysis for Snowpark	BOOLEAN
+SNOWPARK_REQUEST_TIMEOUT_IN_SECONDS	86400	Client side timeout for Snowpark requests in seconds. Currently this parameter only applies to UDF jar (Java/Scala) or zip (Python) file uploading.	NUMBER
+SNOWPARK_STORED_PROC_IS_FINAL_TABLE_QUERY	false	If true, it indicates that the query is the final query of table sproc which is used as the result for the client	BOOLEAN
+SNOWPARK_USE_SCOPED_TEMP_OBJECTS	false	True = Snowpark will create job scoped temp objects. False = Snowpark will create session temp objects. Only affects JVM Snowpark versions > 1.5.0	BOOLEAN
+SQL_API_NULLABLE_IN_RESULT_SET	true	The result set may include JSON null if true, otherwise it includes string 'null'	BOOLEAN
+SQL_API_QUERY_RESULT_FORMAT	JSON	The result set will use the format provided with the default of JSON	STRING
+STATEMENT_QUEUED_TIMEOUT_IN_SECONDS	0	Timeout in seconds for queued statements: statements will automatically be canceled if they are queued on a warehouse for longer than this amount of time; disabled if set to zero.	NUMBER
+STATEMENT_TIMEOUT_IN_SECONDS	172800	Timeout in seconds for statements: statements are automatically canceled if they run for longer; if set to zero, max value (604800) is enforced.	NUMBER
+STRICT_JSON_OUTPUT	false	JSON output is strictly compliant to the specification	BOOLEAN
+TELEMETRY_ENABLE_INTERACTIVE_MODE	false	Deprecated. This parameter is no-op as rowset is now the default when it's available	BOOLEAN
+TIMESTAMP_DAY_IS_ALWAYS_24H	false	If set, arithmetic on days always uses 24 hours per day,\npossibly not preserving the time (due to DST changes)	BOOLEAN
+TIMESTAMP_INPUT_FORMAT	AUTO	input format for timestamp	STRING
+TIMESTAMP_LTZ_OUTPUT_FORMAT		Display format for TIMESTAMP_LTZ values. If empty, TIMESTAMP_OUTPUT_FORMAT is used.	STRING
+TIMESTAMP_NTZ_OUTPUT_FORMAT	YYYY-MM-DD HH24:MI:SS.FF3	Display format for TIMESTAMP_NTZ values. If empty, TIMESTAMP_OUTPUT_FORMAT is used.	STRING
+TIMESTAMP_OUTPUT_FORMAT	YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM	Default display format for all timestamp types.	STRING
+TIMESTAMP_TYPE_MAPPING	TIMESTAMP_NTZ	If TIMESTAMP type is used, what specific TIMESTAMP* type it should map to:\n  TIMESTAMP_LTZ, TIMESTAMP_NTZ (default) or TIMESTAMP_TZ	STRING
+TIMESTAMP_TZ_OUTPUT_FORMAT		Display format for TIMESTAMP_TZ values. If empty, TIMESTAMP_OUTPUT_FORMAT is used.	STRING
+TIMEZONE	America/Los_Angeles	time zone	STRING
+TIME_INPUT_FORMAT	AUTO	input format for time	STRING
+TIME_OUTPUT_FORMAT	HH24:MI:SS	display format for time	STRING
+TRACE_LEVEL	OFF	Trace level value to use when generating/filtering trace events	STRING
+TRANSACTION_ABORT_ON_ERROR	false	If this parameter is true, and a statement issued within a non-autocommit\ntransaction returns with an error, then the non-autocommit transaction is\naborted. All statements issued inside that transaction will fail until an\ncommit or rollback statement is executed to close that transaction.	BOOLEAN
+TRANSACTION_DEFAULT_ISOLATION_LEVEL	READ COMMITTED	The default isolation level when starting a starting a transaction, when no\nisolation level was specified	STRING
+TWO_DIGIT_CENTURY_START	1970	For 2-digit dates, defines a century-start year.\nFor example, when set to 1980:\n  - parsing a string '79' will produce 2079\n  - parsing a string '80' will produce 1980	NUMBER
+UI_QUERY_RESULT_FORMAT	JSON	Format used to serialize query result to send back to python connector 	STRING
+UNLOAD_PARQUET_TIME_TIMESTAMP_MILLIS	true	Enable this parameter to always unload parquet time and timestamp in milliseconds scale, which are TIME_MILLIS and TIMESTAMP_MILLIS	BOOLEAN
+UNSUPPORTED_DDL_ACTION	ignore	The action to take upon encountering an unsupported ddl statement	STRING
+USE_CACHED_RESULT	true	If enabled, query results can be reused between successive invocations of the same query as long as the original result has not expired	BOOLEAN
+VERSIONED_STAGE_ACTIVE_CHECKPOINT_ALIASES		When set to a non-empty string, workspace PUT operations will create checkpoint versions capturing the pre-modification state of files. Accepts a comma-separated list of checkpoint version aliases. Each alias must start with 'CP$'.	STRING
+WEEK_OF_YEAR_POLICY	0	Defines the policy of assigning weeks to years:\n0: the week needs to have 4 days in a given year;\n1: a week with January 1st always belongs to a given year.	NUMBER
+WEEK_START	0	Defines the first day of the week:\n0: legacy Snowflake behavior; 1: Monday .. 7: Sunday.	NUMBER
+WORKSHEETS_MIGRATED	false	Indicates whether the user has migrated their worksheets to workspace files	BOOLEAN
+WORKSPACE_USER_SETTINGS	{}	Workspace user settings	STRING

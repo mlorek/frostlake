@@ -36,6 +36,21 @@ public final class TargetLag {
      * seconds, each unit singular when its count is one, joined with ", ". Input that does not
      * parse as {@code <count> <unit>} is kept as written.
      */
+    /** Whether a lag is written as {@code <count> <unit>}, the only form an ALTER takes (live-verified). */
+    public static boolean parses(final String input) {
+        final String trimmed = input.trim();
+        final int space = trimmed.indexOf(' ');
+        if (space < 0) {
+            return false;
+        }
+        try {
+            Long.parseLong(trimmed.substring(0, space).trim());
+        } catch (final NumberFormatException notANumber) {
+            return false;
+        }
+        return unitSeconds(trimmed.substring(space + 1).trim()) >= 0;
+    }
+
     public static String canonicalize(final String input) {
         final String trimmed = input.trim();
         final int space = trimmed.indexOf(' ');

@@ -129,17 +129,30 @@ public class CopyXmlLoadTest {
     }
 
     @Test
-    public void unsupportedFormatReportsCsvJsonXml() throws IOException {
+    public void anUnknownTypeIsAnInvalidValueWhereAnAbsentReaderNamesWhatIsSupported() throws IOException {
         writeStageFile("a.xml", "<r/>");
         engine.execute("CREATE TABLE docs (doc VARIANT)");
 
-        final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
+        // PROTOBUF is not a file format type at all, so the value itself is refused, in the account's
+        // own words and echoing the value as it was written (live-verified for the same shape).
+        final RuntimeException unknownType = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("COPY INTO docs FROM @data_stage FILE_FORMAT = (TYPE = 'PROTOBUF')");
             }
         });
-        assertTrue(ex.getMessage().contains("CSV, JSON, XML"), ex.getMessage());
+        assertTrue(unknownType.getMessage().contains("invalid value ['PROTOBUF'] for parameter 'TYPE'"),
+            unknownType.getMessage());
+
+        // AVRO is a real type whose reader lives in the optional module, so it gets past the value
+        // check and reaches the reader: THAT is where this classpath names what it can read.
+        final RuntimeException absentReader = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("COPY INTO docs FROM @data_stage FILE_FORMAT = (TYPE = 'AVRO')");
+            }
+        });
+        assertTrue(absentReader.getMessage().contains("CSV, JSON, XML"), absentReader.getMessage());
     }
 
     @Test

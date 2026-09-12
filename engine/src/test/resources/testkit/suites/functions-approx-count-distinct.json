@@ -1,0 +1,33 @@
+{
+  "suite": "functions-approx-count-distinct",
+  "description": "APPROX_COUNT_DISTINCT is a HyperLogLog sketch. It must not undercount distinct values that collide on 32-bit String.hashCode() ('Aa' and 'BB' both hash to 2112, which an earlier implementation merged), NULLs are ignored, an all-NULL column counts zero, small cardinalities are exact, and a moderate cardinality lands inside HLL's error bound. Converted 1:1 from functions/ApproxCountDistinctTest (now retired); its 1000-row Java-built INSERT becomes an INSERT ... SELECT over GENERATOR, which seeds the same 1000 distinct keys.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "distinct-hash-code-collisions-are-not-merged", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('Aa'), ('BB'), ('Aa')"},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(v) AS r FROM t", "expect": {"value": "2"}}
+    ]},
+    {"name": "a-small-cardinality-is-exact-and-deduplicates", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a'), ('b'), ('c'), ('a'), ('c')"},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(v) AS r FROM t", "expect": {"value": "3"}}
+    ]},
+    {"name": "nulls-are-not-counted", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a'), (NULL), ('b'), (NULL)"},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(v) AS r FROM t", "expect": {"value": "2"}}
+    ]},
+    {"name": "an-all-null-column-counts-zero", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (NULL), (NULL)"},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(v) AS r FROM t", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-moderate-cardinality-is-within-the-error-bound", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR)"},
+      {"sql": "INSERT INTO t SELECT 'k' || SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 1000))"},
+      {"sql": "SELECT COUNT(DISTINCT v) FROM t", "expect": {"value": "1000"}},
+      {"sql": "SELECT ABS(APPROX_COUNT_DISTINCT(v) - 1000) <= 20 FROM t", "expect": {"value": "true"}}
+    ]}
+  ]
+}

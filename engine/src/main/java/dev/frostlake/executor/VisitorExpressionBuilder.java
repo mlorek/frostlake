@@ -37,6 +37,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.task.UserTaskCancellation;
+import dev.frostlake.types.NumericLiteralTypes;
 import org.antlr.v4.runtime.misc.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +45,8 @@ import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -68,6 +71,42 @@ public class VisitorExpressionBuilder {
         this.queryExecutor = queryExecutor;
     }
 
+    /**
+     * A SYSTEM$ argument evaluated in place: a value expression as always, and NOT, AND and OR over such
+     * values in three-valued logic (FALSE AND NULL is FALSE, TRUE OR NULL is TRUE, NOT NULL is NULL).
+     */
+    private Object evaluateBooleanArgument(final FrostlakeParser.BooleanExprContext ctx,
+                                           final boolean scriptingNamesVisible) {
+        final FrostlakeParser.ExpressionContext value = unwrapValue(ctx);
+        if (value != null) {
+            return evaluateExpression(value, scriptingNamesVisible);
+        }
+        if (ctx instanceof FrostlakeParser.NotExprContext) {
+            final Boolean operand = truthOf(evaluateBooleanArgument(
+                ((FrostlakeParser.NotExprContext) ctx).booleanExpr(), scriptingNamesVisible));
+            return operand == null ? null : Boolean.valueOf(!operand.booleanValue());
+        }
+        final boolean conjunction = ctx instanceof FrostlakeParser.AndExprContext;
+        final List<FrostlakeParser.BooleanExprContext> sides = conjunction
+            ? ((FrostlakeParser.AndExprContext) ctx).booleanExpr()
+            : ((FrostlakeParser.OrExprContext) ctx).booleanExpr();
+        final Boolean left = truthOf(evaluateBooleanArgument(sides.get(0), scriptingNamesVisible));
+        final Boolean right = truthOf(evaluateBooleanArgument(sides.get(1), scriptingNamesVisible));
+        final Boolean decisive = conjunction ? Boolean.FALSE : Boolean.TRUE;
+        if (decisive.equals(left) || decisive.equals(right)) {
+            return decisive;
+        }
+        return left == null || right == null ? null : Boolean.valueOf(!decisive.booleanValue());
+    }
+
+    /** A boolean operand's truth: a BOOLEAN or NULL, and anything else is not a boolean. */
+    private static Boolean truthOf(final Object value) {
+        if (value == null || value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        throw new RuntimeException("Boolean value '" + value + "' is not recognized");
+    }
+
     /** Peel a booleanExpr to its underlying value expression (null if it is a boolean AND/OR/NOT). */
     private FrostlakeParser.ExpressionContext unwrapValue(final FrostlakeParser.BooleanExprContext be) {
         return be instanceof FrostlakeParser.ValueExprContext ? ((FrostlakeParser.ValueExprContext) be).expression() : null;
@@ -75,6 +114,14 @@ public class VisitorExpressionBuilder {
 
     /** Boolean tier (OR/AND/NOT) over the value/predicate `expression` below. */
     public BaseExpression buildExpression(final FrostlakeParser.BooleanExprContext ctx) {
+        final BaseExpression built = buildBooleanExpression(ctx);
+        if (built != null && built.getSourceLine() < 0 && ctx != null) {
+            built.setSourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+        }
+        return built;
+    }
+
+    private BaseExpression buildBooleanExpression(final FrostlakeParser.BooleanExprContext ctx) {
         if (ctx instanceof FrostlakeParser.NotExprContext) {
             return new UnaryExpression(UnaryOperator.NOT, buildExpression(((FrostlakeParser.NotExprContext) ctx).booleanExpr()));
         }
@@ -93,9 +140,26 @@ public class VisitorExpressionBuilder {
      * Build an Expression from ANTLR expression context
      */
     public BaseExpression buildExpression(final FrostlakeParser.ExpressionContext ctx) {
+        final BaseExpression built = buildValueExpression(ctx);
+        if (built != null && built.getSourceLine() < 0 && ctx != null) {
+            built.setSourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+        }
+        return built;
+    }
+
+    private BaseExpression buildValueExpression(final FrostlakeParser.ExpressionContext ctx) {
         if (ctx instanceof FrostlakeParser.LiteralExprContext) {
-            final Object value = visitor.parseLiteral(((FrostlakeParser.LiteralExprContext) ctx).literal());
-            return new LiteralExpression(value);
+            final FrostlakeParser.LiteralContext literal = ((FrostlakeParser.LiteralExprContext) ctx).literal();
+            // A numeric literal is typed in a scripting expression exactly as it is in a query: an EXACT
+            // number, its trailing zeros no part of the value and an exponent a way of writing a fixed-point
+            // one — RETURN 1.0 is 1 and 1.10 is 1.1 (live-verified), 1.7777 + 1 is 2.7777 and not a double's
+            // 2.7777000000000003 — and past the exact range the double that makes it legal at all.
+            if (literal.FLOAT_LITERAL() != null) {
+                final BigDecimal exact = NumericLiteralTypes.exactValue(literal.FLOAT_LITERAL().getText());
+                return new LiteralExpression(NumericLiteralTypes.exceedsExactRange(exact)
+                    ? Double.valueOf(exact.doubleValue()) : exact);
+            }
+            return new LiteralExpression(visitor.parseLiteral(literal));
         }
 
         if (ctx instanceof FrostlakeParser.QualifiedNameExprContext) {
@@ -220,7 +284,21 @@ public class VisitorExpressionBuilder {
      * right-hand side, an {@code IF} condition, {@code RETURN <expr>}, a {@code DECLARE … DEFAULT}).
      */
     public Object evaluateExpression(final FrostlakeParser.ExpressionContext ctx) {
-        return evaluateExpression(ctx, true);
+        try {
+            return evaluateExpression(ctx, true);
+        } catch (final RuntimeException failed) {
+            // Note WHERE the expression stood as the failure leaves it, so an uncaught wrapper can
+            // name the EXPRESSION_ERROR kind at the expression's own offset — live's split between a
+            // fault raised evaluating an expression and one raised running a statement. Recorded only
+            // inside a block, where a wrapper exists to read it; the record is first-wins, so this
+            // (innermost) one beats the statement record taken as the failure unwinds.
+            final ProceduralExecutor procedural = visitor.getProceduralExecutor();
+            if (procedural != null && procedural.getBlockDepth() > 0 && ctx != null) {
+                procedural.recordExpressionFailure(ctx.getStart().getLine(),
+                    ctx.getStart().getCharPositionInLine());
+            }
+            throw failed;
+        }
     }
 
     /**
@@ -247,7 +325,18 @@ public class VisitorExpressionBuilder {
         }
         if (ctx instanceof FrostlakeParser.SystemStreamHasDataExprContext) {
             final FrostlakeParser.SystemStreamHasDataExprContext sshd = (FrostlakeParser.SystemStreamHasDataExprContext) ctx;
-            final Object nameVal = evaluateExpression(sshd.expression(), scriptingNamesVisible);
+            if (sshd.expressionList() == null || sshd.expressionList().expression().size() != 1) {
+                final int given = sshd.expressionList() == null ? 0
+                    : sshd.expressionList().expression().size();
+                throw new RuntimeException(SqlCompilationError.at(sshd.getStart().getLine(),
+                    sshd.getStart().getCharPositionInLine(), (given < 1
+                        ? "not enough arguments for function [" + ParseTreeText.getOriginalText(sshd)
+                            + "], expected 1, got " + given
+                        : "too many arguments for function [" + ParseTreeText.getOriginalText(sshd)
+                            + "] expected 1, got " + given)));
+            }
+            final Object nameVal = evaluateExpression(sshd.expressionList().expression(0),
+                scriptingNamesVisible);
             final String streamName = nameVal != null ? nameVal.toString().toUpperCase().replaceAll("^'|'$", "") : "";
             try {
                 final Catalog cat = queryExecutor.getCatalog();
@@ -291,7 +380,7 @@ public class VisitorExpressionBuilder {
             final String token = ((FrostlakeParser.SessionVarExprContext) ctx).SESSION_VAR_REF().getText();
             final String name = token.substring(1).toUpperCase(); // strip leading $
             final SecurityManager sm = queryExecutor.getSecurityManager();
-            return sm != null ? sm.getSessionContext().getSessionParameter(name)
+            return sm != null ? sm.getSessionContext().getSessionVariable(name)
                               : queryExecutor.getSessionVariables().get(name);
         }
         if (ctx instanceof FrostlakeParser.QualifiedNameExprContext) {
@@ -306,7 +395,7 @@ public class VisitorExpressionBuilder {
             // Fall back to session variables — those ARE referenceable from SQL in Snowflake.
             final SecurityManager sm = queryExecutor.getSecurityManager();
             final Object sessionVal = sm != null
-                ? sm.getSessionContext().getSessionParameter(varName)
+                ? sm.getSessionContext().getSessionVariable(varName)
                 : queryExecutor.getSessionVariables().get(varName.toUpperCase());
             if (sessionVal != null) {
                 return sessionVal;
@@ -388,9 +477,9 @@ public class VisitorExpressionBuilder {
             throw new RuntimeException("Unsupported system function: " + rawName);
         }
         final List<Object> args = new ArrayList<>();
-        if (ctx.expressionList() != null) {
-            for (final FrostlakeParser.ExpressionContext argCtx : ctx.expressionList().expression()) {
-                args.add(evaluateExpression(argCtx, scriptingNamesVisible));
+        if (ctx.booleanExprList() != null) {
+            for (final FrostlakeParser.BooleanExprContext argCtx : ctx.booleanExprList().booleanExpr()) {
+                args.add(evaluateBooleanArgument(argCtx, scriptingNamesVisible));
             }
         }
 
@@ -534,6 +623,11 @@ public class VisitorExpressionBuilder {
                     if (v instanceof Long || v instanceof Integer) return "INTEGER[LOB]";
                     if (v instanceof Double || v instanceof BigDecimal) return "FLOAT[LOB]";
                     if (v instanceof LocalDateTime || v instanceof LocalDate) return "TIMESTAMP_NTZ[LOB]";
+                    // The two zoned types are their own answers rather than falling through to the
+                    // text branch below, which read them as VARCHAR because their toString starts with
+                    // a digit. The width and the storage tag this still gets wrong are a separate job.
+                    if (v instanceof ZonedDateTime) return "TIMESTAMP_TZ[LOB]";
+                    if (v instanceof OffsetDateTime) return "TIMESTAMP_LTZ[LOB]";
                     final String s = v.toString().trim();
                     if (s.startsWith("{")) return "OBJECT[LOB]";
                     if (s.startsWith("[")) return "ARRAY[LOB]";

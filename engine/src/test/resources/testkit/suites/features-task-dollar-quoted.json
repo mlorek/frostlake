@@ -1,0 +1,61 @@
+{
+  "suite": "features-task-dollar-quoted",
+  "description": "CREATE TASK body forms. Live-verified: the body after AS must be a BARE statement (or CALL) - a dollar-quoted (AS $$...$$) or string-quoted (AS '...') body is a syntax error. Each rejected quoted form is paired with its bare-body equivalent, which creates successfully and shows up in SHOW TASKS: a single-line INSERT, a DELETE, a multi-line ETL body with a leading comment line, a body carrying its own single-quoted literals, a nicely formatted multi-line INSERT...SELECT, and one using OBJECT_CONSTRUCT. Converted 1:1 from features/TaskDollarQuotedTest (now retired); its assertTaskShown read the first SHOW TASKS row, which the converted tests express as a presence count since each test creates exactly one task.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-dollar-quoted-task-body-is-rejected", "steps": [
+      {"sql": "CREATE TASK daily_summary\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 9 * * * UTC'\nAS $$INSERT INTO summary_table SELECT date, COUNT(*) as count, AVG(value) as avg_value FROM transactions WHERE status = 'completed' GROUP BY date$$",
+       "expect": {"error": {"messageContains": "syntax"}}},
+      {"sql": "CREATE TASK daily_summary\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 9 * * * UTC'\nAS INSERT INTO summary_table SELECT date, COUNT(*) as count, AVG(value) as avg_value FROM transactions WHERE status = 'completed' GROUP BY date"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'DAILY_SUMMARY') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-traditional-bare-body-is-accepted", "steps": [
+      {"sql": "CREATE TASK simple_task\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 * * * * UTC'\nAS INSERT INTO logs VALUES (CURRENT_TIMESTAMP())"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'SIMPLE_TASK') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-single-quoted-task-body-is-rejected", "steps": [
+      {"sql": "CREATE TASK quoted_task\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 12 * * * UTC'\nAS 'DELETE FROM temp_data WHERE created_at < DATEADD(day, -7, CURRENT_DATE())'",
+       "expect": {"error": {"messageContains": "syntax"}}},
+      {"sql": "CREATE TASK quoted_task\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 12 * * * UTC'\nAS DELETE FROM temp_data WHERE created_at < DATEADD(day, -7, CURRENT_DATE())"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'QUOTED_TASK') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-dollar-quoted-complex-sql-body-is-rejected", "steps": [
+      {"sql": "CREATE TASK complex_etl\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 2 * * * UTC'\nAS $$\n-- Load data from staging\nINSERT INTO fact_sales\nSELECT\n  s.id,\n  s.amount,\n  s.date,\n  c.region\nFROM staging_sales s\nJOIN customers c ON s.customer_id = c.id\nWHERE s.status = 'verified'\n  AND s.date >= CURRENT_DATE() - 1\n$$",
+       "expect": {"error": {"messageContains": "syntax"}}},
+      {"sql": "CREATE TASK complex_etl\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 2 * * * UTC'\nAS\n-- Load data from staging\nINSERT INTO fact_sales\nSELECT\n  s.id,\n  s.amount,\n  s.date,\n  c.region\nFROM staging_sales s\nJOIN customers c ON s.customer_id = c.id\nWHERE s.status = 'verified'\n  AND s.date >= CURRENT_DATE() - 1"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COMPLEX_ETL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-dollar-quoted-body-carrying-single-quotes-is-rejected", "steps": [
+      {"sql": "CREATE TASK filter_task\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 6 * * * UTC'\nAS $$UPDATE products SET status = 'archived' WHERE category = 'obsolete' AND last_sold < DATEADD(year, -2, CURRENT_DATE())$$",
+       "expect": {"error": {"messageContains": "syntax"}}},
+      {"sql": "CREATE TASK filter_task\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 6 * * * UTC'\nAS UPDATE products SET status = 'archived' WHERE category = 'obsolete' AND last_sold < DATEADD(year, -2, CURRENT_DATE())"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'FILTER_TASK') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-dollar-quoted-multiline-body-is-rejected", "steps": [
+      {"sql": "CREATE TASK weekly_report\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 0 * * 0 UTC'\nAS $$\nINSERT INTO weekly_summary (\n  week_start,\n  total_orders,\n  total_revenue,\n  avg_order_value\n)\nSELECT\n  DATE_TRUNC('week', order_date) as week_start,\n  COUNT(*) as total_orders,\n  SUM(amount) as total_revenue,\n  AVG(amount) as avg_order_value\nFROM orders\nWHERE order_date >= DATEADD(week, -1, CURRENT_DATE())\nGROUP BY DATE_TRUNC('week', order_date)\n$$",
+       "expect": {"error": {"messageContains": "syntax"}}},
+      {"sql": "CREATE TASK weekly_report\nWAREHOUSE = 'compute_wh'\nSCHEDULE = 'USING CRON 0 0 * * 0 UTC'\nAS\nINSERT INTO weekly_summary (\n  week_start,\n  total_orders,\n  total_revenue,\n  avg_order_value\n)\nSELECT\n  DATE_TRUNC('week', order_date) as week_start,\n  COUNT(*) as total_orders,\n  SUM(amount) as total_revenue,\n  AVG(amount) as avg_order_value\nFROM orders\nWHERE order_date >= DATEADD(week, -1, CURRENT_DATE())\nGROUP BY DATE_TRUNC('week', order_date)"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'WEEKLY_REPORT') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-dollar-quoted-json-body-is-rejected", "steps": [
+      {"sql": "CREATE TASK json_export\nWAREHOUSE = 'compute_wh'\nSCHEDULE = '60 MINUTES'\nAS $$INSERT INTO json_exports SELECT id, OBJECT_CONSTRUCT('name', name, 'email', email, 'status', status, 'created', created_at) as user_json FROM users WHERE modified_at >= DATEADD(hour, -1, CURRENT_TIMESTAMP())$$",
+       "expect": {"error": {"messageContains": "syntax"}}},
+      {"sql": "CREATE TASK json_export\nWAREHOUSE = 'compute_wh'\nSCHEDULE = '60 MINUTES'\nAS INSERT INTO json_exports SELECT id, OBJECT_CONSTRUCT('name', name, 'email', email, 'status', status, 'created', created_at) as user_json FROM users WHERE modified_at >= DATEADD(hour, -1, CURRENT_TIMESTAMP())"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'JSON_EXPORT') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}}
+    ]}
+  ]
+}

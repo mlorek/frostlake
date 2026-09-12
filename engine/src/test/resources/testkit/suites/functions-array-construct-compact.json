@@ -1,0 +1,36 @@
+{
+  "suite": "functions-array-construct-compact",
+  "description": "ARRAY_CONSTRUCT_COMPACT(val1, ...) is ARRAY_CONSTRUCT with every SQL NULL argument omitted, so the result is shorter than its argument list, an all-NULL call and a no-argument call both give the empty array, a nested array is embedded rather than stringified, and it works over table columns. A VARIANT JSON null is a value, not a SQL NULL, so it survives. The contrast is live-verified: a SQL NULL array ELEMENT is the VARIANT undefined - ARRAY_CONSTRUCT(1, NULL, 2) renders [1,undefined,2] - while ARRAY_CONSTRUCT(1, PARSE_JSON('null'), 2) keeps [1,null,2]. Converted 1:1 from functions/ArrayConstructCompactTest (now retired); the array cells are read through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "null-arguments-are-omitted", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT_COMPACT(1, NULL, 2, NULL, 'x'))",
+       "expect": {"value": "[1,2,\"x\"]"}}
+    ]},
+    {"name": "all-null-arguments-give-an-empty-array", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT_COMPACT(NULL, NULL))", "expect": {"value": "[]"}}
+    ]},
+    {"name": "no-arguments-give-an-empty-array", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT_COMPACT())", "expect": {"value": "[]"}}
+    ]},
+    {"name": "a-nested-array-is-embedded-not-stringified", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT_COMPACT(ARRAY_CONSTRUCT(1, 2), NULL))",
+       "expect": {"value": "[[1,2]]"}}
+    ]},
+    {"name": "a-json-null-is-a-value-and-is-kept", "steps": [
+      {"sql": "SELECT ARRAY_SIZE(ARRAY_CONSTRUCT_COMPACT(PARSE_JSON('null'), 1))", "expect": {"value": "2"}}
+    ]},
+    {"name": "the-result-is-shorter-than-the-argument-list", "steps": [
+      {"sql": "SELECT ARRAY_SIZE(ARRAY_CONSTRUCT_COMPACT(1, NULL, 2))", "expect": {"value": "2"}}
+    ]},
+    {"name": "a-plain-array-construct-renders-nulls-as-undefined", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT(1, NULL, 2))", "expect": {"value": "[1,undefined,2]"}},
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT(1, PARSE_JSON('null'), 2))", "expect": {"value": "[1,null,2]"}}
+    ]},
+    {"name": "it-works-over-table-columns", "steps": [
+      {"sql": "CREATE TABLE parts (a VARCHAR, b VARCHAR)"},
+      {"sql": "INSERT INTO parts VALUES ('p', NULL)"},
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT_COMPACT(a, b)) FROM parts", "expect": {"value": "[\"p\"]"}}
+    ]}
+  ]
+}

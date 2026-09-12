@@ -39,13 +39,13 @@ public class VectorMinTest extends BaseVectorFunctionTest {
         engine.execute("INSERT INTO min_cross SELECT [7,2,0]::VECTOR(FLOAT,3)");
         // Live: [1.0,2.0,-6.0] — each element comes from a DIFFERENT row, so the reduction is per
         // dimension and not "the smallest row". Same-shaped rows would not have shown this.
-        assertVector("[1.0,2.0,-6.0]", "SELECT VECTOR_MIN(v) FROM min_cross");
+        assertVector("[1.000000,2.000000,-6.000000]", "SELECT VECTOR_MIN(v) FROM min_cross");
     }
 
     @Test
     public void skipsNullRows() {
         // Live: over [1,2,3], [4,5,6] and a NULL row => [1.0,2.0,3.0].
-        assertVector("[1.0,2.0,3.0]", "SELECT VECTOR_MIN(v) FROM min_rows");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT VECTOR_MIN(v) FROM min_rows");
     }
 
     @Test
@@ -65,7 +65,7 @@ public class VectorMinTest extends BaseVectorFunctionTest {
 
     @Test
     public void singleRowGroupIsThatRow() {
-        assertVector("[1.0,2.0,3.0]", "SELECT VECTOR_MIN(v) FROM min_rows WHERE id = 1");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT VECTOR_MIN(v) FROM min_rows WHERE id = 1");
     }
 
     @Test

@@ -1,0 +1,81 @@
+{
+  "suite": "scripting-user-exceptions",
+  "description": "User-defined exceptions in Snowflake Scripting: DECLARE ... EXCEPTION, RAISE, and the live-verified uncaught wording Uncaught exception of type 'NAME' on line L at position P : message (the : message tail absent for an argument-less declaration, which defaults to code -20000); an explicit code must be a signed integer literal strictly between -20,999 and -20,000 with the named bounds themselves refused and a computed code a syntax error at the second minus; RAISE of an undeclared name is an invalid identifier; names are case-insensitive; raises work from IF/ELSE/ELSEIF branches, nested IFs and after queries over table data. Converted 1:1 from executor/procedural/UserDefinedExceptionsTest (now retired; the embedded-only ProceduralException.getErrorCode() asserts have no transport surface and are represented by the message pins).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "declare-and-raise-exception", "steps": [
+      {"sql": "DECLARE\n    my_exception EXCEPTION (-20002, 'my exception');\nBEGIN\n    IF (EXISTS(SELECT 1 AS c)) THEN\n        RAISE my_exception;\n    END IF;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'MY_EXCEPTION' on line 5 at position 8 : my exception"}}}
+    ]},
+    {"name": "default-code-exception-without-message", "steps": [
+      {"sql": "DECLARE\n    plain_exception EXCEPTION;\nBEGIN\n    RAISE plain_exception;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'PLAIN_EXCEPTION' on line 4 at position 4"}}}
+    ]},
+    {"name": "declare-exception-but-dont-raise", "steps": [
+      {"sql": "DECLARE\n    my_exception EXCEPTION (-20001, 'error message');\nBEGIN\n    IF (1 = 0) THEN\n        RAISE my_exception;\n    END IF;\n    RETURN 42;\nEND;",
+       "expect": {"value": "42"}}
+    ]},
+    {"name": "multiple-exception-declarations", "steps": [
+      {"sql": "DECLARE\n    exception1 EXCEPTION (-20001, 'first exception');\n    exception2 EXCEPTION (-20002, 'second exception');\nBEGIN\n    RAISE exception2;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'EXCEPTION2' on line 5 at position 4 : second exception"}}}
+    ]},
+    {"name": "raise-exception-in-else-branch", "steps": [
+      {"sql": "DECLARE\n    validation_error EXCEPTION (-20100, 'validation failed');\nBEGIN\n    IF (EXISTS(SELECT * FROM VALUES(1) WHERE $1 > 10)) THEN\n        RETURN 1;\n    ELSE\n        RAISE validation_error;\n    END IF;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'VALIDATION_ERROR'"}}}
+    ]},
+    {"name": "raise-undefined-exception", "steps": [
+      {"sql": "BEGIN\n    RAISE undefined_exception;\nEND;",
+       "expect": {"error": {"messageContains": "invalid identifier 'UNDEFINED_EXCEPTION'"}}}
+    ]},
+    {"name": "exception-in-nested-if", "steps": [
+      {"sql": "DECLARE\n    nested_error EXCEPTION (-20200, 'nested error');\nBEGIN\n    IF (1 = 1) THEN\n        IF (EXISTS(SELECT 1)) THEN\n            RAISE nested_error;\n        END IF;\n    END IF;\n    RETURN 0;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'NESTED_ERROR'"}}}
+    ]},
+    {"name": "error-code-outside-range-is-refused", "steps": [
+      {"sql": "DECLARE\n    my_error EXCEPTION (-30000, 'custom error');\nBEGIN\n    RAISE my_error;\nEND;",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 2 at position 4"}}},
+      {"sql": "DECLARE\n    my_error EXCEPTION (-30000, 'custom error');\nBEGIN\n    RAISE my_error;\nEND;",
+       "expect": {"error": {"messageContains": "Invalid error code '-30,000'. Must be between -20,999 and -20,000"}}}
+    ]},
+    {"name": "error-code-boundaries-are-refused", "steps": [
+      {"sql": "DECLARE\n    my_error EXCEPTION (-20999, 'edge low');\nBEGIN\n    RAISE my_error;\nEND;",
+       "expect": {"error": {"messageContains": "Invalid error code '-20,999'. Must be between -20,999 and -20,000"}}},
+      {"sql": "DECLARE\n    my_error EXCEPTION (-20000, 'edge high');\nBEGIN\n    RAISE my_error;\nEND;",
+       "expect": {"error": {"messageContains": "Invalid error code '-20,000'. Must be between -20,999 and -20,000"}}}
+    ]},
+    {"name": "positive-error-code-is-refused", "steps": [
+      {"sql": "DECLARE\n    my_error EXCEPTION (100, 'positive');\nBEGIN\n    RAISE my_error;\nEND;",
+       "expect": {"error": {"messageContains": "Invalid error code '100'. Must be between -20,999 and -20,000"}}}
+    ]},
+    {"name": "non-literal-error-code-is-syntax-error", "steps": [
+      {"sql": "DECLARE\n    my_error EXCEPTION (-20000 - 1, 'computed');\nBEGIN\n    RAISE my_error;\nEND;",
+       "expect": {"error": {"messageContains": "syntax error line 2 at position 31 unexpected '-'."}}}
+    ]},
+    {"name": "conditional-exception-raise", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'invalid')"},
+      {"sql": "DECLARE\n    invalid_status EXCEPTION (-20300, 'Invalid status found');\nBEGIN\n    IF (EXISTS(SELECT * FROM test_table WHERE status = 'invalid')) THEN\n        RAISE invalid_status;\n    END IF;\n    RETURN 1;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'INVALID_STATUS'"}}}
+    ]},
+    {"name": "exception-with-special-characters-in-message", "steps": [
+      {"sql": "DECLARE\n    special_error EXCEPTION (-20400, 'Error: \"quoted\", escaped\\\\, and new\\nline');\nBEGIN\n    RAISE special_error;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'SPECIAL_ERROR'"}}},
+      {"sql": "DECLARE\n    special_error EXCEPTION (-20400, 'Error: \"quoted\", escaped\\\\, and new\\nline');\nBEGIN\n    RAISE special_error;\nEND;",
+       "expect": {"error": {"messageContains": "Error: \"quoted\", escaped\\, and new"}}}
+    ]},
+    {"name": "raise-exception-after-successful-query", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER)"},
+      {"sql": "INSERT INTO test_table VALUES (1), (2), (3)"},
+      {"sql": "DECLARE\n    post_query_error EXCEPTION (-20500, 'error after query');\nBEGIN\n    IF (EXISTS(SELECT * FROM test_table WHERE id > 0)) THEN\n        RAISE post_query_error;\n    END IF;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'POST_QUERY_ERROR'"}}}
+    ]},
+    {"name": "multiple-if-branches-with-different-exceptions", "steps": [
+      {"sql": "DECLARE\n    error1 EXCEPTION (-20001, 'first error');\n    error2 EXCEPTION (-20002, 'second error');\nBEGIN\n    IF (1 = 0) THEN\n        RAISE error1;\n    ELSEIF (1 = 1) THEN\n        RAISE error2;\n    END IF;\n    RETURN 0;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'ERROR2'"}}}
+    ]},
+    {"name": "exception-name-case-insensitive", "steps": [
+      {"sql": "DECLARE\n    My_Exception EXCEPTION (-20600, 'case test');\nBEGIN\n    RAISE my_exception;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'MY_EXCEPTION' on line 4 at position 4 : case test"}}}
+    ]}
+  ]
+}

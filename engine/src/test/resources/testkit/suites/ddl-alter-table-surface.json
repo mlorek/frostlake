@@ -1,0 +1,102 @@
+{
+  "suite": "ddl-alter-table-surface",
+  "description": "The ALTER TABLE action surface with its live-measured refusal shapes: ADD/DROP with comma lists (duplicate 'already exists', missing 'does not exist', also within one statement), RENAME COLUMN speaking in Object terms (taken target spelled table.column), parenthesized and bare column-action lists with COMMENT/UNSET COMMENT, second PRIMARY KEY naming the bare table, property refusals (invalid value / invalid property), CLUSTER BY set and drop, a refused RENAME TO leaving the table untouched, SWAP WITH exchanging whole definitions, a positioned invalid-identifier refusal for ALTER COLUMN on a missing column, SET DEFAULT literal unsupported, and a column comment surviving into DESCRIBE. Converted 1:1 from ddl/AlterTableSurfaceTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "add-and-drop-take-column-lists", "steps": [
+      {"sql": "CREATE TABLE alt_t (a INTEGER)"},
+      {"sql": "ALTER TABLE alt_t ADD COLUMN c1 INTEGER"},
+      {"sql": "ALTER TABLE alt_t ADD COLUMN c2 INTEGER, c3 INTEGER"},
+      {"sql": "ALTER TABLE alt_t ADD c4 INTEGER"},
+      {"sql": "ALTER TABLE alt_t ADD COLUMN IF NOT EXISTS c1 INTEGER"},
+      {"sql": "ALTER TABLE alt_t ADD COLUMN c1 INTEGER",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ncolumn 'C1' already exists"}}},
+      {"sql": "ALTER TABLE alt_t ADD COLUMN c5 INTEGER, c5 INTEGER",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ncolumn 'C5' already exists"}}},
+      {"sql": "ALTER TABLE alt_t DROP COLUMN c2, c3"},
+      {"sql": "ALTER TABLE alt_t DROP COLUMN IF EXISTS nosuch"},
+      {"sql": "ALTER TABLE alt_t DROP COLUMN nosuch",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ncolumn 'NOSUCH' does not exist"}}}
+    ]},
+    {"name": "rename-column-speaks-in-object-terms", "steps": [
+      {"sql": "CREATE TABLE ren_t (a INTEGER, b VARCHAR)"},
+      {"sql": "ALTER TABLE ren_t RENAME COLUMN b TO c"},
+      {"sql": "ALTER TABLE ren_t RENAME COLUMN nosuch TO x",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOSUCH' does not exist or not authorized."}}},
+      {"sql": "ALTER TABLE ren_t RENAME COLUMN c TO a",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'REN_T.A' already exists."}}}
+    ]},
+    {"name": "column-action-lists-run-parenthesized-or-bare-with-comments", "steps": [
+      {"sql": "CREATE TABLE cols_t (a INTEGER, b VARCHAR(10))"},
+      {"sql": "ALTER TABLE cols_t ALTER COLUMN b SET DATA TYPE VARCHAR(20)"},
+      {"sql": "ALTER TABLE cols_t ALTER COLUMN b TYPE VARCHAR(30)"},
+      {"sql": "ALTER TABLE cols_t MODIFY COLUMN b VARCHAR(40)"},
+      {"sql": "ALTER TABLE cols_t ALTER (COLUMN a SET NOT NULL, COLUMN b SET NOT NULL)"},
+      {"sql": "ALTER TABLE cols_t ALTER COLUMN a DROP NOT NULL, COLUMN b DROP NOT NULL"},
+      {"sql": "ALTER TABLE cols_t ALTER COLUMN b COMMENT 'col comment'"},
+      {"sql": "ALTER TABLE cols_t ALTER COLUMN b UNSET COMMENT"}
+    ]},
+    {"name": "a-second-primary-key-refuses-naming-the-bare-table", "steps": [
+      {"sql": "CREATE TABLE pk_t (a INTEGER, b VARCHAR)"},
+      {"sql": "ALTER TABLE pk_t ADD PRIMARY KEY (a)"},
+      {"sql": "ALTER TABLE pk_t ADD PRIMARY KEY (b)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nprimary key already exists for table 'PK_T'"}}},
+      {"sql": "ALTER TABLE pk_t DROP PRIMARY KEY"},
+      {"sql": "ALTER TABLE pk_t ADD PRIMARY KEY (b)"}
+    ]},
+    {"name": "table-properties-refuse-as-their-families", "steps": [
+      {"sql": "CREATE TABLE prop_t (a INTEGER)"},
+      {"sql": "ALTER TABLE prop_t SET DATA_RETENTION_TIME_IN_DAYS = 0"},
+      {"sql": "ALTER TABLE prop_t SET DATA_RETENTION_TIME_IN_DAYS = -1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [-1] for parameter 'DATA_RETENTION_TIME_IN_DAYS'"}}},
+      {"sql": "ALTER TABLE prop_t SET NO_SUCH_PROP = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid property 'NO_SUCH_PROP' for 'TABLE'"}}}
+    ]},
+    {"name": "cluster-keys-set-and-drop", "steps": [
+      {"sql": "CREATE TABLE clu_t (a INTEGER)"},
+      {"sql": "ALTER TABLE clu_t CLUSTER BY (a)"},
+      {"sql": "ALTER TABLE clu_t DROP CLUSTERING KEY"}
+    ]},
+    {"name": "a-refused-rename-leaves-the-table-untouched", "steps": [
+      {"sql": "CREATE TABLE src_t (a INTEGER)"},
+      {"sql": "INSERT INTO src_t VALUES (7)"},
+      {"sql": "CREATE TABLE taken_t (z INTEGER)"},
+      {"sql": "ALTER TABLE src_t RENAME TO taken_t",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'TAKEN_T' already exists."}}},
+      {"sql": "SELECT a FROM src_t", "expect": {"value": "7"}},
+      {"sql": "ALTER TABLE src_t RENAME TO renamed_t"},
+      {"sql": "SELECT a FROM renamed_t", "expect": {"value": "7"}},
+      {"sql": "ALTER TABLE nosuch_t ADD COLUMN x INTEGER",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist or not authorized."}}},
+      {"sql": "ALTER TABLE IF EXISTS nosuch_t ADD COLUMN x INTEGER"}
+    ]},
+    {"name": "swap-exchanges-the-whole-definitions", "steps": [
+      {"sql": "CREATE TABLE swp_a (a INTEGER)"},
+      {"sql": "INSERT INTO swp_a VALUES (1)"},
+      {"sql": "CREATE TABLE swp_b (z VARCHAR)"},
+      {"sql": "INSERT INTO swp_b VALUES ('zed')"},
+      {"sql": "ALTER TABLE swp_a SWAP WITH swp_b"},
+      {"sql": "SELECT z FROM swp_a", "expect": {"value": "zed"}},
+      {"sql": "SELECT a FROM swp_b", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE swp_a SWAP WITH nosuch_t",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist or not authorized."}}}
+    ]},
+    {"name": "alter-column-on-a-missing-column-is-a-positioned-refusal", "steps": [
+      {"sql": "CREATE TABLE pos_t (a INTEGER)"},
+      {"sql": "ALTER TABLE pos_t ALTER COLUMN ghost SET NOT NULL",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 31\ninvalid identifier 'GHOST'"}}}
+    ]},
+    {"name": "alter-column-set-default-literal-stays-unsupported", "steps": [
+      {"sql": "CREATE TABLE def_t (a INTEGER)"},
+      {"sql": "ALTER TABLE def_t ALTER COLUMN a SET DEFAULT 5",
+       "expect": {"error": {"messageContains": "Unsupported feature 'Alter Column Set Default'."}}}
+    ]},
+    {"name": "column-comment-survives-into-describe", "steps": [
+      {"sql": "CREATE TABLE dsc_t (a INTEGER)"},
+      {"sql": "ALTER TABLE dsc_t ALTER COLUMN a COMMENT 'the a column'"},
+      {"sql": "DESC TABLE dsc_t"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'A'",
+       "expect": {"value": "the a column"}}
+    ]}
+  ]
+}

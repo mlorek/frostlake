@@ -1,0 +1,99 @@
+{
+  "suite": "ddl-add-column-default",
+  "description": "ALTER TABLE ADD COLUMN judges a DEFAULT far more strictly than CREATE TABLE (live-measured): only bare literals (a cast is echoed in CAST spelling, even CURRENT_TIMESTAMP() refused), the literal's type must be in the column's FAMILY with no coercion (datetime columns take only NULL; the literal is spelled with its own measurements), length/precision are not judged, VARIANT falls through to the coercion sentence, OBJECT/ARRAY/GEOGRAPHY/GEOMETRY/FILE judge nothing, MAP/VECTOR accept no literal, a negative number is a literal, and BINARY takes no default at all. Converted 1:1 from ddl/AddColumnDefaultTypeTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "a-computed-default-is-refused-outright", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c1 NUMBER DEFAULT 1 + 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid column default expression [1 + 1]"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c2 NUMBER DEFAULT LENGTH('abc')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid column default expression [LENGTH('abc')]"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c3 VARCHAR(9) DEFAULT UPPER('a')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid column default expression [UPPER('a')]"}}}
+    ]},
+    {"name": "even-current-timestamp-is-refused", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c4 TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid column default expression [CURRENT_TIMESTAMP()]"}}}
+    ]},
+    {"name": "a-cast-is-echoed-in-its-cast-spelling", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c5 DATE DEFAULT '2026-01-01'::DATE",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid column default expression [CAST('2026-01-01' AS DATE)]"}}}
+    ]},
+    {"name": "a-literal-of-the-wrong-family-is-refused", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c6 DATE DEFAULT 7",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting DATE but got NUMBER(1,0) for column C6"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c7 BOOLEAN DEFAULT 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting BOOLEAN but got NUMBER(1,0) for column C7"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c8 VARCHAR(9) DEFAULT 7",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting VARCHAR(9) but got NUMBER(1,0) for column C8"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN c9 VARCHAR(9) DEFAULT 7.5",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting VARCHAR(9) but got NUMBER(2,1) for column C9"}}}
+    ]},
+    {"name": "the-literal-is-spelled-with-its-own-measurements", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN d1 NUMBER(5,1) DEFAULT 'abc'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting NUMBER(5,1) but got VARCHAR(3) for column D1"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN d2 BOOLEAN DEFAULT 'true'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting BOOLEAN but got VARCHAR(4) for column D2"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN d3 NUMBER(5,1) DEFAULT TRUE",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting NUMBER(5,1) but got BOOLEAN for column D3"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN d4 NUMBER(5,1) DEFAULT X'AB'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting NUMBER(5,1) but got BINARY(1) for column D4"}}}
+    ]},
+    {"name": "a-datetime-column-accepts-only-null", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN d5 DATE DEFAULT '2026-01-01'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting DATE but got VARCHAR(10) for column D5"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN d6 DATE DEFAULT NULL"}
+    ]},
+    {"name": "neither-length-nor-precision-is-judged", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN e1 VARCHAR(2) DEFAULT 'toolong'"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN e2 NUMBER(5,1) DEFAULT 123456"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN e3 NUMBER(5,1) DEFAULT 7.55"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN e4 FLOAT DEFAULT 7"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN e5 BOOLEAN DEFAULT TRUE"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN e6 VARCHAR(9) DEFAULT 'ok'"}
+    ]},
+    {"name": "variant-falls-through-to-the-coercion-rule", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN f1 VARIANT DEFAULT 'z'"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN f2 VARIANT DEFAULT 7",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDefault value data type does not match data type for column F2"}}}
+    ]},
+    {"name": "the-semi-structured-families-take-any-literal", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN g1 OBJECT DEFAULT 7"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN g2 ARRAY DEFAULT 'abc'"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN g3 GEOGRAPHY DEFAULT TRUE"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN g4 GEOMETRY DEFAULT 7"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN g5 FILE DEFAULT 'abc'"}
+    ]},
+    {"name": "map-and-vector-accept-no-literal-at-all", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN h1 MAP(VARCHAR,NUMBER) DEFAULT 'abc'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting MAP(VARCHAR(16777216), NUMBER(38,0)) but got VARCHAR(3) for column H1"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN h2 MAP(VARCHAR,NUMBER) DEFAULT 7",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting MAP(VARCHAR(16777216), NUMBER(38,0)) but got NUMBER(1,0) for column H2"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN h3 VECTOR(FLOAT,3) DEFAULT 'abc'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting VECTOR(FLOAT, 3) but got VARCHAR(3) for column H3"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN h4 VECTOR(FLOAT,3) DEFAULT TRUE",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExpression type does not match column data type, expecting VECTOR(FLOAT, 3) but got BOOLEAN for column H4"}}},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN h5 VECTOR(FLOAT,3) DEFAULT NULL"}
+    ]},
+    {"name": "a-negative-literal-is-accepted", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN n1 NUMBER DEFAULT -1"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN n2 NUMBER(5,1) DEFAULT -7.5"}
+    ]},
+    {"name": "a-binary-column-still-takes-no-default", "steps": [
+      {"sql": "CREATE TABLE ac_t (id NUMBER)"},
+      {"sql": "ALTER TABLE ac_t ADD COLUMN f3 BINARY(4) DEFAULT X'AB'",
+       "expect": {"error": {"messageContains": "SQL compilation error: Default values are not allowed on 'BINARY' columns."}}}
+    ]}
+  ]
+}

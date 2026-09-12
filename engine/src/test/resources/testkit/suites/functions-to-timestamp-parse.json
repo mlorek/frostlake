@@ -1,0 +1,36 @@
+{
+  "suite": "functions-to-timestamp-parse",
+  "description": "TO_TIMESTAMP / TO_TIMESTAMP_NTZ parsing: an explicit Snowflake format is honoured and a date-only format defaults to midnight. The unit rule for an epoch is the sharp part, both halves live-verified: a NUMERIC argument is ALWAYS seconds and is never magnitude-sniffed, so 1631711999000 reads as seconds and lands in year 53676 rather than as the millisecond epoch of 2021-09-15, while a STRING of digits DOES pick its unit by magnitude and the same 13 digits read as milliseconds. An explicit scale argument fixes the unit for the numeric form. Converted 1:1 from functions/ToTimestampParseTest (now retired); the Java compared java.time toString values, so the suite reads TO_VARCHAR, and the wide-year case is pinned by its year prefix as the Java pinned it.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "epoch-seconds", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP(1631711999))", "expect": {"value": "2021-09-15 13:19:59.000"}}
+    ]},
+    {"name": "a-numeric-epoch-is-always-seconds", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP_NTZ(1631711999000))",
+       "expect": {"value": "53676-11-22 13:03:20.000"}},
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(TO_TIMESTAMP_NTZ(1631711999000)), '53676')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "a-digit-string-epoch-uses-magnitude-detection", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP_NTZ('1631711999000'))",
+       "expect": {"value": "2021-09-15 13:19:59.000"}}
+    ]},
+    {"name": "a-numeric-epoch-with-an-explicit-scale", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP_NTZ(1631711999000, 3))",
+       "expect": {"value": "2021-09-15 13:19:59.000"}}
+    ]},
+    {"name": "an-explicit-format-with-a-time", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP('15/01/2021 13:45:30', 'DD/MM/YYYY HH24:MI:SS'))",
+       "expect": {"value": "2021-01-15 13:45:30.000"}}
+    ]},
+    {"name": "a-date-only-format-defaults-to-midnight", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP('01/15/2021', 'MM/DD/YYYY'))",
+       "expect": {"value": "2021-01-15 00:00:00.000"}}
+    ]},
+    {"name": "an-iso-string-without-a-format", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP_NTZ('2024-01-15 10:30:45'))",
+       "expect": {"value": "2024-01-15 10:30:45.000"}}
+    ]}
+  ]
+}

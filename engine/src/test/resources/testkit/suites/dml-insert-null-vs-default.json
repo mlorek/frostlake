@@ -1,0 +1,39 @@
+{
+  "suite": "dml-insert-null-vs-default",
+  "description": "A column's DEFAULT (and AUTOINCREMENT) applies only when the column is OMITTED from an INSERT - a column explicitly listed keeps its value, including an explicit NULL, whether from VALUES, a SELECT source, a positional row or a MERGE insert; omitted columns still take their defaults everywhere. Converted 1:1 from dml/InsertExplicitNullVsDefaultTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "an-explicit-null-is-not-replaced-by-the-default", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR DEFAULT 'NA', score NUMBER(5,3) DEFAULT 0)"},
+      {"sql": "INSERT INTO t (id, name) VALUES (1, NULL)"},
+      {"sql": "SELECT name, score FROM t", "expect": {"rows": [["NULL", "0"]]}}
+    ]},
+    {"name": "an-explicit-null-from-a-select-source-is-kept-too", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR DEFAULT 'NA', score NUMBER(5,3) DEFAULT 0)"},
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, NULL)"},
+      {"sql": "INSERT INTO t (id, name) SELECT id, name FROM src"},
+      {"sql": "SELECT name FROM t", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "a-positional-null-is-explicit-and-trailing-columns-default", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR DEFAULT 'NA', score NUMBER(5,3) DEFAULT 0)"},
+      {"sql": "INSERT INTO t VALUES (1, NULL, 0.5)"},
+      {"sql": "SELECT name FROM t", "expect": {"rows": [["NULL"]]}},
+      {"sql": "CREATE TABLE t2 (id INTEGER, name VARCHAR DEFAULT 'NA')"},
+      {"sql": "INSERT INTO t2 (id) VALUES (7)"},
+      {"sql": "SELECT name FROM t2", "expect": {"value": "NA"}}
+    ]},
+    {"name": "merge-insert-keeps-an-explicit-null", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR DEFAULT 'NA', score NUMBER(5,3) DEFAULT 0)"},
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, NULL)"},
+      {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN NOT MATCHED THEN INSERT (id, name) VALUES (src.id, src.name)"},
+      {"sql": "SELECT name, score FROM t", "expect": {"rows": [["NULL", "0"]]}}
+    ]},
+    {"name": "omitted-columns-still-take-defaults-everywhere", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR DEFAULT 'NA', score NUMBER(5,3) DEFAULT 0)"},
+      {"sql": "INSERT INTO t (id) VALUES (1)"},
+      {"sql": "SELECT name, score FROM t", "expect": {"rows": [["NA", "0"]]}}
+    ]}
+  ]
+}

@@ -85,17 +85,17 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
     /** Live: "Invalid argument types for function '||': (VARCHAR(1), OBJECT)". */
     @Test
     public void concatOperatorRejectsSemiStructuredOnEitherSide() {
-        assertFails("SELECT 'x' || o FROM stt",
+        assertFails("SELECT 'x' || o FROM stt ORDER BY 1",
             "Invalid argument types for function '||': (VARCHAR(1), OBJECT)");
-        assertFails("SELECT o || 'x' FROM stt",
+        assertFails("SELECT o || 'x' FROM stt ORDER BY 1",
             "Invalid argument types for function '||': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT o || o FROM stt",
+        assertFails("SELECT o || o FROM stt ORDER BY 1",
             "Invalid argument types for function '||': (OBJECT, OBJECT)");
-        assertFails("SELECT 'x' || a FROM stt",
+        assertFails("SELECT 'x' || a FROM stt ORDER BY 1",
             "Invalid argument types for function '||': (VARCHAR(1), ARRAY)");
-        assertFails("SELECT a || 'x' FROM stt",
+        assertFails("SELECT a || 'x' FROM stt ORDER BY 1",
             "Invalid argument types for function '||': (ARRAY, VARCHAR(1))");
-        assertFails("SELECT o || a FROM stt",
+        assertFails("SELECT o || a FROM stt ORDER BY 1",
             "Invalid argument types for function '||': (OBJECT, ARRAY)");
     }
 
@@ -111,42 +111,42 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
     /** Live: "Invalid argument types for function 'CONCAT': (VARCHAR(1), OBJECT)". */
     @Test
     public void concatFunctionsRejectSemiStructuredInAnyPosition() {
-        assertFails("SELECT CONCAT('x', o) FROM stt",
+        assertFails("SELECT CONCAT('x', o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'CONCAT': (VARCHAR(1), OBJECT)");
-        assertFails("SELECT CONCAT('x', a) FROM stt",
+        assertFails("SELECT CONCAT('x', a) FROM stt ORDER BY 1",
             "Invalid argument types for function 'CONCAT': (VARCHAR(1), ARRAY)");
-        assertFails("SELECT CONCAT(o) FROM stt",
+        assertFails("SELECT CONCAT(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'CONCAT': (OBJECT)");
-        assertFails("SELECT CONCAT(s, s, o) FROM stt",
+        assertFails("SELECT CONCAT(s, s, o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'CONCAT': (VARCHAR(16777216), VARCHAR(16777216), OBJECT)");
     }
 
     /** Live reports CONCAT_WS as 'CONCAT' — the name it desugars to. */
     @Test
     public void concatWsReportsItselfAsConcat() {
-        assertFails("SELECT CONCAT_WS(',', s, o) FROM stt",
+        assertFails("SELECT CONCAT_WS(',', s, o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'CONCAT':");
-        assertFails("SELECT CONCAT_WS(o, s, s) FROM stt",
+        assertFails("SELECT CONCAT_WS(o, s, s) FROM stt ORDER BY 1",
             "Invalid argument types for function 'CONCAT':");
     }
 
     /** Live: "Invalid argument types for function 'LISTAGG': (OBJECT)", both positions. */
     @Test
     public void listaggRejectsSemiStructuredInBothPositions() {
-        assertFails("SELECT LISTAGG(o) FROM stt",
+        assertFails("SELECT LISTAGG(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LISTAGG': (OBJECT)");
-        assertFails("SELECT LISTAGG(a) FROM stt",
+        assertFails("SELECT LISTAGG(a) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LISTAGG': (ARRAY)");
-        assertFails("SELECT LISTAGG(o, ',') FROM stt",
+        assertFails("SELECT LISTAGG(o, ',') FROM stt ORDER BY 1",
             "Invalid argument types for function 'LISTAGG': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT LISTAGG(s, o) FROM stt",
+        assertFails("SELECT LISTAGG(s, o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LISTAGG': (VARCHAR(16777216), OBJECT)");
     }
 
     /** The DISTINCT and WITHIN GROUP forms reject identically on live. */
     @Test
     public void listaggRejectsItsDistinctAndWithinGroupForms() {
-        assertFails("SELECT LISTAGG(DISTINCT o) FROM stt",
+        assertFails("SELECT LISTAGG(DISTINCT o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LISTAGG': (OBJECT)");
         assertFails("SELECT LISTAGG(o, ',') WITHIN GROUP (ORDER BY id) FROM stt",
             "Invalid argument types for function 'LISTAGG': (OBJECT, VARCHAR(1))");
@@ -179,20 +179,20 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void aVariantIsAcceptedEvenWhenItHoldsAnObject() {
-        assertAccepted("SELECT 'x' || v FROM stt", 2);
-        assertAccepted("SELECT v || 'x' FROM stt", 2);
-        assertAccepted("SELECT 'x' || vo FROM stt", 2);
-        assertAccepted("SELECT CONCAT('x', vo) FROM stt", 2);
-        assertAccepted("SELECT LISTAGG(v) FROM stt", 1);
-        assertAccepted("SELECT LISTAGG(vo) FROM stt", 1);
+        assertAccepted("SELECT 'x' || v FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT v || 'x' FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT 'x' || vo FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT CONCAT('x', vo) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT LISTAGG(v) FROM stt ORDER BY 1", 1);
+        assertAccepted("SELECT LISTAGG(vo) FROM stt ORDER BY 1", 1);
     }
 
     /** An OBJECT cast to VARIANT is accepted; the same value cast to OBJECT is not. */
     @Test
     public void castingToVariantMakesItAcceptableAgain() {
-        assertAccepted("SELECT 'x' || o::VARIANT FROM stt", 2);
-        assertAccepted("SELECT 'x' || TO_VARIANT(o) FROM stt", 2);
-        assertFails("SELECT 'x' || v::OBJECT FROM stt",
+        assertAccepted("SELECT 'x' || o::VARIANT FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT 'x' || TO_VARIANT(o) FROM stt ORDER BY 1", 2);
+        assertFails("SELECT 'x' || v::OBJECT FROM stt ORDER BY 1",
             "Invalid argument types for function '||': (VARCHAR(1), OBJECT)");
     }
 
@@ -206,11 +206,11 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void theTryCastSpellingOfTheWideningIsAcceptedToo() {
-        assertAccepted("SELECT 'x' || TRY_CAST(o AS VARIANT) FROM stt", 2);
-        assertFirstValue("SELECT UPPER(TRY_CAST(o AS VARIANT)) FROM stt", "{\"K\":\"V1\"}");
-        assertFirstValue("SELECT 'x' || TRY_CAST(o AS VARIANT) FROM stt", "x{\"k\":\"v1\"}");
-        assertFails("SELECT UPPER(TRY_CAST(o AS OBJECT)) FROM stt", UPPER_OBJECT);
-        assertFails("SELECT 'x' || TRY_CAST(o AS OBJECT) FROM stt",
+        assertAccepted("SELECT 'x' || TRY_CAST(o AS VARIANT) FROM stt ORDER BY 1", 2);
+        assertFirstValue("SELECT UPPER(TRY_CAST(o AS VARIANT)) FROM stt ORDER BY 1", "{\"K\":\"V1\"}");
+        assertFirstValue("SELECT 'x' || TRY_CAST(o AS VARIANT) FROM stt ORDER BY 1", "x{\"k\":\"v1\"}");
+        assertFails("SELECT UPPER(TRY_CAST(o AS OBJECT)) FROM stt ORDER BY 1", UPPER_OBJECT);
+        assertFails("SELECT 'x' || TRY_CAST(o AS OBJECT) FROM stt ORDER BY 1",
             "Invalid argument types for function '||': (VARCHAR(1), OBJECT)");
     }
 
@@ -222,11 +222,11 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void explicitConversionsToTextStayAccepted() {
-        assertFirstValue("SELECT CAST(o AS VARCHAR) FROM stt", "{\"k\":\"v1\"}");
-        assertFirstValue("SELECT TO_VARCHAR(o) FROM stt", "{\"k\":\"v1\"}");
-        assertFirstValue("SELECT TO_CHAR(o) FROM stt", "{\"k\":\"v1\"}");
-        assertFirstValue("SELECT o::VARCHAR FROM stt", "{\"k\":\"v1\"}");
-        assertFirstValue("SELECT TO_VARCHAR(a) FROM stt", "[1,2]");
+        assertFirstValue("SELECT CAST(o AS VARCHAR) FROM stt ORDER BY 1", "{\"k\":\"v1\"}");
+        assertFirstValue("SELECT TO_VARCHAR(o) FROM stt ORDER BY 1", "{\"k\":\"v1\"}");
+        assertFirstValue("SELECT TO_CHAR(o) FROM stt ORDER BY 1", "{\"k\":\"v1\"}");
+        assertFirstValue("SELECT o::VARCHAR FROM stt ORDER BY 1", "{\"k\":\"v1\"}");
+        assertFirstValue("SELECT TO_VARCHAR(a) FROM stt ORDER BY 1", "[1,2]");
     }
 
     /**
@@ -251,10 +251,10 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
     /** And the converted value flows on into the text functions that refused the original. */
     @Test
     public void aConvertedValueFlowsOnIntoTheTextFunctions() {
-        assertAccepted("SELECT TO_VARCHAR(o) || 'x' FROM stt", 2);
-        assertAccepted("SELECT 'x' || CAST(o AS VARCHAR) FROM stt", 2);
-        assertAccepted("SELECT CONCAT('x', TO_JSON(o)) FROM stt", 2);
-        assertAccepted("SELECT LISTAGG(TO_VARCHAR(o)) FROM stt", 1);
+        assertAccepted("SELECT TO_VARCHAR(o) || 'x' FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT 'x' || CAST(o AS VARCHAR) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT CONCAT('x', TO_JSON(o)) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT LISTAGG(TO_VARCHAR(o)) FROM stt ORDER BY 1", 1);
     }
 
     // ── The bound: ordinary types still concatenate ──────────────────────────
@@ -262,20 +262,20 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
     /** Live joins NUMBER, BOOLEAN, DATE and an untyped NULL to text without complaint. */
     @Test
     public void ordinaryTypesStillConcatenate() {
-        assertAccepted("SELECT 'x' || n FROM stt", 2);
-        assertAccepted("SELECT 'x' || s FROM stt", 2);
-        assertAccepted("SELECT 'x' || NULL FROM stt", 2);
-        assertAccepted("SELECT CONCAT(s, n) FROM stt", 2);
-        assertAccepted("SELECT LISTAGG(s, ',') FROM stt", 1);
-        assertAccepted("SELECT LISTAGG(n) FROM stt", 1);
+        assertAccepted("SELECT 'x' || n FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT 'x' || s FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT 'x' || NULL FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT CONCAT(s, n) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT LISTAGG(s, ',') FROM stt ORDER BY 1", 1);
+        assertAccepted("SELECT LISTAGG(n) FROM stt ORDER BY 1", 1);
     }
 
     /** A path or index read yields VARIANT, so it joins and uppercases fine — live-verified. */
     @Test
     public void readingIntoTheValueYieldsAVariantThatIsAccepted() {
-        assertAccepted("SELECT 'x' || o:k FROM stt", 2);
-        assertAccepted("SELECT 'x' || a[0] FROM stt", 2);
-        assertAccepted("SELECT CONCAT('x', GET(o, 'k')) FROM stt", 2);
+        assertAccepted("SELECT 'x' || o:k FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT 'x' || a[0] FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT CONCAT('x', GET(o, 'k')) FROM stt ORDER BY 1", 2);
     }
 
     // ── The scalar string family ─────────────────────────────────────────────
@@ -287,76 +287,76 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void upperAndLowerRejectSemiStructured() {
-        assertFails("SELECT UPPER(o) FROM stt", UPPER_OBJECT);
-        assertFails("SELECT UPPER(a) FROM stt", UPPER_ARRAY);
-        assertFails("SELECT LOWER(o) FROM stt",
+        assertFails("SELECT UPPER(o) FROM stt ORDER BY 1", UPPER_OBJECT);
+        assertFails("SELECT UPPER(a) FROM stt ORDER BY 1", UPPER_ARRAY);
+        assertFails("SELECT LOWER(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LOWER': (OBJECT)");
-        assertFails("SELECT LOWER(a) FROM stt",
+        assertFails("SELECT LOWER(a) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LOWER': (ARRAY)");
     }
 
     /** The measuring, trimming and padding functions, each live-verified over both columns. */
     @Test
     public void theMeasuringAndTrimmingFunctionsRejectSemiStructured() {
-        assertFails("SELECT LENGTH(o) FROM stt",
+        assertFails("SELECT LENGTH(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LENGTH': (OBJECT)");
-        assertFails("SELECT LENGTH(a) FROM stt",
+        assertFails("SELECT LENGTH(a) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LENGTH': (ARRAY)");
-        assertFails("SELECT LEN(o) FROM stt",
+        assertFails("SELECT LEN(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LEN': (OBJECT)");
-        assertFails("SELECT OCTET_LENGTH(o) FROM stt",
+        assertFails("SELECT OCTET_LENGTH(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'OCTET_LENGTH': (OBJECT)");
-        assertFails("SELECT TRIM(o) FROM stt",
+        assertFails("SELECT TRIM(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'TRIM': (OBJECT)");
-        assertFails("SELECT LTRIM(o) FROM stt",
+        assertFails("SELECT LTRIM(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'LTRIM': (OBJECT)");
-        assertFails("SELECT RTRIM(a) FROM stt",
+        assertFails("SELECT RTRIM(a) FROM stt ORDER BY 1",
             "Invalid argument types for function 'RTRIM': (ARRAY)");
-        assertFails("SELECT RPAD(o, 20, '.') FROM stt",
+        assertFails("SELECT RPAD(o, 20, '.') FROM stt ORDER BY 1",
             "Invalid argument types for function 'RPAD': (OBJECT, NUMBER(2,0), VARCHAR(1))");
-        assertFails("SELECT LPAD(o, 20, '.') FROM stt",
+        assertFails("SELECT LPAD(o, 20, '.') FROM stt ORDER BY 1",
             "Invalid argument types for function 'LPAD': (OBJECT, NUMBER(2,0), VARCHAR(1))");
     }
 
     /** Substring, replacement and splitting, plus the regular-expression family. */
     @Test
     public void theSubstringAndRegexFunctionsRejectSemiStructured() {
-        assertFails("SELECT SUBSTR(o, 1, 1) FROM stt",
+        assertFails("SELECT SUBSTR(o, 1, 1) FROM stt ORDER BY 1",
             "Invalid argument types for function 'SUBSTR': (OBJECT, NUMBER(1,0), NUMBER(1,0))");
-        assertFails("SELECT REPLACE(o, 'a', 'b') FROM stt",
+        assertFails("SELECT REPLACE(o, 'a', 'b') FROM stt ORDER BY 1",
             "Invalid argument types for function 'REPLACE': (OBJECT, VARCHAR(1), VARCHAR(1))");
-        assertFails("SELECT SPLIT_PART(o, ',', 1) FROM stt",
+        assertFails("SELECT SPLIT_PART(o, ',', 1) FROM stt ORDER BY 1",
             "Invalid argument types for function 'SPLIT_PART': (OBJECT, VARCHAR(1), NUMBER(1,0))");
-        assertFails("SELECT SPLIT(o, ',') FROM stt",
+        assertFails("SELECT SPLIT(o, ',') FROM stt ORDER BY 1",
             "Invalid argument types for function 'SPLIT': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT REGEXP_COUNT(o, 'k') FROM stt",
+        assertFails("SELECT REGEXP_COUNT(o, 'k') FROM stt ORDER BY 1",
             "Invalid argument types for function 'REGEXP_COUNT': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT REGEXP_REPLACE(o, 'k', 'z') FROM stt",
+        assertFails("SELECT REGEXP_REPLACE(o, 'k', 'z') FROM stt ORDER BY 1",
             "Invalid argument types for function 'REGEXP_REPLACE': (OBJECT, VARCHAR(1), VARCHAR(1))");
-        assertFails("SELECT REGEXP_SUBSTR(o, 'k') FROM stt",
+        assertFails("SELECT REGEXP_SUBSTR(o, 'k') FROM stt ORDER BY 1",
             "Invalid argument types for function 'REGEXP_SUBSTR': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT INITCAP(o) FROM stt",
+        assertFails("SELECT INITCAP(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'INITCAP': (OBJECT)");
-        assertFails("SELECT REVERSE(o) FROM stt",
+        assertFails("SELECT REVERSE(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'REVERSE': (OBJECT)");
-        assertFails("SELECT SOUNDEX(o) FROM stt",
+        assertFails("SELECT SOUNDEX(o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'SOUNDEX': (OBJECT)");
     }
 
     /** The searching and comparing functions, whose subject is text on both sides. */
     @Test
     public void theSearchingFunctionsRejectSemiStructured() {
-        assertFails("SELECT CONTAINS(o, 'k') FROM stt",
+        assertFails("SELECT CONTAINS(o, 'k') FROM stt ORDER BY 1",
             "Invalid argument types for function 'CONTAINS': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT STARTSWITH(o, 'k') FROM stt",
+        assertFails("SELECT STARTSWITH(o, 'k') FROM stt ORDER BY 1",
             "Invalid argument types for function 'STARTSWITH': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT ENDSWITH(o, 'k') FROM stt",
+        assertFails("SELECT ENDSWITH(o, 'k') FROM stt ORDER BY 1",
             "Invalid argument types for function 'ENDSWITH': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT CHARINDEX(o, 'k') FROM stt",
+        assertFails("SELECT CHARINDEX(o, 'k') FROM stt ORDER BY 1",
             "Invalid argument types for function 'CHARINDEX': (OBJECT, VARCHAR(1))");
-        assertFails("SELECT POSITION('a', o) FROM stt",
+        assertFails("SELECT POSITION('a', o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'POSITION': (VARCHAR(1), OBJECT)");
-        assertFails("SELECT EDITDISTANCE(o, 'k') FROM stt",
+        assertFails("SELECT EDITDISTANCE(o, 'k') FROM stt ORDER BY 1",
             "Invalid argument types for function 'EDITDISTANCE': (OBJECT, VARCHAR(1))");
     }
 
@@ -366,23 +366,23 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void everyArgumentPositionRefusesSemiStructured() {
-        assertFails("SELECT SPLIT_PART(s, o, 1) FROM stt",
+        assertFails("SELECT SPLIT_PART(s, o, 1) FROM stt ORDER BY 1",
             "Invalid argument types for function 'SPLIT_PART': (VARCHAR(16777216), OBJECT, NUMBER(1,0))");
-        assertFails("SELECT SPLIT_PART(s, ',', o) FROM stt",
+        assertFails("SELECT SPLIT_PART(s, ',', o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'SPLIT_PART': (VARCHAR(16777216), VARCHAR(1), OBJECT)");
-        assertFails("SELECT RPAD(s, 20, o) FROM stt",
+        assertFails("SELECT RPAD(s, 20, o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'RPAD': (VARCHAR(16777216), NUMBER(2,0), OBJECT)");
-        assertFails("SELECT REGEXP_REPLACE(s, o, 'z') FROM stt",
+        assertFails("SELECT REGEXP_REPLACE(s, o, 'z') FROM stt ORDER BY 1",
             "Invalid argument types for function 'REGEXP_REPLACE':"
                 + " (VARCHAR(16777216), OBJECT, VARCHAR(1))");
-        assertFails("SELECT REGEXP_REPLACE(s, 'x', o) FROM stt",
+        assertFails("SELECT REGEXP_REPLACE(s, 'x', o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'REGEXP_REPLACE':"
                 + " (VARCHAR(16777216), VARCHAR(1), OBJECT)");
-        assertFails("SELECT REPLACE(s, o, 'z') FROM stt",
+        assertFails("SELECT REPLACE(s, o, 'z') FROM stt ORDER BY 1",
             "Invalid argument types for function 'REPLACE': (VARCHAR(16777216), OBJECT, VARCHAR(1))");
-        assertFails("SELECT CONTAINS(s, o) FROM stt",
+        assertFails("SELECT CONTAINS(s, o) FROM stt ORDER BY 1",
             "Invalid argument types for function 'CONTAINS': (VARCHAR(16777216), OBJECT)");
-        assertFails("SELECT TRANSLATE(s, o, 'cd') FROM stt",
+        assertFails("SELECT TRANSLATE(s, o, 'cd') FROM stt ORDER BY 1",
             "Invalid argument types for function 'TRANSLATE': (VARCHAR(16777216), OBJECT, VARCHAR(2))");
     }
 
@@ -395,9 +395,9 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void theDeclaredTypeIsReadThroughConditionalsAndDerivedColumns() {
-        assertFails("SELECT UPPER(IFF(TRUE, o, o)) FROM stt", UPPER_OBJECT);
-        assertFails("SELECT UPPER(COALESCE(o, o)) FROM stt", UPPER_OBJECT);
-        assertFails("SELECT UPPER(CASE WHEN TRUE THEN o ELSE o END) FROM stt", UPPER_OBJECT);
+        assertFails("SELECT UPPER(IFF(TRUE, o, o)) FROM stt ORDER BY 1", UPPER_OBJECT);
+        assertFails("SELECT UPPER(COALESCE(o, o)) FROM stt ORDER BY 1", UPPER_OBJECT);
+        assertFails("SELECT UPPER(CASE WHEN TRUE THEN o ELSE o END) FROM stt ORDER BY 1", UPPER_OBJECT);
         assertFails("SELECT UPPER(x) FROM (SELECT o AS x FROM stt)", UPPER_OBJECT);
         assertFails("WITH c AS (SELECT o AS x FROM stt) SELECT UPPER(x) FROM c", UPPER_OBJECT);
         assertFails("SELECT UPPER(o) FROM stt WHERE 1 = 0", UPPER_OBJECT);
@@ -406,12 +406,12 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
     /** The producing functions declare their own type, so live rejects those results too. */
     @Test
     public void theSemiStructuredProducersAreRejectedAsArguments() {
-        assertFails("SELECT UPPER(OBJECT_CONSTRUCT('k', 1)) FROM stt", UPPER_OBJECT);
-        assertFails("SELECT UPPER(ARRAY_CONSTRUCT(1)) FROM stt", UPPER_ARRAY);
-        assertFails("SELECT UPPER(SPLIT('a,b', ',')) FROM stt", UPPER_ARRAY);
-        assertFails("SELECT UPPER(OBJECT_KEYS(o)) FROM stt", UPPER_ARRAY);
-        assertFails("SELECT UPPER(ARRAY_AGG(v)) FROM stt", UPPER_ARRAY);
-        assertFails("SELECT UPPER(OBJECT_AGG(s, v)) FROM stt", UPPER_OBJECT);
+        assertFails("SELECT UPPER(OBJECT_CONSTRUCT('k', 1)) FROM stt ORDER BY 1", UPPER_OBJECT);
+        assertFails("SELECT UPPER(ARRAY_CONSTRUCT(1)) FROM stt ORDER BY 1", UPPER_ARRAY);
+        assertFails("SELECT UPPER(SPLIT('a,b', ',')) FROM stt ORDER BY 1", UPPER_ARRAY);
+        assertFails("SELECT UPPER(OBJECT_KEYS(o)) FROM stt ORDER BY 1", UPPER_ARRAY);
+        assertFails("SELECT UPPER(ARRAY_AGG(v)) FROM stt ORDER BY 1", UPPER_ARRAY);
+        assertFails("SELECT UPPER(OBJECT_AGG(s, v)) FROM stt ORDER BY 1", UPPER_OBJECT);
     }
 
     // ── The bound: the rest of the string surface is untouched ───────────────
@@ -419,34 +419,34 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
     /** Live accepts a VARIANT everywhere a text function takes text, holding an object or not. */
     @Test
     public void theStringFunctionsStillTakeAVariant() {
-        assertAccepted("SELECT UPPER(v) FROM stt", 2);
-        assertAccepted("SELECT UPPER(vo) FROM stt", 2);
-        assertAccepted("SELECT LENGTH(vo) FROM stt", 2);
-        assertAccepted("SELECT SPLIT_PART(vo, ',', 1) FROM stt", 2);
-        assertAccepted("SELECT REPLACE(vo, 'x', 'y') FROM stt", 2);
-        assertAccepted("SELECT UPPER(o::VARIANT) FROM stt", 2);
-        assertAccepted("SELECT UPPER(TO_VARIANT(o)) FROM stt", 2);
-        assertAccepted("SELECT UPPER(PARSE_JSON('{\"a\":1}')) FROM stt", 2);
+        assertAccepted("SELECT UPPER(v) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT UPPER(vo) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT LENGTH(vo) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT SPLIT_PART(vo, ',', 1) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT REPLACE(vo, 'x', 'y') FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT UPPER(o::VARIANT) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT UPPER(TO_VARIANT(o)) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT UPPER(PARSE_JSON('{\"a\":1}')) FROM stt ORDER BY 1", 2);
     }
 
     /** And every ordinary type, which live coerces to text without complaint. */
     @Test
     public void theStringFunctionsStillTakeOrdinaryTypes() {
-        assertAccepted("SELECT UPPER(s) FROM stt", 2);
-        assertAccepted("SELECT UPPER(n) FROM stt", 2);
-        assertAccepted("SELECT LENGTH(s) FROM stt", 2);
-        assertAccepted("SELECT SPLIT_PART(n, ',', 1) FROM stt", 2);
-        assertAccepted("SELECT SUBSTR(s, 1, 1) FROM stt", 2);
-        assertAccepted("SELECT UPPER(NULL) FROM stt", 2);
+        assertAccepted("SELECT UPPER(s) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT UPPER(n) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT LENGTH(s) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT SPLIT_PART(n, ',', 1) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT SUBSTR(s, 1, 1) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT UPPER(NULL) FROM stt ORDER BY 1", 2);
     }
 
     /** An explicit conversion re-opens the whole family — live-verified on all three forms. */
     @Test
     public void anExplicitConversionReopensTheStringFunctions() {
-        assertFirstValue("SELECT UPPER(o::VARCHAR) FROM stt", "{\"K\":\"V1\"}");
-        assertFirstValue("SELECT UPPER(TO_VARCHAR(o)) FROM stt", "{\"K\":\"V1\"}");
-        assertFirstValue("SELECT UPPER(TO_JSON(o)) FROM stt", "{\"K\":\"V1\"}");
-        assertAccepted("SELECT LENGTH(CAST(o AS VARCHAR)) FROM stt", 2);
+        assertFirstValue("SELECT UPPER(o::VARCHAR) FROM stt ORDER BY 1", "{\"K\":\"V1\"}");
+        assertFirstValue("SELECT UPPER(TO_VARCHAR(o)) FROM stt ORDER BY 1", "{\"K\":\"V1\"}");
+        assertFirstValue("SELECT UPPER(TO_JSON(o)) FROM stt ORDER BY 1", "{\"K\":\"V1\"}");
+        assertAccepted("SELECT LENGTH(CAST(o AS VARCHAR)) FROM stt ORDER BY 1", 2);
     }
 
     /**
@@ -456,17 +456,17 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void theSemiStructuredAwareFunctionsAreUntouched() {
-        assertAccepted("SELECT SEARCH(o, 'k') FROM stt", 2);
-        assertAccepted("SELECT ARRAY_TO_STRING(a, ',') FROM stt", 2);
-        assertAccepted("SELECT OBJECT_KEYS(o) FROM stt", 2);
-        assertAccepted("SELECT TYPEOF(o) FROM stt", 2);
-        assertAccepted("SELECT ARRAY_SIZE(a) FROM stt", 2);
-        assertAccepted("SELECT OBJECT_INSERT(o, 'j', 2) FROM stt", 2);
-        assertAccepted("SELECT COALESCE(o, o) FROM stt", 2);
-        assertAccepted("SELECT GREATEST(o, o) FROM stt", 2);
-        assertAccepted("SELECT HASH(o) FROM stt", 2);
-        assertAccepted("SELECT ARRAY_CONSTRUCT(o) FROM stt", 2);
-        assertAccepted("SELECT OBJECT_CONSTRUCT('k', o) FROM stt", 2);
+        assertAccepted("SELECT SEARCH(o, 'k') FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT ARRAY_TO_STRING(a, ',') FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT OBJECT_KEYS(o) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT TYPEOF(o) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT ARRAY_SIZE(a) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT OBJECT_INSERT(o, 'j', 2) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT COALESCE(o, o) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT GREATEST(o, o) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT HASH(o) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT ARRAY_CONSTRUCT(o) FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT OBJECT_CONSTRUCT('k', o) FROM stt ORDER BY 1", 2);
     }
 
     /** Grouping, sorting, DISTINCT and comparison keys still take a semi-structured value. */
@@ -474,8 +474,8 @@ public class SemiStructuredTextArgumentTest extends BaseDatabaseTest {
     public void keyPositionsStillAcceptSemiStructured() {
         assertAccepted("SELECT COUNT(*) FROM stt GROUP BY o", 2);
         assertAccepted("SELECT id FROM stt ORDER BY o", 2);
-        assertAccepted("SELECT DISTINCT o FROM stt", 2);
-        assertAccepted("SELECT COUNT(o) FROM stt", 1);
+        assertAccepted("SELECT DISTINCT o FROM stt ORDER BY 1", 2);
+        assertAccepted("SELECT COUNT(o) FROM stt ORDER BY 1", 1);
         assertAccepted("SELECT id FROM stt WHERE o = o", 2);
     }
 }

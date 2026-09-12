@@ -16,13 +16,14 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
 public class Ascii extends TextArgumentFunction {
-    public Ascii() { super("ASCII", NumericType.INTEGER); }
+    public Ascii() { super("ASCII", IntegerResultWidths.YEAR_PART); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -35,4 +36,10 @@ public class Ascii extends TextArgumentFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 1; }
+
+    /** A BINARY is no text here: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

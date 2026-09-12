@@ -1,0 +1,108 @@
+{
+  "suite": "functions-missing-scalar",
+  "description": "The scalar functions this batch added: string extras (CHARINDEX with and without a start position, REGEXP_INSTR, the TRY_ decoders, SHA1), the IGNORE_NULLS numeric extremes, date/time extras (GETDATE, DAYNAME, MONTHNAME, CONVERT_TIMEZONE), the TRY_ conversion family beside its non-TRY counterparts, the semi-structured predicates and constructors (PARSE_JSON / TRY_PARSE_JSON, TO_VARIANT, TO_JSON, TYPEOF, the IS_ family, STRIP_NULL_VALUE), and the context functions. TRY_TO_NUMBER carries TO_NUMBER's NUMBER(38,0) default, so no scale rounds to a whole number while an explicit precision and scale keep the fraction, and TYPEOF reports a string as VARCHAR and never TEXT. Converted 1:1 from functions/MissingScalarFunctionsTest (now retired); the assertNotNull checks become IFF(x IS NULL, ...) projections and the CONVERT_TIMEZONE substring check reads TO_VARCHAR.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "charindex", "steps": [{"sql": "SELECT CHARINDEX('lo', 'hello world')", "expect": {"value": "4"}}]},
+    {"name": "charindex-not-found", "steps": [{"sql": "SELECT CHARINDEX('xyz', 'hello')", "expect": {"value": "0"}}]},
+    {"name": "charindex-with-a-start-position", "steps": [
+      {"sql": "SELECT CHARINDEX('lo', 'hello lo world', 5)", "expect": {"value": "7"}}]},
+    {"name": "regexp-instr", "steps": [{"sql": "SELECT REGEXP_INSTR('hello world', 'lo')", "expect": {"value": "4"}}]},
+    {"name": "regexp-instr-not-found", "steps": [
+      {"sql": "SELECT REGEXP_INSTR('hello', '[0-9]+')", "expect": {"value": "0"}}]},
+    {"name": "try-base64-decode-of-valid-text", "steps": [
+      {"sql": "SELECT TRY_BASE64_DECODE_STRING('aGVsbG8=')", "expect": {"value": "hello"}}]},
+    {"name": "try-base64-decode-of-invalid-text", "steps": [
+      {"sql": "SELECT TRY_BASE64_DECODE_STRING('not!!valid@@base64%%')", "expect": {"rows": [[null]]}}]},
+    {"name": "try-hex-decode-of-valid-text", "steps": [
+      {"sql": "SELECT TRY_HEX_DECODE_STRING('6869')", "expect": {"value": "hi"}}]},
+    {"name": "try-hex-decode-of-invalid-text", "steps": [
+      {"sql": "SELECT TRY_HEX_DECODE_STRING('ZZ')", "expect": {"rows": [[null]]}}]},
+    {"name": "sha1", "steps": [
+      {"sql": "SELECT LENGTH(SHA1('hello'))", "expect": {"value": "40"}},
+      {"sql": "SELECT SHA1('hello')", "expect": {"value": "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"}}]},
+    {"name": "greatest-ignore-nulls", "steps": [
+      {"sql": "SELECT GREATEST_IGNORE_NULLS(1, NULL, 3, NULL, 2)", "expect": {"value": "3"}}]},
+    {"name": "greatest-ignore-nulls-over-all-nulls", "steps": [
+      {"sql": "SELECT GREATEST_IGNORE_NULLS(NULL, NULL)", "expect": {"rows": [[null]]}}]},
+    {"name": "least-ignore-nulls", "steps": [
+      {"sql": "SELECT LEAST_IGNORE_NULLS(NULL, 1, 3, NULL)", "expect": {"value": "1"}}]},
+    {"name": "getdate-answers", "steps": [
+      {"sql": "SELECT IFF(GETDATE() IS NULL, 'null', 'set')", "expect": {"value": "set"}}]},
+    {"name": "dayname", "steps": [{"sql": "SELECT DAYNAME('2024-01-01')", "expect": {"value": "Mon"}}]},
+    {"name": "monthname", "steps": [
+      {"sql": "SELECT MONTHNAME('2024-01-15'), MONTHNAME('2024-12-25')", "expect": {"rows": [["Jan", "Dec"]]}}]},
+    {"name": "convert-timezone", "steps": [
+      {"sql": "SELECT CONTAINS(TO_VARCHAR(CONVERT_TIMEZONE('UTC', 'America/New_York', '2024-06-15T12:00:00')), '08:00')",
+       "expect": {"value": "true"}}]},
+    {"name": "try-to-date-of-valid-text", "steps": [
+      {"sql": "SELECT IFF(TRY_TO_DATE('2024-06-15') IS NULL, 'null', 'set')", "expect": {"value": "set"}}]},
+    {"name": "try-to-date-of-invalid-text", "steps": [
+      {"sql": "SELECT TRY_TO_DATE('not-a-date')", "expect": {"rows": [[null]]}}]},
+    {"name": "try-to-timestamp-of-valid-text", "steps": [
+      {"sql": "SELECT IFF(TRY_TO_TIMESTAMP_NTZ('2024-06-15T10:30:00') IS NULL, 'null', 'set')",
+       "expect": {"value": "set"}}]},
+    {"name": "try-to-timestamp-of-invalid-text", "steps": [
+      {"sql": "SELECT TRY_TO_TIMESTAMP_NTZ('not-a-ts')", "expect": {"rows": [[null]]}}]},
+    {"name": "try-to-number-of-valid-text", "steps": [
+      {"sql": "SELECT TRY_TO_NUMBER('123.45')", "expect": {"value": "123"}},
+      {"sql": "SELECT '<' || TRY_TO_NUMBER('123.45', 10, 2) || '>'", "expect": {"value": "<123.45>"}}]},
+    {"name": "try-to-number-of-invalid-text", "steps": [
+      {"sql": "SELECT TRY_TO_NUMBER('abc')", "expect": {"rows": [[null]]}}]},
+    {"name": "try-to-double-of-valid-text", "steps": [
+      {"sql": "SELECT ABS(TRY_TO_DOUBLE('3.14') - 3.14) < 0.001", "expect": {"value": "true"}}]},
+    {"name": "try-to-double-of-invalid-text", "steps": [
+      {"sql": "SELECT TRY_TO_DOUBLE('abc')", "expect": {"rows": [[null]]}}]},
+    {"name": "try-to-boolean-true", "steps": [
+      {"sql": "SELECT TRY_TO_BOOLEAN('true')", "expect": {"value": "true"}}]},
+    {"name": "try-to-boolean-false", "steps": [
+      {"sql": "SELECT TRY_TO_BOOLEAN('0')", "expect": {"value": "false"}}]},
+    {"name": "try-to-boolean-of-invalid-text", "steps": [
+      {"sql": "SELECT TRY_TO_BOOLEAN('maybe')", "expect": {"rows": [[null]]}}]},
+    {"name": "to-boolean", "steps": [
+      {"sql": "SELECT TO_BOOLEAN('yes'), TO_BOOLEAN('off')", "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "to-double", "steps": [
+      {"sql": "SELECT ABS(TO_DOUBLE('3.14') - 3.14) < 0.001", "expect": {"value": "true"}}]},
+    {"name": "to-number", "steps": [{"sql": "SELECT TO_NUMBER('42')", "expect": {"value": "42"}}]},
+    {"name": "parse-json", "steps": [
+      {"sql": "SELECT IFF(PARSE_JSON('{\"a\":1}') IS NULL, 'null', 'set')", "expect": {"value": "set"}}]},
+    {"name": "try-parse-json-of-valid-text", "steps": [
+      {"sql": "SELECT IFF(TRY_PARSE_JSON('{\"a\":1}') IS NULL, 'null', 'set')", "expect": {"value": "set"}}]},
+    {"name": "try-parse-json-of-invalid-text", "steps": [
+      {"sql": "SELECT TRY_PARSE_JSON('not json')", "expect": {"rows": [[null]]}}]},
+    {"name": "to-variant", "steps": [
+      {"sql": "SELECT IFF(TO_VARIANT(42) IS NULL, 'null', 'set')", "expect": {"value": "set"}}]},
+    {"name": "to-json", "steps": [
+      {"sql": "SELECT IFF(TO_JSON(42) IS NULL, 'null', 'set')", "expect": {"value": "set"}}]},
+    {"name": "typeof-an-integer", "steps": [{"sql": "SELECT TYPEOF(42)", "expect": {"value": "INTEGER"}}]},
+    {"name": "typeof-a-string-is-varchar-never-text", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT('hello'))", "expect": {"value": "VARCHAR"}}]},
+    {"name": "is-object", "steps": [
+      {"sql": "SELECT IS_OBJECT(PARSE_JSON('{\"a\":1}')), IS_OBJECT(PARSE_JSON('[1,2]'))",
+       "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "is-array", "steps": [
+      {"sql": "SELECT IS_ARRAY(PARSE_JSON('[1,2,3]')), IS_ARRAY(PARSE_JSON('{\"a\":1}'))",
+       "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "is-null-value", "steps": [
+      {"sql": "SELECT IS_NULL_VALUE(PARSE_JSON('null')), IS_NULL_VALUE(PARSE_JSON('1'))",
+       "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "is-integer", "steps": [
+      {"sql": "SELECT IS_INTEGER(PARSE_JSON('42')), IS_INTEGER(PARSE_JSON('3.14'))",
+       "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "is-varchar", "steps": [
+      {"sql": "SELECT IS_VARCHAR(PARSE_JSON('\"hello\"')), IS_VARCHAR(PARSE_JSON('42'))",
+       "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "is-boolean", "steps": [
+      {"sql": "SELECT IS_BOOLEAN(PARSE_JSON('true')), IS_BOOLEAN(PARSE_JSON('42'))",
+       "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "strip-null-value", "steps": [
+      {"sql": "SELECT STRIP_NULL_VALUE(PARSE_JSON('null'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT IFF(STRIP_NULL_VALUE(PARSE_JSON('42')) IS NULL, 'null', 'set')", "expect": {"value": "set"}}]},
+    {"name": "current-schema", "steps": [
+      {"sql": "SELECT IFF(CURRENT_SCHEMA() IS NULL, 'null', 'set')", "expect": {"value": "set"}}]},
+    {"name": "current-warehouse-answers-without-throwing", "steps": [
+      {"sql": "SELECT CURRENT_WAREHOUSE()", "expect": {"rowCount": 1}}]},
+    {"name": "current-region", "steps": [
+      {"sql": "SELECT IFF(CURRENT_REGION() IS NULL, 'null', 'set')", "expect": {"value": "set"}}]}
+  ]
+}

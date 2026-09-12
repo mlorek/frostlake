@@ -16,7 +16,11 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
+
+import java.util.List;
+import java.util.Map;
 
 /**
  * The value of an expression written over GROUPED rows, computed over the row's own source group.
@@ -43,4 +47,30 @@ public interface GroupedExpressionValues {
      * @return the value, or {@link #UNRESOLVED} when this row has no group or the text does not compute
      */
     Object valueOf(Row projectedRow, String expressionText);
+
+    /**
+     * The relation the groups were formed over — the FROM table the projected rows no longer are.
+     *
+     * <p>A window stage over grouped rows resolves VALUES against the projected shape, but a DECLARED
+     * type is a property of the base relation: {@code RATIO_TO_REPORT(SUM(a)) OVER ()} beside
+     * {@code GROUP BY a} is NUMBER(30,8) on the account because {@code a} is the NUMBER(10,2) column it
+     * always was, not the untyped slot the projection put it in. This is where that relation is found.
+     *
+     * @return the base table, never null
+     */
+    Table baseTable();
+
+    /**
+     * The FROM clause's alias map paired with {@link #baseTable()}, or null for a single relation.
+     *
+     * @return alias to table, or null
+     */
+    Map<String, Table> aliasToTable();
+
+    /**
+     * Every joined relation paired with {@link #baseTable()}, or null for a single relation.
+     *
+     * @return the joined tables, or null
+     */
+    List<Table> allTables();
 }

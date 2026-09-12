@@ -1,0 +1,190 @@
+{
+  "suite": "ddl-row-access-policy-attachment",
+  "description": "Attaching and detaching a ROW ACCESS POLICY (all live-verified): the refusals are ordered (policy resolves, ON columns resolve, count matches, then the one-policy rule); re-attaching the SAME policy is refused (unlike masking); DROP ALL detaches (plural spelling only), DROP names must match the attached policy; the not-attached sentence says TABLE even for a view; the type rule spells both types with an unsized VARCHAR 128MB wide in a policy signature and FLOAT/NUMBER as different families; masked or projected columns cannot be policy arguments; the CREATE TABLE/VIEW clauses make the same checks (with CREATE's own unknown-column sentence); and a fully qualified policy from another database attaches. Converted 1:1 from ddl/RowAccessPolicyAttachmentTest (now retired).",
+  "tags": ["ddl", "policy", "converted"],
+  "tests": [
+    {"name": "drop-all-detaches-the-attached-policy", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)",
+       "expect": {"error": {"messageContains": "Object POL_T already has a ROW_ACCESS_POLICY. Only one ROW_ACCESS_POLICY is allowed at a time."}}},
+      {"sql": "ALTER TABLE pol_t DROP ALL ROW ACCESS POLICIES"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER TABLE pol_t DROP ROW ACCESS POLICY rap1"}
+    ]},
+    {"name": "drop-all-is-a-no-op-when-nothing-is-attached", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t DROP ALL ROW ACCESS POLICIES"},
+      {"sql": "ALTER TABLE pol_t DROP ALL ROW ACCESS POLICIES"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER TABLE pol_t DROP ROW ACCESS POLICY rap1"}
+    ]},
+    {"name": "drop-all-detaches-a-views-policy", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE VIEW pol_v AS SELECT * FROM pol_t"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER VIEW pol_v ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER VIEW pol_v ADD ROW ACCESS POLICY rap1 ON (dept)",
+       "expect": {"error": {"messageContains": "Object POL_V already has a ROW_ACCESS_POLICY. Only one ROW_ACCESS_POLICY is allowed at a time."}}},
+      {"sql": "ALTER VIEW pol_v DROP ALL ROW ACCESS POLICIES"},
+      {"sql": "ALTER VIEW pol_v ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER VIEW pol_v DROP ROW ACCESS POLICY rap1"}
+    ]},
+    {"name": "the-singular-spelling-is-refused", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "ALTER TABLE pol_t DROP ALL ROW ACCESS POLICY",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 38 unexpected 'POLICY'."}}}
+    ]},
+    {"name": "add-refuses-a-policy-that-does-not-exist", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY no_such_p ON (dept)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P' does not exist or not authorized."}}}
+    ]},
+    {"name": "add-refuses-an-unknown-column-at-its-own-position", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (no_such_c)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 49\ninvalid identifier 'NO_SUCH_C'"}}}
+    ]},
+    {"name": "add-refuses-too-many-columns", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept, id)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid number of arguments for attaching policy 'RAP1' to 'POL_T', expected 1 arguments, got 2 arguments."}}}
+    ]},
+    {"name": "add-refuses-too-few-columns", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap2 AS (a VARCHAR, b INT) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap2 ON (dept)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid number of arguments for attaching policy 'RAP2' to 'POL_T', expected 2 arguments, got 1 arguments."}}}
+    ]},
+    {"name": "add-refuses-a-second-policy-even-when-it-is-the-same-one", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)",
+       "expect": {"error": {"messageContains": "Object POL_T already has a ROW_ACCESS_POLICY. Only one ROW_ACCESS_POLICY is allowed at a time."}}}
+    ]},
+    {"name": "drop-refuses-a-policy-that-is-not-the-attached-one", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE ROW ACCESS POLICY rap2 AS (a VARCHAR, b INT) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER TABLE pol_t DROP ROW ACCESS POLICY rap2",
+       "expect": {"error": {"messageContains": "Policy RAP2 is not attached to TABLE POL_T."}}}
+    ]},
+    {"name": "drop-refuses-when-nothing-is-attached", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t DROP ROW ACCESS POLICY rap1",
+       "expect": {"error": {"messageContains": "Policy RAP1 is not attached to TABLE POL_T."}}}
+    ]},
+    {"name": "drop-refuses-a-policy-that-does-not-exist", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "ALTER TABLE pol_t DROP ROW ACCESS POLICY no_such_p",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-view-is-called-a-table-when-its-drop-finds-nothing-attached", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE VIEW pol_v AS SELECT * FROM pol_t"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER VIEW pol_v DROP ROW ACCESS POLICY rap1",
+       "expect": {"error": {"messageContains": "Policy RAP1 is not attached to TABLE POL_V."}}}
+    ]},
+    {"name": "a-qualified-policy-name-drops-the-same-attachment", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER TABLE pol_t DROP ROW ACCESS POLICY test_db.test_schema.rap1"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY rap1 ON (dept)"},
+      {"sql": "ALTER TABLE pol_t DROP ROW ACCESS POLICY rap1"}
+    ]},
+    {"name": "a-type-mismatch-is-refused-and-names-both-types", "steps": [
+      {"sql": "CREATE TABLE typ_t (s VARCHAR, s20 VARCHAR(20), n NUMBER, m NUMBER(10,2), d DATE, b BOOLEAN, ts TIMESTAMP, lt TIMESTAMP_LTZ, f FLOAT)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (n)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'N' data type 'NUMBER(38,0)' does not match with Row access policy data type 'VARCHAR(134217728)'."}}}
+    ]},
+    {"name": "every-other-type-is-spelled-canonically", "steps": [
+      {"sql": "CREATE TABLE typ_t (s VARCHAR, s20 VARCHAR(20), n NUMBER, m NUMBER(10,2), d DATE, b BOOLEAN, ts TIMESTAMP, lt TIMESTAMP_LTZ, f FLOAT)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (d)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'D' data type 'DATE' does not match with Row access policy data type 'VARCHAR(134217728)'."}}},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (b)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'B' data type 'BOOLEAN' does not match with Row access policy data type 'VARCHAR(134217728)'."}}},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (ts)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'TS' data type 'TIMESTAMP_NTZ(9)' does not match with Row access policy data type 'VARCHAR(134217728)'."}}},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (lt)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'LT' data type 'TIMESTAMP_LTZ(9)' does not match with Row access policy data type 'VARCHAR(134217728)'."}}},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (f)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'F' data type 'FLOAT' does not match with Row access policy data type 'VARCHAR(134217728)'."}}},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (m)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'M' data type 'NUMBER(10,2)' does not match with Row access policy data type 'VARCHAR(134217728)'."}}}
+    ]},
+    {"name": "a-sized-column-still-matches-an-unsized-argument", "steps": [
+      {"sql": "CREATE TABLE typ_t (s VARCHAR, s20 VARCHAR(20), n NUMBER, m NUMBER(10,2), d DATE, b BOOLEAN, ts TIMESTAMP, lt TIMESTAMP_LTZ, f FLOAT)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (s20)"},
+      {"sql": "ALTER TABLE typ_t DROP ALL ROW ACCESS POLICIES"},
+      {"sql": "CREATE ROW ACCESS POLICY rap_n AS (v NUMBER) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap_n ON (m)"}
+    ]},
+    {"name": "number-and-float-do-not-match", "steps": [
+      {"sql": "CREATE TABLE typ_t (s VARCHAR, s20 VARCHAR(20), n NUMBER, m NUMBER(10,2), d DATE, b BOOLEAN, ts TIMESTAMP, lt TIMESTAMP_LTZ, f FLOAT)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap_n AS (v NUMBER) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap_n ON (f)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'F' data type 'FLOAT' does not match with Row access policy data type 'NUMBER(38,0)'."}}}
+    ]},
+    {"name": "a-masked-column-cannot-be-a-policy-argument", "steps": [
+      {"sql": "CREATE TABLE typ_t (s VARCHAR, s20 VARCHAR(20), n NUMBER, m NUMBER(10,2), d DATE, b BOOLEAN, ts TIMESTAMP, lt TIMESTAMP_LTZ, f FLOAT)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE MASKING POLICY mp_s AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN s SET MASKING POLICY mp_s"},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (s)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'S' cannot be used as policy argument because it is masked by another policy."}}}
+    ]},
+    {"name": "a-projected-column-cannot-be-a-policy-argument-either", "steps": [
+      {"sql": "CREATE TABLE typ_t (s VARCHAR, s20 VARCHAR(20), n NUMBER, m NUMBER(10,2), d DATE, b BOOLEAN, ts TIMESTAMP, lt TIMESTAMP_LTZ, f FLOAT)"},
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE PROJECTION POLICY pp_s AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)"},
+      {"sql": "ALTER TABLE typ_t ALTER COLUMN s SET PROJECTION POLICY pp_s"},
+      {"sql": "ALTER TABLE typ_t ADD ROW ACCESS POLICY rap1 ON (s)",
+       "expect": {"error": {"messageContains": "Column 'S' cannot be used as policy argument because it has a projection policy attached."}}}
+    ]},
+    {"name": "the-create-table-clause-makes-the-same-checks", "steps": [
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE TABLE c1 (a VARCHAR) WITH ROW ACCESS POLICY no_such ON (a)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH' does not exist or not authorized."}}},
+      {"sql": "CREATE TABLE c3 (a VARCHAR, b VARCHAR) WITH ROW ACCESS POLICY rap1 ON (a, b)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid number of arguments for attaching policy 'RAP1' to 'C3', expected 1 arguments, got 2 arguments."}}},
+      {"sql": "CREATE TABLE c4 (a NUMBER) WITH ROW ACCESS POLICY rap1 ON (a)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Column 'A' data type 'NUMBER(38,0)' does not match with Row access policy data type 'VARCHAR(134217728)'."}}},
+      {"sql": "CREATE TABLE c5 (a VARCHAR) WITH ROW ACCESS POLICY rap1 ON (a)"}
+    ]},
+    {"name": "an-unknown-column-is-worded-differently-at-create-time", "steps": [
+      {"sql": "CREATE ROW ACCESS POLICY rap1 AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE TABLE c2 (a VARCHAR) WITH ROW ACCESS POLICY rap1 ON (no_such_c)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ncolumn 'NO_SUCH_C' does not exist"}}}
+    ]},
+    {"name": "the-create-view-clause-checks-the-policy-too", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE VIEW vw1 WITH ROW ACCESS POLICY no_such ON (dept) AS SELECT dept FROM pol_t",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-policy-in-another-database-attaches-by-its-full-name", "steps": [
+      {"sql": "CREATE TABLE pol_t (id INT, dept VARCHAR)"},
+      {"sql": "CREATE OR REPLACE DATABASE fl_rap_other_db"},
+      {"sql": "CREATE OR REPLACE SCHEMA fl_rap_other_db.utils"},
+      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY fl_rap_other_db.utils.rap_x AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY fl_rap_other_db.utils.rap_x ON (dept)"},
+      {"sql": "ALTER TABLE pol_t ADD ROW ACCESS POLICY fl_rap_other_db.utils.rap_x ON (dept)",
+       "expect": {"error": {"messageContains": "Object POL_T already has a ROW_ACCESS_POLICY. Only one ROW_ACCESS_POLICY is allowed at a time."}}},
+      {"sql": "ALTER TABLE pol_t DROP ROW ACCESS POLICY fl_rap_other_db.utils.rap_x"},
+      {"sql": "DROP DATABASE IF EXISTS fl_rap_other_db"}
+    ]}
+  ]
+}

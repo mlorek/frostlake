@@ -65,6 +65,27 @@ public class ObjectAgg extends AggregateFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
+    /**
+     * The VALUE takes a NUMBER, a BOOLEAN, a FLOAT or a VARIANT (cast to VARIANT in the plan) and
+     * refuses a VARCHAR, a temporal or a BINARY with the argument-type list — OBJECT_AGG(t, t) is
+     * "Invalid argument types for function 'OBJECT_AGG': (VARCHAR(10), VARCHAR(10))", OBJECT_AGG(t, d)
+     * "(VARCHAR(10), DATE)" — while the KEY takes any of them, cast to text (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection textRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
     @Override
     public Accumulator createAccumulator() { return new ObjectAggAccumulator(); }
 

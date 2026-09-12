@@ -1,0 +1,33 @@
+{
+  "suite": "functions-container-string-member",
+  "description": "A VARCHAR put INTO a container stays a string member, however much its text reads as JSON - and so it comes back out a VARCHAR. This is the write-side twin of the PARSE_JSON rule: PARSE_JSON('\"[1,2,3]\"') is a string because its argument's TYPE says so, and ARRAY_CONSTRUCT('[1,2]') holds a string for the same reason. Frostlake re-read the text as structure when embedding it, so the element came back an ARRAY and nothing downstream could tell it from a real one; extraction was never at fault, since a container built by PARSE_JSON already returned the right thing. A value that really IS semi-structured is unaffected, and the aggregate builders OBJECT_AGG / ARRAY_AGG follow the same rule - which is where double-encoding used to show up. Converted 1:1 from functions/ContainerStringMemberTest (now retired); its @BeforeEach kv fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-json-looking-string-is-stored-as-a-string", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT('[1,2]'))", "expect": {"value": "[\"[1,2]\"]"}},
+      {"sql": "SELECT TO_JSON(OBJECT_CONSTRUCT('a','[1,2]'))", "expect": {"value": "{\"a\":\"[1,2]\"}"}},
+      {"sql": "SELECT TO_JSON(OBJECT_CONSTRUCT('a','{\"b\":1}'))", "expect": {"value": "{\"a\":\"{\\\"b\\\":1}\"}"}}
+    ]},
+    {"name": "that-member-reads-back-as-a-varchar", "steps": [
+      {"sql": "SELECT TYPEOF(ARRAY_CONSTRUCT('[1,2]')[0])", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TYPEOF(OBJECT_CONSTRUCT('a','[1,2]'):a)", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT ARRAY_CONSTRUCT('[1,2]')[0]::VARCHAR", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT LENGTH(ARRAY_CONSTRUCT('[1,2]')[0]::VARCHAR)", "expect": {"value": "5"}}
+    ]},
+    {"name": "a-real-container-member-stays-a-container", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT('[1,2]', PARSE_JSON('[3,4]')))",
+       "expect": {"value": "[\"[1,2]\",[3,4]]"}},
+      {"sql": "SELECT TYPEOF(ARRAY_CONSTRUCT('[1,2]', PARSE_JSON('[3,4]'))[1])", "expect": {"value": "ARRAY"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"k\":[3,4]}'):k)", "expect": {"value": "ARRAY"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"k\":\"[3,4]\"}'):k)", "expect": {"value": "VARCHAR"}}
+    ]},
+    {"name": "the-aggregate-builders-agree", "steps": [
+      {"sql": "CREATE TABLE kv (k VARCHAR, v VARCHAR)"},
+      {"sql": "INSERT INTO kv VALUES ('plans', '[]'), ('name', 'bob')"},
+      {"sql": "SELECT TO_JSON(OBJECT_AGG(k, v::VARIANT)) FROM kv",
+       "expect": {"value": "{\"name\":\"bob\",\"plans\":\"[]\"}"}},
+      {"sql": "SELECT TYPEOF(OBJECT_AGG(k, v::VARIANT):plans) FROM kv", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TO_JSON(ARRAY_AGG(v::VARIANT)) FROM kv", "expect": {"value": "[\"[]\",\"bob\"]"}}
+    ]}
+  ]
+}

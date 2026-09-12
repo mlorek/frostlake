@@ -1,0 +1,43 @@
+{
+  "suite": "query-set-operation-string-coercion",
+  "description": "A set operation mixing a VARCHAR branch with a non-string branch unifies to the NON-STRING side, and the string branch's VALUES convert to it, whichever side leads. Every cell here was measured on a real Snowflake account, one query per cell. A DECLARED VARCHAR branch - a cast or a column, any length, 1 through 16777216 measured alike - contributes NUMBER(18,5) to the numeric-supertype fold, so beside NUMBER(10,2) the union declares NUMBER(18,5), beside NUMBER(30,10) it declares NUMBER(30,10) and beside NUMBER(38,0) it declares NUMBER(38,5). A bare STRING LITERAL branch contributes the literal's OWN numeric measurement instead, so '5' beside 1 declares NUMBER(1,0), '5' beside NUMBER(10,2) declares NUMBER(10,2), and '2.75' beside 1 declares NUMBER(3,2). Values render at the unified SCALE. An unconvertible string FAILS the statement in either branch order, an empty string the same way, and a DATE pairing fails its own way with 'Date ... is not recognized'. Two string branches stay TEXT - no numeric side, no conversion, so '01' stays distinct from '1'. Converted 1:1 from query/SetOperationStringCoercionTest (now retired); the Java joined each row's first column with a pipe, which becomes LISTAGG over the same rows so the rendered SCALE stays visible and reads the same on every transport.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-declared-varchar-branch-contributes-number-18-5-to-the-fold", "steps": [
+      {"sql": "CREATE TABLE u1 AS SELECT '1'::VARCHAR(10) AS a UNION ALL SELECT 1"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'U1' AND column_name = 'A'", "expect": {"value": "NUMBER(18,5)"}},
+      {"sql": "CREATE TABLE u2 AS SELECT '1'::VARCHAR(10) AS a UNION ALL SELECT 1::NUMBER(10,2)"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'U2' AND column_name = 'A'", "expect": {"value": "NUMBER(18,5)"}},
+      {"sql": "CREATE TABLE u3 AS SELECT '1'::VARCHAR(10) AS a UNION ALL SELECT 1::NUMBER(30,10)"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'U3' AND column_name = 'A'", "expect": {"value": "NUMBER(30,10)"}},
+      {"sql": "CREATE TABLE u4 AS SELECT '1'::VARCHAR(10) AS a UNION ALL SELECT 1::NUMBER(38,0)"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'U4' AND column_name = 'A'", "expect": {"value": "NUMBER(38,5)"}}
+    ]},
+    {"name": "a-string-literal-branch-contributes-its-own-measurement", "steps": [
+      {"sql": "CREATE TABLE l1 AS SELECT '5' AS a UNION ALL SELECT 1"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'L1' AND column_name = 'A'", "expect": {"value": "NUMBER(1,0)"}},
+      {"sql": "CREATE TABLE l2 AS SELECT '5' AS a UNION ALL SELECT 1::NUMBER(10,2)"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'L2' AND column_name = 'A'", "expect": {"value": "NUMBER(10,2)"}},
+      {"sql": "CREATE TABLE l3 AS SELECT '2.75' AS a UNION ALL SELECT 1"},
+      {"sql": "SELECT data_type || '(' || numeric_precision || ',' || numeric_scale || ')' FROM test_db.information_schema.columns WHERE table_name = 'L3' AND column_name = 'A'", "expect": {"value": "NUMBER(3,2)"}}
+    ]},
+    {"name": "values-render-at-the-unified-scale", "steps": [
+      {"sql": "SELECT LISTAGG(a::VARCHAR, '|') FROM (SELECT '5' AS a UNION ALL SELECT 1)", "expect": {"value": "5|1"}},
+      {"sql": "SELECT LISTAGG(a::VARCHAR, '|') WITHIN GROUP (ORDER BY a) FROM (SELECT '5' AS a UNION ALL SELECT 1::NUMBER(10,2))", "expect": {"value": "1.00|5.00"}},
+      {"sql": "SELECT LISTAGG(a::VARCHAR, '|') WITHIN GROUP (ORDER BY a) FROM (SELECT '2.7'::VARCHAR(3) AS a UNION ALL SELECT 1)", "expect": {"value": "1.00000|2.70000"}}
+    ]},
+    {"name": "an-unconvertible-string-fails-in-either-branch-order", "steps": [
+      {"sql": "SELECT 'x' AS a UNION ALL SELECT 1", "expect": {"error": {"messageContains": "Numeric value 'x' is not recognized"}}},
+      {"sql": "SELECT 1 AS a UNION ALL SELECT 'x'", "expect": {"error": {"messageContains": "Numeric value 'x' is not recognized"}}},
+      {"sql": "SELECT 'x' AS a UNION ALL SELECT 1.5", "expect": {"error": {"messageContains": "Numeric value 'x' is not recognized"}}},
+      {"sql": "SELECT ''::VARCHAR(3) AS a UNION ALL SELECT 1", "expect": {"error": {"messageContains": "Numeric value '' is not recognized"}}}
+    ]},
+    {"name": "a-date-pairing-converts-the-string-or-fails-its-own-way", "steps": [
+      {"sql": "SELECT '2024-01-01'::DATE AS a UNION ALL SELECT 'y'", "expect": {"error": {"messageContains": "Date 'y' is not recognized"}}},
+      {"sql": "SELECT LISTAGG(a::VARCHAR, '|') WITHIN GROUP (ORDER BY a) FROM (SELECT '2024-01-01'::VARCHAR(10) AS a UNION ALL SELECT '2024-01-02'::DATE)", "expect": {"value": "2024-01-01|2024-01-02"}}
+    ]},
+    {"name": "all-string-branches-stay-text", "steps": [
+      {"sql": "SELECT LISTAGG(a::VARCHAR, '|') WITHIN GROUP (ORDER BY a) FROM (SELECT '01' AS a UNION SELECT '1')", "expect": {"value": "01|1"}}
+    ]}
+  ]
+}

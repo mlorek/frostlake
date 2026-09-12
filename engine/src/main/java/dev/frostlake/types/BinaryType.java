@@ -30,6 +30,14 @@ public class BinaryType extends DataType {
 
     private final boolean fixed;
 
+    private final BinaryWidthSpelling widthSpelling;
+
+    /** The width a bare BINARY column declares, and the one a stored column settles a wider binary at. */
+    public static final int DEFAULT_WIDTH = 8388608;
+
+    /** The 64MB maximum an unsized binary is named at in a refusal. */
+    public static final int NOMINAL_MAXIMUM = 67108864;
+
     /**
      * A binary of that width, taking its fixedness from the SPELLING it was declared with. Both
      * spellings are kept as an input vocabulary — the parser, the cast targets and the derived widths
@@ -50,13 +58,85 @@ public class BinaryType extends DataType {
      * @param fixed     whether SHOW COLUMNS reports it fixed
      */
     public BinaryType(final int maxLength, final boolean fixed) {
+        this(maxLength, fixed, BinaryWidthSpelling.DECLARED);
+    }
+
+    /**
+     * A binary held at that width whose width the plan spells as {@code widthSpelling} says.
+     *
+     * @param maxLength     the width the binary is held at
+     * @param fixed         whether SHOW COLUMNS reports it fixed
+     * @param widthSpelling how SYSTEM$TYPEOF and a refusal name its width
+     */
+    public BinaryType(final int maxLength, final boolean fixed, final BinaryWidthSpelling widthSpelling) {
         super("BINARY", TypeCategory.BINARY);
         this.maxLength = maxLength;
         this.fixed = fixed;
+        this.widthSpelling = widthSpelling;
     }
 
     public int getMaxLength() {
         return maxLength;
+    }
+
+    /** How this binary's width is spelled — see {@link BinaryWidthSpelling}. */
+    public BinaryWidthSpelling getWidthSpelling() {
+        return widthSpelling;
+    }
+
+    /** The type as {@code SYSTEM$TYPEOF} names it: bare BINARY when unsized, else with its width. */
+    public String typeofText() {
+        if (widthSpelling == BinaryWidthSpelling.UNSIZED) {
+            return "BINARY";
+        }
+        return "BINARY(" + (widthSpelling == BinaryWidthSpelling.MAXIMUM ? NOMINAL_MAXIMUM : maxLength) + ")";
+    }
+
+    /** The type as an argument-type refusal names it: an unsized binary at the 64MB maximum. */
+    public String refusalText() {
+        return "BINARY(" + (widthSpelling == BinaryWidthSpelling.DECLARED ? maxLength : NOMINAL_MAXIMUM) + ")";
+    }
+
+    /**
+     * The binary a piece of this one declares — SUBSTR, LEFT, RIGHT: this one's own width, and the
+     * maximum where this one is unsized (live: {@code SUBSTR(b5, 1, 1)} is BINARY(5),
+     * {@code SUBSTR(TO_BINARY(s), 1, 1)} BINARY(67108864)).
+     */
+    public BinaryType piece() {
+        return widthSpelling == BinaryWidthSpelling.DECLARED ? new BinaryType("VARBINARY", maxLength)
+            : AT_MAXIMUM;
+    }
+
+    /**
+     * The binary a concatenation declares, from its operands' SIZED widths added up and whether any
+     * operand is unsized or at the maximum. The widths add up to the 64MB maximum — live types two 8MB
+     * columns concatenated as BINARY(16777216) and an 8MB one beside a BINARY(5) as BINARY(8388613) — and
+     * a sum past it, or one over an unsized operand, is unsized itself: live, both
+     * {@code X'00' || TO_BINARY('00')} and {@code CAST(x AS BINARY(67108864)) || X'00'} read bare BINARY.
+     * Only a stored column settles the width (see {@link #atColumnWidth}). Never the fixed spelling:
+     * live reads a concatenation fixed false even over two BINARY columns.
+     *
+     * @param sizedWidths    the sized operands' widths, added up
+     * @param unsizedOperand whether any operand is unsized or at the maximum
+     * @return the concatenation's type
+     */
+    public static BinaryType concatenation(final long sizedWidths, final boolean unsizedOperand) {
+        if (unsizedOperand || sizedWidths > NOMINAL_MAXIMUM) {
+            return UNSIZED;
+        }
+        return new BinaryType("VARBINARY", (int) sizedWidths);
+    }
+
+    /**
+     * This binary as a stored column holds it: a width past {@link #DEFAULT_WIDTH} settles at that
+     * default, keeping its fixedness. Live stores a CTAS over a 16MB concatenation, or over
+     * {@code CAST(x AS BINARY(67108864))}, as BINARY(8388608), and declares a view's such column the same
+     * while a query over the view still reads the full width. A binary within the default is itself.
+     *
+     * @return the binary a stored column takes
+     */
+    public BinaryType atColumnWidth() {
+        return maxLength > DEFAULT_WIDTH ? new BinaryType(DEFAULT_WIDTH, fixed) : this;
     }
 
     /**
@@ -128,7 +208,10 @@ public class BinaryType extends DataType {
         final boolean bothFixed = this.isFixed() && otherBinary.isFixed();
         final boolean sameWidth = this.maxLength == otherBinary.maxLength;
         final boolean eitherFixed = this.isFixed() || otherBinary.isFixed();
-        return new BinaryType(maxLen, bothFixed || sameWidth && eitherFixed);
+        // The width's spelling folds left to right, the leading arm deciding: TO_BINARY(s) UNION X'00'
+        // is bare BINARY, X'00' UNION TO_BINARY(s) is BINARY(67108864) (live-verified).
+        return new BinaryType(maxLen, bothFixed || sameWidth && eitherFixed,
+            widthSpelling.meeting(otherBinary.widthSpelling));
     }
 
     @Override
@@ -138,4 +221,15 @@ public class BinaryType extends DataType {
 
     public static BinaryType BINARY = new BinaryType("BINARY", 8388608);
     public static BinaryType VARBINARY = new BinaryType("VARBINARY", 8388608);
+
+    /** The binary no width was given to: TO_BINARY's, a cast to a bare VARBINARY's, the crypto family's. */
+    public static final BinaryType UNSIZED = new BinaryType(DEFAULT_WIDTH, false, BinaryWidthSpelling.UNSIZED);
+
+    /** A binary sized at the 64MB maximum, held at the default width like every other. */
+    public static final BinaryType AT_MAXIMUM = new BinaryType(DEFAULT_WIDTH, false, BinaryWidthSpelling.MAXIMUM);
+
+    /** The unsized binary of a cast to a bare BINARY ({@code fixed}) or VARBINARY. */
+    public static BinaryType unsized(final boolean fixed) {
+        return fixed ? new BinaryType(DEFAULT_WIDTH, true, BinaryWidthSpelling.UNSIZED) : UNSIZED;
+    }
 }

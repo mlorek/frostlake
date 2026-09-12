@@ -1,0 +1,99 @@
+{
+  "suite": "features-misc-surface",
+  "description": "Geo-module absence refusals (engine-only cells, snowflake-skipped like the original live assumptions), IDENTIFIER() resolution of columns/tables/views/streams, and inline -- comments inside IN lists. Converted 1:1 from features/GeoModuleAbsenceTest, IdentifierFunctionTest and InlineCommentTest (all now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "geo-columns-parse-but-string-coercion-names-the-module",
+      "skip": {"backends": ["engine-with-geo", "snowflake"], "reason": "asserts the behaviour of an engine WITHOUT the optional frostlake-geo module; a real account always carries the geospatial surface"},
+      "steps": [
+        {"sql": "CREATE TABLE geo_abs (g GEOGRAPHY, m GEOMETRY)"},
+        {"sql": "INSERT INTO geo_abs (g) SELECT 'POINT(1 2)'", "expect": {"error": {"messageContains": "frostlake-geo"}}}
+      ]
+    },
+    {
+      "name": "geo-functions-are-unknown-without-the-module",
+      "skip": {"backends": ["engine-with-geo", "snowflake"], "reason": "asserts the behaviour of an engine WITHOUT the optional frostlake-geo module; a real account resolves TO_GEOGRAPHY"},
+      "steps": [
+        {"sql": "SELECT TO_GEOGRAPHY('POINT(1 2)')", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "identifier-as-column-name",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 90000)"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 80000)"},
+        {"sql": "SELECT IDENTIFIER('name') FROM employees ORDER BY id", "expect": {"rows": [["Alice"], ["Bob"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "identifier-as-column-name-with-session-var",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 90000)"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 80000)"},
+        {"sql": "SET col = 'salary'"},
+        {"sql": "SELECT IDENTIFIER($col) FROM employees ORDER BY id", "expect": {"rowCount": 2, "rows": [["90000"], ["80000"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "identifier-as-table-name",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 90000)"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 80000)"},
+        {"sql": "SET tbl = 'employees'"},
+        {"sql": "SELECT id, name FROM IDENTIFIER($tbl) ORDER BY id", "expect": {"rows": [["1", "Alice"], ["2", "Bob"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "identifier-as-table-name-literal",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 90000)"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 80000)"},
+        {"sql": "SELECT COUNT(*) FROM IDENTIFIER('employees')", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "identifier-resolves-view",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 90000)"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 80000)"},
+        {"sql": "CREATE VIEW hi_earners AS SELECT id, name FROM employees WHERE salary >= 85000"},
+        {"sql": "SELECT COUNT(*) FROM IDENTIFIER('hi_earners')", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "identifier-resolves-stream",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 90000)"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 80000)"},
+        {"sql": "CREATE STREAM emp_stream ON TABLE employees"},
+        {"sql": "INSERT INTO employees VALUES (3, 'Carol', 70000)"},
+        {"sql": "SELECT COUNT(*) FROM IDENTIFIER('emp_stream')", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "inline-comment-inside-in-clause",
+      "steps": [
+        {"sql": "CREATE TABLE t (i INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1)"},
+        {"sql": "INSERT INTO t VALUES (2)"},
+        {"sql": "DELETE FROM t WHERE i IN (1 -- comment\n )"}
+      ]
+    },
+    {
+      "name": "inline-comment-inside-select",
+      "steps": [
+        {"sql": "CREATE TABLE t (i INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1)"},
+        {"sql": "INSERT INTO t VALUES (2)"},
+        {"sql": "SELECT * FROM t WHERE i IN (\n  1, -- first\n  2  -- second\n)", "expect": {"rowCount": 2}}
+      ]
+    }
+  ]
+}

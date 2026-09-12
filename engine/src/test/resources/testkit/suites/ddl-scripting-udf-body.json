@@ -1,0 +1,242 @@
+{
+  "suite": "ddl-scripting-udf-body",
+  "description": "Snowscript UDFs - a scalar LANGUAGE SQL UDF with a Snowflake-Scripting block body (every expectation measured on a real account): all three delimiters plus the unquoted block form (unquoted expressions/queries stay syntax errors); real block semantics (first RETURN wins, LET/DECLARE, IF, WHILE, EXCEPTION, no-RETURN yields NULL); bare parameter references with shadowing; NULL arguments and RETURNS NULL ON NULL INPUT; RETURN cast to the declared type with call-time failures for uncastable values and semi-structured return types; the restricted body language (no DML/queries/EXECUTE IMMEDIATE/CALL/SELECT INTO/cursors/subqueries under either bind style/UDF calls/recursion - built-ins allowed) with Snowflake's own wording; the procedure-side bind split; scope hygiene between UDFs and calling procedures; no UDF may call a block-bodied one while non-UDF callers all may; per-row evaluation; and the untouched expression/query body paths. Converted 1:1 from ddl/ScriptingUdfBodyTest (now retired).",
+  "tags": ["ddl", "functions", "scripting", "converted"],
+  "tests": [
+    {"name": "dollar-quoted-block-body-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_dollar() RETURNS INT AS $$ BEGIN RETURN 1; END $$"},
+      {"sql": "SELECT f_dollar()", "expect": {"value": "1"}}
+    ]},
+    {"name": "single-quoted-block-body-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_quoted() RETURNS INT AS ' BEGIN RETURN 1; END '"},
+      {"sql": "SELECT f_quoted()", "expect": {"value": "1"}}
+    ]},
+    {"name": "single-quoted-block-body-with-escaped-quotes-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_escaped() RETURNS VARCHAR AS 'BEGIN RETURN ''hi''; END'"},
+      {"sql": "SELECT f_escaped()", "expect": {"value": "hi"}}
+    ]},
+    {"name": "explicit-language-sql-block-body-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_explicit() RETURNS INT LANGUAGE SQL AS 'BEGIN RETURN 3; END'"},
+      {"sql": "SELECT f_explicit()", "expect": {"value": "3"}}
+    ]},
+    {"name": "unquoted-block-body-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_unquoted() RETURNS INT AS BEGIN RETURN 1; END"},
+      {"sql": "SELECT f_unquoted()", "expect": {"value": "1"}}
+    ]},
+    {"name": "unquoted-expression-and-query-bodies-stay-rejected", "steps": [
+      {"sql": "CREATE FUNCTION f_bad_expr() RETURNS INT AS 1+1", "expect": {"error": {}}},
+      {"sql": "CREATE FUNCTION f_bad_query() RETURNS INT AS SELECT 1", "expect": {"error": {}}}
+    ]},
+    {"name": "first-return-wins", "steps": [
+      {"sql": "CREATE FUNCTION f_two() RETURNS INT AS $$ BEGIN RETURN 1; RETURN 2; END $$"},
+      {"sql": "SELECT f_two()", "expect": {"value": "1"}}
+    ]},
+    {"name": "let-variable-is-usable", "steps": [
+      {"sql": "CREATE FUNCTION f_let() RETURNS INT AS $$ BEGIN LET x INT := 5; RETURN x * 2; END $$"},
+      {"sql": "SELECT f_let()", "expect": {"value": "10"}}
+    ]},
+    {"name": "declare-section-is-usable", "steps": [
+      {"sql": "CREATE FUNCTION f_declare() RETURNS INT AS\n$$\nDECLARE\n  x INT DEFAULT 7;\nBEGIN\n  RETURN x;\nEND\n$$"},
+      {"sql": "SELECT f_declare()", "expect": {"value": "7"}}
+    ]},
+    {"name": "control-flow-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_if() RETURNS INT AS $$ BEGIN IF (1=1) THEN RETURN 9; END IF; RETURN 0; END $$"},
+      {"sql": "SELECT f_if()", "expect": {"value": "9"}}
+    ]},
+    {"name": "while-loop-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_while(n INT) RETURNS INT AS\n$$\nDECLARE\n  i INT DEFAULT 0;\n  s INT DEFAULT 0;\nBEGIN\n  WHILE (i < n) DO\n    i := i + 1;\n    s := s + i;\n  END WHILE;\n  RETURN s;\nEND\n$$"},
+      {"sql": "SELECT f_while(4)", "expect": {"value": "10"}}
+    ]},
+    {"name": "exception-handler-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_exc() RETURNS INT AS $$ BEGIN LET x INT := 1/0; RETURN 1; EXCEPTION WHEN OTHER THEN RETURN -1; END $$"},
+      {"sql": "SELECT f_exc()", "expect": {"value": "-1"}}
+    ]},
+    {"name": "body-without-return-yields-null", "steps": [
+      {"sql": "CREATE FUNCTION f_noret() RETURNS INT AS $$ BEGIN LET x INT := 1; END $$"},
+      {"sql": "SELECT f_noret()", "expect": {"value": "NULL"}}
+    ]},
+    {"name": "parameter-is-referenced-bare", "steps": [
+      {"sql": "CREATE FUNCTION f_param(n INT) RETURNS INT AS $$ BEGIN RETURN n + 1; END $$"},
+      {"sql": "SELECT f_param(10)", "expect": {"value": "11"}}
+    ]},
+    {"name": "parameter-may-shadow-the-routine-name", "steps": [
+      {"sql": "CREATE FUNCTION f_shadow(f_shadow INT) RETURNS INT AS $$ BEGIN RETURN f_shadow; END $$"},
+      {"sql": "SELECT f_shadow(7)", "expect": {"value": "7"}}
+    ]},
+    {"name": "parameter-may-shadow-a-column-name", "steps": [
+      {"sql": "CREATE TABLE shadow_src (v INTEGER)"},
+      {"sql": "INSERT INTO shadow_src VALUES (3)"},
+      {"sql": "CREATE FUNCTION f_col(v INT) RETURNS INT AS $$ BEGIN RETURN v; END $$"},
+      {"sql": "SELECT f_col(7)", "expect": {"value": "7"}},
+      {"sql": "SELECT f_col(v) FROM shadow_src", "expect": {"value": "3"}}
+    ]},
+    {"name": "zero-and-many-parameter-forms-run", "steps": [
+      {"sql": "CREATE FUNCTION f_zero() RETURNS INT AS $$ BEGIN RETURN 5; END $$"},
+      {"sql": "CREATE FUNCTION f_many(a INT, b INT, c INT) RETURNS INT AS $$ BEGIN RETURN a * 100 + b * 10 + c; END $$"},
+      {"sql": "SELECT f_zero()", "expect": {"value": "5"}},
+      {"sql": "SELECT f_many(1, 2, 3)", "expect": {"value": "123"}}
+    ]},
+    {"name": "null-argument-reaches-the-block", "steps": [
+      {"sql": "CREATE FUNCTION f_null(n INT) RETURNS VARCHAR AS $$ BEGIN IF (n IS NULL) THEN RETURN 'was-null'; END IF; RETURN 'not-null'; END $$"},
+      {"sql": "SELECT f_null(NULL)", "expect": {"value": "was-null"}},
+      {"sql": "SELECT f_null(5)", "expect": {"value": "not-null"}}
+    ]},
+    {"name": "strict-null-handling-short-circuits-the-block", "steps": [
+      {"sql": "CREATE FUNCTION f_strict(n INT) RETURNS VARCHAR RETURNS NULL ON NULL INPUT AS $$ BEGIN IF (n IS NULL) THEN RETURN 'was-null'; END IF; RETURN 'not-null'; END $$"},
+      {"sql": "SELECT f_strict(NULL)", "expect": {"value": "NULL"}}
+    ]},
+    {"name": "return-value-is-cast-to-the-declared-type", "steps": [
+      {"sql": "CREATE FUNCTION f_str_to_int() RETURNS INT AS $$ BEGIN RETURN '7'; END $$"},
+      {"sql": "CREATE FUNCTION f_int_to_str() RETURNS VARCHAR AS $$ BEGIN RETURN 42; END $$"},
+      {"sql": "SELECT f_str_to_int()", "expect": {"value": "7"}},
+      {"sql": "SELECT '<' || f_int_to_str() || '>'", "expect": {"value": "<42>"}}
+    ]},
+    {"name": "return-value-that-cannot-be-cast-fails-at-call-time", "steps": [
+      {"sql": "CREATE FUNCTION f_bad_cast() RETURNS INT AS $$ BEGIN RETURN 'abc'; END $$"},
+      {"sql": "SELECT f_bad_cast()",
+       "expect": {"error": {"messageContains": "Numeric value 'abc' is not recognized"}}}
+    ]},
+    {"name": "semi-structured-return-type-is-rejected-at-call-time", "steps": [
+      {"sql": "CREATE FUNCTION f_variant() RETURNS VARIANT AS $$ BEGIN RETURN 1; END $$"},
+      {"sql": "SELECT f_variant()",
+       "expect": {"error": {"messageContains": "Unsupported return type for Snowscript UDF: VARIANT"}}}
+    ]},
+    {"name": "scalar-return-types-other-than-semi-structured-work", "steps": [
+      {"sql": "CREATE FUNCTION f_num() RETURNS NUMBER(10,2) AS $$ BEGIN RETURN 1.25; END $$"},
+      {"sql": "CREATE FUNCTION f_bool() RETURNS BOOLEAN AS $$ BEGIN RETURN TRUE; END $$"},
+      {"sql": "SELECT f_num()", "expect": {"value": "1.25"}},
+      {"sql": "SELECT f_bool()", "expect": {"value": "true"}}
+    ]},
+    {"name": "dml-in-a-function-body-is-rejected", "steps": [
+      {"sql": "CREATE TABLE dml_src (v INTEGER)"},
+      {"sql": "INSERT INTO dml_src VALUES (1), (2), (3)"},
+      {"sql": "CREATE FUNCTION f_dml() RETURNS INT AS $$ BEGIN INSERT INTO dml_src VALUES (99); RETURN 1; END $$",
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+      {"sql": "CREATE FUNCTION f_upd() RETURNS INT AS $$ BEGIN UPDATE dml_src SET v = 0; RETURN 1; END $$",
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+      {"sql": "CREATE FUNCTION f_ddl() RETURNS INT AS $$ BEGIN CREATE TABLE zz (a INT); RETURN 1; END $$",
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+      {"sql": "SELECT COUNT(*) FROM dml_src", "expect": {"value": "3"}}
+    ]},
+    {"name": "arbitrary-sql-in-a-function-body-is-rejected", "steps": [
+      {"sql": "CREATE FUNCTION f_select() RETURNS INT AS $$ BEGIN SELECT 1; RETURN 2; END $$",
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+      {"sql": "CREATE FUNCTION f_exec() RETURNS INT AS $$ BEGIN EXECUTE IMMEDIATE 'SELECT 1'; RETURN 1; END $$",
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}},
+      {"sql": "CREATE FUNCTION f_call() RETURNS INT AS $$ BEGIN CALL some_proc(); RETURN 1; END $$",
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: query statement"}}}
+    ]},
+    {"name": "select-into-in-a-function-body-is-rejected", "steps": [
+      {"sql": "CREATE TABLE into_src (v INTEGER)"},
+      {"sql": "CREATE FUNCTION f_into() RETURNS INT AS $$ DECLARE x INT; BEGIN SELECT COUNT(*) INTO x FROM into_src; RETURN x; END $$",
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: select into statement"}}}
+    ]},
+    {"name": "cursor-in-a-function-body-is-rejected", "steps": [
+      {"sql": "CREATE TABLE cursor_src (v INTEGER)"},
+      {"sql": "CREATE FUNCTION f_cursor() RETURNS INT AS $$ DECLARE c CURSOR FOR SELECT v FROM cursor_src; BEGIN RETURN 1; END $$",
+       "expect": {"error": {"messageContains": "Unsupported statement type for Snowscript UDF: cursor declaration"}}}
+    ]},
+    {"name": "subquery-in-a-function-body-is-rejected-with-either-bind-style", "steps": [
+      {"sql": "CREATE TABLE sub_src (v INTEGER)"},
+      {"sql": "INSERT INTO sub_src VALUES (1), (2), (3)"},
+      {"sql": "CREATE FUNCTION f_colon(n INT) RETURNS INT AS $$ BEGIN RETURN (SELECT COUNT(*) FROM sub_src WHERE v = :n); END $$",
+       "expect": {"error": {"messageContains": "Unsupported expression for Snowscript UDF"}}},
+      {"sql": "CREATE FUNCTION f_bare(n INT) RETURNS INT AS $$ BEGIN RETURN (SELECT COUNT(*) FROM sub_src WHERE v = n); END $$",
+       "expect": {"error": {"messageContains": "Unsupported expression for Snowscript UDF"}}},
+      {"sql": "CREATE FUNCTION f_plain() RETURNS INT AS $$ BEGIN RETURN (SELECT COUNT(*) FROM sub_src); END $$",
+       "expect": {"error": {"messageContains": "Unsupported expression for Snowscript UDF"}}},
+      {"sql": "CREATE FUNCTION f_exists() RETURNS BOOLEAN AS $$ BEGIN RETURN EXISTS (SELECT 1 FROM sub_src); END $$",
+       "expect": {"error": {"messageContains": "Unsupported expression for Snowscript UDF"}}}
+    ]},
+    {"name": "bind-variable-split-is-real-for-a-procedure", "steps": [
+      {"sql": "CREATE TABLE split_src (v INTEGER)"},
+      {"sql": "INSERT INTO split_src VALUES (1), (2), (3)"},
+      {"sql": "CREATE PROCEDURE p_colon(n INT) RETURNS INT LANGUAGE SQL AS $$ BEGIN RETURN (SELECT COUNT(*) FROM split_src WHERE v = :n); END $$"},
+      {"sql": "CALL p_colon(1)", "expect": {"value": "1"}}
+    ]},
+    {"name": "calling-another-udf-from-a-block-body-is-rejected", "steps": [
+      {"sql": "CREATE FUNCTION f_helper(n INT) RETURNS INT AS 'n * 2'"},
+      {"sql": "CREATE FUNCTION f_caller(n INT) RETURNS INT AS $$ BEGIN RETURN f_helper(n) + 1; END $$",
+       "expect": {"error": {"messageContains": "Unsupported expression for Snowscript UDF"}}},
+      {"sql": "CREATE FUNCTION f_caller2(n INT) RETURNS INT AS $$ DECLARE x INT DEFAULT f_helper(2); BEGIN RETURN x; END $$",
+       "expect": {"error": {"messageContains": "Unsupported expression for Snowscript UDF"}}},
+      {"sql": "CREATE FUNCTION f_caller3(n INT) RETURNS INT AS $$ BEGIN LET x INT := f_helper(2); RETURN x; END $$",
+       "expect": {"error": {"messageContains": "Unsupported expression for Snowscript UDF"}}}
+    ]},
+    {"name": "recursion-from-a-block-body-is-rejected", "steps": [
+      {"sql": "CREATE FUNCTION f_fact(n INT) RETURNS INT AS $$ BEGIN IF (n <= 1) THEN RETURN 1; END IF; RETURN n * f_fact(n - 1); END $$",
+       "expect": {"error": {"messageContains": "Unsupported expression for Snowscript UDF"}}}
+    ]},
+    {"name": "built-in-functions-are-available-in-a-block-body", "steps": [
+      {"sql": "CREATE FUNCTION f_abs(n INT) RETURNS INT AS $$ BEGIN RETURN ABS(n) + 1; END $$"},
+      {"sql": "CREATE FUNCTION f_iff(n INT) RETURNS INT AS $$ BEGIN RETURN IFF(n > 0, 1, 0); END $$"},
+      {"sql": "SELECT f_abs(-5)", "expect": {"value": "6"}},
+      {"sql": "SELECT f_iff(3)", "expect": {"value": "1"}}
+    ]},
+    {"name": "table-function-with-a-block-body-is-rejected", "steps": [
+      {"sql": "CREATE TABLE tf_src (v INTEGER)"},
+      {"sql": "CREATE FUNCTION f_table() RETURNS TABLE(x INT) AS $$ BEGIN RETURN (SELECT COUNT(*) FROM tf_src); END $$",
+       "expect": {"error": {"messageContains": "Compilation of SQL UDF failed"}}}
+    ]},
+    {"name": "udf-variables-do-not-clobber-a-calling-procedure", "steps": [
+      {"sql": "CREATE FUNCTION f_own_x() RETURNS INT AS $$ DECLARE x INT DEFAULT 999; BEGIN RETURN x; END $$"},
+      {"sql": "CREATE PROCEDURE p_caller() RETURNS VARCHAR LANGUAGE SQL AS\n$$\nDECLARE\n  x INT DEFAULT 5;\n  y INT;\nBEGIN\n  y := f_own_x();\n  RETURN x || '/' || y;\nEND\n$$"},
+      {"sql": "CALL p_caller()", "expect": {"value": "5/999"}}
+    ]},
+    {"name": "udf-cannot-see-a-calling-procedures-variables", "steps": [
+      {"sql": "CREATE FUNCTION f_peek() RETURNS INT AS $$ BEGIN RETURN zz; END $$"},
+      {"sql": "CREATE PROCEDURE p_owner() RETURNS INT LANGUAGE SQL AS\n$$\nDECLARE\n  zz INT DEFAULT 7;\nBEGIN\n  RETURN f_peek();\nEND\n$$"},
+      {"sql": "CALL p_owner()", "expect": {"error": {"messageContains": "invalid identifier 'ZZ'"}}}
+    ]},
+    {"name": "udf-return-does-not-terminate-the-calling-block", "steps": [
+      {"sql": "CREATE FUNCTION f_val() RETURNS INT AS $$ BEGIN RETURN 1; END $$"},
+      {"sql": "CREATE PROCEDURE p_continues() RETURNS INT LANGUAGE SQL AS\n$$\nDECLARE\n  a INT;\nBEGIN\n  a := f_val();\n  RETURN 55;\nEND\n$$"},
+      {"sql": "CALL p_continues()", "expect": {"value": "55"}}
+    ]},
+    {"name": "no-udf-may-call-a-block-bodied-udf", "steps": [
+      {"sql": "CREATE FUNCTION f_blk(n INT) RETURNS INT AS $$ BEGIN RETURN n * 2; END $$"},
+      {"sql": "CREATE FUNCTION f_plain_udf(n INT) RETURNS INT AS 'n * 3'"},
+      {"sql": "CREATE FUNCTION f_expr_calls(n INT) RETURNS INT AS 'f_blk(n) + 1'", "expect": {"error": {}}},
+      {"sql": "CREATE FUNCTION f_query_calls(n INT) RETURNS INT AS 'SELECT f_blk(n) + 1'", "expect": {"error": {}}},
+      {"sql": "CREATE FUNCTION f_expr_ok(n INT) RETURNS INT AS 'f_plain_udf(n) + 1'"},
+      {"sql": "SELECT f_expr_ok(5)", "expect": {"value": "16"}}
+    ]},
+    {"name": "non-udf-callers-may-use-a-block-bodied-udf", "steps": [
+      {"sql": "CREATE TABLE caller_src (v INTEGER)"},
+      {"sql": "INSERT INTO caller_src VALUES (1), (2), (3)"},
+      {"sql": "CREATE FUNCTION f_dbl(n INT) RETURNS INT AS $$ BEGIN RETURN n * 2; END $$"},
+      {"sql": "CREATE VIEW caller_view AS SELECT f_dbl(v) AS d FROM caller_src"},
+      {"sql": "SELECT SUM(d) FROM caller_view", "expect": {"value": "12"}},
+      {"sql": "SELECT COUNT(*) FROM caller_src WHERE f_dbl(v) > 2", "expect": {"value": "2"}},
+      {"sql": "CREATE TABLE caller_dst (d INTEGER)"},
+      {"sql": "INSERT INTO caller_dst SELECT f_dbl(v) FROM caller_src"},
+      {"sql": "SELECT SUM(d) FROM caller_dst", "expect": {"value": "12"}}
+    ]},
+    {"name": "block-body-runs-per-row", "steps": [
+      {"sql": "CREATE TABLE row_src (v INTEGER)"},
+      {"sql": "INSERT INTO row_src VALUES (1), (2), (3)"},
+      {"sql": "CREATE FUNCTION f_double(n INT) RETURNS INT AS $$ DECLARE acc INT DEFAULT 0; BEGIN acc := acc + n; RETURN acc * 2; END $$"},
+      {"sql": "SELECT SUM(f_double(v)) FROM row_src", "expect": {"value": "12"}}
+    ]},
+    {"name": "expression-body-still-runs", "steps": [
+      {"sql": "CREATE FUNCTION f_expr(x INT) RETURNS INT AS 'x + 10'"},
+      {"sql": "SELECT f_expr(5)", "expect": {"value": "15"}}
+    ]},
+    {"name": "query-body-still-runs", "steps": [
+      {"sql": "CREATE TABLE query_src (n INTEGER)"},
+      {"sql": "INSERT INTO query_src VALUES (7), (8)"},
+      {"sql": "CREATE FUNCTION f_query() RETURNS INT AS 'SELECT MAX(n) FROM query_src'"},
+      {"sql": "SELECT f_query()", "expect": {"value": "8"}}
+    ]},
+    {"name": "expression-body-with-a-scalar-subquery-still-runs", "steps": [
+      {"sql": "CREATE TABLE scalar_src (n INTEGER)"},
+      {"sql": "INSERT INTO scalar_src VALUES (1), (2), (3)"},
+      {"sql": "CREATE FUNCTION f_scalar(x INT) RETURNS INT AS '(SELECT COUNT(*) FROM scalar_src WHERE n > x)'"},
+      {"sql": "SELECT f_scalar(1)", "expect": {"value": "2"}}
+    ]},
+    {"name": "procedure-body-must-still-be-a-block", "steps": [
+      {"sql": "CREATE PROCEDURE p_plain(a INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT a + 1'",
+       "expect": {"error": {}}}
+    ]}
+  ]
+}

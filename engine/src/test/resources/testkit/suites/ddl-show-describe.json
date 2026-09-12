@@ -1,0 +1,49 @@
+{
+  "suite": "ddl-show-describe",
+  "description": "SHOW DATABASES/TABLES/COLUMNS/VIEWS and DESCRIBE TABLE, converted from ddl/ShowDescribeTest.java (now retired). The 'at least 3 databases' assert became a deterministic SHOW DATABASES LIKE over the two created names.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "show-databases-lists-created",
+      "steps": [
+        {"sql": "CREATE DATABASE test_db1"},
+        {"sql": "CREATE DATABASE test_db2"},
+        {"sql": "SHOW DATABASES LIKE 'test_db_'", "expect": {"rowCount": 2}},
+        {"sql": "USE DATABASE test_db"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "DROP DATABASE IF EXISTS test_db1"},
+        {"sql": "DROP DATABASE IF EXISTS test_db2"}
+      ]
+    },
+    {
+      "name": "show-tables",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR)"},
+        {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+        {"sql": "SHOW TABLES", "expect": {"rowCount": 2}}
+      ]
+    },
+    {
+      "name": "show-columns",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR, active BOOLEAN)"},
+        {"sql": "SHOW COLUMNS IN test_table", "expect": {"rowCount": 3}}
+      ]
+    },
+    {
+      "name": "describe-table",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+        {"sql": "DESCRIBE TABLE test_table", "expect": {"rowCount": 2}}
+      ]
+    },
+    {
+      "name": "show-views",
+      "steps": [
+        {"sql": "CREATE TABLE base_table (id INTEGER, value INTEGER)"},
+        {"sql": "CREATE VIEW test_view AS SELECT * FROM base_table"},
+        {"sql": "SHOW VIEWS", "expect": {"rowCount": 1}}
+      ]
+    }
+  ]
+}

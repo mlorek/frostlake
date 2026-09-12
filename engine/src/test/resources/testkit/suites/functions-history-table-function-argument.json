@@ -1,0 +1,31 @@
+{
+  "suite": "functions-history-table-function-argument",
+  "description": "The INFORMATION_SCHEMA table functions, and the two ways Frostlake used to be more permissive than the account. They exist ONLY under INFORMATION_SCHEMA, so the bare name resolves to nothing - Frostlake resolved a qualified name by its last part and so never noticed the qualifier was missing - while both qualified spellings, schema-only and database-qualified, run. And their leading POSITIONAL parameter is a TIME-RANGE BOUND, not a result limit: QUERY_HISTORY(2) blames 'END_TIME_RANGE_START' where Frostlake read the 2 as a row cap and answered rows. That parameter is named in the refusal rather than reported by position, unlike FLATTEN or SPLIT_TO_TABLE whose positional parameters are '1' and '2', and a date-shaped STRING is refused too since there is no implicit conversion here. Converted 1:1 from functions/HistoryTableFunctionArgumentTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-bare-name-is-an-invalid-identifier", "steps": [
+      {"sql": "SELECT * FROM TABLE(QUERY_HISTORY(RESULT_LIMIT => 2))",
+       "expect": {"error": {"messageContains": "Invalid identifier QUERY_HISTORY"}}},
+      {"sql": "SELECT * FROM TABLE(TASK_HISTORY(RESULT_LIMIT => 2))",
+       "expect": {"error": {"messageContains": "Invalid identifier TASK_HISTORY"}}},
+      {"sql": "SELECT * FROM TABLE(TAG_REFERENCES('t', 'TABLE'))",
+       "expect": {"error": {"messageContains": "Invalid identifier TAG_REFERENCES"}}}
+    ]},
+    {"name": "the-qualified-spellings-run", "steps": [
+      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT => 2))",
+       "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(test_db.INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT => 2))",
+       "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(RESULT_LIMIT => 2))",
+       "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-leading-positional-parameter-is-a-time-range-bound", "steps": [
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(2))",
+       "expect": {"error": {"messageContains": "invalid type [NUMBER(1,0)] for parameter 'END_TIME_RANGE_START'"}}},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(2))",
+       "expect": {"error": {"messageContains": "invalid type [NUMBER(1,0)] for parameter 'SCHEDULED_TIME_RANGE_START'"}}},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY('2026-01-01'))",
+       "expect": {"error": {"messageContains": "invalid type [VARCHAR(10)] for parameter 'END_TIME_RANGE_START'"}}}
+    ]}
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "suite": "query-alias-shadowing",
+  "description": "An alias REPLACES the table name: with FROM sr AS x, a reference qualified by the ORIGINAL name is \"SQL compilation error: invalid identifier 'SR.C'\" - measured in the SELECT list, WHERE, GROUP BY and ORDER BY alike. The alias itself, the unaliased original name, and derived-table aliases all keep resolving. The SELECT-list rejection is PLAN-time and fires over an EMPTY table, like live's compile-time error; the WHERE / GROUP BY / ORDER BY forms still need rows to flow through key resolution - an ORDER BY over one row short-circuits before resolving - so the fixture uses two rows. Converted 1:1 from query/AliasShadowingTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "the-original-name-is-invalid-in-every-clause-when-aliased", "steps": [
+      {"sql": "CREATE TABLE sr (t INTEGER, c INTEGER)"},
+      {"sql": "INSERT INTO sr VALUES (1, 2), (3, 4)"},
+      {"sql": "SELECT sr.t FROM sr AS x", "expect": {"error": {"messageContains": "invalid identifier 'SR.T'"}}},
+      {"sql": "SELECT x.t FROM sr AS x WHERE sr.c = 2", "expect": {"error": {"messageContains": "invalid identifier 'SR.C'"}}},
+      {"sql": "SELECT x.t FROM sr AS x GROUP BY sr.t, x.t", "expect": {"error": {"messageContains": "invalid identifier 'SR.T'"}}},
+      {"sql": "SELECT x.t FROM sr AS x ORDER BY sr.c", "expect": {"error": {"messageContains": "invalid identifier 'SR.C'"}}}
+    ]},
+    {"name": "the-select-list-rejection-fires-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE sr (t INTEGER, c INTEGER)"},
+      {"sql": "INSERT INTO sr VALUES (1, 2), (3, 4)"},
+      {"sql": "DELETE FROM sr"},
+      {"sql": "SELECT COUNT(*) FROM sr", "expect": {"value": "0"}},
+      {"sql": "SELECT sr.t FROM sr AS x", "expect": {"error": {"messageContains": "invalid identifier 'SR.T'"}}}
+    ]},
+    {"name": "the-alias-and-the-unaliased-name-keep-resolving", "steps": [
+      {"sql": "CREATE TABLE sr (t INTEGER, c INTEGER)"},
+      {"sql": "INSERT INTO sr VALUES (1, 2), (3, 4)"},
+      {"sql": "SELECT x.t FROM sr AS x WHERE x.c = 2", "expect": {"value": "1"}},
+      {"sql": "SELECT sr.t FROM sr WHERE sr.c = 2", "expect": {"value": "1"}},
+      {"sql": "SELECT x.t FROM sr AS x GROUP BY x.t ORDER BY x.t", "expect": {"rows": [[1], [3]], "ordered": true}},
+      {"sql": "SELECT sub.t FROM (SELECT t FROM sr) AS sub ORDER BY sub.t", "expect": {"rows": [[1], [3]], "ordered": true}}
+    ]}
+  ]
+}

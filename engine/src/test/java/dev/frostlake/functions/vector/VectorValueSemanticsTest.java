@@ -34,11 +34,11 @@ public class VectorValueSemanticsTest extends BaseVectorFunctionTest {
     @Test
     public void castRendersFloat32AndIntElements() {
         // Live: [1,2,3]::VECTOR(FLOAT,3) displays as [1.0,2.0,3.0] and the INT form as [1,2,3].
-        assertVector("[1.0,2.0,3.0]", "SELECT " + V123);
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT " + V123);
         assertVector("[1,2,3]", "SELECT " + I123);
-        assertVector("[1.1,2.2,3.3]", "SELECT [1.1,2.2,3.3]::VECTOR(FLOAT,3)");
+        assertVector("[1.100000,2.200000,3.300000]", "SELECT [1.1,2.2,3.3]::VECTOR(FLOAT,3)");
         // Live: [3.14159265358979,0,0]::VECTOR(FLOAT,3) is [3.1415927,0.0,0.0] — pi at float32 width.
-        assertVector("[3.1415927,0.0,0.0]", "SELECT [3.14159265358979,0,0]::VECTOR(FLOAT,3)");
+        assertVector("[3.141593,0.000000,0.000000]", "SELECT [3.14159265358979,0,0]::VECTOR(FLOAT,3)");
     }
 
     @Test
@@ -68,7 +68,7 @@ public class VectorValueSemanticsTest extends BaseVectorFunctionTest {
     public void aVectorCastsOnlyToItsOwnType() {
         // Live: the identity cast is the unchanged vector, while a different element type or dimension
         // is "Invalid argument types for function 'CAST': (VECTOR(FLOAT, 3))".
-        assertVector("[1.0,2.0,3.0]", "SELECT " + V123 + "::VECTOR(FLOAT,3)");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT " + V123 + "::VECTOR(FLOAT,3)");
         assertRejected("SELECT " + V123 + "::VECTOR(INT,3)");
         assertRejected("SELECT " + V123 + "::VECTOR(FLOAT,2)");
     }
@@ -86,13 +86,13 @@ public class VectorValueSemanticsTest extends BaseVectorFunctionTest {
         engine.execute("INSERT INTO vec_store SELECT 2, " + V456);
         engine.execute("INSERT INTO vec_store SELECT 3, NULL");
         // Live: the stored value reads back as the vector it was written as …
-        assertVector("[1.0,2.0,3.0]", "SELECT v FROM vec_store WHERE id = 1");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT v FROM vec_store WHERE id = 1");
         // … and every function still works over the stored column.
         assertFloat64(0.0, "SELECT VECTOR_L2_DISTANCE(v, " + V123 + ") FROM vec_store WHERE id = 1");
-        assertVector("[0.26726124,0.5345225,0.80178374]", "SELECT VECTOR_NORMALIZE(v) FROM vec_store WHERE id = 1");
-        assertVector("[1.0,2.0]", "SELECT VECTOR_TRUNC(v, 2) FROM vec_store WHERE id = 1");
+        assertVector("[0.267261,0.534522,0.801784]", "SELECT VECTOR_NORMALIZE(v) FROM vec_store WHERE id = 1");
+        assertVector("[1.000000,2.000000]", "SELECT VECTOR_TRUNC(v, 2) FROM vec_store WHERE id = 1");
         assertEquals(Boolean.TRUE, scalar("SELECT IS_VECTOR(v) FROM vec_store WHERE id = 1"));
-        assertVector("[5.0,7.0,9.0]", "SELECT VECTOR_SUM(v) FROM vec_store");
+        assertVector("[5.000000,7.000000,9.000000]", "SELECT VECTOR_SUM(v) FROM vec_store");
         assertNull(scalar("SELECT v FROM vec_store WHERE id = 3"));
     }
 
@@ -111,14 +111,14 @@ public class VectorValueSemanticsTest extends BaseVectorFunctionTest {
             "SELECT COUNT(*) AS c FROM vec_cmp GROUP BY v ORDER BY c DESC");
         assertEquals(2, grouped.getRows().size());
         assertEquals(2L, ((Number) grouped.getRows().get(0).getValue(0)).longValue());
-        assertVector("[1.0,2.0,3.0]", "SELECT v FROM vec_cmp ORDER BY v LIMIT 1");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT v FROM vec_cmp ORDER BY v LIMIT 1");
     }
 
     @Test
     public void vectorsFlowThroughCaseCoalesceAndUnion() {
         // Live: all three keep the vector.
-        assertVector("[1.0,2.0,3.0]", "SELECT COALESCE(NULL::VECTOR(FLOAT,3), " + V123 + ")");
-        assertVector("[1.0,2.0,3.0]", "SELECT CASE WHEN TRUE THEN " + V123 + " ELSE NULL END");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT COALESCE(NULL::VECTOR(FLOAT,3), " + V123 + ")");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT CASE WHEN TRUE THEN " + V123 + " ELSE NULL END");
         final ResultSet union = engine.executeQuery(
             "SELECT " + V123 + " AS v UNION ALL SELECT " + V456);
         assertEquals(2, union.getRows().size());
@@ -140,6 +140,6 @@ public class VectorValueSemanticsTest extends BaseVectorFunctionTest {
             + "RETURNS VECTOR(FLOAT,3) AS 'VECTOR_NORMALIZE(a)'");
         // Live: the UDF returns the same values the built-ins do.
         assertFloat64(5.196152422706632, "SELECT vec_dist(" + V123 + ", " + V456 + ")");
-        assertVector("[0.26726124,0.5345225,0.80178374]", "SELECT vec_unit(" + V123 + ")");
+        assertVector("[0.267261,0.534522,0.801784]", "SELECT vec_unit(" + V123 + ")");
     }
 }

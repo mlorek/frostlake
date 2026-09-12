@@ -1,0 +1,35 @@
+{
+  "suite": "features-variant-comparison-semantics",
+  "description": "VARIANT comparison semantics, verified row by row against LIVE Snowflake: comparing a VARIANT against a VARCHAR compares the variant's DISPLAY TEXT - a variant string unwraps to its content, an object/array/number/boolean to its JSON text - while comparing two VARIANTs is typed (variant numbers still compare by value across scales). TO_VARIANT of a VARCHAR produces a variant STRING and never parses, so an OBJECT is not equal to TO_VARIANT of its own text and TYPEOF reports VARCHAR. Converted 1:1 from features/VariantComparisonSemanticsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-variant-against-a-varchar-compares-display-text", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\":1}') = '{\"a\":1}'", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('[1,2]') = '[1,2]'", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('123') = '123'", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('1') < '2'", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-variant-string-unwraps-to-its-content-against-a-varchar", "steps": [
+      {"sql": "SELECT PARSE_JSON('\"abc\"') = 'abc'", "expect": {"value": "true"}},
+      {"sql": "SELECT 'abc' = PARSE_JSON('\"abc\"')", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('\"abc\"') = '\"abc\"'", "expect": {"value": "false"}}
+    ]},
+    {"name": "a-variant-against-a-scalar-compares-by-value", "steps": [
+      {"sql": "SELECT PARSE_JSON('123') = 123", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('true') = TRUE", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-variant-against-a-variant-is-typed", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\":1}') = PARSE_JSON('{\"a\":1}')", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('[1,2]') = PARSE_JSON('[1,2]')", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('null') = PARSE_JSON('null')", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('1') = PARSE_JSON('1.0')", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('1') < PARSE_JSON('2')", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON('\"a\"') < PARSE_JSON('\"b\"')", "expect": {"value": "true"}}
+    ]},
+    {"name": "to-variant-of-a-varchar-is-a-variant-string", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\":1}') = TO_VARIANT('{\"a\":1}')", "expect": {"value": "false"}},
+      {"sql": "SELECT TO_VARIANT('abc') = 'abc'", "expect": {"value": "true"}},
+      {"sql": "SELECT TYPEOF(TO_VARIANT('{\"a\":1}'))", "expect": {"value": "VARCHAR"}}
+    ]}
+  ]
+}

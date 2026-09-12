@@ -1,0 +1,104 @@
+{
+  "suite": "expr-binary-mixed-family-refusals",
+  "description": "A BINARY beside another family is REFUSED, not widened, in each construct's own live words: conditionals (IFF/COALESCE/NVL/IFNULL/CASE) answer Can not convert parameter '<operand>' of type [X] into expected type [Y] - operand named and qualified, expected type taken from the FIRST branch, literals named by their own text; CONCAT and the || operator answer Invalid argument types for function ...: (X, Y) with both DECLARED types in written order, positioned at the call, at compile time (no rows needed); all-binary calls stay legal and non-binary operands still convert. Converted 1:1 from expressions/BinaryBesideOtherFamilyTest + expressions/BinaryConcatArgumentTypeTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "a-conditional-refuses-a-mixed-pair", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFF(n = 1, b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT COALESCE(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT NVL(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFNULL(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CASE WHEN n = 1 THEN b ELSE s END AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.S' of type [VARCHAR(10)] into expected type [BINARY(4)]"}}}
+    ]},
+    {"name": "every-other-family-is-refused-too", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFF(n = 1, b, n) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.N' of type [NUMBER(38,0)] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFF(n = 1, b, d) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.D' of type [DATE] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFF(n = 1, b, bo) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.BO' of type [BOOLEAN] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFF(n = 1, b, v) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.V' of type [VARIANT] into expected type [BINARY(4)]"}}}
+    ]},
+    {"name": "the-expected-type-is-the-first-branchs", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFF(n = 1, s, b) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.B' of type [BINARY(4)] into expected type [VARCHAR(10)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT COALESCE(s, b) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.B' of type [BINARY(4)] into expected type [VARCHAR(10)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CASE WHEN n = 1 THEN s ELSE b END AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter 'QX.B' of type [BINARY(4)] into expected type [VARCHAR(10)]"}}}
+    ]},
+    {"name": "a-literal-is-named-by-its-text", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFF(n = 1, b, 'abc') AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter ''abc'' of type [VARCHAR(3)] into expected type [BINARY(4)]"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT COALESCE(b, 'abc') AS c FROM qx",
+       "expect": {"error": {"messageContains": "Can not convert parameter ''abc'' of type [VARCHAR(3)] into expected type [BINARY(4)]"}}}
+    ]},
+    {"name": "concat-refuses-with-the-argument-type-list", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CONCAT(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (BINARY(4), VARCHAR(10))"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CONCAT(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "error line 1 at position"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CONCAT(b, s) AS c FROM qx",
+       "expect": {"error": {"messageContains": "SQL compilation error"}}}
+    ]},
+    {"name": "concat-refuses-whichever-side-the-binary-is-on", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CONCAT(s, b) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (VARCHAR(10), BINARY(4))"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CONCAT(b, n) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (BINARY(4), NUMBER(38,0))"}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CONCAT(b, d) AS c FROM qx",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (BINARY(4), DATE)"}}}
+    ]},
+    {"name": "an-all-binary-call-is-still-accepted", "steps": [
+      {"sql": "CREATE TABLE qx (b BINARY(4), s VARCHAR(10), n NUMBER, d DATE, bo BOOLEAN, v VARIANT)"},
+      {"sql": "INSERT INTO qx SELECT TO_BINARY('4142'), 'abc', 1, '2026-01-01', TRUE, TO_VARIANT(1)"},
+      {"sql": "CREATE OR REPLACE VIEW bx_v AS SELECT CONCAT(b, s) AS c FROM qx", "expect": {"error": {}}},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT CONCAT(b, b) AS c FROM qx"},
+      {"sql": "CREATE OR REPLACE VIEW qx_v AS SELECT IFF(n = 1, b, b) AS c FROM qx"}
+    ]},
+    {"name": "a-binary-beside-a-string-is-refused", "steps": [
+      {"sql": "CREATE TABLE bc_s (s VARCHAR(4), bn BINARY(4), bn2 BINARY(9), n NUMBER(5,1))"},
+      {"sql": "SELECT bn || s AS c FROM bc_s",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (BINARY(4), VARCHAR(4))"}}},
+      {"sql": "SELECT s || bn AS c FROM bc_s",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(4), BINARY(4))"}}}
+    ]},
+    {"name": "the-refusal-is-at-compile-time", "steps": [
+      {"sql": "CREATE TABLE bc_s (s VARCHAR(4), bn BINARY(4), bn2 BINARY(9), n NUMBER(5,1))"},
+      {"sql": "SELECT bn || s AS c FROM bc_s",
+       "expect": {"error": {"messageContains": "SQL compilation error:"}}}
+    ]},
+    {"name": "a-binary-literal-is-judged-too", "steps": [
+      {"sql": "CREATE TABLE bc_s (s VARCHAR(4), bn BINARY(4), bn2 BINARY(9), n NUMBER(5,1))"},
+      {"sql": "SELECT bn || 'a' AS c FROM bc_s",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (BINARY(4), VARCHAR(1))"}}}
+    ]},
+    {"name": "two-binaries-concatenate", "steps": [
+      {"sql": "CREATE TABLE bc_s (s VARCHAR(4), bn BINARY(4), bn2 BINARY(9), n NUMBER(5,1))"},
+      {"sql": "SELECT bn || bn2 AS c FROM bc_s", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-non-binary-operand-still-converts", "steps": [
+      {"sql": "CREATE TABLE bc_s (s VARCHAR(4), bn BINARY(4), bn2 BINARY(9), n NUMBER(5,1))"},
+      {"sql": "SELECT n || s AS c FROM bc_s", "expect": {"rowCount": 0}},
+      {"sql": "SELECT s || n AS c FROM bc_s", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

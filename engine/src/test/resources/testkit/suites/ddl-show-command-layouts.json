@@ -1,0 +1,367 @@
+{
+  "suite": "ddl-show-command-layouts",
+  "description": "Every SHOW listing emits the column layout a real account emits - same names, same order - because callers read them back through RESULT_SCAN by name. Covers OBJECTS (tables+views only, transient reported TABLE), SCHEMAS, DATABASES, VIEWS, SEQUENCES, STAGES, FILE FORMATS (comment is the object's, not an option), STREAMS (qualified sources, change tracking turned on), TAGS, PIPES, ROLES, TASKS (+DESCRIBE TASK sharing the shape, SHOW PARAMETERS IN TASK levels, child predecessors), USERS (full property round trips, service-user refusals, MIDDLE_NAME through DESCRIBE, per-property UNSET semantics), WAREHOUSES (+parameters), the four GRANTS shapes, DESCRIBE PIPE/WAREHOUSE/USER (44 properties in order), TERSE no-op, absent-text-as-empty-string and LINEAR clustering keys. All live-verified. Converted 1:1 from ddl/ShowCommandLayoutTest (now retired). Account-level users/roles/warehouses are dropped at test end.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "show-objects-carries-live-column-layout", "steps": [
+      {"sql": "CREATE TABLE obj_probe (k INTEGER)"},
+      {"sql": "SHOW OBJECTS",
+       "expect": {"columns": ["created_on", "name", "database_name", "schema_name", "kind", "comment", "cluster_by", "rows", "bytes", "owner", "retention_time", "owner_role_type", "is_hybrid", "is_dynamic", "is_iceberg", "is_interactive"]}}
+    ]},
+    {"name": "show-objects-lists-only-tables-and-views", "steps": [
+      {"sql": "CREATE TABLE only_t (k INTEGER)"},
+      {"sql": "CREATE VIEW only_v AS SELECT * FROM only_t"},
+      {"sql": "CREATE SEQUENCE only_s START 1 INCREMENT 1"},
+      {"sql": "CREATE STREAM only_str ON TABLE only_t"},
+      {"sql": "CREATE TAG only_tag"},
+      {"sql": "SHOW OBJECTS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'ONLY_T'), COUNT_IF(\"name\" = 'ONLY_V'), COUNT_IF(\"name\" IN ('ONLY_S', 'ONLY_STR', 'ONLY_TAG')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1", "0"]]}}
+    ]},
+    {"name": "show-objects-reports-transient-tables-as-table", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE tr_probe (k INTEGER)"},
+      {"sql": "SHOW OBJECTS"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TR_PROBE'", "expect": {"value": "TABLE"}},
+      {"sql": "SHOW TABLES LIKE 'TR_PROBE'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TRANSIENT"}}
+    ]},
+    {"name": "show-schemas-carries-live-column-layout", "steps": [
+      {"sql": "SHOW SCHEMAS",
+       "expect": {"columns": ["created_on", "name", "is_default", "is_current", "database_name", "owner", "comment", "options", "retention_time", "owner_role_type", "classification_profile_database", "classification_profile_schema", "classification_profile", "object_visibility", "is_nested"]}},
+      {"sql": "SELECT \"retention_time\", \"object_visibility\", \"is_nested\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1",
+       "expect": {"rows": [["1", "NULL", "false"]]}},
+      {"sql": "SHOW SCHEMAS"},
+      {"sql": "SELECT \"owner_role_type\", LENGTH(\"owner\") > 0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_SCHEMA'",
+       "expect": {"rows": [["ROLE", "true"]]}},
+      {"sql": "SHOW SCHEMAS"},
+      {"sql": "SELECT '<' || \"owner\" || '>', '<' || \"owner_role_type\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'INFORMATION_SCHEMA'",
+       "expect": {"rows": [["<>", "<>"]]}}
+    ]},
+    {"name": "show-databases-carries-live-column-layout", "steps": [
+      {"sql": "SHOW DATABASES",
+       "expect": {"columns": ["created_on", "name", "is_default", "is_current", "origin", "owner", "comment", "options", "retention_time", "kind", "owner_role_type", "object_visibility", "data_quality_monitoring_settings", "resharing_settings"]}},
+      {"sql": "SELECT \"kind\", \"owner_role_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_DB'",
+       "expect": {"rows": [["STANDARD", "ROLE"]]}}
+    ]},
+    {"name": "show-views-carries-live-column-layout", "steps": [
+      {"sql": "CREATE TABLE view_src (k INTEGER)"},
+      {"sql": "CREATE VIEW view_probe AS SELECT * FROM view_src"},
+      {"sql": "SHOW VIEWS LIKE 'VIEW_PROBE'",
+       "expect": {"columns": ["created_on", "name", "reserved", "database_name", "schema_name", "owner", "comment", "text", "is_secure", "is_materialized", "owner_role_type", "change_tracking"]}},
+      {"sql": "SELECT \"is_secure\", \"is_materialized\", \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["false", "false", "OFF"]]}}
+    ]},
+    {"name": "show-sequences-carries-live-column-layout", "steps": [
+      {"sql": "CREATE SEQUENCE seq_probe START 1 INCREMENT 1"},
+      {"sql": "SHOW SEQUENCES",
+       "expect": {"columns": ["name", "database_name", "schema_name", "next_value", "interval", "created_on", "owner", "comment", "owner_role_type", "ordered"]}},
+      {"sql": "SELECT \"created_on\" IS NOT NULL, \"owner_role_type\", \"ordered\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1",
+       "expect": {"rows": [["true", "ROLE", "N"]]}}
+    ]},
+    {"name": "show-stages-carries-live-column-layout", "steps": [
+      {"sql": "CREATE STAGE stage_probe"},
+      {"sql": "SHOW STAGES",
+       "expect": {"columns": ["created_on", "name", "database_name", "schema_name", "url", "has_credentials", "has_encryption_key", "owner", "comment", "region", "type", "cloud", "notification_channel", "storage_integration", "endpoint", "owner_role_type", "directory_enabled"]}},
+      {"sql": "SELECT \"type\", \"owner_role_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1",
+       "expect": {"rows": [["INTERNAL", "ROLE"]]}}
+    ]},
+    {"name": "show-file-formats-carries-live-column-layout", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_probe TYPE = CSV COMMENT = 'ff comment'"},
+      {"sql": "SHOW FILE FORMATS",
+       "expect": {"columns": ["created_on", "name", "database_name", "schema_name", "type", "owner", "comment", "format_options", "owner_role_type"]}},
+      {"sql": "SELECT \"created_on\" IS NOT NULL, \"owner_role_type\", CONTAINS(\"format_options\", '\"TYPE\":\"CSV\"') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1",
+       "expect": {"rows": [["true", "ROLE", "true"]]}}
+    ]},
+    {"name": "file-format-comment-is-the-object-comment-not-an-option", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_comment TYPE = CSV COMMENT = 'describes the format'"},
+      {"sql": "SHOW FILE FORMATS LIKE 'FF_COMMENT'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\", CONTAINS(\"format_options\", 'COMMENT') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["describes the format", "false"]]}}
+    ]},
+    {"name": "show-streams-carries-live-column-layout", "steps": [
+      {"sql": "CREATE TABLE stream_src (k INTEGER)"},
+      {"sql": "CREATE STREAM stream_probe ON TABLE stream_src"},
+      {"sql": "SHOW STREAMS",
+       "expect": {"columns": ["created_on", "name", "database_name", "schema_name", "owner", "comment", "table_name", "source_type", "base_tables", "type", "stale", "mode", "stale_after", "invalid_reason", "owner_role_type"]}},
+      {"sql": "SELECT \"type\", \"source_type\", \"stale\", \"invalid_reason\", \"owner_role_type\", \"table_name\", \"base_tables\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["DELTA", "Table", "false", "N/A", "ROLE", "TEST_DB.TEST_SCHEMA.STREAM_SRC", "TEST_DB.TEST_SCHEMA.STREAM_SRC"]]}}
+    ]},
+    {"name": "a-stream-turns-on-change-tracking-for-its-source-table", "steps": [
+      {"sql": "CREATE TABLE ct_untracked (k INTEGER)"},
+      {"sql": "CREATE TABLE ct_tracked (k INTEGER)"},
+      {"sql": "CREATE STREAM ct_stream ON TABLE ct_tracked"},
+      {"sql": "SHOW TABLES LIKE 'CT_UNTRACKED'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OFF"}},
+      {"sql": "SHOW TABLES LIKE 'CT_TRACKED'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ON"}}
+    ]},
+    {"name": "show-tags-carries-live-column-layout", "steps": [
+      {"sql": "CREATE TAG tag_probe"},
+      {"sql": "SHOW TAGS",
+       "expect": {"columns": ["created_on", "name", "database_name", "schema_name", "owner", "comment", "allowed_values", "owner_role_type", "propagate", "on_conflict", "multi_value"]}},
+      {"sql": "SELECT \"owner_role_type\", \"propagate\", \"multi_value\", \"on_conflict\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1",
+       "expect": {"rows": [["ROLE", "NONE", "false", "NULL"]]}}
+    ]},
+    {"name": "show-pipes-carries-live-column-layout", "steps": [
+      {"sql": "CREATE TABLE pipe_target (k INTEGER)"},
+      {"sql": "CREATE STAGE pipe_stage"},
+      {"sql": "CREATE PIPE pipe_probe AS COPY INTO pipe_target FROM @pipe_stage FILE_FORMAT = (TYPE = CSV)"},
+      {"sql": "SHOW PIPES",
+       "expect": {"columns": ["created_on", "name", "database_name", "schema_name", "definition", "owner", "notification_channel", "comment", "integration", "pattern", "error_integration", "owner_role_type", "invalid_reason", "kind", "is_snowflake_managed"]}},
+      {"sql": "SELECT \"kind\", \"is_snowflake_managed\", \"owner_role_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1",
+       "expect": {"rows": [["STAGE", "false", "ROLE"]]}}
+    ]},
+    {"name": "show-roles-carries-live-column-layout", "steps": [
+      {"sql": "SHOW ROLES",
+       "expect": {"columns": ["created_on", "name", "is_default", "is_current", "is_inherited", "assigned_to_users", "granted_to_roles", "granted_roles", "owner", "comment", "is_from_organization_user_group"]}},
+      {"sql": "SELECT \"comment\", \"is_from_organization_user_group\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ACCOUNTADMIN'",
+       "expect": {"rows": [["Account administrator can manage all aspects of the account.", "N"]]}}
+    ]},
+    {"name": "absent-text-values-are-empty-strings-not-null", "steps": [
+      {"sql": "CREATE TABLE no_comment (k INTEGER)"},
+      {"sql": "CREATE SEQUENCE no_comment_seq START 1 INCREMENT 1"},
+      {"sql": "SHOW TABLES LIKE 'NO_COMMENT'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}},
+      {"sql": "SHOW OBJECTS"},
+      {"sql": "SELECT '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1", "expect": {"value": "<>"}},
+      {"sql": "SHOW SEQUENCES"},
+      {"sql": "SELECT '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1", "expect": {"value": "<>"}}
+    ]},
+    {"name": "clustering-keys-render-as-linear", "steps": [
+      {"sql": "CREATE TABLE clustered_probe (a INTEGER, b INTEGER) CLUSTER BY (a, b)"},
+      {"sql": "CREATE TABLE unclustered_probe (a INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'CLUSTERED_PROBE'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"cluster_by\", \"automatic_clustering\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["LINEAR(a, b)", "ON"]]}},
+      {"sql": "SHOW TABLES LIKE 'UNCLUSTERED_PROBE'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '<' || \"cluster_by\" || '>', \"automatic_clustering\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["<>", "OFF"]]}}
+    ]},
+    {"name": "show-tasks-carries-live-column-layout", "steps": [
+      {"sql": "CREATE TABLE task_sink (k INTEGER)"},
+      {"sql": "CREATE TASK task_probe WAREHOUSE = compute_wh SCHEDULE = '60 MINUTE' COMMENT = 'tc' ALLOW_OVERLAPPING_EXECUTION = TRUE WHEN 1 = 1 AS INSERT INTO task_sink VALUES (1)"},
+      {"sql": "SHOW TASKS",
+       "expect": {"columns": ["created_on", "name", "id", "database_name", "schema_name", "owner", "comment", "warehouse", "schedule", "predecessors", "state", "definition", "condition", "allow_overlapping_execution", "error_integration", "last_committed_on", "last_suspended_on", "owner_role_type", "config", "task_relations", "last_suspended_reason", "success_integration", "scheduling_mode", "target_completion_interval", "execute_as_user", "overlap_policy", "created_by_user"]}},
+      {"sql": "SELECT \"state\", \"allow_overlapping_execution\", \"overlap_policy\", \"owner_role_type\", \"id\" IS NOT NULL, \"task_relations\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["suspended", "true", "ALLOW_CHILD_OVERLAP", "ROLE", "true", "{\"Predecessors\":[]}"]]}}
+    ]},
+    {"name": "describe-task-returns-the-show-tasks-row", "steps": [
+      {"sql": "CREATE TABLE desc_sink (k INTEGER)"},
+      {"sql": "CREATE TASK desc_probe SCHEDULE = '60 MINUTE' AS INSERT INTO desc_sink VALUES (1)"},
+      {"sql": "DESCRIBE TASK desc_probe",
+       "expect": {"rowCount": 1,
+                  "columns": ["created_on", "name", "id", "database_name", "schema_name", "owner", "comment", "warehouse", "schedule", "predecessors", "state", "definition", "condition", "allow_overlapping_execution", "error_integration", "last_committed_on", "last_suspended_on", "owner_role_type", "config", "task_relations", "last_suspended_reason", "success_integration", "scheduling_mode", "target_completion_interval", "execute_as_user", "overlap_policy", "created_by_user"]}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DESC_PROBE"}}
+    ]},
+    {"name": "task-parameters-are-read-through-show-parameters", "steps": [
+      {"sql": "CREATE TABLE param_sink (k INTEGER)"},
+      {"sql": "CREATE TASK param_probe SCHEDULE = '60 MINUTE' USER_TASK_TIMEOUT_MS = 120000 SUSPEND_TASK_AFTER_NUM_FAILURES = 3 AS INSERT INTO param_sink VALUES (1)"},
+      {"sql": "SHOW PARAMETERS IN TASK param_probe",
+       "expect": {"columns": ["key", "value", "default", "level", "description", "type"]}},
+      {"sql": "SELECT \"value\", \"default\", \"level\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"key\" = 'USER_TASK_TIMEOUT_MS'",
+       "expect": {"rows": [["120000", "3600000", "TASK", "NUMBER"]]}},
+      {"sql": "SHOW PARAMETERS IN TASK param_probe"},
+      {"sql": "SELECT \"value\", '<' || \"level\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"key\" = 'TASK_AUTO_RETRY_ATTEMPTS'",
+       "expect": {"rows": [["0", "<>"]]}}
+    ]},
+    {"name": "a-child-task-reports-its-predecessor-and-no-overlap-setting", "steps": [
+      {"sql": "CREATE TABLE child_sink (k INTEGER)"},
+      {"sql": "CREATE TASK parent_probe SCHEDULE = '60 MINUTE' AS INSERT INTO child_sink VALUES (1)"},
+      {"sql": "CREATE TASK child_probe AFTER parent_probe AS INSERT INTO child_sink VALUES (2)"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"allow_overlapping_execution\", \"overlap_policy\", \"schedule\", \"predecessors\", \"task_relations\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CHILD_PROBE'",
+       "expect": {"rows": [["null", "NULL", "NULL", "[\"TEST_DB.TEST_SCHEMA.PARENT_PROBE\"]", "{\"Predecessors\":[\"TEST_DB.TEST_SCHEMA.PARENT_PROBE\"]}"]]}}
+    ]},
+    {"name": "show-users-carries-live-column-layout", "steps": [
+      {"sql": "CREATE OR REPLACE USER user_probe COMMENT = 'uc' DEFAULT_ROLE = PUBLIC"},
+      {"sql": "SHOW USERS",
+       "expect": {"columns": ["name", "created_on", "login_name", "display_name", "first_name", "last_name", "email", "mins_to_unlock", "days_to_expiry", "comment", "disabled", "must_change_password", "snowflake_lock", "default_warehouse", "default_namespace", "default_role", "default_secondary_roles", "ext_authn_duo", "ext_authn_uid", "mins_to_bypass_mfa", "owner", "last_success_login", "expires_at_time", "locked_until_time", "has_password", "has_rsa_public_key", "type", "has_mfa", "has_pat", "has_workload_identity", "is_from_organization_user"]}},
+      {"sql": "SELECT \"disabled\", \"must_change_password\", \"type\", \"default_secondary_roles\", \"login_name\", \"display_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'USER_PROBE'",
+       "expect": {"rows": [["false", "false", "PERSON", "[\"ALL\"]", "USER_PROBE", "USER_PROBE"]]}},
+      {"sql": "DROP USER user_probe"}
+    ]},
+    {"name": "user-properties-round-trip-through-show-users", "steps": [
+      {"sql": "CREATE OR REPLACE USER prop_probe LOGIN_NAME = 'probe_login' DISPLAY_NAME = 'Probe Display' FIRST_NAME = 'First' LAST_NAME = 'Last' EMAIL = 'probe@example.com' DEFAULT_NAMESPACE = test_db.test_schema DEFAULT_SECONDARY_ROLES = ('ALL') MUST_CHANGE_PASSWORD = TRUE DISABLED = TRUE COMMENT = 'pc'"},
+      {"sql": "SHOW USERS"},
+      {"sql": "SELECT \"login_name\", \"display_name\", \"first_name\", \"last_name\", \"email\", \"default_namespace\", \"must_change_password\", \"disabled\", \"type\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PROP_PROBE'",
+       "expect": {"rows": [["PROBE_LOGIN", "Probe Display", "First", "Last", "probe@example.com", "TEST_DB.TEST_SCHEMA", "true", "true", "PERSON", "pc"]]}},
+      {"sql": "DROP USER prop_probe"}
+    ]},
+    {"name": "a-service-user-refuses-the-personal-properties", "steps": [
+      {"sql": "CREATE OR REPLACE USER svc_probe TYPE = SERVICE"},
+      {"sql": "ALTER USER svc_probe SET FIRST_NAME = 'F'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set FIRST_NAME on users with TYPE=SERVICE."}}},
+      {"sql": "ALTER USER svc_probe SET LAST_NAME = 'L'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set LAST_NAME on users with TYPE=SERVICE."}}},
+      {"sql": "ALTER USER svc_probe SET MUST_CHANGE_PASSWORD = TRUE",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set MUST_CHANGE_PASSWORD on users with TYPE=SERVICE."}}},
+      {"sql": "ALTER USER svc_probe SET EMAIL = 'svc@example.com' DISPLAY_NAME = 'Svc' COMMENT = 'c' DISABLED = TRUE"},
+      {"sql": "CREATE USER svc_probe2 TYPE = SERVICE FIRST_NAME = 'F'", "expect": {"error": {}}},
+      {"sql": "CREATE USER svc_probe3 FIRST_NAME = 'F' TYPE = SERVICE", "expect": {"error": {}}},
+      {"sql": "DROP USER svc_probe"}
+    ]},
+    {"name": "middle-name-round-trips-through-describe", "steps": [
+      {"sql": "CREATE OR REPLACE USER mid_probe FIRST_NAME = 'First' MIDDLE_NAME = 'Mid' LAST_NAME = 'Last'"},
+      {"sql": "DESCRIBE USER mid_probe"},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'MIDDLE_NAME'", "expect": {"value": "Mid"}},
+      {"sql": "DESCRIBE USER mid_probe"},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'FIRST_NAME'", "expect": {"value": "First"}},
+      {"sql": "ALTER USER mid_probe SET MIDDLE_NAME = 'Changed'"},
+      {"sql": "DESCRIBE USER mid_probe"},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'MIDDLE_NAME'", "expect": {"value": "Changed"}},
+      {"sql": "DROP USER mid_probe"}
+    ]},
+    {"name": "an-absent-middle-name-is-reported-null", "steps": [
+      {"sql": "CREATE OR REPLACE USER mid_probe"},
+      {"sql": "DESCRIBE USER mid_probe"},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'MIDDLE_NAME'", "expect": {"value": "null"}},
+      {"sql": "DROP USER mid_probe"}
+    ]},
+    {"name": "a-service-user-refuses-a-middle-name", "steps": [
+      {"sql": "CREATE USER mid_svc TYPE = SERVICE MIDDLE_NAME = 'M'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set MIDDLE_NAME on users with TYPE=SERVICE."}}}
+    ]},
+    {"name": "unset-restores-each-property-its-own-way", "steps": [
+      {"sql": "CREATE OR REPLACE USER mid_probe LOGIN_NAME = 'ln' DISPLAY_NAME = 'dn' FIRST_NAME = 'F' MIDDLE_NAME = 'M' LAST_NAME = 'L' EMAIL = 'e@x.com' MUST_CHANGE_PASSWORD = TRUE DISABLED = TRUE COMMENT = 'c'"},
+      {"sql": "ALTER USER mid_probe UNSET LOGIN_NAME, DISPLAY_NAME, FIRST_NAME, MIDDLE_NAME, LAST_NAME, EMAIL, MUST_CHANGE_PASSWORD, DISABLED, COMMENT, TYPE"},
+      {"sql": "DESCRIBE USER mid_probe"},
+      {"sql": "SELECT MAX(IFF(\"property\" = 'LOGIN_NAME', \"value\", NULL)), MAX(IFF(\"property\" = 'TYPE', \"value\", NULL)), MAX(IFF(\"property\" = 'MUST_CHANGE_PASSWORD', \"value\", NULL)), MAX(IFF(\"property\" = 'DISABLED', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["MID_PROBE", "PERSON", "false", "false"]]}},
+      {"sql": "DESCRIBE USER mid_probe"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" IN ('DISPLAY_NAME', 'FIRST_NAME', 'MIDDLE_NAME', 'LAST_NAME', 'EMAIL', 'COMMENT') AND (\"value\" = 'null' OR \"value\" IS NULL)",
+       "expect": {"value": "6"}},
+      {"sql": "DROP USER mid_probe"}
+    ]},
+    {"name": "unset-is-idempotent", "steps": [
+      {"sql": "CREATE OR REPLACE USER mid_probe"},
+      {"sql": "ALTER USER mid_probe UNSET COMMENT"},
+      {"sql": "ALTER USER mid_probe UNSET COMMENT"},
+      {"sql": "DESCRIBE USER mid_probe"},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'COMMENT'", "expect": {"value": "null"}},
+      {"sql": "DROP USER mid_probe"}
+    ]},
+    {"name": "unset-rejects-unknown-and-duplicate-properties", "steps": [
+      {"sql": "CREATE OR REPLACE USER mid_probe COMMENT = 'keep me'"},
+      {"sql": "ALTER USER mid_probe UNSET COMMENT, ROBOT",
+       "expect": {"error": {"messageContains": "invalid property 'ROBOT' for 'USER'"}}},
+      {"sql": "ALTER USER mid_probe UNSET COMMENT, COMMENT",
+       "expect": {"error": {"messageContains": "duplicate property 'COMMENT';"}}},
+      {"sql": "DESCRIBE USER mid_probe"},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'COMMENT'", "expect": {"value": "keep me"}},
+      {"sql": "DROP USER mid_probe"}
+    ]},
+    {"name": "an-existing-person-can-become-a-service-user", "steps": [
+      {"sql": "CREATE OR REPLACE USER becomes_svc FIRST_NAME = 'F'"},
+      {"sql": "ALTER USER becomes_svc SET TYPE = SERVICE"},
+      {"sql": "SHOW USERS"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'BECOMES_SVC'", "expect": {"value": "SERVICE"}},
+      {"sql": "DROP USER becomes_svc"}
+    ]},
+    {"name": "alter-user-sets-the-same-properties", "steps": [
+      {"sql": "CREATE OR REPLACE USER alter_probe"},
+      {"sql": "ALTER USER alter_probe SET EMAIL = 'new@example.com' DISABLED = TRUE"},
+      {"sql": "SHOW USERS"},
+      {"sql": "SELECT \"email\", \"disabled\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ALTER_PROBE'",
+       "expect": {"rows": [["new@example.com", "true"]]}},
+      {"sql": "DROP USER alter_probe"}
+    ]},
+    {"name": "show-warehouses-carries-live-column-layout", "steps": [
+      {"sql": "CREATE WAREHOUSE wh_probe WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE COMMENT = 'wc'"},
+      {"sql": "SHOW WAREHOUSES",
+       "expect": {"columns": ["name", "state", "type", "size", "min_cluster_count", "max_cluster_count", "started_clusters", "running", "queued", "is_default", "is_current", "auto_suspend", "auto_resume", "available", "provisioning", "quiescing", "other", "created_on", "resumed_on", "updated_on", "owner", "comment", "enable_query_acceleration", "query_acceleration_max_scale_factor", "resource_monitor", "actives", "pendings", "failed", "suspended", "uuid", "scaling_policy", "owner_role_type", "resource_constraint", "generation", "query_throughput_multiplier", "max_query_performance_level", "disabled_reasons", "tables"]}},
+      {"sql": "SELECT \"size\", \"state\", \"owner_role_type\", \"resource_constraint\", \"generation\", \"resource_monitor\", '<' || \"available\" || '>', '<' || \"quiescing\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'WH_PROBE'",
+       "expect": {"rows": [["X-Small", "SUSPENDED", "ROLE", "STANDARD_GEN_2", "2", "null", "<>", "<>"]]}},
+      {"sql": "DROP WAREHOUSE wh_probe"}
+    ]},
+    {"name": "warehouse-parameters-are-read-through-show-parameters", "steps": [
+      {"sql": "CREATE WAREHOUSE param_wh WAREHOUSE_SIZE = XSMALL INITIALLY_SUSPENDED = TRUE MAX_CONCURRENCY_LEVEL = 4 STATEMENT_TIMEOUT_IN_SECONDS = 300"},
+      {"sql": "SHOW PARAMETERS IN WAREHOUSE param_wh"},
+      {"sql": "SELECT \"value\", \"default\", \"level\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"key\" = 'MAX_CONCURRENCY_LEVEL'",
+       "expect": {"rows": [["4", "8", "WAREHOUSE"]]}},
+      {"sql": "SHOW PARAMETERS IN WAREHOUSE param_wh"},
+      {"sql": "SELECT \"value\", '<' || \"level\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"key\" = 'STATEMENT_QUEUED_TIMEOUT_IN_SECONDS'",
+       "expect": {"rows": [["0", "<>"]]}},
+      {"sql": "SHOW PARAMETERS IN WAREHOUSE param_wh"},
+      {"sql": "SELECT \"value\", \"default\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"key\" = 'STATEMENT_TIMEOUT_IN_SECONDS'",
+       "expect": {"rows": [["300", "172800"]]}},
+      {"sql": "DROP WAREHOUSE param_wh"}
+    ]},
+    {"name": "show-grants-on-carries-live-column-layout", "steps": [
+      {"sql": "CREATE TABLE grant_probe (k INTEGER)"},
+      {"sql": "CREATE OR REPLACE ROLE grant_role"},
+      {"sql": "GRANT SELECT ON TABLE grant_probe TO ROLE grant_role"},
+      {"sql": "SHOW GRANTS ON TABLE grant_probe",
+       "expect": {"columns": ["created_on", "privilege", "granted_on", "name", "granted_to", "grantee_name", "grant_option", "granted_by", "granted_by_role_type"]}},
+      {"sql": "SELECT \"name\", \"granted_by_role_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1",
+       "expect": {"rows": [["TEST_DB.TEST_SCHEMA.GRANT_PROBE", "ROLE"]]}},
+      {"sql": "DROP ROLE grant_role"}
+    ]},
+    {"name": "show-grants-to-role-carries-live-column-layout", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE to_role_probe"},
+      {"sql": "SHOW GRANTS TO ROLE to_role_probe",
+       "expect": {"columns": ["created_on", "privilege", "granted_on", "name", "granted_to", "grantee_name", "grant_option", "granted_by"]}},
+      {"sql": "DROP ROLE to_role_probe"}
+    ]},
+    {"name": "show-grants-of-role-lists-the-role-holders", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE held_role"},
+      {"sql": "CREATE OR REPLACE USER holder_user"},
+      {"sql": "GRANT ROLE held_role TO USER holder_user"},
+      {"sql": "SHOW GRANTS OF ROLE held_role",
+       "expect": {"rowCount": 1, "columns": ["created_on", "role", "granted_to", "grantee_name", "granted_by"]}},
+      {"sql": "SELECT \"role\", \"granted_to\", \"grantee_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["HELD_ROLE", "USER", "HOLDER_USER"]]}},
+      {"sql": "DROP USER holder_user"},
+      {"sql": "DROP ROLE held_role"}
+    ]},
+    {"name": "bare-show-grants-carries-live-column-layout", "steps": [
+      {"sql": "SHOW GRANTS",
+       "expect": {"columns": ["created_on", "privilege", "granted_on", "name", "role", "granted_to", "grantee_name", "grant_option", "granted_by"]}}
+    ]},
+    {"name": "describe-pipe-returns-the-show-pipes-row", "steps": [
+      {"sql": "CREATE TABLE pipe_desc_target (k INTEGER)"},
+      {"sql": "CREATE STAGE pipe_desc_stage"},
+      {"sql": "CREATE PIPE pipe_desc AS COPY INTO pipe_desc_target FROM @pipe_desc_stage FILE_FORMAT = (TYPE = CSV)"},
+      {"sql": "DESCRIBE PIPE pipe_desc",
+       "expect": {"rowCount": 1,
+                  "columns": ["created_on", "name", "database_name", "schema_name", "definition", "owner", "notification_channel", "comment", "integration", "pattern", "error_integration", "owner_role_type", "invalid_reason", "kind", "is_snowflake_managed"]}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "PIPE_DESC"}}
+    ]},
+    {"name": "describe-warehouse-returns-identity-only", "steps": [
+      {"sql": "CREATE WAREHOUSE desc_wh WAREHOUSE_SIZE = XSMALL"},
+      {"sql": "DESCRIBE WAREHOUSE desc_wh",
+       "expect": {"columns": ["created_on", "name", "kind"]}},
+      {"sql": "SELECT \"name\", \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["DESC_WH", "WAREHOUSE"]]}},
+      {"sql": "DROP WAREHOUSE desc_wh"}
+    ]},
+    {"name": "describe-user-carries-live-column-layout", "steps": [
+      {"sql": "CREATE OR REPLACE USER desc_user EMAIL = 'desc@example.com'"},
+      {"sql": "DESCRIBE USER desc_user",
+       "expect": {"columns": ["property", "value", "default", "description"]}},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'EMAIL'",
+       "expect": {"value": "desc@example.com"}},
+      {"sql": "DROP USER desc_user"}
+    ]},
+    {"name": "describe-user-lists-every-property-live-lists", "steps": [
+      {"sql": "CREATE OR REPLACE USER desc_all_user"},
+      {"sql": "DESCRIBE USER desc_all_user", "expect": {"rowCount": 44}},
+      {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1", "expect": {"value": "NAME"}},
+      {"sql": "DESCRIBE USER desc_all_user"},
+      {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1 OFFSET 1", "expect": {"value": "COMMENT"}},
+      {"sql": "DESCRIBE USER desc_all_user"},
+      {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1 OFFSET 43", "expect": {"value": "LOCK_DETAILS"}},
+      {"sql": "DESCRIBE USER desc_all_user"},
+      {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1 OFFSET 38", "expect": {"value": "MINS_TO_BYPASS_SESSION_POLICY"}},
+      {"sql": "DESCRIBE USER desc_all_user"},
+      {"sql": "SELECT COUNT_IF(\"property\" = 'RSA_PUBLIC_KEY_2_LAST_SET_TIME'), MAX(IFF(\"property\" = 'MINS_TO_BYPASS_SESSION_POLICY', \"value\", NULL)), MAX(IFF(\"property\" = 'FIRST_NAME', \"value\", NULL)), MAX(IFF(\"property\" = 'PASSWORD', \"value\", NULL)), MAX(IFF(\"property\" = 'DISABLED', \"value\", NULL)), MAX(IFF(\"property\" = 'DEFAULT_SECONDARY_ROLES', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "null", "null", "null", "false", "[\"ALL\"]"]]}},
+      {"sql": "DROP USER desc_all_user"}
+    ]},
+    {"name": "show-terse-warehouses-returns-the-full-listing", "steps": [
+      {"sql": "CREATE WAREHOUSE terse_wh WAREHOUSE_SIZE = XSMALL"},
+      {"sql": "SHOW TERSE WAREHOUSES",
+       "expect": {"columns": ["name", "state", "type", "size", "min_cluster_count", "max_cluster_count", "started_clusters", "running", "queued", "is_default", "is_current", "auto_suspend", "auto_resume", "available", "provisioning", "quiescing", "other", "created_on", "resumed_on", "updated_on", "owner", "comment", "enable_query_acceleration", "query_acceleration_max_scale_factor", "resource_monitor", "actives", "pendings", "failed", "suspended", "uuid", "scaling_policy", "owner_role_type", "resource_constraint", "generation", "query_throughput_multiplier", "max_query_performance_level", "disabled_reasons", "tables"]}},
+      {"sql": "DROP WAREHOUSE terse_wh"}
+    ]}
+  ]
+}

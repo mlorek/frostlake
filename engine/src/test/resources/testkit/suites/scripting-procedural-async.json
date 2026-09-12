@@ -1,0 +1,24 @@
+{
+  "suite": "scripting-procedural-async",
+  "description": "Snowflake Scripting ASYNC (<statement>) and AWAIT ALL. The engine is single-threaded, so ASYNC runs its wrapped DML or CALL SYNCHRONOUSLY and AWAIT is a no-op - the observable RESULT is identical, only the concurrency is lost, which is why these tests assert effects rather than timing. Two ASYNC deletes each carrying a :bind run and leave their tables at five rows, and an ASYNC CALL runs the callee, which is the shape that would silently do nothing if ASYNC merely parsed. Converted 1:1 from scripting/ProceduralAsyncTest (now retired); the ten-row fixtures are built with one INSERT instead of the Java loop's twenty.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "async-dml-statements-run-and-await-all-returns", "steps": [
+      {"sql": "CREATE TABLE a1 (x INT)"},
+      {"sql": "CREATE TABLE a2 (x INT)"},
+      {"sql": "INSERT INTO a1 VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "INSERT INTO a2 VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE archive() RETURNS STRING LANGUAGE SQL AS $$ DECLARE thr INT DEFAULT 5; BEGIN ASYNC (DELETE FROM a1 WHERE x <= :thr); ASYNC (DELETE FROM a2 WHERE x <= :thr); AWAIT ALL; RETURN 'done'; END $$"},
+      {"sql": "CALL archive()", "expect": {"value": "done"}},
+      {"sql": "SELECT x FROM a1 ORDER BY x", "expect": {"rows": [[6],[7],[8],[9],[10]], "ordered": true}},
+      {"sql": "SELECT x FROM a2 ORDER BY x", "expect": {"rows": [[6],[7],[8],[9],[10]], "ordered": true}}
+    ]},
+    {"name": "an-async-call-statement-runs", "steps": [
+      {"sql": "CREATE TABLE alog (v INT)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE ins(v INT) RETURNS INT LANGUAGE SQL AS $$ BEGIN INSERT INTO alog VALUES (:v); RETURN 1; END $$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE caller() RETURNS STRING LANGUAGE SQL AS $$ BEGIN ASYNC (CALL ins(42)); AWAIT ALL; RETURN 'ok'; END $$"},
+      {"sql": "CALL caller()", "expect": {"value": "ok"}},
+      {"sql": "SELECT v FROM alog", "expect": {"rows": [[42]]}}
+    ]}
+  ]
+}

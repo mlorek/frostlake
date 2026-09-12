@@ -66,7 +66,7 @@ final class SemiStructuredCasts {
      */
     static Object toObjectText(final Object value) {
         if (quotedJsonStringText(value) != null) {
-            throw new RuntimeException("Cannot cast value to OBJECT: " + value);
+            throw objectCastFailure(value);
         }
         final JsonNode node = ArrayFunctionHelper.parseNode(value);
         if (node != null && node.isNull()) {
@@ -75,7 +75,20 @@ final class SemiStructuredCasts {
         if (node != null && node.isObject()) {
             return VariantValue.ofNode(node);
         }
-        throw new RuntimeException("Cannot cast value to OBJECT: " + value);
+        throw objectCastFailure(value);
+    }
+
+    /**
+     * Snowflake's rejection of a value that cannot become an OBJECT. A VARIANT source names itself and
+     * its target the way every other variant cast failure does — {@code Failed to cast variant value 1
+     * to OBJECT} — where anything else keeps the plainer sentence.
+     */
+    private static RuntimeException objectCastFailure(final Object value) {
+        if (value instanceof VariantValue) {
+            return new RuntimeException("Failed to cast variant value "
+                + ((VariantValue) value).text() + " to OBJECT");
+        }
+        return new RuntimeException("Cannot cast value to OBJECT: " + value);
     }
 
     /**

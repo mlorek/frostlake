@@ -1,0 +1,25 @@
+{
+  "suite": "functions-date-part-epoch",
+  "description": "DATE_PART with the epoch family, both as a bare keyword (Snowflake's usual spelling) and quoted. The bare form - DATE_PART(epoch_second, CURRENT_TIMESTAMP()) - previously failed with \"Column not found: epoch_second\" because the epoch units were absent from the bareword-keyword whitelist. EPOCH is a synonym of EPOCH_SECOND, and the millisecond, microsecond and nanosecond forms scale from the same instant (DATE_PART treats the value as UTC, so 2024-01-01 00:00:00 is 1704067200 s). Converted from functions/DatePartEpochTest, which is trimmed to the one test comparing the engine's epoch against the host clock - an out-of-band reading with no SQL surface.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-bare-epoch-second-on-current-timestamp-works", "steps": [
+      {"sql": "SELECT DATE_PART(epoch_second, CURRENT_TIMESTAMP()) > 1700000000", "expect": {"value": "true"}}
+    ]},
+    {"name": "the-epoch-family-is-deterministic", "steps": [
+      {"sql": "SELECT DATE_PART(epoch_second, TO_TIMESTAMP('2024-01-01 00:00:00'))", "expect": {"value": "1704067200"}},
+      {"sql": "SELECT DATE_PART(epoch, TO_TIMESTAMP('2024-01-01 00:00:00'))", "expect": {"value": "1704067200"}},
+      {"sql": "SELECT DATE_PART(epoch_millisecond, TO_TIMESTAMP('2024-01-01 00:00:00'))",
+       "expect": {"value": "1704067200000"}},
+      {"sql": "SELECT DATE_PART(epoch_microsecond, TO_TIMESTAMP('2024-01-01 00:00:00'))",
+       "expect": {"value": "1704067200000000"}},
+      {"sql": "SELECT DATE_PART(epoch_nanosecond, TO_TIMESTAMP('2024-01-01 00:00:00'))",
+       "expect": {"value": "1704067200000000000"}}
+    ]},
+    {"name": "the-quoted-form-works-and-other-barewords-resolve", "steps": [
+      {"sql": "SELECT DATE_PART('EPOCH_SECOND', TO_TIMESTAMP('2024-01-01 00:00:00'))",
+       "expect": {"value": "1704067200"}},
+      {"sql": "SELECT DATE_PART(dayofmonth, TO_TIMESTAMP('2024-03-15 12:00:00'))", "expect": {"value": "15"}}
+    ]}
+  ]
+}

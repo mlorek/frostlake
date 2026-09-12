@@ -1,0 +1,41 @@
+{
+  "suite": "types-canonical-names",
+  "description": "A column's type is reported CANONICALLY, never as its declared alias: the integer family collapses to NUMBER(38,0), CHAR/NVARCHAR are VARCHAR of their length, DOUBLE/REAL are FLOAT, bare TIME is TIME(9), bare TIMESTAMP is TIMESTAMP_NTZ(9), bare BINARY is 8MB wide; structured OBJECT/ARRAY/MAP spell their parts (declared-case field names, nesting) while unstructured ones stay bare; GET_DDL spells everything the same way. All live-measured. Converted 1:1 from ddl/CanonicalTypeNamesTest (now retired).",
+  "tags": ["types", "converted"],
+  "tests": [
+    {"name": "describe-spells-every-type-canonically", "steps": [
+      {"sql": "CREATE TABLE ty_t (c0 INT, c1 INTEGER, c2 BIGINT, c3 SMALLINT, c4 BYTEINT, c5 NUMBER, c6 NUMBER(10,2), c7 DECIMAL(5), c8 VARCHAR, c9 STRING, c10 TEXT, c11 VARCHAR(20), c12 CHAR, c13 CHAR(5), c14 NVARCHAR(9), c15 FLOAT, c16 DOUBLE, c17 REAL, c18 BOOLEAN, c19 DATE, c20 TIME, c21 TIME(3), c22 TIMESTAMP, c23 TIMESTAMP_TZ(6), c24 BINARY, c25 BINARY(100), c26 VARIANT, c27 OBJECT, c28 ARRAY)"},
+      {"sql": "DESCRIBE TABLE ty_t"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [
+         ["C0", "NUMBER(38,0)"], ["C1", "NUMBER(38,0)"], ["C2", "NUMBER(38,0)"], ["C3", "NUMBER(38,0)"],
+         ["C4", "NUMBER(38,0)"], ["C5", "NUMBER(38,0)"], ["C6", "NUMBER(10,2)"], ["C7", "NUMBER(5,0)"],
+         ["C8", "VARCHAR(16777216)"], ["C9", "VARCHAR(16777216)"], ["C10", "VARCHAR(16777216)"], ["C11", "VARCHAR(20)"],
+         ["C12", "VARCHAR(1)"], ["C13", "VARCHAR(5)"], ["C14", "VARCHAR(9)"], ["C15", "FLOAT"],
+         ["C16", "FLOAT"], ["C17", "FLOAT"], ["C18", "BOOLEAN"], ["C19", "DATE"],
+         ["C20", "TIME(9)"], ["C21", "TIME(3)"], ["C22", "TIMESTAMP_NTZ(9)"], ["C23", "TIMESTAMP_TZ(6)"],
+         ["C24", "BINARY(8388608)"], ["C25", "BINARY(100)"], ["C26", "VARIANT"], ["C27", "OBJECT"], ["C28", "ARRAY"]
+       ], "ordered": true}}
+    ]},
+    {"name": "structured-types-spell-their-parts", "steps": [
+      {"sql": "CREATE TABLE st_t (\n  o OBJECT(a VARCHAR),\n  o2 OBJECT(a VARCHAR, b NUMBER),\n  o3 OBJECT(MixedCase VARCHAR),\n  a1 ARRAY(NUMBER),\n  a2 ARRAY(VARCHAR(4)),\n  a3 ARRAY(ARRAY(NUMBER)),\n  o4 OBJECT(a OBJECT(b VARCHAR)),\n  m MAP(VARCHAR, NUMBER))"},
+      {"sql": "DESCRIBE TABLE st_t"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [
+         ["O", "OBJECT(a VARCHAR(16777216))"],
+         ["O2", "OBJECT(a VARCHAR(16777216), b NUMBER(38,0))"],
+         ["O3", "OBJECT(MixedCase VARCHAR(16777216))"],
+         ["A1", "ARRAY(NUMBER(38,0))"],
+         ["A2", "ARRAY(VARCHAR(4))"],
+         ["A3", "ARRAY(ARRAY(NUMBER(38,0)))"],
+         ["O4", "OBJECT(a OBJECT(b VARCHAR(16777216)))"],
+         ["M", "MAP(VARCHAR(16777216), NUMBER(38,0))"]
+       ], "ordered": true}}
+    ]},
+    {"name": "get-ddl-spells-them-the-same-way", "steps": [
+      {"sql": "CREATE TABLE ty_t (c0 INT, c1 INTEGER, c2 BIGINT, c3 SMALLINT, c4 BYTEINT, c5 NUMBER, c6 NUMBER(10,2), c7 DECIMAL(5), c8 VARCHAR, c9 STRING, c10 TEXT, c11 VARCHAR(20), c12 CHAR, c13 CHAR(5), c14 NVARCHAR(9), c15 FLOAT, c16 DOUBLE, c17 REAL, c18 BOOLEAN, c19 DATE, c20 TIME, c21 TIME(3), c22 TIMESTAMP, c23 TIMESTAMP_TZ(6), c24 BINARY, c25 BINARY(100), c26 VARIANT, c27 OBJECT, c28 ARRAY)"},
+      {"sql": "WITH d AS (SELECT GET_DDL('TABLE', 'ty_t') AS g)\nSELECT CONTAINS(g, 'C0 NUMBER(38,0)') AND CONTAINS(g, 'C1 NUMBER(38,0)') AND CONTAINS(g, 'C2 NUMBER(38,0)')\n  AND CONTAINS(g, 'C3 NUMBER(38,0)') AND CONTAINS(g, 'C4 NUMBER(38,0)') AND CONTAINS(g, 'C5 NUMBER(38,0)')\n  AND CONTAINS(g, 'C6 NUMBER(10,2)') AND CONTAINS(g, 'C7 NUMBER(5,0)') AND CONTAINS(g, 'C8 VARCHAR(16777216)')\n  AND CONTAINS(g, 'C9 VARCHAR(16777216)') AND CONTAINS(g, 'C10 VARCHAR(16777216)') AND CONTAINS(g, 'C11 VARCHAR(20)')\n  AND CONTAINS(g, 'C12 VARCHAR(1)') AND CONTAINS(g, 'C13 VARCHAR(5)') AND CONTAINS(g, 'C14 VARCHAR(9)')\n  AND CONTAINS(g, 'C15 FLOAT') AND CONTAINS(g, 'C16 FLOAT') AND CONTAINS(g, 'C17 FLOAT')\n  AND CONTAINS(g, 'C18 BOOLEAN') AND CONTAINS(g, 'C19 DATE') AND CONTAINS(g, 'C20 TIME(9)')\n  AND CONTAINS(g, 'C21 TIME(3)') AND CONTAINS(g, 'C22 TIMESTAMP_NTZ(9)') AND CONTAINS(g, 'C23 TIMESTAMP_TZ(6)')\n  AND CONTAINS(g, 'C24 BINARY(8388608)') AND CONTAINS(g, 'C25 BINARY(100)') AND CONTAINS(g, 'C26 VARIANT')\n  AND CONTAINS(g, 'C27 OBJECT') AND CONTAINS(g, 'C28 ARRAY')\nFROM d",
+       "expect": {"value": "true"}}
+    ]}
+  ]
+}

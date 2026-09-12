@@ -16,7 +16,10 @@
 
 package dev.frostlake.functions.aggregate;
 
+import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.values.VariantValue;
+
 import java.math.BigDecimal;
 
 /** Accumulator for {@link BitOrAgg}. */
@@ -28,7 +31,11 @@ public class BitOrAccumulator implements AggregateFunction.Accumulator {
     public void accumulate(final Object v) {
         if (v == null) return;
         hasValue = true;
-        result |= new BigDecimal(v.toString()).longValue();
+        // A VARIANT member reads as its number, a boolean as 1 / 0; anything else fails the cast to
+        // FIXED, as live's integer aggregates say (BITOR_AGG over {"x":1}).
+        result |= (v instanceof VariantValue
+            ? VariantNumbers.numberOf((VariantValue) v, VariantNumbers.FIXED).longValue()
+            : new BigDecimal(v.toString()).longValue());
     }
 
     @Override

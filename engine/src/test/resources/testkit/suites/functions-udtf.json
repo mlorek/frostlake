@@ -1,0 +1,39 @@
+{
+  "suite": "functions-udtf",
+  "description": "User-defined table functions: CREATE / OR REPLACE / parameters / joins / multiple columns / DROP, called via TABLE(f()). Converted 1:1 from functions/UserDefinedTableFunctionTest.java (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "create-and-call-basic-udtf", "steps": [
+      {"sql": "CREATE FUNCTION t()\n    RETURNS TABLE(msg VARCHAR)\n    AS\n    $$\n        SELECT 'Hello'\n        UNION\n        SELECT 'World'\n    $$"},
+      {"sql": "SELECT * FROM TABLE(t())", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "udtf-return-column-names", "steps": [
+      {"sql": "CREATE FUNCTION greet()\n    RETURNS TABLE(msg VARCHAR)\n    AS $$\n        SELECT 'Hello' UNION SELECT 'World'\n    $$"},
+      {"sql": "SELECT * FROM TABLE(greet())", "expect": {"columns": ["MSG"], "rowCount": 2}}
+    ]},
+    {"name": "udtf-with-or-replace", "steps": [
+      {"sql": "CREATE FUNCTION t() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'v1' $$"},
+      {"sql": "CREATE OR REPLACE FUNCTION t() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'v2' $$"},
+      {"sql": "SELECT * FROM TABLE(t())", "expect": {"rows": [["v2"]]}}
+    ]},
+    {"name": "udtf-with-parameter", "steps": [
+      {"sql": "CREATE FUNCTION repeat_msg(n INTEGER)\n    RETURNS TABLE(msg VARCHAR)\n    AS $$\n        SELECT 'hello'\n    $$"},
+      {"sql": "SELECT * FROM TABLE(repeat_msg(3))", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "udtf-in-join", "steps": [
+      {"sql": "CREATE TABLE items (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO items VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE FUNCTION two_rows()\n    RETURNS TABLE(val VARCHAR)\n    AS $$ SELECT 'x' UNION SELECT 'y' $$"},
+      {"sql": "SELECT i.name\nFROM items i, TABLE(two_rows()) f", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "udtf-multiple-columns", "steps": [
+      {"sql": "CREATE FUNCTION multi()\n    RETURNS TABLE(id INTEGER, name VARCHAR)\n    AS $$\n        SELECT 1, 'Alice'\n        UNION\n        SELECT 2, 'Bob'\n    $$"},
+      {"sql": "SELECT * FROM TABLE(multi())", "expect": {"rowCount": 2, "columns": ["ID", "NAME"]}}
+    ]},
+    {"name": "udtf-drop-function", "steps": [
+      {"sql": "CREATE FUNCTION to_drop() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'x' $$"},
+      {"sql": "DROP FUNCTION to_drop()"},
+      {"sql": "SELECT * FROM TABLE(to_drop())", "expect": {"error": {}}}
+    ]}
+  ]
+}

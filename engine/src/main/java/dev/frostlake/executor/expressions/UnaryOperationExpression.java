@@ -22,6 +22,8 @@ package dev.frostlake.executor.expressions;
 public class UnaryOperationExpression implements Expression {
     private final Expression operand;
     private final UnaryOperator operator;
+    /** Where the operator token sits in the fragment that was parsed, or null when nothing recorded it. */
+    private SourcePosition position;
 
     public UnaryOperationExpression(final UnaryOperator operator, final Expression operand) {
         this.operator = operator;
@@ -34,6 +36,21 @@ public class UnaryOperationExpression implements Expression {
 
     public UnaryOperator getOperator() {
         return operator;
+    }
+
+    /**
+     * The operator's own place in the parsed fragment — a sign is refused AT the sign: live anchors
+     * "Invalid argument types for function 'NEGATE': (BOOLEAN)" on the {@code -}, and the
+     * 'UNARY PLUS' twin on the {@code +}, wherever the operand starts.
+     *
+     * @return the recorded position, or null
+     */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition where) {
+        this.position = where;
     }
 
     @Override

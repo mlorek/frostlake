@@ -1,0 +1,76 @@
+{
+  "suite": "functions-crypto",
+  "description": "The crypto and hashing family: MD5 / MD5_HEX and their agreement, MD5_NUMBER_LOWER64 / MD5_NUMBER_UPPER64 as UNSIGNED NUMBER(38,0) - Snowflake's documented worked example MD5_NUMBER_UPPER64('Snowflake') = 17145559544104499780 exceeds Long.MAX_VALUE, which a signed implementation would render negative - SHA1 / SHA1_HEX, SHA2 / SHA2_HEX at 256 and 512, HASH determinism, and the ENCRYPT / DECRYPT round trip (both return BINARY, as in Snowflake) with its random IV making two ciphertexts of the same message differ. ENCRYPT may not appear in a VALUES clause, live-measured, the same rule that refuses RANDOM, UUID_STRING, UNIFORM, SEQn, ENCRYPT_RAW, NORMAL and ZIPF there, so INSERT ... SELECT is the route. HMAC and HMAC_HEX do NOT exist on Snowflake - live answers \"Unknown function HMAC.\" at every arity - and Frostlake's removal of them is pinned here so they cannot drift back. Converted 1:1 from functions/CryptoFunctionsTest (now retired); its Java-side comparisons of two query results become server-side equality projections, and the instanceof Long check becomes TYPEOF(TO_VARIANT(...)).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "md5", "steps": [
+      {"sql": "SELECT MD5('hello')", "expect": {"value": "5d41402abc4b2a76b9719d911017c592"}}
+    ]},
+    {"name": "md5-hex", "steps": [
+      {"sql": "SELECT MD5_HEX('hello')", "expect": {"value": "5d41402abc4b2a76b9719d911017c592"}}
+    ]},
+    {"name": "md5-and-md5-hex-are-identical", "steps": [
+      {"sql": "SELECT MD5('snowflake') = MD5_HEX('snowflake')", "expect": {"value": "true"}}
+    ]},
+    {"name": "md5-number-lower64-is-unsigned", "steps": [
+      {"sql": "SELECT IFF(MD5_NUMBER_LOWER64('hello') IS NULL, 'null', 'set')", "expect": {"value": "set"}},
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(MD5_NUMBER_LOWER64('hello')), '-')", "expect": {"value": "false"}}
+    ]},
+    {"name": "md5-number-upper64-matches-the-snowflake-example", "steps": [
+      {"sql": "SELECT TO_VARCHAR(MD5_NUMBER_UPPER64('Snowflake'))", "expect": {"value": "17145559544104499780"}}
+    ]},
+    {"name": "md5-number-lower-and-upper-are-different", "steps": [
+      {"sql": "SELECT MD5_NUMBER_LOWER64('hello') = MD5_NUMBER_UPPER64('hello')", "expect": {"value": "false"}}
+    ]},
+    {"name": "sha1", "steps": [
+      {"sql": "SELECT SHA1('hello')", "expect": {"value": "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"}}
+    ]},
+    {"name": "sha1-hex", "steps": [
+      {"sql": "SELECT SHA1_HEX('hello')", "expect": {"value": "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"}}
+    ]},
+    {"name": "sha2-defaults-to-256", "steps": [
+      {"sql": "SELECT LENGTH(SHA2('hello'))", "expect": {"value": "64"}}
+    ]},
+    {"name": "sha2-hex-agrees-with-sha2-at-256", "steps": [
+      {"sql": "SELECT SHA2('hello', 256) = SHA2_HEX('hello', 256)", "expect": {"value": "true"}}
+    ]},
+    {"name": "sha2-at-512", "steps": [
+      {"sql": "SELECT LENGTH(SHA2('hello', 512))", "expect": {"value": "128"}}
+    ]},
+    {"name": "hash-returns-an-integer", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(HASH('hello')))", "expect": {"value": "INTEGER"}}
+    ]},
+    {"name": "hash-is-deterministic", "steps": [
+      {"sql": "SELECT HASH('same') = HASH('same')", "expect": {"value": "true"}}
+    ]},
+    {"name": "hash-differs-for-different-inputs", "steps": [
+      {"sql": "SELECT HASH('a') = HASH('b')", "expect": {"value": "false"}}
+    ]},
+    {"name": "hash-accepts-several-arguments", "steps": [
+      {"sql": "SELECT IFF(HASH('a', 'b', 'c') IS NULL, 'null', 'set')", "expect": {"value": "set"}}
+    ]},
+    {"name": "encrypt-and-decrypt-round-trip", "steps": [
+      {"sql": "CREATE TABLE secrets (plain VARCHAR, cipher BINARY)"},
+      {"sql": "INSERT INTO secrets SELECT 'hello world', ENCRYPT('hello world', 'mypassword')"},
+      {"sql": "SELECT plain, DECRYPT(cipher, 'mypassword') = TO_BINARY(plain, 'UTF-8') FROM secrets",
+       "expect": {"rowCount": 1, "rows": [["hello world", "true"]]}}
+    ]},
+    {"name": "encrypt-produces-non-plaintext", "steps": [
+      {"sql": "SELECT CONTAINS(TO_VARCHAR(ENCRYPT('secret', 'key')), 'secret')", "expect": {"value": "false"}},
+      {"sql": "SELECT TO_VARCHAR(ENCRYPT('secret', 'key')) = 'secret'", "expect": {"value": "false"}}
+    ]},
+    {"name": "encrypt-is-non-deterministic", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ENCRYPT('msg', 'key')) = TO_VARCHAR(ENCRYPT('msg', 'key'))",
+       "expect": {"value": "false"}}
+    ]},
+    {"name": "decrypting-with-the-wrong-key-fails", "steps": [
+      {"sql": "CREATE TABLE enc_test (c VARCHAR)"},
+      {"sql": "INSERT INTO enc_test SELECT TO_VARCHAR(ENCRYPT('secret', 'rightkey'))"},
+      {"sql": "SELECT DECRYPT(c, 'wrongkey') FROM enc_test", "expect": {"error": {}}}
+    ]},
+    {"name": "hmac-is-not-a-snowflake-function", "steps": [
+      {"sql": "SELECT HMAC('msg', 'key')", "expect": {"error": {}}},
+      {"sql": "SELECT HMAC_HEX('msg', 'key')", "expect": {"error": {}}}
+    ]}
+  ]
+}

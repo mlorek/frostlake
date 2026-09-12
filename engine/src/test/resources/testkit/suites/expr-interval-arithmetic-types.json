@@ -1,0 +1,81 @@
+{
+  "suite": "expr-interval-arithmetic-types",
+  "description": "Shifting a temporal by an INTERVAL with the string-unit spelling, where the line falls at the DAY: whole-day units (year, month, day, week, quarter) leave a DATE a DATE while sub-day units promote it to TIMESTAMP_NTZ, off literals and columns alike; a timestamp keeps its flavour; the view-declared type agrees; a bare interval literal is refused with live's sentence; the full measured unit vocabulary (y/yyyy/quarter/qtr/mm/week/wk/woy/dd/hr/mi/sec and the sub-second ms/us/ns family) shifts by the right amount; and a near-miss spelling is refused echoing the word as written. Sub-second shifts pin via TIMESTAMP-literal equality (the default text render truncates to milliseconds). Converted 1:1 from expressions/IntervalArithmeticTypeTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "a-whole-day-unit-leaves-a-date-a-date", "steps": [
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 year') || '>'", "expect": {"value": "<2027-01-01>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 month') || '>'", "expect": {"value": "<2026-02-01>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 day') || '>'", "expect": {"value": "<2026-01-02>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' - INTERVAL '1 day') || '>'", "expect": {"value": "<2025-12-31>"}}
+    ]},
+    {"name": "a-sub-day-unit-promotes-a-date-to-a-timestamp", "steps": [
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 hour') || '>'", "expect": {"value": "<2026-01-01 01:00:00.000>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 minute') || '>'", "expect": {"value": "<2026-01-01 00:01:00.000>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 second') || '>'", "expect": {"value": "<2026-01-01 00:00:01.000>"}}
+    ]},
+    {"name": "the-rule-holds-for-a-column-too", "steps": [
+      {"sql": "CREATE TABLE iv_base (d DATE, ts TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO iv_base VALUES ('2026-01-01', '2026-01-01 00:00:00')"},
+      {"sql": "SELECT '<' || (d + INTERVAL '1 day') || '>' FROM iv_base", "expect": {"value": "<2026-01-02>"}},
+      {"sql": "SELECT '<' || (d + INTERVAL '1 hour') || '>' FROM iv_base", "expect": {"value": "<2026-01-01 01:00:00.000>"}}
+    ]},
+    {"name": "a-timestamp-stays-a-timestamp", "steps": [
+      {"sql": "CREATE TABLE iv_base (d DATE, ts TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO iv_base VALUES ('2026-01-01', '2026-01-01 00:00:00')"},
+      {"sql": "SELECT '<' || (ts + INTERVAL '1 day') || '>' FROM iv_base", "expect": {"value": "<2026-01-02 00:00:00.000>"}},
+      {"sql": "SELECT '<' || (ts + INTERVAL '1 hour') || '>' FROM iv_base", "expect": {"value": "<2026-01-01 01:00:00.000>"}}
+    ]},
+    {"name": "a-view-declares-the-shifted-type", "steps": [
+      {"sql": "CREATE TABLE iv_base (d DATE, ts TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO iv_base VALUES ('2026-01-01', '2026-01-01 00:00:00')"},
+      {"sql": "CREATE OR REPLACE VIEW iv_view AS SELECT d + INTERVAL '1 day' AS c FROM iv_base"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.iv_view"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"DATE\",\"nullable\":true}"}},
+      {"sql": "CREATE OR REPLACE VIEW iv_view AS SELECT ts + INTERVAL '1 hour' AS c FROM iv_base"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.iv_view"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TIMESTAMP_NTZ\",\"precision\":0,\"scale\":9,\"nullable\":true}"}}
+    ]},
+    {"name": "a-bare-interval-literal-is-refused", "steps": [
+      {"sql": "SELECT INTERVAL '1 day'", "expect": {"error": {"messageContains": "interval literal is not supported in this form."}}}
+    ]},
+    {"name": "every-measured-unit-spelling-is-accepted", "steps": [
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 y') || '>'", "expect": {"value": "<2027-01-01>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 yyyy') || '>'", "expect": {"value": "<2027-01-01>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 quarter') || '>'", "expect": {"value": "<2026-04-01>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 qtr') || '>'", "expect": {"value": "<2026-04-01>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 mm') || '>'", "expect": {"value": "<2026-02-01>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 week') || '>'", "expect": {"value": "<2026-01-08>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 wk') || '>'", "expect": {"value": "<2026-01-08>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 woy') || '>'", "expect": {"value": "<2026-01-08>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 dd') || '>'", "expect": {"value": "<2026-01-02>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 hr') || '>'", "expect": {"value": "<2026-01-01 01:00:00.000>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 mi') || '>'", "expect": {"value": "<2026-01-01 00:01:00.000>"}},
+      {"sql": "SELECT '<' || (DATE '2026-01-01' + INTERVAL '1 sec') || '>'", "expect": {"value": "<2026-01-01 00:00:01.000>"}}
+    ]},
+    {"name": "the-sub-second-units-shift-by-the-right-amount", "steps": [
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 ms' = TIMESTAMP '2026-01-01 00:00:00.001'", "expect": {"value": "true"}},
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 millisecond' = TIMESTAMP '2026-01-01 00:00:00.001'", "expect": {"value": "true"}},
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 us' = TIMESTAMP '2026-01-01 00:00:00.000001'", "expect": {"value": "true"}},
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 ns' = TIMESTAMP '2026-01-01 00:00:00.000000001'", "expect": {"value": "true"}},
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 nanosec' = TIMESTAMP '2026-01-01 00:00:00.000000001'", "expect": {"value": "true"}},
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 us' = TIMESTAMP '2026-01-01 00:00:00.000000001'", "expect": {"value": "false"}}
+    ]},
+    {"name": "week-and-quarter-leave-a-date-a-date", "steps": [
+      {"sql": "CREATE TABLE iv_base (d DATE, ts TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO iv_base VALUES ('2026-01-01', '2026-01-01 00:00:00')"},
+      {"sql": "CREATE OR REPLACE VIEW iv_view AS SELECT d + INTERVAL '1 week' AS c FROM iv_base"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.iv_view"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"DATE\",\"nullable\":true}"}},
+      {"sql": "CREATE OR REPLACE VIEW iv_view AS SELECT d + INTERVAL '1 quarter' AS c FROM iv_base"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.iv_view"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"DATE\",\"nullable\":true}"}}
+    ]},
+    {"name": "an-unknown-unit-spelling-is-refused-the-way-live-refuses-it", "steps": [
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 wofy'", "expect": {"error": {"messageContains": "wofy is not recognized as a date type."}}},
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 ss'", "expect": {"error": {"messageContains": "ss is not recognized as a date type."}}},
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 wks'", "expect": {"error": {"messageContains": "wks is not recognized as a date type."}}},
+      {"sql": "SELECT DATE '2026-01-01' + INTERVAL '1 msecs'", "expect": {"error": {"messageContains": "msecs is not recognized as a date type."}}}
+    ]}
+  ]
+}

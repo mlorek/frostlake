@@ -1,0 +1,25 @@
+{
+  "suite": "functions-regexp-substr-all",
+  "description": "REGEXP_SUBSTR_ALL(subject, pattern [, position [, occurrence [, parameters [, group_num]]]]) returns a VARIANT ARRAY of all matches, or of the named capture group from each match, with an empty array when nothing matches and NULL for a NULL argument. REGEXP_EXTRACT_ALL is an exact alias. Converted 1:1 from functions/RegexpSubstrAllTest (now retired); the ARRAY results are read through TO_JSON so the assertion lands on a VARCHAR no transport reformats.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-returns-all-matches-case-insensitively", "steps": [
+      {"sql": "SELECT TO_JSON(REGEXP_SUBSTR_ALL('a1_a2a3_a4A5a6', 'a[0-9]', 1, 1, 'i'))",
+       "expect": {"value": "[\"a1\",\"a2\",\"a3\",\"a4\",\"A5\",\"a6\"]"}}
+    ]},
+    {"name": "it-extracts-a-capture-group-from-each-match", "steps": [
+      {"sql": "SELECT TO_JSON(REGEXP_SUBSTR_ALL('x=1,y=2', '([a-z])=([0-9])', 1, 1, 'e', 2))",
+       "expect": {"value": "[\"1\",\"2\"]"}}
+    ]},
+    {"name": "no-match-yields-an-empty-array", "steps": [
+      {"sql": "SELECT TO_JSON(REGEXP_SUBSTR_ALL('abc', '[0-9]+'))", "expect": {"value": "[]"}}
+    ]},
+    {"name": "a-null-argument-yields-null", "steps": [
+      {"sql": "SELECT REGEXP_SUBSTR_ALL(NULL, 'a')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "regexp-extract-all-is-an-alias", "steps": [
+      {"sql": "SELECT TO_JSON(REGEXP_EXTRACT_ALL('a1b2', '[a-z][0-9]'))",
+       "expect": {"value": "[\"a1\",\"b2\"]"}}
+    ]}
+  ]
+}

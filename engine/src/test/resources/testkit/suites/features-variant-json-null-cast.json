@@ -1,0 +1,30 @@
+{
+  "suite": "features-variant-json-null-cast",
+  "description": "A VARIANT JSON null cast to a primitive type is SQL NULL in Snowflake - from PARSE_JSON directly, from a VARIANT-typed column, and from a path access - while a plain 'null' VARCHAR keeps its text and a cast back to VARIANT keeps the JSON null (so it is not SQL NULL). Loaders diff semi-structured columns as col::VARCHAR; a text-'null' result would make every seeded PARSE_JSON('null') column compare unequal to SQL NULL. Converted 1:1 from features/VariantJsonNullCastTest (now retired); the assertNull checks are expressed as IS NULL projections so an absent value cannot be confused with the four-character text.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "parse-json-null-casts-to-sql-null", "steps": [
+      {"sql": "SELECT PARSE_JSON('null')::VARCHAR", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('null')::VARCHAR IS NULL", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-variant-column-holding-json-null-casts-to-sql-null", "steps": [
+      {"sql": "CREATE TABLE vjn (v VARIANT)"},
+      {"sql": "INSERT INTO vjn SELECT PARSE_JSON('null')"},
+      {"sql": "SELECT v::VARCHAR FROM vjn", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT v::VARCHAR IS NULL FROM vjn", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-plain-varchar-null-text-keeps-its-text", "steps": [
+      {"sql": "SELECT '<' || 'null'::VARCHAR || '>'", "expect": {"value": "<null>"}},
+      {"sql": "CREATE TABLE vtx (s VARCHAR)"},
+      {"sql": "INSERT INTO vtx VALUES ('null')"},
+      {"sql": "SELECT '<' || s::VARCHAR || '>' FROM vtx", "expect": {"value": "<null>"}}
+    ]},
+    {"name": "a-path-access-to-json-null-still-casts-to-sql-null", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\": null}'):a::VARCHAR", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"a\": null}'):a::VARCHAR IS NULL", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-cast-to-variant-keeps-the-json-null", "steps": [
+      {"sql": "SELECT (PARSE_JSON('null')::VARIANT) IS NULL", "expect": {"value": "false"}}
+    ]}
+  ]
+}

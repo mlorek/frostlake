@@ -1,0 +1,107 @@
+{
+  "suite": "features-streams-and-tasks",
+  "description": "Streams and tasks through the SQL surface: SHOW STREAMS cells (table_name, source_type Table, mode DEFAULT / APPEND_ONLY), the delta a stream reports for inserts, updates (a DELETE+INSERT pair both flagged METADATA$ISUPDATE) and deletes, an APPEND_ONLY stream reporting only the insert, consumption by INSERT ... SELECT, and DROP STREAM. Tasks: CREATE with an interval or a cron schedule, the SHOW TASKS schedule and state cells, RESUME / SUSPEND moving the state, DROP TASK, and a stream left unconsumed by merely creating a task over its table. Converted from features/StreamsAndTasksTest; its task-execution test stays in the trimmed Java class (it drives engine.getTaskScheduler().executeTaskNow and reads the task's execution history, neither of which has a SQL surface).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "create-stream", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'"},
+      {"sql": "SELECT ENDSWITH(\"table_name\", 'USERS'), \"source_type\", \"mode\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "Table", "DEFAULT"]]}}
+    ]},
+    {"name": "create-append-only-stream", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users APPEND_ONLY = TRUE"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'"},
+      {"sql": "SELECT \"mode\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "APPEND_ONLY"}}
+    ]},
+    {"name": "stream-tracks-inserts", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "SELECT id, METADATA$ACTION FROM user_stream", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(METADATA$ACTION = 'INSERT') FROM user_stream", "expect": {"value": "2"}}
+    ]},
+    {"name": "stream-tracks-updates", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "UPDATE users SET age = 31 WHERE id = 1"},
+      {"sql": "SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM user_stream", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(IFF(METADATA$ACTION = 'DELETE', TO_VARCHAR(METADATA$ISUPDATE), NULL)), MAX(IFF(METADATA$ACTION = 'INSERT', TO_VARCHAR(METADATA$ISUPDATE), NULL)) FROM user_stream",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "stream-tracks-deletes", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "DELETE FROM users WHERE id = 1"},
+      {"sql": "SELECT id, METADATA$ACTION FROM user_stream", "expect": {"rowCount": 1, "rows": [["1", "DELETE"]]}}
+    ]},
+    {"name": "append-only-stream-only-tracks-inserts", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users APPEND_ONLY = TRUE"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "UPDATE users SET name = 'Alicia' WHERE id = 1"},
+      {"sql": "DELETE FROM users WHERE id = 1"},
+      {"sql": "SELECT id, METADATA$ACTION FROM user_stream", "expect": {"rowCount": 1, "rows": [["1", "INSERT"]]}}
+    ]},
+    {"name": "stream-consume", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE users_copy (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "SELECT * FROM user_stream", "expect": {"rowCount": 1}},
+      {"sql": "INSERT INTO users_copy SELECT id, name FROM user_stream"},
+      {"sql": "SELECT * FROM user_stream", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "drop-stream", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM user_stream ON TABLE users"},
+      {"sql": "DROP STREAM user_stream"},
+      {"sql": "SHOW STREAMS LIKE 'user_stream'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "create-task", "steps": [
+      {"sql": "CREATE TASK daily_cleanup WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '60 MINUTES' AS DELETE FROM logs WHERE timestamp < '2024-01-01'"},
+      {"sql": "SHOW TASKS LIKE 'daily_cleanup'"},
+      {"sql": "SELECT \"schedule\", \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["60 MINUTES", "suspended"]]}}
+    ]},
+    {"name": "create-task-with-cron-schedule", "steps": [
+      {"sql": "CREATE TASK hourly_job WAREHOUSE = 'COMPUTE_WH' SCHEDULE = 'USING CRON 0 * * * * UTC' AS INSERT INTO summary SELECT * FROM staging"},
+      {"sql": "SHOW TASKS LIKE 'hourly_job'"},
+      {"sql": "SELECT STARTSWITH(\"schedule\", 'USING CRON') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "alter-task-resume", "steps": [
+      {"sql": "CREATE TASK test_task WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS SELECT 1"},
+      {"sql": "ALTER TASK test_task RESUME"},
+      {"sql": "SHOW TASKS LIKE 'test_task'"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "started"}}
+    ]},
+    {"name": "alter-task-suspend", "steps": [
+      {"sql": "CREATE TASK test_task WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS SELECT 1"},
+      {"sql": "ALTER TASK test_task RESUME"},
+      {"sql": "ALTER TASK test_task SUSPEND"},
+      {"sql": "SHOW TASKS LIKE 'test_task'"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "suspended"}}
+    ]},
+    {"name": "drop-task", "steps": [
+      {"sql": "CREATE TASK test_task WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS SELECT 1"},
+      {"sql": "DROP TASK test_task"},
+      {"sql": "SHOW TASKS LIKE 'test_task'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "stream-with-task-integration", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, amount INTEGER, status VARCHAR)"},
+      {"sql": "CREATE STREAM order_stream ON TABLE orders"},
+      {"sql": "CREATE TABLE order_summary (total_orders INTEGER, total_amount INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 'pending'), (2, 200, 'completed')"},
+      {"sql": "SELECT * FROM order_stream", "expect": {"rowCount": 2}},
+      {"sql": "CREATE TASK process_orders WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS INSERT INTO order_summary SELECT COUNT(*), SUM(amount) FROM orders"},
+      {"sql": "SELECT * FROM order_stream", "expect": {"rowCount": 2}},
+      {"sql": "SHOW TASKS LIKE 'process_orders'"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "suspended"}}
+    ]}
+  ]
+}

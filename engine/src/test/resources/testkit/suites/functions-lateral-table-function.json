@@ -1,0 +1,88 @@
+{
+  "suite": "functions-lateral-table-function",
+  "description": "LATERAL over a table function, correlating to a column of a preceding table. LATERAL takes the BARE call: FROM t, LATERAL FLATTEN(...) and FROM t, TABLE(FLATTEN(...)) are the two supported spellings, while LATERAL TABLE(FLATTEN(...)) is a syntax error that gets no further than the keyword - the original Java class was written entirely in that third spelling, which Frostlake accepted and no account parses, so every query here is also a test that the supported form is the one being exercised. FLATTEN's INPUT is a VARIANT column for the same reason: a VARCHAR one is refused live however much its text looks like JSON. GENERATOR's ROWCOUNT is not correlatable - Snowflake answers \"argument 1 to function GENERATOR needs to be constant\" unless its optimiser can fold the value, which is a property of the planner rather than of the language - so the row-multiplication tests use the spelling every account runs: a join to a numbers set built from a CONSTANT rowcount. Converted 1:1 from functions/LateralTableFunctionTest (now retired); the syntax-error offsets are the ones the Java computed from each statement with indexOf.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-join-to-a-generated-numbers-set", "steps": [
+      {"sql": "CREATE TABLE numbers (n INTEGER)"},
+      {"sql": "INSERT INTO numbers VALUES (2)"},
+      {"sql": "INSERT INTO numbers VALUES (3)"},
+      {"sql": "SELECT n.n\nFROM numbers n\nJOIN (SELECT SEQ4() AS k FROM TABLE(GENERATOR(ROWCOUNT => 10))) g ON g.k < n.n\nORDER BY n.n",
+       "expect": {"rowCount": 5, "rows": [["2"], ["2"], ["3"], ["3"], ["3"]], "ordered": true}}
+    ]},
+    {"name": "lateral-over-split-to-table", "steps": [
+      {"sql": "CREATE TABLE data (id INTEGER, tag_list VARCHAR)"},
+      {"sql": "INSERT INTO data VALUES (1, 'red,blue,green')"},
+      {"sql": "INSERT INTO data VALUES (2, 'small,medium')"},
+      {"sql": "SELECT d.id, s.VALUE as tag\nFROM data d, LATERAL SPLIT_TO_TABLE(d.tag_list, ',') s\nORDER BY d.id, s.INDEX",
+       "expect": {"rowCount": 5, "rows": [["1", "red"], ["1", "blue"], ["1", "green"], ["2", "small"], ["2", "medium"]], "ordered": true}}
+    ]},
+    {"name": "lateral-over-flatten", "steps": [
+      {"sql": "CREATE TABLE documents (id INTEGER, json_data VARIANT)"},
+      {"sql": "INSERT INTO documents SELECT 1, PARSE_JSON('{\"a\":1,\"b\":2}')"},
+      {"sql": "INSERT INTO documents SELECT 2, PARSE_JSON('{\"x\":10}')"},
+      {"sql": "SELECT d.id, IFF(f.KEY IS NULL, 'null', 'set')\nFROM documents d, LATERAL FLATTEN(INPUT => d.json_data) f\nORDER BY d.id, f.SEQ",
+       "expect": {"rowCount": 3, "rows": [["1", "set"], ["1", "set"], ["2", "set"]], "ordered": true}},
+      {"sql": "SELECT f.KEY FROM documents d, LATERAL FLATTEN(INPUT => d.json_data) f WHERE d.id = 2",
+       "expect": {"value": "x"}}
+    ]},
+    {"name": "the-cross-join-lateral-syntax", "steps": [
+      {"sql": "CREATE TABLE numbers (n INTEGER)"},
+      {"sql": "INSERT INTO numbers VALUES (2)"},
+      {"sql": "SELECT n.n\nFROM numbers n\nCROSS JOIN LATERAL GENERATOR(ROWCOUNT => n.n) g",
+       "expect": {"rowCount": 2}}
+    ]},
+    {"name": "with-a-where-filter", "steps": [
+      {"sql": "CREATE TABLE ranges (id INTEGER, count INTEGER)"},
+      {"sql": "INSERT INTO ranges VALUES (1, 5)"},
+      {"sql": "INSERT INTO ranges VALUES (2, 3)"},
+      {"sql": "SELECT r.id\nFROM ranges r\nJOIN (SELECT SEQ4() AS k FROM TABLE(GENERATOR(ROWCOUNT => 10))) g ON g.k < r.count\nWHERE r.id = 1",
+       "expect": {"rowCount": 5, "rows": [["1"], ["1"], ["1"], ["1"], ["1"]]}}
+    ]},
+    {"name": "over-multiple-source-rows", "steps": [
+      {"sql": "CREATE TABLE items (item_id INTEGER, item_name VARCHAR, count INTEGER)"},
+      {"sql": "INSERT INTO items VALUES (1, 'Apple', 2)"},
+      {"sql": "INSERT INTO items VALUES (2, 'Banana', 3)"},
+      {"sql": "INSERT INTO items VALUES (3, 'Cherry', 1)"},
+      {"sql": "SELECT i.item_name\nFROM items i\nJOIN (SELECT SEQ4() AS k FROM TABLE(GENERATOR(ROWCOUNT => 10))) g ON g.k < i.count\nORDER BY i.item_id",
+       "expect": {"rowCount": 6, "rows": [["Apple"], ["Apple"], ["Banana"], ["Banana"], ["Banana"], ["Cherry"]], "ordered": true}}
+    ]},
+    {"name": "with-aggregation", "steps": [
+      {"sql": "CREATE TABLE groups (group_id INTEGER, size INTEGER)"},
+      {"sql": "INSERT INTO groups VALUES (1, 3)"},
+      {"sql": "INSERT INTO groups VALUES (2, 2)"},
+      {"sql": "SELECT g.group_id, COUNT(*) as row_count\nFROM groups g\nJOIN (SELECT SEQ4() AS k FROM TABLE(GENERATOR(ROWCOUNT => 10))) gen ON gen.k < g.size\nGROUP BY g.group_id\nORDER BY g.group_id",
+       "expect": {"rowCount": 2, "rows": [["1", "3"], ["2", "2"]], "ordered": true}}
+    ]},
+    {"name": "lateral-flatten-over-an-array-column", "steps": [
+      {"sql": "CREATE TABLE nested_data (id INTEGER, data VARIANT)"},
+      {"sql": "INSERT INTO nested_data SELECT 1, PARSE_JSON('[1,2,3]')"},
+      {"sql": "SELECT n.id, f.VALUE\nFROM nested_data n, LATERAL FLATTEN(INPUT => n.data) f",
+       "expect": {"rowCount": 3, "rows": [["1", "1"], ["1", "2"], ["1", "3"]]}}
+    ]},
+    {"name": "cross-join-lateral-with-a-join-condition", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'a,b')"},
+      {"sql": "INSERT INTO source VALUES (2, 'c,d')"},
+      {"sql": "SELECT s.id, sp.VALUE\nFROM source s\nCROSS JOIN LATERAL SPLIT_TO_TABLE(s.value, ',') sp\nWHERE s.id = 1",
+       "expect": {"rowCount": 2, "rows": [["1", "a"], ["1", "b"]], "ordered": true}}
+    ]},
+    {"name": "a-source-row-that-generates-nothing-drops-out", "steps": [
+      {"sql": "CREATE TABLE empty_test (id INTEGER, count INTEGER)"},
+      {"sql": "INSERT INTO empty_test VALUES (1, 0)"},
+      {"sql": "INSERT INTO empty_test VALUES (2, 2)"},
+      {"sql": "SELECT e.id\nFROM empty_test e\nJOIN (SELECT SEQ4() AS k FROM TABLE(GENERATOR(ROWCOUNT => 10))) g ON g.k < e.count",
+       "expect": {"rowCount": 2, "rows": [["2"], ["2"]]}}
+    ]},
+    {"name": "lateral-does-not-take-a-table-wrapper", "steps": [
+      {"sql": "CREATE TABLE numbers (n INTEGER)"},
+      {"sql": "INSERT INTO numbers VALUES (2)"},
+      {"sql": "SELECT n.n FROM numbers n, LATERAL TABLE(GENERATOR(ROWCOUNT => 2)) g",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 35 unexpected 'TABLE'."}}},
+      {"sql": "SELECT n.n FROM numbers n CROSS JOIN LATERAL TABLE(GENERATOR(ROWCOUNT => 2)) g",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 45 unexpected 'TABLE'."}}},
+      {"sql": "SELECT n.n FROM numbers n, LATERAL GENERATOR(ROWCOUNT => 2) g", "expect": {"rowCount": 2}},
+      {"sql": "SELECT n.n FROM numbers n, TABLE(GENERATOR(ROWCOUNT => 2)) g", "expect": {"rowCount": 2}}
+    ]}
+  ]
+}

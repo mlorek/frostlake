@@ -1,0 +1,154 @@
+{
+  "suite": "expr-binary-operation-static-types",
+  "description": "The KNOWN static type an arithmetic or concatenation column carries, read off DESCRIBE VIEW: + and - answer max leading digits plus one carry over max scale, * adds both precisions and scales, / is driven by the dividend with six extra scale digits, precision saturates at 38, FLOAT is contagious, string and binary concatenation add lengths (a converted operand giving the full-width VARCHAR), a shifted DATE stays DATE while a DATE difference is a NUMBER(9,0) day count, unary sign adds no digit, and modulo keeps max(L1,L2,2) leading digits over max scale. All live-measured. Converted 1:1 from expressions/BinaryOperationStaticTypeTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "addition-carries-one-extra-leading-digit", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT 1 + 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(2,0)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT 1 - 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(2,0)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a + b AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(7,2)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a - b AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(7,2)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a + 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(6,1)"}}
+    ]},
+    {"name": "multiplication-adds-precisions-and-scales", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT 2 * 3 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(2,0)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a * b AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(8,3)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a * 2 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(6,1)"}}
+    ]},
+    {"name": "division-gains-six-digits-of-scale", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT 7 / 2 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(7,6)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a / b AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(13,7)"}}
+    ]},
+    {"name": "precision-saturates-at-thirty-eight", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT i + 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(38,0)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT i * 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(38,0)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT i / 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(38,6)"}}
+    ]},
+    {"name": "float-is-contagious", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT f + a AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "FLOAT"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT f * f AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "FLOAT"}}
+    ]},
+    {"name": "concatenation-adds-lengths", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT 'a' || 'b' AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "VARCHAR(2)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT s || t AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "VARCHAR(13)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT s || 'xyz' AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "VARCHAR(7)"}}
+    ]},
+    {"name": "a-converted-operand-gives-the-full-width-varchar", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a || s AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "VARCHAR(16777216)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT s || a AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "VARCHAR(16777216)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT d || s AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "VARCHAR(16777216)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT s || d AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "VARCHAR(16777216)"}}
+    ]},
+    {"name": "two-binaries-add-their-lengths", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT bn || bn AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "BINARY(8)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT bn || bn2 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "BINARY(13)"}}
+    ]},
+    {"name": "a-shifted-date-is-still-a-date", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT d + 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DATE"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT d - 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DATE"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT 1 + d AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DATE"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT d + i AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DATE"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT d + a AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DATE"}}
+    ]},
+    {"name": "a-date-difference-is-a-day-count", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT d - d2 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(9,0)"}}
+    ]},
+    {"name": "a-unary-sign-adds-no-digit", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT -a AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(5,1)"}}
+    ]},
+    {"name": "modulo-keeps-the-wider-operands-width", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a % b AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(6,2)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT i % 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(38,0)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT a % 2 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(5,1)"}}
+    ]},
+    {"name": "modulo-never-has-fewer-than-two-leading-digits", "steps": [
+      {"sql": "CREATE TABLE bo_s (a NUMBER(5,1), b NUMBER(3,2), f FLOAT, s VARCHAR(4), t VARCHAR(9), d DATE, d2 DATE, i NUMBER(38,0), bn BINARY(4), bn2 BINARY(9))"},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT 1 % 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(2,0)"}},
+      {"sql": "CREATE OR REPLACE VIEW bo_v AS SELECT 1.5 % 1 AS c FROM bo_s"},
+      {"sql": "DESCRIBE VIEW bo_v"},
+      {"sql": "SELECT \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "NUMBER(3,1)"}}
+    ]}
+  ]
+}

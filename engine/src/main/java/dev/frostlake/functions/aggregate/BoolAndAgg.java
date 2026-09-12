@@ -16,12 +16,11 @@
 
 package dev.frostlake.functions.aggregate;
 
-import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
 
-public class BoolAndAgg extends AggregateFunction {
+public class BoolAndAgg extends BooleanAggregate {
     public BoolAndAgg() { super("BOOLAND_AGG", new BooleanType()); }
 
     @Override

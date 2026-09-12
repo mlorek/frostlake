@@ -116,7 +116,7 @@ public class DeclareBeforeBeginTest extends BaseDatabaseTest {
 
         engine.execute("""
             DECLARE
-                cur CURSOR FOR SELECT id, name FROM source;
+                cur CURSOR FOR SELECT id, name FROM source ORDER BY id;
                 rec_id INTEGER;
                 rec_name VARCHAR;
             BEGIN

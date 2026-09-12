@@ -84,9 +84,23 @@ public class NumericType extends DataType {
      * @return true for FLOAT and its aliases
      */
     public static boolean isApproximate(final DataType type) {
-        return type instanceof NumericType
-            && ("FLOAT".equalsIgnoreCase(type.getName()) || "DOUBLE".equalsIgnoreCase(type.getName())
-                || "REAL".equalsIgnoreCase(type.getName()));
+        return type instanceof NumericType && isApproximateName(type.getName());
+    }
+
+    /**
+     * Whether a type NAME is one of the approximate spellings — for a caller that has the name and not
+     * the type, such as a driver reading column metadata off the wire.
+     *
+     * @param name the declared type's name
+     * @return true for FLOAT and its aliases
+     */
+    public static boolean isApproximateName(final String name) {
+        if (name == null) {
+            return false;
+        }
+        final String upper = name.trim().toUpperCase(java.util.Locale.ROOT);
+        return upper.equals("FLOAT") || upper.equals("DOUBLE") || upper.equals("REAL")
+            || upper.equals("FLOAT4") || upper.equals("FLOAT8") || upper.equals("DOUBLE PRECISION");
     }
 
     // Snowflake gives EVERY integer alias the same precision and scale — live-verified,

@@ -1,0 +1,34 @@
+{
+  "suite": "types-collation-ci",
+  "description": "A column declared COLLATE 'en-ci' compares equal regardless of case - in WHERE equality and in JOIN ON conditions (qualified and unqualified) - while columns without the collation stay case-sensitive. Converted 1:1 from ddl/CollationCaseInsensitiveTest (now retired).",
+  "tags": ["types", "converted"],
+  "tests": [
+    {"name": "case-insensitive-equality-matches-regardless-of-case", "steps": [
+      {"sql": "CREATE TABLE ct (s VARCHAR COLLATE 'en-ci')"},
+      {"sql": "INSERT INTO ct VALUES ('ABC')"},
+      {"sql": "SELECT COUNT(*) FROM ct WHERE s = 'abc'", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM ct WHERE s = 'ABC'", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM ct WHERE s = 'xyz'", "expect": {"value": "0"}}
+    ]},
+    {"name": "without-ci-collation-equality-is-case-sensitive", "steps": [
+      {"sql": "CREATE TABLE ct2 (s VARCHAR)"},
+      {"sql": "INSERT INTO ct2 VALUES ('ABC')"},
+      {"sql": "SELECT COUNT(*) FROM ct2 WHERE s = 'abc'", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(*) FROM ct2 WHERE s = 'ABC'", "expect": {"value": "1"}}
+    ]},
+    {"name": "ci-collation-applies-in-a-join-on-condition", "steps": [
+      {"sql": "CREATE TABLE cfg (module_id VARCHAR COLLATE 'en-ci', qualified VARCHAR)"},
+      {"sql": "INSERT INTO cfg VALUES ('VENDOR:MODULE::PUB', 'VENDOR:MODULE::PUB')"},
+      {"sql": "CREATE TABLE stg (lookup_key VARCHAR)"},
+      {"sql": "INSERT INTO stg VALUES ('vendor:module::pub'), ('other:key::x')"},
+      {"sql": "SELECT COUNT(l.qualified)\nFROM stg s LEFT JOIN cfg l ON l.module_id = s.lookup_key", "expect": {"value": "1"}}
+    ]},
+    {"name": "ci-collation-applies-to-an-unqualified-column-in-a-join", "steps": [
+      {"sql": "CREATE TABLE cfg3 (module_id VARCHAR COLLATE 'en-ci', v VARCHAR)"},
+      {"sql": "INSERT INTO cfg3 VALUES ('AbC', 'hit')"},
+      {"sql": "CREATE TABLE stg3 (k VARCHAR)"},
+      {"sql": "INSERT INTO stg3 VALUES ('aBc')"},
+      {"sql": "SELECT COUNT(l.v) FROM stg3 s INNER JOIN cfg3 l ON module_id = k", "expect": {"value": "1"}}
+    ]}
+  ]
+}

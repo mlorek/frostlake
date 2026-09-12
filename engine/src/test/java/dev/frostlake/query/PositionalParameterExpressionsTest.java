@@ -138,6 +138,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT CASE WHEN $1 > 10 THEN 'High' ELSE 'Low' END
             FROM VALUES(5), (15)
+            ORDER BY $1
             """);
 
         assertEquals(2, result.getRowCount());

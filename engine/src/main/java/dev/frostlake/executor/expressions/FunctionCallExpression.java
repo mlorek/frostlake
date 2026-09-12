@@ -36,11 +36,18 @@ public class FunctionCallExpression implements Expression {
     private SourcePosition position;
     // Uppercase column names to omit when a `*` argument is expanded — e.g. OBJECT_CONSTRUCT(* EXCLUDE src).
     private List<String> starExcludes = new ArrayList<>();
+    /** The relation a qualified star names ({@code COUNT(t.*)}), canonical, or null for a bare star. */
+    private String starQualifier;
+    /** The star's ILIKE pattern as written between its quotes, or null. */
+    private String starIlike;
     // Canonical per-identifier parts of the call's (possibly qualified) name, read from the parse
     // tree at build: quoted parts keep their case with the quotes stripped, unquoted parts fold.
     // Null when the name has no identifier parts (LIKE/ILIKE keyword calls, IDENTIFIER(...) dynamic
     // names) — the flattened functionName is the only spelling then.
     private List<String> nameParts;
+    // The single ORDER BY expression of a trailing WITHIN GROUP (ORDER BY x), read off the parse tree at
+    // build. Null when the call has no WITHIN GROUP, or when its ORDER BY holds anything but one item.
+    private Expression withinGroupOrdered;
 
     public FunctionCallExpression(final String functionName, final List<Expression> arguments) {
         this(functionName, arguments, false, false);
@@ -65,8 +72,44 @@ public class FunctionCallExpression implements Expression {
         this.nameExpression = null;
     }
 
+    /** This call with another argument list and everything else as written — a star spliced in place. */
+    public FunctionCallExpression withArguments(final List<Expression> spliced) {
+        final FunctionCallExpression copy = nameExpression != null
+            ? new FunctionCallExpression(functionName, nameExpression, spliced)
+            : argumentNames != null ? new FunctionCallExpression(functionName, spliced, argumentNames)
+            : new FunctionCallExpression(functionName, spliced, distinct, star);
+        copy.position = position;
+        copy.starExcludes = starExcludes;
+        copy.starQualifier = starQualifier;
+        copy.starIlike = starIlike;
+        copy.nameParts = nameParts;
+        copy.withinGroupOrdered = withinGroupOrdered;
+        return copy;
+    }
+
     public String getFunctionName() {
         return functionName;
+    }
+
+    /**
+     * Record the expression a trailing {@code WITHIN GROUP (ORDER BY …)} orders by.
+     *
+     * <p>Evaluation does not read it — the percentile accumulators take the ordered column from the
+     * parse tree themselves — but the STATIC channel cannot: PERCENTILE_CONT and PERCENTILE_DISC are
+     * typed from the column they order by rather than from the fraction they are handed, and without
+     * this the AST node held only the fraction. Read at build for the same reason
+     * {@link WindowFunctionExpression#describeWindow} reads the OVER clause's shape there: so nothing
+     * has to re-parse the call's text later.
+     *
+     * @param ordered the single ORDER BY expression, or null when there is not exactly one
+     */
+    public void describeWithinGroup(final Expression ordered) {
+        this.withinGroupOrdered = ordered;
+    }
+
+    /** The expression a trailing WITHIN GROUP orders by — see {@link #describeWithinGroup}. */
+    public Expression getWithinGroupOrdered() {
+        return withinGroupOrdered;
     }
 
     public List<Expression> getArguments() {
@@ -89,6 +132,22 @@ public class FunctionCallExpression implements Expression {
     /** Uppercase column names to omit when expanding a {@code *} argument (OBJECT_CONSTRUCT(* EXCLUDE …)). */
     public List<String> getStarExcludes() {
         return starExcludes;
+    }
+
+    public String getStarQualifier() {
+        return starQualifier;
+    }
+
+    public void setStarQualifier(final String starQualifier) {
+        this.starQualifier = starQualifier;
+    }
+
+    public String getStarIlike() {
+        return starIlike;
+    }
+
+    public void setStarIlike(final String starIlike) {
+        this.starIlike = starIlike;
     }
 
     public void setStarExcludes(final List<String> starExcludes) {

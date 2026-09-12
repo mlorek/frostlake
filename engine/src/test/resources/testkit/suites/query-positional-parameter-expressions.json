@@ -1,0 +1,37 @@
+{
+  "suite": "query-positional-parameter-expressions",
+  "description": "Positional parameters ($1, $2, ...) over a VALUES source, used everywhere an expression can appear: as a bare select item, as a function argument, NESTED inside another call, in arithmetic between two calls, under CAST in both directions, in string concatenation, as a CASE subject across several rows, inside COALESCE where the first two positions are NULL, inside SUBSTRING, and mixed with plain positional items in one SELECT list. Converted 1:1 from query/PositionalParameterExpressionsTest (now retired); the Java deliberately compared numeric cells by VALUE rather than by boxed class, because the carrier legitimately differs between the embedded engine and a live account over JDBC - the testkit comparator normalises numbers the same way, so the claims survive unchanged.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-positional-parameter-under-abs", "steps": [
+      {"sql": "SELECT $1, ABS($2) FROM VALUES(1, -2)", "expect": {"rows": [[1,2]]}}
+    ]},
+    {"name": "positional-parameters-under-several-functions", "steps": [
+      {"sql": "SELECT ABS($1), UPPER($2), LENGTH($3) FROM VALUES(-5, 'hello', 'world')", "expect": {"rows": [[5,"HELLO",5]]}}
+    ]},
+    {"name": "positional-parameters-in-nested-functions", "steps": [
+      {"sql": "SELECT UPPER(LOWER($1)), ABS(ABS($2)) FROM VALUES('TeSt', -10)", "expect": {"rows": [["TEST",10]]}}
+    ]},
+    {"name": "positional-parameters-in-arithmetic-between-functions", "steps": [
+      {"sql": "SELECT ABS($1) + ABS($2) AS sum FROM VALUES(-3, -4)", "expect": {"rows": [[7]], "columns": ["SUM"]}}
+    ]},
+    {"name": "positional-parameters-under-cast", "steps": [
+      {"sql": "SELECT CAST($1 AS VARCHAR), CAST($2 AS INTEGER) FROM VALUES(123, '456')", "expect": {"rows": [["123",456]]}}
+    ]},
+    {"name": "positional-parameters-in-concatenation", "steps": [
+      {"sql": "SELECT $1 || ' ' || $2 AS full_name FROM VALUES('John', 'Doe')", "expect": {"rows": [["John Doe"]], "columns": ["FULL_NAME"]}}
+    ]},
+    {"name": "a-positional-parameter-as-a-case-subject", "steps": [
+      {"sql": "SELECT CASE WHEN $1 > 10 THEN 'High' ELSE 'Low' END FROM VALUES(5), (15)", "expect": {"rows": [["Low"],["High"]], "ordered": true}}
+    ]},
+    {"name": "positional-parameters-in-coalesce", "steps": [
+      {"sql": "SELECT COALESCE($1, $2, $3) FROM VALUES(NULL, NULL, 'default')", "expect": {"rows": [["default"]]}}
+    ]},
+    {"name": "a-positional-parameter-in-substring", "steps": [
+      {"sql": "SELECT SUBSTRING($1, 1, 3) FROM VALUES('Hello World')", "expect": {"rows": [["Hel"]]}}
+    ]},
+    {"name": "positional-parameters-mixed-with-functions-in-one-select-list", "steps": [
+      {"sql": "SELECT $1, ABS($2), $3 * 2, UPPER($4) FROM VALUES(10, -20, 5, 'test')", "expect": {"rows": [[10,20,10,"TEST"]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "suite": "ddl-search-optimization",
+  "description": "SEARCH OPTIMIZATION recorded and reported (no lookup structure, per the no-indexes scope rule): the three SHOW TABLES cells, DESCRIBE SEARCH OPTIMIZATION's expression list, ids handed out once and never reused, FULL_TEXT reading back with DEFAULT_ANALYZER, EQUALITY(*) covering VARIANT where the bare ADD skips it, drop by expression or by number, positioned refusals under live's IDX_SRC_TABLE alias, and the words staying usable as names. Converted 1:1 from ddl/SearchOptimizationTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "a-table-without-it-answers-no-expressions", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t", "expect": {"rowCount": 0}},
+      {"sql": "SHOW TABLES LIKE 'so_t'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"search_optimization\", \"search_optimization_progress\", \"search_optimization_bytes\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["OFF", "NULL", "NULL"]]}}
+    ]},
+    {"name": "dropping-when-there-is-none-is-silent", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t DROP SEARCH OPTIMIZATION"},
+      {"sql": "ALTER TABLE so_t DROP SEARCH OPTIMIZATION ON EQUALITY(id)"},
+      {"sql": "SHOW TABLES LIKE 'so_t'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"search_optimization\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OFF"}}
+    ]},
+    {"name": "one-method-turns-the-cells-on", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(id)"},
+      {"sql": "SHOW TABLES LIKE 'so_t'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"search_optimization\", \"search_optimization_progress\", \"search_optimization_bytes\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ON", "100", "0"]]}},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t",
+       "expect": {"rows": [["1", "EQUALITY", "ID", "NUMBER(38,0)", "true"]], "ordered": true}}
+    ]},
+    {"name": "full-text-reads-back-with-its-analyzer", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON FULL_TEXT(txt)"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t",
+       "expect": {"rows": [["1", "FULL_TEXT DEFAULT_ANALYZER", "TXT", "VARCHAR(16777216)", "true"]], "ordered": true}}
+    ]},
+    {"name": "the-star-form-covers-every-column-variant-included", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(*)"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t",
+       "expect": {"rows": [["1", "EQUALITY", "ID", "NUMBER(38,0)", "true"], ["2", "EQUALITY", "TXT", "VARCHAR(16777216)", "true"], ["3", "EQUALITY", "V", "VARIANT", "true"], ["4", "EQUALITY", "D", "DATE", "true"]], "ordered": true}}
+    ]},
+    {"name": "a-bare-add-skips-variant-columns", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t",
+       "expect": {"rows": [["1", "EQUALITY", "ID", "NUMBER(38,0)", "true"], ["2", "EQUALITY", "TXT", "VARCHAR(16777216)", "true"], ["3", "EQUALITY", "D", "DATE", "true"]], "ordered": true}}
+    ]},
+    {"name": "adding-the-same-expression-twice-adds-nothing", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(id)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(id)"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t",
+       "expect": {"rows": [["1", "EQUALITY", "ID", "NUMBER(38,0)", "true"]], "ordered": true}}
+    ]},
+    {"name": "several-methods-may-cover-one-column", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(txt)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON SUBSTRING(txt)"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t",
+       "expect": {"rows": [["1", "EQUALITY", "TXT", "VARCHAR(16777216)", "true"], ["2", "SUBSTRING", "TXT", "VARCHAR(16777216)", "true"]], "ordered": true}}
+    ]},
+    {"name": "dropping-one-leaves-the-other-numbers-alone", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(id)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON SUBSTRING(txt)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(d)"},
+      {"sql": "ALTER TABLE so_t DROP SEARCH OPTIMIZATION ON SUBSTRING(txt)"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t",
+       "expect": {"rows": [["1", "EQUALITY", "ID", "NUMBER(38,0)", "true"], ["3", "EQUALITY", "D", "DATE", "true"]], "ordered": true}}
+    ]},
+    {"name": "an-expression-may-be-dropped-by-its-number", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(id)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(txt)"},
+      {"sql": "ALTER TABLE so_t DROP SEARCH OPTIMIZATION ON 1"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t",
+       "expect": {"rows": [["2", "EQUALITY", "TXT", "VARCHAR(16777216)", "true"]], "ordered": true}}
+    ]},
+    {"name": "the-bare-drop-clears-everything", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(*)"},
+      {"sql": "ALTER TABLE so_t DROP SEARCH OPTIMIZATION"},
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON so_t", "expect": {"rowCount": 0}},
+      {"sql": "SHOW TABLES LIKE 'so_t'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"search_optimization\", \"search_optimization_progress\", \"search_optimization_bytes\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["OFF", "NULL", "NULL"]]}}
+    ]},
+    {"name": "dropping-an-expression-that-is-not-there-is-refused", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(id)"},
+      {"sql": "ALTER TABLE so_t DROP SEARCH OPTIMIZATION ON SUBSTRING(txt)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 55\nExpression SUBSTRING(SO_T.TXT) is not indexed by search optimization."}}}
+    ]},
+    {"name": "geo-over-another-type-is-refused", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON GEO(v)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 48\nExpression GEO(IDX_SRC_TABLE.V) cannot be used in search optimization."}}}
+    ]},
+    {"name": "an-unknown-column-is-refused-under-the-same-alias", "steps": [
+      {"sql": "CREATE TABLE so_t (id NUMBER, txt VARCHAR, v VARIANT, d DATE)"},
+      {"sql": "ALTER TABLE so_t ADD SEARCH OPTIMIZATION ON EQUALITY(no_such_c)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 53\ninvalid identifier 'IDX_SRC_TABLE.NO_SUCH_C'"}}}
+    ]},
+    {"name": "describing-a-missing-table-is-refused", "steps": [
+      {"sql": "DESCRIBE SEARCH OPTIMIZATION ON no_such_t",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized."}}}
+    ]},
+    {"name": "its-words-remain-usable-as-names", "steps": [
+      {"sql": "CREATE TABLE search (search NUMBER, optimization NUMBER, equality NUMBER)"},
+      {"sql": "INSERT INTO search VALUES (1, 2, 3)"},
+      {"sql": "SELECT search FROM search", "expect": {"value": "1"}}
+    ]}
+  ]
+}

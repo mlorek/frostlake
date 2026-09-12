@@ -16,6 +16,9 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.functions.CollationMatching;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.ArrayType;
 
@@ -54,8 +57,28 @@ public class Split extends TextArgumentFunction {
         return array.toString();
     }
 
+    /** Under a collation the text splits on every separator the collation matches. */
+    @Override
+    public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        if (collation == null || args.get(0) == null || args.get(1) == null) {
+            return evaluate(args);
+        }
+        final ArrayNode array = MAPPER.createArrayNode();
+        for (final String part : CollationMatching.splitUnder(collation, args.get(0).toString(),
+                args.get(1).toString())) {
+            array.add(part);
+        }
+        return array.toString();
+    }
+
     @Override
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /** A BINARY is no text here: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

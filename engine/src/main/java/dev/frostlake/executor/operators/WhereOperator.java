@@ -124,7 +124,8 @@ public class WhereOperator implements Operator {
             evaluator.setMultiTableContext(context.getAliasToTable(), context.getAllTables());
         }
         // Parse the predicate once, then evaluate the AST per row.
-        final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+        final Expression parsed = evaluator.withNarrowingCastEqualitiesAnswered(
+            ExpressionEvaluator.parse(whereExpression));
         evaluator.validatePredicate(parsed);
         final List<Row> filtered = new ArrayList<>();
 
@@ -150,6 +151,20 @@ public class WhereOperator implements Operator {
      * Alias-aware filtering for multi-table queries with JOINs.
      * Falls back to simple evaluation if alias resolution fails.
      */
+    /** The predicate, parsed, with the narrowing casts live answers without converting dropped. */
+    private Expression narrowedPredicate(final OperatorContext context) {
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            context.getTable(),
+            context.getFunctionRegistry(),
+            getCatalog(context),
+            context.getQueryExecutor()
+        );
+        if (context.getAliasToTable() != null && !context.getAliasToTable().isEmpty()) {
+            evaluator.setMultiTableContext(context.getAliasToTable(), context.getAllTables());
+        }
+        return evaluator.withNarrowingCastEqualitiesAnswered(ExpressionEvaluator.parse(whereExpression));
+    }
+
     /** One-shot predicate-type validation (Snowflake rejects VARCHAR/NUMBER-typed conditions). */
     private void validatePredicateOnce(final Expression parsed, final OperatorContext context) {
         final ExpressionEvaluator typeChecker = new ExpressionEvaluator(
@@ -166,7 +181,7 @@ public class WhereOperator implements Operator {
 
     private List<Row> filterWithAliases(final List<Row> rows, final OperatorContext context) {
         final List<Row> filtered = new ArrayList<>();
-        final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+        final Expression parsed = narrowedPredicate(context);
         validatePredicateOnce(parsed, context);
 
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
@@ -223,7 +238,7 @@ public class WhereOperator implements Operator {
         }
 
         final List<Row> filtered = new ArrayList<>();
-        final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+        final Expression parsed = narrowedPredicate(context);
         validatePredicateOnce(parsed, context);
 
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {

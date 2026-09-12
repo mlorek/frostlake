@@ -1,0 +1,70 @@
+{
+  "suite": "expr-datetime-arithmetic",
+  "description": "The + / - operators on DATE and TIMESTAMP values, matching live: DATE +- int shifts by days staying a DATE (commutative), TIMESTAMP +- int is rejected at compile time (use DATEADD), DATE - DATE is the signed integer day count, +- INTERVAL applies the unit with the keyword-unit spelling promoting DATE to TIMESTAMP for DAY-or-finer units (midnight) while MONTH/YEAR preserve the DATE, CURRENT_DATE arithmetic works in WHERE, NULL temporals propagate, non-date string arithmetic still errors and plain numeric arithmetic is unaffected. Interval renders pinned via SQL-side stringification. Converted 1:1 from expressions/DateTimeArithmeticOperatorTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "date-plus-integer-adds-days-staying-a-date", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT d + 1 FROM t", "expect": {"value": "2020-01-16"}},
+      {"sql": "SELECT d + 5 FROM t", "expect": {"value": "2020-01-20"}}
+    ]},
+    {"name": "date-minus-integer-subtracts-days", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT d - 7 FROM t", "expect": {"value": "2020-01-08"}}
+    ]},
+    {"name": "integer-plus-date-is-commutative", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT 5 + d FROM t", "expect": {"value": "2020-01-20"}}
+    ]},
+    {"name": "date-minus-date-is-integer-days", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT d - d2 FROM t", "expect": {"value": "5"}},
+      {"sql": "SELECT d2 - d FROM t", "expect": {"value": "-5"}}
+    ]},
+    {"name": "timestamp-plus-integer-is-rejected", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT ts + 1 FROM t", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}}
+    ]},
+    {"name": "date-plus-interval-promotes-to-timestamp", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT '<' || (d + INTERVAL '5' DAY) || '>' FROM t", "expect": {"value": "<2020-01-20 00:00:00.000>"}},
+      {"sql": "SELECT '<' || (d + INTERVAL '1' MONTH) || '>' FROM t", "expect": {"value": "<2020-02-15>"}},
+      {"sql": "SELECT '<' || (d + INTERVAL '1' YEAR) || '>' FROM t", "expect": {"value": "<2021-01-15>"}}
+    ]},
+    {"name": "date-plus-time-interval-promotes-to-timestamp", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT CONTAINS('<' || (d + INTERVAL '2' HOUR) || '>', '02:00') FROM t", "expect": {"value": "true"}}
+    ]},
+    {"name": "timestamp-plus-and-minus-interval-applies-the-unit", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT CONTAINS('<' || (ts + INTERVAL '2' HOUR) || '>', '12:30') FROM t", "expect": {"value": "true"}},
+      {"sql": "SELECT CONTAINS('<' || (ts - INTERVAL '30' MINUTE) || '>', '10:00') FROM t", "expect": {"value": "true"}}
+    ]},
+    {"name": "current-date-arithmetic-works-in-where", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2020-01-15', '2020-01-15 10:30:00', '2020-01-10')"},
+      {"sql": "SELECT COUNT(*) FROM t WHERE d > CURRENT_DATE - 100000", "expect": {"value": "1"}}
+    ]},
+    {"name": "null-temporal-arithmetic-yields-null", "steps": [
+      {"sql": "CREATE TABLE t (d DATE, ts TIMESTAMP, d2 DATE)"},
+      {"sql": "INSERT INTO t (d) VALUES (NULL)"},
+      {"sql": "SELECT d + 5 FROM t WHERE d IS NULL", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "non-date-string-arithmetic-still-errors", "steps": [
+      {"sql": "SELECT 'hello' + 5", "expect": {"error": {}}},
+      {"sql": "SELECT 'hello' - 'world'", "expect": {"error": {}}}
+    ]},
+    {"name": "plain-numeric-arithmetic-is-unaffected", "steps": [
+      {"sql": "SELECT 10 + 5", "expect": {"value": "15"}},
+      {"sql": "SELECT 10 - 7", "expect": {"value": "3"}}
+    ]}
+  ]
+}

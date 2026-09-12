@@ -1,0 +1,26 @@
+{
+  "suite": "functions-left-right",
+  "description": "LEFT(str, n) / RIGHT(str, n) - the leading and trailing substrings. The interesting part is PARSING rather than semantics: LEFT and RIGHT are also join keywords, so the function form must stay callable everywhere an expression is legal, including in the same query as a LEFT OUTER JOIN and inside a procedural assignment. Converted 1:1 from functions/LeftRightFunctionTest (now retired); the empty-string result is stringified so it cannot be confused with SQL NULL.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "left-and-right-return-the-edge-substrings", "steps": [
+      {"sql": "SELECT LEFT('hello', 3)", "expect": {"value": "hel"}},
+      {"sql": "SELECT RIGHT('hello', 3)", "expect": {"value": "llo"}},
+      {"sql": "SELECT LEFT('hello', 99)", "expect": {"value": "hello"}},
+      {"sql": "SELECT '<' || RIGHT('hello', 0) || '>'", "expect": {"value": "<>"}},
+      {"sql": "SELECT LEFT(NULL, 3)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "the-function-form-coexists-with-join-keywords", "steps": [
+      {"sql": "CREATE TABLE t (a VARCHAR)"},
+      {"sql": "CREATE TABLE u (a VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('x1')"},
+      {"sql": "INSERT INTO u VALUES ('x1')"},
+      {"sql": "SELECT LEFT(t.a, 1) FROM t LEFT OUTER JOIN u ON t.a = u.a", "expect": {"value": "x"}},
+      {"sql": "SELECT 1 WHERE LEFT('abc:2.3:a', 8) = 'abc:2.3:'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "it-works-in-a-procedural-assignment", "steps": [
+      {"sql": "CREATE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE x VARCHAR;\nBEGIN\n  x := LEFT('hello', 3) || RIGHT('hello', 2);\n  RETURN x;\nEND $$"},
+      {"sql": "CALL p()", "expect": {"value": "hello"}}
+    ]}
+  ]
+}

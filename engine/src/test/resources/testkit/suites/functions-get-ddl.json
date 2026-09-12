@@ -1,0 +1,45 @@
+{
+  "suite": "functions-get-ddl",
+  "description": "GET_DDL reconstructs an object's definition: a table's columns with their declared types, NOT NULL, DEFAULT and PRIMARY KEY; a view rendered the way live Snowflake always renders one, with a parenthesised output column list, one tab-indented column per line; a sequence in live's wording (\"start with N increment by N\"); and an identity column as \"autoincrement start 1 increment 1\". The reconstructed DDL must be both VALID - re-executable as written - and STABLE, reading back identical after the replay. An unsupported object type is refused. Converted 1:1 from functions/GetDdlTest (now retired); the Java class captured the DDL into a Java local and re-executed it, which the converted suite does with SET plus EXECUTE IMMEDIATE $var so the round trip stays inside SQL.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "table-ddl-carries-columns-types-and-the-primary-key", "steps": [
+      {"sql": "CREATE TABLE employees (\n  id INTEGER NOT NULL,\n  name VARCHAR(100),\n  salary NUMBER(10,2) DEFAULT 0,\n  PRIMARY KEY (id)\n)"},
+      {"sql": "SELECT STARTSWITH(GET_DDL('TABLE', 'employees'), 'create or replace TABLE ')", "expect": {"value": "true"}},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'employees'), 'VARCHAR(100)'), CONTAINS(GET_DDL('TABLE', 'employees'), 'NUMBER(10,2)'), CONTAINS(GET_DDL('TABLE', 'employees'), 'NOT NULL'), CONTAINS(GET_DDL('TABLE', 'employees'), 'DEFAULT 0'), CONTAINS(LOWER(GET_DDL('TABLE', 'employees')), 'primary key (id)')",
+       "expect": {"rows": [["true", "true", "true", "true", "true"]]}}
+    ]},
+    {"name": "table-ddl-round-trips", "steps": [
+      {"sql": "CREATE TABLE widgets (\n  id INTEGER NOT NULL,\n  label VARCHAR(50),\n  price NUMBER(12,4) DEFAULT 1,\n  PRIMARY KEY (id)\n)"},
+      {"sql": "SET d = (SELECT GET_DDL('TABLE', 'widgets'))"},
+      {"sql": "EXECUTE IMMEDIATE $d"},
+      {"sql": "SELECT GET_DDL('TABLE', 'widgets') = $d", "expect": {"value": "true"}}
+    ]},
+    {"name": "view-ddl-round-trips", "steps": [
+      {"sql": "CREATE TABLE base (x INTEGER, y INTEGER)"},
+      {"sql": "CREATE VIEW v AS SELECT x FROM base WHERE y > 0"},
+      {"sql": "SELECT GET_DDL('VIEW', 'v')",
+       "expect": {"value": "create or replace view V(\n\tX\n) as SELECT x FROM base WHERE y > 0;"}},
+      {"sql": "SET d = (SELECT GET_DDL('VIEW', 'v'))"},
+      {"sql": "EXECUTE IMMEDIATE $d"},
+      {"sql": "SELECT GET_DDL('VIEW', 'v') = $d", "expect": {"value": "true"}}
+    ]},
+    {"name": "sequence-ddl-round-trips", "steps": [
+      {"sql": "CREATE SEQUENCE seq1 START 5 INCREMENT 2"},
+      {"sql": "SELECT STARTSWITH(GET_DDL('SEQUENCE', 'seq1'), 'create or replace sequence '), CONTAINS(GET_DDL('SEQUENCE', 'seq1'), 'start with 5'), CONTAINS(GET_DDL('SEQUENCE', 'seq1'), 'increment by 2')",
+       "expect": {"rows": [["true", "true", "true"]]}},
+      {"sql": "SET d = (SELECT GET_DDL('SEQUENCE', 'seq1'))"},
+      {"sql": "EXECUTE IMMEDIATE $d"},
+      {"sql": "SELECT GET_DDL('SEQUENCE', 'seq1') = $d", "expect": {"value": "true"}}
+    ]},
+    {"name": "an-identity-column-renders-autoincrement", "steps": [
+      {"sql": "CREATE TABLE idt (id INTEGER IDENTITY(1,1), v VARCHAR(10))"},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'idt'), 'autoincrement start 1 increment 1')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "an-unsupported-object-type-is-refused", "steps": [
+      {"sql": "CREATE TABLE t (a INTEGER)"},
+      {"sql": "SELECT GET_DDL('PIPE', 't')", "expect": {"error": {}}}
+    ]}
+  ]
+}

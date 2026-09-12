@@ -981,20 +981,32 @@ def _frostlake_install_snowpark():
             return DataFrame(self._session, names=list(names), types=list(types), rows=rows)
 
         def _sql_source(self):
-            """SQL text producing this frame: the pending query, or — once rows are local — a
-            session-temporary table the rows are spilled into, so SQL-string operations
-            (select_expr, complex where) can always compose."""
+            """SQL text producing this frame: the pending query, or — once rows are local — an
+            inline VALUES derived table, so SQL-string operations (select_expr, complex where) can
+            always compose. Deliberately NOT a temporary table: a real account refuses
+            CREATE TEMPORARY TABLE inside an owner's-rights procedure ("Unsupported statement type
+            'temporary TABLE'"), and the frames spilled here are procedure-local row sets."""
             if self._pending_sql is not None:
                 return self._pending_sql
             self._materialize()
             _TMP_COUNTER[0] += 1
             name = '__shim_df_' + _builtins.str(_TMP_COUNTER[0])
-            self._session._execute(
-                'CREATE OR REPLACE TEMPORARY TABLE ' + name + ' ('
-                + ', '.join('%s %s' % (n, _spill_type([row[i] for row in self._rows]))
-                            for i, n in enumerate(self._names)) + ')')
-            DataFrameWriter(self).mode('append').save_as_table(name)
-            return 'SELECT * FROM ' + name
+            if not self._rows:
+                empty = ', '.join('CAST(NULL AS %s) AS %s' % (_spill_type([]), n)
+                                  for n in self._names)
+                return 'SELECT ' + empty + ' WHERE 1 = 0'
+            types = [_spill_type([row[i] for row in self._rows])
+                     for i in _builtins.range(_builtins.len(self._names))]
+            rendered = []
+            for r, row in _builtins.enumerate(self._rows):
+                cells = []
+                for i, value in _builtins.enumerate(row):
+                    lit = _sql_literal(value)
+                    # The FIRST row types the whole VALUES list, so it casts every cell.
+                    cells.append('CAST(%s AS %s)' % (lit, types[i]) if r == 0 else lit)
+                rendered.append('(' + ', '.join(cells) + ')')
+            return ('SELECT * FROM (VALUES ' + ', '.join(rendered) + ') AS ' + name
+                    + '(' + ', '.join(self._names) + ')')
 
         # -- metadata --
 

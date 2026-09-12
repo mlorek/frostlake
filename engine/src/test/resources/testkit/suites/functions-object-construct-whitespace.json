@@ -1,0 +1,66 @@
+{
+  "suite": "functions-object-construct-whitespace",
+  "description": "A string embedded into an OBJECT or ARRAY keeps its EXACT whitespace - a script or code value legitimately ends in a newline, and round-tripping it through OBJECT_CONSTRUCT must not trim it, which silently corrupted stored code blocks so they no longer compared equal to the source. Leading and trailing spaces survive ARRAY_CONSTRUCT the same way, and the whitespace is still there after extraction. A VARIANT JSON null embeds back as a real JSON null and the pair is KEPT, matching Snowflake's handling of a VARIANT-null value. Converted 1:1 from functions/ObjectConstructWhitespaceTest (now retired); the extraction round trip is stringified with '<' || x || '>' so a trailing newline is visible in the assertion, and the ARRAY results read through TO_JSON so the HTTP transport's comma spacing cannot reach them.",
+  "tags": [
+    "functions",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "a-trailing-newline-survives-object-construct",
+      "steps": [
+        {
+          "sql": "SELECT OBJECT_CONSTRUCT('code', 'line1\nline2\n') AS o",
+          "expect": {
+            "value": "{\"code\":\"line1\\nline2\\n\"}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "leading-and-trailing-spaces-survive-array-construct",
+      "steps": [
+        {
+          "sql": "SELECT TO_JSON(ARRAY_CONSTRUCT('  padded  ')) AS a",
+          "expect": {
+            "value": "[\"  padded  \"]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "whitespace-survives-an-extraction-round-trip",
+      "steps": [
+        {
+          "sql": "SELECT '<' || OBJECT_CONSTRUCT('v', 'ends with newline\n'):v::VARCHAR || '>' AS s",
+          "expect": {
+            "value": "<ends with newline\n>"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-present-json-null-re-embeds-as-a-json-null",
+      "steps": [
+        {
+          "sql": "SELECT OBJECT_CONSTRUCT_KEEP_NULL('a', PARSE_JSON('{\"x\":null}'):x) AS o",
+          "expect": {
+            "value": "{\"a\":null}"
+          }
+        },
+        {
+          "sql": "SELECT OBJECT_CONSTRUCT('a', PARSE_JSON('{\"x\":null}'):x) AS o",
+          "expect": {
+            "value": "{\"a\":null}"
+          }
+        },
+        {
+          "sql": "SELECT TO_JSON(ARRAY_CONSTRUCT(PARSE_JSON('{\"x\":null}'):x)) AS a",
+          "expect": {
+            "value": "[null]"
+          }
+        }
+      ]
+    }
+  ]
+}

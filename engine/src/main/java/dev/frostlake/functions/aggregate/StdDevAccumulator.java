@@ -17,16 +17,37 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
-import java.util.ArrayList;
-import java.util.List;
 
 /** Accumulator for {@link StdDev}. */
-public class StdDevAccumulator implements AggregateFunction.Accumulator {
-    final List<Double> values = new ArrayList<>();
+public class StdDevAccumulator
+        implements AggregateFunction.Accumulator, ApproximateAwareAccumulator {
+    private final WelfordMoments moments = new WelfordMoments();
+    private final SquaredSumMoments floatMoments = new SquaredSumMoments();
+    private int maxScale;
+    private boolean approximate;
+
+    /**
+     * The argument's DECLARED type, which the values alone cannot say: a FLOAT column is stored
+     * exactly here, so its 2 and a NUMBER(1,0)'s 2 arrive as the same object and only this flag
+     * separates them. Without it a FLOAT input was scaled as an exact number — live's 2.333333333
+     * came back 2.333333.
+     *
+     * @param approximate whether the aggregated expression is declared FLOAT / DOUBLE / REAL
+     */
+    @Override
+    public void setApproximateArgument(final boolean approximate) {
+        this.approximate = this.approximate || approximate;
+    }
 
     @Override
     public void accumulate(final Object value) {
-        if (value != null) values.add(((Number) value).doubleValue());
+        if (value != null) {
+            final double number = NumericAggregateInput.asDouble(value);
+            moments.add(number);
+            floatMoments.add(number);
+            maxScale = Math.max(maxScale, AggregateNumerics.scaleOfInput(value));
+            approximate = approximate || AggregateNumerics.isApproximateInput(value);
+        }
     }
 
     @Override
@@ -34,21 +55,27 @@ public class StdDevAccumulator implements AggregateFunction.Accumulator {
         // STDDEV and STDDEV_SAMP are SAMPLE statistics (live: STDDEV is an alias of
         // STDDEV_SAMP): denominator n-1, and fewer than two rows has no sample spread — NULL.
         // The population variant lives in StdDevPop, not here.
-        if (values.size() < 2) return null;
-        double sum = 0.0;
-        for (final double v : values) sum += v;
-        final double mean = sum / values.size();
-        double varianceSum = 0.0;
-        for (final double v : values) varianceSum += Math.pow(v - mean, 2);
-        final double variance = varianceSum / (values.size() - 1);
-        return Math.sqrt(variance);
+        if (moments.count() < 2) return null;
+        // A FLOAT input is read through the account's sums, an exact one through the running mean.
+        final double variance = approximate ? floatMoments.sampleVariance() : moments.sampleVariance();
+        // The ROOT OF THE ROUNDED variance, not of the raw one — see rootOfDeclaredVariance.
+        return AggregateNumerics.rootOfDeclaredVariance(variance, maxScale, approximate);
     }
 
     @Override
-    public void reset() { values.clear(); }
+    public void reset() {
+        moments.reset();
+        floatMoments.reset();
+        maxScale = 0;
+        approximate = false;
+    }
 
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
-        values.addAll(((StdDevAccumulator) other).values);
+        final StdDevAccumulator o = (StdDevAccumulator) other;
+        moments.merge(o.moments);
+        floatMoments.merge(o.floatMoments);
+        maxScale = Math.max(maxScale, o.maxScale);
+        approximate = approximate || o.approximate;
     }
 }

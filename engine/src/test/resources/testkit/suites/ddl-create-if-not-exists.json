@@ -1,0 +1,101 @@
+{
+  "suite": "ddl-create-if-not-exists",
+  "description": "CREATE ... IF NOT EXISTS across object kinds (database, schema, table, view, function, procedure, task, stream, warehouse, stage, user, role): the second create succeeds silently, the plain create refuses where the Java asserted it, idempotent setup scripts run twice, and IF NOT EXISTS composes with DROP IF EXISTS. Converted 1:1 from ddl/CreateIfNotExistsTest (now retired; it ran over JDBC but was pure SQL).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "create-database-if-not-exists", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS test_create_db"},
+      {"sql": "CREATE DATABASE IF NOT EXISTS test_create_db"},
+      {"sql": "DROP DATABASE test_create_db"}
+    ]},
+    {"name": "create-schema-if-not-exists", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS test_create_schema"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS test_create_schema"},
+      {"sql": "DROP SCHEMA test_create_schema"}
+    ]},
+    {"name": "create-table-if-not-exists", "steps": [
+      {"sql": "CREATE TABLE IF NOT EXISTS test_create_table (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE IF NOT EXISTS test_create_table (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE test_create_table (id INTEGER, name VARCHAR)", "expect": {"error": {}}},
+      {"sql": "DROP TABLE test_create_table"}
+    ]},
+    {"name": "create-view-if-not-exists", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE VIEW IF NOT EXISTS test_create_view AS SELECT * FROM test_table"},
+      {"sql": "CREATE VIEW IF NOT EXISTS test_create_view AS SELECT * FROM test_table"},
+      {"sql": "CREATE VIEW test_create_view AS SELECT * FROM test_table", "expect": {"error": {}}},
+      {"sql": "DROP VIEW test_create_view"}
+    ]},
+    {"name": "create-function-if-not-exists", "steps": [
+      {"sql": "CREATE FUNCTION IF NOT EXISTS test_create_func(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "CREATE FUNCTION IF NOT EXISTS test_create_func(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "CREATE FUNCTION test_create_func(x INTEGER) RETURNS INTEGER AS 'x + 1'", "expect": {"error": {}}},
+      {"sql": "DROP FUNCTION test_create_func(INTEGER)"}
+    ]},
+    {"name": "create-procedure-if-not-exists", "steps": [
+      {"sql": "CREATE PROCEDURE IF NOT EXISTS test_create_proc(x INTEGER) RETURNS INTEGER AS $$BEGIN RETURN x + 1; END;$$"},
+      {"sql": "CREATE PROCEDURE IF NOT EXISTS test_create_proc(x INTEGER) RETURNS INTEGER AS $$BEGIN RETURN x + 1; END;$$"},
+      {"sql": "CREATE PROCEDURE test_create_proc(x INTEGER) RETURNS INTEGER AS $$BEGIN RETURN x + 1; END;$$", "expect": {"error": {}}},
+      {"sql": "DROP PROCEDURE test_create_proc(INTEGER)"}
+    ]},
+    {"name": "create-task-if-not-exists", "steps": [
+      {"sql": "CREATE TASK IF NOT EXISTS test_create_task\nWAREHOUSE = 'compute_wh'\nSCHEDULE = '60 MINUTES'\nAS SELECT 1"},
+      {"sql": "CREATE TASK IF NOT EXISTS test_create_task\nWAREHOUSE = 'compute_wh'\nSCHEDULE = '60 MINUTES'\nAS SELECT 1"},
+      {"sql": "CREATE TASK test_create_task\nWAREHOUSE = 'compute_wh'\nSCHEDULE = '60 MINUTES'\nAS SELECT 1", "expect": {"error": {}}},
+      {"sql": "DROP TASK test_create_task"}
+    ]},
+    {"name": "create-stream-if-not-exists", "steps": [
+      {"sql": "CREATE TABLE test_stream_table (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM IF NOT EXISTS test_create_stream ON TABLE test_stream_table"},
+      {"sql": "CREATE STREAM IF NOT EXISTS test_create_stream ON TABLE test_stream_table"},
+      {"sql": "CREATE STREAM test_create_stream ON TABLE test_stream_table", "expect": {"error": {}}},
+      {"sql": "DROP STREAM test_create_stream"}
+    ]},
+    {"name": "create-warehouse-if-not-exists", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS test_create_wh"},
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS test_create_wh"},
+      {"sql": "DROP WAREHOUSE test_create_wh"}
+    ]},
+    {"name": "create-stage-if-not-exists", "steps": [
+      {"sql": "CREATE STAGE IF NOT EXISTS test_create_stage URL = 's3://bucket/path'"},
+      {"sql": "CREATE STAGE IF NOT EXISTS test_create_stage URL = 's3://bucket/path'"},
+      {"sql": "CREATE STAGE test_create_stage URL = 's3://bucket/path'", "expect": {"error": {}}},
+      {"sql": "DROP STAGE test_create_stage"}
+    ]},
+    {"name": "create-user-if-not-exists", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS test_create_user"},
+      {"sql": "CREATE USER IF NOT EXISTS test_create_user"},
+      {"sql": "DROP USER test_create_user"}
+    ]},
+    {"name": "create-role-if-not-exists", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS test_create_role"},
+      {"sql": "CREATE ROLE IF NOT EXISTS test_create_role"},
+      {"sql": "DROP ROLE test_create_role"}
+    ]},
+    {"name": "idempotent-setup", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS app_db"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS app_db.app_schema"},
+      {"sql": "CREATE TABLE IF NOT EXISTS users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE VIEW IF NOT EXISTS active_users AS SELECT * FROM users"},
+      {"sql": "CREATE DATABASE IF NOT EXISTS app_db"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS app_db.app_schema"},
+      {"sql": "CREATE TABLE IF NOT EXISTS users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE VIEW IF NOT EXISTS active_users AS SELECT * FROM users"},
+      {"sql": "DROP VIEW active_users"},
+      {"sql": "DROP TABLE users"},
+      {"sql": "DROP SCHEMA app_db.app_schema"},
+      {"sql": "DROP DATABASE app_db"}
+    ]},
+    {"name": "create-and-drop-with-if-clauses", "steps": [
+      {"sql": "CREATE TABLE IF NOT EXISTS test_table (id INTEGER)"},
+      {"sql": "DROP TABLE IF EXISTS test_table"},
+      {"sql": "CREATE TABLE IF NOT EXISTS test_table (id INTEGER)"},
+      {"sql": "SELECT COUNT(*) as cnt FROM test_table", "expect": {"value": "0"}},
+      {"sql": "DROP TABLE IF EXISTS test_table"},
+      {"sql": "DROP TABLE IF EXISTS test_table"},
+      {"sql": "CREATE TABLE IF NOT EXISTS test_table (id INTEGER)"},
+      {"sql": "CREATE TABLE IF NOT EXISTS test_table (id INTEGER)"},
+      {"sql": "DROP TABLE test_table"}
+    ]}
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "suite": "query-super-group-doc-examples",
+  "description": "The three super-group constructs run as Snowflake's OWN DOCUMENTATION writes them - the fixtures and queries come from the CUBE, ROLLUP, GROUPING SETS, GROUPING and GROUPING_ID pages, and the expected rows are the ones those pages print. Every case was also run against a live account and agrees cell for cell. ROLLUP totals each PREFIX of its key list and then the grand total; CUBE adds every other combination including city totals across states; a key may be written as a column, a SELECT alias, an ordinal or an expression; and a key REPEATED in a CUBE repeats its rows rather than folding the duplicate sets together. Two bare grouping sets group by each key SEPARATELY while one parenthesised set groups by the PAIR, and a grouping set of () beside a plain key adds that key's own totals. The NULL ambiguity these constructs create is pinned directly: a super-aggregate row puts NULL in the columns it is not grouped by, and that NULL is INDISTINGUISHABLE from a real NULL in the data - the nurses fixture carries both at once and GROUPING() is the only thing that separates them. GROUPING over several columns is a BITMASK, most significant bit first; GROUPING_ID answers the same numbers and is 0 for every row of a plain GROUP BY; HAVING can filter ON the grouping level. And CUBE and ROLLUP do NOT nest - inside another super-group they are read as unknown functions. Converted 1:1 from query/SuperGroupDocExamplesTest (now retired); where a documented query's ORDER BY leaves rows TIED the tie order is not defined by either engine, so those cases are compared as unordered sets exactly as the Java did, and the rest keep their exact order.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "rollup-matches-the-documented-table", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE products (product_ID INTEGER, wholesale_price REAL)"},
+      {"sql": "INSERT INTO products (product_ID, wholesale_price) VALUES (1, 1.00), (2, 2.00)"},
+      {"sql": "CREATE OR REPLACE TABLE sales (product_ID INTEGER, retail_price REAL, quantity INTEGER, city VARCHAR, state VARCHAR)"},
+      {"sql": "INSERT INTO sales (product_id, retail_price, quantity, city, state) VALUES (1, 2.00, 1, 'SF', 'CA'), (1, 2.00, 2, 'SJ', 'CA'), (2, 5.00, 4, 'SF', 'CA'), (2, 5.00, 8, 'SJ', 'CA'), (2, 5.00, 16, 'Miami', 'FL'), (2, 5.00, 32, 'Orlando', 'FL'), (2, 5.00, 64, 'SJ', 'PR')"},
+      {"sql": "SELECT state, city, SUM((s.retail_price - p.wholesale_price) * s.quantity) AS profit FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY ROLLUP (state, city) ORDER BY state, city NULLS LAST",
+       "expect": {"rows": [["CA","SF",13],["CA","SJ",26],["CA",null,39],["FL","Miami",48],["FL","Orlando",96],["FL",null,144],["PR","SJ",192],["PR",null,192],[null,null,375]], "ordered": true}}
+    ]},
+    {"name": "cube-matches-the-documented-table", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE products (product_ID INTEGER, wholesale_price REAL)"},
+      {"sql": "INSERT INTO products (product_ID, wholesale_price) VALUES (1, 1.00), (2, 2.00)"},
+      {"sql": "CREATE OR REPLACE TABLE sales (product_ID INTEGER, retail_price REAL, quantity INTEGER, city VARCHAR, state VARCHAR)"},
+      {"sql": "INSERT INTO sales (product_id, retail_price, quantity, city, state) VALUES (1, 2.00, 1, 'SF', 'CA'), (1, 2.00, 2, 'SJ', 'CA'), (2, 5.00, 4, 'SF', 'CA'), (2, 5.00, 8, 'SJ', 'CA'), (2, 5.00, 16, 'Miami', 'FL'), (2, 5.00, 32, 'Orlando', 'FL'), (2, 5.00, 64, 'SJ', 'PR')"},
+      {"sql": "SELECT state, city, SUM((s.retail_price - p.wholesale_price) * s.quantity) AS profit FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY CUBE (state, city) ORDER BY state, city NULLS LAST",
+       "expect": {"rows": [["CA","SF",13],["CA","SJ",26],["CA",null,39],["FL","Miami",48],["FL","Orlando",96],["FL",null,144],["PR","SJ",192],["PR",null,192],[null,"Miami",48],[null,"Orlando",96],[null,"SF",13],[null,"SJ",218],[null,null,375]], "ordered": true}}
+    ]},
+    {"name": "a-key-may-be-a-column-an-alias-an-ordinal-or-an-expression", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE products (product_ID INTEGER, wholesale_price REAL)"},
+      {"sql": "INSERT INTO products (product_ID, wholesale_price) VALUES (1, 1.00), (2, 2.00)"},
+      {"sql": "CREATE OR REPLACE TABLE sales (product_ID INTEGER, retail_price REAL, quantity INTEGER, city VARCHAR, state VARCHAR)"},
+      {"sql": "INSERT INTO sales (product_id, retail_price, quantity, city, state) VALUES (1, 2.00, 1, 'SF', 'CA'), (1, 2.00, 2, 'SJ', 'CA'), (2, 5.00, 4, 'SF', 'CA'), (2, 5.00, 8, 'SJ', 'CA'), (2, 5.00, 16, 'Miami', 'FL'), (2, 5.00, 32, 'Orlando', 'FL'), (2, 5.00, 64, 'SJ', 'PR')"},
+      {"sql": "SELECT state, SUM((s.retail_price - p.wholesale_price) * s.quantity) AS profit FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY ROLLUP (state) ORDER BY state NULLS LAST", "expect": {"rows": [["CA",39],["FL",144],["PR",192],[null,375]], "ordered": true}},
+      {"sql": "SELECT state, SUM((s.retail_price - p.wholesale_price) * s.quantity) AS profit FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY ROLLUP (1) ORDER BY 1 NULLS LAST", "expect": {"rows": [["CA",39],["FL",144],["PR",192],[null,375]], "ordered": true}},
+      {"sql": "SELECT state AS st, SUM((s.retail_price - p.wholesale_price) * s.quantity) AS profit FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY ROLLUP (st) ORDER BY st NULLS LAST",
+       "expect": {"rows": [["CA",39],["FL",144],["PR",192],[null,375]], "ordered": true}},
+      {"sql": "SELECT SUBSTR(state, 1, 1) AS s1, SUM((s.retail_price - p.wholesale_price) * s.quantity) AS profit FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY ROLLUP (SUBSTR(state, 1, 1)) ORDER BY s1 NULLS LAST",
+       "expect": {"rows": [["C",39],["F",144],["P",192],[null,375]], "ordered": true}}
+    ]},
+    {"name": "a-repeated-cube-key-repeats-the-rows", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE products (product_ID INTEGER, wholesale_price REAL)"},
+      {"sql": "INSERT INTO products (product_ID, wholesale_price) VALUES (1, 1.00), (2, 2.00)"},
+      {"sql": "CREATE OR REPLACE TABLE sales (product_ID INTEGER, retail_price REAL, quantity INTEGER, city VARCHAR, state VARCHAR)"},
+      {"sql": "INSERT INTO sales (product_id, retail_price, quantity, city, state) VALUES (1, 2.00, 1, 'SF', 'CA'), (1, 2.00, 2, 'SJ', 'CA'), (2, 5.00, 4, 'SF', 'CA'), (2, 5.00, 8, 'SJ', 'CA'), (2, 5.00, 16, 'Miami', 'FL'), (2, 5.00, 32, 'Orlando', 'FL'), (2, 5.00, 64, 'SJ', 'PR')"},
+      {"sql": "SELECT state, SUM((s.retail_price - p.wholesale_price) * s.quantity) AS profit FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY CUBE (state, state) ORDER BY state NULLS LAST",
+       "expect": {"rows": [["CA",39],["CA",39],["CA",39],["FL",144],["FL",144],["FL",144],["PR",192],["PR",192],["PR",192],[null,375]], "ordered": true}}
+    ]},
+    {"name": "grouping-sets-group-separately-or-together", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE nurses (ID INTEGER, full_name VARCHAR, medical_license VARCHAR, radio_license VARCHAR)"},
+      {"sql": "INSERT INTO nurses (ID, full_name, medical_license, radio_license) VALUES (201, 'Thomas Leonard Vicente', 'LVN', 'Technician'), (202, 'Tamara Lolita VanZant', 'LVN', 'Technician'), (341, 'Georgeann Linda Vente', 'LVN', 'General'), (471, 'Andrea Renee Nouveau', 'RN', 'Amateur Extra')"},
+      {"sql": "SELECT COUNT(*), medical_license, radio_license FROM nurses GROUP BY GROUPING SETS (medical_license, radio_license) ORDER BY 3 DESC NULLS FIRST",
+       "expect": {"rows": [[1,null,"Amateur Extra"],[1,null,"General"],[1,"RN",null],[2,null,"Technician"],[3,"LVN",null]]}},
+      {"sql": "SELECT COUNT(*), medical_license, radio_license FROM nurses GROUP BY GROUPING SETS ((medical_license, radio_license)) ORDER BY 3 DESC NULLS FIRST",
+       "expect": {"rows": [[2,"LVN","Technician"],[1,"LVN","General"],[1,"RN","Amateur Extra"]], "ordered": true}}
+    ]},
+    {"name": "a-real-null-sits-beside-a-super-group-null", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE nurses (ID INTEGER, full_name VARCHAR, medical_license VARCHAR, radio_license VARCHAR)"},
+      {"sql": "INSERT INTO nurses (ID, full_name, medical_license, radio_license) VALUES (201, 'Thomas Leonard Vicente', 'LVN', 'Technician'), (202, 'Tamara Lolita VanZant', 'LVN', 'Technician'), (341, 'Georgeann Linda Vente', 'LVN', 'General'), (471, 'Andrea Renee Nouveau', 'RN', 'Amateur Extra')"},
+      {"sql": "INSERT INTO nurses (ID, full_name, medical_license, radio_license) VALUES (101, 'Lily Vine', 'LVN', NULL), (102, 'Larry Vancouver', 'LVN', NULL), (172, 'Rhonda Nova', 'RN', NULL)"},
+      {"sql": "SELECT COUNT(*), medical_license, radio_license FROM nurses GROUP BY GROUPING SETS (medical_license, radio_license) ORDER BY 3 DESC NULLS FIRST",
+       "expect": {"rows": [[1,null,"Amateur Extra"],[1,null,"General"],[2,null,"Technician"],[2,"RN",null],[3,null,null],[5,"LVN",null]]}},
+      {"sql": "SELECT COUNT(*), medical_license, radio_license, GROUPING(medical_license) AS grp_medical, GROUPING(radio_license) AS grp_radio FROM nurses GROUP BY GROUPING SETS (medical_license, radio_license) ORDER BY 4, 5, 2 NULLS FIRST, 3 NULLS FIRST",
+       "expect": {"rows": [[5,"LVN",null,0,1],[2,"RN",null,0,1],[3,null,null,1,0],[1,null,"Amateur Extra",1,0],[1,null,"General",1,0],[2,null,"Technician",1,0]], "ordered": true}}
+    ]},
+    {"name": "an-empty-grouping-set-adds-the-keys-own-totals", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE nurses (ID INTEGER, full_name VARCHAR, medical_license VARCHAR, radio_license VARCHAR)"},
+      {"sql": "INSERT INTO nurses (ID, full_name, medical_license, radio_license) VALUES (201, 'Thomas Leonard Vicente', 'LVN', 'Technician'), (202, 'Tamara Lolita VanZant', 'LVN', 'Technician'), (341, 'Georgeann Linda Vente', 'LVN', 'General'), (471, 'Andrea Renee Nouveau', 'RN', 'Amateur Extra')"},
+      {"sql": "INSERT INTO nurses (ID, full_name, medical_license, radio_license) VALUES (101, 'Lily Vine', 'LVN', NULL), (102, 'Larry Vancouver', 'LVN', NULL), (172, 'Rhonda Nova', 'RN', NULL)"},
+      {"sql": "SELECT COUNT(*), medical_license, radio_license FROM nurses GROUP BY medical_license, GROUPING SETS (radio_license, ()) ORDER BY 3 DESC NULLS FIRST",
+       "expect": {"rows": [[1,"LVN","General"],[1,"RN","Amateur Extra"],[1,"RN",null],[2,"LVN",null],[2,"LVN","Technician"],[2,"RN",null],[5,"LVN",null]]}},
+      {"sql": "SELECT COUNT(*), medical_license, radio_license FROM nurses GROUP BY medical_license, radio_license ORDER BY 3 DESC NULLS FIRST",
+       "expect": {"rows": [[1,"LVN","General"],[1,"RN","Amateur Extra"],[1,"RN",null],[2,"LVN",null],[2,"LVN","Technician"]]}}
+    ]},
+    {"name": "grouping-returns-a-bitmask-over-several-columns", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE aggr2 (col_x int, col_y int, col_z int)"},
+      {"sql": "INSERT INTO aggr2 VALUES (1, 2, 1), (1, 2, 3)"},
+      {"sql": "INSERT INTO aggr2 VALUES (2, 1, 10), (2, 2, 11), (2, 2, 3)"},
+      {"sql": "SELECT col_x, col_y, sum(col_z), grouping(col_x), grouping(col_y), grouping(col_x, col_y) FROM aggr2 GROUP BY GROUPING SETS ((col_x), (col_y), ()) ORDER BY 1, 2",
+       "expect": {"rows": [[1,null,4,0,1,1],[2,null,24,0,1,1],[null,1,10,1,0,2],[null,2,18,1,0,2],[null,null,28,1,1,3]], "ordered": true}}
+    ]},
+    {"name": "grouping-id-matches-grouping-and-is-zero-without-super-groups", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE aggr2 (col_x int, col_y int, col_z int)"},
+      {"sql": "INSERT INTO aggr2 VALUES (1, 2, 1), (1, 2, 3)"},
+      {"sql": "INSERT INTO aggr2 VALUES (2, 1, 10), (2, 2, 11), (2, 2, 3)"},
+      {"sql": "SELECT col_x, sum(col_z), GROUPING_ID(col_x) FROM aggr2 GROUP BY col_x ORDER BY col_x",
+       "expect": {"rows": [[1,4,0],[2,24,0]], "ordered": true}},
+      {"sql": "SELECT col_x, col_y, sum(col_z), GROUPING_ID(col_x), GROUPING_ID(col_y), GROUPING_ID(col_x, col_y) FROM aggr2 GROUP BY GROUPING SETS ((col_x), (col_y), ()) ORDER BY col_x ASC, col_y DESC",
+       "expect": {"rows": [[1,null,4,0,1,1],[2,null,24,0,1,1],[null,null,28,1,1,3],[null,2,18,1,0,2],[null,1,10,1,0,2]], "ordered": true}}
+    ]},
+    {"name": "having-can-filter-on-the-grouping-level", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE aggr2 (col_x int, col_y int, col_z int)"},
+      {"sql": "INSERT INTO aggr2 VALUES (1, 2, 1), (1, 2, 3)"},
+      {"sql": "INSERT INTO aggr2 VALUES (2, 1, 10), (2, 2, 11), (2, 2, 3)"},
+      {"sql": "SELECT col_x, col_y, sum(col_z) FROM aggr2 GROUP BY GROUPING SETS ((col_x), (col_y), ()) HAVING GROUPING(col_x) = 1 ORDER BY 1, 2",
+       "expect": {"rows": [[null,1,10],[null,2,18],[null,null,28]], "ordered": true}}
+    ]},
+    {"name": "nested-super-groups-are-unknown-functions", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE products (product_ID INTEGER, wholesale_price REAL)"},
+      {"sql": "INSERT INTO products (product_ID, wholesale_price) VALUES (1, 1.00), (2, 2.00)"},
+      {"sql": "CREATE OR REPLACE TABLE sales (product_ID INTEGER, retail_price REAL, quantity INTEGER, city VARCHAR, state VARCHAR)"},
+      {"sql": "INSERT INTO sales (product_id, retail_price, quantity, city, state) VALUES (1, 2.00, 1, 'SF', 'CA'), (1, 2.00, 2, 'SJ', 'CA'), (2, 5.00, 4, 'SF', 'CA'), (2, 5.00, 8, 'SJ', 'CA'), (2, 5.00, 16, 'Miami', 'FL'), (2, 5.00, 32, 'Orlando', 'FL'), (2, 5.00, 64, 'SJ', 'PR')"},
+      {"sql": "SELECT SUM(s.quantity) AS q FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY GROUPING SETS (CUBE (state, city))",
+       "expect": {"error": {"messageContains": "Unknown function CUBE."}}},
+      {"sql": "SELECT SUM(s.quantity) AS q FROM products AS p, sales AS s WHERE s.product_ID = p.product_ID GROUP BY GROUPING SETS ((state), ROLLUP (city))",
+       "expect": {"error": {"messageContains": "Unknown function ROLLUP."}}}
+    ]}
+  ]
+}

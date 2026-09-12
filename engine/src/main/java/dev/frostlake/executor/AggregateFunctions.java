@@ -18,13 +18,12 @@ package dev.frostlake.executor;
 
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
+import dev.frostlake.functions.aggregate.ApproximateAwareAccumulator;
+import dev.frostlake.functions.aggregate.CoercedNumericArgumentAccumulator;
 import dev.frostlake.functions.aggregate.PercentileContAccumulator;
 import dev.frostlake.functions.aggregate.PercentileDiscAccumulator;
-import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
-import dev.frostlake.storage.Row;
 import dev.frostlake.values.VariantValue;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -38,13 +37,8 @@ public final class AggregateFunctions {
     /** Numeric comparison with the integral / same-type BigDecimal fast paths — MIN/MAX call this
      *  per element, so the toString/BigDecimal bridge is reserved for Double/Float and mixed pairs. */
     private static int compareNumbers(final Number a, final Number b) {
-        if (isIntegral(a) && isIntegral(b)) {
-            return Long.compare(a.longValue(), b.longValue());
-        }
-        if (a instanceof BigDecimal && b instanceof BigDecimal) {
-            return ((BigDecimal) a).compareTo((BigDecimal) b);
-        }
-        return new BigDecimal(a.toString()).compareTo(new BigDecimal(b.toString()));
+        // The extreme's comparator: -0.0 ties with 0.0, so the first seen is kept, as live does.
+        return ValueComparisons.compareForExtreme(a, b);
     }
 
     private static boolean isIntegral(final Object value) {
@@ -83,13 +77,18 @@ public final class AggregateFunctions {
      *
      * @param funcCtx the PERCENTILE_CONT / PERCENTILE_DISC call's parse tree, carrying the function
      *                name, the fraction argument and the WITHIN GROUP ORDER BY
-     * @param groupRows the rows of the current group, whose ORDER-BY-column values feed the accumulator
-     * @param table the table the group rows belong to, used to resolve the ORDER BY column to an index
+     * @param orderedValues the WITHIN GROUP key's value for each row of the group, already EVALUATED —
+     *                      the key is an expression like any other ({@code n * 2}, a CAST, a CASE, a
+     *                      qualified name), and resolving it by column NAME fed the accumulator nulls
+     *                      for everything but a bare unqualified column
+     * @param approximateKey whether the key's declared type is FLOAT / DOUBLE / REAL
+     * @param coercedKey whether that key is declared VARCHAR or VARIANT, converted value by value
      * @return the continuous (interpolated) or discrete percentile of the group's values, or null for
      *         an empty group
      */
     public static Object evaluatePercentile(final FrostlakeParser.FunctionCallExprContext funcCtx,
-                                      final List<Row> groupRows, final Table table) {
+                                      final List<Object> orderedValues, final boolean approximateKey,
+                                      final boolean coercedKey) {
         final FrostlakeParser.OrderByClauseContext withinGroup = withinGroupOrderBy(funcCtx);
         if (withinGroup == null || withinGroup.orderItem().isEmpty()) {
             throw new RuntimeException(
@@ -105,13 +104,17 @@ public final class AggregateFunctions {
         } catch (final NumberFormatException e) {
             throw new RuntimeException("PERCENTILE argument must be a numeric literal in [0, 1]");
         }
-        final int colIndex = ValueComparisons.getColumnIndex(table,
-            ParseTreeText.getOriginalText(withinGroup.orderItem(0).expression()));
         final AggregateFunction.Accumulator acc = "PERCENTILE_CONT".equalsIgnoreCase(funcCtx.functionName().getText())
             ? new PercentileContAccumulator(percentile)
             : new PercentileDiscAccumulator(percentile);
-        for (final Row r : groupRows) {
-            acc.accumulate(r.getValue(colIndex));
+        if (acc instanceof ApproximateAwareAccumulator) {
+            ((ApproximateAwareAccumulator) acc).setApproximateArgument(approximateKey);
+        }
+        if (acc instanceof CoercedNumericArgumentAccumulator) {
+            ((CoercedNumericArgumentAccumulator) acc).setCoercedNumericArgument(coercedKey);
+        }
+        for (final Object v : orderedValues) {
+            acc.accumulate(v);
         }
         return acc.getResult();
     }

@@ -1,0 +1,79 @@
+{
+  "suite": "functions-vector-value-semantics",
+  "description": "The VECTOR VALUE itself, as the whole function family depends on it: the cast's conversion rules and errors, 32-bit element widths, display text, column storage round-trip, and the ordinary SQL operations. Every expectation is measured on a real Snowflake account. A FLOAT vector displays each element with six decimals, [1.000000,2.000000,3.000000], where the INT form is [1,2,3], and pi lands at float32 width, reading 3.141593. INT elements are 32-bit and WRAP: 2147483648 becomes -2147483648 and 2^53+1 becomes 1, the low 32 bits. The cast rejects a wrong-length array, non-real elements and fractional elements for an INT vector, each with its own sentence, while whole-valued decimals DO convert. A vector casts only to its OWN type: the identity cast is the unchanged vector and any other element type or dimension is 'Invalid argument types for function CAST'. TYPEOF reports the bare family name VECTOR. A stored column round-trips and every function still works over it. Vectors compare, GROUP BY, DISTINCT and ORDER BY, and flow through CASE, COALESCE, UNION and UDF bodies - but a vector EXPRESSION is refused in a VALUES clause, exactly as for the semi-structured types, so INSERT ... SELECT is the supported route. Converted 1:1 from functions/vector/VectorValueSemanticsTest (now retired); every vector is read as a bare cell, as recorded in functions-vector-avg - TO_VARCHAR over a VECTOR is refused, a UDF's VECTOR result included - and the Java's assertRejected becomes the exact live message in all nine cases.",
+  "tags": ["functions", "vector", "converted"],
+  "tests": [
+    {"name": "the-cast-renders-float32-and-int-elements", "steps": [
+      {"sql": "SELECT [1,2,3]::VECTOR(FLOAT,3)", "expect": {"value": "[1.000000,2.000000,3.000000]"}},
+      {"sql": "SELECT [1,2,3]::VECTOR(INT,3)", "expect": {"value": "[1,2,3]"}},
+      {"sql": "SELECT [1.1,2.2,3.3]::VECTOR(FLOAT,3)", "expect": {"value": "[1.100000,2.200000,3.300000]"}},
+      {"sql": "SELECT [3.14159265358979,0,0]::VECTOR(FLOAT,3)", "expect": {"value": "[3.141593,0.000000,0.000000]"}}
+    ]},
+    {"name": "int-elements-are-32-bit-and-wrap", "steps": [
+      {"sql": "SELECT [2147483647,0,0]::VECTOR(INT,3)", "expect": {"value": "[2147483647,0,0]"}},
+      {"sql": "SELECT [2147483648,0,0]::VECTOR(INT,3)", "expect": {"value": "[-2147483648,0,0]"}},
+      {"sql": "SELECT [9007199254740993,0,0]::VECTOR(INT,3)", "expect": {"value": "[1,0,0]"}}
+    ]},
+    {"name": "the-cast-conversion-errors", "steps": [
+      {"sql": "SELECT [1,2]::VECTOR(FLOAT,3)", "expect": {"error": {"messageContains": "Vector value being cast to a vector is not an array or vector, or has incorrect dimension or element type"}}},
+      {"sql": "SELECT ['a','b','c']::VECTOR(FLOAT,3)", "expect": {"error": {"messageContains": "Array-like value being cast to a float vector has elements that are not real numbers"}}},
+      {"sql": "SELECT [true,false,true]::VECTOR(FLOAT,3)", "expect": {"error": {"messageContains": "Array-like value being cast to a float vector has elements that are not real numbers"}}},
+      {"sql": "SELECT [1.7,2.2,3.9]::VECTOR(INT,3)", "expect": {"error": {"messageContains": "Array-like value being cast to an integer vector has elements that are not integers"}}},
+      {"sql": "SELECT [1.0,2.0,3.0]::VECTOR(INT,3)", "expect": {"value": "[1,2,3]"}}
+    ]},
+    {"name": "a-vector-casts-only-to-its-own-type", "steps": [
+      {"sql": "SELECT [1,2,3]::VECTOR(FLOAT,3)::VECTOR(FLOAT,3)", "expect": {"value": "[1.000000,2.000000,3.000000]"}},
+      {"sql": "SELECT [1,2,3]::VECTOR(FLOAT,3)::VECTOR(INT,3)", "expect": {"error": {"messageContains": "Invalid argument types for function 'CAST': (VECTOR(FLOAT, 3))"}}},
+      {"sql": "SELECT [1,2,3]::VECTOR(FLOAT,3)::VECTOR(FLOAT,2)", "expect": {"error": {"messageContains": "Invalid argument types for function 'CAST': (VECTOR(FLOAT, 3))"}}}
+    ]},
+    {"name": "typeof-reports-the-bare-family-name", "steps": [
+      {"sql": "SELECT TYPEOF([1,2,3]::VECTOR(FLOAT,3))", "expect": {"value": "VECTOR"}}
+    ]},
+    {"name": "a-column-round-trip-keeps-the-vector", "steps": [
+      {"sql": "CREATE TABLE vec_store (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO vec_store SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO vec_store SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO vec_store SELECT 3, NULL"},
+      {"sql": "SELECT v FROM vec_store WHERE id = 1", "expect": {"value": "[1.000000,2.000000,3.000000]"}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE(v, [1,2,3]::VECTOR(FLOAT,3)) FROM vec_store WHERE id = 1", "expect": {"value": "0.0"}},
+      {"sql": "SELECT VECTOR_NORMALIZE(v) FROM vec_store WHERE id = 1", "expect": {"value": "[0.267261,0.534522,0.801784]"}},
+      {"sql": "SELECT VECTOR_TRUNC(v, 2) FROM vec_store WHERE id = 1", "expect": {"value": "[1.000000,2.000000]"}},
+      {"sql": "SELECT IS_VECTOR(v) FROM vec_store WHERE id = 1", "expect": {"value": "true"}},
+      {"sql": "SELECT VECTOR_SUM(v) FROM vec_store", "expect": {"value": "[5.000000,7.000000,9.000000]"}},
+      {"sql": "SELECT v FROM vec_store WHERE id = 3", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "vectors-compare-group-and-deduplicate", "steps": [
+      {"sql": "CREATE TABLE vec_cmp (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO vec_cmp SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO vec_cmp SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO vec_cmp SELECT 3, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT COUNT(*) FROM vec_cmp WHERE v = [1,2,3]::VECTOR(FLOAT,3)", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT DISTINCT v FROM vec_cmp)", "expect": {"value": "2"}},
+      {"sql": "SELECT LISTAGG(c, ',') FROM (SELECT COUNT(*) AS c FROM vec_cmp GROUP BY v ORDER BY c DESC)", "expect": {"value": "2,1"}},
+      {"sql": "SELECT v FROM vec_cmp ORDER BY v LIMIT 1", "expect": {"value": "[1.000000,2.000000,3.000000]"}}
+    ]},
+    {"name": "vectors-flow-through-case-coalesce-and-union", "steps": [
+      {"sql": "SELECT COALESCE(NULL::VECTOR(FLOAT,3), [1,2,3]::VECTOR(FLOAT,3))", "expect": {"value": "[1.000000,2.000000,3.000000]"}},
+      {"sql": "SELECT CASE WHEN TRUE THEN [1,2,3]::VECTOR(FLOAT,3) ELSE NULL END", "expect": {"value": "[1.000000,2.000000,3.000000]"}},
+      {"sql": "SELECT [1,2,3]::VECTOR(FLOAT,3) AS v UNION ALL SELECT [4,5,6]::VECTOR(FLOAT,3)", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "vector-expressions-are-rejected-in-a-values-clause", "steps": [
+      {"sql": "CREATE TABLE vec_values (v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO vec_values VALUES ([1,2,3]::VECTOR(FLOAT,3))", "expect": {"error": {"messageContains": "Invalid data type [VECTOR(FLOAT, 3)] in VALUES clause"}}},
+      {"sql": "INSERT INTO vec_values SELECT [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT COUNT(*) FROM vec_values", "expect": {"value": "1"}}
+    ]},
+    {"name": "vectors-work-inside-udf-bodies", "steps": [
+      {"sql": "CREATE FUNCTION vec_dist(a VECTOR(FLOAT,3), b VECTOR(FLOAT,3)) RETURNS FLOAT AS 'VECTOR_L2_DISTANCE(a, b)'"},
+      {"sql": "CREATE FUNCTION vec_unit(a VECTOR(FLOAT,3)) RETURNS VECTOR(FLOAT,3) AS 'VECTOR_NORMALIZE(a)'"},
+      {"sql": "SELECT vec_dist([1,2,3]::VECTOR(FLOAT,3), [4,5,6]::VECTOR(FLOAT,3))", "expect": {"value": "5.196152422706632"}},
+      {"sql": "SELECT vec_dist([1,2,3]::VECTOR(FLOAT,3), [4,5,6]::VECTOR(FLOAT,3)) = 5.196152422706632", "expect": {"value": "true"}},
+      {"sql": "SELECT vec_unit([1,2,3]::VECTOR(FLOAT,3))", "expect": {"value": "[0.267261,0.534522,0.801784]"}}
+    ]},
+    {"name": "a-udf-returning-a-vector-cannot-be-read-through-to-varchar",
+     "steps": [
+      {"sql": "CREATE FUNCTION vec_unit(a VECTOR(FLOAT,3)) RETURNS VECTOR(FLOAT,3) AS 'VECTOR_NORMALIZE(a)'"},
+      {"sql": "SELECT TO_VARCHAR(vec_unit([1,2,3]::VECTOR(FLOAT,3)))", "expect": {"error": {"messageContains": "invalid type [TO_VARCHAR(VEC_UNIT("}}}
+    ]}
+  ]
+}

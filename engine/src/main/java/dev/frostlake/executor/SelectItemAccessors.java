@@ -224,10 +224,10 @@ public final class SelectItemAccessors {
     /** Returns qualifier for the {@code t.*} / {@code {t.*}} forms, or null for a bare star. */
     public static String getItemQualifier(final FrostlakeParser.SelectItemContext item) {
         if (item instanceof FrostlakeParser.QualifiedStarItemContext)
-            return ((FrostlakeParser.QualifiedStarItemContext) item).starQualifiedName().getText();
+            return ParseTreeText.writtenText(((FrostlakeParser.QualifiedStarItemContext) item).starQualifiedName());
         if (item instanceof FrostlakeParser.ObjectStarItemContext
                 && ((FrostlakeParser.ObjectStarItemContext) item).starQualifiedName() != null)
-            return ((FrostlakeParser.ObjectStarItemContext) item).starQualifiedName().getText();
+            return ParseTreeText.writtenText(((FrostlakeParser.ObjectStarItemContext) item).starQualifiedName());
         return null;
     }
 

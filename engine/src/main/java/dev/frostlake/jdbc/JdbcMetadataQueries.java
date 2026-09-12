@@ -128,7 +128,7 @@ final class JdbcMetadataQueries {
     private static final String COLUMN_SIZE_EXPRESSION =
         "CASE WHEN DATA_TYPE = 'NUMBER' THEN NUMERIC_PRECISION"
         + " WHEN DATA_TYPE = 'TEXT' THEN CHARACTER_MAXIMUM_LENGTH"
-        + " WHEN DATA_TYPE = 'BINARY' THEN CHARACTER_OCTET_LENGTH"
+        + " WHEN DATA_TYPE = 'BINARY' THEN PARSE_JSON(SHOWN_TYPE):length::INTEGER"
         + " ELSE 0 END";
 
     /** Scale for exact numerics, fractional-second digits for the time types, 0 for everything else. */
@@ -290,15 +290,34 @@ final class JdbcMetadataQueries {
             if (i > 0) {
                 sql.append(" UNION ALL ");
             }
-            sql.append(COLUMNS_PROJECTION).append(qualifier(database)).append("COLUMNS WHERE 1=1");
+            sql.append(COLUMNS_PROJECTION).append(qualifier(database)).append("COLUMNS")
+                .append(SHOWN_COLUMNS_JOIN).append(" WHERE 1=1");
             appendPattern(sql, "TABLE_SCHEMA", schemaPattern);
             appendPattern(sql, "TABLE_NAME", tableNamePattern);
             appendPattern(sql, "COLUMN_NAME", columnNamePattern);
             appendNoMatchGuard(sql, database);
         }
         sql.append(" ORDER BY TABLE_CAT, TABLE_SCHEM, TABLE_NAME, ORDINAL_POSITION");
-        return query(connection, sql.toString());
+        // A BINARY column's size is not in INFORMATION_SCHEMA — live leaves both of its lengths NULL
+        // there — while Snowflake's driver still reports it, read from SHOW COLUMNS. So the listing
+        // goes out first, in the same request, and the projection joins it back through RESULT_SCAN.
+        final Statement statement = connection.createStatement();
+        allowInternalPack(statement);
+        statement.execute("SHOW COLUMNS IN ACCOUNT; " + sql);
+        statement.getMoreResults();
+        return statement.getResultSet();
     }
+
+    /**
+     * SHOW COLUMNS, read back beside INFORMATION_SCHEMA.COLUMNS, for the size a BINARY column declares.
+     * The listing is joined as a derived table, since a table function joined with an ON clause is
+     * refused, and its columns are renamed so that none shares a name with the view's.
+     */
+    private static final String SHOWN_COLUMNS_JOIN =
+        " LEFT JOIN (SELECT \"database_name\" AS SHOWN_DATABASE, \"schema_name\" AS SHOWN_SCHEMA,"
+        + " \"table_name\" AS SHOWN_TABLE, \"column_name\" AS SHOWN_COLUMN, \"data_type\" AS SHOWN_TYPE"
+        + " FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))) ON SHOWN_DATABASE = TABLE_CATALOG"
+        + " AND SHOWN_SCHEMA = TABLE_SCHEMA AND SHOWN_TABLE = TABLE_NAME AND SHOWN_COLUMN = COLUMN_NAME";
 
     /**
      * {@code DatabaseMetaData.getPrimaryKeys(...)}, spanning every catalog in scope. Schema and table

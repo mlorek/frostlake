@@ -17,6 +17,7 @@
 package dev.frostlake.storage;
 
 import dev.frostlake.types.DataType;
+import dev.frostlake.values.ValueRange;
 
 public class ResultSetColumn {
     private final String name;
@@ -39,6 +40,18 @@ public class ResultSetColumn {
     // accepts NULL (live-verified). A boolean alone cannot tell "nullable because we looked" from
     // "nullable because we did not".
     private final boolean nullabilityKnown;
+    // The interval the column's values lie in, propagated from the projection the way the account
+    // propagates statistics, or null when none is known. Read only by the storage tag SYSTEM$TYPEOF
+    // prints through a derived relation; never by a value path.
+    private final ValueRange valueRange;
+    // The NUMBER the column's values spell when the projection is a bare string literal, or a column
+    // carrying one out of a derived relation; null for every other column. Read only by the conditional
+    // fold, through a derived relation built from this result set.
+    private final DataType spelledNumber;
+    // The collation this column's values compare, sort and group under, or null for none. A projection
+    // stamps it from the expression it projects, so a derived relation, a view and a CTAS all carry the
+    // collation out to whoever reads the column next.
+    private final String collation;
 
     public ResultSetColumn(final String name, final DataType dataType) {
         this(name, dataType, null);
@@ -63,12 +76,66 @@ public class ResultSetColumn {
     public ResultSetColumn(final String name, final DataType dataType, final String tableName,
                            final DataType staticType, final boolean nullable,
                            final boolean nullabilityKnown) {
+        this(name, dataType, tableName, staticType, nullable, nullabilityKnown, null);
+    }
+
+    public ResultSetColumn(final String name, final DataType dataType, final String tableName,
+                           final DataType staticType, final boolean nullable,
+                           final boolean nullabilityKnown, final ValueRange valueRange) {
+        this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, null);
+    }
+
+    public ResultSetColumn(final String name, final DataType dataType, final String tableName,
+                           final DataType staticType, final boolean nullable,
+                           final boolean nullabilityKnown, final ValueRange valueRange,
+                           final DataType spelledNumber) {
+        this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, null);
+    }
+
+    private ResultSetColumn(final String name, final DataType dataType, final String tableName,
+                            final DataType staticType, final boolean nullable,
+                            final boolean nullabilityKnown, final ValueRange valueRange,
+                            final DataType spelledNumber, final String collation) {
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
         this.staticType = staticType;
         this.nullable = nullable;
         this.nullabilityKnown = nullabilityKnown;
+        this.valueRange = valueRange;
+        this.spelledNumber = spelledNumber;
+        this.collation = collation;
+    }
+
+    /**
+     * This column carrying a collation — what a projection stamps when the expression it projects has
+     * one, so the derived relation, view or table built from this result set collates the column too.
+     *
+     * @param spec the collation specification, lower-cased
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withCollation(final String spec) {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, spec);
+    }
+
+    /**
+     * The collation this column's values compare under, or null when it carries none.
+     *
+     * @return the specification, lower-cased
+     */
+    public String getCollation() {
+        return collation;
+    }
+
+    /** The interval this column's values lie in, or null when none is known. */
+    public ValueRange getValueRange() {
+        return valueRange;
+    }
+
+    /** The NUMBER this column's values spell, or null — see TableColumn#getSpelledNumber. */
+    public DataType getSpelledNumber() {
+        return spelledNumber;
     }
 
     public String getName() {

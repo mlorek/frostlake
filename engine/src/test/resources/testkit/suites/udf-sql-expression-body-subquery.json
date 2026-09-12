@@ -1,0 +1,46 @@
+{
+  "suite": "udf-sql-expression-body-subquery",
+  "description": "A SQL UDF whose body is an EXPRESSION may contain a scalar SUBQUERY - even over nested, FROM-less derived tables - that references the function's PARAMETERS. This is a real-world scoring-function shape: a documentation comment, then COALESCE((SELECT ... FROM (SELECT ... FROM (SELECT param ...))), 0). Parameters used to be bound only as columns of a synthetic parameter table, which the subquery's own execution through the query engine never saw, so the body failed with Column not found. Parameters are now also SUBSTITUTED into the body text - lexer-driven, quote- and comment-safe - making the body self-contained wherever it executes. The substitution has to be careful about three things, each pinned here: a string parameter is quoted and escaped, so an embedded apostrophe survives and NULL takes the COALESCE fallback; a semi-structured parameter substitutes as PARSE_JSON(...) rather than a bare string, so path access (o:field) stays parseable and yields the structure; and DOT-ADJACENT identifiers are skipped, so in util.stats.tag_of(...) the segment stats is a schema qualifier and not the parameter, while stats:field with a colon still binds - and a JSON FIELD NAME after a colon survives even when another parameter carries the same name, which is the stats-accumulator idiom. A plain expression body still works. Converted 1:1 from udf/SqlUdfExpressionBodySubqueryTest (now retired).",
+  "tags": ["udf", "converted"],
+  "tests": [
+    {"name": "a-subquery-in-an-expression-body-sees-the-parameter", "steps": [
+      {"sql": "CREATE FUNCTION doubled(x FLOAT) RETURNS FLOAT LANGUAGE SQL AS $$\n    COALESCE((SELECT v * 2 FROM (SELECT x AS v)), 0.0) $$"},
+      {"sql": "SELECT doubled(2.0)", "expect": {"value": 4.0}}
+    ]},
+    {"name": "the-full-scoring-shape-works", "steps": [
+      {"sql": "CREATE FUNCTION score_of(spec VARCHAR) RETURNS FLOAT LANGUAGE SQL AS $$\n    /* parses 'grade:X/weight:Y' and scores it; documentation comment. */\n    COALESCE(\n        (\n            SELECT ROUND(CASE g WHEN 'A' THEN 10.0 * w WHEN 'B' THEN 5.0 * w ELSE 0.0 END, 1)\n            FROM (\n                SELECT g, w * 0.5 AS w\n                FROM (\n                    SELECT\n                        SPLIT_PART(REGEXP_SUBSTR(spec, 'grade:[^/]+'), ':', 2) AS g,\n                        CASE SPLIT_PART(REGEXP_SUBSTR(spec, 'weight:[^/]+'), ':', 2)\n                            WHEN 'H' THEN 1.0 WHEN 'L' THEN 0.4 ELSE 0.0 END AS w\n                )\n            )\n        ),\n        0.0\n    )::FLOAT $$"},
+      {"sql": "SELECT score_of('grade:A/weight:H')", "expect": {"value": 5.0}},
+      {"sql": "SELECT score_of('grade:B/weight:L')", "expect": {"value": 1.0}},
+      {"sql": "SELECT score_of('nonsense')", "expect": {"value": 0.0}},
+      {"sql": "SELECT score_of(NULL)", "expect": {"value": 0.0}}
+    ]},
+    {"name": "string-parameters-are-quoted-and-escaped-in-the-substitution", "steps": [
+      {"sql": "CREATE FUNCTION tagged(label VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$\n    COALESCE((SELECT 'tag=' || v FROM (SELECT label AS v)), 'none') $$"},
+      {"sql": "SELECT tagged('it''s')", "expect": {"value": "tag=it's"}},
+      {"sql": "SELECT tagged(NULL)", "expect": {"value": "none"}}
+    ]},
+    {"name": "an-object-parameter-keeps-path-access-and-works-in-subqueries", "steps": [
+      {"sql": "CREATE FUNCTION prefix_of(\"STATE\" OBJECT)\nRETURNS VARCHAR LANGUAGE SQL IMMUTABLE\nAS '''logging/'' || state:step_name || ''/'' || lower(state:db_name)'"},
+      {"sql": "SELECT prefix_of(OBJECT_CONSTRUCT('step_name', 'load', 'db_name', 'MYDB'))", "expect": {"value": "logging/load/mydb"}},
+      {"sql": "CREATE FUNCTION field_via_subq(o OBJECT) RETURNS VARCHAR LANGUAGE SQL AS $$\n    COALESCE((SELECT v FROM (SELECT o:k::VARCHAR AS v)), 'none') $$"},
+      {"sql": "SELECT field_via_subq(OBJECT_CONSTRUCT('k', 'hit'))", "expect": {"value": "hit"}}
+    ]},
+    {"name": "a-parameter-named-like-a-schema-qualifier-does-not-rewrite-qualified-names", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS util"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS util.stats"},
+      {"sql": "CREATE OR REPLACE FUNCTION util.stats.tag_of(name VARCHAR) RETURNS VARCHAR LANGUAGE SQL\nAS 'UPPER(name)'"},
+      {"sql": "CREATE OR REPLACE FUNCTION describe_run(\"STATS\" OBJECT) RETURNS VARCHAR LANGUAGE SQL\nAS '''run/'' || stats:step || ''/'' || util.stats.tag_of(stats:owner)'"},
+      {"sql": "SELECT describe_run(OBJECT_CONSTRUCT('step', 'load', 'owner', 'me'))", "expect": {"value": "run/load/ME"}}
+    ]},
+    {"name": "a-parameter-named-like-a-path-segment-does-not-rewrite-the-path", "steps": [
+      {"sql": "CREATE FUNCTION add_child(\"SO\" OBJECT, \"CHILD_STATS\" OBJECT)\nRETURNS OBJECT LANGUAGE SQL IMMUTABLE\nAS 'OBJECT_INSERT(so, ''child_stats'', ARRAY_APPEND(so:child_stats, child_stats), true)'"},
+      {"sql": "SELECT add_child(OBJECT_CONSTRUCT('name', 'parent', 'child_stats', ARRAY_CONSTRUCT()), OBJECT_CONSTRUCT('name', 'kid'))", "expect": {"value": "{\"child_stats\":[{\"name\":\"kid\"}],\"name\":\"parent\"}"}}
+    ]},
+    {"name": "a-plain-expression-body-still-works", "steps": [
+      {"sql": "CREATE FUNCTION twice(x NUMBER) RETURNS NUMBER LANGUAGE SQL AS $$ x * 2 $$"},
+      {"sql": "SELECT twice(7)", "expect": {"value": 14}},
+      {"sql": "CREATE FUNCTION always_null() RETURNS VARCHAR LANGUAGE SQL AS $$ NULL $$"},
+      {"sql": "SELECT always_null()", "expect": {"value": null}}
+    ]}
+  ]
+}

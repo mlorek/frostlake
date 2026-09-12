@@ -1,0 +1,78 @@
+{
+  "suite": "query-numeric-type",
+  "description": "Which NUMBER a numeric expression actually is. An integer literal - positive, negative or zero - is an exact NUMBER with scale 0, and integer addition, subtraction and multiplication keep scale 0; a decimal literal carries the scale it was written with, and mixing an integer with a decimal takes the decimal's scale. Division is the exception that has its own rule: Snowflake's fixed-point division scale is min(s1 + 6, 12), so integer / integer yields scale 6 - which is visible in the RENDERING, since 10/2 is 5.000000 and not 5. Converted 1:1 from query/NumericTypeTest (now retired). The Java asserted the JAVA runtime class of each cell (Long for the integer cases, BigDecimal for the decimal ones), which has no SQL surface; the converted tests pin the two SQL-visible consequences of that split instead - SYSTEM$TYPEOF reports INTEGER where the Java demanded Long and FLOAT where it demanded BigDecimal, and the exact NUMBER(precision,scale) is read back through a VIEW's INFORMATION_SCHEMA.COLUMNS row, which preserves an expression's DECLARED type where CTAS and DESCRIBE would clamp it.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-integer-literal-is-an-exact-number-with-scale-zero", "steps": [
+      {"sql": "SELECT 2", "expect": {"value": 2}},
+      {"sql": "SELECT SYSTEM$TYPEOF(2)", "expect": {"value": "NUMBER(1,0)[SB1]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 2 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(1,0)"}}
+    ]},
+    {"name": "a-decimal-literal-keeps-the-scale-it-was-written-with", "steps": [
+      {"sql": "SELECT (2.5)::VARCHAR", "expect": {"value": "2.5"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(2.5)", "expect": {"value": "NUMBER(2,1)[SB1]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 2.5 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(2,1)"}}
+    ]},
+    {"name": "a-negative-integer-literal-is-scale-zero-too", "steps": [
+      {"sql": "SELECT -42", "expect": {"value": -42}},
+      {"sql": "SELECT SYSTEM$TYPEOF(-42)", "expect": {"value": "NUMBER(2,0)[SB1]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT -42 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(2,0)"}}
+    ]},
+    {"name": "integer-addition-stays-integer", "steps": [
+      {"sql": "SELECT 2 + 3", "expect": {"value": 5}},
+      {"sql": "SELECT SYSTEM$TYPEOF(2 + 3)", "expect": {"value": "NUMBER(2,0)[SB1]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 2 + 3 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(2,0)"}}
+    ]},
+    {"name": "integer-multiplication-stays-integer", "steps": [
+      {"sql": "SELECT 3 * 4", "expect": {"value": 12}},
+      {"sql": "SELECT SYSTEM$TYPEOF(3 * 4)", "expect": {"value": "NUMBER(2,0)[SB1]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 3 * 4 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(2,0)"}}
+    ]},
+    {"name": "integer-subtraction-stays-integer", "steps": [
+      {"sql": "SELECT 10 - 3", "expect": {"value": 7}},
+      {"sql": "SELECT SYSTEM$TYPEOF(10 - 3)", "expect": {"value": "NUMBER(3,0)[SB1]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 10 - 3 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(3,0)"}}
+    ]},
+    {"name": "division-returns-snowflakes-scaled-decimal", "steps": [
+      {"sql": "SELECT (10 / 3)::VARCHAR", "expect": {"value": "3.333333"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(10 / 3)", "expect": {"value": "NUMBER(8,6)[SB4]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 10 / 3 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(8,6)"}}
+    ]},
+    {"name": "division-keeps-scale-six-for-an-exact-result", "steps": [
+      {"sql": "SELECT (10 / 2)::VARCHAR", "expect": {"value": "5.000000"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(10 / 2)", "expect": {"value": "NUMBER(8,6)[SB4]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 10 / 2 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(8,6)"}}
+    ]},
+    {"name": "mixing-an-integer-with-a-decimal-takes-the-decimals-scale",
+     "steps": [
+      {"sql": "SELECT (2 + 3.5)::VARCHAR", "expect": {"value": "5.5"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(2 + 3.5)", "expect": {"value": "NUMBER(4,1)[SB1]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 2 + 3.5 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(4,1)"}}
+    ]},
+    {"name": "zero-is-an-integer-like-any-other", "steps": [
+      {"sql": "SELECT 0", "expect": {"value": 0}},
+      {"sql": "SELECT SYSTEM$TYPEOF(0)", "expect": {"value": "NUMBER(1,0)[SB1]"}},
+      {"sql": "CREATE OR REPLACE VIEW nv AS SELECT 0 AS a"},
+      {"sql": "SELECT data_type||'('||numeric_precision||','||numeric_scale||')' FROM information_schema.columns WHERE table_name = 'NV'",
+       "expect": {"value": "NUMBER(1,0)"}}
+    ]}
+  ]
+}

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
 
 import java.util.List;
@@ -29,6 +30,12 @@ public class Mode extends AggregateFunction {
 
     @Override
     public Object evaluate(final List<Object> args) { return null; }
+
+    /** A UUID has no ordering the account will take: it refuses the argument type. */
+    @Override
+    public SemiStructuredRejection uuidRejection(final int position) {
+        return SemiStructuredRejection.UNSUPPORTED_ARGUMENT_TYPE;
+    }
 
     @Override
     public int getMinArgCount() { return 1; }

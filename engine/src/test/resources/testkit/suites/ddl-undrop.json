@@ -1,0 +1,37 @@
+{
+  "suite": "ddl-undrop",
+  "description": "UNDROP TABLE / SCHEMA / DATABASE restores a recently dropped object: tables restore metadata and row data, schemas and databases restore the metadata object and stay usable, and UNDROP of a never-existing table fails. Converted 1:1 from ddl/UndropTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "undrop-table-restores-data", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "DROP TABLE t"},
+      {"sql": "SELECT * FROM t", "expect": {"error": {}}},
+      {"sql": "UNDROP TABLE t"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "2"}},
+      {"sql": "SELECT name FROM t WHERE id = 2", "expect": {"value": "Bob"}}
+    ]},
+    {"name": "undrop-schema-restores-it", "steps": [
+      {"sql": "CREATE SCHEMA sc"},
+      {"sql": "DROP SCHEMA sc"},
+      {"sql": "UNDROP SCHEMA sc"},
+      {"sql": "CREATE TABLE sc.tbl (id INTEGER)"},
+      {"sql": "INSERT INTO sc.tbl VALUES (1), (2)"},
+      {"sql": "SELECT COUNT(*) FROM sc.tbl", "expect": {"value": "2"}}
+    ]},
+    {"name": "undrop-database-restores", "steps": [
+      {"sql": "CREATE DATABASE dbx"},
+      {"sql": "CREATE SCHEMA dbx.s1"},
+      {"sql": "CREATE TABLE dbx.s1.t1 (id INTEGER)"},
+      {"sql": "INSERT INTO dbx.s1.t1 VALUES (1)"},
+      {"sql": "DROP DATABASE dbx"},
+      {"sql": "UNDROP DATABASE dbx"},
+      {"sql": "SELECT COUNT(*) FROM dbx.s1.t1", "expect": {"value": "1"}},
+      {"sql": "DROP DATABASE dbx"}
+    ]},
+    {"name": "undrop-nonexistent-fails", "steps": [
+      {"sql": "UNDROP TABLE never_existed", "expect": {"error": {}}}
+    ]}
+  ]
+}

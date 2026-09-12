@@ -17,9 +17,11 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.MultiArgumentAccumulator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * HyperLogLog sketch for APPROX_COUNT_DISTINCT (Flajolet et al.), with linear counting in the
@@ -29,7 +31,7 @@ import java.util.Arrays;
  * (with overwhelming probability) counted separately. With {@code p = 14} registers the standard error
  * is ~0.8%, and linear counting keeps cardinalities up to ~40k (near-)exact.
  */
-public class HllAccumulator implements AggregateFunction.Accumulator {
+public class HllAccumulator implements AggregateFunction.Accumulator, MultiArgumentAccumulator {
 
     private static final int P = 14;
     private static final int M = 1 << P;                       // 16384 registers
@@ -37,12 +39,36 @@ public class HllAccumulator implements AggregateFunction.Accumulator {
 
     private final byte[] registers = new byte[M];
 
+    /**
+     * A multi-argument call counts distinct TUPLES, and a tuple with any NULL member is skipped
+     * whole — live counts (1.5, 7) once over {(1.5, 7), (1.5, NULL), (NULL, 7), (NULL, NULL), (1.5, 7)}.
+     */
+    @Override
+    public void accumulate(final List<Object> argumentValues) {
+        if (argumentValues.size() == 1) {
+            accumulate(argumentValues.get(0));
+            return;
+        }
+        final StringBuilder tuple = new StringBuilder();
+        for (final Object member : argumentValues) {
+            if (member == null) {
+                return;
+            }
+            tuple.append(member.toString()).append('\u0001');
+        }
+        accumulateKey(tuple.toString());
+    }
+
     @Override
     public void accumulate(final Object value) {
         if (value == null) {
             return;
         }
-        final long h = hash64(value.toString());
+        accumulateKey(value.toString());
+    }
+
+    private void accumulateKey(final String key) {
+        final long h = hash64(key);
         final int index = (int) (h >>> (64 - P));             // top P bits select the register
         final long remaining = (h << P) | (1L << (P - 1));    // bound the rank to <= 64 - P + 1
         final int rank = Long.numberOfLeadingZeros(remaining) + 1;

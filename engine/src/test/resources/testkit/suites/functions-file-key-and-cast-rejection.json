@@ -1,0 +1,241 @@
+{
+  "suite": "functions-file-key-and-cast-rejection",
+  "description": "A FILE value may not be a GROUP BY, ORDER BY or PARTITION BY key, may not be ordered by MAX / MIN / MODE, may not be concatenated, and may not be cast or converted to anything - each with its own live-measured sentence. The key rejections name the clause ('Expressions of type FILE cannot be used as GROUP BY keys'), the ordering aggregates use the 'does not support FILE argument type' form, concatenation uses the argument-type list, and every CAST names the CONVERSION FUNCTION it desugars to rather than the cast itself - CAST(f AS FLOAT) is reported against TO_DOUBLE and CAST(f AS TIMESTAMP) against TO_TIMESTAMP_NTZ, with the target's full declared width. The accepted half is pinned just as hard: a FILE still compares, de-duplicates, joins, takes part in UNION and IN, feeds the non-ordering aggregates and windows, passes through the conditionals and containers, and its ACCESSOR results are ordinary keys that group and sort freely. An OBJECT column groups, sorts and casts to VARCHAR perfectly well, so none of these rejections may be widened to semi-structured values in general. Converted 1:1 from functions/file/FileKeyAndCastRejectionTest (now retired); the class's @BeforeEach built the fk table with its FILE/OBJECT/VARCHAR control columns, which each converted test recreates as its first three steps.",
+  "tags": ["functions", "file", "converted"],
+  "tests": [
+    {"name": "group-by-a-file-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT COUNT(*) FROM fk GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "group-by-a-file-ordinal-or-alias-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT f, COUNT(*) FROM fk GROUP BY 1", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT f AS x, COUNT(*) FROM fk GROUP BY x", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "group-by-rejects-a-file-among-other-keys", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT COUNT(*) FROM fk GROUP BY id, f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "group-by-a-conditional-yielding-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT COUNT(*) FROM fk GROUP BY IFF(TRUE, f, f)", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT COUNT(*) FROM fk GROUP BY COALESCE(f, f)", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "order-by-a-file-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT id FROM fk ORDER BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as ORDER BY keys"}}}
+    ]},
+    {"name": "order-by-a-file-ordinal-or-alias-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT f FROM fk ORDER BY 1", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as ORDER BY keys"}}},
+      {"sql": "SELECT f AS x FROM fk ORDER BY x", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as ORDER BY keys"}}}
+    ]},
+    {"name": "order-by-a-file-rejects-with-an-explicit-direction", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT id FROM fk ORDER BY f DESC NULLS LAST", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as ORDER BY keys"}}}
+    ]},
+    {"name": "order-by-a-file-is-rejected-even-with-nothing-to-sort", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT id FROM fk WHERE id = 1 ORDER BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as ORDER BY keys"}}},
+      {"sql": "SELECT id FROM fk WHERE id = 999 ORDER BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as ORDER BY keys"}}}
+    ]},
+    {"name": "a-window-partition-by-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY f ORDER BY id) FROM fk", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as PARTITION BY keys"}}}
+    ]},
+    {"name": "a-window-order-by-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY f) FROM fk", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as ORDER BY keys"}}}
+    ]},
+    {"name": "max-over-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT MAX(f) FROM fk", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support FILE argument type"}}}
+    ]},
+    {"name": "min-and-mode-over-a-file-are-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT MIN(f) FROM fk", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MIN does not support FILE argument type"}}},
+      {"sql": "SELECT MODE(f) FROM fk", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MODE does not support FILE argument type"}}}
+    ]},
+    {"name": "max-distinct-over-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT MAX(DISTINCT f) FROM fk", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support FILE argument type"}}}
+    ]},
+    {"name": "a-windowed-max-over-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT MAX(f) OVER () FROM fk", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support FILE argument type"}}},
+      {"sql": "SELECT MIN(f) OVER (PARTITION BY id) FROM fk", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MIN does not support FILE argument type"}}}
+    ]},
+    {"name": "an-inline-qualify-window-aggregate-over-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT id FROM fk QUALIFY MAX(f) OVER () IS NOT NULL", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support FILE argument type"}}}
+    ]},
+    {"name": "the-concat-operator-rejects-a-file-on-either-side", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT 'x' || f FROM fk", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), FILE)"}}},
+      {"sql": "SELECT f || 'x' FROM fk", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (FILE, VARCHAR(1))"}}},
+      {"sql": "SELECT f || f FROM fk", "expect": {"error": {"messageContains": "Invalid argument types for function '||': (FILE, FILE)"}}}
+    ]},
+    {"name": "the-concat-functions-reject-a-file-in-any-position", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT CONCAT('x', f) FROM fk", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (VARCHAR(1), FILE)"}}},
+      {"sql": "SELECT CONCAT(f, 'x') FROM fk", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (FILE, VARCHAR(1))"}}},
+      {"sql": "SELECT CONCAT_WS('-', 'x', f) FROM fk", "expect": {"error": {"messageContains": "Invalid argument types for function 'CONCAT': (VARCHAR(1), VARCHAR(1), FILE)"}}}
+    ]},
+    {"name": "listagg-over-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT LISTAGG(f, ',') FROM fk", "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (FILE, VARCHAR(1))"}}}
+    ]},
+    {"name": "casting-a-file-to-varchar-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT CAST(f AS VARCHAR) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT f::VARCHAR FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}}
+    ]},
+    {"name": "every-cast-target-names-its-conversion-function", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT CAST(f AS NUMBER) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS NUMBER(38,0))] for parameter 'TO_NUMBER'"}}},
+      {"sql": "SELECT CAST(f AS FLOAT) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS FLOAT)] for parameter 'TO_DOUBLE'"}}},
+      {"sql": "SELECT CAST(f AS BOOLEAN) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS BOOLEAN)] for parameter 'TO_BOOLEAN'"}}},
+      {"sql": "SELECT CAST(f AS DATE) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS DATE)] for parameter 'TO_DATE'"}}},
+      {"sql": "SELECT CAST(f AS TIMESTAMP) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS TIMESTAMP_NTZ(9))] for parameter 'TO_TIMESTAMP_NTZ'"}}},
+      {"sql": "SELECT CAST(f AS OBJECT) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS OBJECT)] for parameter 'TO_OBJECT'"}}},
+      {"sql": "SELECT CAST(f AS VARIANT) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS VARIANT)] for parameter 'TO_VARIANT'"}}},
+      {"sql": "SELECT CAST(f AS ARRAY) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS ARRAY)] for parameter 'TO_ARRAY'"}}},
+      {"sql": "SELECT CAST(f AS BINARY) FROM fk", "expect": {"error": {"messageContains": "invalid type [CAST(FK.F AS BINARY(67108864))] for parameter 'TO_BINARY'"}}}
+    ]},
+    {"name": "a-try-cast-from-a-file-is-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT TRY_CAST(f AS VARCHAR) FROM fk", "expect": {"error": {"messageContains": "invalid type [TRY_CAST(FK.F)] for parameter 'TO_VARCHAR'"}}}
+    ]},
+    {"name": "conversion-functions-over-a-file-are-rejected", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT TO_VARCHAR(f) FROM fk", "expect": {"error": {"messageContains": "invalid type [TO_VARCHAR(FK.F)] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT TO_CHAR(f) FROM fk", "expect": {"error": {"messageContains": "invalid type [TO_CHAR(FK.F)] for parameter 'TO_CHAR'"}}},
+      {"sql": "SELECT TO_NUMBER(f) FROM fk", "expect": {"error": {"messageContains": "invalid type [TO_NUMBER(FK.F)] for parameter 'TO_NUMBER'"}}},
+      {"sql": "SELECT TO_VARIANT(f) FROM fk", "expect": {"error": {"messageContains": "invalid type [TO_VARIANT(FK.F)] for parameter 'TO_VARIANT'"}}},
+      {"sql": "SELECT TO_OBJECT(f) FROM fk", "expect": {"error": {"messageContains": "invalid type [TO_OBJECT(FK.F)] for parameter 'TO_OBJECT'"}}}
+    ]},
+    {"name": "try-conversion-functions-name-the-canonical-parameter", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT TRY_TO_NUMBER(f) FROM fk", "expect": {"error": {"messageContains": "invalid type [TRY_TO_NUMBER(FK.F)] for parameter 'TO_NUMBER'"}}}
+    ]},
+    {"name": "comparisons-distinct-and-count-still-work", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT id FROM fk WHERE f = f", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM fk WHERE f <> f", "expect": {"rowCount": 0}},
+      {"sql": "SELECT id FROM fk WHERE f > f", "expect": {"rowCount": 0}},
+      {"sql": "SELECT id FROM fk WHERE f IS NULL", "expect": {"rowCount": 0}},
+      {"sql": "SELECT id FROM fk WHERE f IS NOT NULL", "expect": {"rowCount": 2}},
+      {"sql": "SELECT DISTINCT f FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(f) FROM fk", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(DISTINCT f) FROM fk", "expect": {"value": "2"}}
+    ]},
+    {"name": "non-ordering-aggregates-and-windows-still-work", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT ANY_VALUE(f) FROM fk", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_AGG(f) FROM fk", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_UNIQUE_AGG(f) FROM fk", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX_BY(id, f) FROM fk", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(f) OVER () FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT FIRST_VALUE(f) OVER (ORDER BY id) FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT LAG(f) OVER (ORDER BY id) FROM fk", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "joins-set-operations-and-in-still-work", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT a.id FROM fk a JOIN fk b ON a.f = b.f", "expect": {"rowCount": 2}},
+      {"sql": "SELECT f FROM fk UNION SELECT f FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT f FROM fk UNION ALL SELECT f FROM fk", "expect": {"rowCount": 4}},
+      {"sql": "SELECT id FROM fk WHERE f IN (SELECT f FROM fk)", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "conditionals-and-containers-still-accept-a-file", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT IFF(TRUE, f, f) FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COALESCE(f, f) FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT GREATEST(f, f) FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CASE WHEN id = 1 THEN f ELSE f END FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(f) FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('k', f) FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT TO_FILE(f) FROM fk", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "accessor-results-are-ordinary-keys", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT id FROM fk ORDER BY FL_GET_RELATIVE_PATH(f)", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*) FROM fk GROUP BY FL_GET_RELATIVE_PATH(f)", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(FL_GET_RELATIVE_PATH(f)) FROM fk", "expect": {"value": "two.txt"}}
+    ]},
+    {"name": "an-object-column-is-unaffected-by-every-file-rule", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT COUNT(*) FROM fk GROUP BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM fk ORDER BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(o AS VARCHAR) FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY o ORDER BY id) FROM fk", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "a-varchar-column-is-unaffected-by-every-file-rule", "steps": [
+      {"sql": "CREATE TABLE fk (id INTEGER, f FILE, o OBJECT, s VARCHAR)"},
+      {"sql": "INSERT INTO fk SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('a', 1), 'x'"},
+      {"sql": "INSERT INTO fk SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('a', 2), 'y'"},
+      {"sql": "SELECT COUNT(*) FROM fk GROUP BY s", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM fk ORDER BY s", "expect": {"rowCount": 2}},
+      {"sql": "SELECT CAST(s AS VARCHAR) FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT 'x' || s FROM fk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(s) FROM fk", "expect": {"value": "y"}}
+    ]}
+  ]
+}

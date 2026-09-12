@@ -1,0 +1,28 @@
+{
+  "suite": "functions-insert",
+  "description": "INSERT(base, pos, len, insert) - Snowflake's string function: remove len characters from base starting at the 1-based pos and put insert in their place. A length of 0 inserts without removing anything, a position past the end appends, calls nest, a NULL base is NULL, and INSERT is a keyword (the INSERT statement) that also names this function, so the grammar allows it as a function name in any letter case. Converted 1:1 from functions/InsertFunctionTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-replaces-characters", "steps": [
+      {"sql": "SELECT INSERT('abcdef', 2, 3, 'zzz')", "expect": {"value": "azzzef"}}
+    ]},
+    {"name": "a-length-of-zero-inserts", "steps": [
+      {"sql": "SELECT INSERT('abcdef', 3, 0, 'XYZ')", "expect": {"value": "abXYZcdef"}}
+    ]},
+    {"name": "it-replaces-the-whole-string", "steps": [
+      {"sql": "SELECT INSERT('abc', 1, 3, 'X')", "expect": {"value": "X"}}
+    ]},
+    {"name": "a-position-past-the-end-appends", "steps": [
+      {"sql": "SELECT INSERT('abc', 5, 0, 'X')", "expect": {"value": "abcX"}}
+    ]},
+    {"name": "nested-insert-calls", "steps": [
+      {"sql": "SELECT INSERT(INSERT('12345678', 5, 0, ':'), 3, 0, '-')", "expect": {"value": "12-34:5678"}}
+    ]},
+    {"name": "a-null-base-is-null", "steps": [
+      {"sql": "SELECT INSERT(NULL, 1, 1, 'x')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "the-lowercase-name", "steps": [
+      {"sql": "SELECT insert('abcdef', 2, 3, 'zzz')", "expect": {"value": "azzzef"}}
+    ]}
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "suite": "stream-in-transaction",
+  "description": "A stream read INSIDE a transaction reflects that transaction's own NOT-YET-COMMITTED DML to the stream's base table - the deferred-apply equivalent of read-your-writes. A stored procedure relies on this when it inserts into a table and then reads a stream over that table in the same transaction: without it the stream reads empty and the downstream load silently loads nothing. A ROLLBACK, which just discards the write set, leaves the stream unchanged. Pinned for an APPEND_ONLY stream, for one read after a flush (only the new rows), for rollback, for a standard stream where an UPDATE nets to a DELETE plus INSERT pair, and for a stream over a UNION ALL VIEW where each branch's rows route correctly. The last three are the cross-schema half: change tracking only searched the MUTATED table's own schema for streams, so a stream living in a DIFFERENT schema from its table never saw a committed change at all and rows visible mid-transaction disappeared again at COMMIT - while the widened search must stay EXACT, so two schemas holding a same-named table must not cross-capture. Converted 1:1 from stream/StreamInTransactionTest (now retired); its six same-transaction tests carried an Assumptions.assumeFalse(isLiveSnowflake()) recording a DELIBERATE, DOCUMENTED model divergence - frostlake lets a stream read see its own transaction's uncommitted DML, while Snowflake pins a stream read to the transaction's start time and returns nothing for changes made inside it - which becomes skip snowflake with that reason kept.",
+  "tags": ["stream", "converted"],
+  "tests": [
+    {"name": "an-append-only-stream-sees-same-transaction-inserts",
+     "skip": {"backends": ["snowflake"], "reason": "deliberate, documented model divergence: frostlake lets a stream read see its own transaction's uncommitted DML (read-your-writes), while Snowflake pins a stream read to the transaction's start time and therefore returns nothing for changes made inside it"},
+     "steps": [
+      {"sql": "CREATE TABLE t (id INT)"},
+      {"sql": "CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO t VALUES (1), (2)"},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": 2}},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": 2}}
+    ]},
+    {"name": "a-stream-after-a-flush-sees-only-the-new-same-transaction-inserts",
+     "skip": {"backends": ["snowflake"], "reason": "deliberate, documented model divergence: frostlake lets a stream read see its own transaction's uncommitted DML (read-your-writes), while Snowflake pins a stream read to the transaction's start time and therefore returns nothing for changes made inside it"},
+     "steps": [
+      {"sql": "CREATE TABLE t (id INT)"},
+      {"sql": "CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE"},
+      {"sql": "INSERT INTO t VALUES (1)"},
+      {"sql": "CREATE OR REPLACE TEMP TABLE reset AS SELECT * FROM s"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO t VALUES (2), (3)"},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": 2}},
+      {"sql": "COMMIT"}
+    ]},
+    {"name": "a-rollback-discards-buffered-stream-changes",
+     "skip": {"backends": ["snowflake"], "reason": "deliberate, documented model divergence: frostlake lets a stream read see its own transaction's uncommitted DML (read-your-writes), while Snowflake pins a stream read to the transaction's start time and therefore returns nothing for changes made inside it"},
+     "steps": [
+      {"sql": "CREATE TABLE t (id INT)"},
+      {"sql": "CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO t VALUES (1), (2)"},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": 2}},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": 0}}
+    ]},
+    {"name": "a-standard-stream-sees-same-transaction-updates-and-deletes",
+     "skip": {"backends": ["snowflake"], "reason": "deliberate, documented model divergence: frostlake lets a stream read see its own transaction's uncommitted DML (read-your-writes), while Snowflake pins a stream read to the transaction's start time and therefore returns nothing for changes made inside it"},
+     "steps": [
+      {"sql": "CREATE TABLE t (id INT, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "CREATE STREAM s ON TABLE t"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "UPDATE t SET v = 'z' WHERE id = 1"},
+      {"sql": "DELETE FROM t WHERE id = 2"},
+      {"sql": "SELECT COUNT(*) FROM s", "expect": {"value": 3}},
+      {"sql": "COMMIT"}
+    ]},
+    {"name": "a-view-stream-sees-same-transaction-inserts-to-both-branches",
+     "skip": {"backends": ["snowflake"], "reason": "deliberate, documented model divergence: frostlake lets a stream read see its own transaction's uncommitted DML (read-your-writes), while Snowflake pins a stream read to the transaction's start time and therefore returns nothing for changes made inside it"},
+     "steps": [
+      {"sql": "CREATE TABLE active (id INT, st VARCHAR)"},
+      {"sql": "CREATE TABLE del (id INT, st VARCHAR)"},
+      {"sql": "CREATE VIEW v AS SELECT id, st FROM active UNION ALL SELECT id, 'DELETE' AS st FROM del"},
+      {"sql": "CREATE STREAM vs ON VIEW v APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO active VALUES (1, 'ACTIVE'), (2, 'ACTIVE')"},
+      {"sql": "INSERT INTO del VALUES (1, 'DELETE')"},
+      {"sql": "SELECT COUNT(*) FROM vs", "expect": {"value": 3}},
+      {"sql": "SELECT COUNT(*) FROM vs WHERE st = 'DELETE'", "expect": {"value": 1}},
+      {"sql": "COMMIT"}
+    ]},
+    {"name": "a-cross-schema-table-stream-captures-committed-changes", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS src_schema"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "CREATE OR REPLACE TABLE src_schema.raw (id INTEGER)"},
+      {"sql": "CREATE OR REPLACE STREAM s_cross ON TABLE src_schema.raw APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=FALSE"},
+      {"sql": "INSERT INTO src_schema.raw VALUES (1), (2)"},
+      {"sql": "SELECT COUNT(*) FROM s_cross", "expect": {"value": 2}},
+      {"sql": "INSERT INTO src_schema.raw VALUES (3)"},
+      {"sql": "SELECT COUNT(*) FROM s_cross", "expect": {"value": 3}}
+    ]},
+    {"name": "a-stream-does-not-capture-a-same-named-table-in-another-schema", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS schema_a"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS schema_b"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "CREATE OR REPLACE TABLE schema_a.t (id INTEGER)"},
+      {"sql": "CREATE OR REPLACE TABLE schema_b.t (id INTEGER)"},
+      {"sql": "CREATE OR REPLACE STREAM s_a ON TABLE schema_a.t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=FALSE"},
+      {"sql": "INSERT INTO schema_b.t VALUES (1), (2)"},
+      {"sql": "SELECT COUNT(*) FROM s_a", "expect": {"value": 0}},
+      {"sql": "INSERT INTO schema_a.t VALUES (9)"},
+      {"sql": "SELECT COUNT(*) FROM s_a", "expect": {"value": 1}}
+    ]},
+    {"name": "a-cross-schema-view-stream-sees-same-transaction-inserts",
+     "skip": {"backends": ["snowflake"], "reason": "deliberate, documented model divergence: frostlake lets a stream read see its own transaction's uncommitted DML (read-your-writes), while Snowflake pins a stream read to the transaction's start time and therefore returns nothing for changes made inside it"},
+     "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS other_schema"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "CREATE OR REPLACE TABLE other_schema.active (id INT, st VARCHAR)"},
+      {"sql": "CREATE OR REPLACE TABLE other_schema.del (id INT, st VARCHAR)"},
+      {"sql": "CREATE OR REPLACE VIEW v AS SELECT id, st FROM other_schema.active UNION ALL SELECT id, 'DELETE' AS st FROM other_schema.del"},
+      {"sql": "CREATE OR REPLACE STREAM vs ON VIEW v APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO other_schema.active VALUES (1, 'ACTIVE'), (2, 'ACTIVE')"},
+      {"sql": "INSERT INTO other_schema.del VALUES (1, 'DELETE')"},
+      {"sql": "SELECT COUNT(*) FROM vs", "expect": {"value": 3}},
+      {"sql": "SELECT COUNT(*) FROM vs WHERE st = 'DELETE'", "expect": {"value": 1}},
+      {"sql": "COMMIT"}
+    ]}
+  ]
+}

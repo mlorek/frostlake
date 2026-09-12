@@ -1,0 +1,35 @@
+{
+  "suite": "scripting-call-named-arguments",
+  "description": "CALL <proc>(name => value) - Snowflake NAMED ARGUMENTS. A named argument binds to the parameter whose name it MATCHES, so order is free and a DEFAULTED parameter may be skipped entirely. A CALL's arguments are all-named or all-positional: mixing them fails 'illegal mixing of named and positional arguments for function P_AB', live-verified, and the restriction is CALL's alone - the same mixed shape on a UDF works there. Exercised for the top-level CALL, the var := (CALL ...) assignment form, and a bare CALL inside a procedure body. An unknown argument name is rejected. Converted 1:1 from scripting/CallNamedArgumentsTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "named-arguments-bind-by-name", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_ab(a INT, b INT) RETURNS INT LANGUAGE SQL AS $$ BEGIN RETURN :a * 10 + :b; END $$"},
+      {"sql": "CALL p_ab(1, 2)", "expect": {"value": 12}},
+      {"sql": "CALL p_ab(a => 1, b => 2)", "expect": {"value": 12}},
+      {"sql": "CALL p_ab(b => 2, a => 1)", "expect": {"value": 12}},
+      {"sql": "CALL p_ab(1, b => 2)", "expect": {"error": {"messageContains": "illegal mixing of named and positional arguments"}}}
+    ]},
+    {"name": "a-named-argument-may-skip-a-defaulted-parameter", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_def(a INT, b INT DEFAULT 5) RETURNS INT LANGUAGE SQL AS $$ BEGIN RETURN :a * 10 + :b; END $$"},
+      {"sql": "CALL p_def(a => 3)", "expect": {"value": 35}},
+      {"sql": "CALL p_def(a => 3, b => 9)", "expect": {"value": 39}}
+    ]},
+    {"name": "named-arguments-in-the-assignment-call-form", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_ab(a INT, b INT) RETURNS INT LANGUAGE SQL AS $$ BEGIN RETURN :a * 10 + :b; END $$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_assign() RETURNS INT LANGUAGE SQL AS $$ DECLARE r INT; BEGIN r := (CALL p_ab(b => 2, a => 1)); RETURN r; END $$"},
+      {"sql": "CALL p_assign()", "expect": {"value": 12}}
+    ]},
+    {"name": "named-arguments-in-a-bare-procedural-call", "steps": [
+      {"sql": "CREATE TABLE call_log (v INT)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_ins(v INT) RETURNS INT LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 1; END $$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_caller() RETURNS INT LANGUAGE SQL AS $$ BEGIN CALL p_ins(v => 77); RETURN 0; END $$"},
+      {"sql": "CALL p_caller()", "expect": {"value": 0}},
+      {"sql": "SELECT v FROM call_log", "expect": {"value": 77}}
+    ]},
+    {"name": "an-unknown-argument-name-is-rejected", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_ab(a INT, b INT) RETURNS INT LANGUAGE SQL AS $$ BEGIN RETURN :a * 10 + :b; END $$"},
+      {"sql": "CALL p_ab(a => 1, nope => 2)", "expect": {"error": {}}}
+    ]}
+  ]
+}

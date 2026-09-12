@@ -1,0 +1,112 @@
+{
+  "suite": "query-top-limit",
+  "description": "TOP, LIMIT [OFFSET] and the ANSI FETCH over a twenty-row fixture. LIMIT takes the first n of an ordered result and OFFSET skips before it, which is enough to page through the whole table four rows-of-five at a time; an offset beyond the data answers nothing and a partial last page answers what remains. TOP n is the same thing written in front of the select list - with a WHERE, with a descending order, over an aggregate, and larger than the table, where it answers every row. FETCH FIRST / FETCH NEXT n ROWS ONLY agree with both, and ROWS is optional. LIMIT 0 answers nothing, OFFSET 0 changes nothing, and all three forms apply AFTER grouping and HAVING, so a limited aggregate is a limit on the GROUPS. Converted 1:1 from query/TopLimitTest (now retired); the Java read the first and last rows by walking the ResultSet cursor, so each converted test pins the whole ordered row set - which is what actually shows a page's boundaries rather than just its size. The fixture's twenty rows are built with a GENERATOR scan instead of the Java loop's twenty INSERT statements.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-basic-limit", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id LIMIT 5", "expect": {"rows": [[1],[2],[3],[4],[5]], "ordered": true}}
+    ]},
+    {"name": "a-limit-with-an-offset", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id LIMIT 5 OFFSET 5", "expect": {"rows": [[6],[7],[8],[9],[10]], "ordered": true}}
+    ]},
+    {"name": "limit-and-offset-page-through-the-table", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id LIMIT 5 OFFSET 0", "expect": {"rows": [[1],[2],[3],[4],[5]], "ordered": true}},
+      {"sql": "SELECT id FROM numbers ORDER BY id LIMIT 5 OFFSET 5", "expect": {"rows": [[6],[7],[8],[9],[10]], "ordered": true}},
+      {"sql": "SELECT id FROM numbers ORDER BY id LIMIT 5 OFFSET 10", "expect": {"rows": [[11],[12],[13],[14],[15]], "ordered": true}},
+      {"sql": "SELECT id FROM numbers ORDER BY id LIMIT 5 OFFSET 15", "expect": {"rows": [[16],[17],[18],[19],[20]], "ordered": true}}
+    ]},
+    {"name": "an-offset-beyond-the-data", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 100", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-partial-last-page", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id LIMIT 10 OFFSET 15", "expect": {"rows": [[16],[17],[18],[19],[20]], "ordered": true}}
+    ]},
+    {"name": "the-top-clause", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT TOP 5 id FROM numbers ORDER BY id", "expect": {"rows": [[1],[2],[3],[4],[5]], "ordered": true}}
+    ]},
+    {"name": "top-with-a-where-clause", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT TOP 3 id FROM numbers WHERE id > 10 ORDER BY id", "expect": {"rows": [[11],[12],[13]], "ordered": true}}
+    ]},
+    {"name": "a-top-larger-than-the-data", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT TOP 100 * FROM numbers", "expect": {"rowCount": 20}}
+    ]},
+    {"name": "fetch-first-rows", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id FETCH FIRST 5 ROWS ONLY", "expect": {"rows": [[1],[2],[3],[4],[5]], "ordered": true}}
+    ]},
+    {"name": "fetch-next-rows", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id FETCH NEXT 7 ROWS ONLY", "expect": {"rows": [[1],[2],[3],[4],[5],[6],[7]], "ordered": true}}
+    ]},
+    {"name": "fetch-without-the-rows-keyword", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id FETCH FIRST 3 ONLY", "expect": {"rows": [[1],[2],[3]], "ordered": true}}
+    ]},
+    {"name": "a-limit-over-an-aggregation", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT category, COUNT(*) AS cnt FROM numbers GROUP BY category ORDER BY category LIMIT 1", "expect": {"rows": [["even",10]]}}
+    ]},
+    {"name": "a-top-over-an-aggregation", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT TOP 1 category, COUNT(*) AS cnt FROM numbers GROUP BY category ORDER BY category DESC", "expect": {"rows": [["odd",10]]}}
+    ]},
+    {"name": "limit-zero", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT * FROM numbers LIMIT 0", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "offset-zero", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id LIMIT 3 OFFSET 0", "expect": {"rows": [[1],[2],[3]], "ordered": true}}
+    ]},
+    {"name": "top-under-a-descending-order", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT TOP 3 id FROM numbers ORDER BY id DESC", "expect": {"rows": [[20],[19],[18]], "ordered": true}}
+    ]},
+    {"name": "limit-and-offset-under-a-descending-order", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id FROM numbers ORDER BY id DESC LIMIT 5 OFFSET 5", "expect": {"rows": [[15],[14],[13],[12],[11]], "ordered": true}}
+    ]},
+    {"name": "top-ordered-by-another-column", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT TOP 3 id, value FROM numbers ORDER BY value DESC", "expect": {"rows": [[20,200],[19,190],[18,180]], "ordered": true}}
+    ]},
+    {"name": "a-limit-over-several-columns", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT id, value, category FROM numbers ORDER BY id LIMIT 5",
+       "expect": {"rows": [[1,10,"odd"],[2,20,"even"],[3,30,"odd"],[4,40,"even"],[5,50,"odd"]], "ordered": true}}
+    ]},
+    {"name": "fetch-first-over-a-grouped-and-having-filtered-query", "steps": [
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO numbers SELECT seq, seq * 10, IFF(seq % 2 = 0, 'even', 'odd') FROM (SELECT ROW_NUMBER() OVER (ORDER BY 1) AS seq FROM TABLE(GENERATOR(ROWCOUNT => 20)))"},
+      {"sql": "SELECT category, SUM(value) AS total FROM numbers GROUP BY category HAVING SUM(value) > 500 ORDER BY category DESC FETCH FIRST 1 ROWS ONLY",
+       "expect": {"rows": [["odd",1000]]}}
+    ]}
+  ]
+}

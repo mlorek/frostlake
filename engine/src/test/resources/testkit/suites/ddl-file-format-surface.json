@@ -1,0 +1,82 @@
+{
+  "suite": "ddl-file-format-surface",
+  "description": "The FILE FORMAT object surface (live-measured): each TYPE accepts only its own option tree (cross-type options refuse naming both), unknown options are invalid parameter, bad values refuse with the invalid-value shape (negative integer unquoted, strings quoted), ALTER sets options and renames but never the TYPE, a missing format is named fully qualified, DESC answers the per-type property tree with declared options overlaid (engine-pinned row counts skip snowflake, as the Java did), and SHOW's format_options blob carries typed JSON values. Converted 1:1 from ddl/FileFormatOptionSurfaceTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "every-type-accepts-its-own-options", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_csv TYPE = CSV FIELD_DELIMITER = '|' SKIP_HEADER = 2 NULL_IF = ('NULL', '\\\\N') COMPRESSION = GZIP"},
+      {"sql": "CREATE FILE FORMAT ff_json TYPE = JSON STRIP_OUTER_ARRAY = TRUE ALLOW_DUPLICATE = FALSE"},
+      {"sql": "CREATE FILE FORMAT ff_parquet TYPE = PARQUET BINARY_AS_TEXT = FALSE"},
+      {"sql": "CREATE FILE FORMAT ff_xml TYPE = XML STRIP_OUTER_ELEMENT = TRUE"},
+      {"sql": "CREATE FILE FORMAT ff_avro TYPE = AVRO COMPRESSION = AUTO"},
+      {"sql": "CREATE FILE FORMAT ff_bare"},
+      {"sql": "SHOW FILE FORMATS LIKE 'ff_json'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "cross-type-options-refuse-naming-both", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_x1 TYPE = CSV STRIP_OUTER_ARRAY = TRUE",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nOption STRIP_OUTER_ARRAY is not valid for file format type CSV."}}},
+      {"sql": "CREATE FILE FORMAT ff_x2 TYPE = JSON SKIP_HEADER = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nOption SKIP_HEADER is not valid for file format type JSON."}}}
+    ]},
+    {"name": "bad-values-refuse-with-the-invalid-value-shape", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_v1 TYPE = CSV SKIP_HEADER = -1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [-1] for parameter 'SKIP_HEADER'"}}},
+      {"sql": "CREATE FILE FORMAT ff_v2 TYPE = CSV COMPRESSION = 'BOGUS'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['BOGUS'] for parameter 'COMPRESSION'"}}},
+      {"sql": "CREATE FILE FORMAT ff_v3 TYPE = 'NOPE'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['NOPE'] for parameter 'TYPE'"}}}
+    ]},
+    {"name": "unknown-option-refuses-as-invalid-parameter", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_u TYPE = CSV NO_SUCH = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid parameter 'NO_SUCH'"}}}
+    ]},
+    {"name": "alter-sets-options-but-never-the-type", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_alter TYPE = CSV"},
+      {"sql": "ALTER FILE FORMAT ff_alter SET SKIP_HEADER = 5"},
+      {"sql": "DESC FILE FORMAT ff_alter"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'SKIP_HEADER'",
+       "expect": {"value": "5"}},
+      {"sql": "ALTER FILE FORMAT ff_alter SET TYPE = JSON",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nFile format type cannot be changed."}}},
+      {"sql": "ALTER FILE FORMAT ff_alter RENAME TO ff_renamed"},
+      {"sql": "SHOW FILE FORMATS LIKE 'ff_renamed'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "altering-a-missing-format-names-it-fully-qualified", "steps": [
+      {"sql": "ALTER FILE FORMAT nosuch_ff SET COMMENT = 'x'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nFile format 'TEST_DB.TEST_SCHEMA.NOSUCH_FF' does not exist or not authorized."}}}
+    ]},
+    {"name": "describe-answers-the-per-type-tree", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_desc TYPE = CSV FIELD_DELIMITER = '|' SKIP_HEADER = 2"},
+      {"sql": "DESC FILE FORMAT ff_desc"},
+      {"sql": "SELECT \"property_value\", \"property_default\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'FIELD_DELIMITER'",
+       "expect": {"rows": [["|", ","]]}},
+      {"sql": "DESC FILE FORMAT ff_desc"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'SKIP_HEADER'",
+       "expect": {"value": "2"}},
+      {"sql": "DESC FILE FORMAT ff_desc"},
+      {"sql": "SELECT \"property_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'MULTI_LINE'",
+       "expect": {"value": "Boolean"}},
+      {"sql": "CREATE FILE FORMAT ff_djson TYPE = JSON"},
+      {"sql": "DESC FILE FORMAT ff_djson"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'NULL_IF'",
+       "expect": {"value": "[]"}},
+      {"sql": "DESC FILE FORMAT ff_djson"},
+      {"sql": "SELECT \"property_value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'STRIP_OUTER_ARRAY'",
+       "expect": {"value": "false"}}
+    ]},
+    {"name": "describe-tree-row-counts",
+     "skip": {"backends": ["snowflake"], "reason": "the per-type tree row counts are engine-pinned; the Java class gated these asserts off live too"},
+     "steps": [
+      {"sql": "CREATE FILE FORMAT ff_desc TYPE = CSV FIELD_DELIMITER = '|' SKIP_HEADER = 2"},
+      {"sql": "DESC FILE FORMAT ff_desc", "expect": {"rowCount": 24}},
+      {"sql": "CREATE FILE FORMAT ff_djson TYPE = JSON"},
+      {"sql": "DESC FILE FORMAT ff_djson", "expect": {"rowCount": 17}}
+    ]},
+    {"name": "show-carries-the-typed-options-blob", "steps": [
+      {"sql": "CREATE FILE FORMAT ff_show TYPE = CSV FIELD_DELIMITER = '|' SKIP_HEADER = 5 NULL_IF = ('NULL', '\\\\N') COMPRESSION = GZIP"},
+      {"sql": "SHOW FILE FORMATS LIKE 'ff_show'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CONTAINS(\"format_options\", '\"SKIP_HEADER\":5') AND CONTAINS(\"format_options\", '\"PARSE_HEADER\":false') AND CONTAINS(\"format_options\", '\"FILE_EXTENSION\":null') AND CONTAINS(\"format_options\", '\"COMPRESSION\":\"GZIP\"'), \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "CSV"]]}}
+    ]}
+  ]
+}

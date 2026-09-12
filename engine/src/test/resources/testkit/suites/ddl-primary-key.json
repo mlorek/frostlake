@@ -1,0 +1,83 @@
+{
+  "suite": "ddl-primary-key",
+  "description": "Single-column PRIMARY KEY metadata through SHOW PRIMARY KEYS, DESCRIBE TABLE's primary key / null? / default cells and GET_DDL: with NOT NULL, AUTOINCREMENT (visible in the reconstructed DDL), DEFAULT, across INTEGER/BIGINT/VARCHAR key types, data intact, key_sequence 1, tables with no key, complex tables, and the key column visible in SHOW COLUMNS. Converted 1:1 from ddl/PrimaryKeyTest (now retired).",
+  "tags": ["ddl", "constraints", "converted"],
+  "tests": [
+    {"name": "single-column-primary-key", "steps": [
+      {"sql": "CREATE TABLE users (\nid INTEGER PRIMARY KEY,\nname VARCHAR,\nemail VARCHAR\n)"},
+      {"sql": "DESCRIBE TABLE users", "expect": {"rowCount": 3}},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ID", "Y"], ["NAME", "N"], ["EMAIL", "N"]], "ordered": true}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE users", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"column_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ID"}}
+    ]},
+    {"name": "primary-key-with-not-null", "steps": [
+      {"sql": "CREATE TABLE users (\nid INTEGER PRIMARY KEY NOT NULL,\nname VARCHAR\n)"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT \"primary key\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'",
+       "expect": {"rows": [["Y", "N"]]}}
+    ]},
+    {"name": "multiple-single-column-primary-keys", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE products (product_id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE users", "expect": {"rowCount": 1}},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE products", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "primary-key-with-autoincrement", "steps": [
+      {"sql": "CREATE TABLE users (\nid INTEGER PRIMARY KEY AUTOINCREMENT,\nname VARCHAR\n)"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'", "expect": {"value": "Y"}},
+      {"sql": "SELECT CONTAINS(LOWER(GET_DDL('TABLE', 'users')), 'autoincrement')", "expect": {"value": "true"}}
+    ]},
+    {"name": "primary-key-with-default", "steps": [
+      {"sql": "CREATE TABLE users (\nid INTEGER PRIMARY KEY DEFAULT 1,\nname VARCHAR\n)"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT \"primary key\", \"default\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'",
+       "expect": {"rows": [["Y", "1"]]}}
+    ]},
+    {"name": "insert-with-primary-key", "steps": [
+      {"sql": "CREATE TABLE users (\nid INTEGER PRIMARY KEY,\nname VARCHAR\n)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "INSERT INTO users VALUES (2, 'Bob')"},
+      {"sql": "SELECT * FROM users ORDER BY id",
+       "expect": {"rows": [["1", "Alice"], ["2", "Bob"]], "ordered": true}}
+    ]},
+    {"name": "primary-key-in-different-data-types", "steps": [
+      {"sql": "CREATE TABLE t1 (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE t2 (id BIGINT PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE t3 (id VARCHAR PRIMARY KEY, name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE t1"},
+      {"sql": "SELECT \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'", "expect": {"value": "Y"}},
+      {"sql": "DESCRIBE TABLE t2"},
+      {"sql": "SELECT \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'", "expect": {"value": "Y"}},
+      {"sql": "DESCRIBE TABLE t3"},
+      {"sql": "SELECT \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ID'", "expect": {"value": "Y"}}
+    ]},
+    {"name": "get-primary-keys-list", "steps": [
+      {"sql": "CREATE TABLE users (\nid INTEGER PRIMARY KEY,\nusername VARCHAR,\nemail VARCHAR\n)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE users", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"column_name\", \"key_sequence\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["ID", "1"]]}}
+    ]},
+    {"name": "table-with-no-primary-key", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE users", "expect": {"rowCount": 0}},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"primary key\" = 'N'", "expect": {"value": "3"}}
+    ]},
+    {"name": "primary-key-with-complex-table", "steps": [
+      {"sql": "CREATE TABLE orders (\norder_id INTEGER PRIMARY KEY,\ncustomer_id INTEGER NOT NULL,\norder_date DATE,\ntotal_amount DECIMAL,\nstatus VARCHAR DEFAULT 'pending'\n)"},
+      {"sql": "DESCRIBE TABLE orders", "expect": {"rowCount": 5}},
+      {"sql": "SELECT \"name\", \"primary key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('ORDER_ID', 'CUSTOMER_ID') ORDER BY \"name\" DESC",
+       "expect": {"rows": [["ORDER_ID", "Y"], ["CUSTOMER_ID", "N"]], "ordered": true}},
+      {"sql": "DESCRIBE TABLE orders"},
+      {"sql": "SELECT \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CUSTOMER_ID'",
+       "expect": {"value": "N"}}
+    ]},
+    {"name": "show-primary-key-in-system-views", "steps": [
+      {"sql": "CREATE TABLE users (\nid INTEGER PRIMARY KEY,\nname VARCHAR\n)"},
+      {"sql": "SHOW COLUMNS IN TABLE users"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'ID'", "expect": {"value": "1"}}
+    ]}
+  ]
+}

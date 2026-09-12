@@ -35,6 +35,7 @@ public class Function extends SqlObject {
     private NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
     private Volatility volatility = Volatility.VOLATILE;
     private boolean secure = false;
+    private boolean memoizable = false;
     private boolean temporary = false;
     private List<String> imports = new ArrayList<>();
 
@@ -115,6 +116,13 @@ public class Function extends SqlObject {
 
     public boolean isSecure() { return secure; }
     public void setSecure(final boolean secure) { this.secure = secure; }
+
+    /**
+     * MEMOIZABLE, which the account reports in SHOW FUNCTIONS and INFORMATION_SCHEMA.FUNCTIONS. The result
+     * is not cached: for a deterministic body a cached and a recomputed result cannot be told apart.
+     */
+    public boolean isMemoizable() { return memoizable; }
+    public void setMemoizable(final boolean memoizable) { this.memoizable = memoizable; }
 
     /**
      * A TEMPORARY (TEMP / VOLATILE) function lives only as long as the session that created it, the same

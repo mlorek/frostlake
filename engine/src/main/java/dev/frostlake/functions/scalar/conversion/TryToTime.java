@@ -24,7 +24,7 @@ import java.util.List;
 /**
  * TRY_TO_TIME(expr [, format]) — the non-throwing form of TO_TIME: delegates to {@link ToTime} and returns
  * NULL instead of raising when the input cannot be parsed as a time. NULL input yields NULL. The optional
- * format argument is accepted for signature compatibility but, as in {@link ToTime}, is not applied.
+ * format is applied as in {@link ToTime}: an input the model cannot read is NULL, and so is a NULL format.
  */
 public class TryToTime extends BuiltInFunction {
     private final ToTime base = new ToTime();

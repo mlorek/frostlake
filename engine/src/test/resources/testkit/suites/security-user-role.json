@@ -1,0 +1,105 @@
+{
+  "suite": "security-user-role",
+  "description": "User and role management: CREATE and DROP USER (with and without a PASSWORD), CREATE and DROP ROLE, GRANT and REVOKE a role to a user, GRANT and REVOKE a privilege to a role, and the SHOW commands that report all of it. Two rules are pinned that are easy to get wrong. A privilege must be DEFINED for the object type it is granted on - live-verified, GRANT SELECT ON DATABASE fails 'Invalid object type DATABASE for privilege SELECT' while USAGE ON DATABASE is exactly how a database is shared. And the implicit PUBLIC membership is NEVER listed: a fresh user shows zero grants, and an EXPLICIT GRANT ROLE PUBLIC TO USER adds no row either, measured on a real account, because every user is in PUBLIC so the grant has nothing to report - while granting any OTHER role shows a row immediately, both for a plain user and for one created with a password and DEFAULT_ROLE = 'PUBLIC'. GRANT ALL expands into individual privilege rows with no row named ALL. The four system roles are always present. Converted 1:1 from security/UserRoleTest (now retired); the Java scanned SHOW output POSITIONALLY, and these steps read the same rows BY NAME through RESULT_SCAN.",
+  "tags": ["security", "converted"],
+  "tests": [
+    {"name": "create-a-user", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS alice"},
+      {"sql": "SHOW USERS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ALICE'", "expect": {"value": 1}}
+    ]},
+    {"name": "create-a-user-with-a-password", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS bob PASSWORD = 'secret123'"},
+      {"sql": "SHOW USERS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'BOB'", "expect": {"value": 1}}
+    ]},
+    {"name": "drop-a-user", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS temp_user"},
+      {"sql": "SHOW USERS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEMP_USER'", "expect": {"value": 1}},
+      {"sql": "DROP USER temp_user"},
+      {"sql": "SHOW USERS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEMP_USER'", "expect": {"value": 0}}
+    ]},
+    {"name": "create-a-role", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS analyst"},
+      {"sql": "SHOW ROLES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ANALYST'", "expect": {"value": 1}}
+    ]},
+    {"name": "drop-a-role", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS temp_role"},
+      {"sql": "SHOW ROLES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEMP_ROLE'", "expect": {"value": 1}},
+      {"sql": "DROP ROLE temp_role"},
+      {"sql": "SHOW ROLES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEMP_ROLE'", "expect": {"value": 0}}
+    ]},
+    {"name": "grant-a-role-to-a-user", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS charlie"},
+      {"sql": "CREATE ROLE IF NOT EXISTS developer"},
+      {"sql": "GRANT ROLE developer TO USER charlie"},
+      {"sql": "SHOW GRANTS TO USER charlie"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'DEVELOPER'", "expect": {"value": 1}}
+    ]},
+    {"name": "revoke-a-role-from-a-user", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS dave"},
+      {"sql": "CREATE ROLE IF NOT EXISTS tester"},
+      {"sql": "GRANT ROLE tester TO USER dave"},
+      {"sql": "REVOKE ROLE tester FROM USER dave"},
+      {"sql": "SHOW GRANTS TO USER dave"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TESTER'", "expect": {"value": 0}}
+    ]},
+    {"name": "a-privilege-must-suit-the-object-type", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS priv_test_db"},
+      {"sql": "CREATE ROLE IF NOT EXISTS data_reader"},
+      {"sql": "GRANT SELECT ON DATABASE priv_test_db TO ROLE data_reader", "expect": {"error": {}}},
+      {"sql": "GRANT USAGE ON DATABASE priv_test_db TO ROLE data_reader"},
+      {"sql": "SHOW GRANTS TO ROLE data_reader"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'USAGE' AND \"name\" = 'PRIV_TEST_DB'", "expect": {"value": 1}}
+    ]},
+    {"name": "revoke-a-privilege-from-a-role", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE products (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE ROLE IF NOT EXISTS writer"},
+      {"sql": "GRANT INSERT ON TABLE products TO ROLE writer"},
+      {"sql": "REVOKE INSERT ON TABLE products FROM ROLE writer"},
+      {"sql": "SHOW GRANTS TO ROLE writer"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'INSERT' AND \"name\" = 'PRODUCTS'", "expect": {"value": 0}}
+    ]},
+    {"name": "the-system-roles-are-present", "steps": [
+      {"sql": "SHOW ROLES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('SYSADMIN','USERADMIN','SECURITYADMIN','PUBLIC')", "expect": {"value": 4}}
+    ]},
+    {"name": "show-grants-on-a-warehouse", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS grant_test_wh"},
+      {"sql": "CREATE ROLE IF NOT EXISTS wh_user"},
+      {"sql": "GRANT USAGE ON WAREHOUSE grant_test_wh TO ROLE wh_user"},
+      {"sql": "SHOW GRANTS ON WAREHOUSE grant_test_wh"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'USAGE' AND \"grantee_name\" = 'WH_USER'", "expect": {"value": 1}}
+    ]},
+    {"name": "grant-all-expands-into-individual-rows", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE all_priv_test (id INTEGER)"},
+      {"sql": "CREATE ROLE IF NOT EXISTS admin_role"},
+      {"sql": "GRANT ALL ON TABLE all_priv_test TO ROLE admin_role"},
+      {"sql": "SHOW GRANTS TO ROLE admin_role"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'ALL'", "expect": {"value": 0}},
+      {"sql": "SHOW GRANTS TO ROLE admin_role"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'SELECT' AND \"name\" LIKE '%ALL_PRIV_TEST'", "expect": {"value": 1}}
+    ]},
+    {"name": "the-implicit-public-role-is-never-listed", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS test_public_user"},
+      {"sql": "SHOW GRANTS TO USER test_public_user", "expect": {"rowCount": 0}},
+      {"sql": "GRANT ROLE PUBLIC TO USER test_public_user"},
+      {"sql": "SHOW GRANTS TO USER test_public_user", "expect": {"rowCount": 0}},
+      {"sql": "CREATE ROLE IF NOT EXISTS listed_role"},
+      {"sql": "GRANT ROLE listed_role TO USER test_public_user"},
+      {"sql": "SHOW GRANTS TO USER test_public_user"},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"rows": [["LISTED_ROLE"]]}}
+    ]},
+    {"name": "an-explicit-public-grant-is-not-listed-for-a-user-with-a-password", "steps": [
+      {"sql": "CREATE USER IF NOT EXISTS test_public_user2 PASSWORD = 'pass123' DEFAULT_ROLE = 'PUBLIC'"},
+      {"sql": "SHOW GRANTS TO USER test_public_user2", "expect": {"rowCount": 0}},
+      {"sql": "GRANT ROLE PUBLIC TO USER test_public_user2"},
+      {"sql": "SHOW GRANTS TO USER test_public_user2", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

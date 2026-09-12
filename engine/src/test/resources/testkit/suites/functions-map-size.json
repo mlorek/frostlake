@@ -1,0 +1,32 @@
+{
+  "suite": "functions-map-size",
+  "description": "MAP_SIZE(map) - the number of entries, every expectation measured live. An empty map is 0, a NULL map answers NULL, and an entry whose VALUE is NULL still counts because the pair is kept as a JSON null. A plain OBJECT is refused, and so is the ARRAY that MAP_KEYS hands back. Converted 1:1 from functions/MapSizeTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-counts-the-entries", "steps": [
+      {"sql": "SELECT MAP_SIZE(OBJECT_CONSTRUCT('a',1,'b',2)::MAP(VARCHAR,INT))", "expect": {"value": "2"}},
+      {"sql": "SELECT MAP_SIZE(MAP_CONSTRUCT('x',1,'y',2,'z',3))", "expect": {"value": "3"}}
+    ]},
+    {"name": "an-empty-map-is-zero", "steps": [
+      {"sql": "SELECT MAP_SIZE(OBJECT_CONSTRUCT()::MAP(VARCHAR,INT))", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-null-map-answers-null", "steps": [
+      {"sql": "SELECT MAP_SIZE(NULL::MAP(VARCHAR,INT))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-entry-whose-value-is-null-still-counts", "steps": [
+      {"sql": "SELECT MAP_SIZE(MAP_INSERT(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT), 'b', NULL))",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "it-reads-a-map-column", "steps": [
+      {"sql": "CREATE TABLE ms (m MAP(VARCHAR,INT))"},
+      {"sql": "INSERT INTO ms SELECT OBJECT_CONSTRUCT('z',1,'a',2,'M',3)::MAP(VARCHAR,INT)"},
+      {"sql": "SELECT MAP_SIZE(m) FROM ms", "expect": {"value": "3"}}
+    ]},
+    {"name": "a-plain-object-and-a-key-array-are-both-refused", "steps": [
+      {"sql": "SELECT MAP_SIZE(OBJECT_CONSTRUCT('a',1))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_SIZE'"}}},
+      {"sql": "SELECT MAP_SIZE(MAP_KEYS(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT)))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_SIZE'"}}}
+    ]}
+  ]
+}

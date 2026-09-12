@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -35,4 +36,29 @@ public class RegrAvgx extends AggregateFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /**
+     * Only the X — the SECOND argument — is converted to a DOUBLE under live's null guard, so only it
+     * is refused outside the numbers, the strings and VARIANT; the Y is merely null-checked and takes
+     * a BOOLEAN or a DATE (live-verified). See {@link SemiStructuredRejection#DOUBLE_CONVERSION_PARAMETER}.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+    }
 }

@@ -39,8 +39,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ORDER BY of an IMPLICITLY aggregated query, which live runs — that query has exactly one row, so no
  * ordering of it can change anything.
  *
- * <p>Live re-prints the call canonicalised where this prints it as written, so the cases assert the
- * sentence around the brackets.
+ * <p>The bracketed call is re-printed from the analysed plan, not echoed from the source — see
+ * {@code CanonicalRefusalEchoTest}, which asserts that form; these cases assert the sentence.
  */
 public class GroupedOrderByWindowTest extends BaseDatabaseTest {
 
@@ -50,7 +50,7 @@ public class GroupedOrderByWindowTest extends BaseDatabaseTest {
     @Override
     protected void setupTest() {
         engine.execute("CREATE OR REPLACE TABLE g (a INT, b INT, c INT)");
-        engine.execute("INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)");
+        engine.execute("INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 5, 300)");
     }
 
     private String refusal(final String sql) {
@@ -104,13 +104,20 @@ public class GroupedOrderByWindowTest extends BaseDatabaseTest {
     /** An IMPLICITLY aggregated query answers one row, and live orders it by a window quite happily. */
     @Test
     public void implicitAggregationAcceptsAWindowKey() {
-        assertEquals("60", order("SELECT SUM(b) FROM g ORDER BY ROW_NUMBER() OVER (ORDER BY 1)"));
+        assertEquals("35", order("SELECT SUM(b) FROM g ORDER BY ROW_NUMBER() OVER (ORDER BY 1)"));
     }
 
-    /** And the ordinary grouped keys are untouched. */
+    /**
+     * And the ordinary grouped keys are untouched — the two of them disagreeing is the point.
+     *
+     * <p>The group sums are 30 and 5, so the aggregate key puts group 2 FIRST while the dimension key
+     * keeps it second. They were once 30 and 30: tied, which no engine has to break the same way twice,
+     * so live answered {@code 1,2} most runs and {@code 2,1} occasionally and the cell proved nothing
+     * either way.
+     */
     @Test
     public void theOrdinaryGroupedKeysStillOrder() {
         assertEquals("1,2", order(GROUPED + "a"));
-        assertEquals("1,2", order(GROUPED + "SUM(b)"));
+        assertEquals("2,1", order(GROUPED + "SUM(b)"));
     }
 }

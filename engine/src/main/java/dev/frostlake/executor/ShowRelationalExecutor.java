@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.Database;
@@ -30,18 +31,18 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.ColumnTypeJson;
-import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
-import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * SHOW / DESCRIBE handlers for relational objects: databases, schemas, tables, views, columns and the
@@ -113,14 +114,42 @@ final class ShowRelationalExecutor {
 
     /** One SHOW OBJECTS row in live's column order.
      *  Byte counts are always zero: the engine holds rows in memory and has no on-disk footprint. */
-    private Row objectRow(final LocalDateTime createdOn, final String name, final String dbName,
+    private Row objectRow(final OffsetDateTime createdOn, final String name, final String dbName,
                           final String scName, final String kind, final String comment,
                           final String clusterBy, final long rowCount, final String owner,
-                          final boolean hybrid, final boolean dynamic) {
+                          final String retentionTime, final boolean hybrid, final boolean dynamic) {
         return new Row(Arrays.asList(createdOn, name, dbName, scName, kind,
             ShowResultHelpers.text(comment), clusterBy, rowCount, 0L, owner,
-            DEFAULT_RETENTION_TIME, ShowResultHelpers.ownerRoleType(owner),
+            retentionTime, ShowResultHelpers.ownerRoleType(owner),
             hybrid ? "Y" : "N", dynamic ? "Y" : "N", "N", "N"));
+    }
+
+    /**
+     * The retention SHOW reports, resolved through the chain: the object's own declared value, else
+     * its container's, else the account default of 1 — INHERITANCE IS LIVE (live-verified: a schema
+     * with no value of its own follows its database's CURRENT value, ALTER included, and UNSET
+     * restores exactly that fallback).
+     */
+    private String effectiveRetention(final Database database, final Schema schema,
+                                      final Table table) {
+        if (table != null && table.getDataRetentionTimeInDays() != null) {
+            return String.valueOf(table.getDataRetentionTimeInDays());
+        }
+        if (schema != null && schema.getDataRetentionTimeInDays() != null) {
+            return String.valueOf(schema.getDataRetentionTimeInDays());
+        }
+        if (database != null && database.getDataRetentionTimeInDays() != null) {
+            return String.valueOf(database.getDataRetentionTimeInDays());
+        }
+        return DEFAULT_RETENTION_TIME;
+    }
+
+    private Database databaseOrNull(final String name) {
+        try {
+            return name == null ? null : catalog.getDatabase(name);
+        } catch (final RuntimeException missing) {
+            return null;
+        }
     }
 
     private final Catalog catalog;
@@ -149,7 +178,7 @@ final class ShowRelationalExecutor {
 
     public ResultSet showDatabases() {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("is_default", StringType.VARCHAR),
             new ResultSetColumn("is_current", StringType.VARCHAR),
@@ -175,8 +204,10 @@ final class ShowRelationalExecutor {
                 "",
                 db.getOwner(),
                 ShowResultHelpers.text(db.getComment()),
-                "",
-                "1",
+                // options is where SHOW spells transience: the word TRANSIENT, or nothing at all for
+                // a permanent object — not a YES/NO cell like INFORMATION_SCHEMA's.
+                db.isTransientObject() ? "TRANSIENT" : "",
+                effectiveRetention(db, null, null),
                 "STANDARD",
                 ShowResultHelpers.OWNER_ROLE_TYPE,
                 null, null, null
@@ -187,7 +218,7 @@ final class ShowRelationalExecutor {
 
     public ResultSet showSchemas(final String databaseName) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("is_default", StringType.VARCHAR),
             new ResultSetColumn("is_current", StringType.VARCHAR),
@@ -212,14 +243,13 @@ final class ShowRelationalExecutor {
                 ShowResultHelpers.createdOn(schema.getCreatedTime()),
                 schema.getName(),
                 "N",
-                // Schema names are stored verbatim but the current schema is tracked upper-cased,
-                // so compare case-insensitively (matches the engine's case-insensitive name lookups).
+                // The current schema is tracked by its stored name; names are unique ignoring case.
                 schema.getName().equalsIgnoreCase(curSchema) ? "Y" : "N",
                 dbName,
                 ShowResultHelpers.text(schema.getOwner()),
                 ShowResultHelpers.text(schema.getComment()),
-                "",
-                DEFAULT_RETENTION_TIME,
+                schema.isTransientObject() ? "TRANSIENT" : "",
+                effectiveRetention(databaseOrNull(dbName), schema, null),
                 ShowResultHelpers.ownerRoleType(schema.getOwner()),
                 null, null, null, null,
                 // Spelled as the text false, not N — live's is_nested convention differs from the
@@ -288,7 +318,7 @@ final class ShowRelationalExecutor {
         // TABLE(RESULT_SCAN(LAST_QUERY_ID())) by real migration scripts, so the names must exist
         // even where the feature is a constant here.
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -316,7 +346,7 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("row_timestamp", StringType.VARCHAR),
             new ResultSetColumn("error_logging", StringType.VARCHAR)
         );
-        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        final String dbName = databaseName != null ? databaseName : ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, true)) {
             final String scName = schema.getName();
@@ -336,7 +366,7 @@ final class ShowRelationalExecutor {
                     (long) table.getRowCount(),
                     0L,
                     ShowResultHelpers.text(table.getOwner()),
-                    DEFAULT_RETENTION_TIME,
+                    effectiveRetention(databaseOrNull(dbName), schema, table),
                     // Live turns automatic clustering on for any table that carries a clustering key.
                     // Change tracking is the table's own flag — the option, ALTER … SET, or a stream's
                     // creation flips it on, and it survives the stream.
@@ -400,7 +430,7 @@ final class ShowRelationalExecutor {
 
     private ResultSet showViewsScoped(final String schemaName, final String databaseName) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("reserved", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
@@ -413,12 +443,14 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
             new ResultSetColumn("change_tracking", StringType.VARCHAR)
         );
-        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
-        final List<Row> rows = new ArrayList<>();
+        final String dbName = databaseName != null ? databaseName : ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        // A MATERIALIZED view is listed here too, with is_materialized true — and the two kinds are
+        // listed together in NAME order, not one kind after the other (live-verified).
+        final Map<String, Row> byName = new TreeMap<>();
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, true)) {
             final String scName = schema.getName();
             for (final View view : schema.getViews()) {
-                rows.add(new Row(Arrays.asList(
+                byName.put(scName + "." + view.getName(), new Row(Arrays.asList(
                     ShowResultHelpers.createdOn(view.getCreatedTime()),
                     view.getName(),
                     "",
@@ -432,8 +464,21 @@ final class ShowRelationalExecutor {
                     ShowResultHelpers.ownerRoleType(view.getOwner()), "OFF"
                 )));
             }
+            for (final MaterializedView mv : schema.getMaterializedViews()) {
+                byName.put(scName + "." + mv.getName(), new Row(Arrays.asList(
+                    ShowResultHelpers.createdOn(mv.getCreatedTime()),
+                    mv.getName(),
+                    "",
+                    dbName, scName,
+                    ShowResultHelpers.text(mv.getOwner()),
+                    ShowResultHelpers.text(mv.getComment()),
+                    mv.ddl(scName + "." + mv.getName()),
+                    String.valueOf(mv.isSecure()), "true",
+                    ShowResultHelpers.ownerRoleType(mv.getOwner()), "OFF"
+                )));
+            }
         }
-        return new ResultSet(columns, rows);
+        return new ResultSet(columns, new ArrayList<>(byName.values()));
     }
 
     public ResultSet showMaterializedViews(final String schemaName) {
@@ -445,9 +490,20 @@ final class ShowRelationalExecutor {
         return showMaterializedViewsScoped(null, databaseName);
     }
 
+    /** SHOW MATERIALIZED VIEWS with no current database: every materialized view of every database. */
+    public ResultSet showMaterializedViewsInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showMaterializedViewsInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showMaterializedViews(null);
+    }
+
     private ResultSet showMaterializedViewsScoped(final String schemaName, final String databaseName) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -456,7 +512,7 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("text", StringType.VARCHAR),
             new ResultSetColumn("is_secure", StringType.VARCHAR)
         );
-        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        final String dbName = databaseName != null ? databaseName : ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, false)) {
             final String scName = schema.getName();
@@ -510,16 +566,23 @@ final class ShowRelationalExecutor {
     /** Every column of every relation in one schema — tables, views and materialized views alike. */
     private void addSchemaColumnRows(final List<Row> rows, final Schema schema,
                                      final String databaseName) {
+        // Ordered by RELATION NAME across the three kinds, not kind by kind (live-verified).
+        final Map<String, List<Row>> byRelation = new TreeMap<>();
         for (final Table table : schema.getTables()) {
-            addTableColumnRows(rows, table, schema.getName(), databaseName);
+            final List<Row> relationRows = new ArrayList<>();
+            addTableColumnRows(relationRows, table, schema.getName(), databaseName);
+            byRelation.put(table.getName(), relationRows);
         }
         for (final View v : schema.getViews()) {
-            rows.addAll(viewColumnRows(v.getName(), v.getResolvedColumns(), v.getColumnNames(),
-                databaseName, schema.getName()));
+            byRelation.put(v.getName(), viewColumnRows(v.getName(), v.getResolvedColumns(),
+                v.getColumnNames(), databaseName, schema.getName()));
         }
         for (final MaterializedView mv : schema.getMaterializedViews()) {
-            rows.addAll(viewColumnRows(mv.getName(), mv.getResolvedColumns(), mv.getColumnNames(),
-                databaseName, schema.getName()));
+            byRelation.put(mv.getName(), viewColumnRows(mv.getName(), mv.getResolvedColumns(),
+                mv.getColumnNames(), databaseName, schema.getName()));
+        }
+        for (final Map.Entry<String, List<Row>> relation : byRelation.entrySet()) {
+            rows.addAll(relation.getValue());
         }
     }
 
@@ -591,13 +654,13 @@ final class ShowRelationalExecutor {
 
     public ResultSet showColumnsScoped(final String name, final boolean view) {
         final List<ResultSetColumn> columns = describeColumnsShape();
-        final Schema schema = ShowResultHelpers.resolveDescribeSchema(catalog);
         final List<Row> rows = new ArrayList<>();
         if (name == null) {
             // The unnamed listing walks EVERY relation in the current schema, not just the tables:
             // over one table, one view and one materialized view a live account answers five rows,
             // one per column of all three (live-verified).
-            addSchemaColumnRows(rows, schema, catalog.getCurrentDatabase());
+            addSchemaColumnRows(rows, ShowResultHelpers.resolveDescribeSchema(catalog),
+                catalog.getCurrentDatabase());
             return new ResultSet(columns, rows);
         }
         if (view && QualifiedName.parse(name).size() < 3) {
@@ -608,6 +671,7 @@ final class ShowRelationalExecutor {
                 "Must specify the full search path starting from database for "
                     + QualifiedName.parse(name).last().toUpperCase()));
         }
+        rejectWithoutCurrentDatabase(name);
         // The named kind is NOT a filter: TABLE, VIEW and the bare form each resolve a table, a view
         // or a materialized view alike, exactly as DESCRIBE does. The keyword decides only the
         // wording when nothing by that name exists (live-verified).
@@ -626,8 +690,25 @@ final class ShowRelationalExecutor {
         // Nothing derived by that name: the table path owns the lookup and its refusal, which echoes
         // the name as the statement WROTE it and speaks the named kind.
         final Table table = catalog.resolveTableAsWritten(name, view ? "View" : "Table");
-        addTableColumnRows(rows, table, schema.getName(), catalog.getCurrentDatabase());
+        addTableColumnRows(rows, table, relationSchema(name), relationDatabase(name));
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * A one- or two-part name in a session with no current database: live misses the bare name the way
+     * any bare lookup misses, and refuses the schema-qualified one by the operation's name.
+     */
+    private void rejectWithoutCurrentDatabase(final String name) {
+        if (catalog.getCurrentDatabase() != null) {
+            return;
+        }
+        final int parts = QualifiedName.parse(name).size();
+        if (parts == 1) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table", name));
+        }
+        if (parts == 2) {
+            throw NoCurrentDatabaseRefusal.naming("SHOW COLUMNS");
+        }
     }
 
     /** The owning database of a named relation: the qualified name's own, else the current one. */
@@ -656,7 +737,7 @@ final class ShowRelationalExecutor {
                 col.getName(),
                 // The data_type cell is a JSON descriptor in Snowflake's internal vocabulary,
                 // never a type name — see ColumnTypeJson.
-                ColumnTypeJson.render(col.getDataType(), col.isNullable()),
+                ColumnTypeJson.render(col.getDataType(), col.isNullable(), col.getCollation()),
                 // Snowflake reports NOT_NULL for a non-nullable column and the text "true" for a
                 // nullable one (live-captured), not Y/N.
                 col.isNullable() ? "true" : "NOT_NULL",
@@ -693,7 +774,7 @@ final class ShowRelationalExecutor {
         if (resolved != null && !resolved.isEmpty()) {
             for (final TableColumn col : resolved) {
                 rows.add(viewColumnRow(relationName, databaseName, schemaName, col.getName(),
-                    ColumnTypeJson.render(col.getDataType(), col.isNullable()), col.isNullable(),
+                    ColumnTypeJson.render(col.getDataType(), col.isNullable(), col.getCollation()), col.isNullable(),
                     col.getComment()));
             }
             return rows;
@@ -745,7 +826,7 @@ final class ShowRelationalExecutor {
     private ResultSet showObjectsScoped(final String schemaName, final String databaseName) {
         // Returns tables, views, functions, procedures, sequences, streams, tasks and dynamic tables.
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -762,30 +843,44 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("is_iceberg", StringType.VARCHAR),
             new ResultSetColumn("is_interactive", StringType.VARCHAR)
         );
-        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
-        final List<Row> rows = new ArrayList<>();
+        final String dbName = databaseName != null ? databaseName : ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        // Every kind is listed in NAME order, not kind by kind, and a materialized view is a VIEW here
+        // (live-verified).
+        final Map<String, Row> byName = new TreeMap<>();
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, true)) {
             final String scName = schema.getName();
             for (final Table t : schema.getTables()) {
                 // Live reports transient tables as plain TABLE here, unlike SHOW TABLES.
-                rows.add(objectRow(ShowResultHelpers.createdOn(t.getCreatedTime()), t.getName(),
+                byName.put(scName + "." + t.getName(),
+                    objectRow(ShowResultHelpers.createdOn(t.getCreatedTime()), t.getName(),
                     dbName, scName, t.isTemporary() ? "TEMPORARY" : "TABLE",
                     ShowResultHelpers.text(t.getComment()),
                     clusterByText(t.getClusterKeys()), (long) t.getRowCount(), ShowResultHelpers.text(t.getOwner()),
-                    t.isHybrid(), false));
+                    effectiveRetention(databaseOrNull(dbName), schema, t), t.isHybrid(), false));
             }
             for (final View v : schema.getViews()) {
-                rows.add(objectRow(ShowResultHelpers.createdOn(v.getCreatedTime()), v.getName(),
+                byName.put(scName + "." + v.getName(),
+                    objectRow(ShowResultHelpers.createdOn(v.getCreatedTime()), v.getName(),
                     dbName, scName, "VIEW", ShowResultHelpers.text(v.getComment()),
-                    "", 0L, ShowResultHelpers.text(v.getOwner()), false, false));
+                    "", 0L, ShowResultHelpers.text(v.getOwner()),
+                    effectiveRetention(databaseOrNull(dbName), schema, null), false, false));
+            }
+            for (final MaterializedView mv : schema.getMaterializedViews()) {
+                byName.put(scName + "." + mv.getName(),
+                    objectRow(ShowResultHelpers.createdOn(mv.getCreatedTime()), mv.getName(),
+                    dbName, scName, "VIEW", ShowResultHelpers.text(mv.getComment()),
+                    "", 0L, ShowResultHelpers.text(mv.getOwner()),
+                    effectiveRetention(databaseOrNull(dbName), schema, null), false, false));
             }
             for (final DynamicTable dt : schema.getDynamicTables()) {
-                rows.add(objectRow(ShowResultHelpers.createdOn(dt.getCreatedTime()), dt.getName(),
+                byName.put(scName + "." + dt.getName(),
+                    objectRow(ShowResultHelpers.createdOn(dt.getCreatedTime()), dt.getName(),
                     dbName, scName, "TABLE", dt.getComment(), "", 0L,
-                    ShowResultHelpers.text(dt.getOwner()), false, true));
+                    ShowResultHelpers.text(dt.getOwner()),
+                    effectiveRetention(databaseOrNull(dbName), schema, null), false, true));
             }
         }
-        return new ResultSet(columns, rows);
+        return new ResultSet(columns, new ArrayList<>(byName.values()));
     }
 
     /**
@@ -853,8 +948,12 @@ final class ShowRelationalExecutor {
         final List<Row> rows = new ArrayList<>();
         if (resolved != null) {
             for (final TableColumn col : resolved) {
+                // A derived column carries its collation in the type cell exactly as a declared one
+                // does — the view's SELECT settled it, and DESCRIBE reports what the view produces.
+                final String derivedType = SqlTypeNames.columnMetadata(col.getDataType());
                 rows.add(new Row(Arrays.asList(col.getName(),
-                    SqlTypeNames.columnMetadata(col.getDataType()),
+                    col.getCollation() != null && !col.getCollation().isEmpty()
+                        ? derivedType + " COLLATE '" + col.getCollation() + "'" : derivedType,
                     "COLUMN", col.isNullable() ? "Y" : "N", null, "N", "N", null, null,
                     col.getComment(), null, null, null)));
             }

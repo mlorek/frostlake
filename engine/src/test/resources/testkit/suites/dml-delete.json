@@ -1,0 +1,57 @@
+{
+  "suite": "dml-delete",
+  "description": "DELETE: by key, WHERE-filtered, multi-row and complex predicates, no-match, delete-all, delete-then-reinsert, and preservation of unmatched rows. Converted 1:1 from dml/DeleteTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "basic-delete", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "DELETE FROM users WHERE id = 1"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "delete-with-where", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "DELETE FROM users WHERE age < 30"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "delete-multiple-rows", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35), (4, 'Diana', 28)"},
+      {"sql": "DELETE FROM users WHERE age > 25 AND age < 35"},
+      {"sql": "SELECT name FROM users ORDER BY id", "expect": {"rows": [["Bob"], ["Charlie"]], "ordered": true}}
+    ]},
+    {"name": "delete-no-match", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "DELETE FROM users WHERE id = 999"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "delete-all", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "DELETE FROM users"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "delete-with-complex-where", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35), (4, 'Diana', 28)"},
+      {"sql": "DELETE FROM users WHERE age = 30 OR age > 33"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "delete-and-reinsert", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "DELETE FROM users WHERE id = 1"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 0}},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "delete-preserves-other-rows", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)"},
+      {"sql": "DELETE FROM users WHERE id = 2"},
+      {"sql": "SELECT name FROM users ORDER BY id", "expect": {"rows": [["Alice"], ["Charlie"]], "ordered": true}}
+    ]}
+  ]
+}

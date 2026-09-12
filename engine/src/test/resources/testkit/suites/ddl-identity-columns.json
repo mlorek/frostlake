@@ -1,0 +1,65 @@
+{
+  "suite": "ddl-identity-columns",
+  "description": "AUTOINCREMENT / IDENTITY column forms: word seeds (START n, INCREMENT n, in any order, with ORDER/NOORDER parsed), the (start, step) paren form, negative increments counting down, plain AUTOINCREMENT defaulting to (1,1), and IDENTITY(start, step) surviving a table-level PRIMARY KEY. Two-single-INSERT tests skip snowflake (a NOORDER column allocates in nondeterministic batches per statement there - the Java tests carried the same assumption); multi-row single INSERTs are contiguous and run everywhere. Converted 1:1 from ddl/IdentityColumnFormsTest and IdentityWithPrimaryKeyTest (both now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "autoincrement-word-forms-in-any-order-and-alone", "steps": [
+      {"sql": "CREATE TABLE w1 (id INT AUTOINCREMENT START 10, n VARCHAR)"},
+      {"sql": "INSERT INTO w1 (n) VALUES ('a'), ('b')"},
+      {"sql": "SELECT id FROM w1 ORDER BY id", "expect": {"rows": [["10"], ["11"]], "ordered": true}},
+      {"sql": "CREATE TABLE w2 (id INT AUTOINCREMENT INCREMENT 2, n VARCHAR)"},
+      {"sql": "INSERT INTO w2 (n) VALUES ('a'), ('b')"},
+      {"sql": "SELECT id FROM w2 ORDER BY id", "expect": {"rows": [["1"], ["3"]], "ordered": true}},
+      {"sql": "CREATE TABLE w3 (id INT AUTOINCREMENT INCREMENT 2 START 10 NOORDER, n VARCHAR)"},
+      {"sql": "INSERT INTO w3 (n) VALUES ('a'), ('b')"},
+      {"sql": "SELECT id FROM w3 ORDER BY id", "expect": {"rows": [["10"], ["12"]], "ordered": true}},
+      {"sql": "CREATE TABLE w4 (id INT AUTOINCREMENT START 10 ORDER, n VARCHAR)"},
+      {"sql": "INSERT INTO w4 (n) VALUES ('a')"},
+      {"sql": "SELECT id FROM w4", "expect": {"value": "10"}}
+    ]},
+    {"name": "autoincrement-negative-increment-counts-down", "steps": [
+      {"sql": "CREATE TABLE wneg (id BIGINT AUTOINCREMENT INCREMENT -1, n VARCHAR)"},
+      {"sql": "INSERT INTO wneg (n) VALUES ('a'), ('b')"},
+      {"sql": "SELECT id FROM wneg ORDER BY id DESC", "expect": {"rows": [["1"], ["0"]], "ordered": true}}
+    ]},
+    {"name": "autoincrement-with-paren-seed-and-step",
+     "skip": {"backends": ["snowflake"], "reason": "a NOORDER autoincrement allocates in nondeterministic per-statement batches on a real account (Java test had the same assumption); Frostlake models the gapless allocation"},
+     "steps": [
+      {"sql": "CREATE TABLE i1 (id NUMBER AUTOINCREMENT(100,5), n VARCHAR)"},
+      {"sql": "INSERT INTO i1 (n) VALUES ('a')"},
+      {"sql": "INSERT INTO i1 (n) VALUES ('b')"},
+      {"sql": "SELECT id FROM i1 ORDER BY id", "expect": {"rows": [["100"], ["105"]], "ordered": true}}
+    ]},
+    {"name": "identity-start-increment-form",
+     "skip": {"backends": ["snowflake"], "reason": "a NOORDER autoincrement allocates in nondeterministic per-statement batches on a real account (Java test had the same assumption); Frostlake models the gapless allocation"},
+     "steps": [
+      {"sql": "CREATE TABLE i2 (id NUMBER IDENTITY START 50 INCREMENT 10, n VARCHAR)"},
+      {"sql": "INSERT INTO i2 (n) VALUES ('a')"},
+      {"sql": "INSERT INTO i2 (n) VALUES ('b')"},
+      {"sql": "SELECT id FROM i2 ORDER BY id", "expect": {"rows": [["50"], ["60"]], "ordered": true}}
+    ]},
+    {"name": "autoincrement-with-order-keyword", "steps": [
+      {"sql": "CREATE TABLE i3 (id NUMBER AUTOINCREMENT(1,1) ORDER, n VARCHAR)"},
+      {"sql": "INSERT INTO i3 (n) VALUES ('a')"},
+      {"sql": "SELECT id FROM i3", "expect": {"value": "1"}}
+    ]},
+    {"name": "plain-autoincrement-still-defaults-to-one-one", "steps": [
+      {"sql": "CREATE TABLE i4 (id NUMBER AUTOINCREMENT, n VARCHAR)"},
+      {"sql": "INSERT INTO i4 (n) VALUES ('a')"},
+      {"sql": "SELECT id FROM i4", "expect": {"value": "1"}}
+    ]},
+    {"name": "identity-start-and-step-survive-a-table-level-primary-key",
+     "skip": {"backends": ["snowflake"], "reason": "a NOORDER autoincrement allocates in nondeterministic per-statement batches on a real account (Java test had the same assumption); Frostlake models the gapless allocation"},
+     "steps": [
+      {"sql": "CREATE TABLE ip (id NUMBER IDENTITY(100,5), name STRING, PRIMARY KEY (name))"},
+      {"sql": "INSERT INTO ip (name) VALUES ('x')"},
+      {"sql": "INSERT INTO ip (name) VALUES ('y')"},
+      {"sql": "SELECT id FROM ip ORDER BY id", "expect": {"rows": [["100"], ["105"]], "ordered": true}}
+    ]},
+    {"name": "identity-start-and-step-without-a-primary-key", "steps": [
+      {"sql": "CREATE TABLE ip2 (id NUMBER IDENTITY(100,5), name STRING)"},
+      {"sql": "INSERT INTO ip2 (name) VALUES ('x')"},
+      {"sql": "SELECT id FROM ip2", "expect": {"value": "100"}}
+    ]}
+  ]
+}

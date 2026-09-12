@@ -1,0 +1,111 @@
+{
+  "suite": "query-union-values",
+  "description": "UNION / UNION ALL with ORDER BY, LIMIT, per-branch WHERE, literals; and $n positional parameters over VALUES (multi-row, expressions, WHERE, GROUP BY, joins, v.$n aliases, mixed with star). Converted 1:1 from query/UnionTest and ValuesWithPositionalParametersTest (both now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "union-all", "steps": [
+      {"sql": "CREATE TABLE table1 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table1 VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE TABLE table2 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table2 VALUES (3, 'Charlie'), (4, 'Diana'), (5, 'Eve')"},
+      {"sql": "SELECT id, name FROM table1 UNION ALL SELECT id, name FROM table2", "expect": {"rowCount": 6}}
+    ]},
+    {"name": "union", "steps": [
+      {"sql": "CREATE TABLE table1 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table1 VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE TABLE table2 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table2 VALUES (3, 'Charlie'), (4, 'Diana'), (5, 'Eve')"},
+      {"sql": "SELECT id, name FROM table1 UNION SELECT id, name FROM table2", "expect": {"rowCount": 5}}
+    ]},
+    {"name": "union-with-order-by", "steps": [
+      {"sql": "CREATE TABLE table1 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table1 VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE TABLE table2 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table2 VALUES (3, 'Charlie'), (4, 'Diana'), (5, 'Eve')"},
+      {"sql": "SELECT id, name FROM table1 UNION SELECT id, name FROM table2 ORDER BY id",
+       "expect": {"rows": [["1", "Alice"], ["2", "Bob"], ["3", "Charlie"], ["4", "Diana"], ["5", "Eve"]], "ordered": true}}
+    ]},
+    {"name": "union-all-with-order-by", "steps": [
+      {"sql": "CREATE TABLE table1 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table1 VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE TABLE table2 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table2 VALUES (3, 'Charlie'), (4, 'Diana'), (5, 'Eve')"},
+      {"sql": "SELECT id FROM table1 UNION ALL SELECT id FROM table2 ORDER BY id",
+       "expect": {"rows": [["1"], ["2"], ["3"], ["3"], ["4"], ["5"]], "ordered": true}}
+    ]},
+    {"name": "union-with-limit", "steps": [
+      {"sql": "CREATE TABLE table1 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table1 VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE TABLE table2 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table2 VALUES (3, 'Charlie'), (4, 'Diana'), (5, 'Eve')"},
+      {"sql": "SELECT id, name FROM table1 UNION SELECT id, name FROM table2 LIMIT 3", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "multiple-unions", "steps": [
+      {"sql": "CREATE TABLE table1 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table1 VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE TABLE table2 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table2 VALUES (3, 'Charlie'), (4, 'Diana'), (5, 'Eve')"},
+      {"sql": "CREATE TABLE table3 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table3 VALUES (6, 'Frank'), (7, 'Grace')"},
+      {"sql": "SELECT id, name FROM table1 UNION ALL SELECT id, name FROM table2 UNION ALL SELECT id, name FROM table3", "expect": {"rowCount": 8}}
+    ]},
+    {"name": "union-with-where-clause", "steps": [
+      {"sql": "CREATE TABLE table1 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table1 VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "CREATE TABLE table2 (id INT, name VARCHAR)"},
+      {"sql": "INSERT INTO table2 VALUES (3, 'Charlie'), (4, 'Diana'), (5, 'Eve')"},
+      {"sql": "SELECT id, name FROM table1 WHERE id < 3 UNION SELECT id, name FROM table2 WHERE id > 3 ORDER BY id",
+       "expect": {"rows": [["1", "Alice"], ["2", "Bob"], ["4", "Diana"], ["5", "Eve"]], "ordered": true}}
+    ]},
+    {"name": "union-with-different-literals", "steps": [
+      {"sql": "SELECT 1 AS num, 'First' AS label UNION SELECT 2 AS num, 'Second' AS label UNION SELECT 1 AS num, 'First' AS label ORDER BY num",
+       "expect": {"rows": [["1", "First"], ["2", "Second"]], "ordered": true}}
+    ]},
+    {"name": "positional-from-values", "steps": [
+      {"sql": "SELECT $1, $2 FROM VALUES(1, 2)", "expect": {"rows": [["1", "2"]]}}
+    ]},
+    {"name": "positional-multiple-rows", "steps": [
+      {"sql": "SELECT $1, $2\nFROM VALUES(1, 2), (3, 4), (5, 6)", "expect": {"rows": [["1", "2"], ["3", "4"], ["5", "6"]]}}
+    ]},
+    {"name": "positional-with-strings", "steps": [
+      {"sql": "SELECT $1, $2\nFROM VALUES('Alice', 'Engineer'), ('Bob', 'Manager')", "expect": {"rows": [["Alice", "Engineer"], ["Bob", "Manager"]]}}
+    ]},
+    {"name": "positional-out-of-order", "steps": [
+      {"sql": "SELECT $2, $1\nFROM VALUES(1, 2)", "expect": {"rows": [["2", "1"]]}}
+    ]},
+    {"name": "positional-same-column-twice", "steps": [
+      {"sql": "SELECT $1, $1\nFROM VALUES(42)", "expect": {"rows": [["42", "42"]]}}
+    ]},
+    {"name": "positional-with-expressions", "steps": [
+      {"sql": "SELECT $1 + $2 AS sum, $1 * $2 AS product\nFROM VALUES(3, 4)", "expect": {"rows": [["7", "12"]]}}
+    ]},
+    {"name": "positional-with-where", "steps": [
+      {"sql": "SELECT $1, $2\nFROM VALUES(1, 10), (2, 20), (3, 30)\nWHERE $1 > 1", "expect": {"rows": [["2", "20"], ["3", "30"]]}}
+    ]},
+    {"name": "positional-with-order-by-column1", "steps": [
+      {"sql": "SELECT $1, $2\nFROM VALUES(3, 'C'), (1, 'A'), (2, 'B')\nORDER BY COLUMN1",
+       "expect": {"rows": [["1", "A"], ["2", "B"], ["3", "C"]], "ordered": true}}
+    ]},
+    {"name": "positional-three-columns", "steps": [
+      {"sql": "SELECT $1, $2, $3\nFROM VALUES(1, 2, 3)", "expect": {"rows": [["1", "2", "3"]]}}
+    ]},
+    {"name": "star-from-values", "steps": [
+      {"sql": "SELECT *\nFROM VALUES(1, 2, 3)", "expect": {"rowCount": 1, "rows": [["1", "2", "3"]]}}
+    ]},
+    {"name": "mixed-positional-and-star", "steps": [
+      {"sql": "SELECT $1, *\nFROM VALUES(10, 20)", "expect": {"rows": [["10", "10", "20"]]}}
+    ]},
+    {"name": "positional-with-group-by-column1", "steps": [
+      {"sql": "SELECT COLUMN1, COUNT(*)\nFROM VALUES(1, 10), (1, 20), (2, 30)\nGROUP BY COLUMN1", "expect": {"rows": [["1", "2"], ["2", "1"]]}}
+    ]},
+    {"name": "positional-with-join", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "SELECT t.name, v.value\nFROM test_table t\nJOIN (SELECT $1 AS id, $2 AS value FROM VALUES(1, 100), (2, 200)) v\nON t.id = v.id",
+       "expect": {"rows": [["Alice", "100"], ["Bob", "200"]]}}
+    ]},
+    {"name": "positional-with-table-alias", "steps": [
+      {"sql": "SELECT v.$1, v.$2\nFROM VALUES(5, 10) AS v", "expect": {"rows": [["5", "10"]]}}
+    ]}
+  ]
+}

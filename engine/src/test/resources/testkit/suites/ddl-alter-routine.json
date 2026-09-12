@@ -1,0 +1,34 @@
+{
+  "suite": "ddl-alter-routine",
+  "description": "ALTER FUNCTION / PROCEDURE rename and comment forms, converted 1:1 from ddl/AlterRoutineTest.java (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "alter-function-rename",
+      "steps": [
+        {"sql": "CREATE FUNCTION add1(x INTEGER) RETURNS INTEGER AS $$ x + 1 $$"},
+        {"sql": "ALTER FUNCTION add1(INTEGER) RENAME TO plus1"},
+        {"sql": "SELECT plus1(5)", "expect": {"value": "6"}},
+        {"sql": "SELECT add1(5)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "alter-function-set-comment",
+      "steps": [
+        {"sql": "CREATE FUNCTION fc(x INTEGER) RETURNS INTEGER AS $$ x $$"},
+        {"sql": "ALTER FUNCTION fc(INTEGER) SET COMMENT = 'doubler'"},
+        {"sql": "SELECT fc(3)", "expect": {"value": "3"}}
+      ]
+    },
+    {
+      "name": "alter-procedure-rename",
+      "steps": [
+        {"sql": "CREATE PROCEDURE pr() RETURNS STRING LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
+        {"sql": "ALTER PROCEDURE pr() RENAME TO qr"},
+        {"sql": "DESCRIBE PROCEDURE qr()"},
+        {"sql": "DESCRIBE PROCEDURE qr", "expect": {"error": {}}},
+        {"sql": "DESCRIBE PROCEDURE pr()", "expect": {"error": {}}}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "suite": "procedures-scoped-transaction",
+  "description": "Snowflake's scoped-transaction rule, live-verified: a transaction STARTED inside a stored procedure must be completed inside it - returning with it open rolls the transaction back and the CALL fails with 'Scoped transaction started in stored procedure is incomplete and it was rolled back.' A transaction opened by the CALLER passes through untouched, and a committed-inside transaction works normally. Separately, a procedure runs in the caller's session and may not RECONFIGURE it: live refuses the whole family by statement TYPE - every USE form is USE and a session parameter change is ALTER_SESSION - while SHOW, GRANT, DDL and COMMIT are all fine inside a body. That is an OWNER's-rights rule: an EXECUTE AS CALLER body runs with the caller's privileges and changes session state freely, using the very statements the owner's-rights form refuses. Converted 1:1 from procedures/ScopedTransactionTest (now retired). Not covered, as in the Java: a bare SET inside a body reaches neither of the paths this rule guards - it is a session variable the engine routes elsewhere - so it is left uncovered rather than asserted against behaviour that has not been aligned.",
+  "tags": ["procedures", "converted"],
+  "tests": [
+    {"name": "an-open-scoped-transaction-rolls-back-and-errors", "steps": [
+      {"sql": "CREATE TABLE sct_t (i INTEGER)"},
+      {"sql": "CREATE PROCEDURE p_open_txn() RETURNS VARCHAR LANGUAGE SQL AS\nBEGIN\n    BEGIN TRANSACTION;\n    INSERT INTO sct_t VALUES (1);\n    RETURN 'left open';\nEND"},
+      {"sql": "CALL p_open_txn()", "expect": {"error": {"messageContains": "Scoped transaction started in stored procedure is incomplete and it was rolled back."}}},
+      {"sql": "SELECT COUNT(*) FROM sct_t", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-committed-inside-transaction-works", "steps": [
+      {"sql": "CREATE TABLE sct_c (i INTEGER)"},
+      {"sql": "CREATE PROCEDURE p_closed_txn() RETURNS VARCHAR LANGUAGE SQL AS\nBEGIN\n    BEGIN TRANSACTION;\n    INSERT INTO sct_c VALUES (2);\n    COMMIT;\n    RETURN 'committed';\nEND"},
+      {"sql": "CALL p_closed_txn()", "expect": {"value": "committed"}},
+      {"sql": "SELECT COUNT(*) FROM sct_c", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-caller-opened-transaction-passes-through", "steps": [
+      {"sql": "CREATE TABLE sct_o (i INTEGER)"},
+      {"sql": "CREATE PROCEDURE p_no_txn() RETURNS VARCHAR LANGUAGE SQL AS\nBEGIN\n    INSERT INTO sct_o VALUES (3);\n    RETURN 'ok';\nEND"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "CALL p_no_txn()", "expect": {"value": "ok"}},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM sct_o", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-procedure-may-not-change-the-session-it-runs-in", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE unsupported_proc() RETURNS STRING LANGUAGE SQL AS $$ BEGIN ALTER SESSION SET AUTOCOMMIT = FALSE; RETURN 'ok'; END $$"},
+      {"sql": "CALL unsupported_proc()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'ALTER_SESSION'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE unsupported_proc() RETURNS STRING LANGUAGE SQL AS $$ BEGIN USE DATABASE test_db; RETURN 'ok'; END $$"},
+      {"sql": "CALL unsupported_proc()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'USE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE unsupported_proc() RETURNS STRING LANGUAGE SQL AS $$ BEGIN USE SCHEMA test_schema; RETURN 'ok'; END $$"},
+      {"sql": "CALL unsupported_proc()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'USE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE unsupported_proc() RETURNS STRING LANGUAGE SQL AS $$ BEGIN USE ROLE PUBLIC; RETURN 'ok'; END $$"},
+      {"sql": "CALL unsupported_proc()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'USE'."}}}
+    ]},
+    {"name": "a-callers-rights-procedure-may-change-the-session", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE callers_rights_proc() RETURNS STRING LANGUAGE SQL\nEXECUTE AS CALLER\nAS $$ BEGIN\n    ALTER SESSION SET QUERY_TAG = 'from-callers-rights';\n    USE SCHEMA test_schema;\n    RETURN 'ok';\nEND $$"},
+      {"sql": "CALL callers_rights_proc()", "expect": {"value": "ok"}}
+    ]},
+    {"name": "a-procedure-still-runs-the-statements-live-allows", "steps": [
+      {"sql": "CREATE TABLE allowed_sink (k INTEGER)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE allowed_proc() RETURNS STRING LANGUAGE SQL AS $$ BEGIN SHOW TABLES; RETURN 'ok'; END $$"},
+      {"sql": "CALL allowed_proc()", "expect": {"value": "ok"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE allowed_proc() RETURNS STRING LANGUAGE SQL AS $$ BEGIN CREATE OR REPLACE TABLE MADE (K NUMBER); RETURN 'ok'; END $$"},
+      {"sql": "CALL allowed_proc()", "expect": {"value": "ok"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE allowed_proc() RETURNS STRING LANGUAGE SQL AS $$ BEGIN COMMIT; RETURN 'ok'; END $$"},
+      {"sql": "CALL allowed_proc()", "expect": {"value": "ok"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE allowed_proc() RETURNS STRING LANGUAGE SQL AS $$ BEGIN INSERT INTO allowed_sink VALUES (1); RETURN 'ok'; END $$"},
+      {"sql": "CALL allowed_proc()", "expect": {"value": "ok"}},
+      {"sql": "SELECT COUNT(*) FROM allowed_sink", "expect": {"value": "1"}}
+    ]}
+  ]
+}

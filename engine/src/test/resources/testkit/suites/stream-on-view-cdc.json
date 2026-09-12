@@ -1,0 +1,67 @@
+{
+  "suite": "stream-on-view-cdc",
+  "description": "Change data capture for a stream defined ON a VIEW - previously inert, in that the DDL was accepted but no change was ever captured. Changes to the view's single base table are captured and PROJECTED THROUGH the view: only the view's columns surface and under the view's aliases, rows outside the view's WHERE predicate never appear, an ordinary update produces the usual DELETE-of-old plus INSERT-of-new pair, and an update that moves a row OUT of the view surfaces only the DELETE half. DML consumption advances a view stream exactly as it does a table stream. Views the change-tracking restrictions forbid are rejected at CREATE STREAM with Snowflake's own per-shape sentences (both live-verified): an INNER join view IS trackable, a LEFT OUTER join is refused by join type, and a GROUP BY view is refused as an aggregate. Converted 1:1 from stream/StreamOnViewCdcTest (now retired).",
+  "tags": ["stream", "converted"],
+  "tests": [
+    {"name": "an-insert-is-captured-through-the-view", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "CREATE VIEW vw AS SELECT * FROM src"},
+      {"sql": "CREATE STREAM st ON VIEW vw"},
+      {"sql": "INSERT INTO src VALUES (1, 'a')"},
+      {"sql": "SELECT id, v, METADATA$ACTION FROM st", "expect": {"rows": [[1, "a", "INSERT"]]}}
+    ]},
+    {"name": "the-views-projection-and-alias-apply", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "CREATE VIEW vw AS SELECT v AS label FROM src"},
+      {"sql": "CREATE STREAM st ON VIEW vw"},
+      {"sql": "INSERT INTO src VALUES (1, 'hello')"},
+      {"sql": "SELECT label, METADATA$ACTION FROM st", "expect": {"columns": ["LABEL", "METADATA$ACTION"], "rows": [["hello", "INSERT"]]}}
+    ]},
+    {"name": "the-views-where-filter-excludes-rows", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE VIEW vw AS SELECT id FROM src WHERE id > 10"},
+      {"sql": "CREATE STREAM st ON VIEW vw"},
+      {"sql": "INSERT INTO src VALUES (1), (11)"},
+      {"sql": "SELECT id FROM st", "expect": {"rows": [[11]]}}
+    ]},
+    {"name": "an-update-through-the-view-produces-a-pair", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (1, 'old')"},
+      {"sql": "CREATE VIEW vw AS SELECT v FROM src"},
+      {"sql": "CREATE STREAM st ON VIEW vw"},
+      {"sql": "UPDATE src SET v = 'new' WHERE id = 1"},
+      {"sql": "SELECT v, METADATA$ACTION FROM st ORDER BY METADATA$ACTION", "expect": {"rows": [["old", "DELETE"], ["new", "INSERT"]], "ordered": true}}
+    ]},
+    {"name": "an-update-moving-a-row-out-of-the-view-shows-the-delete-only", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, flag INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (1, 1)"},
+      {"sql": "CREATE VIEW vw AS SELECT id FROM src WHERE flag = 1"},
+      {"sql": "CREATE STREAM st ON VIEW vw"},
+      {"sql": "UPDATE src SET flag = 0 WHERE id = 1"},
+      {"sql": "SELECT id, METADATA$ACTION FROM st", "expect": {"rows": [[1, "DELETE"]]}}
+    ]},
+    {"name": "dml-consumption-advances-a-view-stream", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE TABLE dst (id INTEGER)"},
+      {"sql": "CREATE VIEW vw AS SELECT id FROM src"},
+      {"sql": "CREATE STREAM st ON VIEW vw"},
+      {"sql": "INSERT INTO src VALUES (1)"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 1}},
+      {"sql": "INSERT INTO dst SELECT id FROM st"},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}}
+    ]},
+    {"name": "an-inner-join-view-is-supported-and-an-outer-join-is-rejected", "steps": [
+      {"sql": "CREATE TABLE a (id INTEGER)"},
+      {"sql": "CREATE TABLE b (id INTEGER)"},
+      {"sql": "CREATE VIEW vw AS SELECT a.id FROM a JOIN b ON a.id = b.id"},
+      {"sql": "CREATE STREAM st ON VIEW vw"},
+      {"sql": "CREATE VIEW lvw AS SELECT a.id FROM a LEFT JOIN b ON a.id = b.id"},
+      {"sql": "CREATE STREAM lst ON VIEW lvw", "expect": {"error": {"messageContains": "Change tracking is not supported on queries with joins of type '[LEFT_OUTER_JOIN]'."}}}
+    ]},
+    {"name": "an-aggregate-view-is-rejected", "steps": [
+      {"sql": "CREATE TABLE a (id INTEGER)"},
+      {"sql": "CREATE VIEW vw AS SELECT COUNT(*) AS c FROM a GROUP BY id"},
+      {"sql": "CREATE STREAM st ON VIEW vw", "expect": {"error": {"messageContains": "Change tracking is not supported on queries with GROUP BY."}}}
+    ]}
+  ]
+}

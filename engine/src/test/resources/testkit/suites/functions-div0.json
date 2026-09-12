@@ -1,0 +1,19 @@
+{
+  "suite": "functions-div0",
+  "description": "DIV0(a, b) divides normally, answers 0 for a zero divisor, and special-cases ONLY the zero divisor: a NULL divisor follows standard division and yields NULL, as does a NULL dividend. Converted 1:1 from functions/Div0Test (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "normal-division", "steps": [
+      {"sql": "SELECT DIV0(10, 2)", "expect": {"value": "5"}}
+    ]},
+    {"name": "dividing-by-zero-returns-zero", "steps": [
+      {"sql": "SELECT DIV0(10, 0)", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-null-divisor-follows-standard-division", "steps": [
+      {"sql": "SELECT DIV0(10, NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-null-dividend-returns-null", "steps": [
+      {"sql": "SELECT DIV0(NULL, 5)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

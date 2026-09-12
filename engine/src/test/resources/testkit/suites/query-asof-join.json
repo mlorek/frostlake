@@ -1,0 +1,102 @@
+{
+  "suite": "query-asof-join",
+  "description": "Snowflake ASOF JOIN ... MATCH_CONDITION (...) [ON ...] - the closest-match time-series join. Every expectation was measured on a live Snowflake account with this exact fixture: q(k,t,v) = (1,10,100),(1,20,200),(2,10,300),(3,10,400) and r(k,t,w) = (1,5,1),(1,15,2),(1,25,3),(2,50,4). The join is LEFT OUTER, so unmatched left rows survive null-extended; >= picks the newest earlier right row and <= the oldest later one; a strict comparison excludes the equal row; without an ON clause every right row is a candidate, so the closest match is chosen across the WHOLE right table. A NULL on the match column makes the comparison UNKNOWN, so such a right row is never a candidate. MATCH_CONDITION accepts an expression on either side as long as each side reads only its OWN table - 'r.t <= q.t' is rejected even though it means the same thing - and only the four inequality operators are allowed. It is mandatory, it must PRECEDE the ON clause, and there is no LEFT / RIGHT / INNER ASOF spelling. The right table may be aliased with the words OFFSET and LIMIT, a live quirk found in sqlglot's Snowflake corpus. ASOF and MATCH_CONDITION stay usable as ordinary identifiers. Converted 1:1 from query/AsofJoinTest (now retired); the Java read individual row indexes, which the converted tests state as whole ordered row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "greater-or-equal-picks-the-newest-earlier-row-and-keeps-unmatched-left-rows", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.k, q.t, r.t, r.w FROM q ASOF JOIN r MATCH_CONDITION (q.t >= r.t) ON q.k = r.k ORDER BY q.k, q.t", "expect": {"rows": [[1,10,5,1],[1,20,15,2],[2,10,null,null],[3,10,null,null]], "ordered": true}}
+    ]},
+    {"name": "less-or-equal-picks-the-oldest-later-row", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.k, q.t, r.t FROM q ASOF JOIN r MATCH_CONDITION (q.t <= r.t) ON q.k = r.k ORDER BY q.k, q.t", "expect": {"rows": [[1,10,15],[1,20,25],[2,10,50],[3,10,null]], "ordered": true}}
+    ]},
+    {"name": "a-strict-comparison-excludes-the-equal-row", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.k, q.t, r.t FROM q ASOF JOIN r MATCH_CONDITION (q.t > r.t) ON q.k = r.k ORDER BY q.k, q.t", "expect": {"rows": [[1,10,5],[1,20,15],[2,10,null],[3,10,null]], "ordered": true}}
+    ]},
+    {"name": "without-on-every-right-row-is-a-candidate", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.k, q.t, r.k, r.t FROM q ASOF JOIN r MATCH_CONDITION (q.t >= r.t) ORDER BY q.k, q.t", "expect": {"rows": [[1,10,1,5],[1,20,1,15],[2,10,1,5],[3,10,1,5]], "ordered": true}}
+    ]},
+    {"name": "the-match-condition-may-carry-an-expression", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.t, r.t FROM q ASOF JOIN r MATCH_CONDITION (q.t >= r.t + 1) ON q.k = r.k ORDER BY q.t, r.t", "expect": {"rows": [[10,5],[10,null],[10,null],[20,15]], "ordered": true}}
+    ]},
+    {"name": "nulls-on-the-match-column-never-match", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "INSERT INTO r VALUES (1, NULL, 99)"},
+      {"sql": "SELECT q.t, r.t, r.w FROM q ASOF JOIN r MATCH_CONDITION (q.t >= r.t) ON q.k = r.k WHERE q.k = 1 ORDER BY q.t", "expect": {"rows": [[10,5,1],[20,15,2]], "ordered": true}}
+    ]},
+    {"name": "asof-joins-chain-and-combine-with-ordinary-joins", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.t, r.t, r2.t FROM q ASOF JOIN r MATCH_CONDITION (q.t >= r.t) ON q.k = r.k ASOF JOIN r r2 MATCH_CONDITION (q.t >= r2.t) ON q.k = r2.k WHERE q.k = 1 ORDER BY q.t", "expect": {"rows": [[10,5,5],[20,15,15]], "ordered": true}}
+    ]},
+    {"name": "an-asof-join-works-over-a-cte-and-a-derived-table", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "WITH cq AS (SELECT * FROM q) SELECT cq.t, r.t FROM cq ASOF JOIN r MATCH_CONDITION (cq.t >= r.t) ON cq.k = r.k WHERE cq.k = 1 ORDER BY cq.t", "expect": {"rows": [[10,5],[20,15]], "ordered": true}},
+      {"sql": "SELECT z.t, s.t FROM q z ASOF JOIN (SELECT * FROM r WHERE w < 3) s MATCH_CONDITION (z.t >= s.t) ON z.k = s.k WHERE z.k = 1 ORDER BY z.t", "expect": {"rows": [[10,5],[20,15]], "ordered": true}}
+    ]},
+    {"name": "the-right-table-may-be-aliased-with-the-words-offset-and-limit", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT * FROM q ASOF JOIN r OFFSET MATCH_CONDITION (q.t > OFFSET.t) ORDER BY q.k, q.t", "expect": {"rowCount": 4, "columns": ["K","T","V","K","T","W"]}},
+      {"sql": "SELECT * FROM q ASOF JOIN r LIMIT MATCH_CONDITION (q.t > w) ORDER BY q.k, q.t", "expect": {"rowCount": 4, "columns": ["K","T","V","K","T","W"]}}
+    ]},
+    {"name": "only-the-four-inequality-operators-are-allowed", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.k FROM q ASOF JOIN r MATCH_CONDITION (q.t = r.t) ON q.k = r.k", "expect": {"error": {"messageContains": "MATCH_CONDITION clause is invalid"}}}
+    ]},
+    {"name": "each-match-condition-operand-must-come-from-its-own-side", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.k FROM q ASOF JOIN r MATCH_CONDITION (r.t <= q.t) ON q.k = r.k", "expect": {"error": {"messageContains": "MATCH_CONDITION clause is invalid"}}}
+    ]},
+    {"name": "match-condition-is-mandatory-and-only-the-bare-asof-spelling-exists", "steps": [
+      {"sql": "CREATE TABLE q (k INTEGER, t INTEGER, v INTEGER)"},
+      {"sql": "CREATE TABLE r (k INTEGER, t INTEGER, w INTEGER)"},
+      {"sql": "INSERT INTO q VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (3, 10, 400)"},
+      {"sql": "INSERT INTO r VALUES (1, 5, 1), (1, 15, 2), (1, 25, 3), (2, 50, 4)"},
+      {"sql": "SELECT q.k FROM q ASOF JOIN r ON q.k = r.k", "expect": {"error": {}}},
+      {"sql": "SELECT q.k FROM q LEFT ASOF JOIN r MATCH_CONDITION (q.t >= r.t) ON q.k = r.k", "expect": {"error": {}}},
+      {"sql": "SELECT q.k FROM q INNER ASOF JOIN r MATCH_CONDITION (q.t >= r.t) ON q.k = r.k", "expect": {"error": {}}},
+      {"sql": "SELECT q.k FROM q ASOF JOIN r ON q.k = r.k MATCH_CONDITION (q.t >= r.t)", "expect": {"error": {}}}
+    ]},
+    {"name": "asof-stays-usable-as-an-ordinary-identifier", "steps": [
+      {"sql": "CREATE TABLE kw (asof INTEGER, match_condition INTEGER)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT asof, match_condition FROM kw", "expect": {"rows": [[1, 2]]}}
+    ]}
+  ]
+}

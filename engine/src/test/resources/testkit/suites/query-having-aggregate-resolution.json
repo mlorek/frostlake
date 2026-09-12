@@ -1,0 +1,38 @@
+{
+  "suite": "query-having-aggregate-resolution",
+  "description": "HAVING must be able to evaluate an aggregate that is NOT a SELECT item - it is computed FRESH over each group's rows rather than read back from the already-projected output row. Previously HAVING reused only the SELECT-computed values, keyed by canonical form, so a HAVING aggregate absent from the SELECT resolved to nothing and filtered out every group; the same happened when the SELECT carried it only WRAPPED, as COUNT(*)::VARCHAR while HAVING references bare COUNT(*), because the canonical forms differ. The pre-existing path is guarded too: HAVING on a SELECT alias keeps working, and a predicate mixing a group column with an unselected aggregate resolves both. With no GROUP BY the whole table is one group, and HAVING filters it the same way. Converted 1:1 from query/HavingAggregateResolutionTest (now retired); the fixture's three groups have 2, 1 and 3 rows summing 3, 10 and 12, so no filter can pass by accident.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "having-a-count-not-in-the-select-list", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a',1),('a',2),('b',10),('c',3),('c',4),('c',5)"},
+      {"sql": "SELECT grp FROM t GROUP BY grp HAVING COUNT(*) > 1 ORDER BY grp", "expect": {"rows": [["a"],["c"]], "ordered": true}}
+    ]},
+    {"name": "having-a-different-aggregate-than-the-select", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a',1),('a',2),('b',10),('c',3),('c',4),('c',5)"},
+      {"sql": "SELECT grp FROM t GROUP BY grp HAVING SUM(id) > 5 ORDER BY grp", "expect": {"rows": [["b"],["c"]], "ordered": true}}
+    ]},
+    {"name": "having-a-bare-aggregate-while-the-select-wraps-it", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a',1),('a',2),('b',10),('c',3),('c',4),('c',5)"},
+      {"sql": "SELECT grp, COUNT(*)::VARCHAR AS c FROM t GROUP BY grp HAVING COUNT(*) > 1 ORDER BY grp", "expect": {"rows": [["a","2"],["c","3"]], "ordered": true}}
+    ]},
+    {"name": "having-still-resolves-a-select-alias", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a',1),('a',2),('b',10),('c',3),('c',4),('c',5)"},
+      {"sql": "SELECT grp, SUM(id) AS total FROM t GROUP BY grp HAVING total > 5 ORDER BY grp", "expect": {"rows": [["b",10],["c",12]], "ordered": true}}
+    ]},
+    {"name": "having-on-an-implicit-group-by-aggregate-not-in-the-select", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a',1),('a',2),('b',10),('c',3),('c',4),('c',5)"},
+      {"sql": "SELECT COUNT(*) FROM t HAVING SUM(id) > 5", "expect": {"rows": [[6]]}},
+      {"sql": "SELECT COUNT(*) FROM t HAVING SUM(id) > 100", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "having-combines-a-group-column-and-an-unselected-aggregate", "steps": [
+      {"sql": "CREATE TABLE t (grp VARCHAR, id INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a',1),('a',2),('b',10),('c',3),('c',4),('c',5)"},
+      {"sql": "SELECT grp FROM t GROUP BY grp HAVING grp <> 'a' AND COUNT(*) > 1 ORDER BY grp", "expect": {"rows": [["c"]], "ordered": true}}
+    ]}
+  ]
+}

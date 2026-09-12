@@ -1,0 +1,23 @@
+{
+  "suite": "scripting-loop-break-continue",
+  "description": "Snowflake Scripting loop control flow in anonymous BEGIN...END blocks, asserting the COMPUTED result rather than merely that the block parses: a bare LOOP ... END LOOP exited by BREAK, CONTINUE skipping the rest of an iteration so only the even values of 1..10 are counted, BREAK leaving a WHILE loop early, and a plain WHILE that runs to completion accumulating a running total. Complements the cursor-FOR and procedure-body loop coverage elsewhere, which never asserts loop EXECUTION. Converted 1:1 from scripting/LoopBreakContinueTest (now retired); the blocks are written on one line here, which the scripting parser reads identically.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-loop-with-break-stops-when-the-condition-is-met", "steps": [
+      {"sql": "BEGIN LET counter INTEGER := 0; LOOP counter := counter + 1; IF (counter >= 5) THEN BREAK; END IF; END LOOP; RETURN counter; END;",
+       "expect": {"value": 5}}
+    ]},
+    {"name": "continue-skips-the-remainder-of-an-iteration", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; LET evens INTEGER := 0; LOOP i := i + 1; IF (i > 10) THEN BREAK; END IF; IF (MOD(i, 2) = 1) THEN CONTINUE; END IF; evens := evens + 1; END LOOP; RETURN evens; END;",
+       "expect": {"value": 5}}
+    ]},
+    {"name": "break-exits-a-while-loop-early", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; WHILE (i < 100) DO i := i + 1; IF (i = 7) THEN BREAK; END IF; END WHILE; RETURN i; END;",
+       "expect": {"value": 7}}
+    ]},
+    {"name": "a-while-loop-computes-a-running-total", "steps": [
+      {"sql": "BEGIN LET i INTEGER := 0; LET total INTEGER := 0; WHILE (i < 5) DO i := i + 1; total := total + i; END WHILE; RETURN total; END;",
+       "expect": {"value": 15}}
+    ]}
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "suite": "scripting-cursor-manual-fetch",
+  "description": "Manual cursor OPEN / FETCH / CLOSE in Snowflake Scripting - the explicit-fetch path, as distinct from the implicit cursor FOR loop. One OPEN followed by three FETCHes must read DISTINCT rows, so the total is 6 and not three times the first row. A FETCH past end-of-data NULLs the target rather than leaving the previous value or raising. And the error paths: CLOSE on a declared-but-never-opened cursor is a statement error - live raises 'CURSOR C is not open', catchable by a WHEN STATEMENT_ERROR handler, and specifically NOT a no-op - a second OPEN on an already-open cursor throws, and a FETCH from an undefined cursor throws. Converted 1:1 from scripting/CursorManualFetchTest (now retired); the blocks are written on one line here, which the scripting parser reads identically.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-multi-row-manual-fetch-advances-across-rows", "steps": [
+      {"sql": "DECLARE c CURSOR FOR SELECT 1 AS n UNION ALL SELECT 2 AS n UNION ALL SELECT 3 AS n; v INTEGER; total INTEGER DEFAULT 0; BEGIN OPEN c; FETCH c INTO v; total := total + v; FETCH c INTO v; total := total + v; FETCH c INTO v; total := total + v; CLOSE c; RETURN total; END;",
+       "expect": {"value": 6}}
+    ]},
+    {"name": "a-fetch-past-end-of-data-yields-null", "steps": [
+      {"sql": "DECLARE c CURSOR FOR SELECT 1 AS n; v INTEGER DEFAULT 99; BEGIN OPEN c; FETCH c INTO v; FETCH c INTO v; CLOSE c; RETURN v; END;",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "closing-an-unopened-cursor-raises", "steps": [
+      {"sql": "DECLARE c CURSOR FOR SELECT 1 AS n; BEGIN CLOSE c; END;",
+       "expect": {"error": {"messageContains": "CURSOR C is not open"}}}
+    ]},
+    {"name": "opening-an-already-open-cursor-throws", "steps": [
+      {"sql": "DECLARE c CURSOR FOR SELECT 1 AS n; BEGIN OPEN c; OPEN c; END;", "expect": {"error": {}}}
+    ]},
+    {"name": "fetching-from-an-undefined-cursor-throws", "steps": [
+      {"sql": "DECLARE v INTEGER; BEGIN FETCH no_such_cursor INTO v; END;", "expect": {"error": {}}}
+    ]}
+  ]
+}

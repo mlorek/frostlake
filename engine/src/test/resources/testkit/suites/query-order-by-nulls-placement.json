@@ -1,0 +1,30 @@
+{
+  "suite": "query-order-by-nulls-placement",
+  "description": "NULL placement in ORDER BY. Snowflake's DEFAULT is NULLS LAST for ASC and NULLS FIRST for DESC - the OPPOSITE convention of several other engines - and an explicit NULLS FIRST / NULLS LAST overrides either default. The same defaults govern a WINDOW's ORDER BY, so under ROW_NUMBER() the NULL row ranks last ascending and first descending, which is asserted here from both directions in one query. Converted 1:1 from query/OrderByNullsPlacementTest (now retired); the Java's assertOrder helper walked the rows by index, so the converted steps pin the whole ordered row set. The same defaults are also asserted from the three-valued-logic side in query-null-three-valued-logic.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "asc-defaults-to-nulls-last", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, NULL), (3, 20)"},
+      {"sql": "SELECT n FROM t ORDER BY n", "expect": {"rows": [[10],[20],[null]], "ordered": true}},
+      {"sql": "SELECT n FROM t ORDER BY n ASC", "expect": {"rows": [[10],[20],[null]], "ordered": true}}
+    ]},
+    {"name": "desc-defaults-to-nulls-first", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, NULL), (3, 20)"},
+      {"sql": "SELECT n FROM t ORDER BY n DESC", "expect": {"rows": [[null],[20],[10]], "ordered": true}}
+    ]},
+    {"name": "an-explicit-placement-overrides-the-default", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, NULL), (3, 20)"},
+      {"sql": "SELECT n FROM t ORDER BY n ASC NULLS FIRST", "expect": {"rows": [[null],[10],[20]], "ordered": true}},
+      {"sql": "SELECT n FROM t ORDER BY n DESC NULLS LAST", "expect": {"rows": [[20],[10],[null]], "ordered": true}}
+    ]},
+    {"name": "a-window-order-by-follows-the-same-defaults", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, n INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, NULL), (3, 20)"},
+      {"sql": "SELECT id, ROW_NUMBER() OVER (ORDER BY n) AS asc_rn, ROW_NUMBER() OVER (ORDER BY n DESC) AS desc_rn FROM t ORDER BY id",
+       "expect": {"rows": [[1,1,3],[2,3,1],[3,2,2]], "ordered": true}}
+    ]}
+  ]
+}

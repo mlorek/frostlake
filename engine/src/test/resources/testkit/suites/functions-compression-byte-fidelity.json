@@ -1,0 +1,114 @@
+{
+  "suite": "functions-compression-byte-fidelity",
+  "description": "COMPRESS byte fidelity: every expected value here is the hex a LIVE Snowflake account returned, pinned as a literal so the compressed bytes cannot drift away from the account's without a test failing - the gap that let the family diverge, because every earlier test round-tripped within Frostlake and so passed no matter what bytes came out. snappy, zlib (default and levels 2-9) and zstd (default level) are byte-identical. Where Frostlake is NOT byte-identical - zlib(1) and the long fox input, zstd at levels it cannot honour, and bz2 whose block size is fixed at 9 against the account's default 5 - the account's value is recorded in the description and the test asserts the property that still has to hold: Frostlake decompresses Snowflake's bytes, and Snowflake decompresses Frostlake's (verified live). Assertions read the BINARY value directly, which renders as uppercase hex, exactly the account's JDBC string for a BINARY column. Converted 1:1 from functions/CompressionByteFidelityTest (now retired); its Java-built long inputs become REPEAT('a', 206) and an inline literal.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "snappy-matches-snowflake-exactly", "steps": [
+      {"sql": "SELECT COMPRESS('hello', 'snappy')", "expect": {"value": "051068656C6C6F"}},
+      {"sql": "SELECT COMPRESS('', 'snappy')", "expect": {"value": "00"}},
+      {"sql": "SELECT COMPRESS('hello world, hello world, hello world', 'snappy')",
+       "expect": {"value": "253068656C6C6F20776F726C642C205E0D00"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'snappy')",
+       "expect": {"value": "232C68656C6C6F20776F726C64205A0C00"}},
+      {"sql": "SELECT COMPRESS('The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog.', 'snappy')",
+       "expect": {"value": "59B054686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E20AE2D00"}}
+    ]},
+    {"name": "snappy-compresses-binary-and-numeric-input-exactly", "steps": [
+      {"sql": "SELECT COMPRESS(TO_BINARY('48454C4C4F', 'HEX'), 'snappy')", "expect": {"value": "051048454C4C4F"}},
+      {"sql": "SELECT COMPRESS(123, 'snappy')", "expect": {"value": "0308313233"}}
+    ]},
+    {"name": "snappy-ignores-the-level-exactly", "steps": [
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'snappy(1)')",
+       "expect": {"value": "232C68656C6C6F20776F726C64205A0C00"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'snappy(99)')",
+       "expect": {"value": "232C68656C6C6F20776F726C64205A0C00"}}
+    ]},
+    {"name": "zlib-matches-snowflake-exactly", "steps": [
+      {"sql": "SELECT COMPRESS('hello', 'zlib')", "expect": {"value": "789CCB48CDC9C90700062C0215"}},
+      {"sql": "SELECT COMPRESS('', 'zlib')", "expect": {"value": "789C030000000001"}},
+      {"sql": "SELECT COMPRESS('hello world, hello world, hello world', 'zlib')",
+       "expect": {"value": "789CCB48CDC9C95728CF2FCA49D151C8C0C10100038C0DAD"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zlib')",
+       "expect": {"value": "789CCB48CDC9C95728CF2FCA4951C8C0CE0600EF930D55"}}
+    ]},
+    {"name": "zlib-levels-match-snowflake-exactly", "steps": [
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zlib(0)')",
+       "expect": {"value": "789CCB48CDC9C95728CF2FCA4951C8C0CE0600EF930D55"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zlib(6)')",
+       "expect": {"value": "789CCB48CDC9C95728CF2FCA4951C8C0CE0600EF930D55"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zlib(2)')",
+       "expect": {"value": "785ECB48CDC9C95728CF2FCA4951C8C0CE0600EF930D55"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zlib(9)')",
+       "expect": {"value": "78DACB48CDC9C95728CF2FCA4951C8C0CE0600EF930D55"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zlib(10)')",
+       "expect": {"value": "78DACB48CDC9C95728CF2FCA4951C8C0CE0600EF930D55"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zlib(2147483647)')",
+       "expect": {"value": "78DACB48CDC9C95728CF2FCA4951C8C0CE0600EF930D55"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zlib(00000000009)')",
+       "expect": {"value": "78DACB48CDC9C95728CF2FCA4951C8C0CE0600EF930D55"}},
+      {"sql": "SELECT COMPRESS('hello', 'zlib(1)')", "expect": {"value": "7801CB48CDC9C90700062C0215"}},
+      {"sql": "SELECT COMPRESS('hello', 'zlib(9)')", "expect": {"value": "78DACB48CDC9C90700062C0215"}}
+    ]},
+    {"name": "zlib-stays-interoperable-where-it-is-not-byte-identical", "steps": [
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('7801CB48CDC9C95728CF2FCA4951C0C10600EF930D55', 'HEX'), 'zlib')",
+       "expect": {"value": "hello world hello world hello world"}},
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('789C0BC94855282CCD4CCE56482ACA2FCF5348CBAF50C82ACD2D2856C82F4B2D5228C94855C849ACAA5448C94FD7530821413100AED1202F', 'HEX'), 'zlib')",
+       "expect": {"value": "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog."}}
+    ]},
+    {"name": "zstd-matches-snowflake-exactly", "steps": [
+      {"sql": "SELECT COMPRESS('hello', 'zstd')", "expect": {"value": "28B52FFD200529000068656C6C6F"}},
+      {"sql": "SELECT COMPRESS('', 'zstd')", "expect": {"value": "28B52FFD2000010000"}},
+      {"sql": "SELECT COMPRESS('hello world, hello world, hello world', 'zstd')",
+       "expect": {"value": "28B52FFD20259D00006868656C6C6F20776F726C642C20010000CE2F"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zstd')",
+       "expect": {"value": "28B52FFD20239500006068656C6C6F20776F726C64200100AF4B12"}},
+      {"sql": "SELECT COMPRESS(TO_BINARY('48454C4C4F', 'HEX'), 'zstd')",
+       "expect": {"value": "28B52FFD200529000048454C4C4F"}},
+      {"sql": "SELECT COMPRESS('The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog.', 'zstd')",
+       "expect": {"value": "28B52FFD2059AD0100D40254686520717569636B2062726F776E20666F78206A756D7073206F76657220746865206C617A7920646F672E2001000D9AAA0C"}}
+    ]},
+    {"name": "zstd-matches-snowflake-on-a-long-run", "steps": [
+      {"sql": "SELECT COMPRESS(REPEAT('a', 206), 'zstd')", "expect": {"value": "28B52FFD20CE4D00001061610100490A6001"}}
+    ]},
+    {"name": "zstd-default-level-spellings-match-snowflake-exactly", "steps": [
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zstd(0)')",
+       "expect": {"value": "28B52FFD20239500006068656C6C6F20776F726C64200100AF4B12"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zstd(1)')",
+       "expect": {"value": "28B52FFD20239500006068656C6C6F20776F726C64200100AF4B12"}},
+      {"sql": "SELECT COMPRESS('hello world hello world hello world', 'zstd(3)')",
+       "expect": {"value": "28B52FFD20239500006068656C6C6F20776F726C64200100AF4B12"}}
+    ]},
+    {"name": "zstd-stays-interoperable-at-levels-it-cannot-honour", "steps": [
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('28B52FFD20239D00006868656C6C6F20776F726C642068010057CA17', 'HEX'), 'zstd')",
+       "expect": {"value": "hello world hello world hello world"}}
+    ]},
+    {"name": "bz2-produces-a-well-formed-bzip2-stream", "steps": [
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(COMPRESS('hello', 'bz2')), '425A68')", "expect": {"value": "true"}}
+    ]},
+    {"name": "bz2-decompresses-snowflakes-bytes", "steps": [
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('425A68353141592653591931653D00000081000244A000219A68334D07338BB9229C28480C98B29E80', 'HEX'), 'bz2')",
+       "expect": {"value": "hello"}},
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('425A68353141592653592C41D3C00000059180400006449080200021B5467A810C08F4444AB9860C34D1385DC914E14240B1074F00', 'HEX'), 'bz2')",
+       "expect": {"value": "hello world hello world hello world"}},
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('425A6835314159265359D93CF9430000099380400104003FFFFFF020005425534F42346234681B481554F504C9846691B536891A3A6CE992684DED879DD0921228ADC396AA2D7C43114EC426787C2143D2C20A29B185CB9F8BB9229C28486C9E7CA180', 'HEX'), 'bz2')",
+       "expect": {"value": "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog."}}
+    ]},
+    {"name": "bz2-decompresses-snowflakes-levelled-bytes", "steps": [
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('425A68313141592653591931653D00000081000244A000219A68334D07338BB9229C28480C98B29E80', 'HEX'), 'bz2')",
+       "expect": {"value": "hello"}},
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('425A68393141592653591931653D00000081000244A000219A68334D07338BB9229C28480C98B29E80', 'HEX'), 'bz2')",
+       "expect": {"value": "hello"}}
+    ]},
+    {"name": "every-method-decompresses-snowflakes-bytes", "steps": [
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('051068656C6C6F', 'HEX'), 'snappy')", "expect": {"value": "hello"}},
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('789CCB48CDC9C90700062C0215', 'HEX'), 'zlib')", "expect": {"value": "hello"}},
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('28B52FFD200529000068656C6C6F', 'HEX'), 'zstd')", "expect": {"value": "hello"}},
+      {"sql": "SELECT DECOMPRESS_STRING(TO_BINARY('425A68353141592653591931653D00000081000244A000219A68334D07338BB9229C28480C98B29E80', 'HEX'), 'bz2')",
+       "expect": {"value": "hello"}}
+    ]},
+    {"name": "encoders-see-the-compressed-bytes", "steps": [
+      {"sql": "SELECT HEX_ENCODE(COMPRESS('hello', 'snappy'))", "expect": {"value": "051068656C6C6F"}},
+      {"sql": "SELECT BASE64_ENCODE(COMPRESS('hello', 'snappy'))", "expect": {"value": "BRBoZWxsbw=="}}
+    ]}
+  ]
+}

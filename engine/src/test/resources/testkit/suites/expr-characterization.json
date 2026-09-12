@@ -1,0 +1,75 @@
+{
+  "suite": "expr-characterization",
+  "description": "Characterization (golden) baseline for expression evaluation - pins representative SELECT <expr> results so ANTLR-builder regressions surface as value changes: arithmetic precedence and left-associativity (10 - 4 - 2 = 4), string concat, comparisons, logical operators, LIKE, prefix NOT binding looser than comparison (NOT 1 = 2 is true), row-constructor tuple IN, BETWEEN/LIKE followed by top-level AND/OR parsing as (predicate) AND rest, and a boolean AND expression projected from a table without aggregation. Deliberately an own-engine golden pin (the Java class ran embedded-only, never on the live surface). Converted 1:1 from expressions/ExpressionCharacterizationTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "arithmetic",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 1 + 2 * 3", "expect": {"value": "7"}},
+      {"sql": "SELECT (1 + 2) * 3", "expect": {"value": "9"}},
+      {"sql": "SELECT 100 - 58", "expect": {"value": "42"}}
+    ]},
+    {"name": "left-associativity-fixed",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 10 - 4 - 2", "expect": {"value": "4"}}
+    ]},
+    {"name": "string-concat",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 'foo' || 'bar'", "expect": {"value": "foobar"}}
+    ]},
+    {"name": "comparisons",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 2 > 1", "expect": {"value": "true"}},
+      {"sql": "SELECT 10 = 10", "expect": {"value": "true"}},
+      {"sql": "SELECT 5 >= 5", "expect": {"value": "true"}}
+    ]},
+    {"name": "logical",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT (1 = 1) AND (2 = 2)", "expect": {"value": "true"}},
+      {"sql": "SELECT (1 = 1) AND (2 = 3)", "expect": {"value": "false"}},
+      {"sql": "SELECT (1 = 2) OR (5 = 5)", "expect": {"value": "true"}},
+      {"sql": "SELECT NOT (1 = 2)", "expect": {"value": "true"}}
+    ]},
+    {"name": "like",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 'abc' LIKE 'a%'", "expect": {"value": "true"}}
+    ]},
+    {"name": "not-precedence-fixed",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT NOT 1 = 2", "expect": {"value": "true"}}
+    ]},
+    {"name": "tuple-in",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT (1, 2) IN ((1, 2))", "expect": {"value": "true"}},
+      {"sql": "SELECT (1, 2) IN ((3, 4), (1, 2))", "expect": {"value": "true"}},
+      {"sql": "SELECT (1, 2) IN ((3, 4))", "expect": {"value": "false"}},
+      {"sql": "SELECT (1, 2) NOT IN ((3, 4))", "expect": {"value": "true"}}
+    ]},
+    {"name": "between-and-like-ungated",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 5 BETWEEN 1 AND 10", "expect": {"value": "true"}},
+      {"sql": "SELECT 5 BETWEEN 1 AND 10 AND 2 > 1", "expect": {"value": "true"}},
+      {"sql": "SELECT 5 BETWEEN 1 AND 10 AND 1 = 2", "expect": {"value": "false"}},
+      {"sql": "SELECT 5 NOT BETWEEN 1 AND 3 AND 1 = 1", "expect": {"value": "true"}},
+      {"sql": "SELECT 'abc' LIKE 'a%' AND 1 = 1", "expect": {"value": "true"}},
+      {"sql": "SELECT 'abc' LIKE 'z%' OR 'x' = 'x'", "expect": {"value": "true"}}
+    ]},
+    {"name": "boolean-projection-from-table",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "CREATE TABLE bp_tbl (a INT, b INT)"},
+      {"sql": "INSERT INTO bp_tbl VALUES (1, 1), (1, 0), (0, 0)"},
+      {"sql": "SELECT a > 0 AND b > 0 AS flag FROM bp_tbl",
+       "expect": {"rows": [["true"], ["false"], ["false"]], "ordered": true}}
+    ]}
+  ]
+}

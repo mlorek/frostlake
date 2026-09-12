@@ -1,0 +1,24 @@
+{
+  "suite": "functions-session-context-gaps",
+  "description": "Session-context functions that only shape-stable assertions can pin across backends: CURRENT_SESSION identifies the session with a non-empty value, CURRENT_STATEMENT echoes the running SQL so its own text appears in the answer, CURRENT_SECONDARY_ROLES reports a JSON shape carrying a roles member, and LAST_TRANSACTION reports an id after an explicit COMMIT. Converted 1:1 from functions/SessionContextGapsTest (now retired); the Java read every value through String.valueOf and then compared against the text \"null\", which a SQL NULL would also satisfy, so the converted tests use IS NOT NULL and LENGTH checks instead.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "current-session-identifies-the-session", "steps": [
+      {"sql": "SELECT CURRENT_SESSION() IS NOT NULL AND LENGTH(CURRENT_SESSION()) > 0",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "current-statement-echoes-the-running-sql", "steps": [
+      {"sql": "SELECT CONTAINS(UPPER(CURRENT_STATEMENT()), 'CURRENT_STATEMENT')", "expect": {"value": "true"}}
+    ]},
+    {"name": "current-secondary-roles-reports-the-json-shape", "steps": [
+      {"sql": "SELECT CONTAINS(CURRENT_SECONDARY_ROLES(), 'roles')", "expect": {"value": "true"}}
+    ]},
+    {"name": "last-transaction-appears-after-an-explicit-commit", "steps": [
+      {"sql": "CREATE TABLE tx (v INTEGER)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO tx VALUES (1)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT LAST_TRANSACTION() IS NOT NULL", "expect": {"value": "true"}}
+    ]}
+  ]
+}
