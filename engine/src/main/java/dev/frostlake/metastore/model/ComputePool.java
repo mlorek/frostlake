@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.SqlObject;
 
 import java.time.Instant;
@@ -48,8 +49,18 @@ public class ComputePool extends SqlObject {
     private Instant updatedOn;
 
     public ComputePool(final String name) {
-        super(name);
-        this.updatedOn = getCreatedTime();
+        this(name, StatementClock.instant());
+    }
+
+    /**
+     * A pool created at a given moment, as a restored snapshot brings it back.
+     *
+     * @param name the pool's canonical name
+     * @param createdTime when it was created
+     */
+    public ComputePool(final String name, final Instant createdTime) {
+        super(name, createdTime);
+        this.updatedOn = createdTime;
     }
 
     @Override
@@ -143,6 +154,11 @@ public class ComputePool extends SqlObject {
     }
 
     public void touchUpdatedOn() {
-        this.updatedOn = Instant.now();
+        this.updatedOn = StatementClock.instant();
+    }
+
+    /** Puts back when the pool last changed, as a restored snapshot recorded it. */
+    public void setUpdatedOn(final Instant updatedOn) {
+        this.updatedOn = updatedOn;
     }
 }

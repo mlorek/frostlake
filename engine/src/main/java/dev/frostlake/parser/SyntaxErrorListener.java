@@ -38,6 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -67,6 +68,14 @@ public class SyntaxErrorListener extends BaseErrorListener {
     private final List<Integer> offendingIndexes;
     /** Per message line: the type of the token the reported statement OPENED at, or -1. */
     private final List<Integer> openerTypes;
+    /** Per message line: whether the parser named its token itself (an IDENTIFIER() reference that is not whole). */
+    private final List<Boolean> parserOwnFaults;
+    /** Per message line: whether it lies in the bracketed tail of the token an earlier line refused. */
+    private final List<Boolean> groupTails;
+    /** Per message line: whether it names a word that opened a statement the parse could not finish, or an alias's '('. */
+    private final List<Boolean> openedStatements;
+    /** The token index of the last line's token that was not such a tail, or -1. */
+    private int lastRefusedIndex = -1;
     private final String sql;
     private int lastMessageLine = -1;
     private int firstMessageLine = -1;
@@ -77,14 +86,25 @@ public class SyntaxErrorListener extends BaseErrorListener {
     private int suppressUntilTokenIndex = -1;
     /** Per message line: its line number and position, so lines from two parses merge in text order. */
     private final List<int[]> coordinates;
-    /** Per message line: the second line live stacks after it when it is the first line reported; or null. */
-    private final List<String> stackedSentences;
+    /** Per message line: the lines live stacks after it when it is the first line reported; or null. */
+    private final List<List<String>> stackedSentences;
     /** Per message line: where the statement holding its stacked line's token ends; lines up to it are its wreckage. */
     private final List<int[]> stackedEnds;
     /** Whether this listener watches the parse of a text whose bare scripting conditions were bracketed. */
     private boolean repairedParse;
     /** The '(' of a call left open at the end of a SELECT list, which live names in a backwards line; or null. */
     private Token unclosedCall;
+    /** The two lines a comma inside a parenthesized FROM group is refused with, or null; see FromGroupComma. */
+    private List<String> fromGroupLines;
+    /** Whether the first line names a word that opened a fresh statement the parse could not finish. */
+    private boolean firstLineOpenedStatement;
+    /** The token the parse's first fault was raised at, before any rule moved the line elsewhere; or null. */
+    private Token firstRaisedAt;
+    /** The lines of the reading of a TRY_CAST around the first fault as a CAST — see TryCastReading; or null. */
+    private List<String> castReading;
+    private boolean castReadingDone;
+    /** The lines of a first fault refusing a word after a keyword SHOW scope in a block; or null. */
+    private KeywordScopeLines keywordScopeLines;
     // Speculative parses (is this UDF body a query or a bare expression?) EXPECT to fail on one of
     // the alternatives; logging their syntax errors at ERROR flooded the log with noise for every
     // perfectly working expression-body UDF. Quiet mode demotes the logging to DEBUG — the collected
@@ -93,6 +113,12 @@ public class SyntaxErrorListener extends BaseErrorListener {
     // Only a WHOLE STATEMENT may be judged by its leading token — see leadingIdentifierRefusal. An
     // expression parse legitimately begins with an identifier, so the rule would blame the wrong word.
     private boolean statementParse;
+    /** The lines {@link #reportedLines} worked out from the faults collected so far; null until asked. */
+    private List<String> reportedCache;
+    /** The line {@link #firstReportedLine} worked out from the faults collected so far, once firstLineKnown. */
+    private String firstLineCache;
+    /** Whether {@link #firstLineCache} holds the answer, which may be null. */
+    private boolean firstLineKnown;
 
     public SyntaxErrorListener(final String sql) {
         this(sql, false);
@@ -106,6 +132,9 @@ public class SyntaxErrorListener extends BaseErrorListener {
         this.surplusEnds = new ArrayList<>();
         this.offendingIndexes = new ArrayList<>();
         this.openerTypes = new ArrayList<>();
+        this.parserOwnFaults = new ArrayList<>();
+        this.groupTails = new ArrayList<>();
+        this.openedStatements = new ArrayList<>();
         this.coordinates = new ArrayList<>();
         this.stackedSentences = new ArrayList<>();
         this.stackedEnds = new ArrayList<>();
@@ -148,9 +177,13 @@ public class SyntaxErrorListener extends BaseErrorListener {
                            final int charPositionInLine,
                            final String msg,
                            final RecognitionException e) {
+        forgetReportedLines();
         final String error = String.format("Syntax error at line %d:%d - %s", line, charPositionInLine, msg);
         if (errors.isEmpty() && isMissingTerminator(e)) {
             firstErrorMissingTerminator = true;
+        }
+        if (errors.isEmpty() && offendingSymbol instanceof Token) {
+            firstRaisedAt = (Token) offendingSymbol;
         }
         errors.add(error);
         final int messageLine;
@@ -160,6 +193,15 @@ public class SyntaxErrorListener extends BaseErrorListener {
         boolean endOpened = false;
         boolean parenAfterAlias = false;
         Token stacked = null;
+        Token stackedAgain = null;
+        boolean stackDecided = false;
+        boolean deadEndSwallowed = false;
+        boolean describeOpened = false;
+        boolean openerRefused = false;
+        boolean firstFaultRunIn = false;
+        boolean refusedRunIn = false;
+        boolean freshStatement = false;
+        boolean stackEndsReport = false;
         if (offendingSymbol instanceof Token) {
             Token reported = (Token) offendingSymbol;
             // A no-viable-alternative that ran to end of input names '<EOF>' as its offending token,
@@ -179,12 +221,52 @@ public class SyntaxErrorListener extends BaseErrorListener {
             // entered leaves that clause as the current rule, and some ancestor of it began EARLIER
             // than the dead end. Trailing junk instead fails while the parser is opening a FRESH
             // statement, so the whole context chain begins exactly at the dead-end token.
+            // A statement its semicolon properly opened is no trailing junk: SELECT 1; SELECT (2 runs out of input,
+            // '<EOF>' at 19 (live-verified).
             if (e instanceof NoViableAltException && reported.getType() == Token.EOF) {
                 final Token startToken = ((NoViableAltException) e).getStartToken();
                 if (startToken != null && startToken.getType() != Token.EOF
                         && startToken.getTokenIndex() > 0
-                        && beginsAFreshStatement(recognizer, startToken)) {
+                        && beginsAFreshStatement(recognizer, startToken)
+                        && !opensAfterSemicolon(recognizer, startToken)) {
                     reported = startToken;
+                }
+            }
+            // ★ AN EMPTY BODY is refused at the END that closes it, and an END where a label stands at that END — see
+            // ConstructEndSyntax.
+            final List<Token> labelEnd = ConstructEndSyntax.endAsLabel(recognizer, reported, e);
+            final List<Token> emptyBody = labelEnd != null ? labelEnd : ConstructEndSyntax.emptyBody(recognizer, reported);
+            if (emptyBody != null) {
+                reported = emptyBody.get(0);
+                stacked = emptyBody.size() > 1 ? emptyBody.get(1) : null;
+                stackedAgain = emptyBody.size() > 2 ? emptyBody.get(2) : null;
+                stackDecided = true;
+                openerRefused = true;
+            }
+            // ★ A FAULT IN A CREATE TABLE'S COLUMN LIST is reported the way live reads the list — see ColumnListRecovery.
+            final List<Token> columnList = emptyBody == null && errors.size() == 1
+                ? ColumnListRecovery.refusal(recognizer, reported) : null;
+            if (columnList != null) {
+                reported = columnList.get(0);
+                stacked = columnList.size() > 1 ? columnList.get(1) : null;
+                stackedAgain = columnList.size() > 2 ? columnList.get(2) : null;
+                stackDecided = true;
+                openerRefused = true;
+            }
+            // ★ AN IDENTIFIER() REFERENCE THAT IS NOT WHOLE stacks lines by where it stands — see OpenedReferenceLines.
+            if (e instanceof IdentifierReferenceFault && !openerRefused && !stackDecided) {
+                final IdentifierReferenceFault referenceFault = (IdentifierReferenceFault) e;
+                if (OpenedReferenceLines.silent(referenceFault)) {
+                    return;
+                }
+                final Token on = OpenedReferenceLines.refusedAt(referenceFault);
+                if (on != null) {
+                    reported = on;
+                    openerRefused = true;
+                    stackDecided = true;
+                } else if (errors.size() == 1) {
+                    stacked = OpenedReferenceLines.stackedAfter(referenceFault, reported);
+                    stackDecided = stacked != null;
                 }
             }
             // ★ A MISSPELLED KEYWORD MID-STATEMENT is live's first-unusable-token shape. The parser
@@ -197,6 +279,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 final Token doomedStart = freshIdentifierStatementStart(recognizer, reported);
                 if (doomedStart != null) {
                     reported = doomedStart;
+                    freshStatement = true;
                 }
             }
             // ★ AN ALIAS FOLLOWED BY '(' is refused AT THE PARENTHESIS, and nothing after it in the
@@ -215,17 +298,117 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 reported = surplusEnd;
                 endOpened = true;
             }
+            // ★ A DESCRIBE WITH NO PLAIN WORD WHERE THE TYPE STANDS is refused at the DESCRIBE itself: live reads
+            // that word as the object's type, and DESC 1, DESCRIBE "x", DESC IDENTIFIER('t1') and a DESC alone
+            // are each "unexpected 'DESC'" at the keyword, while DESC t1 runs on to the end of input.
+            final Token describe = describeWithoutType(recognizer, reported);
+            if (describe != null) {
+                reported = describe;
+                describeOpened = true;
+            }
+            // ★ A FAULT IN OR AFTER AN ALTER is refused further back for some kinds — see AlterStatementAnchor — and a
+            // statement opened without its semicolon at its first token where the statement before it cannot take that
+            // token — see UnseparatedStatementOpener.
+            final List<Token> alterRefusal = AlterStatementAnchor.refusal(recognizer, reported);
+            final Token unseparated = aliasParen == null && describe == null && alterRefusal == null
+                ? UnseparatedStatementOpener.refused(recognizer, reported, errors.size() == 1 && !quiet) : null;
+            // A token refused only because it is the script's first fault — one the refusal of an opening '(' or of what
+            // follows a quoted routine body would not name — is a run-in like any other for the statements after it: a
+            // name or a comma there is run in, as a word the parse opened a statement at is (see LaterStatementLines),
+            // and a ')' that closes no group still ends the whole report (see UnmatchedCloseParen).
+            firstFaultRunIn = unseparated != null && !openerRefused
+                && UnseparatedStatementOpener.refused(recognizer, reported, false) == null;
+            // A token refused after a routine's quoted body, or an opening '(' refused where no signature reads it, is
+            // run in after a complete statement as a word is: see LaterStatementLines.
+            refusedRunIn = unseparated != null
+                && UnseparatedStatementOpener.refused(recognizer, reported, false) != null
+                && !UnseparatedStatementOpener.endsInSignableName(
+                    UnseparatedStatementOpener.runOnStatement((Parser) recognizer, reported));
+            if (alterRefusal != null) {
+                reported = alterRefusal.get(0);
+                stacked = alterRefusal.size() > 1 ? alterRefusal.get(1) : null;
+                stackDecided = true;
+                openerRefused = true;
+            } else if (unseparated != null) {
+                reported = unseparated;
+                stacked = UnseparatedStatementOpener.stackedAfter(recognizer, unseparated);
+                stackDecided = stacked != null;
+                openerRefused = true;
+            }
             if (isMissingTerminator(e)) {
-                final Token follower = aliasSwallowedFollower(recognizer, reported);
-                if (follower != null) {
+                final Token labelled = ConstructEndSyntax.labelFollower(recognizer, reported);
+                final Token follower = labelled != null ? labelled : aliasSwallowedFollower(recognizer, reported);
+                // ★ A SWALLOWED WORD FOLLOWED BY INTO opens the block SELECT's own INTO clause — see AliasedIntoClause.
+                final List<Token> aliasedInto = labelled == null && follower != null
+                    && follower.getType() == FrostlakeLexer.INTO && errors.size() == 1
+                    ? AliasedIntoClause.faults(((Parser) recognizer).getInputStream(), sql, reported, statementParse)
+                    : null;
+                if (aliasedInto != null) {
+                    reported = aliasedInto.get(0);
+                    stacked = aliasedInto.size() > 1 ? aliasedInto.get(1) : null;
+                    stackDecided = true;
+                    stackEndsReport = directlyInOutermostBlock(recognizer);
+                } else if (follower != null) {
                     reported = follower;
                 }
-                if (errors.size() == 1) {
-                    stacked = stackedAfterMissingTerminator(recognizer, reported);
+                if (aliasedInto == null && errors.size() == 1) {
+                    List<Token> resumed = follower == null ? resumedAfterUnaliasedItem(recognizer, reported) : null;
+                    if (resumed == null && follower == null) {
+                        // ★ A LET OR A RETURN RUN INTO THE NEXT WORD resumes its value — see ExpressionResumption.
+                        resumed = ExpressionResumption.lines(recognizer, sql, reported);
+                    }
+                    // ★ IN THE SCRIPT'S OWN BLOCK THESE LINES END THE REPORT: BEGIN LET a := 1 CREATE TABLE u (a INT);
+                    // RETURN 1 1; END is 'CREATE' and '(' alone, the later statement's fault unnamed (live-verified).
+                    stackEndsReport = directlyInOutermostBlock(recognizer);
+                    if (resumed != null) {
+                        stackDecided = true;
+                        stacked = resumed.isEmpty() ? null : resumed.get(0);
+                        stackedAgain = resumed.size() < 2 ? null : resumed.get(1);
+                    } else {
+                        stacked = stackedAfterMissingTerminator(recognizer, reported);
+                        if (labelled != null) {
+                            stacked = ConstructEndSyntax.pastNestedBlockEnds(recognizer, stacked);
+                        }
+                    }
                 }
             }
-            if (stacked == null && !endOpened && recognizer instanceof Parser) {
+            // ★ A SELECT ITEM THAT DEAD-ENDS ON THE NEXT STATEMENT'S FIRST WORD is the missing semicolon
+            // read the other way round: this parser could not take the word as the item's alias because
+            // nothing after it parses, where live takes it and refuses the token after it — SELECT 'foo'
+            // then LET x INT := 1; is 'x', then 'INT' (live-verified).
+            if (errors.size() == 1 && !isMissingTerminator(e) && recognizer instanceof Parser) {
+                final Token follower = deadEndSwallowedFollower((Parser) recognizer, e, reported);
+                if (follower != null) {
+                    reported = follower;
+                    stacked = afterFirstName((Parser) recognizer, follower);
+                    deadEndSwallowed = true;
+                }
+            }
+            // ★ A COMMA IN A PARENTHESIZED FROM GROUP is refused at the group's first token, then at its closing
+            // parenthesis, and nothing more — see FromGroupComma.
+            if (errors.size() == 1 && !stackDecided) {
+                final List<Token> group = FromGroupComma.refusal(recognizer, reported);
+                if (group != null) {
+                    fromGroupLines = Arrays.asList(sentence(group.get(0)), sentence(group.get(1)));
+                }
+            }
+            // ★ A COMMA AFTER THE FROM LIST'S LAST TABLE REFERENCE is refused at the token after it — see FromListComma.
+            if (errors.size() == 1) {
+                final Token listed = FromListComma.refusedInstead(recognizer, reported);
+                if (listed != null) {
+                    reported = listed;
+                    stackDecided = true;
+                }
+            }
+            // ★ A WORD AFTER A KEYWORD WRITTEN ALONE AS A SHOW SCOPE, in a block, is two lines — see KeywordScopeLines.
+            if (errors.size() == 1) {
+                keywordScopeLines = KeywordScopeLines.of(recognizer, e, reported);
+            }
+            if (stacked == null && !stackDecided && !endOpened && !deadEndSwallowed && recognizer instanceof Parser) {
                 stacked = stackedAfterFirstFault((Parser) recognizer, reported, parenAfterAlias, e);
+            }
+            if (stacked == null && !stackDecided && errors.size() == 1 && recognizer instanceof Parser) {
+                stacked = PositionNeedleSyntax.stackedAfterInForm(((Parser) recognizer).getInputStream(), reported);
             }
             if (reported.getType() == Token.EOF && messageLines.isEmpty()) {
                 unclosedCall = unclosedCallParen(recognizer, reported);
@@ -244,7 +427,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 messageLine = shown[0];
                 messagePosition = shown[1];
                 messageText = "syntax error line " + messageLine + " at position " + messagePosition
-                    + " unexpected '" + reported.getText() + "'.";
+                    + " unexpected '" + firstWord(reported) + "'.";
             }
         } else {
             final int[] shown = LeadingCommentOffset.rebase(EndOfInput.line(sql), EndOfInput.position(sql));
@@ -262,6 +445,22 @@ public class SyntaxErrorListener extends BaseErrorListener {
         // It is the GROUP that goes quiet, not the statement. `SAMPLE ((10))` stacks two lines live —
         // the inner '(' and then the ')' left over AFTER that group — so a second fault outside the
         // brackets still speaks, and only positions within them are dropped.
+        // ★ AFTER A FAULT, A SEMICOLON RIGHT AFTER ANOTHER IS AN EMPTY STATEMENT, which live never reports: SELECT 1 x y;
+        // ; is 'y' alone. And after a word that opened a statement the parse could not finish, a ')' closing no group
+        // in a LATER statement ends the report unnamed: SELECT 1 x y; SELECT 1) x is 'y' alone, where after any other
+        // fault the ')' is named (all live-verified).
+        if (named != null && !messageLines.isEmpty() && recognizer instanceof Parser) {
+            final TokenStream stream = ((Parser) recognizer).getInputStream();
+            final Token before = named.getType() == Token.EOF ? null : previousSpoken(stream, named.getTokenIndex());
+            if (named.getType() == FrostlakeLexer.SEMI && before != null && before.getType() == FrostlakeLexer.SEMI) {
+                return;
+            }
+            if (firstLineOpenedStatement && UnmatchedCloseParen.endsTheReport(recognizer, named)
+                    && semicolonBetween(stream, firstOffendingStartIndex, named)) {
+                suppressUntilTokenIndex = Integer.MAX_VALUE;
+                return;
+            }
+        }
         if (named != null && suppressUntilTokenIndex >= 0
                 && named.getTokenIndex() <= suppressUntilTokenIndex) {
             if (quiet) {
@@ -282,13 +481,19 @@ public class SyntaxErrorListener extends BaseErrorListener {
             messageLines.add(messageText);
             coordinates.add(new int[] {messageLine, messagePosition});
             if (stacked != null) {
-                stackedSentences.add(sentence(stacked));
+                final List<String> stackedLines = new ArrayList<>();
+                stackedLines.add(sentence(stacked));
+                if (stackedAgain != null) {
+                    stackedLines.add(sentence(stackedAgain));
+                }
+                stackedSentences.add(stackedLines);
+                final Token lastStacked = stackedAgain != null ? stackedAgain : stacked;
                 Token end = recognizer instanceof Parser
-                    ? nextSpoken(((Parser) recognizer).getInputStream(), stacked.getTokenIndex()) : null;
+                    ? nextSpoken(((Parser) recognizer).getInputStream(), lastStacked.getTokenIndex()) : null;
                 while (end != null && end.getType() != FrostlakeLexer.SEMI && end.getType() != Token.EOF) {
                     end = nextSpoken(((Parser) recognizer).getInputStream(), end.getTokenIndex());
                 }
-                stackedEnds.add(end == null || end.getType() == Token.EOF
+                stackedEnds.add(stackEndsReport || end == null || end.getType() == Token.EOF
                     ? new int[] {Integer.MAX_VALUE, Integer.MAX_VALUE}
                     : LeadingCommentOffset.rebase(end.getLine(), end.getCharPositionInLine()));
             } else {
@@ -307,22 +512,43 @@ public class SyntaxErrorListener extends BaseErrorListener {
             // one (`SELECT case …` rejects CASE as a select item, then reads it as a CASE
             // expression). Live never reports those, so they are dropped once a later error shows
             // the parse continued past them — see throwIfErrors.
-            selfDeadEnds.add(Boolean.valueOf(e instanceof NoViableAltException
+            selfDeadEnds.add(Boolean.valueOf(!deadEndSwallowed && !openerRefused && e instanceof NoViableAltException
                 && ((NoViableAltException) e).getStartToken() == offendingSymbol));
             surplusEnds.add(Boolean.valueOf(endOpened));
             offendingIndexes.add(Integer.valueOf(named != null && named.getType() != Token.EOF
                 ? named.getTokenIndex() : -1));
             openerTypes.add(Integer.valueOf(statementOpenerType(recognizer)));
+            parserOwnFaults.add(Boolean.valueOf(e instanceof IdentifierReferenceFault));
+            final boolean groupTail = named != null && insideGroupAfterRefusal(recognizer, named);
+            groupTails.add(Boolean.valueOf(groupTail));
+            openedStatements.add(Boolean.valueOf(!openerRefused && (freshStatement || parenAfterAlias)
+                || firstFaultRunIn && (freshStatement || isNameLike(named) || named.getType() == FrostlakeLexer.COMMA)
+                || refusedRunIn));
+            if (!groupTail && named != null && named.getType() != Token.EOF) {
+                lastRefusedIndex = named.getTokenIndex();
+            }
             lastMessageLine = messageLine;
             lastMessagePosition = messagePosition;
             if (firstMessageLine < 0) {
                 firstMessageLine = messageLine;
                 firstMessagePosition = messagePosition;
+                firstLineOpenedStatement = freshStatement;
                 if (named != null) {
                     firstOffendingStartIndex = named.getStartIndex();
                 }
             }
-            if (named != null && named.getType() == FrostlakeLexer.LPAREN) {
+            if ((describeOpened || openerRefused)
+                    && !(firstFaultRunIn && UnmatchedCloseParen.endsTheReport(recognizer, named))) {
+                // Nothing after the DESC, or after a refused opening token, is reported: the statement never started.
+                suppressUntilTokenIndex = statementEndIndex(recognizer, named);
+            } else if (e instanceof IdentifierReferenceFault) {
+                // The parser named this token itself, having read the reference's parentheses whole, so no
+                // recovery follows it to be silenced — unless it is the ')' closing a comma's list, after
+                // which live reports nothing more of the statement.
+                if (named != null && ((IdentifierReferenceFault) e).endsTheReport()) {
+                    suppressUntilTokenIndex = statementEndIndex(recognizer, named);
+                }
+            } else if (named != null && named.getType() == FrostlakeLexer.LPAREN) {
                 // ★ A REFUSED '(' IN THE FETCH COUNT SLOT ENDS THE STATEMENT'S REPORTING. Live resyncs
                 // past the group to the clause's own keywords and reads the rest as written — ROWS
                 // ONLY, ROW ONLY, nothing, a stray ')' or junk all give the one line — where this
@@ -343,6 +569,9 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 // after SAMPLE ((10))'s second line live reads a LIMIT 1, a WHERE or plain junk
                 // without another word, while this parser named the LIMIT's count.
                 suppressUntilTokenIndex = statementEndIndex(recognizer, named);
+            } else if (named != null && UnmatchedCloseParen.endsTheReport(recognizer, named)) {
+                // ★ A ')' THAT CLOSES NO GROUP AT ALL ENDS THE REPORTING OF THE WHOLE INPUT — see UnmatchedCloseParen.
+                suppressUntilTokenIndex = Integer.MAX_VALUE;
             }
         }
         if (quiet) {
@@ -350,6 +579,33 @@ public class SyntaxErrorListener extends BaseErrorListener {
         } else {
             logger.error("=> SQL syntax error: {}", error);
         }
+    }
+
+    /**
+     * Whether the statement this parser is reading opened at a '(' right after the token the last line
+     * refused: that token's own bracketed tail, which live never reports inside. {@code SELECT 1 VALUES (1)}
+     * and {@code SELECT 1 INTO t VALUES (1)} are 'VALUES' alone on the account, where this parser read the
+     * {@code (1)} as a query of its own and named the '1' in it. A refused semicolon has no tail: the '('
+     * after it opens the next statement, and {@code SELECT 1 +; (SELECT 1 x y)} names the 'y' (live-verified).
+     */
+    private boolean insideGroupAfterRefusal(final Recognizer<?, ?> recognizer, final Token named) {
+        if (!(recognizer instanceof Parser) || named.getType() == Token.EOF) {
+            return false;
+        }
+        final int refused = lastRefusedIndex;
+        Token opener = null;
+        for (ParserRuleContext context = ((Parser) recognizer).getContext(); context != null;
+                context = context.getParent()) {
+            if (context.getParent() != null && context.getStart() != null) {
+                opener = context.getStart();
+            }
+        }
+        if (refused < 0 || opener == null || opener.getType() != FrostlakeLexer.LPAREN
+                || named.getTokenIndex() <= opener.getTokenIndex()) {
+            return false;
+        }
+        final Token before = previousSpoken(((Parser) recognizer).getInputStream(), opener.getTokenIndex());
+        return before != null && before.getTokenIndex() == refused && before.getType() != FrostlakeLexer.SEMI;
     }
 
     /**
@@ -453,6 +709,25 @@ public class SyntaxErrorListener extends BaseErrorListener {
         return false;
     }
 
+    /**
+     * The DESC or DESCRIBE opening a statement when the refused token stands right after it and is no plain
+     * word, which live reads as the object's type; or null.
+     */
+    private static Token describeWithoutType(final Recognizer<?, ?> recognizer, final Token reported) {
+        if (!(recognizer instanceof Parser) || reported.getType() == FrostlakeLexer.IDENTIFIER) {
+            return null;
+        }
+        final TokenStream stream = ((Parser) recognizer).getInputStream();
+        final Token describe = reported.getType() == Token.EOF && reported.getTokenIndex() < 0 ? null
+            : previousSpoken(stream, reported.getTokenIndex());
+        if (describe == null
+                || describe.getType() != FrostlakeLexer.DESC && describe.getType() != FrostlakeLexer.DESCRIBE) {
+            return null;
+        }
+        final Token before = previousSpoken(stream, describe.getTokenIndex());
+        return before == null || before.getType() == FrostlakeLexer.SEMI ? describe : null;
+    }
+
     /** Whether {@code e} is a block's statement ending without its semicolon (the statement list's own check). */
     private static boolean isMissingTerminator(final RecognitionException e) {
         return e instanceof FailedPredicateException
@@ -503,10 +778,35 @@ public class SyntaxErrorListener extends BaseErrorListener {
     }
 
     /**
+     * The token live refuses when a select item inside a block dead-ends on the word right after its
+     * expression — a word it could take as its bare alias, followed by something the parse cannot go on
+     * with: the token after the word. Null when this is not that case, or nothing refusable follows.
+     */
+    private static Token deadEndSwallowedFollower(final Parser parser, final RecognitionException e, final Token word) {
+        if (!(e instanceof NoViableAltException) || !(e.getCtx() instanceof FrostlakeParser.ExprItemContext)
+                || word.getType() == Token.EOF || !isNameLike(parser, word)) {
+            return null;
+        }
+        final FrostlakeParser.ExprItemContext item = (FrostlakeParser.ExprItemContext) e.getCtx();
+        if (item.AS() != null || item.identifier() != null || item.booleanExpr() == null
+                || item.booleanExpr().getStop() == null) {
+            return null;
+        }
+        final Token before = previousSpoken(parser.getInputStream(), word.getTokenIndex());
+        if (before == null || before.getTokenIndex() != item.booleanExpr().getStop().getTokenIndex()
+                || !directlyInBlock(parser, word)) {
+            return null;
+        }
+        final Token follower = nextSpoken(parser.getInputStream(), word.getTokenIndex());
+        return follower == null || follower.getType() == Token.EOF || follower.getType() == FrostlakeLexer.SEMI
+            ? null : follower;
+    }
+
+    /**
      * Whether a statement is a DELETE that ends at its unaliased target table — {@code DELETE FROM t}
      * followed by {@code RETURN 1;} reads RETURN as the target's alias on the account, as a query does.
      */
-    private static boolean endsInUnaliasedDeleteTarget(final FrostlakeParser.StatementContext statement) {
+    static boolean endsInUnaliasedDeleteTarget(final FrostlakeParser.StatementContext statement) {
         if (statement.dmlStatement() == null || statement.dmlStatement().deleteStatement() == null) {
             return false;
         }
@@ -556,8 +856,8 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 || owner instanceof FrostlakeParser.RepeatStatementContext) {
             // Only where the block-level reading would stack a line at all: with no name before the
             // statement's semicolon (RETURN 1 1;) the fault is one line in a body too.
-            return owner.getStart() == null || firstNameBeforeSemicolon(parser, first) == null
-                ? null : afterEnclosingConstruct(parser, owner.getStart());
+            return owner.getStart() == null || firstNameBeforeSemicolon(parser.getInputStream(), first) == null
+                ? null : afterEnclosingConstruct(parser.getInputStream(), owner.getStart());
         }
         if (!(list.getParent() instanceof FrostlakeParser.BeginEndBlockContext)
                 && !(list.getParent() instanceof FrostlakeParser.ExceptionHandlerContext)) {
@@ -579,14 +879,131 @@ public class SyntaxErrorListener extends BaseErrorListener {
     }
 
     /**
+     * The lines live stacks when a query directly inside a BEGIN … END block or an exception handler ends in an
+     * unaliased select item and runs into a word it cannot take as that item's alias — or null when the
+     * statement is any other shape, or nothing resumes it, and {@link #stackedAfterMissingTerminator} names
+     * the second line. The recovery resumes the interrupted query as it does between two statements at the
+     * top level (see {@link StatementSeparation}), and after the fault it meets there runs once more, the way
+     * {@link #afterFirstName} describes (live-verified):
+     *
+     * <pre>
+     *   SELECT 'foo'  then  GRANT SELECT ON TABLE t TO ROLE r;   'GRANT', 'TO', then 'r'
+     *   SELECT 'foo'  then  UPDATE t SET a = b WHERE c = d;      'UPDATE', 'SET', then '='
+     *   SELECT 'foo'  then  CREATE TABLE u (a INT);              'CREATE', '(', then 'INT'
+     *   SELECT 'foo'  then  DELETE FROM t WHERE a = b;           'DELETE' alone: t WHERE a = b reads on
+     *   SELECT 'foo'  then  INSERT INTO t VALUES (1);            'INSERT', then 'VALUES': nothing resumes
+     * </pre>
+     *
+     * <p>After an aliased item the same statements stop at the second line.
+     *
+     * @return the stacked tokens, none when the resumed query reads on without a fault, or null
+     */
+    private List<Token> resumedAfterUnaliasedItem(final Recognizer<?, ?> recognizer, final Token word) {
+        if (!(recognizer instanceof Parser) || sql == null || word.getType() == Token.EOF
+                || word.getType() == FrostlakeLexer.END || word.getType() == FrostlakeLexer.CALL) {
+            return null;
+        }
+        final Parser parser = (Parser) recognizer;
+        if (!(parser.getContext() instanceof FrostlakeParser.StatementListContext)) {
+            return null;
+        }
+        final FrostlakeParser.StatementListContext list = (FrostlakeParser.StatementListContext) parser.getContext();
+        if (!(list.getParent() instanceof FrostlakeParser.BeginEndBlockContext)
+                && !(list.getParent() instanceof FrostlakeParser.ExceptionHandlerContext)) {
+            return null;
+        }
+        FrostlakeParser.StatementContext finished = null;
+        for (int i = list.getChildCount() - 1; i >= 0 && finished == null; i--) {
+            if (list.getChild(i) instanceof FrostlakeParser.StatementContext) {
+                finished = (FrostlakeParser.StatementContext) list.getChild(i);
+            }
+        }
+        if (finished == null || finished.queryStatement() == null || finished.getStart() == null
+                || finished.getStop() == null || !endsInUnaliasedSelectItem(finished)) {
+            return null;
+        }
+        // The query is read on its own, at its own place: everything before it is blanked, line breaks kept.
+        final char[] text = sql.toCharArray();
+        for (int i = 0; i < finished.getStart().getStartIndex() && i < text.length; i++) {
+            if (text[i] != '\n' && text[i] != '\r') {
+                text[i] = ' ';
+            }
+        }
+        final TokenStream stream = parser.getInputStream();
+        if (stream instanceof BufferedTokenStream) {
+            ((BufferedTokenStream) stream).fill();
+        }
+        final String resumed = StatementSeparation.resumedLine(stream, new String(text), word);
+        if (resumed == null) {
+            return null;
+        }
+        final List<Token> lines = new ArrayList<>();
+        if (resumed.isEmpty()) {
+            return lines;
+        }
+        final int[] at = sentenceCoordinates(resumed);
+        Token fault = null;
+        for (Token token = nextSpoken(stream, word.getTokenIndex()); at != null && fault == null && token != null
+                && token.getType() != Token.EOF; token = nextSpoken(stream, token.getTokenIndex())) {
+            final int[] shown = LeadingCommentOffset.rebase(token.getLine(), token.getCharPositionInLine());
+            if (shown[0] == at[0] && shown[1] == at[1]) {
+                fault = token;
+            }
+        }
+        if (fault == null) {
+            return null;
+        }
+        lines.add(fault);
+        final Token again = afterFirstName(parser, fault);
+        if (again != null) {
+            lines.add(again);
+        }
+        return lines;
+    }
+
+    /**
+     * Whether the parser stands in the statement list of the script's own BEGIN … END block or of one of its exception
+     * handlers — not a nested block's, and not a control construct's body.
+     */
+    private static boolean directlyInOutermostBlock(final Recognizer<?, ?> recognizer) {
+        if (!(recognizer instanceof Parser)
+                || !(((Parser) recognizer).getContext() instanceof FrostlakeParser.StatementListContext)) {
+            return false;
+        }
+        ParserRuleContext block = ((Parser) recognizer).getContext().getParent();
+        if (block instanceof FrostlakeParser.ExceptionHandlerContext) {
+            block = block.getParent() == null ? null : block.getParent().getParent();
+        }
+        if (!(block instanceof FrostlakeParser.BeginEndBlockContext)) {
+            return false;
+        }
+        for (ParserRuleContext up = block.getParent(); up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.BeginEndBlockContext) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * The token live refuses in the second line once its recovery resumes at {@code first}: the first word
      * from there on that the grammar can read as a NAME is taken, and the token after it is refused. A
      * semicolon right after the name is consumed and the token after it is refused instead; END straight
      * after the name, or no name before the statement's semicolon, ends the report (null).
      */
-    private static Token afterFirstName(final Parser parser, final Token first) {
-        final TokenStream stream = parser.getInputStream();
-        final Token name = firstNameBeforeSemicolon(parser, first);
+    static Token afterFirstName(final Parser parser, final Token first) {
+        return afterFirstName(parser.getInputStream(), first);
+    }
+
+    /**
+     * As {@link #afterFirstName(Parser, Token)}, read off the token stream alone.
+     *
+     * @param stream the parse's token stream
+     * @param first  the token the search starts at
+     * @return the token refused after the first name, or null
+     */
+    static Token afterFirstName(final TokenStream stream, final Token first) {
+        final Token name = firstNameBeforeSemicolon(stream, first);
         if (name == null) {
             return null;
         }
@@ -617,8 +1034,14 @@ public class SyntaxErrorListener extends BaseErrorListener {
      */
     private static Token stackedAfterFirstFault(final Parser parser, final Token first, final boolean parenAfterAlias,
                                                 final RecognitionException e) {
-        if (first.getType() == Token.EOF || isMissingTerminator(e)) {
+        if (isMissingTerminator(e)) {
             return null;
+        }
+        // ★ A FAULT IN AN ARGUMENT OF A SELECT-LIST CALL is retried from the argument's leading name — see
+        // CallArgumentRetryLine.
+        final Token retried = CallArgumentRetryLine.after(parser.getInputStream(), first);
+        if (retried != null || first.getType() == Token.EOF) {
+            return retried;
         }
         if (strayAfterLoopCondition(parser, first)) {
             final Token next = nextSpoken(parser.getInputStream(), first.getTokenIndex());
@@ -856,8 +1279,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
      * END, or the next statement's first word — while FOR is reserved and is itself the second line
      * ({@code … RETURN 1; END FOR;} names that FOR).
      */
-    private static Token afterEnclosingConstruct(final Parser parser, final Token opener) {
-        final TokenStream stream = parser.getInputStream();
+    static Token afterEnclosingConstruct(final TokenStream stream, final Token opener) {
         if (stream instanceof BufferedTokenStream) {
             ((BufferedTokenStream) stream).fill();
         }
@@ -875,7 +1297,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 depth++;
             } else if (token.getType() == FrostlakeLexer.END && --depth == 0) {
                 Token next = nextSpoken(stream, i);
-                if (next == null || next.getType() == Token.EOF || !isNameLike(parser, next)) {
+                if (next == null || next.getType() == Token.EOF || !isNameLike(next)) {
                     return next == null || next.getType() == Token.EOF ? null : next;
                 }
                 next = nextSpoken(stream, next.getTokenIndex());
@@ -921,8 +1343,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
      * The first token from {@code first} onwards that live's recovery reads as a NAME, or null when the
      * statement's semicolon (or the end of the input) comes first.
      */
-    private static Token firstNameBeforeSemicolon(final Parser parser, final Token first) {
-        final TokenStream stream = parser.getInputStream();
+    static Token firstNameBeforeSemicolon(final TokenStream stream, final Token first) {
         if (stream instanceof BufferedTokenStream) {
             ((BufferedTokenStream) stream).fill();
         }
@@ -934,7 +1355,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
             if (token.getType() == FrostlakeLexer.SEMI || token.getType() == Token.EOF) {
                 return null;
             }
-            if (isNameLike(parser, token)) {
+            if (isNameLike(token)) {
                 return token;
             }
         }
@@ -952,18 +1373,28 @@ public class SyntaxErrorListener extends BaseErrorListener {
     }
 
     /**
-     * Whether live's recovery reads the token as a NAME: whatever may name a column here, CASE too (it
-     * leads a name wherever one is the only thing possible), but not BEGIN, which live skips like a
-     * reserved word.
+     * Whether live's recovery reads the token as a NAME: whatever may name a column here, CASE and WHEN too
+     * (a loop run into a CASE statement or an exception handler is refused at the WHEN, then at the token after
+     * it), but not BEGIN, which live skips like a reserved word.
      */
-    private static boolean isNameLike(final Parser parser, final Token token) {
-        if (token.getType() == FrostlakeLexer.CASE) {
+    static boolean isNameLike(final Parser parser, final Token token) {
+        return isNameLike(token);
+    }
+
+    /**
+     * As {@link #isNameLike(Parser, Token)}, by this grammar's own reading.
+     *
+     * @param token the token
+     * @return true when live's recovery reads it as a NAME
+     */
+    static boolean isNameLike(final Token token) {
+        if (token.getType() == FrostlakeLexer.CASE || token.getType() == FrostlakeLexer.WHEN) {
             return true;
         }
         if (token.getType() == FrostlakeLexer.BEGIN) {
             return false;
         }
-        final ATN atn = parser.getATN();
+        final ATN atn = FrostlakeParser._ATN;
         return atn.nextTokens(atn.ruleToStartState[FrostlakeParser.RULE_identifier]).contains(token.getType());
     }
 
@@ -988,7 +1419,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
     }
 
     /** Whether a statement's last token closes an unaliased select item or table reference, which a bare alias may follow. */
-    private static boolean endsTakingBareAlias(final ParseTree statement) {
+    static boolean endsTakingBareAlias(final ParseTree statement) {
         ParseTree leaf = statement;
         while (leaf.getChildCount() > 0) {
             leaf = leaf.getChild(leaf.getChildCount() - 1);
@@ -1006,6 +1437,23 @@ public class SyntaxErrorListener extends BaseErrorListener {
             }
         }
         return false;
+    }
+
+    /**
+     * Offers a word a check after the parse refuses in the statements the parse read on at the top level, when the
+     * first fault refused a word after a keyword SHOW scope in a block: it is that fault's second line when it comes
+     * before the parse's own next fault — see KeywordScopeLines.
+     *
+     * @param word the refused word
+     * @return whether the first fault takes it
+     */
+    public boolean takesLaterRefusal(final Token word) {
+        if (keywordScopeLines == null || !keywordScopeLines.offer(word)) {
+            return false;
+        }
+        // The word is a later line of its own, so the lines worked out before it came are no longer the answer.
+        forgetReportedLines();
+        return true;
     }
 
     /**
@@ -1045,6 +1493,33 @@ public class SyntaxErrorListener extends BaseErrorListener {
         return outermostStart;
     }
 
+    /** Whether a semicolon stands after the character {@code from} and before {@code token}. */
+    private static boolean semicolonBetween(final TokenStream stream, final int from, final Token token) {
+        for (int i = token.getTokenIndex() - 1; i >= 0; i--) {
+            final Token candidate = stream.get(i);
+            if (candidate.getStartIndex() <= from) {
+                return false;
+            }
+            if (candidate.getChannel() == Token.DEFAULT_CHANNEL && candidate.getType() == FrostlakeLexer.SEMI) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the token right before a keyword {@code startToken} is a semicolon. A word opening the statement is still
+     * trailing junk there: BEGIN RETURN 'x'; END; junk is 'junk' (live-verified).
+     */
+    private static boolean opensAfterSemicolon(final Recognizer<?, ?> recognizer, final Token startToken) {
+        if (!(recognizer instanceof Parser) || startToken.getType() == FrostlakeLexer.IDENTIFIER
+                || startToken.getType() == FrostlakeLexer.QUOTED_IDENTIFIER) {
+            return false;
+        }
+        final Token before = previousSpoken(((Parser) recognizer).getInputStream(), startToken.getTokenIndex());
+        return before != null && before.getType() == FrostlakeLexer.SEMI;
+    }
+
     private boolean beginsAFreshStatement(final Recognizer<?, ?> recognizer, final Token startToken) {
         if (!(recognizer instanceof Parser)) {
             return false;
@@ -1076,11 +1551,36 @@ public class SyntaxErrorListener extends BaseErrorListener {
      *   <li>inside a scripting BLOCK, the wreckage of an ABANDONED block — see
      *       {@link #abandonedBlockArtifacts}.</li>
      * </ul>
+     *
+     * <p>The lines are worked out once for the faults collected so far: the rules that rebuild live's recovery parse
+     * rebuilt texts whose listeners are asked for their lines several times, so working them out again on every
+     * question would repeat each nested parse once per question, level after level.
      */
     private List<String> reportedLines() {
+        if (reportedCache == null) {
+            reportedCache = workOutReportedLines(false);
+        }
+        return reportedCache;
+    }
+
+    /** Drops the lines worked out from the faults collected so far: a further fault changes them. */
+    private void forgetReportedLines() {
+        reportedCache = null;
+        firstLineCache = null;
+        firstLineKnown = false;
+    }
+
+    /**
+     * The lines actually reported, worked out afresh — or, when {@code firstOnly}, a list whose first line is theirs and
+     * whose later lines the rules that rebuild live's recovery on a second parse leave out: see {@link #reportedLines}.
+     */
+    private List<String> workOutReportedLines(final boolean firstOnly) {
         final String leading = leadingIdentifierRefusal();
         if (leading != null) {
             return Collections.singletonList(leading);
+        }
+        if (fromGroupLines != null) {
+            return fromGroupLines;
         }
         final String unsupportedType = unsupportedTypeRefusal();
         if (unsupportedType != null) {
@@ -1094,9 +1594,54 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (unbalancedBlock != null) {
             return Collections.singletonList(unbalancedBlock);
         }
+        final List<String> readAsCast = tryCastReading();
+        if (readAsCast != null) {
+            return readAsCast;
+        }
+        if (keywordScopeLines != null) {
+            // The parse's own reading, the refused word set aside as the dead end it is, gives the second line. It is
+            // worked out afresh, not through the cache, which holds the answer WITH the keyword scope's lines; the
+            // first line is the refused word's in both modes, so the first-only question needs no second reading.
+            final KeywordScopeLines keywordScope = keywordScopeLines;
+            keywordScopeLines = null;
+            try {
+                return keywordScope.lines(keywordScope.readsNextFault() && !firstOnly
+                    ? workOutReportedLines(false) : null);
+            } finally {
+                keywordScopeLines = keywordScope;
+            }
+        }
+        final List<Token> spokenTokens = sql == null ? null : defaultChannelTokens();
+        final List<String> starModifier = spokenTokens == null || !statementParse ? null
+            : StarModifierLines.lines(sql, spokenTokens, firstOnly);
+        if (starModifier != null) {
+            return starModifier;
+        }
+        final String joinCondition =spokenTokens == null || coordinates.isEmpty() || !statementParse ? null
+            : JoinConditionEnd.refusal(spokenTokens, coordinates.get(0));
+        if (joinCondition != null) {
+            return Collections.singletonList(joinCondition);
+        }
+        final List<String> listSubquery = spokenTokens == null || coordinates.isEmpty() ? null
+            : ListSubqueryRecovery.refusal(sql, spokenTokens, coordinates.get(0), statementParse);
+        if (listSubquery != null) {
+            return listSubquery;
+        }
+        final List<String> ilikeAll = spokenTokens == null ? null : IlikeAllSyntax.refusal(sql, spokenTokens);
+        if (ilikeAll != null) {
+            return ilikeAll;
+        }
+        final List<String> subqueryAliasParen = spokenTokens == null ? null
+            : SubqueryAliasParenLines.lines(sql, spokenTokens);
+        if (subqueryAliasParen != null) {
+            return subqueryAliasParen;
+        }
         final List<String> reported = new ArrayList<>();
         final List<Integer> kept = new ArrayList<>();
         final boolean[] artifacts = abandonedBlockArtifacts();
+        // ★ A LATER STATEMENT IS READ ON ITS OWN — see LaterStatementLines.
+        final LaterStatementLines later = statementParse ? LaterStatementLines.over(spokenTokens) : null;
+        boolean laterEnded = false;
         boolean keptPositioned = false;
         for (int i = 0; i < messageLines.size(); i++) {
             if (artifacts[i]) {
@@ -1108,7 +1653,27 @@ public class SyntaxErrorListener extends BaseErrorListener {
             }
             final boolean endOfInput = i < atEndOfInput.size()
                 && Boolean.TRUE.equals(atEndOfInput.get(i));
-            if (endOfInput && keptPositioned) {
+            boolean laterStatementEnd = false;
+            if (later != null && !kept.isEmpty()) {
+                final int last = kept.get(kept.size() - 1).intValue();
+                final int at = offendingIndexes.get(i).intValue() >= 0 ? offendingIndexes.get(i).intValue()
+                    : endOfInput ? spokenTokens.get(spokenTokens.size() - 1).getTokenIndex() : -1;
+                final LaterLineVerdict verdict = later.judge(offendingIndexes.get(last).intValue(),
+                    Boolean.TRUE.equals(openedStatements.get(last)), at);
+                if (verdict == LaterLineVerdict.SKIPPED) {
+                    continue;
+                }
+                if (verdict == LaterLineVerdict.REPLACED) {
+                    reported.add(sentence(later.replacement()));
+                    kept.add(Integer.valueOf(i));
+                }
+                if (verdict == LaterLineVerdict.END || verdict == LaterLineVerdict.REPLACED) {
+                    laterEnded = true;
+                    break;
+                }
+                laterStatementEnd = endOfInput && verdict == LaterLineVerdict.READ;
+            }
+            if (endOfInput && keptPositioned && !laterStatementEnd) {
                 continue;
             }
             if (!reported.isEmpty() && reported.get(reported.size() - 1).equals(messageLines.get(i))) {
@@ -1122,8 +1687,19 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 // After a surplus END live reports nothing more: the statement list is over.
                 break;
             }
-            if (!endOfInput) {
+            // A line the parser named itself leaves no recovery behind it, so running out of input later is a
+            // fault of its own: live reports both for IDENTIFIER(UPPER('t1')) WHERE a = 1 AND.
+            if (!endOfInput && !Boolean.TRUE.equals(parserOwnFaults.get(i))) {
                 keptPositioned = true;
+            }
+        }
+        if (later != null && !laterEnded && !kept.isEmpty()) {
+            // A later statement that cannot open is named even where no fault of this parse follows it.
+            final int last = kept.get(kept.size() - 1).intValue();
+            if (later.judge(offendingIndexes.get(last).intValue(), Boolean.TRUE.equals(openedStatements.get(last)),
+                    spokenTokens.get(spokenTokens.size() - 1).getTokenIndex()) == LaterLineVerdict.REPLACED) {
+                reported.add(sentence(later.replacement()));
+                kept.add(Integer.valueOf(last));
             }
         }
         if (reported.isEmpty() && !messageLines.isEmpty()) {
@@ -1141,15 +1717,76 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (nested != null) {
             return nested;
         }
+        final List<String> needle = PositionNeedleSyntax.linesAroundOperatorFault(sql, offendingIndexes.get(kept.get(0)));
+        if (needle != null) {
+            return needle;
+        }
+        final List<String> insertList = spokenTokens == null ? null
+            : InsertColumnListRecovery.refusal(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (insertList != null) {
+            return insertList;
+        }
+        final List<String> markerList = spokenTokens == null ? null
+            : JoinMarkerListLines.refusal(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (markerList != null) {
+            return markerList;
+        }
+        final List<String> inList = spokenTokens == null ? null
+            : InListRecovery.refusal(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (inList != null) {
+            return inList;
+        }
+        final List<String> bodyParen = spokenTokens == null ? null
+            : ConstructBodyAliasParen.lines(spokenTokens, offendingIndexes.get(kept.get(0)));
+        if (bodyParen != null) {
+            return bodyParen;
+        }
+        final List<String> marker = spokenTokens == null ? null
+            : OuterJoinMarkerRecovery.lines(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (marker != null) {
+            return marker;
+        }
+        final List<String> missingOperand = spokenTokens == null ? null
+            : MissingOperandRecovery.lines(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (missingOperand != null) {
+            return missingOperand;
+        }
+        final List<String> selectList = spokenTokens == null ? null
+            : SelectListResync.lines(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse, firstOnly);
+        if (selectList != null) {
+            return selectList;
+        }
+        final List<String> fromList = spokenTokens == null ? null
+            : FromListResync.lines(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (fromList != null) {
+            return fromList;
+        }
+        final List<String> castComma = spokenTokens == null ? null
+            : CastCommaLines.lines(spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (castComma != null) {
+            return castComma;
+        }
+        final List<String> blockClose = spokenTokens == null || !statementParse ? null
+            : UnmatchedCloseParen.blockLines(spokenTokens, offendingIndexes.get(kept.get(0)));
+        if (blockClose != null) {
+            return blockClose;
+        }
+        // A line inside the bracketed tail of a word already refused is that refusal's wreckage.
+        for (int k = kept.size() - 1; k > 0; k--) {
+            if (Boolean.TRUE.equals(groupTails.get(kept.get(k).intValue()))) {
+                kept.remove(k);
+                reported.remove(k);
+            }
+        }
         final int firstLine = kept.get(0).intValue();
         if (firstLine < stackedSentences.size() && stackedSentences.get(firstLine) != null) {
-            // The one line live stacks after the first fault — a block statement run into the next word, and
-            // the shapes stackedAfterFirstFault names. Whatever this parser reported from there to the end of
-            // the statement holding the stacked token is the wreckage of the same fault; a fault in a later
+            // The lines live stacks after the first fault — a block statement run into the next word, and the
+            // shapes stackedAfterFirstFault names. Whatever this parser reported from there to the end of the
+            // statement holding the last stacked token is the wreckage of the same fault; a fault in a later
             // statement still speaks.
             final List<String> stackedLines = new ArrayList<>();
             stackedLines.add(reported.get(0));
-            stackedLines.add(stackedSentences.get(firstLine));
+            stackedLines.addAll(stackedSentences.get(firstLine));
             for (int k = 1; k < kept.size(); k++) {
                 if (isAfter(coordinates.get(kept.get(k).intValue()), stackedEnds.get(firstLine))) {
                     stackedLines.add(reported.get(k));
@@ -1164,6 +1801,20 @@ public class SyntaxErrorListener extends BaseErrorListener {
             final List<String> withOpener = new ArrayList<>(reported);
             withOpener.add("syntax error line " + at[0] + " at position " + at[1] + " unexpected '('.");
             return withOpener;
+        }
+        if (reported.size() == 1 && spokenTokens != null && spokenTokens.size() > 1
+                && (Boolean.TRUE.equals(atEndOfInput.get(kept.get(0)))
+                    || reported.get(0).equals(sentence(spokenTokens.get(spokenTokens.size() - 2))))) {
+            final List<String> emptyCall = UnclosedCallLines.lines(spokenTokens);
+            if (emptyCall != null) {
+                return emptyCall;
+            }
+        }
+        if (reported.size() == 1 && spokenTokens != null) {
+            final String emptyCast = UnclosedCallLines.emptyCast(spokenTokens, offendingIndexes.get(kept.get(0)));
+            if (emptyCast != null) {
+                return Collections.singletonList(emptyCast);
+            }
         }
         return reported;
     }
@@ -1300,7 +1951,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
 
     /**
      * Where the ')' of a bare condition starting at {@code start} belongs: the index of the THEN (after
-     * IF / ELSEIF), DO (after WHILE) or END (after UNTIL) that ends the condition, skipping brackets and
+     * IF / ELSEIF), DO or LOOP (after WHILE) or END (after UNTIL) that ends the condition, skipping brackets and
      * CASE … END expressions inside it; -1 when a ')' of the text's own closes the condition first; -2
      * when the statement ends before any of them.
      */
@@ -1325,7 +1976,8 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 cases++;
             } else if (depth == 0 && cases > 0 && type == FrostlakeLexer.END) {
                 cases--;
-            } else if (depth == 0 && cases == 0 && type == closerType) {
+            } else if (depth == 0 && cases == 0
+                    && (type == closerType || closerType == FrostlakeLexer.DO && type == FrostlakeLexer.LOOP)) {
                 return j;
             }
         }
@@ -1346,7 +1998,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
      * The line and position a sentence of this listener's own names ({@code … line L at position P …}),
      * or null for a sentence that carries none.
      */
-    private static int[] sentenceCoordinates(final String sentence) {
+    static int[] sentenceCoordinates(final String sentence) {
         final int lineAt = sentence.indexOf(" line ");
         final int positionAt = sentence.indexOf(" at position ");
         if (lineAt < 0 || positionAt < lineAt) {
@@ -1632,7 +2284,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
     }
 
     /** A syntax-error sentence naming {@code token} at its own place. */
-    private static String sentence(final Token token) {
+    static String sentence(final Token token) {
         final int[] at = LeadingCommentOffset.rebase(token.getLine(), token.getCharPositionInLine());
         return "syntax error line " + at[0] + " at position " + at[1] + " unexpected '" + token.getText() + "'.";
     }
@@ -1814,6 +2466,86 @@ public class SyntaxErrorListener extends BaseErrorListener {
         return !errors.isEmpty();
     }
 
+    /**
+     * Where the token the parse's first fault names begins, as a character index of the text — or -1 when that fault
+     * names no token, as a lexer's does.
+     *
+     * @return the index, or -1
+     */
+    public int firstFaultStartIndex() {
+        final List<String> readAsCast = tryCastReading();
+        if (readAsCast != null) {
+            final Token named = TryCastReading.namedBy(defaultChannelTokens(), readAsCast.get(0));
+            return named == null ? -1 : named.getStartIndex();
+        }
+        return firstOffendingStartIndex;
+    }
+
+    /**
+     * The line and position of the parse's first fault, or null when there is none.
+     *
+     * @return the line and position
+     */
+    public int[] firstFaultCoordinates() {
+        final List<String> readAsCast = tryCastReading();
+        if (readAsCast != null) {
+            return sentenceCoordinates(readAsCast.get(0));
+        }
+        return firstMessageLine < 0 ? null : new int[] {firstMessageLine, firstMessagePosition};
+    }
+
+    /**
+     * The lines of the parse read with the TRY_CAST around its first fault spelled CAST, which live reads as the same
+     * construct — or null when no TRY_CAST holds that fault. See {@code TryCastReading}.
+     */
+    private List<String> tryCastReading() {
+        if (!castReadingDone) {
+            castReadingDone = true;
+            castReading = sql == null || firstRaisedAt == null ? null
+                : TryCastReading.lines(sql, defaultChannelTokens(), firstRaisedAt, statementParse);
+        }
+        return castReading;
+    }
+
+    /**
+     * The first line this listener would report, or null when it has nothing to report.
+     *
+     * @return the sentence, as {@link #throwIfErrors} would put it first
+     */
+    public String firstReportedLine() {
+        if (!hasErrors()) {
+            return null;
+        }
+        if (!firstLineKnown) {
+            // The first line alone spares the second parses that only the lines after it need.
+            final List<String> lines = reportedCache != null ? reportedCache : workOutReportedLines(true);
+            firstLineCache = lines.isEmpty() ? null : lines.get(0);
+            firstLineKnown = true;
+        }
+        return firstLineCache;
+    }
+
+    /**
+     * Every line this listener would report, in order — none when it has nothing to report.
+     *
+     * @return the sentences, as {@link #throwIfErrors} would join them
+     */
+    public List<String> reportedSyntaxLines() {
+        return hasErrors() ? new ArrayList<String>(reportedLines()) : new ArrayList<String>();
+    }
+
+    /**
+     * Whether the first line this listener reports was judged on a text that parses cleanly and is separated up to it —
+     * a star's misplaced RENAME or REPLACE, see {@link StarModifierLines} — so no refusal a recovered parse suggests
+     * before it stands.
+     *
+     * @return true when the first line is settled
+     */
+    boolean firstLineSettled() {
+        return statementParse && sql != null && hasErrors()
+            && StarModifierLines.lines(sql, defaultChannelTokens(), true) != null;
+    }
+
     public List<String> getErrors() {
         return new ArrayList<>(errors);
     }
@@ -1823,6 +2555,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
      */
     public void statementParse() {
         this.statementParse = true;
+        forgetReportedLines();
     }
 
     /**
@@ -2100,7 +2833,10 @@ public class SyntaxErrorListener extends BaseErrorListener {
      * @return the single reported line, or null when the rule does not apply
      */
     private String unsupportedTypeRefusal() {
-        if (!statementParse || sql == null || firstOffendingStartIndex < 0) {
+        // A line the parser named itself is no doubtful type: a quoted name after an IDENTIFIER() colon
+        // would read as one once substituted.
+        if (!statementParse || sql == null || firstOffendingStartIndex < 0
+                || !parserOwnFaults.isEmpty() && Boolean.TRUE.equals(parserOwnFaults.get(0))) {
             return null;
         }
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
@@ -2184,7 +2920,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
         }
         final String substituted = sql.substring(0, all.get(at).getStartIndex()) + "NUMBER"
             + sql.substring(all.get(end).getStopIndex() + 1);
-        if (!parsesClean(substituted)) {
+        if (!TypeSlotSubstitution.readsAsType(substituted, all.get(at).getStartIndex())) {
             return null;
         }
         String name = lastPart.getText();
@@ -2226,16 +2962,8 @@ public class SyntaxErrorListener extends BaseErrorListener {
         return -1;
     }
 
-    /**
-     * Whether {@code candidate} parses as a script with no syntax errors at all — the substitution
-     * check behind the unsupported-data-type sentence.
-     */
-    private static boolean parsesClean(final String candidate) {
-        return cleanParse(candidate) != null;
-    }
-
     /** The parse tree of {@code candidate} as a script, or null when it has any syntax error at all. */
-    private static FrostlakeParser.SqlScriptContext cleanParse(final String candidate) {
+    static FrostlakeParser.SqlScriptContext cleanParse(final String candidate) {
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(candidate));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
@@ -2255,6 +2983,50 @@ public class SyntaxErrorListener extends BaseErrorListener {
         return faults[0] == 0 ? tree : null;
     }
 
+    /**
+     * The lines a parse of {@code text} reports, or none when it parses cleanly: how a refusal that rebuilds live's
+     * recovery on a repaired text reads the faults left after the one it repaired.
+     */
+    static List<String> linesReportedFor(final String text, final boolean statementParse) {
+        return reportedFor(text, statementParse, false);
+    }
+
+    /**
+     * The first line a parse of {@code text} as a statement reports, or null when it parses cleanly: how a reading that
+     * rebuilds live's recovery tests where a candidate text first fails, without working out the lines after it.
+     */
+    static String firstLineReportedFor(final String text) {
+        final List<String> lines = reportedFor(text, true, true);
+        return lines.isEmpty() ? null : lines.get(0);
+    }
+
+    private static List<String> reportedFor(final String text, final boolean statementParse, final boolean firstOnly) {
+        final SyntaxErrorListener listener = new SyntaxErrorListener(text, true);
+        listener.statementParse = statementParse;
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        lexer.removeErrorListeners();
+        lexer.addErrorListener(listener);
+        final CommonTokenStream tokens = new CommonTokenStream(lexer);
+        final FrostlakeParser parser = new FrostlakeParser(tokens);
+        parser.removeErrorListeners();
+        parser.addErrorListener(listener);
+        final FrostlakeParser.SqlScriptContext tree = parser.sqlScript();
+        try {
+            if (statementParse) {
+                StatementSeparation.requireSeparatorsBefore(tree, tokens, text, listener);
+            }
+            if (listener.hasErrors()) {
+                return firstOnly ? Collections.singletonList(listener.firstReportedLine()) : listener.reportedLines();
+            }
+            if (statementParse) {
+                StatementSeparation.requireSeparators(tree, tokens, text);
+            }
+        } catch (final SqlSyntaxException separatorFault) {
+            return separatorFault.getSyntaxErrors();
+        }
+        return Collections.emptyList();
+    }
+
     public void throwIfErrors() {
         if (hasErrors()) {
             final StringBuilder detail = new StringBuilder();
@@ -2272,5 +3044,23 @@ public class SyntaxErrorListener extends BaseErrorListener {
             }
             throw new SqlSyntaxException(SqlCompilationError.of(detail.toString()), errors, sql);
         }
+    }
+    /**
+     * A token's text as live's lexer would split it. A few multi-word clauses lex here as one token (REVOKE CURRENT
+     * GRANTS); live reads their words one by one, so a refusal names only the first.
+     */
+    private static String firstWord(final Token token) {
+        final String text = token.getText();
+        final int type = token.getType();
+        if (type != FrostlakeLexer.REVOKE_CURRENT_GRANTS && type != FrostlakeLexer.RESUME_IF_SUSPENDED
+                && type != FrostlakeLexer.ABORT_ALL_QUERIES) {
+            return text;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.isWhitespace(text.charAt(i))) {
+                return text.substring(0, i);
+            }
+        }
+        return text;
     }
 }

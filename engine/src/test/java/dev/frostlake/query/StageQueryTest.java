@@ -37,7 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Querying staged files directly: {@code SELECT ... FROM @stage[/path] [(FILE_FORMAT => 'name',
  * PATTERN => 'regex')]} with $1..$n positional fields and the metadata$filename /
  * metadata$file_row_number columns (present by name, hidden from {@code SELECT *}), plus the
- * {@code DIRECTORY(@stage)} directory table.
+ * {@code DIRECTORY(@stage)} directory table. A PATTERN must match a file's whole stored path, not its
+ * bare name, so these select a file with {@code '.*a[.]csv'}.
  */
 public class StageQueryTest extends BaseDatabaseTest {
 
@@ -53,7 +54,7 @@ public class StageQueryTest extends BaseDatabaseTest {
             "every test here reads files from a local `file://` directory the harness just wrote, "
             + "which no account-side stage can see; the local-URL affordance itself is an explicit "
             + "opt-in (stage.file.urlEnabled) whose default surface StageUrlPolicyTest pins");
-        engine.execute("CREATE STAGE q_stage URL='file://" + stageDir + "'");
+        engine.execute("CREATE STAGE q_stage URL='file://" + stageDir + "' DIRECTORY = (ENABLE = TRUE)");
         engine.execute("CREATE FILE FORMAT q_json TYPE = 'JSON'");
     }
 
@@ -74,7 +75,7 @@ public class StageQueryTest extends BaseDatabaseTest {
 
     @Test
     public void selectStarExposesPositionalFieldsOnly() {
-        final ResultSet rs = q("SELECT * FROM @q_stage (PATTERN => 'a[.]csv') ORDER BY 1");
+        final ResultSet rs = q("SELECT * FROM @q_stage (PATTERN => '.*a[.]csv') ORDER BY 1");
         assertEquals(2, rs.getRowCount());
         assertEquals(3, rs.getColumns().size(), "SELECT * must expose the field columns but no METADATA$ columns");
         for (final ResultSetColumn col : rs.getColumns()) {
@@ -86,7 +87,7 @@ public class StageQueryTest extends BaseDatabaseTest {
     @Test
     public void positionalFieldsAndMetadataResolveByName() {
         final ResultSet rs = q("SELECT $2, metadata$filename, metadata$file_row_number "
-            + "FROM @q_stage (PATTERN => 'a[.]csv') ORDER BY $1");
+            + "FROM @q_stage (PATTERN => '.*a[.]csv') ORDER BY $1");
         assertEquals(2, rs.getRowCount());
         assertEquals("alpha", rs.getRows().get(0).getValue(0));
         assertEquals("a.csv", rs.getRows().get(0).getValue(1));
@@ -127,14 +128,14 @@ public class StageQueryTest extends BaseDatabaseTest {
 
     @Test
     public void aliasColumnListRenamesFields() {
-        final ResultSet rs = q("SELECT c1 FROM @q_stage (PATTERN => 'b[.]csv') t (c1, c2)");
+        final ResultSet rs = q("SELECT c1 FROM @q_stage (PATTERN => '.*b[.]csv') t (c1, c2)");
         assertEquals(1, rs.getRowCount());
         assertEquals("3", rs.getRows().get(0).getValue(0));
     }
 
     @Test
     public void schemaQualifiedStageName() {
-        final ResultSet rs = q("SELECT $1 FROM @test_schema.q_stage (PATTERN => 'b[.]csv')");
+        final ResultSet rs = q("SELECT $1 FROM @test_schema.q_stage (PATTERN => '.*b[.]csv')");
         assertEquals(1, rs.getRowCount());
         assertEquals("3", rs.getRows().get(0).getValue(0));
     }
@@ -161,7 +162,9 @@ public class StageQueryTest extends BaseDatabaseTest {
         assertEquals(3, all.getRowCount());
         assertEquals("a.csv", all.getRows().get(0).getValue(0));
         assertTrue(((Number) all.getRows().get(0).getValue(1)).longValue() > 0);
-        assertTrue(String.valueOf(all.getRows().get(0).getValue(2)).startsWith("file:"));
+        // The file's stage file URL, as BUILD_STAGE_FILE_URL(@q_stage, RELATIVE_PATH) spells it.
+        final String url = String.valueOf(all.getRows().get(0).getValue(2));
+        assertTrue(url.endsWith("/api/files/TEST_DB/TEST_SCHEMA/Q_STAGE/a%2ecsv"), url);
 
         final ResultSet filtered = q("SELECT file_url FROM DIRECTORY(@q_stage) WHERE size > 100000");
         assertEquals(0, filtered.getRowCount(), "all fixture files are small");

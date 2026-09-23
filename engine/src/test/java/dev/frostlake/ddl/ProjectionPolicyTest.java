@@ -179,8 +179,8 @@ public class ProjectionPolicyTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE pj_t ALTER COLUMN a SET PROJECTION POLICY no_such_pp");
             }
         });
-        assertEquals("SQL compilation error:\nProjection policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_PP'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nProjection policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_PP'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     @Test

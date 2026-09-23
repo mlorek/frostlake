@@ -43,7 +43,6 @@
       {"sql": "SELECT VECTOR_AVG(id) FROM avg_rows", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_AVG'"}}}
     ]},
     {"name": "a-bare-vector-cell-renders-as-the-vector-text",
-     "skip": {"backends": ["http"], "reason": "transport divergence: the HTTP transport returns a bare VECTOR cell as its descriptor object, {elementType=FLOAT}, losing the value entirely; every other check in this suite reads through TO_VARCHAR, which renders identically on all three transports, and this test keeps the un-cast claim on the embedded and JDBC paths."},
      "steps": [
       {"sql": "CREATE TABLE avg_rows (v VECTOR(FLOAT,3))"},
       {"sql": "INSERT INTO avg_rows SELECT [1,2,3]::VECTOR(FLOAT,3)"},

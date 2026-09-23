@@ -108,7 +108,7 @@ public class UnknownFunctionPrecedenceTest extends BaseDatabaseTest {
     public void whatStillOutranksTheUnknownName() {
         assertEquals("SQL compilation error:|syntax error line 1 at position 32 unexpected '<EOF>'.",
             refusal("SELECT " + FN + " FROM gw WHERE"));
-        assertEquals("SQL compilation error:|Object 'NOSUCHTABLE' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|Object 'NOSUCHTABLE' does not exist or not authorized."),
             refusal("SELECT " + FN + " FROM nosuchtable"));
         assertEquals("SQL compilation error:|Window function type [ROW_NUMBER] requires ORDER BY"
             + " in window specification.",

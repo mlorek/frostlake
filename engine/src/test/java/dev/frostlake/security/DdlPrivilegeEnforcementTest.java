@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -89,17 +90,17 @@ public class DdlPrivilegeEnforcementTest {
         });
     }
 
+    /** DROP is no privilege: dropping takes OWNERSHIP, and a GRANT of DROP is refused for the object's type. */
     @Test
-    public void dropGrantAllowsDrop() {
+    public void dropIsNoPrivilegeToGrant() {
         engine.execute("CREATE TABLE g (id INTEGER)");
-        engine.execute("GRANT DROP ON TABLE g TO ROLE app_role");
-        asAppRole();
-        assertDoesNotThrow(new Executable() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.execute("DROP TABLE g");
+                engine.execute("GRANT DROP ON TABLE g TO ROLE app_role");
             }
         });
+        assertEquals("SQL compilation error:\nInvalid object type 'TABLE' for privilege 'DROP'.", refused.getMessage());
     }
 
     @Test

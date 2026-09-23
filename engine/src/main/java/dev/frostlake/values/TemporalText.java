@@ -16,6 +16,7 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.TypeCategory;
 
@@ -61,6 +62,7 @@ public final class TemporalText {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final DateTimeFormatter NAIVE = eraYearFormat("-MM-dd HH:mm:ss.SSS");
     private static final DateTimeFormatter ZONED = eraYearFormat("-MM-dd HH:mm:ss.SSS Z");
+    private static final DateTimeFormatter ZERO_OFFSET = eraYearFormat("-MM-dd HH:mm:ss.SSS 'Z'");
     private static final DateTimeFormatter SECONDS = eraYearFormat("-MM-dd HH:mm:ss");
     private static final DateTimeFormatter OFFSET = DateTimeFormatter.ofPattern("Z");
 
@@ -117,7 +119,8 @@ public final class TemporalText {
             return time.getNano() == 0 ? TIME.format(time) : TIME.format(time) + "." + fraction(time.getNano());
         }
         if (!type.startsWith("TIMESTAMP")) {
-            return render(value, declared);
+            final String text = render(value, declared);
+            return value instanceof LocalDate ? signedBeforeYearOne(text, ((LocalDate) value).getYear()) : text;
         }
         final boolean zoned = "TIMESTAMP_LTZ".equals(type) || "TIMESTAMP_TZ".equals(type);
         final ZonedDateTime at = zoned ? zonedValue(value) : null;
@@ -125,8 +128,31 @@ public final class TemporalText {
         if (local == null) {
             return render(value, declared);
         }
-        final String text = SECONDS.format(local) + "." + fraction(local.getNano());
+        final String text = signedBeforeYearOne(SECONDS.format(local), local.getYear()) + "." + fraction(local.getNano());
         return zoned ? text + " " + OFFSET.format(at) : text;
+    }
+
+    /**
+     * A cell's text with a year before the first spelled by its SIGNED proleptic number — {@code -1-01-15},
+     * {@code 0000-01-15} — rather than its year of the era, which the display text uses and which reads as a
+     * different year: year -1 as {@code 0002}. A driver decodes the value from this text, as the account's
+     * drivers decode it from epoch days or seconds, so the transport must not be ambiguous. Years from 1 on
+     * pass through unchanged, and so does SQL-visible text, which keeps the era spelling.
+     *
+     * @param text the text, starting with the four-digit year of the era
+     * @param prolepticYear the value's proleptic year
+     * @return the text with its year made unambiguous
+     */
+    private static String signedBeforeYearOne(final String text, final int prolepticYear) {
+        if (prolepticYear > 0) {
+            return text;
+        }
+        final String eraYear = SharedFunctionHelpers.yearText(prolepticYear);
+        if (!text.startsWith(eraYear)) {
+            return text;
+        }
+        final String signed = prolepticYear == 0 ? "0000" : Integer.toString(prolepticYear);
+        return signed + text.substring(eraYear.length());
     }
 
     /**
@@ -153,7 +179,10 @@ public final class TemporalText {
         while (end < wire.length() && Character.isDigit(wire.charAt(end))) {
             end++;
         }
-        return wire.substring(0, 20) + (wire.substring(20, end) + "000").substring(0, 3) + wire.substring(end);
+        final String offset = wire.substring(end);
+        // The wire keeps its numeric offset; the display spells a zero one Z, as render does.
+        return wire.substring(0, 20) + (wire.substring(20, end) + "000").substring(0, 3)
+            + (" +0000".equals(offset) ? " Z" : offset);
     }
 
     /** Three, six or nine digits of a fraction of a second — as many as {@code nanos} needs, at least three. */
@@ -235,25 +264,18 @@ public final class TemporalText {
         return format(value, NAIVE);
     }
 
-    /** A zoned rendering: a value that carries no zone is read in the session's. */
+    /**
+     * A zoned rendering: a value that carries no zone is read in the session's, and a zero offset is spelled
+     * {@code Z}, as the account's driver prints it — {@code 2020-01-15 10:00:00.000 Z} for an LTZ read under
+     * UTC or Europe/London in January and for a TZ written {@code +00:00}, where a non-zero one keeps its
+     * {@code -0800} (live-verified).
+     */
     private static String zoned(final Object value) {
-        if (value instanceof ZonedDateTime) {
-            return ZONED.format((ZonedDateTime) value);
+        final ZonedDateTime at = zonedValue(value);
+        if (at == null) {
+            return value.toString();
         }
-        if (value instanceof OffsetDateTime) {
-            return ZONED.format((OffsetDateTime) value);
-        }
-        if (value instanceof Instant) {
-            return ZONED.format(((Instant) value).atZone(ZoneId.systemDefault()));
-        }
-        if (value instanceof LocalDateTime) {
-            return ZONED.format(((LocalDateTime) value).atZone(ZoneId.systemDefault()));
-        }
-        if (value instanceof java.sql.Timestamp) {
-            return ZONED.format(((java.sql.Timestamp) value).toLocalDateTime()
-                .atZone(ZoneId.systemDefault()));
-        }
-        return value.toString();
+        return (at.getOffset().getTotalSeconds() == 0 ? ZERO_OFFSET : ZONED).format(at);
     }
 
     /** A naive rendering, widening a date or a time to whatever the pattern needs. */

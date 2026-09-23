@@ -23,10 +23,13 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.conversion.TimestampFlavourConversion;
 import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DayTimeInterval;
+import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantBooleans;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.YearMonthInterval;
 
 import java.util.Set;
 
@@ -38,6 +41,9 @@ import java.math.RoundingMode;
  * value to a target type, NUMBER(p,s) scale/precision enforcement, integer rounding, and hex decoding.
  */
 public final class ValueCaster {
+
+    /** The widest NUMBER, which an unparameterised exact target is. */
+    private static final int MAX_NUMBER_PRECISION = 38;
 
     private ValueCaster() {
     }
@@ -68,11 +74,22 @@ public final class ValueCaster {
         // JSON text — which unwrapping first would have thrown away.
         final Object unwrapped = variantCastSource(value, baseType);
         final CastTargetCategory category = CastTargetCategory.fromTypeName(baseType);
+        if ((value instanceof DayTimeInterval || value instanceof YearMonthInterval)
+                && (category == CastTargetCategory.INTEGER || category == CastTargetCategory.DECIMAL)) {
+            return intervalNumber(value, IntervalText.amount(value, IntervalText.ownQualifier(value)), targetType,
+                category, nullableSource);
+        }
         if (category == null) {
             // Temporal targets (DATE/TIME/TIMESTAMP*) convert a string to a real LocalDate/LocalTime/
             // LocalDateTime — the same value TO_DATE/TO_TIMESTAMP yields — so e.g. '2024-01-01'::TIMESTAMP_NTZ
             // compares equal to TO_TIMESTAMP_NTZ('2024-01-01'); any other unhandled type passes through.
-            return SharedFunctionHelpers.toTemporalValue(baseType, unwrapped);
+            // A declared precision truncates the fraction of a text, temporal or VARIANT source, as a column
+            // of that type does: '12:34:56.987654321'::TIMESTAMP_NTZ(2) keeps .98. A NUMBER keeps every
+            // digit it carries, its scale becoming the type's precision: 2.5::TIMESTAMP_NTZ(0) is 2.5
+            // seconds past the epoch, a TIMESTAMP_NTZ(1) (live-verified).
+            final Object temporal = SharedFunctionHelpers.toTemporalValue(baseType, unwrapped);
+            return unwrapped instanceof Number ? temporal
+                : SharedFunctionHelpers.atDeclaredPrecision(temporal, declaredFractionalPrecision(targetType));
         }
         switch (category) {
             case INTEGER:
@@ -94,6 +111,10 @@ public final class ValueCaster {
                     }
                     return Double.parseDouble(castSourceText(value));
                 } catch (final NumberFormatException notApproximate) {
+                    final Double hex = HexDoubleText.withoutExponent(castSourceText(value), true);
+                    if (hex != null) {
+                        return hex;
+                    }
                     throw numericCastFailure(value, "REAL");
                 }
 
@@ -179,6 +200,24 @@ public final class ValueCaster {
      * {@code precision - scale} digits (Snowflake error 100039, "Numeric value out of range"). A bare NUMBER
      * with no parentheses is NUMBER(38,0) — the value is rounded to a whole number (e.g. 123.45 -> 123).
      */
+    /**
+     * The fractional-second digits a TIME or TIMESTAMP target type declares — {@code TIMESTAMP_NTZ(3)} is 3 — or
+     * 9 when it declares none or is not one of those families.
+     */
+    private static int declaredFractionalPrecision(final String targetType) {
+        final String type = targetType.toUpperCase();
+        final int open = type.indexOf('(');
+        final int close = type.indexOf(')');
+        if (!type.startsWith("TIME") || open < 0 || close <= open) {
+            return 9;
+        }
+        try {
+            return Integer.parseInt(type.substring(open + 1, close).trim());
+        } catch (final NumberFormatException notADigitCount) {
+            return 9;
+        }
+    }
+
     private static BigDecimal applyNumberScaleAndPrecision(final BigDecimal number, final String targetType,
                                                            final Object source, final boolean nullableSource) {
         final int open = targetType.indexOf('(');
@@ -201,6 +240,40 @@ public final class ValueCaster {
             throw new RuntimeException(rangeRefusal(number, source, precision, scale, nullableSource));
         }
         return scaled;
+    }
+
+    /**
+     * An interval as the exact number a cast asks for — its span in units of its type's TRAILING field, so a
+     * TIMESTAMP difference casts to its seconds and {@code INTERVAL '1' DAY} to 1 — rounded half away from
+     * zero to the target's scale: {@code +0 00:00:00.600000000} is 1 as a NUMBER, 0.6 as a NUMBER(10,1) and
+     * 0.600000000 as a NUMBER(38,9), and minus half a second is -1 (live-verified). A value past the
+     * target's digits is the interval's own sentence, naming the target's storage class and printing the
+     * interval: "Interval out of representable range, type: FIXED[SB2](3,0){not null} value: +1
+     * 01:00:00.000000000".
+     */
+    private static Object intervalNumber(final Object interval, final BigDecimal amount, final String targetType,
+                                         final CastTargetCategory category, final boolean nullableSource) {
+        int precision = MAX_NUMBER_PRECISION;
+        int scale = 0;
+        final int open = targetType.indexOf('(');
+        final int close = targetType.indexOf(')');
+        if (category == CastTargetCategory.DECIMAL && open >= 0 && close > open) {
+            final String[] parts = targetType.substring(open + 1, close).split(",");
+            try {
+                precision = Integer.parseInt(parts[0].trim());
+                scale = parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 0;
+            } catch (final NumberFormatException unparameterised) {
+                precision = MAX_NUMBER_PRECISION;
+                scale = 0;
+            }
+        }
+        final BigDecimal scaled = amount.setScale(scale, RoundingMode.HALF_UP);
+        if (scaled.precision() - scaled.scale() > precision - scale) {
+            throw new RuntimeException("Interval out of representable range, type: FIXED["
+                + SignedStorageWidth.tagOfPrecision(precision) + "](" + precision + "," + scale + "){"
+                + (nullableSource ? "nullable" : "not null") + "} value: " + interval);
+        }
+        return category == CastTargetCategory.INTEGER ? Long.valueOf(scaled.longValueExact()) : scaled;
     }
 
     /**

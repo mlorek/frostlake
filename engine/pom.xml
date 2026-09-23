@@ -46,7 +46,7 @@
         <dependency>
             <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>3.2.1</version>
+            <version>3.2.2</version>
             <scope>compile</scope>
         </dependency>
 
@@ -54,12 +54,12 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-            <version>2.0.17</version>
+            <version>2.0.20</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
-            <version>2.0.17</version>
+            <version>2.0.20</version>
         </dependency>
 
         <!-- JLine for interactive console with history support -->
@@ -95,7 +95,7 @@
         <dependency>
             <groupId>net.snowflake</groupId>
             <artifactId>snowflake-jdbc</artifactId>
-            <version>4.3.2</version>
+            <version>4.3.4</version>
             <scope>test</scope>
         </dependency>
 

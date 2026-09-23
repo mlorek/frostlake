@@ -279,7 +279,7 @@ public class JavaScriptUDFTest {
             CREATE FUNCTION py_multiply(x INTEGER, y INTEGER)
             RETURNS INTEGER
             LANGUAGE PYTHON
-            RUNTIME_VERSION = '3.8'
+            RUNTIME_VERSION = '3.11'
             HANDLER = 'multiply_handler'
             AS $$
 def multiply_handler(x, y):
@@ -294,7 +294,7 @@ def multiply_handler(x, y):
         assertEquals("PY_MULTIPLY", func.getName());
         assertEquals("PYTHON", func.getLanguage());
         assertEquals("multiply_handler", func.getHandler());
-        assertEquals("3.8", func.getRuntimeVersion());
+        assertEquals("3.11", func.getRuntimeVersion());
         assertEquals(2, func.getParameters().size());
         assertTrue(func.getBody().contains("def multiply_handler"),
                    "Function body should contain handler function");
@@ -314,7 +314,7 @@ def multiply_handler(x, y):
 """;
 
         final Function func = new Function("test_multiply", parameters, NumericType.INTEGER,
-                                    body, false, "PYTHON", "multiply_handler", "3.8");
+                                    body, false, "PYTHON", "multiply_handler", "3.11");
 
         final List<Object> args = Arrays.asList(6, 7);
         final Object result = PythonExecutor.executePythonFunction(func, args);
@@ -368,7 +368,7 @@ def fibonacci(n):
 """;
 
         final Function func = new Function("test_fib", parameters, NumericType.INTEGER,
-                                    body, false, "PYTHON", "fibonacci", "3.8");
+                                    body, false, "PYTHON", "fibonacci", "3.11");
 
         final List<Object> args = Arrays.asList(10);
         final Object result = PythonExecutor.executePythonFunction(func, args);

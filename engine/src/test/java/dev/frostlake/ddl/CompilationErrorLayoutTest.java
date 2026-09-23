@@ -127,15 +127,15 @@ public class CompilationErrorLayoutTest extends BaseDatabaseTest {
             layoutOf("ALTER TABLE rt DROP COLUMN nosuchcol"));
         assertEquals("SQL compilation error:\\nObject 'RT.F' already exists.",
             layoutOf("ALTER TABLE rt RENAME COLUMN i TO f"));
-        assertEquals("SQL compilation error:\\nTable 'TEST_DB.TEST_SCHEMA.NOSUCHTABLE'"
-            + " does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\\nTable 'TEST_DB.TEST_SCHEMA.NOSUCHTABLE'"
+            + " does not exist or not authorized."),
             layoutOf("ALTER TABLE nosuchtable ADD COLUMN x INT"));
     }
 
     /** And so does every other family — the layout the common builder produces. */
     @Test
     public void theOrdinaryLayoutIsTheCommonOne() {
-        assertEquals("SQL compilation error:\\nObject 'NOSUCHTABLE' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\\nObject 'NOSUCHTABLE' does not exist or not authorized."),
             layoutOf("SELECT i FROM nosuchtable"));
         assertEquals("SQL compilation error:\\nUnknown function NOSUCHFN.",
             layoutOf("SELECT nosuchfn(i) FROM rt"));

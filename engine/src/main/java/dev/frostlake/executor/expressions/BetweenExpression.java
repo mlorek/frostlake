@@ -24,6 +24,7 @@ public class BetweenExpression implements Expression {
     private final Expression lower;
     private final Expression upper;
     private final boolean not;
+    private SourcePosition position;
 
     public BetweenExpression(final Expression value, final Expression lower, final Expression upper, final boolean not) {
         this.value = value;
@@ -46,6 +47,15 @@ public class BetweenExpression implements Expression {
 
     public boolean isNot() {
         return not;
+    }
+
+    /** Where the BETWEEN keyword stands, which an argument-type refusal of a bound points at; null when unknown. */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     @Override

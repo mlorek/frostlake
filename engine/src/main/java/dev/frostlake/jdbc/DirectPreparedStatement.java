@@ -238,6 +238,7 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
         checkClosed();
         final int[] results = new int[batchParameters.size()];
         int index = 0;
+        long total = 0;
 
         try {
             for (final Map<Integer, Object> params : batchParameters) {
@@ -249,6 +250,7 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
                     // Live Snowflake reports the real affected-row count per batch entry, not
                     // SUCCESS_NO_INFO.
                     results[index] = executeUpdate();
+                    total += results[index];
                 } finally {
                     // Restore original parameters
                     parameters.clear();
@@ -261,7 +263,9 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
             batchParameters.clear();
             batchBindTypes.clear();
         }
-
+        // The driver runs the batch as ONE array-bound statement, so what getUpdateCount() reports after it is
+        // the whole batch's count (live-verified: two one-row entries leave 2).
+        takeBatchCount(total);
         return results;
     }
 

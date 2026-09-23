@@ -17,14 +17,18 @@
 package dev.frostlake.functions.scalar;
 
 import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SessionOutputFormats;
 import dev.frostlake.executor.SessionTimestampMapping;
 import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.executor.expressions.RawOverflowKind;
 import dev.frostlake.executor.expressions.RawRangeOverflow;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantJsonText;
+import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -45,6 +49,9 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class SharedFunctionHelpers {
+
+    /** The nanoseconds in a day. */
+    private static final long NANOS_PER_DAY = 86_400_000_000_000L;
 
     private SharedFunctionHelpers() {}
 
@@ -235,8 +242,9 @@ public final class SharedFunctionHelpers {
 
     /**
      * A DATE's text inside a VARIANT: {@link #textOf}'s, except that a year before the first keeps its
-     * proleptic number, unpadded — live's VARIANT of the second year BC reads {@code "-1-01-01"} where its
-     * ::VARCHAR reads {@code 0002-01-01}, and one past 9999 reads {@code "20201-01-15"} (live-verified).
+     * proleptic number — live's VARIANT of the second year BC reads {@code "-1-01-01"} where its
+     * ::VARCHAR reads {@code 0002-01-01}, the year 0 reads {@code "0000-01-01"}, and one past 9999 reads
+     * {@code "20201-01-15"} (live-verified).
      *
      * @param date the date
      * @return its text as a VARIANT string holds it
@@ -245,7 +253,74 @@ public final class SharedFunctionHelpers {
         if (date.getYear() > 0) {
             return textOf(date);
         }
-        return date.getYear() + String.format("-%02d-%02d", date.getMonthValue(), date.getDayOfMonth());
+        return signedYearText(date.getYear()) + String.format("-%02d-%02d", date.getMonthValue(), date.getDayOfMonth());
+    }
+
+    /** A year before the first as a VARIANT's text spells it: its proleptic number, {@code 0000} for the year 0. */
+    private static String signedYearText(final int prolepticYear) {
+        return prolepticYear == 0 ? "0000" : Integer.toString(prolepticYear);
+    }
+
+    /**
+     * A temporal's text inside a VARIANT, the text TO_JSON and a client read in quotes: a DATE as
+     * {@link #variantDateText} spells it, a TIME to the second and a timestamp to the millisecond with its
+     * offset where it has one — {@code "10:00:00"}, {@code "2024-01-15 10:00:00.000 +0200"} — and, as for a
+     * DATE, a timestamp before the first year keeps its proleptic year: {@code "-1-01-15 10:00:00.000"}
+     * where the ::VARCHAR of a timestamp stepped there by whole days or years reads {@code 0002-01-15 …}
+     * (live-verified).
+     *
+     * @param value a DATE, a TIME or a timestamp
+     * @return its text as a VARIANT holds it
+     */
+    public static String variantTemporalText(final Object value) {
+        if (value instanceof LocalDate) {
+            return variantDateText((LocalDate) value);
+        }
+        final String text = textOf(value);
+        final int year = value instanceof LocalDateTime ? ((LocalDateTime) value).getYear()
+            : value instanceof ZonedDateTime ? ((ZonedDateTime) value).getYear()
+            : value instanceof OffsetDateTime
+                ? ((OffsetDateTime) value).toInstant().atZone(SessionZone.current()).getYear() : 1;
+        return year > 0 ? text : signedYearText(year) + text.substring(yearText(year).length());
+    }
+
+    /**
+     * A value as this statement's session reads it: a TIMESTAMP_LTZ instant re-expressed at the session's zone,
+     * which a freshly computed one already carries, and anything else as it is. A TIMESTAMP_LTZ is carried as an
+     * {@link OffsetDateTime}; a TIMESTAMP_TZ, which keeps the offset it was written with, is not.
+     *
+     * @param value a value read from a row
+     * @return the value in the session's zone
+     */
+    public static Object inSessionZone(final Object value) {
+        if (!(value instanceof OffsetDateTime)) {
+            return value;
+        }
+        final OffsetDateTime instant = (OffsetDateTime) value;
+        final OffsetDateTime here = instant.atZoneSameInstant(SessionZone.current()).toOffsetDateTime();
+        return here.getOffset().equals(instant.getOffset()) ? instant : here;
+    }
+
+    /** Whether a value is a DATE, a TIME or a timestamp held in its own Java type. */
+    public static boolean isNativeTemporal(final Object value) {
+        return value instanceof LocalDate || value instanceof LocalTime || value instanceof LocalDateTime
+            || value instanceof OffsetDateTime || value instanceof ZonedDateTime;
+    }
+
+    /**
+     * A DATE entering a VARIANT, which holds only the days from 1970-01-01 in [-16777216, 16777215]:
+     * live, the date 16777216 days on is "Date 16777216 is out of range" in TO_VARIANT, a ::VARIANT cast
+     * and an ARRAY or OBJECT constructor alike, while a timestamp of the same day enters freely.
+     *
+     * @param date the date
+     * @return the date, when a VARIANT can hold it
+     */
+    public static LocalDate variantDate(final LocalDate date) {
+        final long epochDay = date.toEpochDay();
+        if (epochDay < -16_777_216L || epochDay > 16_777_215L) {
+            throw new RuntimeException("Date " + epochDay + " is out of range");
+        }
+        return date;
     }
 
     /**
@@ -299,6 +374,10 @@ public final class SharedFunctionHelpers {
      * ordinary text. A DATE is {@code YYYY-MM-DD} with its era year — see {@link #yearText}.
      */
     public static String textOf(final Object value) {
+        final String sessionFormatted = sessionFormatted(value);
+        if (sessionFormatted != null) {
+            return sessionFormatted;
+        }
         if (value instanceof LocalDate) {
             final LocalDate date = (LocalDate) value;
             return yearText(date.getYear()) + String.format("-%02d-%02d", date.getMonthValue(),
@@ -319,6 +398,12 @@ public final class SharedFunctionHelpers {
         if (value instanceof Double || value instanceof Float) {
             return floatText(((Number) value).doubleValue());
         }
+        if (value instanceof VariantValue && (((VariantValue) value).node().isDouble()
+                || ((VariantValue) value).node().isFloat())) {
+            // A VARIANT double reads as its string conversion, the same text ::VARCHAR gives it:
+            // CONCAT(TO_VARIANT(SQRT(4)), '') is 2 (live-verified).
+            return VariantJsonText.stringConversionTextOf(value);
+        }
         if (value instanceof BigDecimal) {
             // A NUMBER prints its digits in place — 0.00000001 and a scaled zero as 0.00000000000000000000
             // (live-verified) — never java.math's scientific 1E-8 / 0E-20, which BigDecimal.toString
@@ -326,6 +411,36 @@ public final class SharedFunctionHelpers {
             return ((BigDecimal) value).toPlainString();
         }
         return String.valueOf(value);
+    }
+
+    /**
+     * A temporal rendered in the output format the session has set for its type, or null when the session has set
+     * none and the built-in rendering applies. A TIMESTAMP_LTZ is read in the session's zone first, as its
+     * built-in rendering reads it.
+     */
+    private static String sessionFormatted(final Object value) {
+        if (value instanceof LocalDate) {
+            return formattedOrNull(value, SessionOutputFormats.date());
+        }
+        if (value instanceof LocalTime) {
+            return formattedOrNull(value, SessionOutputFormats.time());
+        }
+        if (value instanceof LocalDateTime) {
+            return formattedOrNull(value, SessionOutputFormats.timestampNtz());
+        }
+        if (value instanceof ZonedDateTime) {
+            return formattedOrNull(value, SessionOutputFormats.timestampTz());
+        }
+        if (value instanceof OffsetDateTime) {
+            final String format = SessionOutputFormats.timestampLtz();
+            return format == null ? null : formattedOrNull(((OffsetDateTime) value).toInstant()
+                .atZone(SessionZone.current()).toOffsetDateTime(), format);
+        }
+        return null;
+    }
+
+    private static String formattedOrNull(final Object value, final String format) {
+        return format == null ? null : SnowflakeDateFormat.format(value, format);
     }
 
     /**
@@ -578,13 +693,54 @@ public final class SharedFunctionHelpers {
         if (v instanceof LocalTime) return (LocalTime) v;
         // As for a DATE: the TZ's own wall clock, so 10:00 +0300 casts to 10:00 and not to 07:00.
         if (v instanceof ZonedDateTime) return ((ZonedDateTime) v).toLocalTime();
+        // An LTZ reads its wall clock in the session's zone: live, one written under UTC is 16:04:56 under Kolkata.
+        if (v instanceof OffsetDateTime) return ((OffsetDateTime) inSessionZone(v)).toLocalTime();
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalTime();
         final String s = v.toString().trim();
+        final LocalTime epoch = integerStringTime(s);
+        if (epoch != null) return epoch;
         try { return LocalTime.parse(s); } catch (final Exception ignored) {}
         try { return LocalTime.parse(s, DateTimeFormatter.ofPattern("HH:mm")); } catch (final Exception ignored) {}
         // Live names the TYPE it could not read the text as, exactly as the DATE and TIMESTAMP
         // readers do: 'abc'::TIME and TO_TIME('abc') are both "Time 'abc' is not recognized".
         throw new RuntimeException("Time '" + s + "' is not recognized");
+    }
+
+    /**
+     * A string of digits read as a TIME: an epoch in the unit its magnitude picks, as a TIMESTAMP's digits
+     * are (seconds below 31536000000, then milliseconds, microseconds and, from 31536000000000000,
+     * nanoseconds), placed in its day. Live: {@code TO_TIME('36000')} is 10:00:00, {@code ('90')} 00:01:30,
+     * {@code ('1700000000123')} 22:13:20.123, {@code ('-1')} 23:59:59, and a value past a long still reads,
+     * {@code ('99999999999999999999')} 09:46:39.999999999. A sign and leading zeros are read; a point or an
+     * exponent makes no integer, so {@code '12.5'} is still not recognized.
+     *
+     * @param text the trimmed text
+     * @return the time, or null when the text is not an integer
+     */
+    private static LocalTime integerStringTime(final String text) {
+        final int digitsFrom = !text.isEmpty() && (text.charAt(0) == '+' || text.charAt(0) == '-') ? 1 : 0;
+        if (digitsFrom == text.length()) {
+            return null;
+        }
+        for (int i = digitsFrom; i < text.length(); i++) {
+            if (text.charAt(i) < '0' || text.charAt(i) > '9') {
+                return null;
+            }
+        }
+        final BigInteger epoch = new BigInteger(text);
+        final BigInteger magnitude = epoch.abs();
+        final long nanosPerUnit;
+        if (magnitude.compareTo(BigInteger.valueOf(31_536_000_000L)) < 0) {
+            nanosPerUnit = 1_000_000_000L;
+        } else if (magnitude.compareTo(BigInteger.valueOf(31_536_000_000_000L)) < 0) {
+            nanosPerUnit = 1_000_000L;
+        } else if (magnitude.compareTo(BigInteger.valueOf(31_536_000_000_000_000L)) < 0) {
+            nanosPerUnit = 1_000L;
+        } else {
+            nanosPerUnit = 1L;
+        }
+        return LocalTime.ofNanoOfDay(epoch.multiply(BigInteger.valueOf(nanosPerUnit))
+            .mod(BigInteger.valueOf(NANOS_PER_DAY)).longValue());
     }
 
     /**
@@ -993,20 +1149,21 @@ public final class SharedFunctionHelpers {
         }
         switch (unit) {
             case "YEAR": case "Y": case "YY": case "YYY": case "YYYY": case "YR": return dt.getYear();
-            case "YEAROFWEEK": case "YEAROFWEEKISO": return dt.get(IsoFields.WEEK_BASED_YEAR);
+            case "YEAROFWEEK": case "YEAROFWEEKISO": case "YEAROFWEEK_ISO": return dt.get(IsoFields.WEEK_BASED_YEAR);
             case "QUARTER": case "Q": case "QTR":
                 return (dt.getMonthValue() - 1) / 3 + 1;
             case "MONTH": case "MM": case "MON": case "MONS": return dt.getMonthValue();
-            case "WEEK": case "W": case "WY": case "WOY": case "WEEKOFYEAR": case "WEEKISO":
+            case "WEEK": case "W": case "WY": case "WOY": case "WEEKOFYEAR": case "WEEKISO": case "WEEK_ISO":
                 return dt.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
             case "DAY": case "DD": case "D": case "DAYOFMONTH": return dt.getDayOfMonth();
-            case "DAYOFWEEK": case "DOW": case "DW": return (long) dt.getDayOfWeek().getValue() % 7;
-            case "DAYOFWEEKISO": return dt.getDayOfWeek().getValue();
-            case "DAYOFYEAR": case "DOY": return dt.getDayOfYear();
+            case "DAYOFWEEK": case "DOW": case "DW": case "WEEKDAY": return (long) dt.getDayOfWeek().getValue() % 7;
+            case "DAYOFWEEKISO": case "DAYOFWEEK_ISO": case "WEEKDAY_ISO": case "DOW_ISO": case "DW_ISO":
+                return dt.getDayOfWeek().getValue();
+            case "DAYOFYEAR": case "DOY": case "YEARDAY": case "DY": return dt.getDayOfYear();
             case "HOUR": case "H": case "HH": case "HR": return dt.getHour();
             case "MINUTE": case "MIN": case "MI": return dt.getMinute();
             case "SECOND": case "SEC": case "S": return dt.getSecond();
-            case "NANOSECOND": return dt.getNano();
+            case "NANOSECOND": case "NSECOND": return dt.getNano();
             case "EPOCH": case "EPOCH_SECOND": return dt.toEpochSecond(ZoneOffset.UTC);
             case "EPOCH_MILLISECOND": return dt.toEpochSecond(ZoneOffset.UTC) * 1000 + dt.getNano() / 1_000_000L;
             case "EPOCH_MICROSECOND": return dt.toEpochSecond(ZoneOffset.UTC) * 1_000_000L + dt.getNano() / 1_000L;
@@ -1050,6 +1207,25 @@ public final class SharedFunctionHelpers {
      * @param raw the unit as written, in any case
      * @return the unit's full name, or the word as written when it names no interval unit
      */
+    /** A fixed clock the date-part vocabulary is read against; any timestamp answers every known part. */
+    private static final LocalDateTime VOCABULARY_CLOCK = LocalDateTime.of(2000, 1, 1, 0, 0);
+
+    /**
+     * Whether DATE_PART and EXTRACT know a part word: the vocabulary of {@link #datePart(String, LocalDateTime,
+     * Object, String)}, zone components included, read against a timestamp.
+     *
+     * @param unitRaw the part as written
+     * @return whether the word names a part
+     */
+    public static boolean isDatePartUnit(final String unitRaw) {
+        try {
+            datePart(unitRaw, VOCABULARY_CLOCK, VOCABULARY_CLOCK, "DATE_PART");
+            return true;
+        } catch (final RuntimeException unknownPart) {
+            return false;
+        }
+    }
+
     /** The bad-component refusal EXTRACT and DATE_PART share, each naming itself as the parameter. */
     public static RuntimeException invalidDatePart(final String unitRaw, final String functionName) {
         return new RuntimeException("SQL compilation error:\ninvalid value [" + unitRaw
@@ -1089,16 +1265,17 @@ public final class SharedFunctionHelpers {
     }
 
     /**
-     * Whether a word names a date COMPONENT that no interval can be measured in. {@code woy} and
-     * {@code weekofyear} are units for INTERVAL and readable by DATE_PART, but DATEADD, DATEDIFF and
-     * DATE_TRUNC all refuse them — the one place the two vocabularies disagree.
+     * Whether a word names a date COMPONENT that no interval can be measured in. {@code woy},
+     * {@code weekofyear} and {@code wy} are units for INTERVAL and readable by DATE_PART and EXTRACT, but
+     * DATEADD, DATEDIFF, DATE_TRUNC, LAST_DAY and TRUNC all refuse them — the one place the two
+     * vocabularies disagree.
      *
      * @param raw the unit word as written
      * @return true when an interval function must refuse it
      */
     public static boolean isComponentOnlyUnit(final Object raw) {
         final String word = String.valueOf(raw).toUpperCase(Locale.ROOT);
-        return "WOY".equals(word) || "WEEKOFYEAR".equals(word);
+        return "WOY".equals(word) || "WEEKOFYEAR".equals(word) || "WY".equals(word);
     }
 
     public static String canonicalDateUnit(final Object raw) {

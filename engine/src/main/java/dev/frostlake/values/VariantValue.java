@@ -133,7 +133,17 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
             return false;
         }
         final VariantValue that = (VariantValue) other;
-        return text.equals(that.text) || comparisonKey().equals(that.comparisonKey());
+        // The same text is the same value unless a UUID sits in either: it prints as the string of its
+        // text and still differs from it, which only the comparison key tells.
+        if (text.equals(that.text) && !holdsUuid() && !that.holdsUuid()) {
+            return true;
+        }
+        return comparisonKey().equals(that.comparisonKey());
+    }
+
+    /** Whether a UUID sits anywhere in this value; a value read back from its text holds none. */
+    private boolean holdsUuid() {
+        return node != null && UuidTextNode.anywhereIn(node);
     }
 
     @Override

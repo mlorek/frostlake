@@ -102,9 +102,9 @@ public class AccountIdentityTest extends BaseDatabaseTest {
     }
 
     /**
-     * The measured 24-column shape, which SHOW ORGANIZATION ACCOUNTS shares exactly. Note what is NOT
-     * here: {@code region_group} and {@code org_default_region} were Frostlake's own inventions, and
-     * asking a real account for either is an invalid identifier.
+     * The 25-column shape SHOW ACCOUNTS and SHOW ORGANIZATION ACCOUNTS share, ending with {@code contract_number}.
+     * Note what is NOT here: {@code region_group} and {@code org_default_region} were Frostlake's own inventions,
+     * and asking a real account for either is an invalid identifier.
      */
     @Test
     public void bothAccountListingsCarryTheMeasuredShape() {
@@ -115,7 +115,7 @@ public class AccountIdentityTest extends BaseDatabaseTest {
             "marketplace_provider_billing_entity_name", "old_account_url", "is_org_admin",
             "account_old_url_saved_on", "account_old_url_last_used", "organization_old_url",
             "organization_old_url_saved_on", "organization_old_url_last_used", "is_events_account",
-            "is_organization_account", "tenant_type", "domain_names");
+            "is_organization_account", "tenant_type", "domain_names", "contract_number");
         for (final String listing : List.of("SHOW ACCOUNTS", "SHOW ORGANIZATION ACCOUNTS")) {
             final ResultSet rs = engine.executeQuery(listing);
             assertEquals(shape.size(), rs.getColumns().size(), listing);

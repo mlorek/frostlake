@@ -22,19 +22,19 @@ import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 import javax.crypto.Cipher;
-import javax.crypto.spec.GCMParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 
 /**
  * DECRYPT_RAW(value, key, iv [, additional_authenticated_data [, encryption_method [, aead_tag]]]) —
- * reverses {@link EncryptRaw}. The optionals nest from the LEFT (live-measured):
- * the fourth argument is ALWAYS the AAD, the fifth the method, and the AEAD tag sits strictly SIXTH —
- * a four-argument call putting the tag fourth fails "Decryption mode requires an AEAD tag as
- * parameter", exactly as any GCM call that never reaches the sixth argument does, and a sixth argument
- * of the wrong length fails "Wrong AEAD tag size. Expected 16, but got N" (both messages verbatim).
- * All BINARY arguments are hex strings; the returned decrypted value is BINARY (hex). Only AES-GCM is
- * supported. A wrong key, IV, AAD or tag fails authentication and raises, exactly as Snowflake's GCM
- * verification does.
+ * reverses {@link EncryptRaw}, in any mode the method names. The optionals nest from the LEFT
+ * (live-measured): the fourth argument is ALWAYS the AAD, the fifth the method, and the AEAD tag sits
+ * strictly SIXTH — a four-argument call putting the tag fourth fails "Decryption mode requires an AEAD
+ * tag as parameter", exactly as any authenticating call that never reaches the sixth argument does, and
+ * a sixth argument of the wrong length fails "Wrong AEAD tag size. Expected 16, but got N" (both
+ * messages verbatim). A mode that does not authenticate needs no tag.
+ *
+ * <p>All BINARY arguments are hex strings; the returned decrypted value is BINARY (hex). Anything the
+ * cipher itself refuses — a wrong key, IV, AAD or tag, a ciphertext whose padding does not read — is one
+ * sentence: "Decryption failed. Check encrypted data, key, AAD, or AEAD tag."
  */
 public class DecryptRaw extends BuiltInFunction {
 
@@ -42,39 +42,51 @@ public class DecryptRaw extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null || args.get(1) == null || args.get(2) == null) {
+        // Only the value and the key make the answer NULL: a mode that takes no IV reads a NULL one as
+        // none at all, and a mode that takes one reads it as an IV that will not match.
+        if (args.get(0) == null || args.get(1) == null) {
             return null;
         }
         final int n = args.size();
         final Object aadArg = n >= 4 ? args.get(3) : null;
         final Object methodArg = n >= 5 ? args.get(4) : null;
         final Object tagArg = n >= 6 ? args.get(5) : null;
-        RawCipherSupport.requireGcm("DECRYPT_RAW", methodArg);
-        if (tagArg == null) {
-            throw new RuntimeException("Decryption mode requires an AEAD tag as parameter");
+        // Live's order: the method, the key's size, the IV's size, whether the mode takes AAD, then the tag.
+        final EncryptionMethod method = EncryptionMethod.of(methodArg);
+        RawCipherSupport.requireKeySize(RawCipherSupport.binaryBytes("DECRYPT_RAW", args.get(1)));
+        if (args.get(2) != null) {
+            RawCipherSupport.requireIvSize(method, RawCipherSupport.binaryBytes("DECRYPT_RAW", args.get(2)));
         }
-        final byte[] tag = RawCipherSupport.binaryBytes("DECRYPT_RAW", tagArg);
-        if (tag.length != RawCipherSupport.GCM_TAG_BITS / 8) {
-            throw new RuntimeException("Wrong AEAD tag size. Expected "
-                + (RawCipherSupport.GCM_TAG_BITS / 8) + ", but got " + tag.length);
+        method.requireAadSupport(aadArg != null);
+        byte[] tag = null;
+        if (method.mode().isAead()) {
+            if (tagArg == null) {
+                throw new RuntimeException("Decryption mode requires an AEAD tag as parameter");
+            }
+            tag = RawCipherSupport.binaryBytes("DECRYPT_RAW", tagArg);
+            if (tag.length != RawCipherSupport.GCM_TAG_BYTES) {
+                throw new RuntimeException("Wrong AEAD tag size. Expected "
+                    + RawCipherSupport.GCM_TAG_BYTES + ", but got " + tag.length);
+            }
         }
         try {
             final byte[] ciphertext = RawCipherSupport.binaryBytes("DECRYPT_RAW", args.get(0));
             final byte[] key = RawCipherSupport.binaryBytes("DECRYPT_RAW", args.get(1));
-            final byte[] iv = RawCipherSupport.binaryBytes("DECRYPT_RAW", args.get(2));
-            // Java's GCM cipher expects the tag appended to the ciphertext; reassemble the two.
-            final byte[] combined = new byte[ciphertext.length + tag.length];
-            System.arraycopy(ciphertext, 0, combined, 0, ciphertext.length);
-            System.arraycopy(tag, 0, combined, ciphertext.length, tag.length);
-            final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"),
-                new GCMParameterSpec(RawCipherSupport.GCM_TAG_BITS, iv));
+            final byte[] iv = RawCipherSupport.ivOrDrawn("DECRYPT_RAW", method, args.get(2));
+            byte[] input = ciphertext;
+            if (tag != null) {
+                // Java's authenticated ciphers expect the tag appended to the ciphertext; reassemble the two.
+                input = new byte[ciphertext.length + tag.length];
+                System.arraycopy(ciphertext, 0, input, 0, ciphertext.length);
+                System.arraycopy(tag, 0, input, ciphertext.length, tag.length);
+            }
+            final Cipher cipher = method.cipher(Cipher.DECRYPT_MODE, key, iv);
             if (aadArg != null) {
                 cipher.updateAAD(RawCipherSupport.binaryBytes("DECRYPT_RAW", aadArg));
             }
-            return BinaryValue.of(cipher.doFinal(combined));
+            return BinaryValue.of(cipher.doFinal(input));
         } catch (final Exception e) {
-            throw new RuntimeException("DECRYPT_RAW failed: " + e.getMessage());
+            throw new RuntimeException("Decryption failed. Check encrypted data, key, AAD, or AEAD tag.");
         }
     }
 

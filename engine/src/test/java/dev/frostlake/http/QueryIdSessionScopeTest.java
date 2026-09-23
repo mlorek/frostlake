@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * <p>The query-ID history used to be thread-local, which is invisible in process but broken over the
  * HTTP transport: consecutive requests of one session are handed to whichever pool thread is free,
  * so the second request saw an empty history and {@code RESULT_SCAN(LAST_QUERY_ID())} failed with
- * "No previous query results available". That is the exact read-back idiom migration scripts use
+ * "Statement NULL not found". That is the exact read-back idiom migration scripts use
  * after a SHOW.
  */
 public class QueryIdSessionScopeTest {

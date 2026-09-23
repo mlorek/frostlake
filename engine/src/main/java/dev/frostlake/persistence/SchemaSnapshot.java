@@ -19,7 +19,9 @@ package dev.frostlake.persistence;
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Serializable snapshot of schema metadata
@@ -40,6 +42,7 @@ public class SchemaSnapshot implements Serializable {
     public List<StreamSnapshot> streams = new ArrayList<>();
     public List<TaskSnapshot> tasks = new ArrayList<>();
     public List<ContactSnapshot> contacts = new ArrayList<>();
+    public List<SecurityObjectSnapshot> securityObjects = new ArrayList<>();
     public List<ProjectionPolicySnapshot> projectionPolicies = new ArrayList<>();
     public List<ProjectionPolicySnapshot> aggregationPolicies = new ArrayList<>();
     public List<ProjectionPolicySnapshot> joinPolicies = new ArrayList<>();
@@ -53,4 +56,23 @@ public class SchemaSnapshot implements Serializable {
     public List<TagSnapshot> tags = new ArrayList<>();
     // Null on snapshots predating Cortex search services — the restore path null-checks.
     public List<CortexSearchServiceSnapshot> cortexSearchServices = new ArrayList<>();
+
+    // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
+    public Integer dataRetentionTimeInDays;
+    public boolean transientObject;
+    public boolean managedAccess;
+    public HashMap<String, String> parameters = new HashMap<>();
+    public List<AppObjectSnapshot> appObjects = new ArrayList<>();
+    public List<ImageRepositorySnapshot> imageRepositories = new ArrayList<>();
+    public List<ContainerServiceSnapshot> services = new ArrayList<>();
+    public List<ArtifactRepositorySnapshot> artifactRepositories = new ArrayList<>();
+    public List<AlertSnapshot> alerts = new ArrayList<>();
+    public List<MaterializedViewSnapshot> materializedViews = new ArrayList<>();
+    /** The dropped notebooks and Streamlit apps UNDROP can still restore, the most recently dropped first. */
+    public List<AppObjectSnapshot> droppedAppObjects = new ArrayList<>();
+
+    // The tag associations ON THE SCHEMA ITSELF, tag name -> value — not to be confused with `tags`
+    // above, which is the tags the schema DEFINES. Null in a snapshot written before they were
+    // recorded, which reads back as a schema carrying none.
+    public Map<String, String> tagValues;
 }

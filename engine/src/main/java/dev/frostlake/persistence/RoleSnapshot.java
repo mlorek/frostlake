@@ -17,8 +17,10 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 
 /**
@@ -33,4 +35,14 @@ public class RoleSnapshot implements Serializable {
     public String comment;
     public LocalDateTime createdAt;
     public String owner;  // null on old snapshots — restore leaves the role's default owner in place
+
+    // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
+    /** Who granted each role in grantedRoles, by role name. */
+    public HashMap<String, String> roleGrantors;
+    public List<FutureGrantSnapshot> futureGrants;
+    /** The database roles granted to this role, by qualified name, each with its grantor. */
+    public HashMap<String, String> databaseRoleGrants;
+    /** When each database role in databaseRoleGrants was granted, by qualified name. */
+    public HashMap<String, Instant> databaseRoleGrantTimes;
+    public HashMap<String, String> tags;
 }

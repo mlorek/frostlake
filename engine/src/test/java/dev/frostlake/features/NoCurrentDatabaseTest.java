@@ -81,9 +81,10 @@ public class NoCurrentDatabaseTest extends BaseDatabaseTest {
     private void assertOutcomes(final String[][] cells) {
         final List<String> wrong = new ArrayList<String>();
         for (final String[] cell : cells) {
+            final String expected = hinted(cell[1]);
             final String got = outcome(cell[0]);
-            if (!cell[1].equals(got)) {
-                wrong.add(cell[0] + "\n    expected: " + cell[1] + "\n    got:      " + got);
+            if (!expected.equals(got)) {
+                wrong.add(cell[0] + "\n    expected: " + expected + "\n    got:      " + got);
             }
         }
         assertTrue(wrong.isEmpty(), String.join("\n", wrong));

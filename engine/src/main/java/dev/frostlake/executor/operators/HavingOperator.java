@@ -53,13 +53,10 @@ public class HavingOperator implements Operator {
         final Expression condition = ExpressionEvaluator.parse(havingExpression);
         final List<Row> filtered = new ArrayList<>();
         for (final Row row : input) {
-            try {
-                final boolean passes = havingEvaluator.evaluate(condition, row);
-                if (passes) {
-                    filtered.add(row);
-                }
-            } catch (final Exception e) {
-                logger.warn("Failed to evaluate HAVING condition: {}", e.getMessage());
+            // A value the condition cannot compute refuses the statement rather than dropping the group:
+            // HAVING CAST(s AS VARCHAR(5)) = 'x' over a longer s is live's truncation refusal.
+            if (havingEvaluator.evaluate(condition, row)) {
+                filtered.add(row);
             }
         }
 

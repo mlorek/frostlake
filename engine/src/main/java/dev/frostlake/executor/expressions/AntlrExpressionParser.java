@@ -22,7 +22,9 @@ import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.BailErrorStrategy;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.misc.ParseCancellationException;
 
 /**
  * Parses an expression string into an {@link Expression} AST using the ANTLR grammar and
@@ -74,6 +76,7 @@ public final class AntlrExpressionParser {
         if (parser.getCurrentToken().getType() != Token.EOF) {
             throw new IllegalStateException("Trailing input after expression: " + expression);
         }
+        NamedCallRewrite.apply(ctx);
         return ctx;
     }
 
@@ -106,5 +109,34 @@ public final class AntlrExpressionParser {
             // current token is exactly where it stopped, which is what we want to report.
         }
         return parser.getCurrentToken();
+    }
+
+    /**
+     * The token a parse of {@code expression} could not use — the end of input when the text stops before
+     * its expression does — or null when the text opens with one whole expression, whatever follows it.
+     * Unlike {@link #failurePoint(String)}, which reports where the parser stood when it gave up (the start
+     * of the alternative it was predicting), this is the token that made the prediction fail.
+     *
+     * @param expression the expression source text
+     * @return the offending token, or null when the parse did not fail
+     */
+    public static Token offendingToken(final String expression) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        lexer.removeErrorListeners();
+
+        final CommonTokenStream tokens = new CommonTokenStream(lexer);
+        final FrostlakeParser parser = new FrostlakeParser(tokens);
+        parser.removeErrorListeners();
+        parser.setErrorHandler(new BailErrorStrategy());
+
+        try {
+            parser.booleanExpr();
+            return null;
+        } catch (final ParseCancellationException bailed) {
+            if (bailed.getCause() instanceof RecognitionException) {
+                return ((RecognitionException) bailed.getCause()).getOffendingToken();
+            }
+            return parser.getCurrentToken();
+        }
     }
 }

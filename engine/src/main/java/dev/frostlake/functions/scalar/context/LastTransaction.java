@@ -21,7 +21,11 @@ import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-/** LAST_TRANSACTION() — the last transaction id (ids are not exposed; NULL). */
+/**
+ * LAST_TRANSACTION() — the public id of the last transaction the CALLING session committed or rolled back, as
+ * decimal text, or NULL when that session has ended none. It is the same number CURRENT_TRANSACTION() showed
+ * inside that transaction.
+ */
 public class LastTransaction extends BuiltInFunction {
     private final dev.frostlake.security.SessionContext sessionContext;
 

@@ -18,6 +18,7 @@ package dev.frostlake.jdbc;
 
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.SqlTokens;
+import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
@@ -29,6 +30,7 @@ import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.sql.Date;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
@@ -40,9 +42,12 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
@@ -86,6 +91,11 @@ public final class JdbcMarshaling {
             return Types.OTHER;
         }
         final String t = typeName.toUpperCase();
+        // An interval's codes are the driver's own, outside java.sql.Types; its name contains INT and,
+        // for INTERVAL_DAY_TIME, TIME, so it is tested before either.
+        if (t.startsWith("INTERVAL")) {
+            return isYearMonthInterval(t) ? IntervalCells.YEAR_MONTH_TYPE : IntervalCells.DAY_TIME_TYPE;
+        }
         // Order matters: a more specific name often contains a shorter one (TIMESTAMP contains TIME,
         // BIGINT contains INT), so the specific cases must be tested first.
         if (t.contains("TIMESTAMP") || t.contains("DATETIME")) {
@@ -140,6 +150,118 @@ public final class JdbcMarshaling {
      * The class name {@code ResultSet.getObject} yields for a {@link java.sql.Types} constant. Integral types
      * map to {@code Long} because the engine stores INTEGER/BIGINT/etc. as {@code Long} (not {@code Integer}).
      */
+    /**
+     * A column's type as Snowflake's JDBC driver names it in {@code ResultSetMetaData}: the timestamp flavours
+     * without their underscore — TIMESTAMPNTZ, TIMESTAMPLTZ, TIMESTAMPTZ — and every approximate number DOUBLE,
+     * however the column was declared (live-verified over literals, CURRENT_TIMESTAMP() and FLOAT, FLOAT4, FLOAT8,
+     * REAL, DOUBLE and DOUBLE PRECISION columns). The SQL surfaces — DESCRIBE, SYSTEM$TYPEOF, the refusal
+     * sentences — keep the underscores, as they do on the account.
+     *
+     * @param engineName the engine's type name
+     * @return the driver's name for it
+     */
+    public static String driverTypeName(final String engineName) {
+        if (engineName == null) {
+            return null;
+        }
+        final String upper = engineName.toUpperCase(Locale.ROOT);
+        // An interval is reported by its family alone, whatever fields it spans (live-verified).
+        if (upper.startsWith("INTERVAL")) {
+            return isYearMonthInterval(upper) ? "INTERVAL_YEAR_MONTH" : "INTERVAL_DAY_TIME";
+        }
+        // A VECTOR's name drops its parameters, and a MAP is reported as the OBJECT it is (live-verified).
+        if (upper.startsWith("VECTOR")) {
+            return "VECTOR";
+        }
+        if (upper.equals("MAP") || upper.startsWith("MAP(")) {
+            return "OBJECT";
+        }
+        switch (upper) {
+            case "TIMESTAMP_NTZ":
+                return "TIMESTAMPNTZ";
+            case "TIMESTAMP_LTZ":
+                return "TIMESTAMPLTZ";
+            case "TIMESTAMP_TZ":
+                return "TIMESTAMPTZ";
+            case "FLOAT":
+                return "DOUBLE";
+            default:
+                return engineName;
+        }
+    }
+
+    /**
+     * A column's {@link Types} code by the driver's name for its type: as {@link #toSqlType(String, int)} maps
+     * it, but for a TIMESTAMPTZ, which the driver reports as TIMESTAMP_WITH_TIMEZONE while a TIMESTAMPLTZ stays
+     * TIMESTAMP (live-verified).
+     *
+     * @param driverName the driver's name for the type, see {@link #driverTypeName}
+     * @param scale      the column's scale
+     * @return the type code
+     */
+    public static int driverSqlType(final String driverName, final int scale) {
+        if ("TIMESTAMPTZ".equalsIgnoreCase(driverName)) {
+            return Types.TIMESTAMP_WITH_TIMEZONE;
+        }
+        if (reportedAsText(driverName)) {
+            return Types.VARCHAR;
+        }
+        return "VECTOR".equalsIgnoreCase(driverName) ? VECTOR_TYPE : toSqlType(driverName, scale);
+    }
+
+    /**
+     * The code the driver reports for a VECTOR column, outside {@link Types}: {@code getColumnClassName} has no class
+     * for it and refuses (live-verified).
+     */
+    public static final int VECTOR_TYPE = 50003;
+
+    /**
+     * Whether the driver reports a column of this type as text: the semi-structured and geospatial types are type
+     * code VARCHAR and {@code java.lang.String}, and {@code getObject} reads their text (live-verified).
+     *
+     * @param driverName the driver's name for the type, see {@link #driverTypeName}
+     * @return true for VARIANT, OBJECT, ARRAY, GEOGRAPHY and GEOMETRY
+     */
+    public static boolean reportedAsText(final String driverName) {
+        if (driverName == null) {
+            return false;
+        }
+        switch (driverName.toUpperCase(Locale.ROOT)) {
+            case "VARIANT":
+            case "OBJECT":
+            case "ARRAY":
+            case "GEOGRAPHY":
+            case "GEOMETRY":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Whether an interval type's name, engine or driver spelling, names the year-month family.
+     *
+     * @param upper the name, upper-cased
+     * @return true for a year-month interval
+     */
+    private static boolean isYearMonthInterval(final String upper) {
+        return upper.contains("YEAR") || upper.contains("MONTH");
+    }
+
+    /**
+     * A column's class name by its type code, refusing a VECTOR and an interval as the driver does.
+     *
+     * @param sqlType the column's type code
+     * @return the class name
+     * @throws SQLFeatureNotSupportedException for a VECTOR column
+     */
+    public static String driverColumnClassName(final int sqlType) throws SQLFeatureNotSupportedException {
+        if (sqlType == VECTOR_TYPE || sqlType == IntervalCells.DAY_TIME_TYPE || sqlType == IntervalCells.YEAR_MONTH_TYPE) {
+            throw new SQLFeatureNotSupportedException("No corresponding Java type is found for java.sql.Type: " + sqlType);
+        }
+        return columnClassName(sqlType);
+    }
+
     public static String columnClassName(final int sqlType) {
         switch (sqlType) {
             case Types.INTEGER:
@@ -160,6 +282,7 @@ public final class JdbcMarshaling {
             case Types.TIME:
                 return "java.sql.Time";
             case Types.TIMESTAMP:
+            case Types.TIMESTAMP_WITH_TIMEZONE:
                 return "java.sql.Timestamp";
             case Types.BINARY:
                 return "[B";
@@ -215,8 +338,48 @@ public final class JdbcMarshaling {
         if (v instanceof java.util.Date) {
             return new Date(((java.util.Date) v).getTime());
         }
-        final String s = v.toString();
-        return Date.valueOf(s.length() >= 10 ? s.substring(0, 10) : s);
+        return Date.valueOf(parseDate(v.toString()));
+    }
+
+    /**
+     * A DATE's text as the wire carries it, including a year before the first: that one crosses with its
+     * SIGNED proleptic number — {@code -1-01-15}, {@code 0000-01-15} — because the year of the era would read as
+     * a different year. Anything after the date (a timestamp's time) is ignored.
+     *
+     * @param text the cell's text
+     * @return the date it names
+     */
+    static LocalDate parseDate(final String text) {
+        final String iso = isoYear(text.trim());
+        final int timeAt = iso.indexOf(iso.indexOf('T') >= 0 ? 'T' : ' ');
+        return LocalDate.parse(timeAt > 0 ? iso.substring(0, timeAt) : iso);
+    }
+
+    /**
+     * A wire text's leading year in the ISO spelling {@code java.time} parses: a negative year padded to four
+     * digits ({@code -1} becomes {@code -0001}) and a year past 9999 signed ({@code 20201} becomes
+     * {@code +20201}). A four-digit year passes through.
+     */
+    private static String isoYear(final String text) {
+        final boolean negative = text.startsWith("-");
+        final int dash = text.indexOf('-', negative ? 1 : 0);
+        if (dash < 0) {
+            return text;
+        }
+        final String digits = text.substring(negative ? 1 : 0, dash);
+        for (int i = 0; i < digits.length(); i++) {
+            if (!Character.isDigit(digits.charAt(i))) {
+                return text;
+            }
+        }
+        if (negative) {
+            final StringBuilder padded = new StringBuilder("-");
+            for (int i = digits.length(); i < 4; i++) {
+                padded.append('0');
+            }
+            return padded.append(text.substring(1)).toString();
+        }
+        return digits.length() > 4 ? "+" + text : text;
     }
 
     public static Time toTime(final Object v) {
@@ -280,11 +443,20 @@ public final class JdbcMarshaling {
      * e.g. Snowflake's {@code EXECUTE IMMEDIATE '… ? … ?' USING (v1, v2)}.
      */
     public static String substitutePlaceholders(final String sql, final List<Object> values) {
+        return substitutePlaceholders(sql, values, Collections.<Integer>emptySet());
+    }
+
+    /**
+     * {@link #substitutePlaceholders(String, List)}, leaving as written each placeholder whose 1-based number
+     * {@code unbound} holds: the statement then refuses it as a bind variable that is not set.
+     */
+    public static String substitutePlaceholders(final String sql, final List<Object> values,
+                                                final Set<Integer> unbound) {
         final Map<Integer, Object> params = new HashMap<>();
         for (int i = 0; i < values.size(); i++) {
             params.put(i + 1, values.get(i));
         }
-        return substitutePlaceholders(sql, params);
+        return substitute(sql, params, unbound);
     }
 
     /**
@@ -294,14 +466,18 @@ public final class JdbcMarshaling {
      * binding.)
      */
     public static String substitutePlaceholders(final String sql, final Map<Integer, Object> params) {
+        return substitute(sql, params, Collections.<Integer>emptySet());
+    }
+
+    private static String substitute(final String sql, final Map<Integer, Object> params, final Set<Integer> unbound) {
         final CommonTokenStream tokens = lex(sql);
         final StringBuilder out = new StringBuilder(sql.length() + 16);
         int param = 0;
         int cursor = 0;
         for (final Token t : tokens.getTokens()) {
-            if (t.getType() == FrostlakeLexer.QUESTION) {
+            if (t.getType() == FrostlakeLexer.QUESTION && !unbound.contains(++param)) {
                 out.append(sql, cursor, t.getStartIndex());
-                out.append(formatLiteral(params.get(++param)));
+                out.append(formatLiteral(params.get(param)));
                 cursor = t.getStopIndex() + 1;
             }
         }
@@ -479,11 +655,12 @@ public final class JdbcMarshaling {
         if (offset > 0 && isNumericOffset(text.substring(offset + 1))) {
             text = text.substring(0, offset);
         }
-        final String iso = text.contains(" ") && !text.contains("T") ? text.replace(' ', 'T') : text;
+        final String spaced = text.contains(" ") && !text.contains("T") ? text.replace(' ', 'T') : text;
+        final String iso = isoYear(spaced);
         try {
             return LocalDateTime.parse(iso);
         } catch (final DateTimeParseException dateOnly) {
-            return LocalDate.parse(s.length() >= 10 ? s.substring(0, 10) : s).atStartOfDay();
+            return parseDate(s).atStartOfDay();
         }
     }
 

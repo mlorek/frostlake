@@ -17,6 +17,7 @@
 package dev.frostlake.transaction;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
@@ -41,6 +42,8 @@ public class Transaction {
     private final List<TransactionLog> logs;
     private final TransactionWriteSet writeSet = new TransactionWriteSet();   // deferred-apply buffer (Phase 1)
     private final List<String> walStatements = new ArrayList<>();   // mutating SQL to log on commit (WAL)
+    // The statements run inside this transaction, whose changes become visible when it commits.
+    private final List<QueryHistory> statements = new ArrayList<>();
     /** What each buffered statement called "now" — one per entry of walStatements, same order. */
     private final List<Instant> walInstants = new ArrayList<>();
     // CDC streams read by this txn's DML, each with the scope of what the read SAW (committed cut +
@@ -59,6 +62,9 @@ public class Transaction {
      *  tracks its own set in {@link TransactionWriteSet}. One {@code PARTITIONS} lock per table
      *  (live-verified — appends do NOT lock), released with the transaction. */
     private final Map<String, TableLock> tableLocks = new LinkedHashMap<>();
+    /** The number of the session that began the transaction — SHOW TRANSACTIONS' and SHOW LOCKS'
+     *  session cell — or null for a transaction begun with no session context wired. */
+    private volatile Long sessionNumber;
 
     public Transaction(final long id, final Catalog catalog, final StorageEngine storageEngine,
                        final StreamManager streamManager) {
@@ -74,6 +80,38 @@ public class Transaction {
 
     public long getId() {
         return id;
+    }
+
+    /**
+     * The transaction's one public id: the 19-digit number CURRENT_TRANSACTION() and LAST_TRANSACTION()
+     * answer and SHOW TRANSACTIONS and SHOW LOCKS list — its start instant in epoch nanoseconds, with the
+     * engine's counter in the low digits so two transactions begun in the same millisecond stay apart.
+     * {@link #getId()} is the engine's internal counter and is never shown.
+     *
+     * @return the id every SQL surface prints
+     */
+    /** Record a statement that ran inside this transaction, so its commit can date the statement's changes. */
+    public void addStatement(final QueryHistory statement) {
+        statements.add(statement);
+    }
+
+    /** The statements that ran inside this transaction, in the order they ran. */
+    public List<QueryHistory> getStatements() {
+        return statements;
+    }
+
+    public long getPublicId() {
+        return startTime * 1_000_000L + id % 1_000_000L;
+    }
+
+    /** The number of the session that began this transaction, or null when none was known. */
+    public Long getSessionNumber() {
+        return sessionNumber;
+    }
+
+    /** Record the session that began this transaction. */
+    public void setSessionNumber(final Long sessionNumber) {
+        this.sessionNumber = sessionNumber;
     }
 
     public TransactionState getState() {

@@ -30,8 +30,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -159,6 +161,10 @@ public class StreamManager {
         }
         for (final Schema schema : database.getAllSchemas()) {
             for (final Stream stream : schema.getStreams()) {
+                if (stream.getSourceType() == StreamSourceType.STAGE
+                        || stream.getSourceType() == StreamSourceType.DYNAMIC_TABLE) {
+                    continue; // their changes come from a directory refresh or a table refresh, not DML
+                }
                 if (stream.getSourceType() == StreamSourceType.VIEW || !stream.getBaseTableNames().isEmpty()) {
                     if (capturesTable(stream, tableName)) {
                         out.add(stream);
@@ -285,20 +291,150 @@ public class StreamManager {
     }
 
     /**
-     * Seed a freshly created SHOW_INITIAL_ROWS stream with the source table's existing rows as
-     * INSERT records, so the stream's first read returns the current table contents (Snowflake
-     * semantics). Subsequent reads after consumption then return only new changes as usual.
+     * Record the changes a source that is not written by DML reports at once — a stage's directory table at a
+     * refresh, a dynamic table at a refresh — into every stream of that kind over it in the database: first the
+     * rows that left, then the rows that arrived.
+     *
+     * @param databaseName the source's database
+     * @param kind         the kind of source
+     * @param sourceName   the source's qualified name, DB.SCHEMA.NAME
+     * @param removed      the rows that left
+     * @param added        the rows that arrived
      */
-    public void seedInitialRows(final Stream stream, final String qualifiedTableName, final List<Row> rows) {
-        for (final Row row : rows) {
-            stream.addRecord(new StreamRecord(
-                row.getValues(),
-                ChangeType.INSERT,
-                false,
-                getNextRowId(qualifiedTableName)
-            ));
+    public void trackRefresh(final String databaseName, final StreamSourceType kind, final String sourceName,
+                             final List<List<Object>> removed, final List<List<Object>> added) {
+        for (final Stream stream : streamsOver(databaseName, kind, sourceName)) {
+            final String rowIdKey = sourceName.toUpperCase() + "#" + stream.getName();
+            for (final List<Object> values : removed) {
+                stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
+            }
+            for (final List<Object> values : added) {
+                stream.addRecord(new StreamRecord(values, ChangeType.INSERT, false, getNextRowId(rowIdKey)));
+            }
         }
-        logger.debug("Seeded stream {} with {} initial rows", stream.getName(), rows.size());
+    }
+
+    /**
+     * Record a dynamic table's refresh into every stream over it: the rows that left and arrived since the
+     * image of the table each stream last saw, which becomes the new image.
+     *
+     * @param databaseName the dynamic table's database
+     * @param tableName    its qualified name, DB.SCHEMA.NAME
+     * @param rows         its rows as the refresh leaves them
+     */
+    public void trackDynamicTableRefresh(final String databaseName, final String tableName,
+                                         final List<List<Object>> rows) {
+        for (final Stream stream : streamsOver(databaseName, StreamSourceType.DYNAMIC_TABLE, tableName)) {
+            final List<List<Object>> before = stream.getRefreshImage() == null
+                ? new ArrayList<List<Object>>() : stream.getRefreshImage();
+            final List<List<Object>> removed = new ArrayList<>();
+            final List<List<Object>> added = new ArrayList<>();
+            diff(before, rows, removed, added);
+            final String rowIdKey = tableName.toUpperCase() + "#" + stream.getName();
+            for (final List<Object> values : removed) {
+                stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
+            }
+            for (final List<Object> values : added) {
+                stream.addRecord(new StreamRecord(values, ChangeType.INSERT, false, getNextRowId(rowIdKey)));
+            }
+            stream.setRefreshImage(new ArrayList<>(rows));
+        }
+    }
+
+    /**
+     * The multiset difference of two row images: each row of {@code before} no row of {@code after} matches is
+     * removed, each row of {@code after} no row of {@code before} matches is added.
+     */
+    public static void diff(final List<List<Object>> before, final List<List<Object>> after,
+                            final List<List<Object>> removed, final List<List<Object>> added) {
+        // Rows are matched by their values themselves, so two rows whose values merely print alike stay apart.
+        final Map<List<Object>, Integer> remaining = new HashMap<>();
+        for (final List<Object> row : before) {
+            final Integer count = remaining.get(row);
+            remaining.put(row, count == null ? 1 : count.intValue() + 1);
+        }
+        for (final List<Object> row : after) {
+            final Integer count = remaining.get(row);
+            if (count != null && count.intValue() > 0) {
+                remaining.put(row, count.intValue() - 1);
+            } else {
+                added.add(row);
+            }
+        }
+        for (final List<Object> row : before) {
+            final List<Object> key = row;
+            final Integer count = remaining.get(key);
+            if (count != null && count.intValue() > 0) {
+                removed.add(row);
+                remaining.put(key, count.intValue() - 1);
+            }
+        }
+    }
+
+    /**
+     * The streams of one source kind over one source, across the database's schemas.
+     *
+     * @param databaseName the source's database
+     * @param kind         the kind of source
+     * @param sourceName   the source's qualified name, DB.SCHEMA.NAME
+     * @return the streams
+     */
+    public List<Stream> streamsOver(final String databaseName, final StreamSourceType kind, final String sourceName) {
+        final List<Stream> out = new ArrayList<>();
+        final Database database = catalog.getDatabase(databaseName);
+        if (database == null) {
+            return out;
+        }
+        for (final Schema schema : database.getAllSchemas()) {
+            for (final Stream stream : schema.getStreams()) {
+                if (stream.getSourceType() == kind && sourceName.equalsIgnoreCase(stream.getSourceTableName())) {
+                    out.add(stream);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Removes a dropped column's slot from the change records every stream over {@code qualifiedTableName}
+     * captured from it. A table stream's records all come from that table; a view stream narrows only the
+     * records it captured from this one of its base tables.
+     *
+     * @param qualifiedTableName the table whose column was dropped
+     * @param index              the dropped column's position before the drop
+     */
+    public void onColumnDropped(final String qualifiedTableName, final int index) {
+        final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
+        if (parts.length != 3) {
+            return;
+        }
+        final String tableName = parts[2].toUpperCase();
+        for (final Stream stream : capturingStreams(qualifiedTableName)) {
+            final boolean viewStream = stream.getSourceType() == StreamSourceType.VIEW
+                || !stream.getBaseTableNames().isEmpty();
+            stream.dropColumnSlot(index, viewStream ? tableName : null);
+        }
+    }
+
+    /**
+     * Appends a newly added column's value to the change records every stream over
+     * {@code qualifiedTableName} captured from it before the add.
+     *
+     * @param qualifiedTableName the table the column was added to
+     * @param width              the table's column count after the add
+     * @param value              the value the new column takes in rows that already exist
+     */
+    public void onColumnAdded(final String qualifiedTableName, final int width, final Object value) {
+        final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
+        if (parts.length != 3) {
+            return;
+        }
+        final String tableName = parts[2].toUpperCase();
+        for (final Stream stream : capturingStreams(qualifiedTableName)) {
+            final boolean viewStream = stream.getSourceType() == StreamSourceType.VIEW
+                || !stream.getBaseTableNames().isEmpty();
+            stream.appendColumnSlot(width, value, viewStream ? tableName : null);
+        }
     }
 
     /**

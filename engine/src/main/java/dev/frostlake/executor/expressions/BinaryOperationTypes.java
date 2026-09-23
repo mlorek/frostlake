@@ -21,6 +21,7 @@ import dev.frostlake.types.BinaryWidthSpelling;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.IntervalDayTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
@@ -119,6 +120,9 @@ public final class BinaryOperationTypes {
         if (!isArithmetic(operator)) {
             return null;
         }
+        if (IntervalArithmeticTypes.involves(left, right)) {
+            return IntervalArithmeticTypes.resultOf(operator, left, right);
+        }
         if (left instanceof DateTimeType || right instanceof DateTimeType) {
             return dateArithmetic(operator, left, right);
         }
@@ -174,6 +178,10 @@ public final class BinaryOperationTypes {
             return invalidArguments(matching, left, right);
         }
         final String arithmetic = ARITHMETIC_SYMBOLS.get(operator);
+        if (arithmetic != null && IntervalArithmeticTypes.involves(left, right)) {
+            return IntervalArithmeticTypes.resultOf(operator, left, right) == null
+                ? invalidArguments(arithmetic, left, right) : null;
+        }
         if (arithmetic != null && isScaling(operator)
                 && (left instanceof DateTimeType || right instanceof DateTimeType)) {
             // A temporal value is shifted, never scaled: only + and - take one, and which pairs they
@@ -193,18 +201,6 @@ public final class BinaryOperationTypes {
     }
 
     /**
-     * The temporal pairs live refuses, and ONLY those — each measured in the order written here, so an
-     * unmeasured order stays unjudged rather than being refused on symmetry:
-     *
-     * <ul>
-     *   <li>a TIMESTAMP or a TIME shifted by a number, either operator — where the same shift of a
-     *       DATE is legal;</li>
-     *   <li>a TIME against another TIME, either operator — where TIMESTAMP minus TIMESTAMP is legal
-     *       and answers an interval;</li>
-     *   <li>a TIMESTAMP and a DATE subtracted in either order — where DATE minus DATE is legal.</li>
-     * </ul>
-     */
-    /**
      * Whether {@code +} or {@code -} over this operand pair is refused, given at least one temporal
      * operand. Stated as the LEGAL set and refusing the rest, because that set is small and the
      * refused one is not: over DATE / TIME / TIMESTAMP / NUMBER there are 32 pairs, and only these
@@ -218,6 +214,10 @@ public final class BinaryOperationTypes {
      * <p>Note the asymmetry that a "temporal ± numeric is fine" reading would miss: {@code NUMBER + DATE}
      * is accepted but {@code NUMBER - DATE} is refused, and a TIMESTAMP takes no numeric operand at all
      * on either side. TIME is refused against everything, itself included.
+     *
+     * <p>The NUMBER is an EXACT one. A FLOAT beside a DATE is refused in every order the table
+     * accepts a NUMBER — {@code d + f} is "(DATE, FLOAT)" and {@code f + d} "(FLOAT, DATE)" — while an
+     * exponent literal such as {@code 1e0} is typed NUMBER(1,0) and shifts the DATE like any other.
      */
     private static boolean refusedTemporalPair(final BinaryOperator operator, final DataType left,
                                                final DataType right) {
@@ -225,19 +225,23 @@ public final class BinaryOperationTypes {
             return false;
         }
         if (operator == BinaryOperator.ADD) {
-            return !(isDate(left) && right instanceof NumericType
-                || left instanceof NumericType && isDate(right));
+            return !(isDate(left) && isExactNumber(right)
+                || isExactNumber(left) && isDate(right));
         }
-        return !(isDate(left) && right instanceof NumericType
+        return !(isDate(left) && isExactNumber(right)
             || isDate(left) && isDate(right)
             || isTimestamp(left) && isTimestamp(right));
+    }
+
+    /** A NUMBER that is not a FLOAT — the only numeric a DATE may be shifted by. */
+    private static boolean isExactNumber(final DataType type) {
+        return type instanceof NumericType && !NumericType.isApproximate(type);
     }
 
     private static boolean isTemporal(final DataType type) {
         return isDate(type) || isTime(type) || isTimestamp(type);
     }
 
-    /** Live's argument-type sentence: the operator quoted, both types spelled, in written order. */
     /** The name each matching operator is refused under — a NOT spelling reports its plain form. */
     private static final Map<BinaryOperator, String> MATCHING_NAMES = Map.of(
         BinaryOperator.LIKE, "LIKE",
@@ -269,7 +273,7 @@ public final class BinaryOperationTypes {
      */
     public static boolean isArithmeticOperand(final DataType type) {
         return type == null || type instanceof NumericType || type instanceof StringType
-            || type instanceof VariantType || type instanceof DateTimeType;
+            || type instanceof VariantType || type instanceof DateTimeType || IntervalArithmeticTypes.isInterval(type);
     }
 
     /**
@@ -286,10 +290,20 @@ public final class BinaryOperationTypes {
             || type instanceof StringType || type instanceof VariantType;
     }
 
+    /** Live's argument-type sentence: the operator quoted, both types spelled, in written order. */
     private static String invalidArguments(final String operator, final DataType left,
                                            final DataType right) {
         return "Invalid argument types for function '" + operator + "': ("
-            + SqlTypeNames.canonical(left) + ", " + SqlTypeNames.canonical(right) + ")";
+            + operandText(left) + ", " + operandText(right) + ")";
+    }
+
+    /**
+     * One operand's type as the sentence spells it: canonically, but for a BINARY, which is named by its
+     * width spelling — an unsized one at the 64MB maximum (live: {@code DECRYPT(x, 'p') + 1} names
+     * {@code BINARY(67108864)}, a BINARY column {@code BINARY(8388608)}).
+     */
+    private static String operandText(final DataType type) {
+        return type instanceof BinaryType ? ((BinaryType) type).refusalText() : SqlTypeNames.canonical(type);
     }
 
     /** A TIME, not a TIMESTAMP — the canonical spellings of both begin with the same four letters. */
@@ -434,14 +448,12 @@ public final class BinaryOperationTypes {
      *   <li>A DATE shifted by any numeric is still a DATE, and ADDITION commutes — {@code 1 + d}
      *       answers DATE too. Only addition: the reversed subtraction is not claimed.</li>
      *   <li>A DATE difference is a count of DAYS, {@code NUMBER(9,0)}.</li>
+     *   <li>A TIMESTAMP difference is an {@code INTERVAL DAY(9) TO SECOND(9)}, whatever the two flavours.</li>
      * </ul>
      *
-     * <p>Two accepted shapes are deliberately left untyped because Frostlake has no INTERVAL type to
-     * answer with: {@code timestamp - timestamp} and {@code ltz - ntz} both give
-     * {@code INTERVAL DAY(9) TO SECOND(9)} on live. Everything else in this area is REFUSED by live
-     * rather than typed — a TIMESTAMP or TIME shifted by a number, a TIME difference, and any
-     * DATE/TIMESTAMP mix — so answering null here keeps this class out of the way of the refusal
-     * those shapes deserve.
+     * <p>Everything else in this area is REFUSED by live rather than typed — a TIMESTAMP or TIME shifted by
+     * a number, a TIME difference, and any DATE/TIMESTAMP mix — so answering null here keeps this class
+     * out of the way of the refusal those shapes deserve.
      */
     private static DataType dateArithmetic(final BinaryOperator operator, final DataType left,
                                            final DataType right) {
@@ -454,6 +466,9 @@ public final class BinaryOperationTypes {
         }
         if (operator == BinaryOperator.SUBTRACT && isDate(left) && isDate(right)) {
             return new NumericType("NUMBER", DATE_DIFFERENCE_PRECISION, 0);
+        }
+        if (operator == BinaryOperator.SUBTRACT && isTimestamp(left) && isTimestamp(right)) {
+            return IntervalDayTimeType.DAY_TO_SECOND;
         }
         return null;
     }

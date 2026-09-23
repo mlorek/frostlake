@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 
@@ -33,15 +34,7 @@ public class LTrim extends TextArgumentFunction {
         final String str = args.get(0).toString();
         // Snowflake LTRIM(expr [, chars]): trims every character in the set (default whitespace).
         final String chars = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : null;
-        int start = 0;
-        final int end = str.length();
-        while (start < end && trimmed(str.charAt(start), chars)) { start++; }
-        
-        return str.substring(start, end);
-    }
-
-    private static boolean trimmed(final char c, final String chars) {
-        return chars == null ? Character.isWhitespace(c) : chars.indexOf(c) >= 0;
+        return str.substring(CodePointText.trimmedStart(str, chars));
     }
 
     @Override

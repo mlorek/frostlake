@@ -56,10 +56,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * <p>★ A CASE WITHOUT ELSE FOLDS AN IMPLICIT NULL BRANCH: a text CASE declares VARCHAR(134217728)
  * whatever its branches' widths, while a NUMBER, DATE, BOOLEAN or VARIANT one keeps its own type.
  *
+ * <p>★ A SELECT ALIAS IS JUDGED BY WHAT IT PROJECTS in every predicate clause, WHERE and a join's ON
+ * included, and the clauses are judged in live's order: the WHERE's type, then the HAVING's, then the
+ * QUALIFY's, each after every clause's NAMES and after a join condition's own type. WHERE and HAVING
+ * echo the alias bare ({@code [GG]}) where ON echoes the expression it projects ({@code [F.N]}). A real
+ * COLUMN always wins over a same-named alias, so that predicate is echoed as the column.
+ *
  * <p>NOT COVERED HERE, deliberately: a scalar subquery as the condition (untyped here), live's
  * internal CASE_FLATTENED spelling of a CASE operand, an unaliased derived table's invented name, a
- * BOOL*_AGG over unrecognised text, a ::BOOLEAN cast of a JSON object, and a SELECT alias in WHERE —
- * each recorded on its own.
+ * BOOL*_AGG over unrecognised text, and a ::BOOLEAN cast of a JSON object — each recorded on its own.
+ * The predicate rule's NARROWER TYPE SET is a gap of its own: live refuses a DATE, a VARIANT and the
+ * other non-boolean families in a predicate as well, over a plain column too, where Frostlake refuses
+ * only VARCHAR and NUMBER.
  */
 public class BooleanPositionStrictTypeTest extends BaseDatabaseTest {
 
@@ -268,6 +276,67 @@ public class BooleanPositionStrictTypeTest extends BaseDatabaseTest {
         assertEquals(predicate("NUMBER(1,0)", "1"), outcome("SELECT 1 FROM rt WHERE 1"));
         assertEquals(predicate(VARCHAR10, "B.H"), outcome("SELECT 1 FROM rt a JOIN rt2 b ON a.n = b.m WHERE h"));
         assertEquals("ACCEPTED 1", outcome("SELECT 1 FROM rt WHERE CASE WHEN b THEN b END"));
+    }
+
+    /** ★ A SELECT alias fills a predicate slot, and is judged by the expression it names. */
+    @Test
+    void aSelectAliasInWhereIsJudgedByWhatItProjects() {
+        assertEquals(predicate(VARCHAR10, "GG"), outcome("SELECT g AS gg FROM rt WHERE gg"));
+        assertEquals(predicate(VARCHAR10, "GG"), outcome("SELECT g AS gg FROM rt WHERE (gg)"),
+            "parentheses do not take it out of the slot");
+        assertEquals(predicate("NUMBER(5,0)", "ZZ"), outcome("SELECT n AS zz FROM rt WHERE zz"));
+        assertEquals(predicate("NUMBER(6,0)", "ZZ"), outcome("SELECT n + 1 AS zz FROM rt WHERE zz"),
+            "the alias is typed from its own expression, not from a column");
+        assertEquals("ACCEPTED 1", outcome("SELECT n FROM rt WHERE b"), "a BOOLEAN column is a predicate");
+        assertEquals("ACCEPTED true", outcome("SELECT b AS zz, n FROM rt WHERE zz"),
+            "and so is a BOOLEAN alias");
+        assertEquals("ACCEPTED 1", outcome("SELECT n AS zz FROM rt WHERE zz = 1"),
+            "only the WHOLE predicate is judged");
+        assertEquals("ACCEPTED 1", outcome("SELECT n AS zz FROM rt WHERE zz AND TRUE"),
+            "an operand of AND converts at row time instead");
+        // A real column wins over a same-named alias, so the predicate is the COLUMN and is echoed as one.
+        assertEquals(predicate(VARCHAR10, "RT.G"), outcome("SELECT n AS g FROM rt WHERE g"));
+        // An empty relation refuses the same: the rule is a compile-time one.
+        assertEquals(predicate(VARCHAR10, "GG"), outcome("SELECT g AS gg FROM re WHERE gg"));
+    }
+
+    /** ★ The clauses' predicate types are judged in live's order, after every clause's names. */
+    @Test
+    void thePredicateTypesAreJudgedInLivesOrder() {
+        // WHERE before HAVING before QUALIFY.
+        assertEquals(predicate(VARCHAR10, "GG"),
+            outcome("SELECT g AS gg, n AS zz FROM rt WHERE gg HAVING zz"));
+        assertEquals(predicate(VARCHAR10, "GG"),
+            outcome("SELECT g AS gg, n AS zz FROM rt HAVING gg QUALIFY zz"));
+        // Every clause's NAMES come first, and so does an out-of-range position.
+        assertEquals("SQL compilation error: error line 1 at position 41|invalid identifier 'NOSUCHCOL'",
+            outcome("SELECT g AS gg FROM rt WHERE gg ORDER BY nosuchcol"));
+        assertEquals("SQL compilation error:|[9] is not a valid order by expression",
+            outcome("SELECT g AS gg FROM rt WHERE gg ORDER BY 9"));
+        assertEquals("SQL compilation error:|[9] is not a valid group by expression",
+            outcome("SELECT g AS gg FROM rt WHERE gg GROUP BY 9"));
+        // A join condition's own type comes before the WHERE's.
+        assertEquals(predicate("NUMBER(5,0)", "B.M"),
+            outcome("SELECT a.g AS gg FROM rt a JOIN rt2 b ON b.m WHERE gg"));
+        // And the WHERE's comes before the grouped select list's own rule.
+        assertEquals(predicate(VARCHAR10, "GG"),
+            outcome("SELECT g AS gg, SUM(n) FROM rt WHERE gg GROUP BY 1"));
+        // A HAVING over an ungrouped query is judged as a predicate before it is read as a grouping.
+        assertEquals(predicate(VARCHAR10, "GG"), outcome("SELECT g AS gg FROM rt HAVING gg"));
+        assertEquals(predicate(VARCHAR10, "RT.G"), outcome("SELECT n FROM rt HAVING g"));
+    }
+
+    /** ★ A join condition that is a SELECT alias is echoed as the expression the alias projects. */
+    @Test
+    void aJoinConditionSpellsAnAliasAsItsExpression() {
+        assertEquals(predicate("NUMBER(5,0)", "A.N"),
+            outcome("SELECT a.n AS zz FROM rt a JOIN rt2 b ON zz"));
+        assertEquals(predicate(VARCHAR10, "A.G"),
+            outcome("SELECT a.g AS gg FROM rt a JOIN rt2 b ON gg"));
+        assertEquals(predicate("NUMBER(6,0)", "A.N + 1"),
+            outcome("SELECT a.n + 1 AS zz FROM rt a JOIN rt2 b ON zz"));
+        assertEquals("ACCEPTED true", outcome("SELECT a.b AS zz, a.n FROM rt a JOIN rt2 b ON zz"),
+            "a BOOLEAN one joins");
     }
 
     @Test

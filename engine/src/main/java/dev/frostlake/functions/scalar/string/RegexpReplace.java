@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 import java.util.regex.Matcher;
@@ -45,12 +46,13 @@ public class RegexpReplace extends TextArgumentFunction {
         final int occurrence = args.size() > 4 && args.get(4) != null ? ((Number) args.get(4)).intValue() : 0;
         final String parameters = args.size() > 5 && args.get(5) != null ? args.get(5).toString() : null;
 
+        // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);
-        if (start >= subject.length()) {
+        if (start >= CodePointText.length(subject)) {
             return subject;
         }
-        final String prefix = subject.substring(0, start);
-        final String region = subject.substring(start);
+        final String prefix = CodePointText.slice(subject, 0, start);
+        final String region = subject.substring(prefix.length());
         final String javaReplacement = RegexpHelper.translateReplacement(replacement);
         final Matcher matcher = RegexpHelper.compile(pattern, parameters).matcher(region);
         final StringBuilder sb = new StringBuilder();

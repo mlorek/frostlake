@@ -26,10 +26,36 @@ import java.util.List;
 public class ObjectAccessExpression implements Expression {
     private final Expression base;
     private final List<String> pathParts;
+    private SourcePosition position;
+    private boolean dotted;
 
     public ObjectAccessExpression(final Expression base, final List<String> pathParts) {
         this.base = base;
         this.pathParts = pathParts;
+    }
+
+    /** Where the path's first colon stands, which a refusal of its base points at; null when unknown. */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
+    }
+
+    /**
+     * Whether a dot continues the path after its colon ({@code v:a.b}). Live refuses the base of such a path
+     * nowhere — "error line 0 at position -1" — where a path of colons alone is refused at its first colon.
+     *
+     * @return true for a path continued by a dot
+     */
+    public boolean isDotted() {
+        return dotted;
+    }
+
+    /** Record that a dot continues the path — see {@link #isDotted()}. */
+    public void markDotted() {
+        this.dotted = true;
     }
 
     public Expression getBase() {

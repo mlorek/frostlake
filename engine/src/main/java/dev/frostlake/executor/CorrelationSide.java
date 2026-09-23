@@ -24,6 +24,12 @@ enum CorrelationSide {
     /** The row the subquery is evaluated for, or a row further out. */
     OUTER,
 
+    /**
+     * A name of the row the subquery is evaluated for that its relation's statistics pin to one value on every
+     * row: a constant, which leaves nothing to correlate (see {@link OuterNameConstancy}).
+     */
+    CONSTANT,
+
     /** Neither: a name the rule cannot place, left for the subquery's own execution to report. */
     UNKNOWN
 }

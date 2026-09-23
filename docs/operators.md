@@ -10,11 +10,11 @@ live Snowflake wherever they have been measured — the notes call out the measu
 | Operator | Form | Notes |
 |---|---|---|
 | `+` | `a + b` | Addition. Also date/timestamp `+ INTERVAL` arithmetic (`d + INTERVAL '1 day'`). |
-| `-` | `a - b` | Subtraction, incl. `- INTERVAL`. |
+| `-` | `a - b` | Subtraction, incl. `- INTERVAL`. A TIMESTAMP minus a TIMESTAMP is an `INTERVAL DAY(9) TO SECOND(9)` (see below). |
 | `*` | `a * b` | Multiplication. |
 | `/` | `a / b` | Division. Division by zero is an error (`DIV0`/`DIV0NULL` are the guarded forms). |
 | `%` | `a % b` | Modulo (the `MOD` function is its twin). |
-| `+`, `-` (unary) | `-a`, `+a` | Sign. A NUMBER keeps its type; a text or a VARIANT operand converts to a FLOAT (`+'5'` is 5, `-'3'` is -3.0); a BOOLEAN, DATE/TIME/TIMESTAMP, BINARY, OBJECT, ARRAY or GEOGRAPHY operand is refused while the statement compiles, at the sign, under Snowflake's names — `Invalid argument types for function 'NEGATE': (BOOLEAN)` / `'UNARY PLUS': (DATE)`. |
+| `+`, `-` (unary) | `-a`, `+a` | Sign. A negated NUMBER keeps its type, while a unary plus gives an exact NUMBER at least two integer digits, its scale kept and capped at 38 (`+1` is NUMBER(2,0), `+1.5` NUMBER(3,1), `+99` NUMBER(2,0), `+NULL` NUMBER(2,0)); a text or a VARIANT operand converts to a FLOAT (`+'5'` is 5, `-'3'` is -3.0); a BOOLEAN, DATE/TIME/TIMESTAMP, BINARY, OBJECT, ARRAY or GEOGRAPHY operand is refused while the statement compiles, at the sign, under Snowflake's names — `Invalid argument types for function 'NEGATE': (BOOLEAN)` / `'UNARY PLUS': (DATE)`. An interval negates to its own type and takes no plus (`'UNARY PLUS': (INTERVAL DAY(9))`). |
 
 Numeric results carry Snowflake's derived precision/scale rules for NUMBER operands (the
 live-verified supertype fold), and DOUBLE contaminates as in Snowflake.
@@ -34,10 +34,55 @@ but carries more than thirteen whole digits is `Numeric value '12345678901234' i
 `NUMBER(19,1)`; a one-argument `ROUND(t)`, `ABS(t)`, `SIGN(t)` or `SQRT(t)` is a FLOAT read at its full
 digits).
 
-`INTERVAL` literals take the quoted form only: `INTERVAL '1 day, 2 hours'` (plural units and
-comma-separated parts inside the string, bare numbers default to seconds) or
-`INTERVAL '<n>' <singular unit>`. An unquoted amount (`INTERVAL 10 DAY`) is a syntax error, and a
-plural unit word after the string is an alias, not a unit — both live-verified.
+**A TIMESTAMP minus a TIMESTAMP is an `INTERVAL DAY(9) TO SECOND(9)`**, whatever the two flavours; beside an
+LTZ or a TZ an NTZ is read at the session's time zone (all live-verified). The interval converts to an
+exact number of seconds (`CAST(ts - ts2 AS NUMBER)`, `TO_NUMBER`, rounded half away from zero to the
+target's scale; past its digits `Interval out of representable range, type: FIXED[SB2](3,0){not null} value:
++1 01:00:00.000000000`) and to text (`::VARCHAR`, `TO_CHAR`, `TO_VARCHAR`: `+1 01:00:00.000000000`). A cast to
+any other family (DATE, TIME, a TIMESTAMP, FLOAT, BOOLEAN, BINARY, VARIANT, OBJECT, ARRAY) is refused while
+the statement compiles, echoing the plan (`invalid type [CAST(DATE_DIFFTIMESTAMPTOINTERVAL(FAM.TS2, FAM.TS)
+AS DATE)] for parameter 'TO_DATE'`), and so is any TRY_CAST of one. An interval moves a timestamp (`ts ±
+interval` and `interval + ts` keep the flavour at nine digits; a DATE becomes a TIMESTAMP_NTZ), meets
+another (`±`), scales by an exact number (`* n`, `n *`, `/ n`; dividing by zero is `Interval division by
+zero`) and negates; intervals compare, group and take MIN/MAX. Any other pairing with an interval — a
+number, a text, a VARIANT or a bare NULL added, a FLOAT or another interval as a factor or divisor, `%`, a
+TIME, an interval minus a timestamp, the two interval families mixed, a quoted-string interval — is refused at
+the operator.
+
+The unit-suffixed literals below take the same arithmetic, typed by their fields (all live-verified): two
+intervals of one family meet in the span of both (`INTERVAL '1' DAY + INTERVAL '1' HOUR` is an `INTERVAL
+DAY(9) TO HOUR`, `YEAR + MONTH` a `YEAR(9) TO MONTH`) with a leading precision one past the wider operand's,
+up to nine; a factor or divisor keeps the fields and widens the leading precision by the number's digits
+(`INTERVAL '1' DAY(2) * 200` is a `DAY(5)`); a product is rounded half away from zero to the nanosecond or
+the month and either result keeps nothing finer than its trailing field (`INTERVAL '1' DAY / 2` is zero
+days, `INTERVAL '3' MONTH / 2` one month). A DATE plus a year-month interval stays a DATE, plus a day-time
+one it becomes a TIMESTAMP_NTZ(9), in either order; a day-time interval moves a TIMESTAMP_LTZ by its exact
+duration, where the quoted-string `'1 day'` moves it by a calendar day. A result its leading precision
+cannot hold is `Interval out of representable range after <plus|minus|multiply|divide>, type:
+INTERVAL_DAY_TIME[SB16](9,6){not null}` (the operation named, the type as the storage layer spells it). A Snowflake Scripting block
+and a stored procedure type them the same way (`RETURN TO_VARCHAR(INTERVAL '1' DAY / 2)` is `+0`), a variable
+the block reads scaling one as the number it holds.
+
+`INTERVAL` literals take two quoted forms (all live-verified). The in-string one, `INTERVAL '1 day, 2
+hours'`, reads comma-separated parts, each an optionally signed number (a fraction rounds half away from
+zero to a whole count) and an optional unit word, singular or plural (none means seconds); a token out of
+place is a syntax error counted inside the text (`INTERVAL '1 day 2 hours'` is `syntax error line 1 at
+position 6 unexpected '2'.`), a reserved word such as `select` or `null` included, and an unknown unit word is
+`<word> is not recognized as a date type.`. The text takes the statement's comments (`--`, `//`, `/* */`; a
+block comment left open is `parse error … near '<EOF>'.`), and an amount its unit cannot count is refused
+when a row reaches it (`Number out of representable range: type FIXED[SB4](9,0){not null}, value 1e+09` for a
+day, week, month, quarter, year or hour amount of a billion; minutes, seconds and finer stay under 10^18, `FIXED[SB8](18,0)`, the amount compared as a double).
+The unit-suffixed one, `INTERVAL '<text>' <qualifier>`, is a typed value: the qualifier is a field — YEAR,
+MONTH, DAY, HOUR, MINUTE or SECOND, or its plural — with an optional leading precision (a SECOND also a
+fractional one: `SECOND(2,3)`), or a range of fields (`DAY TO HOUR`, `DAY(3) TO SECOND(3)`, `YEAR TO
+MONTH`), and the text is read by those fields (`'1 02:03:04.5' DAY TO SECOND`, `'-1-2' YEAR TO MONTH`,
+`'1.5' SECOND`) when a row reaches the literal, refused in the account's words when it does not fit them.
+`INTERVAL '1' DAY(2)` is an `INTERVAL DAY(2)`, stored in eight bytes where a `DAY(9)` takes sixteen. A
+qualifier that names no type is `Invalid specification for type INTERVAL: INTERVAL <fields>` (`INTERVAL '1'
+DAY(0)` gives `… INTERVAL DAY`) while the statement compiles; it and a quoted-string text with a token out of place
+refuse the statement ahead of any unknown name it holds, the first in the text winning, while an unknown unit word
+is judged with the names. An unquoted amount (`INTERVAL 10 DAY`) is a syntax error, and WEEK, QUARTER
+and the sub-second words are no fields: after the string they are an alias.
 
 ## String operators
 
@@ -52,12 +97,13 @@ plural unit word after the string is an alias, not a unit — both live-verified
 | `=` | `a = b` | Equality. |
 | `!=`, `<>` | `a != b` | Inequality — both spellings lex to the same operator. |
 | `<`, `<=`, `>`, `>=` | `a < b` | Ordering. |
+| Row comparison | `(a, b) = (1, 2)`, `(a, b) < (c, d)` | Two row constructors of one width with `=`, `!=`/`<>`, `<`, `<=`, `>`, `>=`. Equality reads the whole row: one differing pair makes it FALSE, and a NULL decides only when nothing else does. The ordering operators compare lexicographically, stopping at the first differing pair. A row opposite a scalar, or two rows of different widths, is refused while the statement compiles. |
 | `IS [NOT] NULL` | `a IS NULL` | Two-valued (never UNKNOWN). |
 | `IS [NOT] DISTINCT FROM` | `a IS DISTINCT FROM b` | NULL-safe equality. |
 | `[NOT] BETWEEN` | `a BETWEEN x AND y` | Inclusive range. |
-| `[NOT] LIKE` | `a LIKE p [ESCAPE e]` | `%`/`_` wildcards, optional ESCAPE. |
-| `[NOT] ILIKE` | `a ILIKE p [ESCAPE e]` | Case-insensitive LIKE. |
-| `LIKE ANY / LIKE ALL / ILIKE ANY` | `a LIKE ANY (p1, p2, …) [ESCAPE e]` | Multi-pattern forms. Snowflake has ONLY these three: `NOT LIKE ANY/ALL` and `ILIKE ALL` are compile errors there, so Frostlake deliberately omits them (live-verified). |
+| `[NOT] LIKE` | `a LIKE p [ESCAPE e]` | `%`/`_` wildcards, optional ESCAPE. Without ESCAPE nothing is an escape; the escape makes whatever follows it literal. A pattern ending in its escape is refused with `Escape character at end of LIKE pattern` where it is matched in full; a literal run with at most a leading or trailing run of `%` is compared directly and keeps that escape as a character. |
+| `[NOT] ILIKE` | `a ILIKE p [ESCAPE e]` | Case-insensitive LIKE. Every pattern is matched in full, so one ending in its escape is always refused. |
+| `LIKE ANY / LIKE ALL / ILIKE ANY` | `a LIKE ANY (p1, p2, …) [ESCAPE e]` | Multi-pattern forms. Snowflake has ONLY these three: `NOT LIKE ANY/ALL` and `ILIKE ALL` are compile errors there, so Frostlake deliberately omits them (live-verified). A pattern ending in its escape is refused where it is reached: LIKE ALL matches each pattern in written order and stops at the first miss, ILIKE ANY checks every pattern before matching, and LIKE ANY answers from its directly compared patterns first and checks the others only when none of those matched. |
 | `[NOT] RLIKE`, `[NOT] REGEXP` | `a RLIKE p` | Whole-string regex match (the `REGEXP_LIKE` function family is the callable twin). |
 | `[NOT] IN` | see below | Membership, in all of Snowflake's shapes. |
 

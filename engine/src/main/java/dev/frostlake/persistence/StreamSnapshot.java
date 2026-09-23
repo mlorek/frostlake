@@ -19,6 +19,7 @@ package dev.frostlake.persistence;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Serializable snapshot of a STREAM — its definition plus the pending (unconsumed) change records, which
@@ -41,4 +42,12 @@ public class StreamSnapshot implements Serializable {
     public String comment;
     public String owner;
     public List<StreamRecordSnapshot> records = new ArrayList<>();
+    // The initial rows a SHOW_INITIAL_ROWS stream reports before its first consumption, and a dynamic-table
+    // stream's image of the table at its last refresh. Null when the stream has none, and on older snapshots.
+    public List<StreamRecordSnapshot> initialRecords;
+    public List<List<Object>> refreshImage;
+
+    // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
+    // recorded, which reads back as an object carrying none.
+    public Map<String, String> tags;
 }

@@ -1,0 +1,22 @@
+# The parameters SHOW PARAMETERS IN USER lists that a session does not carry, transcribed from a real account.
+# name<TAB>default<TAB>description<TAB>type   (\n in a description is a real newline)
+CORTEX_CODE_CLI_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for Cortex Code CLI usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
+CORTEX_CODE_DESKTOP_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for Cortex Code Desktop usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
+CORTEX_CODE_SNOWSIGHT_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for Cortex Code Snowsight usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
+DEFAULT_SNOWFLAKE_APPS_BUILD_COMPUTE_POOL		Default compute pool for building Snowflake Apps Docker images.	STRING
+DEFAULT_SNOWFLAKE_APPS_BUILD_EXTERNAL_ACCESS_INTEGRATION		Default external access integration for Snowflake Apps builds that require external network access. Empty string means build without external access.	STRING
+DEFAULT_SNOWFLAKE_APPS_DESTINATION_DATABASE		Default database where Snowflake Apps are created. Empty string means the CLI uses the personal database (USER$<login_name>).	STRING
+DEFAULT_SNOWFLAKE_APPS_DESTINATION_SCHEMA		Default schema within the destination database for Snowflake Apps. Empty string means the CLI uses PUBLIC.	STRING
+DEFAULT_SNOWFLAKE_APPS_QUERY_WAREHOUSE		Default warehouse for Snowflake Apps SQL queries during deployment. Empty string means the CLI uses the current session warehouse.	STRING
+DEFAULT_SNOWFLAKE_APPS_SERVICE_COMPUTE_POOL		Default compute pool for running deployed Snowflake Apps services.	STRING
+DISABLE_UI_DOWNLOAD_BUTTON	false	Disables the Classic UI download button	BOOLEAN
+ENABLE_UNREDACTED_QUERY_SYNTAX_ERROR	false	Enable View Malformed SQL Text feature when parse error occurs	BOOLEAN
+ENABLE_UNREDACTED_SECURE_OBJECT_ERROR	false	Enable viewing error messages coming from secure objects	BOOLEAN
+ENFORCE_NETWORK_RULES_FOR_INTERNAL_STAGES_ON_USER	false	The user lineage version of the customer facing account parameter ENFORCE_NETWORK_RULES_FOR_INTERNAL_STAGES used by managed policy migration. Users with this parameter enabled will have managed policy enforced on internal stage. We will deprecate it manually after customer migration is finished.	BOOLEAN
+EXEMPT_DISABLE_RISKY_USER	false	When true, exempts the target from automatic disablement of risky users	BOOLEAN
+NETWORK_POLICY		Network policy assigned for the given target.	STRING
+PREVENT_UNLOAD_TO_INLINE_URL	false	prevent copy into inline url (copy into s3://mybucket/path/f1).	BOOLEAN
+PREVENT_UNLOAD_TO_INTERNAL_STAGES	false	Prevent unload sensitive data to non-external stages (user stage, table stage, named stage).	BOOLEAN
+SNOWWORK_DAILY_EST_CREDIT_LIMIT_PER_USER	-1	Daily estimated credit limit per user for SnowWork usage. A value of -1 means no limit. A value of 0 disables access.	NUMBER
+TEST_ORG_ALIAS_USER_RESOLUTION_PARAM	0	A test parameter to confirm alter param is supported using org.acct syntax	NUMBER
+UI_NOTIFICATIONS	false	Whether UI notifications are shown in the UI	BOOLEAN

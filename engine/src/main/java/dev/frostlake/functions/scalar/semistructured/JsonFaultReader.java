@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import java.math.BigInteger;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -34,12 +35,17 @@ import java.util.Set;
  *   incomplete object value, pos 7                    the document ended mid-object
  *   incomplete array value, pos 5                     … or mid-array
  *   unfinished string, pos 5                          … or mid-string
+ *   unterminated string, line 2, pos 0                a raw line feed inside a string (pos 3 for a carriage
+ *                                                     return, which counts as a column)
+ *   bad escape sequence in the string, pos 5          a backslash before a carriage return
  *   duplicate object attribute "abc", pos 14          the SAME object naming one key twice
  *   missing comma, pos 8       missing colon, pos 6   two members, or a key and its value, run on
  *   invalid character outside of a string: '#', pos 1
  *   stray minus sign, pos 2    no number after a sign, pos 2
  *   missing decimal exponent digits: '1e+', pos 4
- *   garbage in the numeric literal: 1a , pos 3        note the space before the comma
+ *   garbage in the numeric literal: 1a , pos 3        the literal runs through letters, points and
+ *                                                     signs (2024-01-01), then the character after
+ *                                                     it, a space at the end: [1-2] reads "1-2], pos 5"
  *   garbage after valid input document                these two carry NO position
  *   more than one document in the input
  * </pre>
@@ -57,11 +63,64 @@ import java.util.Set;
  */
 final class JsonFaultReader {
 
+    /** The greatest hex integer the reader converts: 2^127 - 1. */
+    private static final BigInteger LARGEST_HEX_INTEGER = BigInteger.ONE.shiftLeft(127).subtract(BigInteger.ONE);
+
     private final String text;
     private int at;
 
     private JsonFaultReader(final String document) {
         this.text = document;
+    }
+
+    /**
+     * The fault of a raw line break inside a string, which Snowflake's reader refuses where every other
+     * control character is kept: a line feed or a carriage return, or a backslash before a carriage return
+     * (a backslash before a line feed continues the string). The lenient reader accepts all three, so a
+     * document it has read is asked this before its value stands.
+     *
+     * @param document the document as written
+     * @return the fault, or null when no string holds a raw line break
+     */
+    static String lineBreakFault(final String document) {
+        boolean inString = false;
+        for (int i = 0; i < document.length(); i++) {
+            final char c = document.charAt(i);
+            if (!inString) {
+                inString = c == '"';
+                continue;
+            }
+            if (c == '\\') {
+                if (i + 1 < document.length() && document.charAt(i + 1) == '\r') {
+                    return badEscape(document, i);
+                }
+                i++;
+            } else if (c == '"') {
+                inString = false;
+            } else if (c == '\n' || c == '\r') {
+                return unterminated(document, i);
+            }
+        }
+        return null;
+    }
+
+    /** A raw line break at {@code at}: a line feed has begun the next line, a carriage return is a column. */
+    private static String unterminated(final String text, final int at) {
+        if (text.charAt(at) == '\n') {
+            int line = 1;
+            for (int i = 0; i < at; i++) {
+                if (text.charAt(i) == '\n') {
+                    line++;
+                }
+            }
+            return "unterminated string, line " + (line + 1) + ", pos 0";
+        }
+        return "unterminated string, " + positionOf(text, at);
+    }
+
+    /** A backslash at {@code at} escaping a carriage return, reported just past the pair. */
+    private static String badEscape(final String text, final int at) {
+        return "bad escape sequence in the string, " + positionOf(text, at + 2);
     }
 
     /** The fault Snowflake names in {@code document}, or null when this reader finds none. */
@@ -287,8 +346,14 @@ final class JsonFaultReader {
         while (!atEnd()) {
             final char c = text.charAt(at);
             if (c == '\\') {
+                if (at + 1 < text.length() && text.charAt(at + 1) == '\r') {
+                    return badEscape(text, at);
+                }
                 at += 2;
                 continue;
+            }
+            if (c == '\n' || c == '\r') {
+                return unterminated(text, at);
             }
             at++;
             if (c == '"') {
@@ -315,6 +380,10 @@ final class JsonFaultReader {
                 return keyword();
             }
         }
+        final String hex = hexNumber(start);
+        if (hex != null) {
+            return hex.isEmpty() ? null : hex;
+        }
         skipDigits();
         if (!atEnd() && text.charAt(at) == '.') {
             at++;
@@ -331,13 +400,78 @@ final class JsonFaultReader {
             }
             skipDigits();
         }
-        if (!atEnd() && isWordCharacter(text.charAt(at))) {
-            while (!atEnd() && isWordCharacter(text.charAt(at))) {
+        if (!atEnd() && continuesANumber(text.charAt(at))) {
+            while (!atEnd() && continuesANumber(text.charAt(at))) {
                 at++;
             }
-            return "garbage in the numeric literal: " + text.substring(start, at) + " , " + positionOf(text, at);
+            return "garbage in the numeric literal: " + text.substring(start, at)
+                + (atEnd() ? " " : String.valueOf(text.charAt(at))) + ", " + positionOf(text, at);
         }
         return null;
+    }
+
+    /**
+     * A HEXADECIMAL number, which the reader converts where it can: {@code 0x} with no digits and an
+     * integer past the signed 128-bit range are its own sentences, an exponent with no digits is the
+     * hexadecimal twin of the decimal one, and a token running into other characters is garbage like any
+     * other literal. Null when no hex token stands here, and the empty string when one stands and reads
+     * (live-verified).
+     *
+     * @param start where the literal began, a leading sign included
+     */
+    private String hexNumber(final int start) {
+        final int digitsAt = text.charAt(start) == '+' ? start + 1 : start;
+        if (digitsAt + 1 >= text.length() || text.charAt(digitsAt) != '0'
+                || text.charAt(digitsAt + 1) != 'x' && text.charAt(digitsAt + 1) != 'X') {
+            return null;
+        }
+        at = digitsAt + 2;
+        final int integerAt = at;
+        while (!atEnd() && isHexDigit(text.charAt(at))) {
+            at++;
+        }
+        final int integerEnd = at;
+        boolean floating = false;
+        if (!atEnd() && text.charAt(at) == '.') {
+            floating = true;
+            at++;
+            while (!atEnd() && isHexDigit(text.charAt(at))) {
+                at++;
+            }
+        }
+        if (!atEnd() && (text.charAt(at) == 'p' || text.charAt(at) == 'P')) {
+            floating = true;
+            at++;
+            if (!atEnd() && (text.charAt(at) == '+' || text.charAt(at) == '-')) {
+                at++;
+            }
+            if (atEnd() || !isDigit(text.charAt(at))) {
+                return "missing hexadecimal exponent digits: '" + text.substring(start, at)
+                    + "', " + positionOf(text, at);
+            }
+            skipDigits();
+        }
+        if (!atEnd() && continuesANumber(text.charAt(at))) {
+            while (!atEnd() && continuesANumber(text.charAt(at))) {
+                at++;
+            }
+            return "garbage in the numeric literal: " + text.substring(start, at)
+                + (atEnd() ? " " : String.valueOf(text.charAt(at))) + ", " + positionOf(text, at);
+        }
+        if (!floating && integerEnd == integerAt) {
+            return "hexadecimal integer number conversion error: " + text.substring(start, at)
+                + ", " + positionOf(text, at);
+        }
+        if (!floating && new BigInteger(text.substring(integerAt, integerEnd), 16)
+                .compareTo(LARGEST_HEX_INTEGER) > 0) {
+            return "hexadecimal integer number conversion error: " + text.substring(start, at)
+                + ", " + positionOf(text, at);
+        }
+        return "";
+    }
+
+    private static boolean isHexDigit(final char c) {
+        return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F';
     }
 
     /** A bare word: one of the four JSON keywords, or a fault naming it. */
@@ -362,6 +496,11 @@ final class JsonFaultReader {
 
     private String incomplete(final String container) {
         return "incomplete " + container + " value, " + positionOf(text, at);
+    }
+
+    /** Whether a character carries a numeric literal on: a letter, a digit, a point or a sign. */
+    private static boolean continuesANumber(final char c) {
+        return isWordCharacter(c) || c == '.' || c == '-' || c == '+';
     }
 
     /** Whether a character could begin a JSON VALUE here, which is what chooses the sentence. */

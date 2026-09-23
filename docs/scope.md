@@ -32,35 +32,43 @@ POLICY p` reports a syntax error at end of input — the clause takes more than 
 what more is not observable here. Emulating a shape from documentation alone is how invented
 metadata gets in, so this waits until an account can answer for it.
 
-## INTERVAL AS A DATA TYPE — declined; the type has no values that cross a connection
+## INTERVAL AS A DATA TYPE — a decision that was REVERSED; the type is implemented
 
-Two expressions Snowflake accepts produce an interval, and Frostlake declares its VARCHAR placeholder
-for both:
+This entry is kept because the decision it records was undone, and the reasoning behind it is quoted
+in places this file does not reach. Nothing here is out of scope any more.
 
-    timestamp - timestamp   ->  INTERVAL DAY(9) TO SECOND(9)
+An interval is a value with its own types: `IntervalDayTimeType` and `IntervalYearMonthType`, each
+carrying an `IntervalQualifier` — the unit at each end with its own precision (`DAY(9) TO SECOND(9)`,
+`YEAR TO MONTH`). Two expressions produce one, and a bare interval projects:
+
+    timestamp - timestamp        ->  INTERVAL DAY(9) TO SECOND(9)
     timestamp_ltz - timestamp_ntz
+    SELECT INTERVAL '1' DAY      ->  INTERVAL DAY(9)
 
-Adding INTERVAL to the `DataType` hierarchy was considered and declined, because measuring the account
-showed how little of it is reachable:
+A column definition and a cast target spell the type themselves — `CREATE TABLE t (iv INTERVAL DAY(3) TO
+SECOND(3))`, `'1 02'::INTERVAL DAY TO HOUR` — with the leading and fractional digits kept on the type, and a
+text or an interval of the same family converts into it (a cast also reads an exact number as a count of a
+one-field type's field, while a range of fields, and any column write, refuse a number); RESULT_SCAN refuses a result
+holding one, except as a bare `SELECT *`, as the account does.
 
-- A bare interval is NOT a value. `SELECT INTERVAL '1 day'` is refused — *interval literal is not
-  supported in this form* — in every spelling probed, and Frostlake already answers that same sentence.
-  An interval is only ever an OPERAND of temporal arithmetic.
-- `SELECT ts - ts` cannot be fetched at all. The account's own JDBC driver refuses to return the value:
-  *Feature unsupported: data type: 50006*. The type exists inside the engine, but no client of the kind
-  Frostlake serves can receive one.
-- `CAST('1 day' AS INTERVAL)` is a syntax error.
+The in-string spelling is still refused standalone — `SELECT INTERVAL '1 day'` is *interval literal is
+not supported in this form*, as on the account, where such an interval is only ever an OPERAND of
+temporal arithmetic. `CAST('1 day' AS INTERVAL)` remains a syntax error.
 
-So the whole observable surface of INTERVAL is two metadata strings: what `SYSTEM$TYPEOF` prints, and
-the `data_type` descriptor a view declares for such a column. A full data type — grammar, canonical
-spelling, the JDBC type mapping, the wire form, and INTERVAL's own qualifier syntax with a precision on
-each end (`DAY(9) TO SECOND(9)`, `YEAR TO MONTH`) — is a large surface to build for two strings
-describing values that cannot be selected.
+What overturned the decision was the reason it rested on: that no client could receive an interval,
+because the account's own JDBC driver refuses an interval column with *Feature unsupported: data type:
+50006*. That
+refusal holds only with JSON results, which is what the live-comparison harness forces. With the
+driver's default ARROW results it reads one — a day-time interval as BigDecimal nanoseconds (a Duration
+for SECOND), a year-month interval as a Period — so the values do cross a connection after all, and
+Frostlake's driver reads them the same way. The wire form is in
+[http-api.md](http-api.md#intervals).
 
-What IS supported is the arithmetic itself, which is the part users write: a temporal shifted by an
-interval computes and TYPES correctly, and the line falls at the day rather than the month — a whole-day
-unit (year, month, day) leaves a DATE a DATE, while a sub-day unit (hour, minute, second) promotes it to
-TIMESTAMP_NTZ, exactly as the account does.
+What was true all along, and still is, is the arithmetic itself, which is the part users write: a
+temporal shifted by an interval computes and TYPES correctly. With the quoted-string form the line falls at the
+day rather than the month — a whole-day unit (year, month, day) leaves a DATE a DATE, while a sub-day unit (hour,
+minute, second) promotes it to TIMESTAMP_NTZ, exactly as the account does; a unit-suffixed interval splits by family
+instead — a year-month one keeps a DATE, a day-time one (`INTERVAL '1' DAY` included) makes it a TIMESTAMP_NTZ(9).
 
 ## HTTP AUTHENTICATION — none, by design; the server binds loopback and is exposed deliberately
 

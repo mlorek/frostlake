@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.IntegerResultWidths;
+import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 import java.util.regex.Matcher;
@@ -52,12 +53,13 @@ public class RegexpInstr extends TextArgumentFunction {
         final String parameters = args.size() > 5 && args.get(5) != null ? args.get(5).toString() : null;
         final Integer groupNum = args.size() > 6 && args.get(6) != null ? ((Number) args.get(6)).intValue() : null;
 
+        // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);
-        if (start > subject.length()) {
+        if (start > CodePointText.length(subject)) {
             return 0L;
         }
         final Matcher matcher = RegexpHelper.compile(pattern, parameters).matcher(subject);
-        if (!matcher.find(start)) {
+        if (!matcher.find(CodePointText.offset(subject, start))) {
             return 0L;
         }
         int found = 1;
@@ -77,7 +79,7 @@ public class RegexpInstr extends TextArgumentFunction {
                 spanEnd = matcher.end(group);
             }
         }
-        return (long) ((option == 1 ? spanEnd : spanStart) + 1);
+        return (long) (CodePointText.characterIndex(subject, option == 1 ? spanEnd : spanStart) + 1);
     }
 
     @Override

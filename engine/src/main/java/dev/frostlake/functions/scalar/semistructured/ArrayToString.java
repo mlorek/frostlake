@@ -45,9 +45,9 @@ public class ArrayToString extends VariantAccessorFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(0));
-        if (arr == null) return null;
-        if (args.get(1) == null) return null;
+        if (args.get(0) == null || args.get(1) == null) return null;
+        // The account's own sentence names the conversion rather than the function.
+        final ArrayNode arr = ArrayFunctionHelper.requireArray(args.get(0), "Left argument of string is not an array");
         final String delimiter = args.get(1).toString();
         final List<String> parts = new ArrayList<>();
         for (final JsonNode el : arr) {
@@ -73,4 +73,13 @@ public class ArrayToString extends VariantAccessorFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /**
+     * A predicate as ARRAY_TO_STRING's separator is refused by the argument types, where a BOOLEAN
+     * value is read as text (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

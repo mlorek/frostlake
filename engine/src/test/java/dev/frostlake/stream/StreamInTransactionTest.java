@@ -45,7 +45,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
     public void appendOnlyStreamSeesSameTransactionInserts() {
         Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         engine.execute("CREATE TABLE t (id INT)");
-        engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE");
+        engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE");
         engine.execute("BEGIN TRANSACTION");
         engine.execute("INSERT INTO t VALUES (1), (2)");
         assertEquals(2, streamCount("SELECT * FROM s"));   // buffered inserts visible before COMMIT
@@ -58,7 +58,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
         Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         // The loader shape: seed + flush the stream, then insert more in a transaction and read.
         engine.execute("CREATE TABLE t (id INT)");
-        engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE");
+        engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE");
         engine.execute("INSERT INTO t VALUES (1)");
         engine.execute("CREATE OR REPLACE TEMP TABLE reset AS SELECT * FROM s WHERE 1=0");  // flush past row 1
         engine.execute("BEGIN TRANSACTION");
@@ -71,7 +71,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
     public void rollbackDiscardsBufferedStreamChanges() {
         Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         engine.execute("CREATE TABLE t (id INT)");
-        engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE");
+        engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE");
         engine.execute("BEGIN TRANSACTION");
         engine.execute("INSERT INTO t VALUES (1), (2)");
         assertEquals(2, streamCount("SELECT * FROM s"));
@@ -99,7 +99,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE active (id INT, st VARCHAR)");
         engine.execute("CREATE TABLE del (id INT, st VARCHAR)");
         engine.execute("CREATE VIEW v AS SELECT id, st FROM active UNION ALL SELECT id, 'DELETE' AS st FROM del");
-        engine.execute("CREATE STREAM vs ON VIEW v APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE");
+        engine.execute("CREATE STREAM vs ON VIEW v APPEND_ONLY=TRUE");
         engine.execute("BEGIN TRANSACTION");
         engine.execute("INSERT INTO active VALUES (1, 'ACTIVE'), (2, 'ACTIVE')");   // branch 1 (buffered)
         engine.execute("INSERT INTO del VALUES (1, 'DELETE')");                     // branch 2 (buffered)
@@ -148,7 +148,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE other_schema.del (id INT, st VARCHAR)");
         engine.execute("CREATE VIEW v AS SELECT id, st FROM other_schema.active "
             + "UNION ALL SELECT id, 'DELETE' AS st FROM other_schema.del");
-        engine.execute("CREATE STREAM vs ON VIEW v APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE");
+        engine.execute("CREATE STREAM vs ON VIEW v APPEND_ONLY=TRUE");
         engine.execute("BEGIN TRANSACTION");
         engine.execute("INSERT INTO other_schema.active VALUES (1, 'ACTIVE'), (2, 'ACTIVE')");
         engine.execute("INSERT INTO other_schema.del VALUES (1, 'DELETE')");

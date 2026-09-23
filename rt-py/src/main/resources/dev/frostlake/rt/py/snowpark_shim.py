@@ -1246,6 +1246,8 @@ def _frostlake_install_snowpark():
                     return DataFrame(self._session,
                                      sql='SELECT * FROM (' + self._pending_sql + ') WHERE ' + condition)
                 simple = _parse_simple_condition(condition)
+                if simple is None:
+                    simple = self._flag_condition(condition)
                 if simple is not None:
                     return self.filter(simple)
                 return DataFrame(self._session,
@@ -1259,6 +1261,30 @@ def _frostlake_install_snowpark():
                 if condition._evaluate(self._env(row)):
                     rows.append(row)
             return self._derived(self._names, self._types, rows)
+
+        def _flag_condition(self, text):
+            """A bare column name over local rows holding only booleans and NULLs, read as the flag it is.
+
+            Real Snowpark knows such a column is BOOLEAN; a frame spilled with no value to read its type from
+            declares it VARIANT, and the engine refuses a VARIANT predicate as the account does, so the
+            flag is read here instead. Any other column keeps the SQL path and its refusal."""
+            m = _re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*$", text)
+            if m is None:
+                return None
+            self._materialize()
+            names = [_builtins.str(n).upper() for n in self._names]
+            target = m.group(1).upper()
+            if target not in names:
+                return None
+            index = names.index(target)
+            for row in self._rows:
+                if row[index] is not None and not isinstance(row[index], bool):
+                    return None
+            original = self._names[index]
+
+            def _flag(env, original=original):
+                return env.get(original)
+            return Column(_flag, target)
 
         def where(self, condition):
             return self.filter(condition)

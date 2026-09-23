@@ -107,8 +107,8 @@ public class RowAccessPolicyAttachmentTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE pol_t ADD ROW ACCESS POLICY no_such_p ON (dept)");
             }
         });
-        assertEquals("SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     @Test
@@ -186,8 +186,8 @@ public class RowAccessPolicyAttachmentTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE pol_t DROP ROW ACCESS POLICY no_such_p");
             }
         });
-        assertEquals("SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     /** A view is named as a TABLE in this one sentence — measured, not a typo. */
@@ -301,8 +301,8 @@ public class RowAccessPolicyAttachmentTest extends BaseDatabaseTest {
                 engine.execute("CREATE TABLE c1 (a VARCHAR) WITH ROW ACCESS POLICY no_such ON (a)");
             }
         });
-        assertEquals("SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH'"
-            + " does not exist or not authorized.", unknownPolicy.getMessage());
+        assertEquals(hinted("SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH'"
+            + " does not exist or not authorized."), unknownPolicy.getMessage());
         final RuntimeException arity = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
@@ -344,8 +344,8 @@ public class RowAccessPolicyAttachmentTest extends BaseDatabaseTest {
                     + " AS SELECT dept FROM pol_t");
             }
         });
-        assertEquals("SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nRow access policy 'TEST_DB.TEST_SCHEMA.NO_SUCH'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     /** A fully qualified policy is looked up in ITS database, not in whichever one is current. */

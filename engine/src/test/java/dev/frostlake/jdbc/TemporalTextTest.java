@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * up to nine fractional digits — because both transports' {@code getString} was exactly that call.
  *
  * <p>The offset is the SESSION's, so this asserts its shape rather than a fixed zone: a test that
- * hardcoded {@code -0700} would only pass in one timezone.
+ * hardcoded {@code -0700} would only pass in one timezone. A zero offset is spelled {@code Z}.
  */
 public class TemporalTextTest {
 
@@ -75,10 +75,10 @@ public class TemporalTextTest {
         assertEquals("12:34:56", rs.getString("tm"));
         // Exactly three fractional digits, space-separated, no 'T'.
         assertEquals("2026-08-07 12:34:56.789", rs.getString("ntz"));
-        // The zoned one adds the session's numeric offset.
+        // The zoned one adds the session's offset: numeric, or Z when it is zero.
         final String ltz = rs.getString("ltz");
         assertTrue(ltz.startsWith("2026-08-07 12:34:56.789 "), ltz);
-        assertTrue(ltz.matches(".* [+-]\\d{4}$"), ltz);
+        assertTrue(ltz.matches(".* ([+-]\\d{4}|Z)$"), ltz);
     }
 
     @Test

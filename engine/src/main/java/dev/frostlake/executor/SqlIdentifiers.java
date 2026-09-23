@@ -60,13 +60,18 @@ public final class SqlIdentifiers {
         return ctx.getText();
     }
 
+    /**
+     * The identifier's canonical name: an unquoted one upper-cased, a quoted one as written between its
+     * quotes with each doubled quote read as one, so {@code "a""b"} names {@code a"b} (live-verified), and a
+     * {@code $n} positional parameter as {@code COLUMNn}.
+     */
     public static String canonical(final FrostlakeParser.IdentifierContext ctx) {
         if (ctx == null) {
             return null;
         }
         if (ctx.QUOTED_IDENTIFIER() != null) {
             final String quoted = ctx.QUOTED_IDENTIFIER().getText();
-            return quoted.substring(1, quoted.length() - 1);
+            return quoted.substring(1, quoted.length() - 1).replace("\"\"", "\"");
         }
         if (ctx.POSITIONAL_PARAMETER() != null) {
             final String param = ctx.POSITIONAL_PARAMETER().getText();
@@ -104,8 +109,8 @@ public final class SqlIdentifiers {
         // that could have been written bare and kept them otherwise, measured spelling by spelling:
         //   "Q" -> Q      "A_B" -> A_B     "A1" -> A1      "$X" -> $X
         //   "qQ" -> "qQ"  "1A" -> "1A"     "NO SUCH" -> "NO SUCH"
-        final String inner = rawToken.substring(1, rawToken.length() - 1);
-        return writableWithoutQuotes(inner) ? inner : rawToken;
+        // A doubled quote is echoed as the one quote it names: "e""f" -> "e"f".
+        return spellCanonical(rawToken.substring(1, rawToken.length() - 1).replace("\"\"", "\""));
     }
 
     /**
@@ -122,6 +127,42 @@ public final class SqlIdentifiers {
             return null;
         }
         return writableWithoutQuotes(name) ? name : "\"" + name + "\"";
+    }
+
+    /**
+     * A CANONICAL name spelled as SQL text that reads back to it: bare when it could have been written
+     * without quotes, quoted otherwise with each quote it holds doubled, so {@code a"b} is {@code "a""b"}.
+     * DDL and the missing-table sentence spell a name this way, where the other refusals print its quote
+     * once (live-verified).
+     *
+     * @param name the canonical name
+     * @return the name as SQL text
+     */
+    public static String spellCanonicalEscaped(final String name) {
+        if (name == null) {
+            return null;
+        }
+        return writableWithoutQuotes(name) ? name : "\"" + name.replace("\"", "\"\"") + "\"";
+    }
+
+    /**
+     * {@link #spellAlreadyCanonicalPath}, each part spelled by {@link #spellCanonicalEscaped}.
+     *
+     * @param path the already-canonical name, parts separated by dots
+     * @return the name as SQL text
+     */
+    public static String spellAlreadyCanonicalPathEscaped(final String path) {
+        if (path == null || path.indexOf('.') < 0) {
+            return spellCanonicalEscaped(path);
+        }
+        final StringBuilder spelled = new StringBuilder();
+        for (final String part : QualifiedName.parse(path).parts()) {
+            if (spelled.length() > 0) {
+                spelled.append('.');
+            }
+            spelled.append(spellCanonicalEscaped(part));
+        }
+        return spelled.toString();
     }
 
     /**

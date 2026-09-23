@@ -196,6 +196,7 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
     @Override
     public int[] executeBatch() throws SQLException {
         final int[] results = new int[batchParameters.size()];
+        long total = 0;
         try {
             for (int i = 0; i < batchParameters.size(); i++) {
                 final Map<Integer, Object> saved = new HashMap<>(parameters);
@@ -205,6 +206,7 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
                     // Live Snowflake reports the real affected-row count per batch entry, not
                     // SUCCESS_NO_INFO.
                     results[i] = executeUpdate();
+                    total += results[i];
                 } finally {
                     parameters.clear();
                     parameters.putAll(saved);
@@ -214,6 +216,9 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
             batchParameters.clear();
             batchBindTypes.clear();
         }
+        // The driver runs the batch as ONE array-bound statement, so what getUpdateCount() reports after it is
+        // the whole batch's count (live-verified: two one-row entries leave 2).
+        takeBatchCount(total);
         return results;
     }
 

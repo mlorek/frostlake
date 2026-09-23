@@ -4,7 +4,6 @@
   "tags": ["functions", "converted"],
   "tests": [
     {"name": "every-sql-null-entering-an-array-becomes-undefined",
-     "skip": {"backends": ["http"], "reason": "engine defect (recorded, engine main not touched): the HTTP transport serialises an ARRAY cell whose SQL-NULL elements render as the bare token undefined directly into the JSON row payload, so the response is not valid JSON and no client can parse it - the testkit reports a JSON parse error on the row payload rather than a value mismatch. The same values read correctly on the embedded and JDBC paths"},
      "steps": [
       {"sql": "SELECT ARRAY_CONSTRUCT(1, NULL, 2)", "expect": {"value": "[1,undefined,2]"}},
       {"sql": "SELECT [1, NULL, 2]", "expect": {"value": "[1,undefined,2]"}},
@@ -188,7 +187,6 @@
       {"sql": "SELECT ARRAYS_TO_OBJECT(ARRAY_CONSTRUCT('a', 'b'), ARRAY_CONSTRUCT(1, NULL))", "expect": {"value": "{\"a\":1,\"b\":null}"}}
     ]},
     {"name": "array-construct-compact-and-filter-still-work",
-     "skip": {"backends": ["http"], "reason": "engine defect (recorded, engine main not touched): the HTTP transport serialises an ARRAY cell whose SQL-NULL elements render as the bare token undefined directly into the JSON row payload, so the response is not valid JSON and no client can parse it - the testkit reports a JSON parse error on the row payload rather than a value mismatch. The same values read correctly on the embedded and JDBC paths"},
      "steps": [
       {"sql": "SELECT ARRAY_CONSTRUCT_COMPACT(1, NULL, 2)", "expect": {"value": "[1,2]"}},
       {"sql": "SELECT FILTER(ARRAY_CONSTRUCT(1, NULL, 2), x -> TRUE)", "expect": {"value": "[1,undefined,2]"}}

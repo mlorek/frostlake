@@ -32,23 +32,45 @@ public class LastDay extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final LocalDate d = SharedFunctionHelpers.toLocalDate(args.get(0));
-        final String part = args.size() > 1 && args.get(1) != null
-            ? args.get(1).toString().trim().toUpperCase() : "MONTH";
+        final String part = args.size() > 1 && args.get(1) != null ? partOf(args.get(1).toString()) : "MONTH";
+        if (part == null) {
+            // A word LAST_DAY does not know is refused rather than silently read as MONTH —
+            // live: "['ZZ'] is not a valid date/time component for function LAST_DAY." The week
+            // COMPONENTS woy, weekofyear and wy are among them.
+            throw SharedFunctionHelpers.notADateTimeComponent(args.get(1), "LAST_DAY");
+        }
         switch (part) {
-            case "YEAR": case "Y": case "YY": case "YYY": case "YYYY": case "YR": case "YRS":
-            case "YEARS":
+            case "YEAR":
                 return d.with(TemporalAdjusters.lastDayOfYear());
-            case "QUARTER": case "Q": case "QTR": case "QTRS": case "QUARTERS":
+            case "QUARTER":
                 return lastDayOfQuarter(d);
-            case "WEEK": case "W": case "WK": case "WEEKS": case "WEEKOFYEAR": case "WOY": case "WY":
+            case "WEEK":
                 // Default WEEK_START (weeks start on Monday) → the week's last day is Sunday.
                 return d.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY));
-            case "MONTH": case "MM": case "MON": case "MONS": case "MONTHS":
-                return d.with(TemporalAdjusters.lastDayOfMonth());
             default:
-                // A word LAST_DAY does not know is refused rather than silently read as MONTH —
-                // live: "['ZZ'] is not a valid date/time component for function LAST_DAY."
-                throw SharedFunctionHelpers.notADateTimeComponent(args.get(1), "LAST_DAY");
+                return d.with(TemporalAdjusters.lastDayOfMonth());
+        }
+    }
+
+    /**
+     * The part LAST_DAY reads a word as — YEAR, QUARTER, WEEK or MONTH — or null when it reads none.
+     * Asked by the statement's compilation as well as by the row.
+     *
+     * @param word the part as written, in any case
+     * @return the part's name, or null
+     */
+    public static String partOf(final String word) {
+        switch (word.trim().toUpperCase()) {
+            case "YEAR": case "Y": case "YY": case "YYY": case "YYYY": case "YR": case "YRS": case "YEARS":
+                return "YEAR";
+            case "QUARTER": case "Q": case "QTR": case "QTRS": case "QUARTERS":
+                return "QUARTER";
+            case "WEEK": case "W": case "WK": case "WEEKS":
+                return "WEEK";
+            case "MONTH": case "MM": case "MON": case "MONS": case "MONTHS":
+                return "MONTH";
+            default:
+                return null;
         }
     }
 

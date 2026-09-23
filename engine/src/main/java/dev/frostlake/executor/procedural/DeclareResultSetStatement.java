@@ -19,6 +19,8 @@ package dev.frostlake.executor.procedural;
 public class DeclareResultSetStatement extends Statement {
     private final String resultSetName;
     private final String selectQuery;
+    private int queryLine = -1;
+    private int queryColumn = -1;
 
     public DeclareResultSetStatement(final String resultSetName, final String selectQuery) {
         super(StatementType.DECLARE_RESULTSET);
@@ -32,5 +34,24 @@ public class DeclareResultSetStatement extends Statement {
 
     public String getSelectQuery() {
         return selectQuery;
+    }
+
+    /**
+     * Note where the initialiser's query begins in the block, which a failure running it is reported at.
+     *
+     * @param line   the query's line
+     * @param column the query's column
+     */
+    public void setQueryAt(final int line, final int column) {
+        this.queryLine = line;
+        this.queryColumn = column;
+    }
+
+    public int getQueryLine() {
+        return queryLine;
+    }
+
+    public int getQueryColumn() {
+        return queryColumn;
     }
 }

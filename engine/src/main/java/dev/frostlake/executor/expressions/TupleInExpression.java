@@ -35,6 +35,8 @@ public final class TupleInExpression implements Expression {
     private final List<Expression> flatListValues;    // right-hand flat scalar list (null otherwise)
     private final SubqueryExpression subquery;        // right-hand subquery (null otherwise)
     private final boolean not;
+    private boolean scalarLeft;
+    private SourcePosition position;
 
     private TupleInExpression(final List<Expression> values, final List<List<Expression>> tupleRows,
                               final List<Expression> flatListValues, final SubqueryExpression subquery,
@@ -49,6 +51,24 @@ public final class TupleInExpression implements Expression {
     public static TupleInExpression ofTupleRows(final List<Expression> values,
                                                 final List<List<Expression>> tupleRows, final boolean not) {
         return new TupleInExpression(values, tupleRows, null, null, not);
+    }
+
+    /**
+     * One parenthesized value IN a list of rows of which one at least holds several values: the value is a
+     * scalar there, each row of one a scalar too, and the list a type error naming the wider rows as ROWs —
+     * {@code (1) IN ((1), (2, 3))} is "Invalid argument types for function 'IN': (NUMBER(1,0), NUMBER(1,0),
+     * ROW(NUMBER(1,0), NUMBER(1,0)))" (live-verified).
+     */
+    public static TupleInExpression ofScalarRows(final List<Expression> values,
+                                                 final List<List<Expression>> tupleRows, final boolean not) {
+        final TupleInExpression tuple = new TupleInExpression(values, tupleRows, null, null, not);
+        tuple.scalarLeft = true;
+        return tuple;
+    }
+
+    /** Whether the left side is one scalar value rather than a row — see {@link #ofScalarRows}. */
+    public boolean isScalarLeft() {
+        return scalarLeft;
     }
 
     public static TupleInExpression ofFlatList(final List<Expression> values,
@@ -91,6 +111,15 @@ public final class TupleInExpression implements Expression {
 
     public boolean isNot() {
         return not;
+    }
+
+    /** Where the IN keyword, or the NOT before it, stands, which a ROW refusal points at; null when unknown. */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     @Override

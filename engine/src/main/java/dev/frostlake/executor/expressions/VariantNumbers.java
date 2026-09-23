@@ -17,6 +17,7 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.NumericConversionException;
+import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.JsonNode;
@@ -57,6 +58,13 @@ public final class VariantNumbers {
         final Number member = ExpressionArithmetic.variantAsNumber(variant);
         if (member != null) {
             return member;
+        }
+        // A text member spelling a hexadecimal number reads as a REAL (see HexDoubleText), never as a FIXED.
+        if (REAL.equals(target) && node.isTextual()) {
+            final Double hex = HexDoubleText.withoutExponent(node.asText().trim(), true);
+            if (hex != null) {
+                return hex;
+            }
         }
         if (node.isBoolean()) {
             return node.booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO;

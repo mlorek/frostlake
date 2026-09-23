@@ -26,19 +26,21 @@ import tools.jackson.databind.node.ObjectNode;
 import java.util.Arrays;
 import java.util.List;
 import javax.crypto.Cipher;
-import javax.crypto.spec.GCMParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 
 /**
- * ENCRYPT_RAW(value, key, iv [, additional_authenticated_data [, encryption_method]]) — raw-key AES-GCM
- * authenticated encryption. All BINARY arguments (value, key, iv, aad) are the engine's hex-string BINARY
- * representation; {@code key} is used verbatim (16 / 24 / 32 bytes select AES-128 / 192 / 256) and the IV
- * must be 12 bytes (96 bits) for GCM. Only AES-GCM (the Snowflake default) is supported; a non-GCM method
- * is rejected rather than silently mis-encrypted.
+ * ENCRYPT_RAW(value, key, iv [, additional_authenticated_data [, encryption_method]]) — raw-key AES
+ * encryption in any mode the method names: GCM, CBC, ECB, CTR, OFB or CFB. All BINARY arguments (value,
+ * key, iv, aad) are the engine's hex-string BINARY representation; {@code key} is used verbatim (16 / 24 /
+ * 32 bytes select AES-128 / 192 / 256) and the IV must be exactly the size its mode takes — 12 bytes for
+ * GCM, 16 for the other IV modes, none at all for ECB.
  *
- * <p>Returns a VARIANT OBJECT with the Snowflake-documented keys {@code ciphertext}, {@code iv} and
- * {@code tag} (each a hex BINARY), where {@code tag} is the 128-bit GCM authentication tag split off from
- * the cipher output. {@link DecryptRaw} consumes these to reverse the operation.
+ * <p>An IV of NULL is not a missing argument: one is DRAWN at random and returned with the answer, so the
+ * call stays reversible. Only a NULL value or key makes the answer NULL.
+ *
+ * <p>Returns a VARIANT OBJECT with the Snowflake-documented keys {@code ciphertext} and {@code iv} (each a
+ * hex BINARY), plus {@code tag} for an authenticating mode — the 128-bit GCM tag split off from the cipher
+ * output. A mode that takes no IV answers with a NULL {@code iv} member. {@link DecryptRaw} consumes these
+ * to reverse the operation.
  */
 public class EncryptRaw extends BuiltInFunction {
 
@@ -46,32 +48,47 @@ public class EncryptRaw extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null || args.get(1) == null || args.get(2) == null) {
+        // Only the value and the key make the answer NULL: a NULL IV means one is drawn here.
+        if (args.get(0) == null || args.get(1) == null) {
             return null;
         }
-        final byte[] aad = args.size() >= 4 && args.get(3) != null
-            ? RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(3)) : null;
-        RawCipherSupport.requireGcm("ENCRYPT_RAW", args.size() >= 5 ? args.get(4) : null);
+        final Object aadArg = args.size() >= 4 ? args.get(3) : null;
+        // Live's order: the method, the key's size, the IV's size, then whether the mode takes AAD.
+        final EncryptionMethod method = EncryptionMethod.of(args.size() >= 5 ? args.get(4) : null);
+        RawCipherSupport.requireKeySize(RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(1)));
+        if (args.get(2) != null) {
+            RawCipherSupport.requireIvSize(method, RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(2)));
+        }
+        method.requireAadSupport(aadArg != null);
+        final byte[] plaintext = RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(0));
+        method.requireWholeBlocks(plaintext.length);
         try {
-            final byte[] plaintext = RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(0));
             final byte[] key = RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(1));
-            final byte[] iv = RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(2));
-            final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"),
-                new GCMParameterSpec(RawCipherSupport.GCM_TAG_BITS, iv));
-            if (aad != null) {
-                cipher.updateAAD(aad);
+            final byte[] iv = RawCipherSupport.ivOrDrawn("ENCRYPT_RAW", method, args.get(2));
+            final Cipher cipher = method.cipher(Cipher.ENCRYPT_MODE, key, iv);
+            if (aadArg != null) {
+                cipher.updateAAD(RawCipherSupport.binaryBytes("ENCRYPT_RAW", aadArg));
             }
             final byte[] out = cipher.doFinal(plaintext);
-            // GCM appends the authentication tag to the ciphertext; split it back out for the returned object.
-            final byte[] ciphertext = Arrays.copyOfRange(out, 0, out.length - RawCipherSupport.GCM_TAG_BYTES);
-            final byte[] tag = Arrays.copyOfRange(out, out.length - RawCipherSupport.GCM_TAG_BYTES, out.length);
             final ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
             // The members keep their BINARY type (live: TYPEOF(o:ciphertext) is BINARY and
             // AS_BINARY over it returns the bytes) while rendering as the same hex text.
-            result.set("ciphertext", binaryMember(ciphertext));
-            result.set("iv", binaryMember(iv));
-            result.set("tag", binaryMember(tag));
+            if (method.mode().isAead()) {
+                // An authenticating mode appends its tag to the ciphertext; split it back out.
+                result.set("ciphertext",
+                    binaryMember(Arrays.copyOfRange(out, 0, out.length - RawCipherSupport.GCM_TAG_BYTES)));
+            } else {
+                result.set("ciphertext", binaryMember(out));
+            }
+            if (method.mode().ivBytes() == 0) {
+                result.putNull("iv");
+            } else {
+                result.set("iv", binaryMember(iv));
+            }
+            if (method.mode().isAead()) {
+                result.set("tag", binaryMember(
+                    Arrays.copyOfRange(out, out.length - RawCipherSupport.GCM_TAG_BYTES, out.length)));
+            }
             // Return the typed variant, not its text: as text the members' BINARY typing would be
             // discarded before the caller ever sees them (TYPEOF/AS_BINARY then say VARCHAR/NULL).
             return dev.frostlake.values.VariantValue.ofNode(result);

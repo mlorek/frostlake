@@ -31,9 +31,9 @@ public class ArrayCat extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
-        final ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
-        if (a1 == null || a2 == null) return null;
+        if (args.get(0) == null || args.get(1) == null) return null;
+        final ArrayNode a1 = ArrayFunctionHelper.requireArray(args.get(0), "Left argument of ARRAY_CAT is not an array");
+        final ArrayNode a2 = ArrayFunctionHelper.requireArray(args.get(1), "Right argument of ARRAY_CAT is not an array");
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (final JsonNode el : a1) result.add(el);
         for (final JsonNode el : a2) result.add(el);

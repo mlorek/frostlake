@@ -188,6 +188,46 @@ final class CallArgumentTypes {
         }
     }
 
+    /**
+     * Refuse a CALL one of whose named arguments is a parenthesized list, a ROW no parameter takes — at any depth,
+     * as live refuses it while the CALL compiles: {@code named arguments [A, B] do not match any signature for
+     * function PAB}, the named parameters in declaration order, then any name no parameter has.
+     *
+     * @param procName  the procedure's name as the sentence prints it
+     * @param params    its parameters, in declaration order
+     * @param arguments the CALL's arguments
+     */
+    static void refuseRows(final String procName, final List<Parameter> params,
+                           final List<FrostlakeParser.CallArgumentContext> arguments) {
+        final List<String> written = new ArrayList<String>();
+        boolean row = false;
+        for (final FrostlakeParser.CallArgumentContext argument : arguments) {
+            final FrostlakeParser.NamedArgumentContext named = argument.namedArgument();
+            if (named != null) {
+                written.add(named.identifier().getText());
+                row = row || named.argumentRow() != null;
+            }
+        }
+        if (!row) {
+            return;
+        }
+        final List<String> names = new ArrayList<String>();
+        for (final Parameter param : params) {
+            for (final String name : written) {
+                if (name.equalsIgnoreCase(param.getName())) {
+                    names.add(param.getName().toUpperCase(Locale.ROOT));
+                }
+            }
+        }
+        for (final String name : written) {
+            if (!names.contains(name.toUpperCase(Locale.ROOT))) {
+                names.add(name.toUpperCase(Locale.ROOT));
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.at(0, -1, "named arguments [" + String.join(", ", names)
+            + "] do not match any signature for function " + procName));
+    }
+
     /** An all-named CALL: each named parameter's argument against its type, named in declaration order. */
     private static void checkNamed(final String procName, final List<Parameter> params,
                                    final List<FrostlakeParser.CallArgumentContext> arguments,

@@ -22,11 +22,21 @@ import java.util.List;
 public class OperatorPipelineBuilder {
     // Package-private, not private: read by {@link OperatorPipeline} now that this class is a
     // top-level type in the same package rather than a nested one.
-    final List<Operator> operators = new ArrayList<>();
+    final List<PipelineStage> stages = new ArrayList<>();
     OperatorContext context;
 
+    /** Adds a stage that runs under the pipeline's context. */
     public OperatorPipelineBuilder addOperator(final Operator operator) {
-        this.operators.add(operator);
+        return addStage(new PipelineStage(operator, null));
+    }
+
+    /** Adds a stage that runs under its own context. */
+    public OperatorPipelineBuilder addStage(final Operator operator, final OperatorContext stageContext) {
+        return addStage(new PipelineStage(operator, stageContext));
+    }
+
+    public OperatorPipelineBuilder addStage(final PipelineStage stage) {
+        this.stages.add(stage);
         return this;
     }
 

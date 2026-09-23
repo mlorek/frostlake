@@ -39,5 +39,5 @@ public class TryDecrypt extends BuiltInFunction {
     @Override
     public int getMinArgCount() { return 2; }
     @Override
-    public int getMaxArgCount() { return 3; }
+    public int getMaxArgCount() { return 4; }
 }

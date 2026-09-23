@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
@@ -25,7 +26,6 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -75,11 +75,12 @@ public class ToJson extends StructuredArgumentFunction {
                 return value.toString();
             }
         }
-        // Temporals and any other scalar: a variant STRING of the value's text form — a DATE's as a
-        // VARIANT holds it, so a year past 9999 is its digits (live: "20201-01-15").
+        // Temporals and any other scalar: a variant STRING of the value's text form — a temporal's as a
+        // VARIANT holds it, so a year past 9999 is its digits and a TIME has its seconds (live: "20201-01-15",
+        // "10:00:00", "2024-01-15 10:00:00.000").
         try {
-            return MAPPER.writeValueAsString(value instanceof LocalDate
-                ? SharedFunctionHelpers.variantDateText((LocalDate) value) : value.toString());
+            return MAPPER.writeValueAsString(SharedFunctionHelpers.isNativeTemporal(value)
+                ? SharedFunctionHelpers.variantTemporalText(value) : value.toString());
         } catch (final Exception e) {
             return value.toString();
         }
@@ -89,4 +90,13 @@ public class ToJson extends StructuredArgumentFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 1; }
+
+    /**
+     * A predicate as TO_JSON's first argument is refused by the argument types, where a BOOLEAN
+     * value is read as text (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

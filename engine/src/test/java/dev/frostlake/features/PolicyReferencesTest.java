@@ -181,7 +181,7 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
                     + "REF_ENTITY_NAME => 'NO_SUCH_T', REF_ENTITY_DOMAIN => 'TABLE'))");
             }
         });
-        assertEquals("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized."),
             ex.getMessage());
     }
 
@@ -194,8 +194,8 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
                     + "POLICY_NAME => 'NO_SUCH_P'))");
             }
         });
-        assertEquals("SQL compilation error:\nPolicy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nPolicy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     @Test

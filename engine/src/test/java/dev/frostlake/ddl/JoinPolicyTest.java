@@ -130,8 +130,8 @@ public class JoinPolicyTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE jn_t SET JOIN POLICY no_such_jp");
             }
         });
-        assertEquals("SQL compilation error:\nJoin policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_JP'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nJoin policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_JP'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     @Test

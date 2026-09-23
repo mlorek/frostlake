@@ -17,6 +17,8 @@
 package dev.frostlake;
 
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.functions.scalar.file.NamedStage;
+import dev.frostlake.http.ExpiredSessionListener;
 import dev.frostlake.http.SessionContext;
 import dev.frostlake.http.SessionManager;
 import dev.frostlake.parser.FrostlakeLexer;
@@ -32,6 +34,7 @@ import org.antlr.v4.runtime.Token;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -71,6 +74,14 @@ public class ConcurrentDatabaseEngine {
         // blocks barging readers when a writer is queued, so writers are not badly starved.
         this.engineLock = new ReentrantReadWriteLock();
         this.sessionStates = new ConcurrentHashMap<>();
+        // An expired session is ended the way a released one is — its transaction rolled back and the
+        // engine's state for it dropped — rather than merely forgotten by the manager.
+        this.sessionManager.setExpiredSessionListener(new ExpiredSessionListener() {
+            @Override
+            public void expired(final SessionContext session) {
+                endSession(session);
+            }
+        });
         logger.info("Initialized concurrent Frostlake engine");
     }
 
@@ -129,7 +140,19 @@ public class ConcurrentDatabaseEngine {
                     applySessionContext(session);
 
                     final long startTime = System.currentTimeMillis();
-                    final ExecutionResult result = engine.execute(sql);
+                    final ExecutionResult result;
+                    try {
+                        result = engine.execute(sql);
+                    } catch (final RuntimeException failed) {
+                        // A request that fails part-way keeps what its earlier statements did, so the
+                        // session must take it back: a transaction a BEGIN opened stays open in the session
+                        // (live-verified — CURRENT_TRANSACTION() is still set, the session reads its own
+                        // rows, and COMMIT or ROLLBACK ends it), and a USE stays in force. Left uncaptured,
+                        // the transaction stayed with this pooled thread, the session's next request cleared
+                        // it, and SHOW TRANSACTIONS listed it for the server's lifetime under no session.
+                        captureSessionContext(session);
+                        throw failed;
+                    }
                     final long duration = System.currentTimeMillis() - startTime;
 
                     logger.debug("Executed SQL in session {} ({}ms): {}",
@@ -147,6 +170,10 @@ public class ConcurrentDatabaseEngine {
                     engine.getCatalog().clearSessionScope();
                     engine.getTransactionManager().clearSessionAutoCommit();
                     engine.getQueryResultCache().clearSessionScope();
+                    engine.getSecurityManager().getSessionContext().unbindSettings();
+                    // The transaction now belongs to the session (captured above): unbind it from this
+                    // pooled thread, which serves other sessions next.
+                    engine.getTransactionManager().setCurrentTransaction(null);
                     if (readOnly) {
                         engineLock.readLock().unlock();
                     } else {
@@ -248,6 +275,9 @@ public class ConcurrentDatabaseEngine {
             // statement: consecutive requests of one session land on different threads, and a
             // thread-keyed history would lose the previous statement's ID between them.
             engine.getQueryResultCache().beginSessionScope(session.getSessionId());
+            // ALTER SESSION parameters and SET variables follow the session too: one engine-wide store
+            // let a TIMEZONE, a QUERY_TAG or a variable set in one session reach every other.
+            engine.getSecurityManager().getSessionContext().bindSettings(session.getSettings());
 
             // ALWAYS restore (or clear, when null) this session's transaction. The shared engine uses a
             // thread-local "current transaction", so if we skipped this when the session has none, the
@@ -256,6 +286,22 @@ public class ConcurrentDatabaseEngine {
             engine.getTransactionManager().setCurrentTransaction(session.getTransactionId());
         } catch (final Exception e) {
             logger.warn("Error applying session context: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Bind the session's JSON_INDENT to this thread for rendering a statement's rows after the statement's own
+     * scope has closed — read from the session's own settings, which only its statements see. The caller clears
+     * it with {@code VariantJsonFormat.clearSessionScope}.
+     *
+     * @param session the session whose rows are rendered
+     */
+    public void bindJsonIndent(final SessionContext session) {
+        engine.getSecurityManager().getSessionContext().bindSettings(session.getSettings());
+        try {
+            engine.bindJsonIndent();
+        } finally {
+            engine.getSecurityManager().getSessionContext().unbindSettings();
         }
     }
 
@@ -294,8 +340,60 @@ public class ConcurrentDatabaseEngine {
         sessionManager.removeSession(sessionId);
     }
 
+    /**
+     * End a session for good: roll back the transaction it left open, then drop everything the engine kept
+     * for it. Both a released session and an expired one end this way, so neither can leave a transaction
+     * running with nobody to end it.
+     *
+     * @param session the session to end
+     */
+    public void endSession(final SessionContext session) {
+        if (session.isInTransaction()) {
+            try {
+                // Through execute(), under the engine's lock like any request: the idle sweep's thread is not
+                // a request thread.
+                execute("ROLLBACK", session);
+            } catch (final RuntimeException failed) {
+                // The session goes regardless; its transaction's writes were never committed.
+                logger.warn("Rolling back ended session {} failed: {}", session.getSessionId(), failed.getMessage());
+            }
+        }
+        removeSession(session.getSessionId());
+    }
+
+    /**
+     * End every session idle for longer than {@code idleMs} now, rather than at the next scheduled sweep.
+     *
+     * @param idleMs how long a session may sit idle
+     * @return how many sessions were ended
+     */
+    public int expireIdleSessions(final long idleMs) {
+        return sessionManager.expireSessionsIdleFor(idleMs);
+    }
+
     public int getActiveSessionCount() {
         return sessionManager.getActiveSessionCount();
+    }
+
+    /**
+     * The local file a stage file URL names — BUILD_STAGE_FILE_URL's {@code /api/files/<database>/<schema>/<stage>/<path>}
+     * with each name canonical — found under the engine's read lock, so no statement changes the stage meanwhile.
+     *
+     * @param database the database, canonical
+     * @param schema   the schema, canonical
+     * @param stage    the stage's name, canonical
+     * @param relative the file's stage-relative name
+     * @return the file's local path, or null when no named stage has those names or it has no local directory
+     */
+    public Path stageFileUrlTarget(final String database, final String schema, final String stage,
+                                   final String relative) {
+        engineLock.readLock().lock();
+        try {
+            final NamedStage named = engine.getExecutor().namedStage(database, schema, stage);
+            return named == null ? null : named.fileAt(relative);
+        } finally {
+            engineLock.readLock().unlock();
+        }
     }
 
     // Component access

@@ -46,4 +46,16 @@ public class Space extends TextArgumentFunction {
     public SemiStructuredRejection binaryRejection(final int position) {
         return SemiStructuredRejection.SPACE_REWRITE_OPERANDS;
     }
+
+    /** So is a predicate count: SPACE(1 = 1) is 'LPAD': (VARCHAR(1), BOOLEAN, VARCHAR(1)) (live-verified). */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return SemiStructuredRejection.SPACE_REWRITE_OPERANDS;
+    }
+
+    /** A BOOLEAN count is judged as the LPAD the call is planned as, like a predicate one (live-verified). */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.SPACE_REWRITE_OPERANDS;
+    }
 }

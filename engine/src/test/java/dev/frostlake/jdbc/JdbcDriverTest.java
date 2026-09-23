@@ -446,8 +446,9 @@ public class JdbcDriverTest {
                 st.execute("INSERT INTO arr SELECT ARRAY_CONSTRUCT(10, 20)");
                 try (ResultSet rs = st.executeQuery("SELECT a FROM arr")) {
                     assertTrue(rs.next());
-                    assertEquals(Types.ARRAY, rs.getMetaData().getColumnType(1));
-                    final Object[] elements = (Object[]) rs.getArray(1).getArray();   // previously threw
+                    // Reported as text, as Snowflake's driver reports it, while getArray still reads the elements.
+                    assertEquals(Types.VARCHAR, rs.getMetaData().getColumnType(1));
+                    final Object[] elements = (Object[]) rs.getArray(1).getArray();
                     assertEquals(2, elements.length);
                     assertEquals(10, ((Number) elements[0]).intValue());
                     assertEquals(20, ((Number) elements[1]).intValue());

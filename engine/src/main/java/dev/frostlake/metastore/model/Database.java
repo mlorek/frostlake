@@ -17,9 +17,12 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.metastore.NameKeys;
 import dev.frostlake.metastore.SqlObject;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,6 +45,8 @@ public class Database extends SqlObject {
 
 
     private final Map<String, Schema> schemas;
+    /** The database's own roles, by name, in the order they were created. */
+    private final Map<String, DatabaseRole> databaseRoles = new LinkedHashMap<>();
     private boolean readOnly = false;
 
     /** TRANSIENT, as written on the CREATE; every schema inside inherits it. */
@@ -49,6 +54,14 @@ public class Database extends SqlObject {
 
     public boolean isTransientObject() {
         return transientObject;
+    }
+
+    /** The parameters the database sets on itself; the retention is kept apart, above. */
+    private final ObjectParameters parameters = new ObjectParameters();
+
+    /** The parameters the database sets on itself (its schemas inherit them). */
+    public ObjectParameters getParameters() {
+        return parameters;
     }
 
     public void setTransientObject(final boolean value) {
@@ -74,32 +87,16 @@ public class Database extends SqlObject {
         registerSchema("INFORMATION_SCHEMA", infoSchema);
 
         // The INFORMATION_SCHEMA views a real account exposes, listed so they appear in
-        // INFORMATION_SCHEMA.TABLES / VIEWS and SHOW VIEWS exactly as they do live (this list and
-        // the reader in QueryExecutor.executeSystemViewIfApplicable must name the same set — a
-        // name listed here but not routed there would resolve to this placeholder definition).
-        // STREAMS, TASKS and TAGS are deliberately absent: a real account has no such views.
-        for (final String v : new String[]{
-            "APPLICABLE_ROLES", "APPLICATION_CONFIGURATIONS", "APPLICATION_SPECIFICATIONS", "BACKUPS",
-            "BACKUP_POLICIES", "BACKUP_SETS", "CHECK_CONSTRAINTS", "CLASSES", "CLASS_INSTANCES",
-            "CLASS_INSTANCE_FUNCTIONS", "CLASS_INSTANCE_PROCEDURES", "COLUMNS",
-            "CORTEX_SEARCH_SERVICES", "CORTEX_SEARCH_SERVICE_SCORING_PROFILES",
-            "CURRENT_PACKAGES_POLICY", "DATABASES", "ELEMENT_TYPES", "ENABLED_ROLES", "EVENT_TABLES",
-            "EXTERNAL_TABLES", "FIELDS", "FILE_FORMATS", "FUNCTIONS", "GIT_REPOSITORIES",
-            "HYBRID_TABLES", "INDEXES", "INDEX_COLUMNS", "INFORMATION_SCHEMA_CATALOG_NAME", "LISTINGS",
-            "LOAD_HISTORY", "MODEL_VERSIONS", "NOTEBOOKS", "OBJECT_PRIVILEGES", "PACKAGES", "PIPES",
-            "PROCEDURES", "REFERENTIAL_CONSTRAINTS", "REPLICATION_DATABASES", "REPLICATION_GROUPS",
-            "SCHEMATA", "SEMANTIC_DIMENSIONS", "SEMANTIC_FACTS", "SEMANTIC_METRICS",
-            "SEMANTIC_RELATIONSHIPS", "SEMANTIC_TABLES", "SEMANTIC_VARIABLES", "SEMANTIC_VIEWS",
-            "SEQUENCES", "SERVICES", "SHARES", "SNAPSHOTS", "SNAPSHOT_POLICIES", "SNAPSHOT_SETS",
-            "STAGES", "STREAMLITS", "TABLES", "TABLE_CONSTRAINTS", "TABLE_PRIVILEGES",
-            "TABLE_STORAGE_METRICS", "TYPES", "USAGE_PRIVILEGES", "VIEWS"
-        }) {
-            final View systemView = new View(v, "/* system view */");
-            // Owned by nobody, like the schema holding them: SHOW OBJECTS reports an empty owner for
-            // every INFORMATION_SCHEMA view, where a created view names the role that made it
-            // (live-verified). The default SYSADMIN would be an invented owner.
-            systemView.setOwner(null);
-            infoSchema.addView(systemView);
+        // INFORMATION_SCHEMA.TABLES / VIEWS, SHOW VIEWS and SHOW OBJECTS exactly as they do live.
+        InformationSchemaViews.seed(infoSchema);
+    }
+
+    /** A renamed database re-stamps its schemas, which spell their members' full names under it. */
+    @Override
+    public void rename(final String newName) {
+        super.rename(newName);
+        for (final Schema schema : schemas.values()) {
+            schema.setDatabaseName(newName);
         }
     }
 
@@ -110,31 +107,51 @@ public class Database extends SqlObject {
     }
 
     public void addSchema(final Schema schema) {
-        final String upperName = schema.getName().toUpperCase();
-        if (schemas.containsKey(upperName)) {
-            // Live names no KIND here — every object that finds its name taken gets the same sentence.
+        final String name = schema.getName();
+        if (schemas.containsKey(name)) {
+            // Live names no KIND here — every object that finds its name taken gets the same sentence, with
+            // the name quoted only where it has to be.
             throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + upperName + "' already exists."));
+                "Object '" + SqlIdentifiers.spellCanonical(name) + "' already exists."));
         }
-        registerSchema(upperName, schema);
+        registerSchema(name, schema);
+    }
+
+    /**
+     * Takes a schema out of this database for a rename or a move, without any of a drop's checks.
+     *
+     * @param name the schema's name
+     * @return the schema
+     */
+    public Schema detachSchema(final String name) {
+        return schemas.remove(NameKeys.keyFor(schemas, name));
+    }
+
+    /**
+     * Puts a renamed or moved schema into this database under its (new) name, stamped with this database.
+     *
+     * @param schema the schema
+     */
+    public void attachSchema(final Schema schema) {
+        registerSchema(schema.getName(), schema);
     }
 
     public void dropSchema(final String name, final boolean cascade) {
-        final String upperName = name.toUpperCase();
-        if ("INFORMATION_SCHEMA".equals(upperName)) {
+        final String key = NameKeys.keyFor(schemas, name);
+        if ("INFORMATION_SCHEMA".equals(key)) {
             throw new RuntimeException("Cannot drop INFORMATION_SCHEMA schema");
         }
-        if (!schemas.containsKey(upperName)) {
+        if (!schemas.containsKey(key)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", getName() + "." + name));
         }
         // Live-verified Snowflake semantics: PUBLIC is droppable like any schema, and
         // DROP SCHEMA ... RESTRICT drops a NON-EMPTY schema too (the callers snapshot and
         // release the contained tables' storage before this removal either way).
-        schemas.remove(upperName);
+        schemas.remove(key);
     }
 
     /**
-     * Whether a schema of this name exists, matched ignoring case — the question {@link #getSchema}
+     * Whether a schema of this name exists, matched as {@link #getSchema} matches — the question it
      * cannot answer, because it THROWS for a name that is not there rather than returning null. Two
      * callers were written as {@code getSchema("PUBLIC") != null}, which reads like a check and is one
      * only for databases that happen to have a PUBLIC.
@@ -143,15 +160,26 @@ public class Database extends SqlObject {
      * @return whether it exists
      */
     public boolean hasSchema(final String name) {
-        return schemas.containsKey(name.toUpperCase());
+        return schemas.containsKey(NameKeys.keyFor(schemas, name));
     }
 
     /**
-     * A schema by name, matched ignoring case — the INTERNAL Java API. SQL resolution goes through
-     * {@link #schemaExact}.
+     * Whether a schema of EXACTLY this name exists — the question a SQL statement asks, since a schema
+     * created as {@code "ss"} and one created as {@code SS} are two schemas (live-verified).
+     *
+     * @param name the canonical schema name
+     * @return whether it exists
+     */
+    public boolean hasSchemaExact(final String name) {
+        return schemas.containsKey(name);
+    }
+
+    /**
+     * A schema by name, matched exactly or else by the one schema whose name matches ignoring case
+     * ({@link NameKeys#keyFor}) — the INTERNAL Java API. SQL resolution goes through {@link #schemaExact}.
      */
     public Schema getSchema(final String name) {
-        final Schema schema = schemas.get(name.toUpperCase());
+        final Schema schema = schemas.get(NameKeys.keyFor(schemas, name));
         if (schema == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", getName() + "." + name));
         }
@@ -164,8 +192,8 @@ public class Database extends SqlObject {
      * created as {@code "mixedSch"}, echoing each qualifier as the reference resolved it.
      */
     public Schema schemaExact(final String name) {
-        final Schema schema = schemas.get(name.toUpperCase());
-        if (schema == null || !schema.getName().equals(name)) {
+        final Schema schema = schemas.get(name);
+        if (schema == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", getName() + "." + name));
         }
         return schema;
@@ -181,6 +209,8 @@ public class Database extends SqlObject {
     public Database clone(final String newName) {
         final Database clonedDb = new Database(newName);
         clonedDb.setComment(this.getComment());
+        clonedDb.getParameters().copyFrom(parameters);
+        clonedDb.setDataRetentionTimeInDays(dataRetentionTimeInDays);
 
         // Clone all schemas
         for (final Schema schema : schemas.values()) {
@@ -194,7 +224,7 @@ public class Database extends SqlObject {
                 final Schema targetPublic = clonedDb.getSchema("PUBLIC");
 
                 // Clone tables from source PUBLIC to target PUBLIC
-                for (final Table table : sourcePublic.getTables()) {
+                for (final Table table : sourcePublic.getNonTemporaryTables()) {
                     final List<TableColumn> clonedColumns = new ArrayList<>();
                     for (final TableColumn col : table.getColumns()) {
                         final TableColumn clonedCol = new TableColumn(
@@ -223,7 +253,7 @@ public class Database extends SqlObject {
             } else {
                 // Clone user-created schemas
                 final Schema clonedSchema = schema.clone();
-                clonedDb.registerSchema(schemaName.toUpperCase(), clonedSchema);
+                clonedDb.registerSchema(schemaName, clonedSchema);
             }
         }
 
@@ -234,7 +264,7 @@ public class Database extends SqlObject {
      * Clone a schema within this database
      */
     public Schema cloneSchema(final String sourceName, final String targetName) {
-        final Schema sourceSchema = getSchema(sourceName);
+        final Schema sourceSchema = schemaExact(sourceName);
         final Schema clonedSchema = sourceSchema.clone();
         clonedSchema.rename(targetName);
         addSchema(clonedSchema);
@@ -245,7 +275,7 @@ public class Database extends SqlObject {
      * Clone a schema from this database to another database
      */
     public Schema cloneSchemaTo(final String sourceName, final Database targetDb, final String targetName) {
-        final Schema sourceSchema = getSchema(sourceName);
+        final Schema sourceSchema = schemaExact(sourceName);
         final Schema clonedSchema = sourceSchema.clone();
         clonedSchema.rename(targetName);
         targetDb.addSchema(clonedSchema);
@@ -263,5 +293,25 @@ public class Database extends SqlObject {
     @Override
     public String getObjectType() {
         return "DATABASE";
+    }
+
+    /** The database role of that name, or null. */
+    public synchronized DatabaseRole getDatabaseRole(final String roleName) {
+        return databaseRoles.get(roleName);
+    }
+
+    /** Every database role of this database, in the order they were created. */
+    public synchronized List<DatabaseRole> getDatabaseRoles() {
+        return new ArrayList<>(databaseRoles.values());
+    }
+
+    /** Adds a database role, replacing one of the same name. */
+    public synchronized void putDatabaseRole(final DatabaseRole role) {
+        databaseRoles.put(role.getName(), role);
+    }
+
+    /** Removes a database role, answering it, or null when there is none of that name. */
+    public synchronized DatabaseRole removeDatabaseRole(final String roleName) {
+        return databaseRoles.remove(roleName);
     }
 }

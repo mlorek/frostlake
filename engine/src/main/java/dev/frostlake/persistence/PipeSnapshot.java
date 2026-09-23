@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.util.Map;
 
 /** Serializable snapshot of a PIPE (its COPY statement and ingest settings). */
 public class PipeSnapshot implements Serializable {
@@ -34,4 +35,8 @@ public class PipeSnapshot implements Serializable {
     public String lastLoadedTime;
     public String comment;
     public String owner;
+
+    // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
+    // recorded, which reads back as an object carrying none.
+    public Map<String, String> tags;
 }

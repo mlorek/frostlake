@@ -19,6 +19,7 @@ package dev.frostlake.persistence;
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,12 +31,20 @@ public class TableSnapshot implements Serializable {
 
     public String name;
     public String comment;
+    /** The user whose DDL created the relation (LAST_DDL_BY); null in a snapshot taken before it was kept. */
+    public String lastDdlBy;
     public Instant createdAt;
     public List<ColumnSnapshot> columns = new ArrayList<>();
+
+    // The highest position ever given to a column of this table, so a restored table does not hand a
+    // dropped LAST column's number to the next one added.
+    public int highestOrdinal;
     // TEMPORARY / TRANSIENT table flags. Primitives default to false on old snapshots (a permanent table).
     public boolean temporary;
     public boolean isTransient;
     public boolean hybrid;
+    // A permanent table a temporary table of the same name hides; false on old snapshots.
+    public boolean shadowed;
     // CLUSTER BY keys and table-level FOREIGN KEY constraints. Null on old snapshots — restore null-guards.
     public List<String> clusterKeys;
     public List<ForeignKeyConstraintSnapshot> foreignKeys;
@@ -57,4 +66,20 @@ public class TableSnapshot implements Serializable {
     // Only the UNIQUE constraints declared at TABLE level; a column-level UNIQUE is named per column
     // (ColumnSnapshot.uniqueConstraintName) and must not become a table-level constraint on reload.
     public List<UniqueConstraintSnapshot> uniqueConstraints;
+
+    // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
+    public Integer dataRetentionTimeInDays;
+    public boolean eventTable;
+    public IcebergMetadataSnapshot icebergMetadata;
+    public boolean changeTracking;
+    public boolean schemaEvolution;
+    public boolean reclusterSuspended;
+    public List<DataMetricSnapshot> dataMetrics;
+    public String dataMetricSchedule;
+    public HashMap<String, String> stageFileFormat;
+    public HashMap<String, String> stageCopyOptions;
+
+    // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
+    // recorded, which reads back as an object carrying none.
+    public Map<String, String> tags;
 }

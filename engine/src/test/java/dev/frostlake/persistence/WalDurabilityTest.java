@@ -23,12 +23,14 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Write-ahead log durability (Phase 5; {@code durability.walEnabled}, default off). Committed (autocommit)
@@ -116,6 +118,32 @@ public class WalDurabilityTest {
         final DatabaseEngine e2 = newWalEngine();
         final ResultSet rs = e2.executeQuery("SELECT * FROM db.s.t");
         assertEquals(3, rs.getRowCount(), "an explicit BEGIN…COMMIT block must be recovered as a unit");
+        e2.shutdown();
+    }
+
+    @Test
+    public void theStatementsARequestCommittedBeforeItFailedAreRecovered() {
+        final DatabaseEngine e1 = newWalEngine();
+        e1.execute("CREATE DATABASE db");
+        e1.execute("USE DATABASE db");
+        e1.execute("CREATE SCHEMA s");
+        e1.execute("USE SCHEMA s");
+        e1.execute("CREATE TABLE t (id INTEGER)");
+        e1.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
+        e1.execute("INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                e1.execute("INSERT INTO t VALUES (3); INSERT INTO t VALUES (4); SELECT * FROM nowhere_xyz");
+            }
+        });
+        e1.shutdown();
+
+        // Each statement of a request commits on its own, so each is logged on its own: the two that
+        // completed before the failure are recovered, and nothing is replayed twice.
+        final DatabaseEngine e2 = newWalEngine();
+        final ResultSet rs = e2.executeQuery("SELECT * FROM db.s.t");
+        assertEquals(4, rs.getRowCount(), "every statement a request committed must be recovered, once");
         e2.shutdown();
     }
 }

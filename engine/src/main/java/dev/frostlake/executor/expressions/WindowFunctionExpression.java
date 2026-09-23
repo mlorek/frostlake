@@ -49,6 +49,12 @@ public class WindowFunctionExpression implements Expression {
     private List<Expression> orderKeys;
     private List<Boolean> orderAscending;
     private List<Boolean> orderNullsFirst;
+    /** The keys of a WITHIN GROUP clause as written, or null when the call has none. */
+    private List<Expression> withinGroupKeys;
+    /** Whether the call was written with the ALL quantifier. */
+    private boolean all;
+    /** The call's name as the parse tree's canonical parts, or null for a dynamic name. */
+    private List<String> nameParts;
 
     public WindowFunctionExpression(final String callText) {
         this.callText = callText;
@@ -193,6 +199,51 @@ public class WindowFunctionExpression implements Expression {
     /** The {@code WITHIN GROUP (ORDER BY …)} key, or null when the call carries no such clause. */
     public Expression getWithinGroupOrdered() {
         return withinGroupOrdered;
+    }
+
+    /**
+     * Record every key of the call's WITHIN GROUP clause as written, which the name walk judges for the function
+     * the call names.
+     *
+     * @param keys the keys, or null when the call has no WITHIN GROUP
+     */
+    public void describeWithinGroupKeys(final List<Expression> keys) {
+        this.withinGroupKeys = keys;
+    }
+
+    /** The keys of the call's WITHIN GROUP clause, or null when it has none. */
+    public List<Expression> getWithinGroupKeys() {
+        return withinGroupKeys;
+    }
+
+    /**
+     * Record that the call was written with the ALL quantifier, a no-op for the functions a window takes.
+     *
+     * @param written whether ALL was written
+     */
+    public void describeAll(final boolean written) {
+        this.all = written;
+    }
+
+    /** Whether the call was written with the ALL quantifier. */
+    public boolean isAll() {
+        return all;
+    }
+
+    /**
+     * Record the call's name as the parse tree's canonical parts — an unquoted part folded to upper case, a
+     * quoted one as written between its quotes — so a rule can tell a qualified name from a plain one without
+     * reading the name's text.
+     *
+     * @param parts the parts, or null when the name is dynamic ({@code IDENTIFIER('fn')})
+     */
+    public void describeNameParts(final List<String> parts) {
+        this.nameParts = parts;
+    }
+
+    /** The call's name as canonical parts, or null when it has none. */
+    public List<String> getNameParts() {
+        return nameParts;
     }
 
     @Override

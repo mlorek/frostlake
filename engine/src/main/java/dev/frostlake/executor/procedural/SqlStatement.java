@@ -18,10 +18,26 @@ package dev.frostlake.executor.procedural;
 
 public class SqlStatement extends Statement {
     private final String sql;
+    private final boolean selectInto;
 
     public SqlStatement(final String sql) {
+        this(sql, false);
+    }
+
+    /**
+     * A statement of a block, run as text.
+     *
+     * @param sql the statement's text
+     * @param selectInto whether it is the block's own SELECT … INTO, the one context an INTO clause is allowed in
+     */
+    public SqlStatement(final String sql, final boolean selectInto) {
         super(StatementType.SQL);
         this.sql = sql;
+        this.selectInto = selectInto;
+    }
+
+    public boolean isSelectInto() {
+        return selectInto;
     }
 
     public String getSql() {

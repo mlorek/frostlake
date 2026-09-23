@@ -21,6 +21,7 @@ import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 
@@ -64,10 +65,11 @@ public class Insert extends TextArgumentFunction {
             return BinaryValue.of(spliced);
         }
         final String base = SharedFunctionHelpers.textOf(args.get(0));
-        final int[] head = Substring.window(base.length(), 1, position - 1);
-        final int[] tail = Substring.window(base.length(), position + length, Integer.MAX_VALUE);
-        return base.substring(head[0], head[1]) + SharedFunctionHelpers.textOf(args.get(3))
-            + base.substring(tail[0], tail[1]);
+        final int characters = CodePointText.length(base);
+        final int[] head = Substring.window(characters, 1, position - 1);
+        final int[] tail = Substring.window(characters, position + length, Integer.MAX_VALUE);
+        return CodePointText.slice(base, head[0], head[1]) + SharedFunctionHelpers.textOf(args.get(3))
+            + CodePointText.slice(base, tail[0], tail[1]);
     }
 
     @Override
@@ -79,5 +81,14 @@ public class Insert extends TextArgumentFunction {
     @Override
     public SemiStructuredRejection binaryRejection(final int position) {
         return SemiStructuredRejection.INSERT_REWRITE_OPERANDS;
+    }
+
+    /**
+     * A BOOLEAN position or length is refused by the arithmetic that reads it (live-verified); a BOOLEAN text
+     * or insertion reads as its text.
+     */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 || position == 2 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
     }
 }

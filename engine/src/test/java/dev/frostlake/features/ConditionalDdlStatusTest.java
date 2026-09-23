@@ -17,12 +17,8 @@
 package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.LiveSnowflake;
 import dev.frostlake.storage.ResultSet;
 
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 
 import org.junit.jupiter.api.Test;
 
@@ -43,28 +39,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * that never existed, and a quoted one keeps its case — so it is not a lookup result. The happy
  * paths keep their ordinary sentences, and CREATE OR REPLACE over an existing object never says
  * "already exists".
- *
- * <p>★ THIS TEST OPENS ITS OWN CONNECTION IN LIVE MODE, like its neighbour: BaseDatabaseTest's live
- * harness rewrites every non-SELECT result into a one-cell count, so the sentences have to be read
- * off a raw JDBC connection there.
  */
 public class ConditionalDdlStatusTest extends BaseDatabaseTest {
 
     private String statusOf(final String sql) {
-        if (LiveSnowflake.enabled()) {
-            try {
-                final Connection connection = LiveSnowflake.shared();
-                final Statement st = connection.createStatement();
-                final java.sql.ResultSet rs = st.executeQuery(sql);
-                rs.next();
-                final String value = rs.getString(1);
-                rs.close();
-                st.close();
-                return value;
-            } catch (final SQLException e) {
-                throw new IllegalStateException(sql + " failed on live: " + e.getMessage(), e);
-            }
-        }
         final ResultSet rs = engine.executeQuery(sql);
         return String.valueOf(rs.getRows().get(0).getValue(0));
     }

@@ -20,6 +20,7 @@ import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
 
 import java.util.Arrays;
 import java.util.List;
@@ -47,16 +48,11 @@ public class RPad extends TextArgumentFunction {
 
         // Live-verified: an input longer than the target length is TRUNCATED to it (RPAD('world', 3, '*')
         // is 'wor'), not returned unchanged.
-        if (str.length() >= targetLength) return str.substring(0, Math.max(targetLength, 0));
+        // Lengths count characters, a supplementary one included: RPAD('😀', 3, 'x') is 😀xx.
+        final int characters = CodePointText.length(str);
+        if (characters >= targetLength) return CodePointText.slice(str, 0, Math.max(targetLength, 0));
         if (padStr.isEmpty()) return str;
-
-        final StringBuilder result = new StringBuilder(str);
-        while (result.length() < targetLength) {
-            result.append(padStr);
-        }
-        result.setLength(targetLength);
-
-        return result.toString();
+        return str + CodePointText.repeatTo(padStr, targetLength - characters);
     }
 
     /** The BINARY form: pad bytes on the right, truncating to the leading bytes when already longer. */

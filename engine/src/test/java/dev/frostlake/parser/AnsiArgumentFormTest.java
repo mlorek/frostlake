@@ -41,10 +41,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * the FROM instead, which is measured and is why the grammar reads the way it does. The same reasoning
  * already governs the ANSI POSITION form.
  *
- * <p>ONE LINE is asserted per case, because live STACKS two or three and Frostlake reports one by the
- * design #316 settled: it keeps genuinely independent problems and drops what recovery invented, and
- * live's extra lines here are its own recovery walking the rest of the call. Live's second line for
- * {@code SUBSTRING(v FROM 2)} is position 24 ('2'), and its third for the FOR form is position 30.
+ * <p>ONE LINE is asserted per case: the lines live's recovery stacks after the FROM are pinned in
+ * {@code AnsiFromClauseReadingTest}. Live's second line for {@code SUBSTRING(v FROM 2)} is position 24 ('2'),
+ * and its third for the FOR form is position 30.
  */
 public class AnsiArgumentFormTest extends BaseDatabaseTest {
 

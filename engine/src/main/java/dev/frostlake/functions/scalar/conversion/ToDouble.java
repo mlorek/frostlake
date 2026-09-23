@@ -20,6 +20,7 @@ import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantValue;
 
@@ -33,6 +34,7 @@ import java.util.List;
  *   TO_DOUBLE(' 1.5 ')      1.5       the text is trimmed
  *   TO_DOUBLE('NaN')        NaN       'nan', 'inf', '-inf', 'Infinity' alike, as '…'::DOUBLE reads them
  *   TO_DOUBLE('1e400')      inf
+ *   TO_DOUBLE('-0x10')      -16       a hexadecimal number, see HexDoubleText
  *   TO_DOUBLE('abc')        Numeric value 'abc' is not recognized
  *   TO_DOUBLE(' ')          Numeric value '' is not recognized       the text echoed trimmed
  * </pre>
@@ -71,6 +73,10 @@ public class ToDouble extends BuiltInFunction {
         try {
             return Double.valueOf(Double.parseDouble(text));
         } catch (final NumberFormatException notNumeric) {
+            final Double hex = HexDoubleText.withoutExponent(text, true);
+            if (hex != null) {
+                return hex;
+            }
             throw new RuntimeException(NumericRangeRefusal.unreadableText(text));
         }
     }

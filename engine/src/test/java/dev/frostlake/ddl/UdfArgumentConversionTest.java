@@ -94,6 +94,8 @@ public class UdfArgumentConversionTest extends BaseDatabaseTest {
                 "Failed to cast variant value 1 to DATE");
             assertEquals("\"2024-01-01\"",
                 rows("SELECT REPLACE(TO_JSON(TO_VARIANT(f_date('2024-01-01'))), CHR(10), '~')"));
+            assertEquals("\"00:00:12\"",
+                rows("SELECT REPLACE(TO_JSON(TO_VARIANT(f_time('12'))), CHR(10), '~')"));
             assertRefused("SELECT REPLACE(TO_JSON(TO_VARIANT(f_object(PARSE_JSON('1')))), CHR(10), '~')",
                 "Failed to cast variant value 1 to OBJECT");
             assertEquals("{\"a\":1}",

@@ -41,32 +41,40 @@ import java.math.BigInteger;
  * DECODE, but no comparison over it, or over anything computed from it, is settled: live leaves
  * {@code IFF(COALESCE(n, 0) > 5, 3000.5, 1.5)} open over a column holding a NULL, and settles it over
  * one holding none.
+ *
+ * <p>Last, it says whether anything may be COMPUTED from it (see {@link #isOpaqueToComputation}). The
+ * interval REDUCE's accumulator is planned with survives being picked — by a conditional, a COALESCE,
+ * LEAST or GREATEST, a derived column — and being negated, and nothing else: live tags
+ * {@code -REDUCE(…)} and {@code COALESCE(REDUCE(…), 5)} by the accumulator's width and
+ * {@code REDUCE(…) + 1}, {@code ABS(REDUCE(…))} and a cast of it by their declared width.
  */
 public final class ValueRange {
 
     /** No value at all: a NULL, or a column that holds nothing. Takes the narrowest tag. */
-    public static final ValueRange EMPTY = new ValueRange(null, null, true, false);
+    public static final ValueRange EMPTY = new ValueRange(null, null, true, false, false);
 
     /** Wider than any tag tells apart, for a plan that always accumulates in sixteen bytes. */
     public static final ValueRange WIDEST = new ValueRange(BigDecimal.TEN.pow(37).negate(),
-        BigDecimal.TEN.pow(37), true, false);
+        BigDecimal.TEN.pow(37), true, false, false);
 
     private final BigDecimal min;
     private final BigDecimal max;
     private final boolean nullable;
     private final boolean opaqueToConditions;
+    private final boolean opaqueToComputation;
 
     private ValueRange(final BigDecimal min, final BigDecimal max, final boolean nullable,
-                       final boolean opaqueToConditions) {
+                       final boolean opaqueToConditions, final boolean opaqueToComputation) {
         this.min = min;
         this.max = max;
         this.nullable = nullable;
         this.opaqueToConditions = opaqueToConditions;
+        this.opaqueToComputation = opaqueToComputation;
     }
 
     /** The interval of one known value, which is never NULL, or {@link #EMPTY} for null. */
     public static ValueRange of(final BigDecimal value) {
-        return value == null ? EMPTY : new ValueRange(value, value, false, false);
+        return value == null ? EMPTY : new ValueRange(value, value, false, false, false);
     }
 
     /** The interval between two bounds, in either order, holding no NULL. */
@@ -74,7 +82,8 @@ public final class ValueRange {
         if (a == null || b == null) {
             return EMPTY;
         }
-        return a.compareTo(b) <= 0 ? new ValueRange(a, b, false, false) : new ValueRange(b, a, false, false);
+        return a.compareTo(b) <= 0 ? new ValueRange(a, b, false, false, false)
+            : new ValueRange(b, a, false, false, false);
     }
 
     /**
@@ -140,7 +149,7 @@ public final class ValueRange {
         if (isEmpty() || nullable == mayBeNull) {
             return this;
         }
-        return new ValueRange(min, max, mayBeNull, opaqueToConditions);
+        return new ValueRange(min, max, mayBeNull, opaqueToConditions, opaqueToComputation);
     }
 
     /** This interval, as one no condition is settled by; {@link #EMPTY} stays itself. */
@@ -148,7 +157,23 @@ public final class ValueRange {
         if (isEmpty() || opaqueToConditions) {
             return this;
         }
-        return new ValueRange(min, max, nullable, true);
+        return new ValueRange(min, max, nullable, true, opaqueToComputation);
+    }
+
+    /**
+     * Whether nothing may be computed from this interval — no arithmetic, cast or numeric function over
+     * the expression carries it — while picking the value or negating it still does. See the class comment.
+     */
+    public boolean isOpaqueToComputation() {
+        return opaqueToComputation;
+    }
+
+    /** This interval, as one nothing may be computed from; {@link #EMPTY} stays itself. */
+    public ValueRange opaqueToComputation() {
+        if (isEmpty() || opaqueToComputation) {
+            return this;
+        }
+        return new ValueRange(min, max, nullable, opaqueToConditions, true);
     }
 
     /** This interval, opaque to conditions where {@code source} is: for a value derived from it. */
@@ -164,13 +189,13 @@ public final class ValueRange {
         if (isEmpty()) {
             return of(value);
         }
-        return new ValueRange(min.min(value), max.max(value), nullable, opaqueToConditions);
+        return new ValueRange(min.min(value), max.max(value), nullable, opaqueToConditions, opaqueToComputation);
     }
 
     /**
-     * The smallest interval holding both, NULL-able where either side is and opaque to conditions where
-     * either side is. An empty side adds no value, only its NULL; an unknown (null) side contributes
-     * nothing.
+     * The smallest interval holding both, NULL-able where either side is and opaque to conditions and to
+     * computation where either side is. An empty side adds no value, only its NULL; an unknown (null) side
+     * contributes nothing.
      */
     public ValueRange union(final ValueRange other) {
         if (other == null) {
@@ -183,11 +208,12 @@ public final class ValueRange {
             return other.withNullable(true);
         }
         return new ValueRange(min.min(other.min), max.max(other.max), nullable || other.nullable,
-            opaqueToConditions || other.opaqueToConditions);
+            opaqueToConditions || other.opaqueToConditions, opaqueToComputation || other.opaqueToComputation);
     }
 
     public ValueRange negate() {
-        return isEmpty() ? this : new ValueRange(max.negate(), min.negate(), nullable, opaqueToConditions);
+        return isEmpty() ? this
+            : new ValueRange(max.negate(), min.negate(), nullable, opaqueToConditions, opaqueToComputation);
     }
 
     public ValueRange abs() {
@@ -200,7 +226,7 @@ public final class ValueRange {
         if (max.signum() <= 0) {
             return negate();
         }
-        return new ValueRange(BigDecimal.ZERO, min.abs().max(max), nullable, opaqueToConditions);
+        return new ValueRange(BigDecimal.ZERO, min.abs().max(max), nullable, opaqueToConditions, opaqueToComputation);
     }
 
     public ValueRange add(final ValueRange other) {
@@ -208,7 +234,7 @@ public final class ValueRange {
             return EMPTY;
         }
         return new ValueRange(min.add(other.min), max.add(other.max), nullable || other.nullable,
-            opaqueToConditions || other.opaqueToConditions);
+            opaqueToConditions || other.opaqueToConditions, opaqueToComputation || other.opaqueToComputation);
     }
 
     public ValueRange subtract(final ValueRange other) {
@@ -216,7 +242,7 @@ public final class ValueRange {
             return EMPTY;
         }
         return new ValueRange(min.subtract(other.max), max.subtract(other.min), nullable || other.nullable,
-            opaqueToConditions || other.opaqueToConditions);
+            opaqueToConditions || other.opaqueToConditions, opaqueToComputation || other.opaqueToComputation);
     }
 
     /** The interval of every product of one value from each side: the four corners bound it. */
@@ -229,7 +255,7 @@ public final class ValueRange {
         final BigDecimal c = max.multiply(other.min);
         final BigDecimal d = max.multiply(other.max);
         return new ValueRange(a.min(b).min(c).min(d), a.max(b).max(c).max(d), nullable || other.nullable,
-            opaqueToConditions || other.opaqueToConditions);
+            opaqueToConditions || other.opaqueToConditions, opaqueToComputation || other.opaqueToComputation);
     }
 
     /** Both bounds multiplied by a non-negative factor. */
@@ -243,7 +269,7 @@ public final class ValueRange {
             return this;
         }
         final BigDecimal reach = magnitude();
-        return new ValueRange(reach.negate(), reach, nullable, opaqueToConditions);
+        return new ValueRange(reach.negate(), reach, nullable, opaqueToConditions, opaqueToComputation);
     }
 
     /**

@@ -107,14 +107,14 @@ public class SqlCompilationErrorFormatTest extends BaseDatabaseTest {
      */
     @Test
     public void aMissingObjectMatchesLiveAndCarriesNoPreamble() {
-        assertEquals("SQL compilation error:\nView 'TEST_DB.TEST_SCHEMA.NOSUCHVIEW_X'"
-            + " does not exist or not authorized.", messageOf("DROP VIEW nosuchview_x"));
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCHTABLE_X'"
-            + " does not exist or not authorized.", messageOf("DROP TABLE nosuchtable_x"));
-        assertEquals("SQL compilation error:\nSchema 'TEST_DB.NOSUCHSCHEMA_X'"
-            + " does not exist or not authorized.", messageOf("DROP SCHEMA nosuchschema_x"));
-        assertEquals("SQL compilation error:\nStream 'TEST_DB.TEST_SCHEMA.NOSUCHSTREAM_X'"
-            + " does not exist or not authorized.", messageOf("DROP STREAM nosuchstream_x"));
+        assertEquals(hinted("SQL compilation error:\nView 'TEST_DB.TEST_SCHEMA.NOSUCHVIEW_X'"
+            + " does not exist or not authorized."), messageOf("DROP VIEW nosuchview_x"));
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCHTABLE_X'"
+            + " does not exist or not authorized."), messageOf("DROP TABLE nosuchtable_x"));
+        assertEquals(hinted("SQL compilation error:\nSchema 'TEST_DB.NOSUCHSCHEMA_X'"
+            + " does not exist or not authorized."), messageOf("DROP SCHEMA nosuchschema_x"));
+        assertEquals(hinted("SQL compilation error:\nStream 'TEST_DB.TEST_SCHEMA.NOSUCHSTREAM_X'"
+            + " does not exist or not authorized."), messageOf("DROP STREAM nosuchstream_x"));
     }
 
     /**
@@ -123,11 +123,11 @@ public class SqlCompilationErrorFormatTest extends BaseDatabaseTest {
      */
     @Test
     public void aMissingFromClauseNameIsAnObjectNotATable() {
-        assertEquals("SQL compilation error:\nObject 'NOSUCHTABLE_Y' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nObject 'NOSUCHTABLE_Y' does not exist or not authorized."),
             messageOf("SELECT 1 FROM nosuchtable_y"));
-        assertEquals("SQL compilation error:\nTable 'NOSUCHTABLE_Y' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'NOSUCHTABLE_Y' does not exist or not authorized."),
             messageOf("DESCRIBE TABLE nosuchtable_y"));
-        assertEquals("SQL compilation error:\nTable 'NOSUCHTABLE_Y' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'NOSUCHTABLE_Y' does not exist or not authorized."),
             messageOf("INSERT INTO nosuchtable_y VALUES (1)"));
     }
 
@@ -154,47 +154,47 @@ public class SqlCompilationErrorFormatTest extends BaseDatabaseTest {
      */
     @Test
     public void ddlSpellsTheNameInFullAndDmlEchoesWhatWasWritten() {
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q'"
-            + " does not exist or not authorized.", messageOf("DROP TABLE nosuch_q"));
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q'"
-            + " does not exist or not authorized.", messageOf("TRUNCATE TABLE nosuch_q"));
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q'"
-            + " does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q'"
+            + " does not exist or not authorized."), messageOf("DROP TABLE nosuch_q"));
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q'"
+            + " does not exist or not authorized."), messageOf("TRUNCATE TABLE nosuch_q"));
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q'"
+            + " does not exist or not authorized."),
             messageOf("ALTER TABLE nosuch_q ADD COLUMN c INTEGER"));
 
-        assertEquals("SQL compilation error:\nTable 'NOSUCH_Q' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'NOSUCH_Q' does not exist or not authorized."),
             messageOf("INSERT INTO nosuch_q VALUES (1)"));
-        assertEquals("SQL compilation error:\nTable 'NOSUCH_Q' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'NOSUCH_Q' does not exist or not authorized."),
             messageOf("DESCRIBE TABLE nosuch_q"));
     }
 
     /** SELECT, UPDATE and DELETE report a missing name as an Object; INSERT and DESCRIBE as a Table. */
     @Test
     public void theQueryFamilyReportsAnObject() {
-        assertEquals("SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized."),
             messageOf("SELECT 1 FROM nosuch_r"));
-        assertEquals("SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized."),
             messageOf("UPDATE nosuch_r SET c = 1"));
-        assertEquals("SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized."),
             messageOf("DELETE FROM nosuch_r"));
     }
 
     /** Any qualifier at all and even a query expands the name in full. */
     @Test
     public void aWrittenQualifierIsExpandedInFull() {
-        assertEquals("SQL compilation error:\nObject 'TEST_DB.TEST_SCHEMA.NOSUCH_S'"
-            + " does not exist or not authorized.", messageOf("SELECT 1 FROM test_schema.nosuch_s"));
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_S'"
-            + " does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nObject 'TEST_DB.TEST_SCHEMA.NOSUCH_S'"
+            + " does not exist or not authorized."), messageOf("SELECT 1 FROM test_schema.nosuch_s"));
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_S'"
+            + " does not exist or not authorized."),
             messageOf("INSERT INTO test_schema.nosuch_s VALUES (1)"));
     }
 
     /** Resolution reports the OUTERMOST level that is missing, and qualifies it as far as it is known. */
     @Test
     public void theOutermostMissingLevelIsReported() {
-        assertEquals("SQL compilation error:\nSchema 'TEST_DB.NOSUCHSCHEMA'"
-            + " does not exist or not authorized.", messageOf("DROP TABLE nosuchschema.nosuch_t"));
-        assertEquals("SQL compilation error:\nDatabase 'NOSUCHDB' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nSchema 'TEST_DB.NOSUCHSCHEMA'"
+            + " does not exist or not authorized."), messageOf("DROP TABLE nosuchschema.nosuch_t"));
+        assertEquals(hinted("SQL compilation error:\nDatabase 'NOSUCHDB' does not exist or not authorized."),
             messageOf("DROP TABLE nosuchdb.s.nosuch_t"));
     }
 

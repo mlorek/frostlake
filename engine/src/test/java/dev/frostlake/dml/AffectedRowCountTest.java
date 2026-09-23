@@ -18,7 +18,6 @@ package dev.frostlake.dml;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,10 +29,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * count was hardcoded 0 (the engine computed the number, then discarded it).
  */
 public class AffectedRowCountTest extends BaseDatabaseTest {
-
-    private static final String MERGE_PER_ACTION_COLUMNS =
-        "reads MERGE's PER-ACTION result columns; a live statement reaches the harness over JDBC as a "
-        + "single update count, which cannot be split back into the inserted / updated / deleted columns";
 
     private void seed() {
         engine.execute("CREATE TABLE t (id INTEGER, v VARCHAR)");
@@ -94,7 +89,6 @@ public class AffectedRowCountTest extends BaseDatabaseTest {
 
     @Test
     public void mergeReportsPerActionCounts() {
-        Assumptions.assumeFalse(isLiveSnowflake(), MERGE_PER_ACTION_COLUMNS);
         seed();
         engine.execute("CREATE TABLE src (id INTEGER, v VARCHAR)");
         engine.execute("INSERT INTO src VALUES (1, 'updated'), (9, 'inserted')");
@@ -109,16 +103,17 @@ public class AffectedRowCountTest extends BaseDatabaseTest {
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
     }
 
+    /** A delete-only MERGE answers the deleted column alone: one column per kind of action its clauses write. */
     @Test
     public void mergeDeleteReportsDeletedCount() {
-        Assumptions.assumeFalse(isLiveSnowflake(), MERGE_PER_ACTION_COLUMNS);
         seed();
         engine.execute("CREATE TABLE src (id INTEGER)");
         engine.execute("INSERT INTO src VALUES (2)");
         final ResultSet rs = engine.executeQuery(
             "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN DELETE");
-        assertEquals("number of rows deleted", rs.getColumns().get(2).getName());
-        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(2)).longValue());
+        assertEquals(1, rs.getColumns().size());
+        assertEquals("number of rows deleted", rs.getColumns().get(0).getName());
+        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 
     @Test

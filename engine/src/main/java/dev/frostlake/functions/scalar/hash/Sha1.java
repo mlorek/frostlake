@@ -49,4 +49,13 @@ public class Sha1 extends BuiltInFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 1; }
+
+    /**
+     * A predicate as SHA1's first argument is refused by the argument types, where a BOOLEAN
+     * value is read as text (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

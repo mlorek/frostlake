@@ -77,38 +77,44 @@ public class PolicyEnforcementTest {
     }
 
     @Test
-    public void testMaskingPolicyEnforcedForNonPrivilegedRole() {
+    public void testMaskingPolicyExemptsOnlyTheRoleItsBodyNames() {
         engine.execute("CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)");
         engine.execute("ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask");
 
-        // SYSADMIN bypasses masking
+        // The role the BODY names is the one that sees through the policy.
+        engine.getSecurityManager().getSessionContext().setCurrentRole("HR_ADMIN");
+        final ResultSet rsExempt = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
+        assertEquals(80000.0, ((Number) rsExempt.getRows().get(0).getValue(0)).doubleValue(), 0.01);
+
+        // Every other role is masked, an admin role included.
         engine.getSecurityManager().getSessionContext().setCurrentRole("SYSADMIN");
         final ResultSet rsAdmin = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
-        assertEquals(80000.0, ((Number) rsAdmin.getRows().get(0).getValue(0)).doubleValue(), 0.01);
+        assertEquals(-1.0, ((Number) rsAdmin.getRows().get(0).getValue(0)).doubleValue(), 0.01);
 
-        // PUBLIC role sees masked value
         engine.getSecurityManager().getSessionContext().setCurrentRole("PUBLIC");
         final ResultSet rsMasked = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
         assertEquals(-1.0, ((Number) rsMasked.getRows().get(0).getValue(0)).doubleValue(), 0.01);
-        logger.info("Masking enforced: PUBLIC sees -1");
+        logger.info("Masking enforced: only the body's own role sees through it");
     }
 
+    /** No role bypasses a masking policy; the account masks SYSADMIN like any other. */
     @Test
-    public void testMaskingPolicyBypassed_ForSysadmin() {
+    public void testMaskingPolicyAppliesToSysadmin() {
         engine.execute("CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)");
         engine.execute("ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask");
         engine.getSecurityManager().getSessionContext().setCurrentRole("SYSADMIN");
         final ResultSet rs = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
-        assertEquals(80000.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
+        assertEquals(-1.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
     }
 
+    /** Nor ACCOUNTADMIN: holding the highest role is not an exemption from a policy body. */
     @Test
-    public void testMaskingPolicyBypassed_ForAccountadmin() {
+    public void testMaskingPolicyAppliesToAccountadmin() {
         engine.execute("CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)");
         engine.execute("ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask");
         engine.getSecurityManager().getSessionContext().setCurrentRole("ACCOUNTADMIN");
         final ResultSet rs = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
-        assertEquals(80000.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
+        assertEquals(-1.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
     }
 
     @Test
@@ -174,12 +180,13 @@ public class PolicyEnforcementTest {
         assertEquals(-1.0, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.01);
     }
 
+    /** An expression around the column is masked for an admin role too — the wrapping is the same. */
     @Test
-    public void testAdminSeesRawInsideExpression() {
+    public void testAdminIsMaskedInsideExpression() {
         maskSalaryAndName();
         engine.getSecurityManager().getSessionContext().setCurrentRole("SYSADMIN");
         final ResultSet rs = engine.executeQuery("SELECT salary + 0 FROM employees WHERE id = 1");
-        assertEquals(80000.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
+        assertEquals(-1.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
     }
 
     @Test

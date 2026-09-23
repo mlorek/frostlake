@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantUndefined;
@@ -45,14 +46,14 @@ public class ArrayIntersection extends BuiltInFunction {
         // never matches a JSON null (ARRAY_INTERSECTION(PARSE_JSON('[1,null,2]'), [NULL]) is []).
         final Map<String, Integer> remaining = new HashMap<>();
         for (final JsonNode el : a2) {
-            final String k = el.toString();
+            final String k = ArrayFunctionHelper.elementKey(el);
             final Integer count = remaining.get(k);
             remaining.put(k, count == null ? 1 : count + 1);
         }
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         int undefinedMatches = 0;
         for (final JsonNode el : a1) {
-            final String k = el.toString();
+            final String k = ArrayFunctionHelper.elementKey(el);
             final Integer count = remaining.get(k);
             if (count == null || count == 0) {
                 continue;
@@ -74,4 +75,10 @@ public class ArrayIntersection extends BuiltInFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /** A VECTOR is no ARRAY: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

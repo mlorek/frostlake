@@ -129,8 +129,8 @@ public class CompilationPrefixSweepTest extends BaseDatabaseTest {
     /** A missing relation was already prefixed and must not move. */
     @Test
     public void amissingRelationIsUntouched() {
-        assertEquals("SQL compilation error:|Table 'TEST_DB.TEST_SCHEMA.NOSUCHTABLE_XYZ'"
-            + " does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|Table 'TEST_DB.TEST_SCHEMA.NOSUCHTABLE_XYZ'"
+            + " does not exist or not authorized."),
             answer("DROP TABLE nosuchtable_xyz"));
     }
 }

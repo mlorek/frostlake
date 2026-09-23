@@ -99,6 +99,10 @@ public final class ColumnTypeJson {
     }
 
     private static void append(final StringBuilder out, final DataType type, final boolean nullable) {
+        if (type instanceof IntervalDayTimeType || type instanceof IntervalYearMonthType) {
+            appendInterval(out, type, nullable);
+            return;
+        }
         final String name = SqlTypeNames.internalName(type);
         out.append("{\"type\":\"").append(name).append('"');
         if ("FIXED".equals(name)) {
@@ -127,6 +131,25 @@ public final class ColumnTypeJson {
         }
         appendContained(out, type);
         out.append('}');
+    }
+
+    /**
+     * An interval names its fields without their precisions and carries the leading digits as
+     * {@code precision} and, where a field is SECOND, the fractional digits as {@code scale}:
+     * {@code {"type":"INTERVAL DAY TO SECOND","precision":3,"scale":3,"nullable":true}},
+     * {@code {"type":"INTERVAL YEAR TO MONTH","precision":9,"nullable":true}} (live-verified).
+     */
+    private static void appendInterval(final StringBuilder out, final DataType type, final boolean nullable) {
+        final IntervalQualifier qualifier = type instanceof IntervalDayTimeType
+            ? ((IntervalDayTimeType) type).getQualifier() : ((IntervalYearMonthType) type).getQualifier();
+        final int leading = type instanceof IntervalDayTimeType
+            ? ((IntervalDayTimeType) type).getLeadingPrecision() : ((IntervalYearMonthType) type).getLeadingPrecision();
+        out.append("{\"type\":\"INTERVAL ").append(qualifier.fieldsName()).append("\",\"precision\":")
+           .append(leading);
+        if (qualifier.endsInSecond()) {
+            out.append(",\"scale\":").append(((IntervalDayTimeType) type).getFractionalPrecision());
+        }
+        out.append(",\"nullable\":").append(nullable).append('}');
     }
 
     /** The three types Snowflake hands back as an OBJECT rather than in their own representation. */

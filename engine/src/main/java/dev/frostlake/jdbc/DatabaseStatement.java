@@ -19,9 +19,7 @@ package dev.frostlake.jdbc;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.http.ResultSetData;
 import dev.frostlake.http.SqlResponse;
-import dev.frostlake.parser.FrostlakeLexer;
 
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.Token;
 
 import java.sql.BatchUpdateException;
@@ -42,19 +40,17 @@ public class DatabaseStatement implements Statement {
     protected final HttpClient httpClient;
     protected boolean closed;
     protected DatabaseResultSet currentResultSet;
-    // Every result set produced by the last (possibly multi-statement) execute, plus a cursor into them so
-    // getMoreResults() walks past the first — a batch like "SELECT …; SELECT …" exposes every result.
+    // Every result the last (possibly multi-statement) execution produced, one per statement, and the walk
+    // over them: which answer rows and which an update count, and where getMoreResults() stands.
     protected List<ResultSetData> pendingResultData = new ArrayList<>();
-    protected int resultDataIndex = 0;
+    private JdbcResultWalk walk = JdbcResultWalk.none();
     protected final List<String> batchedSql = new ArrayList<>();
-    protected int updateCount;
     protected int maxRows;
 
     public DatabaseStatement(final DatabaseConnection connection, final HttpClient httpClient) {
         this.connection = connection;
         this.httpClient = httpClient;
         this.closed = false;
-        this.updateCount = -1;
         this.maxRows = 0;
     }
 
@@ -99,7 +95,7 @@ public class DatabaseStatement implements Statement {
         }
         final int actual = JdbcMultiStatement.countStatements(sql);
         if (actual != desired) {
-            throw JdbcMultiStatement.countMismatch(actual, desired);
+            throw JdbcMultiStatement.countMismatch(sql, actual, desired);
         }
     }
 
@@ -109,34 +105,114 @@ public class DatabaseStatement implements Statement {
             ? statementMultiCount : Integer.valueOf(connection.getMultiStatementCount());
     }
 
-    public ResultSet executeQuery(final String sql) throws SQLException {
+    /** Send a request, gated first, and keep its results. */
+    private SqlResponse run(final String sql) throws SQLException {
         checkClosed();
         applyMultiStatementGate(sql);
+        if (currentResultSet != null) {
+            currentResultSet.close();
+            currentResultSet = null;
+        }
         final SqlResponse response = httpClient.execute(sql, desiredMultiCount());
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
-        resultDataIndex = 0;
+        return response;
+    }
 
-        if (!pendingResultData.isEmpty()) {
-            currentResultSet = new DatabaseResultSet(this, pendingResultData.get(0));
-            updateCount = -1;
-            return currentResultSet;
+    /**
+     * Take the request's results as the walk's: each answers rows, or the update count the server marked
+     * its statement with. A server predating the mark answers rows for every statement, as it always did.
+     * With {@code firstAsRows} the first answers rows whatever it is.
+     */
+    private void take(final boolean firstAsRows) {
+        final List<Long> counts = new ArrayList<>();
+        for (int i = 0; i < pendingResultData.size(); i++) {
+            counts.add(firstAsRows && i == 0 ? null : countOf(pendingResultData.get(i)));
         }
+        walk = new JdbcResultWalk(counts);
+        currentResultSet = walk.currentIsRows() ? new DatabaseResultSet(this, pendingResultData.get(0)) : null;
+    }
 
-        throw new SQLException("Query did not return a result set");
+    /** The update count a result's statement reports, or null when it answers rows (or the server is older). */
+    private static Long countOf(final ResultSetData data) {
+        final Long marked = data.getJdbcUpdateCount();
+        return marked == null || marked.longValue() < 0 ? null : marked;
+    }
+
+    /** Whether the server marks each result with its statement's update count. */
+    private boolean serverMarksCounts() {
+        return !pendingResultData.isEmpty() && pendingResultData.get(0).getJdbcUpdateCount() != null;
+    }
+
+    /**
+     * Snowflake's rule: a single statement answers its result as a result set — a DML statement its count
+     * grid, DDL its status line — while a request of several must begin with rows, and otherwise has run and
+     * is refused all the same.
+     */
+    public ResultSet executeQuery(final String sql) throws SQLException {
+        run(sql);
+        updateContextFromSql(sql);
+        if (pendingResultData.isEmpty()) {
+            take(false);
+            throw new SQLException("Query did not return a result set");
+        }
+        if (pendingResultData.size() > 1 && countOf(pendingResultData.get(0)) != null) {
+            take(false);
+            throw JdbcResultWalk.firstResultIsACount();
+        }
+        take(true);
+        return currentResultSet;
     }
 
     @Override
     public int executeUpdate(final String sql) throws SQLException {
-        checkClosed();
-        applyMultiStatementGate(sql);
-        final SqlResponse response = httpClient.execute(sql, desiredMultiCount());
-        updateContextFromSql(sql);
+        return (int) update(sql);
+    }
 
-        // DML statements report their affected-row count as a Snowflake-style result set
-        // ("number of rows inserted/updated/deleted") — sum those columns of the first row.
-        updateCount = (int) extractRowsAffected(response);
+    /**
+     * The first statement's update count. A statement that answers rows has run by the time it is refused
+     * (live-verified: a refused {@code CALL} has still done its work). From a server predating the mark, the
+     * count is the old reading of the grids.
+     */
+    private long update(final String sql) throws SQLException {
+        final SqlResponse response = run(sql);
+        updateContextFromSql(sql);
+        if (!serverMarksCounts()) {
+            walk = JdbcResultWalk.ofCount(extractRowsAffected(response));
+            currentResultSet = null;
+            return walk.updateCount();
+        }
+        take(false);
+        if (walk.currentIsRows()) {
+            throw JdbcResultWalk.notAnUpdate(sql);
+        }
+        return Math.max(walk.updateCount(), 0);
+    }
+
+    @Override
+    public long executeLargeUpdate(final String sql) throws SQLException {
+        return update(sql);
+    }
+
+    @Override
+    public long executeLargeUpdate(final String sql, final int autoGeneratedKeys) throws SQLException {
+        return update(sql);
+    }
+
+    @Override
+    public long executeLargeUpdate(final String sql, final int[] columnIndexes) throws SQLException {
+        return update(sql);
+    }
+
+    @Override
+    public long executeLargeUpdate(final String sql, final String[] columnNames) throws SQLException {
+        return update(sql);
+    }
+
+    /** Leave a whole prepared batch behind as one update count, as the driver's array-bound batch does. */
+    protected void takeBatchCount(final long count) {
+        pendingResultData = new ArrayList<>();
         currentResultSet = null;
-        return updateCount;
+        walk = JdbcResultWalk.ofCount(count);
     }
 
     /**
@@ -250,24 +326,13 @@ public class DatabaseStatement implements Statement {
         throw new SQLFeatureNotSupportedException("Named cursors not supported");
     }
 
+    /** True when the first statement answers rows; false when it answers an update count. */
     @Override
     public boolean execute(final String sql) throws SQLException {
-        checkClosed();
-        applyMultiStatementGate(sql);
-        final SqlResponse response = httpClient.execute(sql, desiredMultiCount());
+        run(sql);
         updateContextFromSql(sql);
-        pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
-        resultDataIndex = 0;
-
-        if (!pendingResultData.isEmpty()) {
-            currentResultSet = new DatabaseResultSet(this, pendingResultData.get(0));
-            updateCount = -1;
-            return true;
-        } else {
-            currentResultSet = null;
-            updateCount = 0;
-            return false;
-        }
+        take(false);
+        return walk.currentIsRows();
     }
 
     /**
@@ -279,45 +344,20 @@ public class DatabaseStatement implements Statement {
      */
     protected void updateContextFromSql(final String sql) {
         if (sql == null || connection == null) return;
-        final List<Token> tokens = new ArrayList<>();
-        try {
-            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
-            lexer.removeErrorListeners();
-            for (Token t = lexer.nextToken(); t.getType() != Token.EOF; t = lexer.nextToken()) {
-                if (t.getChannel() == Token.DEFAULT_CHANNEL) {
-                    tokens.add(t);
-                }
-            }
-        } catch (final RuntimeException notLexable) {
+        final List<List<Token>> statements = JdbcSessionEffects.statements(sql);
+        if (statements == null || statements.size() != 1) {
             return;
         }
-        if (tokens.isEmpty() || tokens.get(0).getType() != FrostlakeLexer.USE) {
-            return;
-        }
-        if (tokens.get(tokens.size() - 1).getType() == FrostlakeLexer.SEMI) {
-            tokens.remove(tokens.size() - 1);
-        }
-        if (tokens.size() < 3) {
-            return;
-        }
-        final int kw = tokens.get(1).getType();
-        if (kw == FrostlakeLexer.DATABASE && tokens.size() == 3 && isUseNamePart(tokens.get(2))) {
+        final List<Token> tokens = statements.get(0);
+        final JdbcScopeUse use = JdbcSessionEffects.scopeUse(tokens);
+        if (use == JdbcScopeUse.DATABASE) {
             connection.updateCatalog(SqlIdentifiers.canonicalText(tokens.get(2).getText()));
-        } else if (kw == FrostlakeLexer.SCHEMA && tokens.size() == 3 && isUseNamePart(tokens.get(2))) {
+        } else if (use == JdbcScopeUse.SCHEMA && tokens.size() == 3) {
             connection.updateSchema(SqlIdentifiers.canonicalText(tokens.get(2).getText()));
-        } else if (kw == FrostlakeLexer.SCHEMA && tokens.size() == 5
-                && isUseNamePart(tokens.get(2))
-                && tokens.get(3).getType() == FrostlakeLexer.DOT
-                && isUseNamePart(tokens.get(4))) {
+        } else if (use == JdbcScopeUse.SCHEMA) {
             connection.updateCatalog(SqlIdentifiers.canonicalText(tokens.get(2).getText()));
             connection.updateSchema(SqlIdentifiers.canonicalText(tokens.get(4).getText()));
         }
-    }
-
-    /** A token that can serve as the name in USE DATABASE/SCHEMA — anything but punctuation. */
-    private boolean isUseNamePart(final Token token) {
-        final int type = token.getType();
-        return type != FrostlakeLexer.SEMI && type != FrostlakeLexer.DOT;
     }
 
     @Override
@@ -326,12 +366,20 @@ public class DatabaseStatement implements Statement {
         return currentResultSet;
     }
 
+    /** The current result's update count: -1 when it answers rows, and once the walk has passed the end. */
     @Override
     public int getUpdateCount() throws SQLException {
         checkClosed();
-        return updateCount;
+        return (int) walk.updateCount();
     }
 
+    @Override
+    public long getLargeUpdateCount() throws SQLException {
+        checkClosed();
+        return walk.updateCount();
+    }
+
+    /** Move to the next statement's result; see {@link JdbcResultWalk#next()} for what it answers. */
     @Override
     public boolean getMoreResults() throws SQLException {
         checkClosed();
@@ -339,13 +387,11 @@ public class DatabaseStatement implements Statement {
             currentResultSet.close();
             currentResultSet = null;
         }
-        // Advance to the next result set produced by the last (multi-statement) execute.
-        resultDataIndex++;
-        if (resultDataIndex < pendingResultData.size()) {
-            currentResultSet = new DatabaseResultSet(this, pendingResultData.get(resultDataIndex));
-            return true;
+        final boolean answer = walk.next();
+        if (walk.currentIsRows()) {
+            currentResultSet = new DatabaseResultSet(this, pendingResultData.get(walk.position()));
         }
-        return false;
+        return answer;
     }
 
     @Override
@@ -404,7 +450,16 @@ public class DatabaseStatement implements Statement {
         try {
             for (int i = 0; i < batchedSql.size(); i++) {
                 try {
-                    counts[i] = executeUpdate(batchedSql.get(i));
+                    // A statement that answers rows is not refused in a batch: it runs, and its entry is
+                    // SUCCESS_NO_INFO (live-verified).
+                    final SqlResponse response = run(batchedSql.get(i));
+                    updateContextFromSql(batchedSql.get(i));
+                    if (serverMarksCounts()) {
+                        take(false);
+                        counts[i] = walk.currentIsRows() ? SUCCESS_NO_INFO : (int) walk.updateCount();
+                    } else {
+                        counts[i] = (int) extractRowsAffected(response);
+                    }
                 } catch (final SQLException e) {
                     counts[i] = EXECUTE_FAILED;
                     if (firstFailure == null) {

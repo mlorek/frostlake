@@ -111,7 +111,12 @@ final class PercentileCallRules {
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            validate(node.getChild(i), table, aliasToTable, allTables);
+            // A nested select's calls are judged against its own relations when it compiles: the WITHIN GROUP
+            // key of (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v) FROM g) names g's column, not this
+            // query's.
+            if (!(node.getChild(i) instanceof FrostlakeParser.SelectStatementContext)) {
+                validate(node.getChild(i), table, aliasToTable, allTables);
+            }
         }
     }
 

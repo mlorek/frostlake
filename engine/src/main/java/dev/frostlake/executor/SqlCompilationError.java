@@ -132,6 +132,47 @@ public final class SqlCompilationError {
         return PREFIX + " \n" + detail;
     }
 
+    /**
+     * The positioned layout with the detail on the SAME line as the position, after a space — the layout the
+     * INTO clause refusal keeps: "SQL compilation error: error line 1 at position 0 INTO clause is not
+     * allowed in this context", where the other positioned sentences break after the position.
+     *
+     * @param line the line, before any leading comment is re-based away
+     * @param position the position, likewise
+     * @param detail the sentence
+     * @return the message as the driver hands it to a client
+     */
+    public static String atInline(final int line, final int position, final String detail) {
+        final int[] shown = LeadingCommentOffset.rebase(line, position);
+        return PREFIX + " error line " + shown[0] + " at position " + shown[1] + " " + detail;
+    }
+
+    /**
+     * A SELECT … INTO that is not a statement of a Snowflake Scripting block, refused at its query's SELECT.
+     *
+     * @param line the SELECT's line
+     * @param position the SELECT's position
+     * @return the message
+     */
+    public static String intoClauseNotAllowed(final int line, final int position) {
+        return atInline(line, position, "INTO clause is not allowed in this context");
+    }
+
+    /**
+     * The positioned layout that names the place without the word "error" and closes it with a colon — "SQL
+     * compilation error: line 1 at position 46:" — the layout of a change-tracking refusal over a
+     * non-deterministic time-travel point.
+     *
+     * @param line the line, before any leading comment is re-based away
+     * @param position the position, likewise
+     * @param detail the sentence
+     * @return the message as the driver hands it to a client
+     */
+    public static String atLine(final int line, final int position, final String detail) {
+        final int[] shown = LeadingCommentOffset.rebase(line, position);
+        return PREFIX + " line " + shown[0] + " at position " + shown[1] + ":\n" + detail;
+    }
+
     public static String at(final int line, final int position, final String detail) {
         // Past any LEADING comment: a statement that opens with one reports from its first real token,
         // so the place computed against the raw text is shifted back here — see LeadingCommentOffset.
@@ -250,9 +291,64 @@ public final class SqlCompilationError {
     public static String doesNotExist(final String kind, final String name) {
         // The name is spelled the way every refusal spells one: quoted only where it has to be, part
         // by part. Live reads Object '"kw"' for a lower-case relation and TEST_DB.TEST_SCHEMA."kw"
-        // when the whole path is named, where an ordinary upper-case name stays bare.
-        return of(kind + " '" + SqlIdentifiers.spellAlreadyCanonicalPath(name)
-            + "' does not exist or not authorized.");
+        // when the whole path is named, where an ordinary upper-case name stays bare. A quote the
+        // name holds is doubled for a table alone: Table '"n""o"' beside View, Sequence, Schema,
+        // Database and Object '"n"o"'.
+        return doesNotExistAsSpelled(kind, "Table".equals(kind) ? SqlIdentifiers.spellAlreadyCanonicalPathEscaped(name)
+            : SqlIdentifiers.spellAlreadyCanonicalPath(name));
+    }
+
+    /**
+     * {@link #doesNotExist} for a name its caller has already spelled: the refusal, then the privilege the
+     * statement's role would need on the object ({@link PrivilegeHint}), which names the object exactly as the
+     * first sentence does.
+     *
+     * @param kind the kind noun, as the sentence opens with it
+     * @param spelled the name as it appears between the quotes
+     * @return the message as the driver hands it to a client
+     */
+    public static String doesNotExistAsSpelled(final String kind, final String spelled) {
+        return of(kind + " '" + spelled + "' does not exist or not authorized." + PrivilegeHint.of(kind, spelled));
+    }
+
+    /**
+     * {@link #doesNotExist} for a name that is no securable object, which live words without the privilege hint:
+     * the column of a RENAME COLUMN or a COMMENT ON COLUMN, the constraint of an ALTER CONSTRAINT, a search
+     * analyzer, a table stage named with four parts, a data metric function that is not a system one. An UNDROP
+     * ACCOUNT of a missing account uses it too: live refuses that in other words altogether, and a hint would only
+     * add a sentence live never gives.
+     *
+     * @param kind the kind noun, as the sentence opens with it
+     * @param name the canonical name
+     * @return the message as the driver hands it to a client
+     */
+    public static String doesNotExistWithoutHint(final String kind, final String name) {
+        return of(kind + " '" + SqlIdentifiers.spellAlreadyCanonicalPath(name) + "' does not exist or not authorized.");
+    }
+
+    /**
+     * {@link #doesNotExist} for a DESCRIBE NETWORK RULE, whose hint lists every account privilege that would let
+     * the role read a rule, one sentence each, where an ALTER or a DROP of a missing rule asks for MONITOR alone
+     * (live-verified).
+     *
+     * @param name the rule's qualified canonical name
+     * @return the message as the driver hands it to a client
+     */
+    public static String networkRuleToDescribeDoesNotExist(final String name) {
+        return of("Network rule '" + SqlIdentifiers.spellAlreadyCanonicalPath(name)
+            + "' does not exist or not authorized." + PrivilegeHint.toDescribeNetworkRule());
+    }
+
+    /**
+     * {@link #doesNotExist} for a GRANT, a REVOKE or a SHOW GRANTS ON over a network rule, whose hint asks for
+     * MONITOR, then RESOLVE ALL, one sentence each (live-verified).
+     *
+     * @param name the rule's qualified canonical name
+     * @return the message as the driver hands it to a client
+     */
+    public static String networkRuleToGrantDoesNotExist(final String name) {
+        return of("Network rule '" + SqlIdentifiers.spellAlreadyCanonicalPath(name)
+            + "' does not exist or not authorized." + PrivilegeHint.toGrantOnNetworkRule());
     }
 
     /**

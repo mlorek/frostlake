@@ -84,11 +84,14 @@ public abstract class BaseJdbcTest {
         // Allow subclasses to add their own teardown
         teardownTest();
 
-        // Clean up test database
-        try {
-            statement.execute("DROP DATABASE IF EXISTS test_db");
-        } catch (final Exception e) {
-            // Ignore errors during cleanup
+        // Clean up test database — on a live account only while this run holds its claim: after a lost
+        // claim, test_db belongs to the run that holds the account now.
+        if (!LiveSnowflake.enabled() || LiveSnowflake.holdsAccountClaim()) {
+            try {
+                statement.execute("DROP DATABASE IF EXISTS test_db");
+            } catch (final Exception e) {
+                // Ignore errors during cleanup
+            }
         }
 
         // Roles, users, warehouses and sibling databases live OUTSIDE test_db, so dropping it leaves

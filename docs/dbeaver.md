@@ -229,6 +229,13 @@ the model-backed functions works without it.
 **Slow first connection with `rt-py`** — GraalPy initialises on first use. It is a one-off per DBeaver
 session.
 
+**`The server no longer holds session …` (SQLState 08003)** — over the HTTP server, the connection sat idle
+past the server's 30-minute session limit, or the server restarted, while its session held something a new one
+would not: an open transaction, or a USE, SET or ALTER SESSION run in the editor. The statement did not run. Run
+it again and it goes to a new session on the connection's own database and schema; repeat the USE or SET first if
+it depends on one. A session that held nothing is replaced without a word, and a schema picked in DBeaver's
+navigator is put back on the new session too.
+
 **"Data directory … is open in another Frostlake process"** — a `file:` directory takes one process at
 a time. Close the other client, or give DBeaver its own directory; the message names the holding
 process id. Opening many DBeaver tabs on one directory is fine — they share a single engine and a

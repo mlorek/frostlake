@@ -63,13 +63,13 @@
     {"name": "copy-option-groups-parse", "steps": [
       {"sql": "CREATE TABLE load1 (c1 VARCHAR)"},
       {"sql": "COPY INTO load1 FROM @%load1/data1/ CREDENTIALS = (AWS_KEY_ID='id' AWS_SECRET_KEY='key' AWS_TOKEN='token') FILES = ('test1.csv', 'test2.csv') FORCE = TRUE",
-       "expect": {"error": {"messageContains": "Remote file '@%load1/data1/test1.csv' was not found."}}},
+       "expect": {"error": {"messageContains": "COPY statements targeting a user or table stage do not support credential properties."}}},
       {"sql": "COPY INTO load1 (c1) FROM 's3://mybucket/data/files' STORAGE_INTEGRATION = \"storage\" ENCRYPTION = (TYPE='NONE' MASTER_KEY='key') FILES = ('file1.csv') CREDENTIALS = ()",
        "expect": {"error": {"messageContains": "invalid parameter 'STORAGE_INTEGRATION'"}}}
     ]},
     {"name": "describe-type-stage-and-alter-set-forms", "steps": [
       {"sql": "CREATE TABLE d_t (id INTEGER)"},
-      {"sql": "DESCRIBE TABLE d_t type=stage", "expect": {"rowCount": 1}},
+      {"sql": "DESCRIBE TABLE d_t type=stage", "expect": {"rowCount": 32}},
       {"sql": "ALTER TABLE d_t SET DATA_RETENTION_TIME_IN_DAYS=1"},
       {"sql": "ALTER TABLE d_t SET STAGE_COPY_OPTIONS = (ON_ERROR=SKIP_FILE SIZE_LIMIT=5 PURGE=TRUE MATCH_BY_COLUMN_NAME=CASE_SENSITIVE)"},
       {"sql": "ALTER TABLE d_t SET STAGE_FILE_FORMAT = (TYPE=CSV FIELD_DELIMITER='|' NULL_IF=('') FIELD_OPTIONALLY_ENCLOSED_BY='\"' TIMESTAMP_FORMAT='TZHTZM YYYY-MM-DD HH24:MI:SS.FF9')"},

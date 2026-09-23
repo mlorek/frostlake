@@ -79,10 +79,7 @@ public class SplitToTable extends TableFunction {
     private ResultSet split(final Object stringValue, final Object delimiterValue) {
         // Declared as the account declares them: SEQ and INDEX NUMBER(38,0), VALUE a VARCHAR the
         // plan spells bare (live-verified).
-        final List<ResultSetColumn> columns = new ArrayList<>();
-        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
-        columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
-        columns.add(new ResultSetColumn("VALUE", StringType.VARCHAR, null, new LengthlessStringType()));
+        final List<ResultSetColumn> columns = columns();
 
         final List<Row> rows = new ArrayList<>();
         // NULL in either parameter contributes nothing at all — not an empty-string row.
@@ -117,5 +114,19 @@ public class SplitToTable extends TableFunction {
     public void validateArgs(final Map<String, Object> namedArgs) {
         // Argument names, count and types are all settled while the statement is compiled — see
         // TableFunctionArguments. Nothing is left to check once a value is in hand.
+    }
+
+    /** The three columns every SPLIT_TO_TABLE answers. */
+    public static List<ResultSetColumn> columns() {
+        final List<ResultSetColumn> columns = new ArrayList<>();
+        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
+        columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
+        columns.add(new ResultSetColumn("VALUE", StringType.VARCHAR, null, new LengthlessStringType()));
+        return columns;
+    }
+
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return columns();
     }
 }

@@ -65,4 +65,13 @@ public class ListAgg extends AggregateFunction {
     public SemiStructuredRejection binaryRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
+
+    /**
+     * A predicate as LISTAGG's first argument is refused by the argument types, where a BOOLEAN
+     * value is read as text (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

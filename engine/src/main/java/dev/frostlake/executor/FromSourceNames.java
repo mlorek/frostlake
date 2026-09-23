@@ -94,9 +94,54 @@ final class FromSourceNames {
         }
     }
 
-    private void registerReference(final FrostlakeParser.TableReferenceContext ref) {
+    /**
+     * The names a clause's sources register, as {@link #registerSources} registers them, without registering
+     * them: null when a source's name is not known here, or when a PIVOT or an UNPIVOT reshapes one.
+     *
+     * @param clause the clause whose table references and joins are read
+     * @return the names, or null
+     */
+    Set<String> sourceNames(final ParserRuleContext clause) {
+        final Set<String> names = new HashSet<>();
+        return collectSourceNames(clause, names) ? names : null;
+    }
+
+    private boolean collectSourceNames(final ParserRuleContext clause, final Set<String> names) {
+        if (clause.children == null) {
+            return true;
+        }
+        for (final ParseTree child : clause.children) {
+            final FrostlakeParser.TableReferenceContext ref = child instanceof FrostlakeParser.TableReferenceContext
+                ? (FrostlakeParser.TableReferenceContext) child
+                : child instanceof FrostlakeParser.JoinClauseContext
+                    ? ((FrostlakeParser.JoinClauseContext) child).tableReference() : null;
+            if (ref == null) {
+                continue;
+            }
+            if (ref.pivotClause() != null || ref.unpivotClause() != null) {
+                return false;
+            }
+            final FrostlakeParser.TableSourceContext source = ref.tableSource();
+            if (source != null && source.tableReference() != null && ref.aliasName() == null
+                    && ref.nonJoinKeywordIdentifier() == null && ref.pivotAlias() == null) {
+                if (!collectSourceNames(source, names)) {
+                    return false;
+                }
+                continue;
+            }
+            final String name = nameOf(ref);
+            if (name == null) {
+                return false;
+            }
+            names.add(name);
+        }
+        return true;
+    }
+
+    /** Register one source as {@link #registerSources} registers each: a parenthesised join's sources, else its name. */
+    void registerReference(final FrostlakeParser.TableReferenceContext ref) {
         final FrostlakeParser.TableSourceContext source = ref.tableSource();
-        if (source != null && !source.tableReference().isEmpty() && ref.aliasName() == null
+        if (source != null && source.tableReference() != null && ref.aliasName() == null
                 && ref.nonJoinKeywordIdentifier() == null && ref.pivotAlias() == null) {
             // A parenthesised join is pure grouping: its sources belong to this scope.
             registerSources(source);
@@ -136,16 +181,39 @@ final class FromSourceNames {
         }
         if (source.TABLE() != null && source.expression() != null) {
             final FrostlakeParser.FunctionNameContext function = firstFunctionName(source.expression());
-            return function == null ? null : lastPart(ParseTreeText.functionNameParts(function));
+            // A table literal registers the name its value resolves to, as an IDENTIFIER() source does.
+            return function == null ? tableLiteralName(source.expression())
+                : lastPart(ParseTreeText.functionNameParts(function));
         }
-        if (source.KW_IDENTIFIER() != null && source.expression() != null) {
-            return identifierReferenceName(source.expression());
+        if (source.identifierArgument() != null) {
+            return identifierReferenceName(source.identifierArgument());
         }
         return null;
     }
 
+    /**
+     * The name a {@code TABLE(<value>)} table literal resolves to, or null when it cannot be read here.
+     * A name that reaches no relation registers nothing: live resolves each source before it weighs the
+     * aliases, so {@code FROM TABLE('nosuch'), TABLE('nosuch')} names the missing object, not a duplicate.
+     */
+    private String tableLiteralName(final FrostlakeParser.ExpressionContext expr) {
+        try {
+            final Object value = new ExpressionEvaluator(null, executor.getFunctionRegistry(), executor.getCatalog(),
+                executor).evaluate(executor.getOriginalText(expr), null);
+            if (value == null || !SqlIdentifiers.isIdentifierReference(value.toString())) {
+                return null;
+            }
+            final String written = value.toString().trim();
+            return executor.namesARelation(SqlIdentifiers.identifierReferenceText(written))
+                ? lastPart(SqlIdentifiers.identifierReferenceParts(written)) : null;
+        } catch (final RuntimeException unreadable) {
+            // The source's own resolution reports it.
+            return null;
+        }
+    }
+
     /** The name an IDENTIFIER(...) source resolves to, or null when it cannot be read here. */
-    private String identifierReferenceName(final FrostlakeParser.ExpressionContext argument) {
+    private String identifierReferenceName(final FrostlakeParser.IdentifierArgumentContext argument) {
         try {
             final Object value = new ExpressionEvaluator(null, executor.getFunctionRegistry(), executor.getCatalog(),
                 executor).evaluate(executor.getOriginalText(argument), null);

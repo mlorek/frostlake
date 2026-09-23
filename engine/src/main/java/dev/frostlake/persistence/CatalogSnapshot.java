@@ -18,6 +18,7 @@ package dev.frostlake.persistence;
 
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 
 /**
@@ -31,7 +32,20 @@ public class CatalogSnapshot implements Serializable {
     public String currentWarehouse;
     public List<DatabaseSnapshot> databases = new ArrayList<>();
     public List<WarehouseSnapshot> warehouses = new ArrayList<>();
+    public List<SecurityObjectSnapshot> securityObjects = new ArrayList<>();
+    public HashMap<String, String> securityAttachments = new HashMap<>();
     public List<StageSnapshot> stages = new ArrayList<>();
     public List<UserSnapshot> users = new ArrayList<>();
     public List<RoleSnapshot> roles = new ArrayList<>();
+
+    // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
+    public List<IntegrationSnapshot> integrations = new ArrayList<>();
+    public List<ExternalVolumeSnapshot> externalVolumes = new ArrayList<>();
+    public List<AccountSnapshot> accounts = new ArrayList<>();
+    public List<ManagedAccountSnapshot> managedAccounts = new ArrayList<>();
+    /** The last account locator number handed out, so a restored engine does not reuse one. */
+    public int accountLocatorSequence;
+    public List<ComputePoolSnapshot> computePools = new ArrayList<>();
+    /** The dropped external volumes UNDROP can still restore, each name's drops the earliest first. */
+    public List<ExternalVolumeSnapshot> droppedExternalVolumes = new ArrayList<>();
 }

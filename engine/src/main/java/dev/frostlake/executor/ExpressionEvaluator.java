@@ -24,6 +24,7 @@ import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.SortKeyRole;
+import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryMemo;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
@@ -57,9 +58,14 @@ public class ExpressionEvaluator {
     private Map<String, Table> declaredTypeAliasToTable;
     private List<Table> declaredTypeAllTables;
     private Set<String> scopeExemptNames;
+    private Set<String> whereAggregateAliases;
+    private Map<String, String> whereWindowAliases;
     private Set<String> outputScopeNames;
     private Map<String, DataType> outputAliasTypes;
     private Map<String, Object> resultContext;
+    private Map<String, Object> subqueryOuterRow;
+    private Map<String, DataType> scriptNameTypes;
+    private boolean bindsAsParameters;
     // One memo per evaluator instance (= one outer query's row loop). Evaluators are created per
     // operator-execution and never pooled, so cached uncorrelated-subquery results never leak across
     // queries. See SubqueryMemo.
@@ -134,6 +140,31 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * The row a subquery evaluated here reads as its outer row when that is not the row being evaluated: a
+     * HAVING condition runs over the grouped output row, while its subquery reads the group's own row
+     * ({@code HAVING (SELECT COUNT(*) FROM g WHERE g.id = fz.id) = 0}, live-verified). Offered to subqueries
+     * only; the condition's own names resolve as before.
+     *
+     * @param bindings the outer row's names and values, as {@link #rowBindings} builds them, or null
+     */
+    public void setSubqueryOuterRow(final Map<String, Object> bindings) {
+        this.subqueryOuterRow = bindings;
+    }
+
+    /**
+     * The names a subquery evaluated over {@code row} reads that row by: its columns bare, under their
+     * relation's name, and under each FROM alias.
+     *
+     * @param row a row of this evaluator's relation
+     * @return the bindings, for {@link #setSubqueryOuterRow}
+     */
+    public Map<String, Object> rowBindings(final Row row) {
+        final ExpressionEvaluatorVisitor visitor = preparedVisitor();
+        visitor.setRow(row);
+        return visitor.rowBindings();
+    }
+
+    /**
      * The relation a reference's DECLARED type is read from when {@code table} cannot say — see
      * {@link ExpressionEvaluatorVisitor#setDeclaredTypeBase}.
      *
@@ -176,8 +207,43 @@ public class ExpressionEvaluator {
         if (resultContext != null) {
             visitor.setResultContext(resultContext);
         }
+        visitor.setSubqueryOuterRow(subqueryOuterRow);
         visitor.setSubqueryMemo(subqueryMemo);
+        visitor.setScriptNameTypes(scriptNameTypes);
+        visitor.setBindsAsParameters(bindsAsParameters);
         return expression.accept(visitor);
+    }
+
+    /**
+     * The names a scripting expression reads and their declared types. SYSTEM$TYPEOF types its argument over
+     * them, each a parameter of its type: live answers {@code NUMBER(38,0)[SB16]} for
+     * {@code RETURN SYSTEM$TYPEOF(:x)} over {@code LET x := 1}, where the same call inside a statement reads
+     * the bound value, {@code [SB1]}.
+     *
+     * @param types the declared types by name, or null in a SQL statement
+     */
+    public void setScriptNameTypes(final Map<String, DataType> types) {
+        this.scriptNameTypes = types;
+    }
+
+    /**
+     * Whether a bind variable reads as a parameter of its declared type — no interval, a text without a width
+     * of its own — rather than as the value a statement binds.
+     *
+     * @param parameters true to read binds as parameters
+     */
+    public void setBindsAsParameters(final boolean parameters) {
+        this.bindsAsParameters = parameters;
+    }
+
+    /**
+     * What SYSTEM$TYPEOF answers for {@code expression} in this evaluator's scope, without evaluating it.
+     *
+     * @param expression the argument
+     * @return the description
+     */
+    public String describeTypeOf(final Expression expression) {
+        return preparedVisitor().describeTypeOf(expression);
     }
 
     /**
@@ -194,12 +260,49 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * Whether this evaluator's relations settle a condition over their statistics: TRUE on every row,
+     * FALSE on every row, or null where the statistics leave it open.
+     *
+     * @param predicate the parsed condition
+     * @return the settled value, or null
+     */
+    public Boolean settledCondition(final Expression predicate) {
+        return preparedVisitor().settledCondition(predicate);
+    }
+
+    /**
      * Plan-time strict-argument validation over a parsed expression: runs the Snowflake
      * argument-type checks for every function call in {@code expression} WITHOUT evaluating it,
      * so rejection fires even over zero input rows.
      */
     public void validateStrict(final Expression expression) {
-        preparedVisitor().validateStrictArguments(expression);
+        preparedVisitor().validateStrictArgumentsWithRows(expression);
+    }
+
+    /**
+     * Compile every subquery {@code expression} holds in this evaluator's scope, before any row: see
+     * {@link ExpressionEvaluatorVisitor#compileSubqueries}.
+     *
+     * @param expression     the parsed expression
+     * @param enclosingNames the names of the query around this scope's query when that one is compiling, or null
+     * @return the first refusal that waits for the statement around the subqueries, or null
+     */
+    public RuntimeException compileSubqueries(final Expression expression, final Map<String, Object> enclosingNames) {
+        return preparedVisitor().compileSubqueries(expression, enclosingNames);
+    }
+
+    /** Compile one subquery in this evaluator's scope, as {@link #compileSubqueries} compiles each. */
+    public RuntimeException compileSubquery(final SubqueryExpression subquery, final Map<String, Object> enclosingNames) {
+        return preparedVisitor().compileSubquery(subquery, enclosingNames);
+    }
+
+    /**
+     * The ROW type of an expression that is a subquery selecting more than one column, as a type match names
+     * it: {@code ROW(NUMBER(1,0), VARCHAR(1))}; null for anything else.
+     */
+    public String multiColumnRowText(final Expression expression) {
+        return expression instanceof SubqueryExpression
+            ? preparedVisitor().multiColumnRowText((SubqueryExpression) expression) : null;
     }
 
     /** The plan-time user-defined function argument check alone, over a parsed expression. */
@@ -234,6 +337,16 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * Every call's written shape — a quantifier, a WITHIN GROUP or named arguments it does not take — and nothing
+     * else, refused ahead of every argument type: see {@link ExpressionEvaluatorVisitor#validateCallShapesOnly}.
+     *
+     * @param expression the parsed expression
+     */
+    public void validateCallShapes(final Expression expression) {
+        preparedVisitor().validateCallShapesOnly(expression);
+    }
+
+    /**
      * PHASE TWO as a QUESTION rather than a refusal. {@link #validateFunctionNames} stops at the first
      * unresolvable name, which is right for one expression; a whole statement's refusal names every one
      * of them at once, so the caller asks this per call and refuses after.
@@ -262,6 +375,16 @@ public class ExpressionEvaluator {
         return preparedVisitor().collationOf(expression).toRules();
     }
 
+    /**
+     * The visitor that types names in this evaluator's scope, for naming that scope as the one AROUND a
+     * relation planned inside it (see {@link SubqueryCompilation#beginScope}).
+     *
+     * @return the prepared visitor
+     */
+    public ExpressionEvaluatorVisitor scopeVisitor() {
+        return preparedVisitor();
+    }
+
     /** The reusable visitor with this evaluator's context applied — shared by every phase. */
     private ExpressionEvaluatorVisitor preparedVisitor() {
         if (reusableVisitor == null) {
@@ -271,12 +394,27 @@ public class ExpressionEvaluator {
         reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
         reusableVisitor.setScopeOpaqueToSubqueries(scopeOpaqueToSubqueries);
         reusableVisitor.setScopeExemptNames(scopeExemptNames);
+        reusableVisitor.setWhereAliasRefusals(whereAggregateAliases, whereWindowAliases);
         reusableVisitor.setOutputScopeNames(outputScopeNames);
         reusableVisitor.setOutputAliasTypes(outputAliasTypes);
+        reusableVisitor.setScriptNameTypes(scriptNameTypes);
+        reusableVisitor.setBindsAsParameters(bindsAsParameters);
         if (multiTableAllTables != null) {
             reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
         }
         return reusableVisitor;
+    }
+
+    /**
+     * The select aliases a WHERE may not read, for the scope walk to refuse in live's words: an alias of
+     * an item holding an aggregate, and an alias of a window call with the sentence that names it.
+     *
+     * @param aggregateAliases the canonical aliases of aggregate items, or null
+     * @param windowAliases    each window item's canonical alias, with its refusal sentence, or null
+     */
+    public void setWhereAliasRefusals(final Set<String> aggregateAliases, final Map<String, String> windowAliases) {
+        this.whereAggregateAliases = aggregateAliases;
+        this.whereWindowAliases = windowAliases;
     }
 
     /** Bare names the plan-time scope walk must not reject — the query's SELECT output aliases /
@@ -399,6 +537,8 @@ public class ExpressionEvaluator {
      */
     public void validatePredicate(final Expression expression) {
         final ExpressionEvaluatorVisitor checker = preparedVisitor();
+        // A multi-column subquery an operator compares is typed as a ROW before the predicate is.
+        checker.rejectRowOperations(expression);
         checker.validateBooleanPositions(expression);
         checker.validatePredicateType(expression);
         checker.validateGeoComparisons(expression);
@@ -412,7 +552,9 @@ public class ExpressionEvaluator {
      * @param expression the parsed expression
      */
     public void validateBooleanPositions(final Expression expression) {
-        preparedVisitor().validateBooleanPositions(expression);
+        final ExpressionEvaluatorVisitor visitor = preparedVisitor();
+        visitor.rejectRowOperations(expression);
+        visitor.validateBooleanPositions(expression);
     }
 
     /**
@@ -428,6 +570,8 @@ public class ExpressionEvaluator {
         }
         reusableVisitor.setQueryExecutor(queryExecutor);
         reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        // A bare name no relation carries may be an EARLIER select item's alias, typed from that item.
+        reusableVisitor.setOutputAliasTypes(outputAliasTypes);
         if (multiTableAllTables != null) {
             reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
         }
@@ -463,6 +607,36 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * Whether a select item projects a double live's compiler folds, or a column carrying one out of a derived
+     * relation — see TableColumn#isFoldedDouble. Never throws.
+     *
+     * @param expression a select item
+     * @return true for such an item
+     */
+    public boolean projectsFoldedDouble(final Expression expression) {
+        try {
+            return preparedVisitor().projectsFoldedDouble(expression);
+        } catch (final RuntimeException undetermined) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a select item projects a number or boolean constant wrapped into a VARIANT, or a column carrying
+     * one out of a derived relation — see TableColumn#isUncheckedConstant. Never throws.
+     *
+     * @param expression a select item
+     * @return true for such an item
+     */
+    public boolean projectsUncheckedConstant(final Expression expression) {
+        try {
+            return preparedVisitor().projectsUncheckedConstant(expression);
+        } catch (final RuntimeException undetermined) {
+            return false;
+        }
+    }
+
+    /**
      * The NUMBER {@code expression} spells when it is a bare string literal, or a column carrying one out
      * of a derived relation — what a projected column hands on so a conditional over it folds as live
      * folds the literal (see TableColumn#getSpelledNumber); null for anything else. Never throws.
@@ -478,6 +652,26 @@ public class ExpressionEvaluator {
         }
         try {
             return reusableVisitor.spelledNumber(expression);
+        } catch (final RuntimeException undetermined) {
+            return null;
+        }
+    }
+
+    /**
+     * A SQL function call as the plan holds it once inlined, or null where that is not spelled out — see
+     * {@link ExpressionEvaluatorVisitor#inlinedUdfCall}. Never throws.
+     */
+    public Expression inlinedUdfCall(final FunctionCallExpression call) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        try {
+            return reusableVisitor.inlinedUdfCall(call);
         } catch (final RuntimeException undetermined) {
             return null;
         }
@@ -558,6 +752,17 @@ public class ExpressionEvaluator {
      */
     public String qualifiedText(final Expression expression) {
         return preparedVisitor().strictText(expression);
+    }
+
+    /**
+     * {@link #qualifiedText} in the plan-shaped mode, which re-prints a subquery from its plan — see
+     * {@link ExpressionEvaluatorVisitor#strictPlanText}.
+     *
+     * @param expression the expression
+     * @return the expression as the plan holds it
+     */
+    public String plannedText(final Expression expression) {
+        return preparedVisitor().strictPlanText(expression);
     }
 
     /**

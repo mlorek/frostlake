@@ -16,17 +16,22 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.StructuredTypes;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.JsonNode;
@@ -70,7 +75,8 @@ import java.util.List;
 final class StructuredCast {
 
     /** Snowflake's runtime message when a value does not fit the declared structured shape. */
-    private static final String SCHEMA_MISMATCH = "Typed object schema mismatch in conversion";
+    /** The row-time refusal of a value whose shape does not fit the declared structure. */
+    static final String SCHEMA_MISMATCH = "Typed object schema mismatch in conversion";
 
     private StructuredCast() {
     }
@@ -91,12 +97,56 @@ final class StructuredCast {
                 sourceTypeText, targetTypeText);
             return;
         }
+        // A structured OBJECT or a MAP takes a VARIANT, an OBJECT or another of its family: any other source is
+        // refused while the statement compiles, naming its family (live-verified).
+        final String family = structuredObjectlessFamily(sourceType);
+        if (family != null && StructuredTypes.isStructuredObjectFamily(structuredTarget)) {
+            throw new RuntimeException(SqlCompilationError.of("incompatible types: [" + family + "] and ["
+                + (structuredTarget instanceof MapType ? "MAP" : "STRUCTURED_OBJECT") + "]"));
+        }
         // No modifier: only a structured-to-structured OBJECT cast is constrained, and only on the
         // field LAYOUT — CAST(<OBJECT(x VARCHAR, y INT)> AS OBJECT(x VARCHAR, y VARCHAR)) succeeds while
         // renaming/adding/dropping a field without a modifier does not.
         if (StructuredTypes.isStructured(sourceType) && StructuredTypes.isStructured(structuredTarget)) {
             checkFieldLayout(sourceType, structuredTarget);
         }
+    }
+
+    /**
+     * The family a structured OBJECT or MAP target names a source it has no conversion from — TEXT, UUID, FIXED,
+     * REAL, BOOLEAN, BINARY, DATE, TIME, a TIMESTAMP flavour, ARRAY or STRUCTURED_ARRAY — or null for a VARIANT,
+     * an OBJECT, a MAP, an undetermined source and a family not measured.
+     */
+    private static String structuredObjectlessFamily(final DataType source) {
+        if (source instanceof UuidType) {
+            return "UUID";
+        }
+        if (source instanceof StringType) {
+            return "TEXT";
+        }
+        if (source instanceof NumericType) {
+            return NumericType.isApproximate(source) ? "REAL" : "FIXED";
+        }
+        if (source instanceof BooleanType) {
+            return "BOOLEAN";
+        }
+        if (source instanceof BinaryType) {
+            return "BINARY";
+        }
+        if (source instanceof StructuredArrayType) {
+            return "STRUCTURED_ARRAY";
+        }
+        if (source instanceof ArrayType) {
+            return "ARRAY";
+        }
+        if (!(source instanceof DateTimeType)) {
+            return null;
+        }
+        final String name = SqlTypeNames.canonical(source);
+        if (name.startsWith("TIMESTAMP")) {
+            return name.substring(0, name.indexOf('(') < 0 ? name.length() : name.indexOf('('));
+        }
+        return name.startsWith("TIME") ? "TIME" : "DATE";
     }
 
     /**

@@ -19,8 +19,10 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.TransientRetentionLimit;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.ContainerType;
@@ -79,13 +81,19 @@ public class CreateNamespaceHandler implements CommandHandler {
                 queryExecutor.getTransactionManager().discardBufferedWritesFor(fqn);
             }
         }
+        for (final Table hidden : schema.getShadowedTables()) {
+            storage.dropShadowedTable(QualifiedName.key(databaseName, schema.getName(), hidden.getName()));
+        }
     }
 
     public Object handleCreateDatabase(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String dbName = getText(ctx.identifier(0));
+        final NamespaceProperties properties = NamespaceProperties.ofDatabase(ctx.databaseProperty());
         if (ctx.or_replace() != null) {
+            // Replacing a database needs OWNERSHIP of it.
+            queryExecutor.requireOwnership("DATABASE", new String[] {dbName}, null);
             try {
-                final Database replaced = catalog.getDatabase(dbName);
+                final Database replaced = catalog.databaseExact(dbName);
                 if (replaced != null) {
                     for (final Schema replacedSchema : replaced.getAllSchemas()) {
                         releaseSchemaStorage(dbName, replacedSchema);
@@ -97,21 +105,23 @@ public class CreateNamespaceHandler implements CommandHandler {
                 }
             } catch (final RuntimeException ignored) {}
         }
+        boolean made = false;
         try {
             if (ctx.CLONE() != null) {
                 final String sourceDbName = getText(ctx.identifier(1));
                 catalog.cloneDatabase(sourceDbName, dbName);
-                ddl.cloneDatabaseData(sourceDbName.toUpperCase(), dbName.toUpperCase());
+                made = true;
+                ddl.cloneDatabaseData(sourceDbName, dbName);
                 logger.trace("Cloned database: {} from {}", dbName, sourceDbName);
             } else {
                 catalog.createDatabase(dbName);
+                made = true;
                 logger.trace("Created database: {}", dbName);
             }
 
-            final Database db = catalog.getDatabase(dbName);
-            if (ctx.DATA_RETENTION_TIME_IN_DAYS() != null && ctx.INTEGER_LITERAL() != null) {
-                final String written = (ctx.MINUS() != null ? "-" : "")
-                    + ctx.INTEGER_LITERAL().getText();
+            final Database db = catalog.databaseExact(dbName);
+            final String written = properties.retention();
+            if (written != null) {
                 if (written.startsWith("-")) {
                     throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
                         written, "DATA_RETENTION_TIME_IN_DAYS"));
@@ -129,20 +139,38 @@ public class CreateNamespaceHandler implements CommandHandler {
                     inherited.setTransientObject(true);
                 }
             }
-            final String comment = ddl.extractCommentFromList(ctx.commentClause());
+            final String comment = ddl.extractCommentFromList(properties.comments());
             if (comment != null) db.setComment(comment);
+            properties.applyParameters(db.getParameters());
+            for (final FrostlakeParser.TagListContext tags : properties.tags()) {
+                InlineTags.apply(db, tags, queryExecutor);
+            }
             // Snowflake activates a newly created database: it becomes the session's current
             // database, with PUBLIC as the current schema (live-verified).
             catalog.useDatabase(dbName);
         } catch (final RuntimeException e) {
+            if (made) {
+                // A property refused after the database was made leaves no database behind.
+                discardDatabase(dbName);
+            }
             ddl.handleIfNotExists(ifNotExists, e, "object");
             logger.debug("Database already exists (IF NOT EXISTS): {}", dbName);
         }
         return null;
     }
 
+    /** Removes a database this statement made, with its tables' storage. */
+    private void discardDatabase(final String dbName) {
+        final Database made = catalog.databaseExact(dbName);
+        for (final Schema schema : made.getAllSchemas()) {
+            releaseSchemaStorage(dbName, schema);
+        }
+        catalog.dropDatabase(dbName, true);
+    }
+
     public Object handleCreateSchema(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         rejectUnsupportedSchemaModifier(ctx);
+        final NamespaceProperties properties = NamespaceProperties.ofSchema(ctx.schemaProperty());
         final String schemaName = getText(ctx.qualifiedName(0));
         // A schema name has at most two parts (db..s counts three): live refuses a longer one with its
         // generic sentence, IF NOT EXISTS or not, and reads a leading locator of this account.
@@ -153,15 +181,15 @@ public class CreateNamespaceHandler implements CommandHandler {
             ddl.checkCreatePrivilege(Privilege.CREATE_SCHEMA, ContainerType.DATABASE, containerDb);
         }
         if (ctx.or_replace() != null) {
+            // Replacing a schema needs OWNERSHIP of it.
+            queryExecutor.requireOwnership("SCHEMA", parts, null);
             try {
                 final String dbN = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
                 final String scN = parts.length == 2 ? parts[1] : parts[0];
                 if (dbN != null) {
-                    final Schema replacedSchema = catalog.getDatabase(dbN).getSchema(scN);
-                    if (replacedSchema != null) {
-                        releaseSchemaStorage(dbN, replacedSchema);
-                    }
-                    catalog.getDatabase(dbN).dropSchema(scN, true);
+                    final Schema replacedSchema = catalog.databaseExact(dbN).schemaExact(scN);
+                    releaseSchemaStorage(dbN, replacedSchema);
+                    catalog.databaseExact(dbN).dropSchema(replacedSchema.getName(), true);
                     if (ddl.getStreamManager() != null) {
                         ddl.getStreamManager().onSchemaDropped(dbN, scN);
                     }
@@ -174,16 +202,16 @@ public class CreateNamespaceHandler implements CommandHandler {
             // option is judged (an invalid retention over an existing schema is "already exists" on the
             // account).
             if (ifNotExists && ctx.or_replace() == null && ctx.CLONE() == null && containerName != null
-                    && catalog.getDatabase(containerName).hasSchema(parts.length == 2 ? parts[1] : parts[0])) {
+                    && catalog.databaseExact(containerName).hasSchemaExact(parts.length == 2 ? parts[1] : parts[0])) {
                 ConditionalDdlOutcome.createSkipped();
                 return null;
             }
-            final Database container = containerName == null ? null : catalog.getDatabase(containerName);
+            final Database container = containerName == null ? null : catalog.databaseExact(containerName);
             final boolean transientSchema = ctx.TRANSIENT() != null
                 || (container != null && container.isTransientObject());
             // Over a NEW name the options are judged before anything is made, so a refused CREATE leaves no
             // schema behind.
-            final Integer retention = requestedRetention(ctx, transientSchema);
+            final Integer retention = requestedRetention(properties.retention(), transientSchema);
             final Schema schema;
 
             if (ctx.CLONE() != null) {
@@ -199,34 +227,34 @@ public class CreateNamespaceHandler implements CommandHandler {
                     if (catalog.getCurrentDatabase() == null) {
                         throw NoCurrentDatabaseRefusal.forStatement();
                     }
-                    final Database db = catalog.getDatabase(catalog.getCurrentDatabase());
+                    final Database db = catalog.databaseExact(catalog.getCurrentDatabase());
 
                     if (sourceParts.length == 1) {
                         schema = db.cloneSchema(sourceParts[0], parts[0]);
-                        sourceDbName = catalog.getCurrentDatabase().toUpperCase();
-                        sourceSchema = sourceParts[0].toUpperCase();
+                        sourceDbName = catalog.getCurrentDatabase();
+                        sourceSchema = sourceParts[0];
                         targetDbName = sourceDbName;
-                        targetSchema = parts[0].toUpperCase();
+                        targetSchema = parts[0];
                     } else {
                         throw new RuntimeException("Source schema must be in current database when target is unqualified");
                     }
                 } else if (parts.length == 2) {
-                    final Database db = catalog.getDatabase(parts[0]);
+                    final Database db = catalog.databaseExact(parts[0]);
 
                     if (sourceParts.length == 1) {
-                        final Database sourceDb = catalog.getDatabase(catalog.getCurrentDatabase());
+                        final Database sourceDb = catalog.databaseExact(catalog.getCurrentDatabase());
                         schema = sourceDb.cloneSchemaTo(sourceParts[0], db, parts[1]);
-                        sourceDbName = catalog.getCurrentDatabase().toUpperCase();
-                        sourceSchema = sourceParts[0].toUpperCase();
-                        targetDbName = parts[0].toUpperCase();
-                        targetSchema = parts[1].toUpperCase();
+                        sourceDbName = catalog.getCurrentDatabase();
+                        sourceSchema = sourceParts[0];
+                        targetDbName = parts[0];
+                        targetSchema = parts[1];
                     } else if (sourceParts.length == 2) {
-                        final Database sourceDb = catalog.getDatabase(sourceParts[0]);
+                        final Database sourceDb = catalog.databaseExact(sourceParts[0]);
                         schema = sourceDb.cloneSchemaTo(sourceParts[1], db, parts[1]);
-                        sourceDbName = sourceParts[0].toUpperCase();
-                        sourceSchema = sourceParts[1].toUpperCase();
-                        targetDbName = parts[0].toUpperCase();
-                        targetSchema = parts[1].toUpperCase();
+                        sourceDbName = sourceParts[0];
+                        sourceSchema = sourceParts[1];
+                        targetDbName = parts[0];
+                        targetSchema = parts[1];
                     } else {
                         throw new RuntimeException("Invalid source schema name: " + sourceSchemaName);
                     }
@@ -241,12 +269,20 @@ public class CreateNamespaceHandler implements CommandHandler {
                         throw NoCurrentDatabaseRefusal.forStatement();
                     }
                     schema = new Schema(parts[0]);
-                    catalog.getDatabase(catalog.getCurrentDatabase()).addSchema(schema);
-                    schema.setOwner(catalog.currentRoleForOwner());
+                    catalog.databaseExact(catalog.getCurrentDatabase()).addSchema(schema);
+                    schema.setOwner(FutureGrants.ownerOfNewInDatabase(catalog, "SCHEMA",
+                        schema.getDatabaseName(), schema.getName()));
                 } else if (parts.length == 2) {
                     schema = new Schema(parts[1]);
-                    catalog.getDatabase(parts[0]).addSchema(schema);
-                    schema.setOwner(catalog.currentRoleForOwner());
+                    final Database target = catalog.databaseExact(parts[0]);
+                    if (target.hasSchemaExact(parts[1])) {
+                        // A qualified name is echoed qualified: Object 'DB."ss"' already exists. (live-verified)
+                        throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(parts[0])
+                            + "." + SqlIdentifiers.spellCanonical(parts[1]) + "' already exists."));
+                    }
+                    target.addSchema(schema);
+                    schema.setOwner(FutureGrants.ownerOfNewInDatabase(catalog, "SCHEMA",
+                        schema.getDatabaseName(), schema.getName()));
                 } else {
                     throw new RuntimeException("Invalid schema name: " + schemaName);
                 }
@@ -257,13 +293,15 @@ public class CreateNamespaceHandler implements CommandHandler {
             if (retention != null) {
                 schema.setDataRetentionTimeInDays(retention);
             }
-            final String comment = ddl.extractCommentFromList(ctx.commentClause());
+            final String comment = ddl.extractCommentFromList(properties.comments());
             if (comment != null) {
                 schema.setComment(comment);
             }
-            if (ctx.tagList() != null) {
-                InlineTags.apply(schema, ctx.tagList());
+            for (final FrostlakeParser.TagListContext tags : properties.tags()) {
+                InlineTags.apply(schema, tags, queryExecutor);
             }
+            properties.applyParameters(schema.getParameters());
+            schema.setManagedAccess(properties.managedAccess());
             // Snowflake activates a newly created schema: it becomes the session's current schema,
             // in its containing database (live-verified: CURRENT_SCHEMA() changes right after).
             final String activatedDb = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
@@ -279,12 +317,10 @@ public class CreateNamespaceHandler implements CommandHandler {
      * The retention a CREATE SCHEMA asks for, judged up front: a negative value, one past the account's
      * limit, or one a transient schema cannot keep is refused. Null when the clause is absent.
      */
-    private static Integer requestedRetention(final FrostlakeParser.CreateStatementContext ctx,
-            final boolean transientSchema) {
-        if (ctx.DATA_RETENTION_TIME_IN_DAYS() == null || ctx.INTEGER_LITERAL() == null) {
+    private static Integer requestedRetention(final String written, final boolean transientSchema) {
+        if (written == null) {
             return null;
         }
-        final String written = (ctx.MINUS() != null ? "-" : "") + ctx.INTEGER_LITERAL().getText();
         if (written.startsWith("-")) {
             throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
                 written, "DATA_RETENTION_TIME_IN_DAYS"));

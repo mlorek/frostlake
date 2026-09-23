@@ -31,7 +31,8 @@ public class ArrayCompact extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.requireArray(args.get(0),
+            "First argument of ARRAY_COMPACT is not an array");
         if (src == null) return null;
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (final JsonNode el : src) {

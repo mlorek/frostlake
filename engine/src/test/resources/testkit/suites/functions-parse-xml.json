@@ -80,11 +80,18 @@
       {"sql": "SELECT TYPEOF(v) FROM xml_t", "expect": {"value": "XML"}}
     ]},
     {"name": "a-bare-xml-variant-cell-renders-as-xml-text",
-     "skip": {"backends": ["http"], "reason": "transport divergence: the HTTP transport re-serialises a VARIANT cell with the JSON serialiser, so a bare XML value arrives as its object model {\"$\":22,\"@\":\"test\"} instead of the XML text. Every other check in this suite reads through ::VARCHAR, which renders identically on all transports; this test keeps the un-cast claim on the embedded and JDBC paths."},
      "steps": [
       {"sql": "SELECT PARSE_XML('<test>22</test>')", "expect": {"value": "<test>22</test>"}},
       {"sql": "SELECT PARSE_JSON('{\"$\":1,\"@\":\"b\"}')", "expect": {"value": "<b>1</b>"}},
       {"sql": "SELECT GET(PARSE_XML('<a><b>1</b></a>'), '$')", "expect": {"value": "<b>1</b>"}}
+    ]},
+    {"name": "an-xml-value-nested-in-a-container-keeps-the-object-model",
+     "steps": [
+      {"sql": "ALTER SESSION SET JSON_INDENT = 2"},
+      {"sql": "SELECT ARRAY_CONSTRUCT(PARSE_XML('<test>22</test>'))", "expect": {"value": "[\n  {\n    \"$\": 22,\n    \"@\": \"test\"\n  }\n]"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('x', PARSE_XML('<test>22</test>'))", "expect": {"value": "{\n  \"x\": {\n    \"$\": 22,\n    \"@\": \"test\"\n  }\n}"}},
+      {"sql": "ALTER SESSION UNSET JSON_INDENT"},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<test>22</test>'))", "expect": {"value": "{\"$\":22,\"@\":\"test\"}"}}
     ]}
   ]
 }

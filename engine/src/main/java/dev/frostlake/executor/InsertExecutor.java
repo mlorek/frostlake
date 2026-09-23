@@ -26,6 +26,7 @@ import dev.frostlake.executor.expressions.JsonArrayExpression;
 import dev.frostlake.executor.expressions.JsonObjectExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
+import dev.frostlake.executor.expressions.MultiColumnScalarSubqueryException;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
@@ -45,12 +46,14 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.StatementResultWidths;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -91,7 +94,7 @@ final class InsertExecutor {
             // only inside its subqueries.
             final Map<String, ResultSet> cteResults = null;
 
-            final String tableName = ctx.objectName().KW_IDENTIFIER() != null
+            final String tableName = ctx.objectName().qualifiedName() == null
                 ? executor.resolveObjectName(ctx.objectName())
                 : executor.getQualifiedName(ctx.objectName().qualifiedName());
             // A missing source relation is reported ahead of a missing target (live-verified).
@@ -113,12 +116,14 @@ final class InsertExecutor {
 
             // Get column names if specified
             List<String> columnNames = null;
-            if (ctx.columnListOptional() != null) {
+            if (ctx.insertColumnList() != null) {
                 columnNames = new ArrayList<>();
-                for (final FrostlakeParser.NamePartContext id : ctx.columnListOptional().namePart()) {
+                for (final FrostlakeParser.InsertColumnItemContext item
+                        : ctx.insertColumnList().insertColumnItem()) {
                     // Checked by requireColumnList once the values' count is known: live weighs the
                     // count first, and the source query's own errors ahead of the list's.
-                    columnNames.add(ParseTreeText.namePartText(id));
+                    columnNames.add(ParseTreeText.namePartText(
+                        item.namePart(item.namePart().size() - 1)));
                 }
             }
 
@@ -126,9 +131,14 @@ final class InsertExecutor {
             final List<List<Object>> valuesList = new ArrayList<>();
 
             if (ctx.valueTupleList() != null) {
-                if (ctx.columnListOptional() != null) {
-                    requireColumnList(table, ctx.columnListOptional(),
+                if (ctx.insertColumnList() != null) {
+                    requireColumnList(table, ctx.insertColumnList(),
                         ctx.valueTupleList().valueTuple(0).valueList().booleanExpr().size());
+                } else if (ctx.valueTupleList().valueTuple(0).valueList().booleanExpr().size() != table.columnCount()) {
+                    // Positionally too, the count is weighed before any item's own refusal (live-verified).
+                    throw new RuntimeException(SqlCompilationError.of(
+                        "Insert value list does not match column list expecting " + table.columnCount()
+                        + " but got " + ctx.valueTupleList().valueTuple(0).valueList().booleanExpr().size()));
                 }
                 // INSERT ... VALUES — one evaluator serves every cell (the dummy table and row carry
                 // no per-cell state, so per-cell construction was pure allocation).
@@ -161,6 +171,7 @@ final class InsertExecutor {
                 for (int position = 0; position < foldedTypes.size(); position++) {
                     final TableColumn target = valuesTarget(table, columnNames, position);
                     if (target != null) {
+                        rejectRowValue(rowCells, position, target, evaluator);
                         ColumnTypeFamilies.rejectMismatch(target, foldedTypes.get(position));
                     }
                 }
@@ -201,11 +212,16 @@ final class InsertExecutor {
                 try {
                     selectResult = executor.executeSelectFromContextWithCTEs(
                         ctx.selectStatement(), null, cteResults);
+                    // Writing reads every cell, so a fault a relation deferred raises here.
+                    DeferredFault.requireNone(selectResult.getRows());
                 } catch (final RuntimeException failed) {
+                    if (refusesColumnCount(failed)) {
+                        rejectRowItems(ctx.selectStatement(), table, columnNames);
+                    }
                     throw sourceQueryFailure(tableName, table, columnNames, failed);
                 }
-                if (ctx.columnListOptional() != null) {
-                    requireColumnList(table, ctx.columnListOptional(), selectResult.getColumns().size());
+                if (ctx.insertColumnList() != null) {
+                    requireColumnList(table, ctx.insertColumnList(), selectResult.getColumns().size());
                 }
                 rejectMismatchedSelectColumnTypes(table, columnNames, selectResult.getColumns());
                 for (final Row row : selectResult.getRows()) {
@@ -223,7 +239,6 @@ final class InsertExecutor {
             // transaction had inserted earlier in place, so the OVERWRITE appended to them.
             if (isOverwrite) {
                 executor.emptyTableContents(fullyQualifiedName);
-                table.setRowCount(0);
                 logger.trace("Truncated table {} due to INSERT OVERWRITE", tableName);
             }
 
@@ -285,6 +300,104 @@ final class InsertExecutor {
             }
             ColumnTypeFamilies.rejectMismatch(target, sourceColumns.get(i).getStaticType());
         }
+    }
+
+    /**
+     * A VALUES column holding a scalar subquery of several columns, where Frostlake reached the value and refused
+     * its column count. A single row types it ROW(ANY), a type no column takes; across several rows the column
+     * cannot fold it at all: "Invalid data type [ROW(NUMBER(1,0), NUMBER(1,0))] in VALUES clause" (live-verified).
+     */
+    private static void rejectRowValue(final List<List<Expression>> rowCells, final int position,
+                                       final TableColumn target, final ExpressionEvaluator evaluator) {
+        for (final List<Expression> cells : rowCells) {
+            final Expression cell = position < cells.size() ? cells.get(position) : null;
+            final String rowType = cell == null ? null : evaluator.multiColumnRowText(cell);
+            if (rowType == null) {
+                continue;
+            }
+            if (rowCells.size() > 1) {
+                throw new RuntimeException(SqlCompilationError.of("Invalid data type [" + rowType + "] in VALUES clause"));
+            }
+            ColumnTypeFamilies.rejectRowValue(target, "ROW(ANY)");
+        }
+    }
+
+    /**
+     * An INSERT … SELECT item that is a scalar subquery of several columns is typed as the ROW of its items and
+     * matched against its column, a type no column takes: {@code INSERT INTO t (a) SELECT (SELECT 1, 2)} is
+     * "expecting NUMBER(38,0) but got ROW(NUMBER(1,0), NUMBER(1,0)) for column A", where Frostlake ran the source
+     * query and refused the subquery's column count. The source's own names are judged first, while it runs. An item
+     * of a derived table the source reads through a star is matched the same way (live-verified).
+     *
+     * @param source      the source query
+     * @param table       the target table
+     * @param columnNames the written column list, or null for the table's columns in order
+     */
+    private void rejectRowItems(final FrostlakeParser.SelectStatementContext source, final Table table,
+                                final List<String> columnNames) {
+        final List<ParserRuleContext> items = sourceItems(source);
+        if (items == null) {
+            return;
+        }
+        final ExpressionEvaluator scope = new ExpressionEvaluator(null, executor.getFunctionRegistry(),
+            executor.getCatalog(), executor);
+        // In the table's column order, whatever order the column list writes them in (live-verified).
+        for (final TableColumn column : table.getColumns()) {
+            for (int i = 0; i < items.size(); i++) {
+                if (valuesTarget(table, columnNames, i) != column) {
+                    continue;
+                }
+                final String rowType;
+                try {
+                    rowType = scope.multiColumnRowText(ExpressionEvaluator.parse(executor.getOriginalText(items.get(i))));
+                } catch (final RuntimeException unparseable) {
+                    continue;
+                }
+                if (rowType != null) {
+                    ColumnTypeFamilies.rejectRowValue(column, rowType);
+                }
+            }
+        }
+    }
+
+    /** Whether a failure is, or was caused by, the refusal of a scalar subquery's column count. */
+    private static boolean refusesColumnCount(final Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof MultiColumnScalarSubqueryException) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The items of a source query of one SELECT, in order: each item's expression, a star over a single derived
+     * table expanded to that table's own items. Null when the positions cannot be told: a set operation, a star over
+     * anything else.
+     */
+    private static List<ParserRuleContext> sourceItems(final FrostlakeParser.SelectStatementContext source) {
+        if (source == null || source.selectOperand().size() != 1 || source.selectOperand(0).selectClause() == null) {
+            return null;
+        }
+        final FrostlakeParser.SelectClauseContext clause = source.selectOperand(0).selectClause();
+        final List<ParserRuleContext> items = new ArrayList<>();
+        for (final FrostlakeParser.SelectItemContext item : clause.selectList().selectItem()) {
+            if (SelectItemAccessors.isExprItem(item)) {
+                items.add(SelectItemAccessors.getItemExpression(item));
+                continue;
+            }
+            final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
+            if (!SelectItemAccessors.isStarItem(item) || from == null || from.tableReference().size() != 1
+                    || !from.joinClause().isEmpty() || from.tableReference(0).tableSource().selectStatement() == null) {
+                return null;
+            }
+            final List<ParserRuleContext> derived = sourceItems(from.tableReference(0).tableSource().selectStatement());
+            if (derived == null) {
+                return null;
+            }
+            items.addAll(derived);
+        }
+        return items;
     }
 
     /** Build a row in table-column order from positional or column-listed values (auto-increment + defaults applied). */
@@ -424,6 +537,11 @@ final class InsertExecutor {
         if (semiStructured) {
             throw new RuntimeException(SqlCompilationError.of("Invalid expression [" + exprText + "] in VALUES clause"));
         }
+        // A division or a math function live does not fold is refused too, echoed as live rewrites it.
+        final RuntimeException unfolded = ValuesFoldRule.refusalOf(ast, exprText, evaluator);
+        if (unfolded != null) {
+            throw unfolded;
+        }
     }
 
     /**
@@ -522,14 +640,15 @@ final class InsertExecutor {
             }
             return mapping;
         }
-        final Map<String, Integer> positionByName = new HashMap<>();
-        for (int i = 0; i < columnNames.size(); i++) {
-            positionByName.put(columnNames.get(i).toUpperCase(), i);
-        }
-        final List<TableColumn> cols = table.columnsView();
+        // Each listed name finds its column through the table's own lookup, which matches the spelling
+        // exactly before it folds case: INSERT INTO t ("x", "X") fills two different columns.
         for (int c = 0; c < mapping.length; c++) {
-            final Integer position = positionByName.get(cols.get(c).getName().toUpperCase());
-            mapping[c] = position == null ? -1 : position;
+            mapping[c] = -1;
+        }
+        for (int i = 0; i < columnNames.size(); i++) {
+            if (table.hasColumn(columnNames.get(i))) {
+                mapping[table.getColumnIndex(columnNames.get(i))] = i;
+            }
         }
         return mapping;
     }
@@ -604,7 +723,21 @@ final class InsertExecutor {
             for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
                 executor.getCatalog().resolveTableAsWritten(executor.getQualifiedName(into.qualifiedName()), "Table");
             }
-            final ResultSet source = executor.executeSelectFromContext(ctx.selectStatement());
+            final ResultSet source;
+            try {
+                source = executor.executeSelectFromContext(ctx.selectStatement());
+            } catch (final RuntimeException failed) {
+                if (refusesColumnCount(failed)) {
+                    // A source item of several columns is a ROW the target's column cannot take, and
+                    // live names it that way rather than refusing the subquery's shape.
+                    for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
+                        if (into.expressionList() == null) {
+                            rejectRowItems(ctx.selectStatement(), targetOf(into), columnNamesOf(into));
+                        }
+                    }
+                }
+                throw failed;
+            }
             // Every count ahead of every name: a later INTO's miscount is refused before an earlier
             // INTO's unknown column.
             for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
@@ -617,6 +750,7 @@ final class InsertExecutor {
             }
             final Table sourceTable = executor.resultSetToTable(source, "multi_insert_source");
             requireResolvableRoutingExpressions(ctx, sourceTable);
+            rejectMistypedRoutedValues(ctx, source, sourceTable);
             final boolean overwrite = ctx.OVERWRITE() != null;
             final boolean first = ctx.FIRST() != null;
             final boolean conditional = !ctx.multiInsertWhen().isEmpty();
@@ -629,11 +763,21 @@ final class InsertExecutor {
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
                     if (truncated.add(fqn)) {
                         executor.emptyTableContents(fqn);
-                        executor.getCatalog().resolveTableAsWritten(tableName, "Table").setRowCount(0);
                     }
                 }
             }
 
+            // One count per distinct target, in the order the statement first names it — the grid live
+            // answers with, one "number of rows inserted into <table>" column each.
+            final Map<String, long[]> insertedInto = new LinkedHashMap<>();
+            final Map<String, String> targetNames = new LinkedHashMap<>();
+            for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
+                final String fqn = executor.getFullyQualifiedTableName(executor.getQualifiedName(into.qualifiedName()));
+                if (!insertedInto.containsKey(fqn)) {
+                    insertedInto.put(fqn, new long[1]);
+                    targetNames.put(fqn, targetOf(into).getName());
+                }
+            }
             int rowsInserted = 0;
             for (final Row srcRow : source.getRows()) {
                 final List<FrostlakeParser.MultiInsertIntoContext> applicable = new ArrayList<>();
@@ -677,20 +821,47 @@ final class InsertExecutor {
                         }
                     } else {
                         values = srcRow.getValues();
+                        // Writing reads every cell, so a fault a relation deferred raises here.
+                        for (final Object value : values) {
+                            DeferredFault.read(value);
+                        }
                     }
                     insertRowInto(target, fqn,
                         buildInsertRow(target, fqn, columnNames, insertValueIndexes(target, columnNames), values),
                         null, false, tableName);
+                    insertedInto.get(fqn)[0]++;
                     rowsInserted++;
                 }
             }
             logger.trace("Multi-table INSERT routed {} row insertion(s)", rowsInserted);
-            return null;
+            return multiTableInsertCounts(insertedInto, targetNames);
         } catch (final SecurityException e) {
             throw e;
         } catch (final Exception e) {
             throw StatementErrors.propagate(e);
         }
+    }
+
+    /**
+     * A multi-table INSERT's count grid, as live answers it: one column per distinct target in the order the
+     * statement first names it, "number of rows inserted into T" (the table's own name, however the INTO wrote
+     * it), and the plain "number of rows inserted" when every INTO names one table. A target no row reached
+     * still has its column, holding 0.
+     */
+    private ResultSet multiTableInsertCounts(final Map<String, long[]> insertedInto,
+                                             final Map<String, String> targetNames) {
+        final List<ResultSetColumn> columns = new ArrayList<>();
+        final List<Object> counts = new ArrayList<>();
+        long total = 0;
+        for (final Map.Entry<String, long[]> target : insertedInto.entrySet()) {
+            columns.add(new ResultSetColumn(insertedInto.size() == 1 ? "number of rows inserted"
+                : "number of rows inserted into " + targetNames.get(target.getKey()), StatementResultWidths.DML_COUNT));
+            counts.add(Long.valueOf(target.getValue()[0]));
+            total += target.getValue()[0];
+        }
+        final List<Row> rows = new ArrayList<>();
+        rows.add(new Row(counts));
+        return new ResultSet(columns, rows).markUpdateCount(total);
     }
 
     private List<FrostlakeParser.MultiInsertIntoContext> allMultiInsertIntos(final FrostlakeParser.MultiTableInsertStatementContext ctx) {
@@ -735,6 +906,62 @@ final class InsertExecutor {
      * the values', before any unknown function name — and resolves a name against the source's output
      * columns alone: neither the source's own alias nor a target's name qualifies anything here.
      */
+    /**
+     * The compile-time type match of every value a multi-table INSERT writes, against the column it
+     * feeds — the same rule the single-table INSERT applies, which this path never reached. An INTO
+     * with a VALUES list types each of its expressions in the source's scope; one without takes the
+     * source query's own column types.
+     *
+     * @param ctx         the statement
+     * @param source      the source query's result, for its columns' static types
+     * @param sourceTable the source as a relation, the scope a routed expression reads
+     */
+    private void rejectMistypedRoutedValues(final FrostlakeParser.MultiTableInsertStatementContext ctx,
+                                            final ResultSet source, final Table sourceTable) {
+        final ExpressionEvaluator scope = new ExpressionEvaluator(sourceTable, executor.getFunctionRegistry(),
+            executor.getCatalog(), executor);
+        final Map<String, Table> unnamed = new HashMap<>();
+        unnamed.put("", sourceTable);
+        final List<Table> allTables = new ArrayList<>();
+        allTables.add(sourceTable);
+        scope.setMultiTableContext(unnamed, allTables);
+        for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
+            final Table target = targetOf(into);
+            final List<String> columnNames = columnNamesOf(into);
+            if (into.expressionList() == null) {
+                rejectMismatchedSelectColumnTypes(target, columnNames, source.getColumns());
+                continue;
+            }
+            final List<FrostlakeParser.ExpressionContext> values = into.expressionList().expression();
+            for (int i = 0; i < values.size(); i++) {
+                final TableColumn column = valuesTarget(target, columnNames, i);
+                if (column == null) {
+                    continue;
+                }
+                final DataType written;
+                try {
+                    written = scope.inferStaticType(
+                        ExpressionEvaluator.parse(executor.getOriginalText(values.get(i))));
+                } catch (final RuntimeException untyped) {
+                    continue;
+                }
+                ColumnTypeFamilies.rejectMismatch(column, written);
+            }
+        }
+    }
+
+    /** An INTO clause's column list, or null when it writes every column of its target. */
+    private List<String> columnNamesOf(final FrostlakeParser.MultiInsertIntoContext into) {
+        if (into.columnListOptional() == null) {
+            return null;
+        }
+        final List<String> names = new ArrayList<>();
+        for (final FrostlakeParser.NamePartContext id : into.columnListOptional().namePart()) {
+            names.add(ParseTreeText.namePartText(id));
+        }
+        return names;
+    }
+
     private void requireResolvableRoutingExpressions(final FrostlakeParser.MultiTableInsertStatementContext ctx,
                                                      final Table sourceTable) {
         final List<ParserRuleContext> expressions = new ArrayList<>();
@@ -820,6 +1047,44 @@ final class InsertExecutor {
      * first, then each name in the order written. A name the table does not have is an invalid identifier
      * where it stands, and one already named is a duplicate (live-verified).
      */
+    /**
+     * An INSERT's column list, whose items may be qualified. The qualifier the account accepts is the
+     * target table's own bare name and nothing else — not a schema, not a database — and it accepts it
+     * whether the target was written bare or fully qualified. Any other qualifier, and any column the
+     * table does not have, is an invalid identifier spelled as the item was WRITTEN: {@code X.A},
+     * {@code T1.ZZ}.
+     */
+    private void requireColumnList(final Table table, final FrostlakeParser.InsertColumnListContext list,
+                                   final int valueCount) {
+        final List<FrostlakeParser.InsertColumnItemContext> items = list.insertColumnItem();
+        if (valueCount != items.size()) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Insert value list does not match column list expecting " + items.size()
+                    + " but got " + valueCount));
+        }
+        final Set<String> seen = new HashSet<>();
+        for (final FrostlakeParser.InsertColumnItemContext item : items) {
+            final List<FrostlakeParser.NamePartContext> parts = item.namePart();
+            final String columnName = ParseTreeText.namePartText(parts.get(parts.size() - 1));
+            if (parts.size() > 1) {
+                final String qualifier = ParseTreeText.namePartText(parts.get(0));
+                if (!table.getName().equals(qualifier) || !table.hasColumn(columnName)
+                        || !table.getColumn(columnName).getName().equals(columnName)) {
+                    throw new RuntimeException(SqlCompilationError.invalidIdentifier(
+                        item.getStart().getLine(), item.getStart().getCharPositionInLine(),
+                        SqlIdentifiers.spellCanonical(qualifier) + "."
+                            + SqlIdentifiers.spellCanonical(columnName)));
+                }
+            } else {
+                requireColumn(table, columnName, parts.get(0));
+            }
+            if (!seen.add(columnName)) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "duplicate column name '" + SqlIdentifiers.spellCanonical(columnName) + "'"));
+            }
+        }
+    }
+
     private void requireColumnList(final Table table, final FrostlakeParser.ColumnListOptionalContext list,
                                    final int valueCount) {
         final List<FrostlakeParser.NamePartContext> names = list.namePart();

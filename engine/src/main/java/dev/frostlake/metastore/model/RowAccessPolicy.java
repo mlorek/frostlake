@@ -30,7 +30,7 @@ import java.util.List;
 public class RowAccessPolicy extends SqlObject {
 
     private final List<Parameter> parameters;  // columns from the table passed as args
-    private final String body;                 // SQL boolean expression
+    private String body;                       // SQL boolean expression
 
     public RowAccessPolicy(final String name, final List<Parameter> parameters, final String body) {
         super(name);
@@ -40,6 +40,7 @@ public class RowAccessPolicy extends SqlObject {
 
     public List<Parameter> getParameters() { return new ArrayList<>(parameters); }
     public String getBody() { return body; }
+    public void setBody(final String body) { this.body = body; }
 
     @Override
     public String getObjectType() { return "ROW ACCESS POLICY"; }

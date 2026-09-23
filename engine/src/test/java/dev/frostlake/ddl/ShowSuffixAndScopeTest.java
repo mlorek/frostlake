@@ -216,17 +216,17 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
         assertEquals(0, engine.executeQuery("SHOW ICEBERG TABLES").getRowCount());
         assertEquals(0, engine.executeQuery("SHOW TERSE ICEBERG TABLES IN test_db.test_schema").getRowCount());
         assertScopeRefused("SHOW PROCEDURES LIKE 'foo' IN APPLICATION app",
-            "SQL compilation error:\nApplication 'APP' does not exist or not authorized.");
+            hinted("SQL compilation error:\nApplication 'APP' does not exist or not authorized."));
         assertScopeRefused("SHOW PROCEDURES LIKE 'foo' IN APPLICATION PACKAGE pkg",
-            "SQL compilation error:\nApplication package 'PKG' does not exist or not authorized.");
+            hinted("SQL compilation error:\nApplication package 'PKG' does not exist or not authorized."));
         assertScopeRefused("SHOW FUNCTIONS LIKE 'foo' IN CLASS bla",
             "SQL compilation error: Object type or Class 'BLA' does not exist or not authorized.");
         assertScopeRefused("SHOW FUNCTIONS IN APPLICATION app",
-            "SQL compilation error:\nApplication 'APP' does not exist or not authorized.");
+            hinted("SQL compilation error:\nApplication 'APP' does not exist or not authorized."));
         assertScopeRefused("SHOW PROCEDURES IN CLASS c1",
             "SQL compilation error: Object type or Class 'C1' does not exist or not authorized.");
         assertScopeRefused("SHOW PROCEDURES IN APPLICATION \"app\"",
-            "SQL compilation error:\nApplication '\"app\"' does not exist or not authorized.");
+            hinted("SQL compilation error:\nApplication '\"app\"' does not exist or not authorized."));
     }
 
     @Test

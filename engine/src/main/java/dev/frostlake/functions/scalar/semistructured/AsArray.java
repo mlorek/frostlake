@@ -19,7 +19,9 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.TypedVectorNode;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
@@ -32,8 +34,9 @@ public class AsArray extends StructuredArgumentFunction {
         if (args.get(0) == null) return null;
         final Object v = args.get(0);
         if (v instanceof List) return v;
+        if (v instanceof VectorValue) return null;
         final JsonNode node = JsonTypeHelper.parse(v);
-        if (node != null && node.isArray()) return VariantValue.ofNode(node);
+        if (node != null && node.isArray() && TypedVectorNode.vectorValueOf(node) == null) return VariantValue.ofNode(node);
         return null;
     }
 

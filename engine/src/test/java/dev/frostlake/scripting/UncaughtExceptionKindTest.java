@@ -86,8 +86,8 @@ public class UncaughtExceptionKindTest extends BaseDatabaseTest {
 
     @Test
     void aFailingStatementStaysStatementError() {
-        assertEquals("Uncaught exception of type 'STATEMENT_ERROR' on line 2 at position 2 :"
-                + " SQL compilation error:|Table 'NOSUCHTABLE' does not exist or not authorized.",
+        assertEquals(hinted("Uncaught exception of type 'STATEMENT_ERROR' on line 2 at position 2 :"
+                + " SQL compilation error:|Table 'NOSUCHTABLE' does not exist or not authorized."),
             outcome("BEGIN\n  INSERT INTO nosuchtable VALUES (1);\n  RETURN 1;\nEND"));
     }
 

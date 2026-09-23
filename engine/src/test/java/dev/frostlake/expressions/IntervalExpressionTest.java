@@ -17,7 +17,6 @@
 package dev.frostlake.expressions;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -25,16 +24,14 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Snowflake interval literals, live-verified: the quoted-string form ({@code INTERVAL '10 days'},
  * plural units and comma-separated parts INSIDE the string, a bare number meaning seconds) and the
- * {@code INTERVAL '<n>' <singular-unit>} form. An unquoted amount is a syntax error, and a PLURAL
- * word after the string is a column alias, not a unit — {@code INTERVAL '10' DAYS} adds ten
- * SECONDS. Intervals apply in date/time arithmetic.
+ * {@code INTERVAL '<n>' <unit>} form. An unquoted amount is a syntax error. Intervals apply in date/time
+ * arithmetic.
  */
 public class IntervalExpressionTest extends BaseJdbcTest {
 
@@ -74,8 +71,8 @@ public class IntervalExpressionTest extends BaseJdbcTest {
     }
 
     @Test
-    public void pluralWordAfterTheStringIsAnAliasNotAUnit() throws SQLException {
-        // Live-verified: INTERVAL '10' DAYS is ten SECONDS with the column aliased DAYS.
+    public void aWordAfterTheCallIsAnAlias() throws SQLException {
+        // Live-verified: a plural unit word after the call, outside the interval, aliases the column.
         final ResultSet rs = statement.executeQuery(
             "SELECT TO_CHAR('2024-01-01'::DATE + INTERVAL '10', 'YYYY-MM-DD HH24:MI:SS') DAYS");
         assertTrue(rs.next());
@@ -130,23 +127,27 @@ public class IntervalExpressionTest extends BaseJdbcTest {
 
     @Test
     public void unitSuffixedIntervalProjectsAsAValue() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "the Snowflake JDBC driver cannot marshal an interval result column — it fails with "
-            + "\"Feature unsupported: data type: 50006\" before the value reaches the test");
-        // Live-verified: the <amount> <singular-unit> spelling is a first-class value —
-        // SYSTEM$TYPEOF(INTERVAL '1' DAY) is "INTERVAL DAY(9)[SB16]", it aliases, and it survives
-        // TO_VARCHAR. (The Snowflake JDBC driver cannot RENDER an interval result column, "No enum
-        // constant … INTERVAL_DAY_TIME", which is a client limitation, not a server rejection.)
-        assertIntervalProjects("SELECT INTERVAL '1' DAY");
-        assertIntervalProjects("SELECT INTERVAL '2' HOUR");
-        assertIntervalProjects("SELECT INTERVAL '1' YEAR");
-        assertIntervalProjects("SELECT INTERVAL '1' DAY AS d");
+        // The <amount> <singular-unit> spelling is a first-class value: SYSTEM$TYPEOF(INTERVAL '1' DAY) is
+        // "INTERVAL DAY(9)[SB16]", and it aliases. The column is the interval family with a scale that codes
+        // its fields, and a sixteen-byte day-time cell reads as its nanoseconds — the answers the account's
+        // driver gives whether its results travel as JSON or as ARROW. (What the other kinds read as differs
+        // between those two formats; the driver-surface test pins the ARROW reading.)
+        assertIntervalProjects("SELECT INTERVAL '1' DAY", "INTERVAL_DAY_TIME", 50006, 6, "86400000000000");
+        assertIntervalProjects("SELECT INTERVAL '2' HOUR", "INTERVAL_DAY_TIME", 50006, 9, "7200000000000");
+        assertIntervalProjects("SELECT INTERVAL '1' YEAR", "INTERVAL_YEAR_MONTH", 50005, 1, null);
+        assertIntervalProjects("SELECT INTERVAL '1' DAY AS d", "INTERVAL_DAY_TIME", 50006, 6, "86400000000000");
     }
 
-    private void assertIntervalProjects(final String sql) throws SQLException {
+    private void assertIntervalProjects(final String sql, final String typeName, final int typeCode, final int scale,
+                                        final String text) throws SQLException {
         try (final java.sql.ResultSet rs = statement.executeQuery(sql)) {
+            assertEquals(typeName, rs.getMetaData().getColumnTypeName(1), sql);
+            assertEquals(typeCode, rs.getMetaData().getColumnType(1), sql);
+            assertEquals(scale, rs.getMetaData().getScale(1), sql);
             assertTrue(rs.next(), "expected a row from: " + sql);
-            assertNotNull(rs.getObject(1), "expected an interval value from: " + sql);
+            if (text != null) {
+                assertEquals(text, rs.getString(1), sql);
+            }
         }
     }
 

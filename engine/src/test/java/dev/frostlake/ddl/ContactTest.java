@@ -201,8 +201,8 @@ public class ContactTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE c_t SET CONTACT SUPPORT = no_such_contact");
             }
         });
-        assertEquals("SQL compilation error:\nContact 'TEST_DB.TEST_SCHEMA.NO_SUCH_CONTACT'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nContact 'TEST_DB.TEST_SCHEMA.NO_SUCH_CONTACT'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     @Test
@@ -214,8 +214,8 @@ public class ContactTest extends BaseDatabaseTest {
                 engine.execute("DROP CONTACT c2");
             }
         });
-        assertEquals("SQL compilation error:\nContact 'TEST_DB.TEST_SCHEMA.C2'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nContact 'TEST_DB.TEST_SCHEMA.C2'"
+            + " does not exist or not authorized."), ex.getMessage());
         engine.execute("DROP CONTACT IF EXISTS c2");
     }
 

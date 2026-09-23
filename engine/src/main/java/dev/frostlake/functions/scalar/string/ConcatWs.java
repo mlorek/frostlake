@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
@@ -55,4 +56,13 @@ public class ConcatWs extends TextArgumentFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return Integer.MAX_VALUE; }
+
+    /**
+     * A predicate separator is not refused: with a single value there is nothing to separate, and
+     * CONCAT_WS(1 = 1, 'a') answers 'a' (live-verified). A predicate VALUE is refused, in CONCAT's name.
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.NONE : SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

@@ -19,6 +19,7 @@ package dev.frostlake.persistence;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /** Serializable snapshot of a stored PROCEDURE (any language). */
 public class ProcedureSnapshot implements Serializable {
@@ -36,4 +37,14 @@ public class ProcedureSnapshot implements Serializable {
     public List<String> imports = new ArrayList<>();
     public String comment;
     public String owner;
+    // RETURNS TABLE and its declared columns; false and null on old snapshots, which kept neither.
+    public boolean returnsTable;
+    public List<ParameterSnapshot> returnColumns;
+    // The declared null handling and volatility; null on old snapshots, which read back as the defaults.
+    public String nullHandling;
+    public String volatility;
+
+    // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
+    // recorded, which reads back as an object carrying none.
+    public Map<String, String> tags;
 }

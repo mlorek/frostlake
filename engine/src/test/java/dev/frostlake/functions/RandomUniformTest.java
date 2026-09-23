@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * RANDOM([seed]) returns a signed 64-bit integer (a constant seed is deterministic across rows).
  * UNIFORM(min, max, gen) returns an integer inclusive of both bounds when the bounds are integers, or
- * a double in [min, max) with a float bound; a per-row RANDOM() varies it, a constant RANDOM(seed)
+ * a double in [min, max) with a FLOAT bound; a per-row RANDOM() varies it, a constant RANDOM(seed)
  * repeats it. Assertions check these invariants, not specific random draws.
  */
 public class RandomUniformTest extends BaseDatabaseTest {
@@ -77,13 +77,12 @@ public class RandomUniformTest extends BaseDatabaseTest {
     @Test
     public void uniformFloatBoundsReturnDoubleInHalfOpenRange() {
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "asserts the JAVA runtime type (Double) of a single nondeterministic draw; over JDBC a live "
-            + "UNIFORM(0.0, 1.0, …) arrives as a scaled decimal, and whether the upper bound is open is "
-            + "an RNG-internal detail of the account");
-        final Object v = one("SELECT UNIFORM(0.0, 1.0, RANDOM()) AS r");
+            "asserts the JAVA runtime type (Double) of a single nondeterministic draw, and whether the upper "
+            + "bound is open is an RNG-internal detail of the account");
+        final Object v = one("SELECT UNIFORM(0.0::FLOAT, 1.0::FLOAT, RANDOM()) AS r");
         assertTrue(v instanceof Double, "float bounds → double result");
         final double d = (Double) v;
-        assertTrue(d >= 0.0 && d < 1.0, "UNIFORM(0.0,1.0) out of [0,1): " + d);
+        assertTrue(d >= 0.0 && d < 1.0, "UNIFORM(0.0::FLOAT, 1.0::FLOAT) out of [0,1): " + d);
     }
 
     @Test

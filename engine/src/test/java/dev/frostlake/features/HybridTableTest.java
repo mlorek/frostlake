@@ -86,10 +86,11 @@ public class HybridTableTest extends BaseDatabaseTest {
         engine.execute("CREATE HYBRID TABLE hyb (a INT)");
         engine.execute("CREATE TABLE plain (a INT)");
 
+        // The hybrid listing has NINE columns of its own and no `kind` among them — a hybrid table is
+        // the only thing it answers, so it says nothing to tell one from another (live-verified).
         final ResultSet rs = engine.executeQuery("SHOW HYBRID TABLES");
         assertEquals(1, rs.getRowCount(), "only the hybrid table is listed");
         assertEquals("HYB", rs.getRows().get(0).getValue(1));
-        assertEquals("HYBRID TABLE", rs.getRows().get(0).getValue(4));
     }
 
     @Test

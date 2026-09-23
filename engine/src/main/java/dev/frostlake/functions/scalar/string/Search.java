@@ -78,8 +78,8 @@ public class Search extends BuiltInFunction {
                 // Any other value is an analyzer NAME, and Snowflake ships exactly three. Live-verified
                 // on a real account: DEFAULT_ANALYZER / UNICODE_ANALYZER / NO_OP_ANALYZER
                 // all work, while ANALYZER => 'PATTERN_ANALYZER' and ANALYZER => 'BOGUS_ANALYZER' both
-                // fail "Object 'PATTERN_ANALYZER' does not exist or not authorized."
-                throw new RuntimeException(SqlCompilationError.doesNotExist("Object", text));
+                // fail "Object 'PATTERN_ANALYZER' does not exist or not authorized.", with no privilege hint.
+                throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", text));
             }
         }
 

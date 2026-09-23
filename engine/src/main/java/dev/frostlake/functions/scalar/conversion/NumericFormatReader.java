@@ -45,7 +45,30 @@ import java.util.List;
  * <p>Without S or MI a sign may lead the text ('- 12' under '99' is -12). A run of digits the model
  * splits with elements the text need not write may read none ('1' under '9MI9' is 1), where a literal
  * between them makes both runs written ('1' under '9 9' is refused). After a text-minimal number
- * {@code $}, {@code S} and {@code MI} read nothing. FX, the exact mode, is read as the lax one.
+ * {@code $}, {@code S} and {@code MI} read nothing.
+ *
+ * <p>FX toggles the EXACT mode for the elements after it, and FM the compact one, each written again
+ * toggling back. A text is read exactly as the model prints it in fill mode — also live-verified:
+ *
+ * <pre>
+ *   white space          skipped at the start only when the model does not start with FX, and at
+ *                        the end only when the mode is lax there                 ' 1 ' under 'FX9' is refused
+ *   9, 0, , and $        the whole number field at its printed width: a sign position first, a
+ *                        space, '+' or '-' written just before the digits, $ just after it, and
+ *                        leading positions as spaces or zeros                    ' 1', '-1' and '+1' under 'FX9' are 1,
+ *                                                                                '1' is refused; '  1' and ' 01'
+ *                                                                                under 'FX99' are 1
+ *   . and fraction       as many characters as fraction positions, trailing zeros written as
+ *                        digits or spaces                                        ' 1.5 ' and ' 1.50' under 'FX9.99'
+ *   EEE .. EEEEEEE       exactly as wide as the element                          ' 1.5E+0' under 'FX9.9EEEE' is refused
+ *   S, MI                one character: the sign, or a space for MI              '1 ' and '1-' under 'FX9MI'
+ *   X                    the positions' width, with no sign position             'FF' under 'FXXX'; ' FF' is refused
+ *   TM9, TME, TM         a sign position before the number                       ' 1' under 'FXTM9'; '1' is refused
+ *   literals             character by character, a space as exactly one space    '  1' under 'FX 9'
+ * </pre>
+ *
+ * <p>In compact mode an exact number is read as a lax one, but with no white space around it:
+ * '1' under 'FXFM9' is 1 and ' FF' under 'FXFMXX' is refused.
  */
 final class NumericFormatReader {
 
@@ -63,6 +86,16 @@ final class NumericFormatReader {
     /** Whether an element the text had to write has been read since the last run of digits. */
     private boolean requiredSinceNumber;
     private int exponent;
+    /** Whether the elements being read now match exactly: FX toggles it. */
+    private boolean exact;
+    /** Whether the elements being read now are in fill mode: FM toggles it off and on. */
+    private boolean fill = true;
+    /** Whether a sign may lead the first number because the alternative places none. */
+    private boolean implicitSign;
+    /** Whether an exact fill-mode $ floats into the number field that follows it. */
+    private boolean dollarPending;
+    /** Whether an exact fill-mode S floats into the number field that follows it. */
+    private boolean signPending;
 
     /**
      * @param text the text being read
@@ -80,13 +113,16 @@ final class NumericFormatReader {
      * @return the value, or null where the text does not fit the alternative
      */
     BigDecimal read(final boolean implicitSign) {
-        skipWhiteSpace();
-        if (implicitSign && pos < text.length() && isSign(text.charAt(pos))) {
-            negative = text.charAt(pos) == '-';
-            pos++;
-            skipSpaces();
-        }
+        this.implicitSign = implicitSign;
         final List<NumericFormatElement> kinds = alternative.kinds();
+        if (!startsExact(alternative)) {
+            skipWhiteSpace();
+            if (implicitSign && pos < text.length() && isSign(text.charAt(pos))) {
+                negative = text.charAt(pos) == '-';
+                pos++;
+                skipSpaces();
+            }
+        }
         int at = 0;
         while (at < kinds.size()) {
             if (isNumberElement(kinds.get(at))) {
@@ -95,7 +131,7 @@ final class NumericFormatReader {
                     end++;
                 }
                 final List<NumericFormatElement> run = kinds.subList(at, end);
-                if (!(alternative.hexadecimal() ? readHexadecimal(run) : readDecimal(run))) {
+                if (!readNumberRun(run)) {
                     return null;
                 }
                 numberSeen = true;
@@ -103,16 +139,54 @@ final class NumericFormatReader {
                 at = end;
                 continue;
             }
-            if (!readElement(kinds.get(at), alternative.spellings().get(at))) {
+            final boolean numberFollows = at + 1 < kinds.size() && isNumberElement(kinds.get(at + 1));
+            if (!readElement(kinds.get(at), alternative.spellings().get(at), numberFollows)) {
                 return null;
             }
             at++;
         }
-        skipWhiteSpace();
+        if (!exact) {
+            skipWhiteSpace();
+        }
         if (pos != text.length() || whole.length() + fraction.length() == 0) {
             return null;
         }
         return value();
+    }
+
+    /**
+     * Whether an alternative starts in the exact mode: the toggles it leads with leave FX on, so 'FX9'
+     * starts exact and 'FXFX9' lax (' 1' under it is 1).
+     *
+     * @param alternative the alternative
+     * @return whether the text is matched exactly from its first character
+     */
+    static boolean startsExact(final NumericFormatAlternative alternative) {
+        boolean exactAtStart = false;
+        for (final NumericFormatElement kind : alternative.kinds()) {
+            if (kind == NumericFormatElement.EXACT_MODE) {
+                exactAtStart = !exactAtStart;
+            } else if (kind != NumericFormatElement.FILL_MODE) {
+                break;
+            }
+        }
+        return exactAtStart;
+    }
+
+    /** One run of number positions, in the mode the elements before it left. */
+    private boolean readNumberRun(final List<NumericFormatElement> run) {
+        if (!exact) {
+            return alternative.hexadecimal() ? readHexadecimal(run) : readDecimal(run);
+        }
+        if (!fill) {
+            // Compact: as lax reads it, with a sign written right before the first number.
+            if (implicitSign && !numberSeen && pos < text.length() && isSign(text.charAt(pos))) {
+                negative = text.charAt(pos) == '-';
+                pos++;
+            }
+            return alternative.hexadecimal() ? readHexadecimal(run) : readDecimal(run);
+        }
+        return alternative.hexadecimal() ? readExactHexadecimal(run) : readExactDecimal(run);
     }
 
     /** The elements a number is read across; a text-minimal model reads its number as one element. */
@@ -129,26 +203,36 @@ final class NumericFormatReader {
             || kind == NumericFormatElement.BLANK;
     }
 
-    private boolean readElement(final NumericFormatElement kind, final String spelling) {
+    private boolean readElement(final NumericFormatElement kind, final String spelling,
+                                final boolean numberFollows) {
         switch (kind) {
             case TEXT_MINIMAL:
             case TEXT_MINIMAL_POSITIONAL:
             case TEXT_MINIMAL_SCIENTIFIC:
+                if (exact && fill && implicitSign && !numberSeen && !readSignPosition()) {
+                    return false;
+                }
                 numberSeen = true;
                 requiredSinceNumber = false;
                 return readTextMinimal(kind);
             case EXPONENT:
                 requiredSinceNumber = true;
-                return readExponent();
+                return exact && fill && spelling.length() > 2 ? readExactExponent(spelling.length()) : readExponent();
             case DOLLAR:
                 if (numberSeen && alternative.textMinimal()) {
                     return true;
                 }
                 requiredSinceNumber = true;
+                if (exact && fill && numberFollows) {
+                    dollarPending = true;
+                    return true;
+                }
                 if (!expect('$')) {
                     return false;
                 }
-                skipSpaces();
+                if (!exact) {
+                    skipSpaces();
+                }
                 return true;
             case PERCENT:
                 hundredths = true;
@@ -160,21 +244,34 @@ final class NumericFormatReader {
                     return true;
                 }
                 requiredSinceNumber = requiredSinceNumber || kind == NumericFormatElement.SIGN;
+                if (exact && fill) {
+                    if (kind == NumericFormatElement.SIGN && numberFollows) {
+                        signPending = true;
+                        return true;
+                    }
+                    return kind == NumericFormatElement.SIGN ? readSign(true) : readSignPosition();
+                }
                 return readSign(kind == NumericFormatElement.SIGN);
             case OPTIONAL_SPACE:
                 skipSpaces();
                 return true;
             case LITERAL:
                 requiredSinceNumber = true;
-                return readLiteral(spelling);
+                return exact ? readExactLiteral(spelling) : readLiteral(spelling);
             case GROUP:
                 requiredSinceNumber = true;
                 return expect(',');
             case DECIMAL:
                 requiredSinceNumber = true;
                 return !alternative.hexadecimal() && expect('.');
+            case FILL_MODE:
+                fill = !fill;
+                return true;
+            case EXACT_MODE:
+                exact = !exact;
+                return true;
             default:
-                // FM, FX and B read nothing.
+                // B reads nothing.
                 return true;
         }
     }
@@ -256,6 +353,175 @@ final class NumericFormatReader {
             return count <= fractionPositions && count >= fractionRequired;
         }
         return fractionRequired == 0;
+    }
+
+    /**
+     * A run of decimal positions matched exactly, in fill mode: the whole number field at its printed
+     * width, then the point and exactly as many characters as the fraction has positions.
+     */
+    private boolean readExactDecimal(final List<NumericFormatElement> run) {
+        // The whole part's positions from the right: a digit (true when it is a 0) or a separator (null).
+        final List<Boolean> slots = new ArrayList<>();
+        int fractionPositions = 0;
+        int fractionRequired = 0;
+        boolean point = false;
+        for (final NumericFormatElement kind : run) {
+            if (kind == NumericFormatElement.DECIMAL) {
+                point = true;
+            } else if (kind == NumericFormatElement.DIGIT || kind == NumericFormatElement.ZERO) {
+                if (point) {
+                    fractionPositions++;
+                    if (kind == NumericFormatElement.ZERO) {
+                        fractionRequired = fractionPositions;
+                    }
+                } else {
+                    slots.add(0, Boolean.valueOf(kind == NumericFormatElement.ZERO));
+                }
+            } else if (kind == NumericFormatElement.GROUP && !point) {
+                slots.add(0, null);
+            }
+        }
+        final boolean signSlot = signPending || (implicitSign && !numberSeen);
+        final int end = pos + (signSlot ? 1 : 0) + (dollarPending ? 1 : 0) + slots.size();
+        if (end > text.length()) {
+            return false;
+        }
+        int at = pos;
+        while (at < end && text.charAt(at) == ' ') {
+            at++;
+        }
+        if (signSlot && at < end && isSign(text.charAt(at))) {
+            negative = text.charAt(at) == '-';
+            at++;
+        } else if (signPending) {
+            return false;
+        }
+        if (dollarPending) {
+            if (at >= end || text.charAt(at) != '$') {
+                return false;
+            }
+            at++;
+        }
+        signPending = false;
+        dollarPending = false;
+        final int area = end - at;
+        if (area > slots.size() || (area == 0 && !slots.isEmpty())) {
+            return false;
+        }
+        for (int fromRight = slots.size(); fromRight > area; fromRight--) {
+            if (Boolean.TRUE.equals(slots.get(fromRight - 1))) {
+                // A 0 position prints its digit, so it cannot stand among the leading spaces.
+                return false;
+            }
+        }
+        final StringBuilder digits = new StringBuilder();
+        for (int i = at; i < end; i++) {
+            final char ch = text.charAt(i);
+            if (slots.get(end - i - 1) == null) {
+                if (ch != ',' || digits.length() == 0) {
+                    return false;
+                }
+            } else if (NumericFormatModel.isAsciiDigit(ch)) {
+                digits.append(ch);
+            } else {
+                return false;
+            }
+        }
+        whole.append(digits);
+        pos = end;
+        if (!point) {
+            return true;
+        }
+        if (!expect('.') || pos + fractionPositions > text.length()) {
+            return false;
+        }
+        final int fractionEnd = pos + fractionPositions;
+        while (pos < fractionEnd && NumericFormatModel.isAsciiDigit(text.charAt(pos))) {
+            fraction.append(text.charAt(pos));
+            pos++;
+        }
+        while (pos < fractionEnd && text.charAt(pos) == ' ') {
+            pos++;
+        }
+        return pos == fractionEnd && (fractionPositions == 0 || fraction.length() > 0)
+            && fraction.length() >= fractionRequired;
+    }
+
+    /** A run of hexadecimal positions matched exactly, in fill mode: leading spaces, then the digits. */
+    private boolean readExactHexadecimal(final List<NumericFormatElement> run) {
+        final List<Boolean> slots = new ArrayList<>();
+        for (final NumericFormatElement kind : run) {
+            if (kind == NumericFormatElement.HEX || kind == NumericFormatElement.ZERO) {
+                slots.add(0, Boolean.valueOf(kind == NumericFormatElement.ZERO));
+            }
+        }
+        final int end = pos + slots.size();
+        if (end > text.length()) {
+            return false;
+        }
+        int at = pos;
+        while (at < end && text.charAt(at) == ' ') {
+            at++;
+        }
+        final int area = end - at;
+        if (area == 0) {
+            return false;
+        }
+        for (int fromRight = slots.size(); fromRight > area; fromRight--) {
+            if (Boolean.TRUE.equals(slots.get(fromRight - 1))) {
+                return false;
+            }
+        }
+        for (int i = at; i < end; i++) {
+            if (!isAsciiHexDigit(text.charAt(i))) {
+                return false;
+            }
+        }
+        whole.append(text, at, end);
+        pos = end;
+        return true;
+    }
+
+    /** An exponent as wide as its element: the letter, a sign, and the rest of the width in digits. */
+    private boolean readExactExponent(final int width) {
+        if (pos + width > text.length() || !isExponentLetter(text.charAt(pos)) || !isSign(text.charAt(pos + 1))) {
+            return false;
+        }
+        final int start = pos + 2;
+        for (int i = start; i < pos + width; i++) {
+            if (!NumericFormatModel.isAsciiDigit(text.charAt(i))) {
+                return false;
+            }
+        }
+        final int written = Integer.parseInt(text.substring(start, pos + width));
+        exponent = text.charAt(pos + 1) == '-' ? -written : written;
+        pos += width;
+        return true;
+    }
+
+    /** A sign position: a sign, or a space where the number is not negative. */
+    private boolean readSignPosition() {
+        if (pos >= text.length()) {
+            return false;
+        }
+        final char ch = text.charAt(pos);
+        if (isSign(ch)) {
+            negative = ch == '-';
+        } else if (ch != ' ') {
+            return false;
+        }
+        pos++;
+        return true;
+    }
+
+    /** Literal text matched character by character, a space as exactly one space. */
+    private boolean readExactLiteral(final String spelling) {
+        final String literal = spelling.startsWith("\"") ? spelling.substring(1, spelling.length() - 1) : spelling;
+        if (!text.startsWith(literal, pos)) {
+            return false;
+        }
+        pos += literal.length();
+        return true;
     }
 
     /** A run of hexadecimal digit positions. */

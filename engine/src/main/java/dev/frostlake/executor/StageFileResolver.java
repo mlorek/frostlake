@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.scalar.file.NamedStage;
+import dev.frostlake.functions.scalar.file.NamedStageLocator;
 import dev.frostlake.functions.scalar.file.StageFileLocator;
 import dev.frostlake.functions.scalar.file.StagedFile;
 import dev.frostlake.metastore.Catalog;
@@ -36,7 +38,7 @@ import java.util.Locale;
  * user stage renders {@code @"~"} and a table stage renders the bare upper-cased table name
  * ({@code @TSTG}), with no database or schema even when the reference carried one.
  */
-public class StageFileResolver implements StageFileLocator {
+public class StageFileResolver implements StageFileLocator, NamedStageLocator {
 
     private final QueryExecutor executor;
     private final Catalog catalog;
@@ -53,7 +55,8 @@ public class StageFileResolver implements StageFileLocator {
         }
         final Path path;
         try {
-            path = executor.resolveCopyBaseDir(location);
+            // A staged name that other names continue is kept as its directory's own file (StagePathSegments).
+            path = StagePathSegments.ownFileOf(executor.resolveCopyBaseDir(location));
         } catch (final RuntimeException e) {
             // An unknown stage name throws out of the catalog; to the caller that is simply a file it
             // cannot reach, which TO_FILE reports as Snowflake's "was not found".
@@ -77,6 +80,19 @@ public class StageFileResolver implements StageFileLocator {
         final String stageName = slash >= 0 ? reference.substring(0, slash) : reference;
         final String relative = slash >= 0 ? reference.substring(slash + 1) : "";
         return new StagedFile(path, "@" + qualifiedStageName(stageName), relative);
+    }
+
+    @Override
+    public NamedStage namedStage(final String[] parts) {
+        if (parts == null || parts.length == 0 || parts.length > 3) {
+            return null;
+        }
+        final String database = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
+        final String schema = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema();
+        if (database == null || schema == null) {
+            return null;
+        }
+        return executor.namedStage(database, schema, parts[parts.length - 1]);
     }
 
     /** {@code name} / {@code schema.name} / {@code db.schema.name} to the full upper-cased three-part form. */

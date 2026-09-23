@@ -56,6 +56,7 @@ public final class SystemFunctionArity {
         declare("SYSTEM$ABORT_SESSION", 1, -1);
         declare("SYSTEM$LAST_CHANGE_COMMIT_TIME", 1, -1);
         declare("SYSTEM$GET_TAG", 3, -1);
+        declare("SYSTEM$GET_TASK_GRAPH_CONFIG", 0, 1);
     }
 
     private SystemFunctionArity() {

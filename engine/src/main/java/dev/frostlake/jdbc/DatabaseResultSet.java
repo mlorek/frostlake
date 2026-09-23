@@ -17,6 +17,7 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.http.ColumnData;
 import dev.frostlake.http.ResultSetData;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.ClientValueText;
@@ -25,6 +26,7 @@ import dev.frostlake.values.TemporalText;
 import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.net.URL;
 import java.sql.Array;
 import java.sql.Blob;
@@ -88,6 +90,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public String getString(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getString(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value instanceof Boolean && isBooleanColumn(columnIndex)) {
@@ -121,6 +127,25 @@ public class DatabaseResultSet implements ResultSet {
         return type != null && ("TIME".equalsIgnoreCase(type) || type.toUpperCase().startsWith("TIMESTAMP"));
     }
 
+    /** Whether a 1-based column is declared DATE, TIME or a TIMESTAMP flavour, read off the wire metadata. */
+    private boolean isTemporalColumn(final int columnIndex) {
+        if (columnIndex < 1 || columnIndex > data.getColumns().size()) {
+            return false;
+        }
+        final String type = data.getColumns().get(columnIndex - 1).getDataType();
+        return type != null && (type.toUpperCase().startsWith("DATE") || type.toUpperCase().startsWith("TIME"));
+    }
+
+    /** Whether a 1-based column is a NUMBER of scale 0, whose cells read as whole numbers. */
+    private boolean isWholeNumberColumn(final int columnIndex) {
+        if (columnIndex < 1 || columnIndex > data.getColumns().size()) {
+            return false;
+        }
+        final ColumnData column = data.getColumns().get(columnIndex - 1);
+        return column.getDataType() != null && column.getDataType().toUpperCase().startsWith("NUMBER")
+            && column.getScale() == 0;
+    }
+
     /** Whether a 1-based column is declared BOOLEAN, read off the wire metadata. */
     private boolean isBooleanColumn(final int columnIndex) {
         return columnIndex >= 1 && columnIndex <= data.getColumns().size()
@@ -135,6 +160,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public boolean getBoolean(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getBoolean(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return false;
@@ -144,6 +173,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public byte getByte(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getByte(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
@@ -153,6 +186,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public short getShort(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getShort(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
@@ -162,6 +199,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public int getInt(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getInt(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
@@ -171,6 +212,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public long getLong(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getLong(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
@@ -180,6 +225,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public float getFloat(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getFloat(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
@@ -189,6 +238,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public double getDouble(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getDouble(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
@@ -198,6 +251,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex, final int scale) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getBigDecimal(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return null;
@@ -207,6 +264,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public byte[] getBytes(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getBytes(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return JdbcMarshaling.toBytes(value);
@@ -214,6 +275,11 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public Date getDate(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            intervalNumber(columnIndex);
+            return IntervalColumnReads.getDate(interval);
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return JdbcMarshaling.toDate(value);
@@ -221,6 +287,11 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public Time getTime(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            intervalNumber(columnIndex);
+            return IntervalColumnReads.getTime(interval);
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return JdbcMarshaling.toTime(value);
@@ -228,6 +299,11 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public Timestamp getTimestamp(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            intervalNumber(columnIndex);
+            return IntervalColumnReads.getTimestamp(interval);
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return JdbcMarshaling.toTimestamp(value);
@@ -350,6 +426,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public Object getObject(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getObject(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value instanceof String && columnIndex <= data.getColumns().size()) {
@@ -364,10 +444,27 @@ public class DatabaseResultSet implements ResultSet {
             // cell is the double it spells, which is what getObject promises for the type.
             return Double.valueOf(((Number) value).doubleValue());
         }
-        if (value instanceof String && isTimeOrTimestampColumn(columnIndex)) {
-            // getObject keeps the display text it always answered; getTimestamp and getTime read the
-            // whole fraction.
-            return TemporalText.displayOfWire((String) value, data.getColumns().get(columnIndex - 1).getDataType());
+        if (value instanceof String && isTemporalColumn(columnIndex)) {
+            // A temporal cell crosses the JSON wire as text and comes back as the java.sql class the
+            // column's metadata NAMES — the class the account's driver answers with, and the one a client
+            // reading getColumnClassName is entitled to cast to.
+            final String type = data.getColumns().get(columnIndex - 1).getDataType().toUpperCase();
+            if (type.startsWith("DATE")) {
+                return JdbcMarshaling.toDate(value);
+            }
+            if (type.startsWith("TIME") && !type.startsWith("TIMESTAMP")) {
+                return JdbcMarshaling.toTime(value);
+            }
+            return JdbcMarshaling.toTimestamp(value);
+        }
+        if (value instanceof Number && !(value instanceof BigDecimal)
+                && !(value instanceof Double) && isWholeNumberColumn(columnIndex)) {
+            // The wire's JSON integers parse to whatever fits them — an Integer for a small one, a
+            // BigInteger past a long — while a NUMBER of scale 0 reads as a Long, and as a BigDecimal
+            // only once its value no longer fits one (live-verified, metadata naming Long throughout).
+            final BigInteger whole = new BigInteger(value.toString());
+            return whole.bitLength() < Long.SIZE ? (Object) Long.valueOf(whole.longValue())
+                : (Object) new BigDecimal(whole);
         }
         return value;
     }
@@ -399,6 +496,10 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getBigDecimal(interval, intervalNumber(columnIndex));
+        }
         final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return null;
@@ -1142,14 +1243,11 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public <T> T getObject(final int columnIndex, final Class<T> type) throws SQLException {
-        final Object value = getValue(columnIndex);
-        if (value == null) {
-            return null;
+        final IntervalKind interval = intervalKind(columnIndex);
+        if (interval != null) {
+            return IntervalColumnReads.getObject(interval, intervalNumber(columnIndex), type);
         }
-        if (type.isAssignableFrom(value.getClass())) {
-            return type.cast(value);
-        }
-        throw new SQLException("Cannot convert to " + type.getName());
+        return TypedObjectReads.getObject(this, columnIndex, type);
     }
 
     @Override
@@ -1176,6 +1274,25 @@ public class DatabaseResultSet implements ResultSet {
         if (closed) {
             throw new SQLException("ResultSet is closed");
         }
+    }
+
+    /**
+     * The interval kind of a 1-based column, read off the wire metadata (see {@link IntervalColumnReads}); null for
+     * any other column.
+     */
+    private IntervalKind intervalKind(final int columnIndex) {
+        if (columnIndex < 1 || columnIndex > data.getColumns().size()) {
+            return null;
+        }
+        final ColumnData column = data.getColumns().get(columnIndex - 1);
+        return IntervalColumnReads.kindOf(column.getDataType(), column.getScale());
+    }
+
+    /** A 1-based interval column's current cell: the wire's decimal digits as a number, null for SQL NULL. */
+    private BigInteger intervalNumber(final int columnIndex) throws SQLException {
+        final Object value = getValue(columnIndex);
+        wasNull = value == null;
+        return value == null ? null : new BigInteger(value.toString());
     }
 
     private Object getValue(final int columnIndex) throws SQLException {

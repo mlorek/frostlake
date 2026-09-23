@@ -63,7 +63,7 @@ import java.util.Set;
  */
 final class TableFunctionCorrelationRule {
 
-    /** The default names {@code resolveTableReference} gives an unaliased table-function source. */
+    /** The default names {@code planTableReference} gives an unaliased table-function source. */
     private static final String FLATTEN_DEFAULT_ALIAS = "flatten";
     private static final String TABLE_FUNCTION_DEFAULT_ALIAS = "table_function";
 

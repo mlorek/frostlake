@@ -21,6 +21,7 @@ import tools.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Reads a staged file of a record-based FILE_FORMAT (JSON, XML, Avro, Parquet, ORC) into a list of
@@ -42,4 +43,20 @@ public interface StageFileReader {
 
     /** The FILE_FORMAT TYPE this reader handles (e.g. {@code "JSON"}), matched case-insensitively. */
     String formatType();
+
+    /**
+     * The top-level columns a staged file of a self-describing format declares, as INFER_SCHEMA reports them.
+     * A file this reader cannot read as its format is not refused: it declares no column at all.
+     *
+     * @param file the staged file
+     * @param formatOptions the file format's options by upper-cased name, values as stored
+     * @param iceberg whether the call asked for the types an Iceberg table takes ({@code KIND => 'ICEBERG'})
+     * @return the columns in file order, empty for a file of another format; null when this reader does not
+     *         describe files at all
+     * @throws IOException when the file cannot be read
+     */
+    default List<StagedFileColumn> readColumns(final Path file, final Map<String, String> formatOptions,
+                                               final boolean iceberg) throws IOException {
+        return null;
+    }
 }

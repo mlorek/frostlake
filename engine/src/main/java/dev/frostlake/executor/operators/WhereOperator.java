@@ -22,6 +22,8 @@ import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.SqlTruth;
+import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
+import dev.frostlake.executor.expressions.VariantComparisonCastException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
@@ -165,7 +167,7 @@ public class WhereOperator implements Operator {
         return evaluator.withNarrowingCastEqualitiesAnswered(ExpressionEvaluator.parse(whereExpression));
     }
 
-    /** One-shot predicate-type validation (Snowflake rejects VARCHAR/NUMBER-typed conditions). */
+    /** One-shot predicate-type validation (Snowflake rejects a condition whose static type is no BOOLEAN). */
     private void validatePredicateOnce(final Expression parsed, final OperatorContext context) {
         final ExpressionEvaluator typeChecker = new ExpressionEvaluator(
             context.getTable(),
@@ -200,6 +202,14 @@ public class WhereOperator implements Operator {
                 // Also definitive — an alias REPLACES the table name; the keyless fallback below
                 // would quietly resolve what live rejects.
                 throw invalidQualifier;
+            } catch (final VariantComparisonCastException castFailure) {
+                // Definitive too: the keyless fallback cannot type the VARIANT, so it would read the pair
+                // as unequal where the comparison fails (live-verified).
+                throw castFailure;
+            } catch (final UnsupportedSubqueryException unsupported) {
+                // Definitive too: a correlated subquery live cannot evaluate over the joined row. The keyless
+                // fallback reads the row without its relations, where the refused shape is no longer seen.
+                throw unsupported;
             } catch (final Exception e) {
                 logger.warn("Failed to evaluate WHERE clause with aliases: {}, trying simple evaluation",
                     e.getMessage());
@@ -215,8 +225,10 @@ public class WhereOperator implements Operator {
                     if (SqlTruth.isTrue(result)) {
                         filtered.add(row);
                     }
-                } catch (final Exception e2) {
-                    logger.error("WHERE clause evaluation failed completely: {}", e2.getMessage());
+                } catch (final RuntimeException e2) {
+                    // Neither evaluation computes the predicate for this row: the statement is refused, as live
+                    // refuses a value it cannot convert, rather than the row being dropped.
+                    throw e instanceof RuntimeException ? (RuntimeException) e : e2;
                 }
             } finally {
                 RowOrdinal.end(displacedOrdinal);
@@ -255,8 +267,6 @@ public class WhereOperator implements Operator {
                 throw ambiguous;
             } catch (final InvalidQualifierException invalidQualifier) {
                 throw invalidQualifier;
-            } catch (final Exception e) {
-                logger.warn("Failed to evaluate WHERE clause with lateral context: {}", e.getMessage());
             } finally {
                 RowOrdinal.end(displacedOrdinal);
             }

@@ -21,8 +21,10 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.values.ApproximateValues;
+import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.YearMonthInterval;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -39,7 +41,16 @@ public final class ValueComparisons {
     /** Like {@link #getColumnIndex} but answers -1 instead of throwing — for callers probing
      *  whether a text is a bare column at all (the throw built a stack trace per probe). */
     public static int findColumnIndex(final Table table, final String columnName) {
+        // One snapshot for the whole scan — Table.getColumns() copies its list per call.
         final List<TableColumn> cols = table.getColumns();
+        // The column spelled EXACTLY so wins: "x" and "X" are two columns, and the name of one of them
+        // must not read the other just because it comes first. Only a name no column spells exactly
+        // falls back to the case-insensitive match.
+        for (int i = 0; i < cols.size(); i++) {
+            if (cols.get(i).getName().equals(columnName)) {
+                return i;
+            }
+        }
         for (int i = 0; i < cols.size(); i++) {
             if (cols.get(i).getName().equalsIgnoreCase(columnName)) {
                 return i;
@@ -48,16 +59,45 @@ public final class ValueComparisons {
         return -1;
     }
 
-    public static int getColumnIndex(final Table table, final String columnName) {
-        // One snapshot for the whole scan — Table.getColumns() copies its list per call, so the
-        // former per-iteration double call cost 2i copies to resolve column i.
-        final List<TableColumn> cols = table.getColumns();
-        for (int i = 0; i < cols.size(); i++) {
-            if (cols.get(i).getName().equalsIgnoreCase(columnName)) {
-                return i;
+    /**
+     * {@link #findColumnIndex} for a name as WRITTEN in the statement's text rather than already canonical:
+     * a single identifier is canonicalised first — unquoted upper-cased, quoted taken verbatim — so {@code x}
+     * finds the column X and {@code "x"} the column x, where handing either over as is would reach the
+     * wrong one of two columns that differ only in case. Any other text is looked up as it stands.
+     *
+     * @param table   the relation
+     * @param written the name as written
+     * @return the column's position, or -1
+     */
+    public static int findWrittenColumnIndex(final Table table, final String written) {
+        if (written == null) {
+            return -1;
+        }
+        final String trimmed = written.trim();
+        if (SqlIdentifiers.isIdentifierReference(trimmed)) {
+            final String[] parts = SqlIdentifiers.canonicalTextParts(trimmed);
+            if (parts.length == 1) {
+                return findColumnIndex(table, parts[0]);
             }
         }
-        throw new RuntimeException(SqlCompilationError.invalidIdentifier(columnName));
+        return findColumnIndex(table, trimmed);
+    }
+
+    /** {@link #findWrittenColumnIndex}, refusing a name no column carries as an invalid identifier. */
+    public static int getWrittenColumnIndex(final Table table, final String written) {
+        final int index = findWrittenColumnIndex(table, written);
+        if (index < 0) {
+            throw new RuntimeException(SqlCompilationError.invalidIdentifier(written));
+        }
+        return index;
+    }
+
+    public static int getColumnIndex(final Table table, final String columnName) {
+        final int index = findColumnIndex(table, columnName);
+        if (index < 0) {
+            throw new RuntimeException(SqlCompilationError.invalidIdentifier(columnName));
+        }
+        return index;
     }
 
     /**
@@ -152,6 +192,14 @@ public final class ValueComparisons {
         }
         if (v2 instanceof CollatedKey && v1 instanceof String) {
             return -((CollatedKey) v2).compareTo((CollatedKey) CollatedKey.of(v1, ((CollatedKey) v2).rulesOf()));
+        }
+        // Intervals of one family order by their span, whichever unit each was written in: live sorts
+        // INTERVAL '-1' MINUTE, '1' DAY, '25' HOUR, '2' DAY in that order, and MIN / MAX pick by span.
+        if (v1 instanceof DayTimeInterval && v2 instanceof DayTimeInterval) {
+            return ((DayTimeInterval) v1).compareTo((DayTimeInterval) v2);
+        }
+        if (v1 instanceof YearMonthInterval && v2 instanceof YearMonthInterval) {
+            return ((YearMonthInterval) v1).compareTo((YearMonthInterval) v2);
         }
         if (v1 instanceof Comparable && v2 instanceof Comparable && v1.getClass() == v2.getClass()) {
             return ((Comparable) v1).compareTo(v2);

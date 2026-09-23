@@ -37,6 +37,11 @@ public final class ConditionalDdlOutcome {
         TAKEN.set(ConditionalDdlBranch.CREATE_SKIPPED);
     }
 
+    /** Record that CREATE OR ALTER TABLE found the table and altered it where it stands. */
+    public static void alteredInPlace() {
+        TAKEN.set(ConditionalDdlBranch.ALTERED_IN_PLACE);
+    }
+
     /** Record that DROP … IF EXISTS found nothing to drop. */
     public static void dropSkipped() {
         TAKEN.set(ConditionalDdlBranch.DROP_SKIPPED);

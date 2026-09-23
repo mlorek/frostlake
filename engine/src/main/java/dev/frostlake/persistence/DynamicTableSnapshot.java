@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.util.List;
 
 /** Serializable snapshot of a DYNAMIC TABLE definition. */
 public class DynamicTableSnapshot implements Serializable {
@@ -30,5 +31,10 @@ public class DynamicTableSnapshot implements Serializable {
     public String initialize;
     public String state;
     public String comment;
+    /** The user whose DDL created the relation (LAST_DDL_BY); null in a snapshot taken before it was kept. */
+    public String lastDdlBy;
     public String owner;
+    /** The CLUSTER BY keys as written; null in a snapshot taken before they were kept. */
+    public List<String> clusterKeys;
+    public boolean transientTable;
 }

@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.datetime;
 
+import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
@@ -38,13 +39,16 @@ public class TimeSlice extends BuiltInFunction {
         final boolean dateInput = args.get(0) instanceof LocalDate;
         final LocalDateTime t = SharedFunctionHelpers.toLocalDateTime(args.get(0));
         final long n = (long) Double.parseDouble(args.get(1).toString());
-        final String unit = args.get(2).toString().toUpperCase();
+        final IntervalUnit unit = DateUnitVocabulary.sliceUnit(args.get(2));
+        if (unit == null) {
+            throw SharedFunctionHelpers.notADateTimeComponent(args.get(2), "TIME_SLICE");
+        }
         final boolean end = args.size() > 3 && args.get(3) != null
             && args.get(3).toString().equalsIgnoreCase("END");
         final LocalDateTime start;
         final LocalDateTime next;
-        if (unit.startsWith("MONTH") || unit.startsWith("QUARTER") || unit.startsWith("YEAR")) {
-            final long unitMonths = unit.startsWith("MONTH") ? 1 : unit.startsWith("QUARTER") ? 3 : 12;
+        if (unit == IntervalUnit.MONTH || unit == IntervalUnit.QUARTER || unit == IntervalUnit.YEAR) {
+            final long unitMonths = unit == IntervalUnit.MONTH ? 1 : unit == IntervalUnit.QUARTER ? 3 : 12;
             final long months = (t.getYear() - 1970) * 12L + (t.getMonthValue() - 1);
             final long slice = Math.floorDiv(months, n * unitMonths) * n * unitMonths;
             start = LocalDateTime.of(1970, 1, 1, 0, 0).plusMonths(slice);
@@ -52,15 +56,14 @@ public class TimeSlice extends BuiltInFunction {
         } else {
             final long unitSeconds;
             long anchor = 0L;
-            if (unit.startsWith("SECOND")) unitSeconds = 1L;
-            else if (unit.startsWith("MINUTE")) unitSeconds = 60L;
-            else if (unit.startsWith("HOUR")) unitSeconds = 3600L;
-            else if (unit.startsWith("DAY")) unitSeconds = 86400L;
-            else if (unit.startsWith("WEEK")) {
+            if (unit == IntervalUnit.SECOND) unitSeconds = 1L;
+            else if (unit == IntervalUnit.MINUTE) unitSeconds = 60L;
+            else if (unit == IntervalUnit.HOUR) unitSeconds = 3600L;
+            else if (unit == IntervalUnit.DAY) unitSeconds = 86400L;
+            else {
                 unitSeconds = 7L * 86400L;
                 anchor = 4L * 86400L;
             }
-            else throw new RuntimeException("Unsupported TIME_SLICE unit: " + unit);
             final long epoch = t.toEpochSecond(ZoneOffset.UTC);
             final long slice = Math.floorDiv(epoch - anchor, n * unitSeconds) * n * unitSeconds + anchor;
             start = LocalDateTime.ofEpochSecond(slice, 0, ZoneOffset.UTC);

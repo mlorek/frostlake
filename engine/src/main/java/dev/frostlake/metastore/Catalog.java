@@ -18,6 +18,7 @@ package dev.frostlake.metastore;
 
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.Contact;
@@ -32,6 +33,7 @@ import dev.frostlake.metastore.model.ProjectionPolicy;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SecurityObjectStore;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageType;
 import dev.frostlake.metastore.model.Stream;
@@ -61,8 +63,11 @@ public class Catalog {
     private final Map<String, Database> databases;
     private final Map<String, Warehouse> warehouses;
     private final Map<String, ComputePool> computePools = new ConcurrentHashMap<>();
+    private final IntegrationRegistry integrations = new IntegrationRegistry();
+    private final ExternalVolumeRegistry externalVolumes = new ExternalVolumeRegistry();
     private final Map<String, User> users;
     private final Map<String, Role> roles;
+    private final AccountDirectory accountDirectory = new AccountDirectory();
     private String currentDatabase;
     private String currentSchema;
     private String currentWarehouse;
@@ -105,53 +110,49 @@ public class Catalog {
     }
 
     public void createDatabase(final String name) {
-        final String upperName = name.toUpperCase();
-        if (databases.containsKey(upperName)) {
-            throw new RuntimeException(alreadyExists(upperName));
+        if (databases.containsKey(name)) {
+            throw new RuntimeException(alreadyExists(name));
         }
-        // The name is stored as the reference resolved it — bare folded to upper, quoted verbatim — so a
-        // database created as "mixedDb" is still called mixedDb. Folding it here lost that, and with it any
-        // hope of telling mixedDb from MIXEDDB. The map key stays folded: it is a case-insensitive INDEX,
-        // and exactness is enforced against the stored name by databaseExact.
+        // The name is stored, and keyed, as the reference resolved it — bare folded to upper, quoted
+        // verbatim — so a database created as "mixedDb" is called mixedDb and MIXEDDB is another database
+        // beside it (live-verified).
         final Database db = new Database(name);
         db.setOwner(currentRoleForOwner());
-        databases.put(upperName, db);
+        databases.put(name, db);
     }
 
     public void cloneDatabase(final String sourceName, final String targetName) {
-        final String sourceUpper = sourceName.toUpperCase();
-        final String targetUpper = targetName.toUpperCase();
-
-        if (databases.containsKey(targetUpper)) {
-            throw new RuntimeException(alreadyExists(targetUpper));
+        if (databases.containsKey(targetName)) {
+            throw new RuntimeException(alreadyExists(targetName));
         }
 
-        final Database sourceDb = getDatabase(sourceName);
+        final Database sourceDb = databaseExact(sourceName);
         final Database targetDb = sourceDb.clone(targetName);
-        databases.put(targetUpper, targetDb);
+        databases.put(targetName, targetDb);
     }
 
     /**
      * The sentence live gives for a name already taken — the same one a renamed table gets, so every
-     * kind of object answers alike. The name is canonical, which is what a bare one folds to.
+     * kind of object answers alike. The name is canonical and is spelled as every refusal spells one,
+     * quoted only where it has to be: {@code Object '"lower_db"' already exists.}
      *
-     * @param canonicalName the taken name, already folded
+     * @param canonicalName the taken name, canonical
      * @return the refusal message
      */
     private static String alreadyExists(final String canonicalName) {
-        return SqlCompilationError.of("Object '" + canonicalName + "' already exists.");
+        return SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(canonicalName) + "' already exists.");
     }
 
     public void dropDatabase(final String name, final boolean cascade) {
-        final String upperName = name.toUpperCase();
-        if (!databases.containsKey(upperName)) {
+        final String key = NameKeys.keyFor(databases, name);
+        if (!databases.containsKey(key)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
-        final Database dropped = databases.remove(upperName);
+        final Database dropped = databases.remove(key);
         // ★ DROPPING THE CURRENT DATABASE LEAVES THE SESSION WITH NO CONTEXT AT ALL. Live answers NULL
         // to both CURRENT_DATABASE() and CURRENT_SCHEMA() afterwards; keeping the dropped name current
-        // leaves a pair that names nothing and fails whenever an unqualified name is resolved. The session
-        // carries the stored name, which differs from the index key only in case.
+        // leaves a pair that names nothing and fails whenever an unqualified name is resolved. Live compares
+        // IGNORING case here: dropping "db" clears a session whose current database is DB (live-verified).
         if (dropped.getName().equalsIgnoreCase(getCurrentDatabase())) {
             setCurrentDatabaseName(null);
             setCurrentSchemaName(null);
@@ -179,12 +180,12 @@ public class Catalog {
     }
 
     /**
-     * A database by name, matched ignoring case — the INTERNAL Java API, used by engine plumbing and by
-     * tests that name {@code test_db} in lower case. SQL resolution must not come through here; see
-     * {@link #databaseExact}.
+     * A database by name, matched exactly or else by the one database whose name matches ignoring case
+     * ({@link NameKeys#keyFor}) — the INTERNAL Java API, used by engine plumbing and by tests that name
+     * {@code test_db} in lower case. SQL resolution must not come through here; see {@link #databaseExact}.
      */
     public Database getDatabase(final String name) {
-        final Database db = databases.get(name.toUpperCase());
+        final Database db = databases.get(NameKeys.keyFor(databases, name));
         if (db == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
@@ -200,11 +201,35 @@ public class Catalog {
      * resolved form rather than the spelling; so does this.
      */
     public Database databaseExact(final String name) {
-        final Database db = databases.get(name.toUpperCase());
-        if (db == null || !db.getName().equals(name)) {
+        final Database db = name == null ? null : databases.get(name);
+        if (db == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
         return db;
+    }
+
+    /**
+     * ALTER SCHEMA … RENAME TO: a schema renamed in its database, or moved to another one with every member.
+     * The target database must exist and hold no schema of the new name, both checked before anything changes
+     * (live: {@code Database 'NOSUCH_DB' does not exist or not authorized.},
+     * {@code Object 'DB.EXISTING' already exists.}).
+     *
+     * @param schema         the schema
+     * @param targetDatabase the database it is to be in, canonical
+     * @param newName        its new name, canonical
+     */
+    public void moveSchema(final Schema schema, final String targetDatabase, final String newName) {
+        final Database target = databaseExact(targetDatabase);
+        final Database source = databaseExact(schema.getDatabaseName());
+        if (target.hasSchemaExact(newName) && !(target == source && schema.getName().equals(newName))) {
+            // A schema whose name differs only in case is another schema, so SS may become "ss" beside
+            // nothing, and never beside an "ss" (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(target.getName())
+                + "." + SqlIdentifiers.spellCanonical(newName) + "' already exists."));
+        }
+        source.detachSchema(schema.getName());
+        schema.rename(newName);
+        target.attachSchema(schema);
     }
 
     /** True when a masking policy ({@code masking}) or row access policy is attached to any column,
@@ -268,7 +293,7 @@ public class Catalog {
         if (name == null) {
             return null;
         }
-        final Database database = databases.get(name.toUpperCase());
+        final Database database = databases.get(NameKeys.keyFor(databases, name));
         return database != null ? database.getName() : name.toUpperCase();
     }
 
@@ -277,7 +302,7 @@ public class Catalog {
         if (schemaName == null) {
             return null;
         }
-        final Database database = databaseName == null ? null : databases.get(databaseName.toUpperCase());
+        final Database database = databaseName == null ? null : databases.get(NameKeys.keyFor(databases, databaseName));
         return database != null && database.hasSchema(schemaName)
             ? database.getSchema(schemaName).getName() : schemaName.toUpperCase();
     }
@@ -392,8 +417,7 @@ public class Catalog {
 
     /** The database whose stored name is exactly {@code resolvedName}, or null. */
     private Database exactDatabaseOrNull(final String resolvedName) {
-        final Database database = databases.get(resolvedName.toUpperCase());
-        return database != null && database.getName().equals(resolvedName) ? database : null;
+        return resolvedName == null ? null : databases.get(resolvedName);
     }
 
     public String getCurrentDatabase() {
@@ -791,6 +815,16 @@ public class Catalog {
     }
 
     /** Set the session context used to stamp object ownership at CREATE time. */
+    /** The account's integrations. */
+    public IntegrationRegistry getIntegrations() {
+        return integrations;
+    }
+
+    /** The account's external volumes. */
+    public ExternalVolumeRegistry getExternalVolumes() {
+        return externalVolumes;
+    }
+
     public void setSessionContext(final SessionContext sessionContext) {
         this.sessionContext = sessionContext;
     }
@@ -837,6 +871,11 @@ public class Catalog {
         } catch (final RuntimeException e) {
             return null;
         }
+    }
+
+    /** The user a DDL statement runs as, which LAST_DDL_BY names — CURRENT_USER()'s answer; null with no session. */
+    public String currentUserForDdl() {
+        return sessionContext != null ? sessionContext.getDisplayUser() : null;
     }
 
     /** The user whose stage {@code @~} resolves to: the session's current user, else PUBLIC. */
@@ -888,6 +927,21 @@ public class Catalog {
         droppedObjects.put(key.toUpperCase(), dropped);
     }
 
+    /**
+     * The dropped-object snapshots an UNDROP can still restore, of one kind (the key prefix before the colon,
+     * e.g. {@code DATABASE} or {@code SCHEMA}): the most recent drop of each name.
+     */
+    public List<DroppedObject> droppedOfKind(final String kind) {
+        final String prefix = kind.toUpperCase() + ":";
+        final List<DroppedObject> out = new ArrayList<>();
+        for (final Map.Entry<String, DroppedObject> entry : droppedObjects.entrySet()) {
+            if (entry.getKey().startsWith(prefix)) {
+                out.add(entry.getValue());
+            }
+        }
+        return out;
+    }
+
     /** Remove and return the most recent dropped-object snapshot for "KIND:fqName", or null if none. */
     public DroppedObject takeDropped(final String key) {
         return droppedObjects.remove(key.toUpperCase());
@@ -895,7 +949,7 @@ public class Catalog {
 
     /** Re-insert a previously-dropped database object (UNDROP DATABASE). */
     public void restoreDatabase(final Database database) {
-        databases.put(database.getName().toUpperCase(), database);
+        databases.put(database.getName(), database);
     }
 
     /** Read the value of a tag set on an object (SYSTEM$GET_TAG); null if the object or tag is absent. */
@@ -904,7 +958,7 @@ public class Catalog {
         return target == null ? null : target.getTagValue(tagName);
     }
 
-    /** Resolve a tag-bearing object by name and Snowflake object domain (TABLE, COLUMN, VIEW, SCHEMA, DATABASE, WAREHOUSE). */
+    /** Resolve a tag-bearing object by name and Snowflake object domain (TABLE, COLUMN, SCHEMA, DATABASE, WAREHOUSE, ALERT). */
     private Taggable resolveTaggable(final String objectName, final String domain) {
         final String d = domain == null ? "TABLE" : domain.toUpperCase();
         // Live accepts only TABLE for every table-like object: naming the specific kind is
@@ -928,6 +982,10 @@ public class Catalog {
                     }
                 }
                 case "WAREHOUSE": return getWarehouse(objectName);
+                case "ALERT": return resolveSchemaForObject(objectName).getAlert(objectName(objectName));
+                case "STREAM": return resolveSchemaForObject(objectName).getStream(objectName(objectName));
+                case "TASK": return resolveSchemaForObject(objectName).getTask(objectName(objectName));
+                case "PIPE": return resolveSchemaForObject(objectName).getPipe(objectName(objectName));
                 case "COLUMN": {
                     final int dot = objectName.lastIndexOf('.');
                     if (dot < 0) {
@@ -950,7 +1008,7 @@ public class Catalog {
             throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
         }
         final Stage stage = new Stage(objName, type, url, "CSV", false, null, s3PathResolver);
-        stage.setOwner(currentRoleForOwner());
+        stage.setOwner(FutureGrants.ownerOfNew(this, "STAGE", schema, objName));
         schema.addStage(stage);
     }
 
@@ -962,7 +1020,7 @@ public class Catalog {
             throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
         }
         final Stage stage = new Stage(objName, type, url, fileFormat, encryption, comment, s3PathResolver);
-        stage.setOwner(currentRoleForOwner());
+        stage.setOwner(FutureGrants.ownerOfNew(this, "STAGE", schema, objName));
         schema.addStage(stage);
     }
 
@@ -985,6 +1043,11 @@ public class Catalog {
 
     public Stage getStage(final String name) {
         return resolveSchemaForObject(name).getStage(objectName(name));
+    }
+
+    /** The schema a stage or table reference resolves in, as {@link #getStage} resolves it. */
+    public Schema resolveOwningSchema(final String name) {
+        return resolveSchemaForObject(name);
     }
 
     /**
@@ -1070,28 +1133,84 @@ public class Catalog {
         } catch (final Exception e) { return new ArrayList<>(); }
     }
 
+    /**
+     * ALTER TAG … RENAME TO: a bare new name renames the tag in its schema, a qualified one moves it to the schema
+     * that name resolves to.
+     */
     public void renameTag(final String oldName, final String newName) {
-        resolveSchemaForObject(oldName).renameTag(objectName(oldName), objectName(newName));
+        final Schema source = resolveSchemaForObject(oldName);
+        final Schema target = QualifiedName.parse(newName).size() == 1 ? source : resolveSchemaForObject(newName);
+        if (target == source) {
+            source.renameTag(objectName(oldName), objectName(newName));
+            return;
+        }
+        final Tag tag = source.getTag(objectName(oldName));
+        if (target.hasTag(objectName(newName))) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + objectName(newName) + "' already exists."));
+        }
+        source.dropTag(objectName(oldName));
+        tag.setName(objectName(newName));
+        target.addTag(tag);
     }
 
     public void renameMaskingPolicy(final String oldName, final String newName) {
-        resolveSchemaForObject(oldName).renameMaskingPolicy(objectName(oldName), objectName(newName));
+        final Schema from = resolveSchemaForObject(oldName);
+        final Schema to = resolveSchemaForObject(newName);
+        from.renameMaskingPolicy(objectName(oldName), objectName(newName));
+        if (from != to) {
+            // A qualified target naming ANOTHER schema moves the policy there (live-verified).
+            final MaskingPolicy moved = from.getMaskingPolicy(objectName(newName));
+            from.dropMaskingPolicy(objectName(newName));
+            to.addMaskingPolicy(moved);
+        }
     }
 
     public void renameJoinPolicy(final String oldName, final String newName) {
-        resolveSchemaForObject(oldName).renameJoinPolicy(objectName(oldName), objectName(newName));
+        final Schema from = resolveSchemaForObject(oldName);
+        final Schema to = resolveSchemaForObject(newName);
+        from.renameJoinPolicy(objectName(oldName), objectName(newName));
+        if (from != to) {
+            // A qualified target naming ANOTHER schema moves the policy there (live-verified).
+            final JoinPolicy moved = from.getJoinPolicy(objectName(newName));
+            from.dropJoinPolicy(objectName(newName));
+            to.addJoinPolicy(moved);
+        }
     }
 
     public void renameAggregationPolicy(final String oldName, final String newName) {
-        resolveSchemaForObject(oldName).renameAggregationPolicy(objectName(oldName), objectName(newName));
+        final Schema from = resolveSchemaForObject(oldName);
+        final Schema to = resolveSchemaForObject(newName);
+        from.renameAggregationPolicy(objectName(oldName), objectName(newName));
+        if (from != to) {
+            // A qualified target naming ANOTHER schema moves the policy there (live-verified).
+            final AggregationPolicy moved = from.getAggregationPolicy(objectName(newName));
+            from.dropAggregationPolicy(objectName(newName));
+            to.addAggregationPolicy(moved);
+        }
     }
 
     public void renameProjectionPolicy(final String oldName, final String newName) {
-        resolveSchemaForObject(oldName).renameProjectionPolicy(objectName(oldName), objectName(newName));
+        final Schema from = resolveSchemaForObject(oldName);
+        final Schema to = resolveSchemaForObject(newName);
+        from.renameProjectionPolicy(objectName(oldName), objectName(newName));
+        if (from != to) {
+            // A qualified target naming ANOTHER schema moves the policy there (live-verified).
+            final ProjectionPolicy moved = from.getProjectionPolicy(objectName(newName));
+            from.dropProjectionPolicy(objectName(newName));
+            to.addProjectionPolicy(moved);
+        }
     }
 
     public void renameRowAccessPolicy(final String oldName, final String newName) {
-        resolveSchemaForObject(oldName).renameRowAccessPolicy(objectName(oldName), objectName(newName));
+        final Schema from = resolveSchemaForObject(oldName);
+        final Schema to = resolveSchemaForObject(newName);
+        from.renameRowAccessPolicy(objectName(oldName), objectName(newName));
+        if (from != to) {
+            // A qualified target naming ANOTHER schema moves the policy there (live-verified).
+            final RowAccessPolicy moved = from.getRowAccessPolicy(objectName(newName));
+            from.dropRowAccessPolicy(objectName(newName));
+            to.addRowAccessPolicy(moved);
+        }
     }
 
     /**
@@ -1298,6 +1417,16 @@ public class Catalog {
         users.remove(upperName);
     }
 
+    private final SecurityObjectStore securityObjects = new SecurityObjectStore();
+
+    /**
+     * The account's network policies, and the password and network policies attached to the account and to its
+     * users.
+     */
+    public SecurityObjectStore getSecurityObjects() {
+        return securityObjects;
+    }
+
     /** Whether a user of this name exists, for callers that must not throw on a miss. */
     public boolean hasUser(final String name) {
         return name != null && users.containsKey(name.toUpperCase());
@@ -1353,12 +1482,22 @@ public class Catalog {
                upperName.equals("PUBLIC");
     }
 
+    /** Whether a role of that name exists. */
+    public boolean roleExists(final String name) {
+        return name != null && roles.containsKey(name.toUpperCase(Locale.ROOT));
+    }
+
     public Role getRole(final String name) {
         final Role role = roles.get(name.toUpperCase());
         if (role == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Role", name));
         }
         return role;
+    }
+
+    /** The organization's other accounts and this account's managed accounts. */
+    public AccountDirectory getAccountDirectory() {
+        return accountDirectory;
     }
 
     public List<Role> getAllRoles() {
@@ -1378,9 +1517,20 @@ public class Catalog {
     }
 
     public void grantPrivilegeToRole(final String privilege, final String objectType, final String objectName, final String roleName) {
+        grantPrivilegeToRole(privilege, objectType, objectName, roleName, null);
+    }
+
+    /**
+     * Grant a privilege on an object to a role, recorded as granted by {@code grantor}. Live records a grant on an
+     * object in its owner's name, whichever role runs the GRANT.
+     *
+     * @param grantor the object's owner, or null to record the current role
+     */
+    public void grantPrivilegeToRole(final String privilege, final String objectType, final String objectName,
+                                     final String roleName, final String grantor) {
         final Role role = getRole(roleName);
         final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
-        role.grantPrivilege(objectType, objectName, priv, currentRoleForOwner());
+        role.grantPrivilege(objectType, objectName, priv, grantor != null ? grantor : currentRoleForOwner());
     }
 
     public void revokePrivilegeFromRole(final String privilege, final String objectType, final String objectName, final String roleName) {
@@ -1390,9 +1540,19 @@ public class Catalog {
     }
 
     public void grantPrivilegeToUser(final String privilege, final String objectType, final String objectName, final String userName) {
+        grantPrivilegeToUser(privilege, objectType, objectName, userName, null);
+    }
+
+    /**
+     * Grant a privilege on an object to a user, recorded as granted by {@code grantor}.
+     *
+     * @param grantor the object's owner, or null to record the current role
+     */
+    public void grantPrivilegeToUser(final String privilege, final String objectType, final String objectName,
+                                     final String userName, final String grantor) {
         final User user = getUser(userName);
         final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
-        user.grantPrivilege(objectType, objectName, priv, currentRoleForOwner());
+        user.grantPrivilege(objectType, objectName, priv, grantor != null ? grantor : currentRoleForOwner());
     }
 
     public void revokePrivilegeFromUser(final String privilege, final String objectType, final String objectName, final String userName) {
@@ -1482,16 +1642,27 @@ public class Catalog {
     }
 
     // Rename operations
+    /**
+     * ALTER DATABASE … RENAME TO: the database answers to its new name, stored as resolved like a created
+     * one's, so a rename that changes only case is a rename. The new name must be free exactly. A session
+     * whose current database it was is left with no current database and no current schema (live-verified).
+     * The caller moves the tables' rows to the new name.
+     *
+     * @param oldName the database's name, canonical
+     * @param newName its new name, canonical
+     */
     public void renameDatabase(final String oldName, final String newName) {
-        final Database db = getDatabase(oldName);
-        if (databases.containsKey(newName.toUpperCase())) {
-            throw new RuntimeException(alreadyExists(newName.toUpperCase()));
+        final Database db = databaseExact(oldName);
+        if (databases.containsKey(newName)) {
+            throw new RuntimeException(alreadyExists(newName));
         }
-        databases.remove(oldName.toUpperCase());
-        // createDatabase stores the name upper-cased; keep rename symmetric so getName()
-        // stays consistent with the map key and with every freshly-created database.
-        db.rename(newName.toUpperCase());
-        databases.put(newName.toUpperCase(), db);
+        databases.remove(db.getName());
+        db.rename(newName);
+        databases.put(newName, db);
+        if (oldName.equals(getCurrentDatabase())) {
+            setCurrentDatabaseName(null);
+            setCurrentSchemaName(null);
+        }
     }
 
     public void renameTable(final String qualifiedName, final String newName) {
@@ -1517,6 +1688,10 @@ public class Catalog {
     public void swapTables(final String nameA, final String nameB) {
         final Table a = resolveTable(nameA);
         final Table b = resolveTable(nameB);
+        if (a.isTemporary() != b.isTemporary()) {
+            // Live-verified, and so for a temporary table that hides a permanent one of its name.
+            throw new RuntimeException("Swapping of a temporary table with another non-temporary table is not allowed.");
+        }
         final Schema schemaA = resolveSchemaForTable(nameA);
         final Schema schemaB = resolveSchemaForTable(nameB);
         final String bareA = a.getName();
@@ -1555,35 +1730,33 @@ public class Catalog {
      * whose new name the session's context places. The destination must exist and hold no view of
      * that name, both checked before anything changes; a move within the view's own schema is a rename.
      */
+    /**
+     * ALTER VIEW … RENAME TO: the view renamed into the schema its new name resolves to, moving there when that
+     * is another one. A missing schema or database is refused by name, and a name any relation there holds -
+     * the view's own included - is refused as the statement wrote it, {@code Object 'OTHER.OTAKEN' already
+     * exists.}, before anything moves (live-verified).
+     *
+     * @param sourceQualifiedName the view as the statement names it
+     * @param targetDatabase      the database the new name resolves to
+     * @param targetSchema        the schema the new name resolves to
+     * @param written             the new name's canonical parts as written
+     */
     public void moveView(final String sourceQualifiedName, final String targetDatabase,
-                         final String targetSchema, final String newName) {
+                         final String targetSchema, final String[] written) {
         final View view = resolveView(sourceQualifiedName);
         final Schema source = resolveSchemaForTable(sourceQualifiedName);
-        final Schema target = getDatabase(targetDatabase).getSchema(targetSchema);
-        if (target == source) {
-            renameView(sourceQualifiedName, newName);
-            return;
-        }
+        final Schema target = databaseExact(targetDatabase).schemaExact(targetSchema);
+        final String newName = written[written.length - 1];
         if (target.relationKindOf(newName) != null) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + newName.toUpperCase() + "' already exists."));
+            final StringBuilder spelled = new StringBuilder();
+            for (final String part : written) {
+                spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+            }
+            throw new RuntimeException(SqlCompilationError.of("Object '" + spelled + "' already exists."));
         }
         source.dropView(view.getName());
         view.rename(newName);
         target.addView(view);
-    }
-
-    public void renameView(final String qualifiedName, final String newName) {
-        final View view = resolveView(qualifiedName);
-        final Schema schema = resolveSchemaForTable(qualifiedName);
-        // A name any relation kind holds - the view's own included - refuses the rename plainly,
-        // before anything moves (live-verified).
-        if (schema.relationKindOf(newName) != null) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + newName.toUpperCase() + "' already exists."));
-        }
-        schema.dropView(view.getName());
-        view.rename(newName);
-        schema.addView(view);
     }
 
     public void renameUser(final String oldName, final String newName) {

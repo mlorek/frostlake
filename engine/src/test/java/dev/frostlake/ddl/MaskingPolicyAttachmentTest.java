@@ -194,8 +194,8 @@ public class MaskingPolicyAttachmentTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY no_such_mp");
             }
         });
-        assertEquals("SQL compilation error:\nMasking policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_MP'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nMasking policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_MP'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     /** A missing SCHEMA in the policy name answers the schema's own sentence, not the policy's. */
@@ -207,7 +207,7 @@ public class MaskingPolicyAttachmentTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE mask_t ALTER COLUMN b SET MASKING POLICY no_such_s.mp1");
             }
         });
-        assertEquals("SQL compilation error:\nSchema 'TEST_DB.NO_SUCH_S' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nSchema 'TEST_DB.NO_SUCH_S' does not exist or not authorized."),
             ex.getMessage());
     }
 
@@ -219,8 +219,8 @@ public class MaskingPolicyAttachmentTest extends BaseDatabaseTest {
                 engine.execute("CREATE TABLE bad_t (a VARCHAR WITH MASKING POLICY no_such_mp)");
             }
         });
-        assertEquals("SQL compilation error:\nMasking policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_MP'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nMasking policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_MP'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     @Test

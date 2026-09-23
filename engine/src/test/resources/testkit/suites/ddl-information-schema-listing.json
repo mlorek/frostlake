@@ -1,19 +1,19 @@
 {
   "suite": "ddl-information-schema-listing",
-  "description": "What INFORMATION_SCHEMA contributes to container-scoped listings: the schema holds exactly 62 views and no tables, a database-wide SHOW VIEWS counts them beside the user's own (63) and SHOW OBJECTS both kinds (64) while SHOW TABLES counts only user tables; the schema row itself is owned by nobody with its fixed comment among 3 schemas; every system view is a VIEW owned by nobody (no owner role type) where a created object names its owner; and SHOW COLUMNS is asserted as a floor (user columns only - the recorded gap in docs/scope.md). Totals asserted exactly, live-verified on both sides. Converted 1:1 from ddl/InformationSchemaListingTest (now retired).",
+  "description": "What INFORMATION_SCHEMA contributes to container-scoped listings: the schema holds exactly 63 views and no tables, a database-wide SHOW VIEWS counts them beside the user's own (64) and SHOW OBJECTS both kinds (65) while SHOW TABLES counts only user tables; the schema row itself is owned by nobody with its fixed comment among 3 schemas; every system view is a VIEW owned by nobody (no owner role type) where a created object names its owner; and SHOW COLUMNS is asserted as a floor (user columns only - the recorded gap in docs/scope.md). Totals asserted exactly, live-verified on both sides. Converted 1:1 from ddl/InformationSchemaListingTest (now retired).",
   "tags": ["ddl", "converted"],
   "tests": [
-    {"name": "information-schema-holds-sixty-two-views-and-no-tables", "steps": [
-      {"sql": "SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 62}},
+    {"name": "information-schema-holds-sixty-three-views-and-no-tables", "steps": [
+      {"sql": "SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 63}},
       {"sql": "SHOW TABLES IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 0}},
-      {"sql": "SHOW OBJECTS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 62}}
+      {"sql": "SHOW OBJECTS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 63}}
     ]},
     {"name": "a-database-wide-listing-counts-them-too", "steps": [
       {"sql": "CREATE TABLE is_t (a NUMBER, b VARCHAR(10))"},
       {"sql": "CREATE VIEW is_v AS SELECT a FROM is_t"},
-      {"sql": "SHOW VIEWS IN DATABASE test_db", "expect": {"rowCount": 63}},
+      {"sql": "SHOW VIEWS IN DATABASE test_db", "expect": {"rowCount": 64}},
       {"sql": "SHOW TABLES IN DATABASE test_db", "expect": {"rowCount": 1}},
-      {"sql": "SHOW OBJECTS IN DATABASE test_db", "expect": {"rowCount": 64}}
+      {"sql": "SHOW OBJECTS IN DATABASE test_db", "expect": {"rowCount": 65}}
     ]},
     {"name": "the-schema-itself-is-listed", "steps": [
       {"sql": "SHOW SCHEMAS IN DATABASE test_db", "expect": {"rowCount": 3}},
@@ -25,9 +25,9 @@
     ]},
     {"name": "every-system-view-is-owned-by-nobody", "steps": [
       {"sql": "CREATE TABLE is_t (a NUMBER, b VARCHAR(10))"},
-      {"sql": "SHOW OBJECTS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 62}},
+      {"sql": "SHOW OBJECTS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 63}},
       {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"kind\" = 'VIEW' AND \"owner\" = '' AND \"owner_role_type\" = ''",
-       "expect": {"value": "62"}},
+       "expect": {"value": "63"}},
       {"sql": "SHOW OBJECTS IN SCHEMA test_db.test_schema", "expect": {"rowCount": 1}},
       {"sql": "SELECT MIN(LENGTH(\"owner\")) > 0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
        "expect": {"value": "true"}}

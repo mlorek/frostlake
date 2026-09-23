@@ -16,10 +16,12 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlIdentifierSubstitution;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.commands.ServiceFunctions;
 import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.UdfRuntimes;
@@ -45,6 +47,7 @@ import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 import dev.frostlake.values.VariantJsonText;
+import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
@@ -156,7 +159,13 @@ final class UdfInvoker {
                     // it has to become a number at all (live-verified both ways).
                     continue;
                 }
-                final Object cast = ValueCaster.castValue(value, SqlTypeNames.canonical(paramType));
+                Object cast;
+                try {
+                    cast = ValueCaster.castValue(value, SqlTypeNames.canonical(paramType));
+                } catch (final RuntimeException notConvertible) {
+                    // The account converts where the body READS the parameter, so the refusal waits there.
+                    cast = new DeferredConversion(value, paramType, notConvertible);
+                }
                 if (cast != value) {
                     if (coerced == null) {
                         coerced = new ArrayList<>(args);
@@ -210,6 +219,17 @@ final class UdfInvoker {
     }
 
     Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues) {
+        return resolveOverloadedFunction(schema, funcName, argValues, null);
+    }
+
+    /**
+     * The overload a call reaches, ranking the candidates by each argument's family.
+     *
+     * @param argumentFamilies each argument's family as {@link UdfOverloadPreference#familyOf} reads it, in
+     *                         argument order, or null to read every family off the values
+     */
+    Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues,
+                                       final List<String> argumentFamilies) {
         final List<Function> overloads = schema.getFunctionOverloads(funcName);
         if (overloads.isEmpty()) {
             return null;
@@ -257,7 +277,9 @@ final class UdfInvoker {
                     typesMatch = false;
                     break;
                 }
-                ranks[i] = UdfOverloadPreference.rank(argValue, param.getDataType());
+                ranks[i] = argumentFamilies != null
+                    ? UdfOverloadPreference.rankFamily(argumentFamilies.get(i), param.getDataType())
+                    : UdfOverloadPreference.rank(argValue, param.getDataType());
             }
             if (typesMatch && (preferredRanks == null || preferredArgumentwise(ranks, preferredRanks))) {
                 preferred = func;
@@ -363,6 +385,9 @@ final class UdfInvoker {
                 }
             }
         }
+        if (function.isServiceFunction()) {
+            throw new RuntimeException(ServiceFunctions.cannotCall(function));
+        }
         final UdfLanguage language = function.getUdfLanguage();
 
         if (language == UdfLanguage.JAVA) {
@@ -416,14 +441,15 @@ final class UdfInvoker {
             return VariantValue.of(text);
         }
         if (returnType instanceof VariantType) {
-            return VariantValue.of(StringNode.valueOf((String) result).toString());
+            return VariantValue.of(VariantText.canonical(StringNode.valueOf((String) result)));
         }
         return result;
     }
 
     private Object evaluateSqlFunction(final Function function, final List<Object> args) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
-        final String body = function.getBody();
+        // A body that closes its own frame before a semicolon runs what the frame holds (see SqlUdfBodyFrame).
+        final String body = SqlUdfBodyFrame.executableBody(function.getBody());
         if (body == null || body.isEmpty()) return null;
 
         // Bind parameter names to argument values
@@ -442,6 +468,7 @@ final class UdfInvoker {
                 }
                 return null;
             } catch (final Exception e) {
+                rethrowDeferredConversion(args, e);
                 throw new RuntimeException("Error executing SQL function: " + describe(e), e);
             }
         }
@@ -455,6 +482,12 @@ final class UdfInvoker {
         // parses to the same text.
         if (queryExecutor != null && queryExecutor.isProceduralBlock(trimmedBody)) {
             rejectUnsupportedScriptingReturnType(function);
+            // A block binds its parameters as variables when it starts, so it converts every argument then.
+            for (final Object arg : args) {
+                if (arg instanceof DeferredConversion) {
+                    throw ((DeferredConversion) arg).getFailure();
+                }
+            }
             final Object returned = queryExecutor.executeScriptingFunctionBody(function, args);
             // Snowflake casts the RETURNed value to the DECLARED return type: `RETURNS INT` over
             // `RETURN '7'` is 7, `RETURNS VARCHAR` over `RETURN 42` is the string '42', and
@@ -490,7 +523,8 @@ final class UdfInvoker {
             for (int i = 0; i < params.size() && i < args.size(); i++) {
                 cols.add(new TableColumn(
                     params.get(i).getName(), params.get(i).getDataType(), true, null, false, false, false));
-                rowVals.add(args.get(i));
+                rowVals.add(args.get(i) instanceof DeferredConversion
+                    ? new DeferredFault(((DeferredConversion) args.get(i)).getFailure()) : args.get(i));
             }
             final Table paramTable =
                 new Table("__UDF__", cols, false);
@@ -501,6 +535,7 @@ final class UdfInvoker {
             try {
                 return eval.evaluate(exprBody, paramRow);
             } catch (final Exception e) {
+                rethrowDeferredConversion(args, e);
                 throw new RuntimeException("Error in SQL function body: " + describe(e), e);
             }
         }
@@ -539,6 +574,21 @@ final class UdfInvoker {
         }
     }
 
+    /**
+     * Raise a deferred argument's own refusal when the body failed by reading that argument: the cast the body
+     * read it through refuses in the same words, and the account answers with that sentence alone rather than
+     * inside the function-body wrapper.
+     */
+    private static void rethrowDeferredConversion(final List<Object> args, final Exception failure) {
+        final String message = failure.getMessage();
+        for (final Object arg : args) {
+            if (arg instanceof DeferredConversion && message != null
+                    && message.equals(((DeferredConversion) arg).getFailure().getMessage())) {
+                throw ((DeferredConversion) arg).getFailure();
+            }
+        }
+    }
+
     /** The exception's message, or its class name when the message is null (an NPE's message usually is) —
      *  so a wrapped failure never surfaces as the bare text "null". */
     private String describe(final Exception e) {
@@ -557,7 +607,12 @@ final class UdfInvoker {
             final Parameter param = params.get(i);
             final Object argVal = args.get(i);
             final String argStr;
-            if (argVal == null) {
+            if (argVal instanceof DeferredConversion) {
+                // The argument the caller passed, converted where the body reads it.
+                final DeferredConversion deferred = (DeferredConversion) argVal;
+                argStr = "CAST(" + rawLiteral(deferred.getRaw()) + " AS "
+                    + SqlTypeNames.canonical(deferred.getType()) + ")";
+            } else if (argVal == null) {
                 argStr = "NULL";
             } else if (argVal instanceof Number || argVal instanceof Boolean) {
                 argStr = argVal.toString();
@@ -597,6 +652,25 @@ final class UdfInvoker {
             sql = SqlIdentifierSubstitution.substitute(sql, param.getName(), argStr);
         }
         return sql;
+    }
+
+    /** A value as the SQL literal of its OWN type: a VARIANT through PARSE_JSON, a temporal typed, a text quoted. */
+    private static String rawLiteral(final Object value) {
+        if (value instanceof Number || value instanceof Boolean) {
+            return value.toString();
+        }
+        if (value instanceof VariantValue) {
+            return "PARSE_JSON(" + SqlStringLiterals.encode(VariantJsonText.clientTextOf((VariantValue) value)) + ")";
+        }
+        if (value instanceof LocalDateTime || value instanceof LocalDate || value instanceof LocalTime
+                || value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
+            final String type = value instanceof LocalDate ? "DATE"
+                : value instanceof LocalTime ? "TIME"
+                : value instanceof ZonedDateTime ? "TIMESTAMP_TZ"
+                : value instanceof OffsetDateTime ? "TIMESTAMP_LTZ" : "TIMESTAMP_NTZ";
+            return "'" + SharedFunctionHelpers.textOf(value) + "'::" + type;
+        }
+        return SqlStringLiterals.encode(value.toString());
     }
 
     private Object evaluateJavaFunction(final Function function, final List<Object> args) {

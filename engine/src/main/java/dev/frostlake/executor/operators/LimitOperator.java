@@ -49,7 +49,7 @@ public class LimitOperator implements Operator {
         }
 
         final int startIndex = offset;
-        final int endIndex = Math.min(offset + limit, input.size());
+        final int endIndex = (int) Math.min((long) offset + (long) limit, (long) input.size());
 
         if (startIndex >= input.size()) {
             logger.debug("LIMIT offset {} exceeds input size {}, returning empty result",

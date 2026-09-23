@@ -22,10 +22,20 @@ package dev.frostlake.executor.expressions;
 public class ArrayAccessExpression implements Expression {
     private final Expression array;
     private final Expression index;
+    private SourcePosition position;
 
     public ArrayAccessExpression(final Expression array, final Expression index) {
         this.array = array;
         this.index = index;
+    }
+
+    /** Where the opening bracket stands, which a refusal of the subscripted base points at; null when unknown. */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     public Expression getArray() {

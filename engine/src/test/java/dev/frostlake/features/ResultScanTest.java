@@ -320,7 +320,7 @@ public class ResultScanTest extends BaseDatabaseTest {
         assertEquals(3L, ((Number) oneBefore.getRows().get(0).getValue(0)).longValue());
     }
 
-    /** RESULT_SCAN over a LAST_QUERY_ID that resolves to nothing keeps its own wording. */
+    /** RESULT_SCAN over a LAST_QUERY_ID that resolves to nothing names the NULL it was given. */
     @Test
     public void resultScanOverAnEmptyHistoryReportsNoPreviousResults() {
         // The shared live session carries a deep query history, so a "nothing N queries back"
@@ -336,7 +336,6 @@ public class ResultScanTest extends BaseDatabaseTest {
                 engine.executeQuery("SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-99)))");
             }
         });
-        assertTrue(error.getMessage().contains("No previous query results available"),
-            "unexpected message: " + error.getMessage());
+        assertEquals("Statement NULL not found", error.getMessage());
     }
 }

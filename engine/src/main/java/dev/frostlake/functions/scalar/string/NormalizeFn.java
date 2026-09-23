@@ -40,6 +40,12 @@ public class NormalizeFn extends TextArgumentFunction {
 
     public NormalizeFn() { super("NORMALIZE", NumericType.DOUBLE); }
 
+    /** A DATE, TIME or timestamp normalizes by its value on the time line, never by its text. */
+    @Override
+    public boolean readsTemporalsAsText() {
+        return false;
+    }
+
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null || args.get(2) == null) return null;

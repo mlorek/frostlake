@@ -17,8 +17,10 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.BooleanType;
+import dev.frostlake.values.UuidTextNode;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -44,7 +46,8 @@ public class ArrayContains extends BuiltInFunction {
         for (final JsonNode el : arr) {
             if (ArrayFunctionHelper.nodesEqual(el, target)) return true;
             // Also compare as string for text values
-            if (value != null && el.isTextual() && el.asText().equals(value.toString())) return true;
+            if (value != null && el.isTextual() && UuidTextNode.holds(el) == UuidTextNode.holds(target)
+                    && el.asText().equals(value.toString())) return true;
         }
         return value == null ? null : Boolean.FALSE;
     }
@@ -53,4 +56,10 @@ public class ArrayContains extends BuiltInFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /** A VECTOR is no ARRAY: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

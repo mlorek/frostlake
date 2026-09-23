@@ -53,26 +53,26 @@ public class QualifiedNameEchoTest extends BaseDatabaseTest {
     /** A quoted RELATION part keeps its case inside an otherwise unquoted path. */
     @Test
     public void aQuotedRelationPartKeepsItsCase() {
-        assertEquals("SQL compilation error: Object 'TEST_DB.TEST_SCHEMA.\"kw\"'"
-            + " does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error: Object 'TEST_DB.TEST_SCHEMA.\"kw\"'"
+            + " does not exist or not authorized."),
             refusalOf("SELECT * FROM test_schema.\"kw\""));
     }
 
     /** And a quoted SCHEMA part does, in both the spellings that reach it. */
     @Test
     public void aQuotedSchemaPartKeepsItsCase() {
-        assertEquals("SQL compilation error: Schema 'TEST_DB.\"test_schema\"'"
-            + " does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error: Schema 'TEST_DB.\"test_schema\"'"
+            + " does not exist or not authorized."),
             refusalOf("SELECT * FROM \"test_schema\".kw"));
-        assertEquals("SQL compilation error: Schema 'TEST_DB.\"test_schema\"'"
-            + " does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error: Schema 'TEST_DB.\"test_schema\"'"
+            + " does not exist or not authorized."),
             refusalOf("SELECT * FROM \"test_schema\".\"kw\""));
     }
 
     /** The single-part form, which already behaved, and the unquoted path, which resolves. */
     @Test
     public void theSinglePartAndUnquotedFormsAreUnchanged() {
-        assertEquals("SQL compilation error: Object '\"kw\"' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error: Object '\"kw\"' does not exist or not authorized."),
             refusalOf("SELECT * FROM \"kw\""));
         assertEquals("accepted", refusalOf("SELECT * FROM test_schema.kw"));
     }

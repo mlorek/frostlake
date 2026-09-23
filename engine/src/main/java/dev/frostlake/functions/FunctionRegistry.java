@@ -60,7 +60,9 @@ import dev.frostlake.functions.scalar.context.CurrentUser;
 import dev.frostlake.functions.scalar.context.CurrentVersion;
 import dev.frostlake.functions.scalar.context.CurrentWarehouse;
 import dev.frostlake.functions.scalar.context.GetDdl;
+import dev.frostlake.functions.scalar.context.GetVariable;
 import dev.frostlake.functions.scalar.context.InvokerRole;
+import dev.frostlake.functions.scalar.context.IsDatabaseRoleInSession;
 import dev.frostlake.functions.scalar.context.IsRoleInSession;
 import dev.frostlake.functions.scalar.context.JoinConstraint;
 import dev.frostlake.functions.scalar.context.LastTransaction;
@@ -122,6 +124,7 @@ import dev.frostlake.functions.scalar.datetime.MonthName;
 import dev.frostlake.functions.scalar.datetime.MonthsBetween;
 import dev.frostlake.functions.scalar.datetime.NextDay;
 import dev.frostlake.functions.scalar.datetime.NowFn;
+import dev.frostlake.functions.scalar.datetime.PlannedIntervalFunctions;
 import dev.frostlake.functions.scalar.datetime.PreviousDay;
 import dev.frostlake.functions.scalar.datetime.QuarterFn;
 import dev.frostlake.functions.scalar.datetime.SecondFn;
@@ -151,6 +154,8 @@ import dev.frostlake.functions.scalar.encoding.TryBase64Decode;
 import dev.frostlake.functions.scalar.encoding.TryBase64DecodeBinary;
 import dev.frostlake.functions.scalar.encoding.TryHexDecode;
 import dev.frostlake.functions.scalar.encoding.TryHexDecodeBinary;
+import dev.frostlake.functions.scalar.file.BuildScopedFileUrl;
+import dev.frostlake.functions.scalar.file.BuildStageFileUrl;
 import dev.frostlake.functions.scalar.file.FlGetContentType;
 import dev.frostlake.functions.scalar.file.FlGetEtag;
 import dev.frostlake.functions.scalar.file.FlGetFileType;
@@ -165,6 +170,10 @@ import dev.frostlake.functions.scalar.file.FlIsCompressed;
 import dev.frostlake.functions.scalar.file.FlIsDocument;
 import dev.frostlake.functions.scalar.file.FlIsImage;
 import dev.frostlake.functions.scalar.file.FlIsVideo;
+import dev.frostlake.functions.scalar.file.GetAbsolutePath;
+import dev.frostlake.functions.scalar.file.GetPresignedUrl;
+import dev.frostlake.functions.scalar.file.GetRelativePath;
+import dev.frostlake.functions.scalar.file.GetStageLocation;
 import dev.frostlake.functions.scalar.file.ToFile;
 import dev.frostlake.functions.scalar.file.TryToFile;
 import dev.frostlake.functions.scalar.hash.HashFn;
@@ -268,6 +277,9 @@ import dev.frostlake.functions.scalar.semistructured.CheckJson;
 import dev.frostlake.functions.scalar.semistructured.CheckXml;
 import dev.frostlake.functions.scalar.semistructured.GetIgnoreCase;
 import dev.frostlake.functions.scalar.semistructured.GetPath;
+import dev.frostlake.functions.scalar.semistructured.HllEstimate;
+import dev.frostlake.functions.scalar.semistructured.HllExport;
+import dev.frostlake.functions.scalar.semistructured.HllImport;
 import dev.frostlake.functions.scalar.semistructured.IsArray;
 import dev.frostlake.functions.scalar.semistructured.IsBinary;
 import dev.frostlake.functions.scalar.semistructured.IsBoolean;
@@ -351,6 +363,7 @@ import dev.frostlake.functions.scalar.string.Right;
 import dev.frostlake.functions.scalar.string.RtrimmedLength;
 import dev.frostlake.functions.scalar.string.Search;
 import dev.frostlake.functions.scalar.string.Soundex;
+import dev.frostlake.functions.scalar.string.SoundexP123;
 import dev.frostlake.functions.scalar.string.Space;
 import dev.frostlake.functions.scalar.string.Split;
 import dev.frostlake.functions.scalar.string.SplitPart;
@@ -372,19 +385,25 @@ import dev.frostlake.functions.scalar.vector.VectorL1Distance;
 import dev.frostlake.functions.scalar.vector.VectorL2Distance;
 import dev.frostlake.functions.scalar.vector.VectorNormalize;
 import dev.frostlake.functions.scalar.vector.VectorTrunc;
+import dev.frostlake.functions.table.AlertHistoryFunction;
+import dev.frostlake.functions.table.CompleteTaskGraphsFunction;
+import dev.frostlake.functions.table.CurrentTaskGraphsFunction;
 import dev.frostlake.functions.table.DataMetricReferencesFunction;
 import dev.frostlake.functions.table.Flatten;
 import dev.frostlake.functions.table.Generator;
 import dev.frostlake.functions.table.PolicyReferencesFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.functions.table.SplitToTable;
+import dev.frostlake.functions.table.StrtokSplitToTable;
 import dev.frostlake.functions.table.TagReferencesFunction;
+import dev.frostlake.functions.table.TaskDependentsFunction;
 import dev.frostlake.functions.table.TaskHistoryFunction;
 import dev.frostlake.functions.table.UserTaskCancelFunction;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.security.SessionContext;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.transaction.TransactionManager;
 
 import dev.frostlake.functions.aggregate.AnyValue;
 import dev.frostlake.functions.aggregate.ApproxCountDistinct;
@@ -412,6 +431,8 @@ import dev.frostlake.functions.aggregate.CountIf;
 import dev.frostlake.functions.aggregate.CovarPop;
 import dev.frostlake.functions.aggregate.CovarSamp;
 import dev.frostlake.functions.aggregate.HashAgg;
+import dev.frostlake.functions.aggregate.HllAccumulate;
+import dev.frostlake.functions.aggregate.HllCombine;
 import dev.frostlake.functions.aggregate.Kurtosis;
 import dev.frostlake.functions.aggregate.ListAgg;
 import dev.frostlake.functions.aggregate.Max;
@@ -448,8 +469,10 @@ import dev.frostlake.functions.scalar.GroupingFn;
 import dev.frostlake.functions.scalar.GroupingIdFn;
 
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -459,6 +482,8 @@ public class FunctionRegistry {
     private final Map<String, BuiltInFunction> functions;
     private final Map<String, AggregateFunction> aggregateFunctions;
     private final Map<String, TableFunction> tableFunctions;
+    /** The names a call may use that the account leaves out of SHOW FUNCTIONS — see {@link #registerUnlisted}. */
+    private final Set<String> unlistedNames = new HashSet<>();
     private final Catalog catalog;
     /** Installed after construction by the executor; see {@link #setQueryRunner}. */
     private QueryRunner queryRunner;
@@ -466,6 +491,9 @@ public class FunctionRegistry {
     private final EngineConfig config;
     /** Held so the task scheduler can be handed over once it exists — it is built after this. */
     private UserTaskCancelFunction userTaskCancel;
+
+    /** Held so the engine can hand it the transaction manager once both exist. */
+    private CurrentTransaction currentTransaction;
 
     public FunctionRegistry(final Catalog catalog) {
         this(catalog, null, null);
@@ -537,6 +565,7 @@ public class FunctionRegistry {
         register(new ParseIp());
         register(new StrtokToArray());
         register(new Soundex());
+        register(new SoundexP123());
         register(new ConcatWs());
         register(new Len());
         register(new OctetLength());
@@ -606,6 +635,10 @@ public class FunctionRegistry {
         register(new Sysdate());
         register(new DateAdd());
         register(new DateDiff());
+        // The internal names DATEADD and DATEDIFF are planned as — DATE_ADDDAYSTODATE, DATE_DIFFDATEINDAYS, …
+        for (final BuiltInFunction planned : PlannedIntervalFunctions.all()) {
+            registerUnlisted(planned);
+        }
         register(new DatePart());
         register(new Extract());
         register(new DateTrunc());
@@ -657,6 +690,7 @@ public class FunctionRegistry {
         register(new CurrentVersion());
         register(new CurrentClient());
         register(new CurrentSession(sessionContext));
+        register(new GetVariable(sessionContext));
         if (sessionContext != null) {
             register(new CurrentUser(sessionContext));
             register(new CurrentRole(sessionContext));
@@ -872,6 +906,14 @@ public class FunctionRegistry {
         // SHOW FUNCTIONS lists them. Live, the accessors classify on CONTENT_TYPE alone.
         register(new ToFile());
         register(new TryToFile());
+        // The stage functions, whose first argument names a named stage. QueryExecutor re-registers them
+        // with the stages they resolve against; registered here so the names always resolve.
+        register(new GetPresignedUrl(null, null));
+        register(new BuildStageFileUrl(null, null));
+        register(new BuildScopedFileUrl(null, null));
+        register(new GetStageLocation(null, null));
+        register(new GetAbsolutePath(null, null));
+        register(new GetRelativePath(null, null));
         register(new FlGetContentType());
         register(new FlGetEtag());
         register(new FlGetFileType());
@@ -907,8 +949,8 @@ public class FunctionRegistry {
         functions.put("POW", new Power());               // POW == POWER
         functions.put("DATE", new DateFunction());       // DATE == TO_DATE, but it also takes an epoch NUMBER
         functions.put("TIME", new TimeFunction());       // TIME reads a text as TO_TIME does, the rest its own way
-        functions.put("TIMESTAMPADD", new DateAdd());    // TIMESTAMPADD == DATEADD (== TIMEADD)
-        functions.put("TIMESTAMPDIFF", new DateDiff());  // TIMESTAMPDIFF == DATEDIFF (== TIMEDIFF)
+        functions.put("TIMESTAMPADD", new DateAdd("TIMESTAMPADD"));    // TIMESTAMPADD == DATEADD (== TIMEADD)
+        functions.put("TIMESTAMPDIFF", new DateDiff("TIMESTAMPDIFF"));  // TIMESTAMPDIFF == DATEDIFF (== TIMEDIFF)
         functions.put("DAYOFMONTH", new DayFn());        // DAYOFMONTH == DAY
         functions.put("LOCALTIME", new CurrentTime());   // LOCALTIME == CURRENT_TIME
         // LOCALTIMESTAMP is CURRENT_TIMESTAMP, not SYSDATE: it declares TIMESTAMP_LTZ. Registering
@@ -970,11 +1012,13 @@ public class FunctionRegistry {
         register(new CurrentOrganizationName(config != null ? config : new EngineConfig()));
         register(new CurrentAccountName(config != null ? config : new EngineConfig()));
         register(new CurrentStatement(sessionContext));
-        register(new CurrentTransaction());
+        this.currentTransaction = new CurrentTransaction();
+        register(this.currentTransaction);
         register(new LastTransaction(sessionContext));
         register(new CurrentSchemas(catalog));
         register(new InvokerRole(sessionContext));
         register(new IsRoleInSession(sessionContext));
+        register(new IsDatabaseRoleInSession(catalog, sessionContext));
         // Snowflake-name aliases over existing implementations.
         functions.put("AS_CHAR", new AsVarchar());
         functions.put("AS_NUMBER", new AsDecimal());
@@ -1007,6 +1051,13 @@ public class FunctionRegistry {
         aggregateFunctions.put("ARRAYAGG", new ArrayAgg());
         aggregateFunctions.put("OBJECTAGG", new ObjectAgg());
         aggregateFunctions.put("HLL", new ApproxCountDistinct());
+        // The HLL STATE family: a sketch written as a BINARY state, rolled up, estimated, and carried
+        // between engines as the exported OBJECT.
+        registerAggregate(new HllAccumulate());
+        registerAggregate(new HllCombine());
+        register(new HllEstimate());
+        register(new HllExport());
+        register(new HllImport());
         aggregateFunctions.put("APPROXIMATE_COUNT_DISTINCT", new ApproxCountDistinct());
         aggregateFunctions.put("BITANDAGG", new BitAndAgg());
         aggregateFunctions.put("BIT_ANDAGG", new BitAndAgg());
@@ -1021,9 +1072,14 @@ public class FunctionRegistry {
         // Table functions
         registerTableFunction(new Generator());
         registerTableFunction(new SplitToTable());
+        registerTableFunction(new StrtokSplitToTable());
         registerTableFunction(new Flatten());
         registerTableFunction(new TaskHistoryFunction(catalog));
         registerTableFunction(new TagReferencesFunction(catalog));
+        registerTableFunction(new AlertHistoryFunction(catalog));
+        registerTableFunction(new TaskDependentsFunction(catalog));
+        registerTableFunction(new CurrentTaskGraphsFunction(catalog));
+        registerTableFunction(new CompleteTaskGraphsFunction(catalog));
         registerTableFunction(new PolicyReferencesFunction(catalog));
         registerTableFunction(new DataMetricReferencesFunction(catalog));
         this.userTaskCancel = new UserTaskCancelFunction(catalog);
@@ -1045,12 +1101,33 @@ public class FunctionRegistry {
         functions.put(function.getName().toUpperCase(), function);
     }
 
+    /**
+     * Register a function a call may use by name but that the account does not list: the internal names its
+     * planner turns other functions into, which run when written but appear in no {@code SHOW FUNCTIONS}.
+     *
+     * @param function the function
+     */
+    public void registerUnlisted(final BuiltInFunction function) {
+        register(function);
+        unlistedNames.add(function.getName().toUpperCase());
+    }
+
     public void registerAggregate(final AggregateFunction function) {
         aggregateFunctions.put(function.getName().toUpperCase(), function);
     }
 
     public void registerTableFunction(final TableFunction function) {
         tableFunctions.put(function.getName().toUpperCase(), function);
+    }
+
+    /**
+     * Register a table function the account leaves out of {@code SHOW FUNCTIONS}, such as INFER_SCHEMA.
+     *
+     * @param function the table function
+     */
+    public void registerUnlistedTableFunction(final TableFunction function) {
+        registerTableFunction(function);
+        unlistedNames.add(function.getName().toUpperCase());
     }
 
     /**
@@ -1087,6 +1164,15 @@ public class FunctionRegistry {
      */
     public void setTaskScheduler(final TaskScheduler taskScheduler) {
         userTaskCancel.setTaskScheduler(taskScheduler);
+    }
+
+    /**
+     * Hand the transaction manager to the functions that read it — CURRENT_TRANSACTION().
+     *
+     * @param transactionManager the engine's transaction manager
+     */
+    public void setTransactionManager(final TransactionManager transactionManager) {
+        currentTransaction.setTransactionManager(transactionManager);
     }
 
     public BuiltInFunction getFunction(final String name) {
@@ -1163,6 +1249,7 @@ public class FunctionRegistry {
         names.addAll(HigherOrderFunctionNames.names());
         names.addAll(SystemFunctionNames.names());
         names.addAll(OperatorFunctionNames.names());
+        names.removeAll(unlistedNames);
         return names;
     }
 }

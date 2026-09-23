@@ -56,4 +56,13 @@ public class Base64Encode extends BuiltInFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 3; }
+
+    /**
+     * A predicate as BASE64_ENCODE's first argument is refused by the argument types, where a BOOLEAN
+     * value is read as text (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

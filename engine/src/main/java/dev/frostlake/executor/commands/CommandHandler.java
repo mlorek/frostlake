@@ -81,8 +81,8 @@ public interface CommandHandler {
      * {@code COMMENT '<text>'} with no equals sign, the only spelling live accepts on a column.
      *
      * @param ctx the column's comment clause, or null when the column carries none
-     * @return the comment text with its single-quote or dollar-quote delimiters stripped, or null
-     *         when the clause is absent
+     * @return the comment text — a quoted literal decoded as every string literal is, so {@code 'it''s'}
+     *         is {@code it's}; a dollar-quoted one verbatim — or null when the clause is absent
      */
     default String extractComment(final FrostlakeParser.ColumnCommentClauseContext ctx) {
         if (ctx == null) return null;
@@ -91,12 +91,7 @@ public interface CommandHandler {
             return raw.substring(2, raw.length() - 2);
         }
         if (ctx.STRING_LITERAL() == null) return null;
-        String comment = ctx.STRING_LITERAL().getText();
-        // Remove quotes
-        if (comment.startsWith("'") && comment.endsWith("'")) {
-            comment = comment.substring(1, comment.length() - 1);
-        }
-        return comment;
+        return ParseTreeText.extractStringLiteral(ctx.STRING_LITERAL());
     }
 
     /**

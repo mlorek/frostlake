@@ -64,7 +64,7 @@ public class PythonProcedureTest {
             CREATE PROCEDURE pysp()
             RETURNS VARIANT
             LANGUAGE PYTHON
-            RUNTIME_VERSION = '3.9'
+            RUNTIME_VERSION = '3.11'
             PACKAGES = ('snowflake-snowpark-python')
             HANDLER = 'run'
             AS
@@ -81,7 +81,7 @@ def run(session):
         assertEquals("PYSP", proc.getName());
         assertEquals("PYTHON", proc.getLanguage());
         assertEquals("run", proc.getHandler());
-        assertEquals("3.9", proc.getRuntimeVersion());
+        assertEquals("3.11", proc.getRuntimeVersion());
         assertEquals(1, proc.getPackages().size());
         assertEquals("snowflake-snowpark-python", proc.getPackages().get(0));
         assertTrue(proc.getBody().contains("def run"),
@@ -101,7 +101,7 @@ def run(session):
 
         final List<String> packages = Arrays.asList("snowflake-snowpark-python");
         final Procedure proc = new Procedure("test_pysp", parameters, VariantType.VARIANT,
-                                      body, "PYTHON", "run", "3.9", packages);
+                                      body, "PYTHON", "run", "3.11", packages);
 
         final List<Object> args = Arrays.asList();
         final Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);
@@ -129,7 +129,7 @@ def run(session):
 
         final List<String> packages = Arrays.asList("snowflake-snowpark-python");
         final Procedure proc = new Procedure("test_count", parameters, VariantType.VARIANT,
-                                      body, "PYTHON", "run", "3.9", packages);
+                                      body, "PYTHON", "run", "3.11", packages);
 
         final List<Object> args = Arrays.asList();
         final Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);
@@ -147,7 +147,7 @@ def run(session):
             CREATE PROCEDURE multi_pkg_proc()
             RETURNS VARIANT
             LANGUAGE PYTHON
-            RUNTIME_VERSION = '3.9'
+            RUNTIME_VERSION = '3.11'
             PACKAGES = ('snowflake-snowpark-python', 'pandas', 'numpy')
             HANDLER = 'process'
             AS
@@ -180,7 +180,7 @@ def run(session):
 
         final List<String> packages = Arrays.asList("snowflake-snowpark-python");
         final Procedure proc = new Procedure("test_dict", parameters, VariantType.VARIANT,
-                                      body, "PYTHON", "run", "3.9", packages);
+                                      body, "PYTHON", "run", "3.11", packages);
 
         final List<Object> args = Arrays.asList();
         final Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);

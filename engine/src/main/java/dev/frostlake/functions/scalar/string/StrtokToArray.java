@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -46,13 +47,13 @@ public class StrtokToArray extends TextArgumentFunction {
         final ArrayNode array = MAPPER.createArrayNode();
         if (delimiters.isEmpty()) {
             if (!str.isEmpty()) array.add(str);
-            return array.toString();
+            return VariantValue.ofNode(array);
         }
         final String regex = "[" + Pattern.quote(delimiters) + "]+";
         for (final String token : str.split(regex, -1)) {
             if (!token.isEmpty()) array.add(token);
         }
-        return array.toString();
+        return VariantValue.ofNode(array);
     }
 
     @Override

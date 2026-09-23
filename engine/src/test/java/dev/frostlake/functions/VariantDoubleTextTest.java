@@ -26,10 +26,12 @@ import org.junit.jupiter.api.Test;
  * the double came from (live-verified cell by cell):
  *
  * <ul>
- *   <li>a FLOAT through TO_VARIANT converts to VARCHAR in the shortest round-trip spelling held to ten
- *       significant digits plus one per decade — {@code 1.5}, {@code 3.0}, {@code 1.0E18}, {@code -0.0},
- *       {@code 1.414213562} for SQRT(2), {@code 1.2345678901234568E16} in full;</li>
- *   <li>a double read from JSON text, or extracted from a container, converts in the FLOAT text —
+ *   <li>a FLOAT constant the compiler folds, through TO_VARIANT, converts to VARCHAR in the shortest
+ *       round-trip spelling held to ten significant digits plus one per decade — {@code 1.5}, {@code 3.0},
+ *       {@code 1.0E18}, {@code -0.0}, {@code 1.2345678901234568E16} in full;</li>
+ *   <li>a computed double through TO_VARIANT (SQRT(2) is {@code 1.414213562}; see
+ *       FoldedDoubleVariantTextTest), a double read from JSON text, or one extracted from a container,
+ *       converts in the FLOAT text —
  *       {@code 100} for {@code 1e2}, {@code 1e+18}, {@code 1e-07}, {@code -0};</li>
  *   <li>TO_JSON, and a double inside a container under any conversion, keep the fifteen-decimal
  *       scientific form ({@code 1.500000000000000e+00}).</li>

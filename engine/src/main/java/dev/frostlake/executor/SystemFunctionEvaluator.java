@@ -22,7 +22,9 @@ import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
+import dev.frostlake.task.TaskGraphConfig;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.transaction.Transaction;
 import dev.frostlake.transaction.TransactionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,15 +96,8 @@ public class SystemFunctionEvaluator {
                 return "[]";
             case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
                 return System.currentTimeMillis();
-            case "SYSTEM$WAIT": {
-                if (!args.isEmpty() && args.get(0) instanceof Number) {
-                    final long ms = (long)(((Number) args.get(0)).doubleValue() * 1000);
-                    if (ms > 0 && ms <= 30_000) {
-                        try { Thread.sleep(ms); } catch (final InterruptedException ignored) {}
-                    }
-                }
-                return "waited";
-            }
+            case "SYSTEM$WAIT":
+                return SystemWait.waitFor(args);
             case "SYSTEM$LOG":
                 if (args.size() >= 2) logger.info("SYSTEM$LOG [{}]: {}", args.get(0), args.get(1));
                 else if (!args.isEmpty()) logger.info("SYSTEM$LOG: {}", args.get(0));
@@ -118,8 +113,7 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$CLUSTERING_RATIO":
                 return 1.0;
             case "SYSTEM$ABORT_TRANSACTION":
-                try { transactionManager.rollback(); } catch (final Exception ignored) {}
-                return "Transaction aborted.";
+                return abortTransaction(args);
             case "SYSTEM$ABORT_SESSION":
                 return "Session aborted.";
             case "SYSTEM$CANCEL_QUERY":
@@ -175,8 +169,9 @@ public class SystemFunctionEvaluator {
                 return value;
             }
             case "SYSTEM$TASK_RUNTIME_INFO":
-            case "SYSTEM$GET_TASK_GRAPH_CONFIG":
                 return "{}";
+            case "SYSTEM$GET_TASK_GRAPH_CONFIG":
+                return TaskGraphConfig.readInTask(args);
             case "SYSTEM$PIPE_STATUS": {
                 final String pipeName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 // Reflect the pipe's actual state (RUNNING/PAUSED); getPipe throws on an unknown pipe, matching Snowflake.
@@ -262,5 +257,20 @@ public class SystemFunctionEvaluator {
                 }
             }
         }
+    }
+
+    /**
+     * SYSTEM$ABORT_TRANSACTION(&lt;id&gt;): abort the transaction the id NAMES — the public id SHOW TRANSACTIONS
+     * lists and CURRENT_TRANSACTION() answers — not whichever one the caller happens to hold. An id that names
+     * no running transaction is answered, not refused: {@code Could not abort txn: <id>}.
+     */
+    private Object abortTransaction(final List<Object> args) {
+        final String written = args.isEmpty() || args.get(0) == null ? "" : String.valueOf(args.get(0)).trim();
+        final Transaction own = transactionManager.getCurrentTransaction();
+        if (own != null && written.equals(String.valueOf(own.getPublicId()))) {
+            transactionManager.rollback();
+            return "Transaction aborted.";
+        }
+        return "Could not abort txn: " + written;
     }
 }

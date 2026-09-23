@@ -22,7 +22,6 @@ import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.types.TypeCategory;
 import dev.frostlake.values.BinaryValue;
-import org.graalvm.polyglot.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -65,6 +64,9 @@ public final class PythonExecutor {
             // A FUNCTION body may import snowflake.snowpark exactly like a procedure body; the
             // shim install is idempotent per thread.
             PythonProcedureExecutor.installSnowparkShim();
+            if (PythonHandlerCheck.isDotted(function.getHandler())) {
+                PythonRuntime.bind("__fl_handler_name", function.getHandler());
+            }
             PythonRuntime.eval(buildCode(function, parameters));
 
             final Object javaResult = PythonRuntime.toJava(PythonRuntime.global("__result"));
@@ -94,10 +96,10 @@ public final class PythonExecutor {
     }
 
     /**
-     * Compile a Python FUNCTION's body at CREATE time. Live refuses three things here and this refuses
-     * the same three: a body that is not Python, a body whose module-level code fails (an import of
-     * something that is not installed is the usual one), and a HANDLER the body does not define — or
-     * defines with a different number of arguments than the function declares.
+     * Compile a Python FUNCTION's body at CREATE time. Live refuses these here, and this refuses the same: a
+     * body that is not Python, a body whose module-level code fails (an import of something that is not
+     * installed is the usual one), and a HANDLER that cannot take the function's arguments (see
+     * {@link PythonHandlerCheck}).
      *
      * <p>A Python PROCEDURE is deliberately NOT put through this. Measured on the same account: the
      * identical nonsense body is refused for a function and accepted for a procedure.
@@ -116,42 +118,30 @@ public final class PythonExecutor {
                 "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e), e);
         }
         final String handlerName = function.getHandler();
-        if (handlerName == null || handlerName.isEmpty()) {
+        if (handlerName == null) {
             return;
         }
-        final Value handler = PythonRuntime.global(handlerName);
-        if (handler == null || !handler.canExecute()) {
-            throw new RuntimeException("Could not find handler in function " + function.getName()
-                + " with handler " + handlerName);
-        }
-        final int declared = function.getParameters() == null ? 0 : function.getParameters().size();
-        final int accepts = declaredArgumentCount(handler);
-        if (accepts >= 0 && accepts != declared) {
-            throw new RuntimeException("Python function is defined with " + accepts
-                + " arguments, but UDF definition contains " + declared
-                + " arguments in function " + function.getName() + " with handler " + handlerName);
+        final String refusal = PythonHandlerCheck.refusal(handlerName, function.isTableFunction(),
+            function.getParameters() == null ? 0 : function.getParameters().size());
+        if (refusal != null) {
+            throw new RuntimeException(refusal + (handlerName.isEmpty() ? " in function " + function.getName()
+                : " in function " + function.getName() + " with handler " + handlerName));
         }
     }
 
-    /** How many positional arguments a Python callable takes, or -1 when it will not say. */
-    private static int declaredArgumentCount(final Value handler) {
-        try {
-            final Value code = handler.getMember("__code__");
-            if (code == null || !code.hasMember("co_argcount")) {
-                return -1;
-            }
-            return code.getMember("co_argcount").asInt();
-        } catch (final RuntimeException notIntrospectable) {
-            return -1;
-        }
-    }
-
-    /** Build the runnable Python source: the body plus an {@code __result = handler(params)} call. */
+    /**
+     * Build the runnable Python source: the body plus an {@code __result = handler(params)} call. A dotted handler
+     * names an attribute of a module, which is imported and read as CREATE resolved it.
+     */
     private static String buildCode(final Function function, final List<Parameter> parameters) {
         final String body = dedent(function.getBody());
         final String handlerName = function.getHandler();
         final StringBuilder code = new StringBuilder();
-        if (handlerName != null && !handlerName.isEmpty()) {
+        if (PythonHandlerCheck.isDotted(handlerName)) {
+            code.append(body).append('\n').append(PythonHandlerCheck.RESOLVE_DOTTED).append("__result = __fl_handler(");
+            appendArgs(code, parameters);
+            code.append(')');
+        } else if (handlerName != null && !handlerName.isEmpty()) {
             code.append(body).append("\n__result = ").append(handlerName).append('(');
             appendArgs(code, parameters);
             code.append(')');

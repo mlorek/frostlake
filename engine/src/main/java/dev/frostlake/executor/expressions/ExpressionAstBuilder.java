@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.IntegerLiteralRange;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
@@ -25,6 +26,7 @@ import dev.frostlake.executor.StarArgument;
 import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.parser.FrostlakeBaseVisitor;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.StructuredTypes;
@@ -42,6 +44,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -65,6 +68,13 @@ import java.util.Map;
  * reaches {@link #visitChildren(RuleNode)} and also fails loudly.
  */
 public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
+
+    /**
+     * The LIKE ANY whose pattern list stands in for itself while the value operators written after that list are
+     * built, and the value it stands in as — see {@link ComparisonLevelChain}. Null outside such a build.
+     */
+    private FrostlakeParser.LikeAnyAllExprContext patternListBase;
+    private Expression patternListValue;
 
     /** Build an {@link Expression} AST from a parsed {@code booleanExpr} (top) context. */
     public Expression build(final FrostlakeParser.BooleanExprContext ctx) {
@@ -99,6 +109,36 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
         }
         return built;
+    }
+
+    /** IDENTIFIER()'s argument as the expression that yields the name: a string, a variable, a bind variable or an integer. */
+    private Expression identifierArgument(final FrostlakeParser.IdentifierArgumentContext argument) {
+        if (argument.QUESTION() != null) {
+            throw unsuppliedPositionalBind(argument.getStart());
+        }
+        final SourcePosition at = new SourcePosition(
+            argument.getStart().getLine(), argument.getStart().getCharPositionInLine());
+        if (argument.COLON() != null) {
+            return new BindVariableExpression(argument.identifier() != null
+                ? argument.identifier().getText() : argument.INTEGER_LITERAL().getText(), at);
+        }
+        if (argument.SESSION_VAR_REF() != null) {
+            final SessionVarExpression variable =
+                new SessionVarExpression(argument.SESSION_VAR_REF().getText().substring(1));
+            variable.setPosition(at);
+            return variable;
+        }
+        final LiteralExpression literal;
+        if (argument.STRING_LITERAL() != null) {
+            literal = new LiteralExpression(
+                unquoteStringAt(argument.getText(), argument.STRING_LITERAL().getSymbol()), LiteralType.STRING);
+        } else if (argument.DOLLAR_QUOTED_STRING() != null) {
+            literal = new LiteralExpression(unquoteDollar(argument.getText()), LiteralType.STRING);
+        } else {
+            literal = new LiteralExpression(new BigDecimal(argument.getText()), LiteralType.DECIMAL);
+        }
+        literal.setPosition(at);
+        return literal;
     }
 
     private Expression literalOf(final FrostlakeParser.LiteralContext lit) {
@@ -164,7 +204,31 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
      *  join); as an expression the marked reference is just its plain column, so evaluation drops the marker. */
     @Override
     public Expression visitOuterJoinColumnExpr(final FrostlakeParser.OuterJoinColumnExprContext ctx) {
-        return buildColumnReference(ctx.qualifiedName());
+        final Expression column = buildColumnReference(ctx.qualifiedName());
+        // A refusal naming the column names its marker too: invalid identifier 'T.NOSUCH(+)'.
+        if (column instanceof ColumnReferenceExpression
+                && ((ColumnReferenceExpression) column).getWrittenName() != null) {
+            final ColumnReferenceExpression reference = (ColumnReferenceExpression) column;
+            reference.setWrittenName(reference.getWrittenName() + "(+)");
+        }
+        return column;
+    }
+
+    /** A (+) after anything but a column: {@code a = 1 (+)} is "Invalid argument for (+): 1." (live-verified). */
+    @Override
+    public Expression visitOuterJoinOperandExpr(final FrostlakeParser.OuterJoinOperandExprContext ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
+        if (ctx.expression() instanceof FrostlakeParser.QualifiedNameExprContext) {
+            return visit(ctx.expression());
+        }
+        if (ctx.expression() == patternListBase) {
+            // Marking a LIKE ANY's one pattern names that pattern as written, inside its parentheses:
+            // 'a' LIKE ANY ('a') (+) is "Invalid argument for (+): 'a'." (live-verified).
+            throw new OuterJoinOperandException(originalText(patternListBase.patterns.get(0)));
+        }
+        throw new OuterJoinOperandException(originalText(ctx.expression()));
     }
 
     /** {@code PRIOR <column>} — the parent-row side of a CONNECT BY step. Snowflake resolves only the bare
@@ -234,8 +298,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             }
             table.append(parts[i]);
         }
+        // A qualified t.$N is positional too: it reads relation t's Nth column (live answers t.$1).
+        final FrostlakeParser.NamePartContext lastPart = qn.namePart().isEmpty() ? null
+            : qn.namePart().get(qn.namePart().size() - 1);
+        final FrostlakeParser.IdentifierContext lastName = lastPart == null || lastPart.columnDefName() == null
+            ? null : lastPart.columnDefName().identifier();
+        final int ordinal = lastName != null && lastName.POSITIONAL_PARAMETER() != null
+            ? Integer.parseInt(lastName.POSITIONAL_PARAMETER().getText().substring(1)) : 0;
         final ColumnReferenceExpression qualified =
-            new ColumnReferenceExpression(table.toString(), column, position);
+            new ColumnReferenceExpression(table.toString(), column, position, ordinal);
         qualified.setWrittenName(writtenQualifiedName(qn));
         return qualified;
     }
@@ -267,9 +338,27 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         return variable;
     }
 
+    /**
+     * A stage written bare as a stage function's argument, {@code BUILD_STAGE_FILE_URL(@st, 'f.csv')}, or as a CALL's:
+     * the string {@code '@st'} as written, which is what the account makes of it — its refusals echo the call as
+     * {@code BUILD_STAGE_FILE_URL('@st')}. Where a bare stage may stand is settled while the statement parses and
+     * compiles (see {@code StageArgumentSyntax}); a text read here on its own is held to the same rules, except that
+     * a stage that is the whole text passes, as a CALL argument read back on its own is.
+     */
+    @Override
+    public Expression visitStageReferenceExpr(final FrostlakeParser.StageReferenceExprContext ctx) {
+        // No text read on its own evaluates a stage where none is taken, whatever path it arrived by.
+        StageArgumentSyntax.requireStandalone(ctx);
+        final LiteralExpression stage =
+            new LiteralExpression(StageArgumentSyntax.writtenText(ctx), LiteralType.STRING);
+        stage.setPosition(new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+        return stage;
+    }
+
     @Override
     public Expression visitCurrentTimestampExpr(final FrostlakeParser.CurrentTimestampExprContext ctx) {
-        return zeroArgFunction("CURRENT_TIMESTAMP");
+        // LOCALTIMESTAMP keeps its own name, which the plan prints: CAST(LOCALTIMESTAMP() AS …); LOCALTIME likewise.
+        return zeroArgFunction(ctx.LOCALTIMESTAMP() != null ? "LOCALTIMESTAMP" : "CURRENT_TIMESTAMP");
     }
 
     @Override
@@ -279,7 +368,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitCurrentTimeExpr(final FrostlakeParser.CurrentTimeExprContext ctx) {
-        return zeroArgFunction("CURRENT_TIME");
+        return zeroArgFunction(ctx.LOCALTIME() != null ? "LOCALTIME" : "CURRENT_TIME");
     }
 
     @Override
@@ -324,6 +413,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitMultiplicativeExpr(final FrostlakeParser.MultiplicativeExprContext ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
         final BinaryOperator op;
         switch (ctx.op.getType()) {
             case FrostlakeParser.STAR:
@@ -341,6 +433,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitAdditiveExpr(final FrostlakeParser.AdditiveExprContext ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
         final BinaryOperator op = ctx.op.getType() == FrostlakeParser.PLUS
             ? BinaryOperator.ADD
             : BinaryOperator.SUBTRACT;
@@ -349,13 +444,297 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitConcatExpr(final FrostlakeParser.ConcatExprContext ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
         return binary(ctx.expression(0), BinaryOperator.CONCAT, ctx.expression(1),
             ctx.PIPE_PIPE() != null ? ctx.PIPE_PIPE().getSymbol() : null);
     }
 
+    /**
+     * Two parenthesised lists compared. A list of one is a parenthesised SCALAR, not a row: two of them are an
+     * ordinary comparison, and one opposite a row is the row-against-scalar refusal, as live reads
+     * {@code (1, 2) = (1)}.
+     */
+    @Override
+    public Expression visitRowComparisonExpr(final FrostlakeParser.RowComparisonExprContext ctx) {
+        final boolean scalarLeft = ctx.left.expression().size() == 1;
+        final boolean scalarRight = ctx.right.expression().size() == 1;
+        if (scalarLeft && scalarRight) {
+            return comparisonChain(ctx);
+        }
+        return positioned(new RowComparisonExpression(elementsOf(ctx.left), ctx.op.getText(),
+            elementsOf(ctx.right), scalarLeft, scalarRight), ctx.op);
+    }
+
+    @Override
+    public Expression visitRowScalarComparisonExpr(final FrostlakeParser.RowScalarComparisonExprContext ctx) {
+        final List<Expression> scalar = new ArrayList<>();
+        scalar.add(visit(ctx.scalarRight));
+        return positioned(new RowComparisonExpression(elementsOf(ctx.rowLeft), ctx.op.getText(), scalar,
+            false, true), ctx.op);
+    }
+
+    @Override
+    public Expression visitScalarRowComparisonExpr(final FrostlakeParser.ScalarRowComparisonExprContext ctx) {
+        return comparisonChain(ctx);
+    }
+
+    /** A scalar compared with a row, over the scalar a comparison-level chain gave it. */
+    private Expression scalarRowStep(final FrostlakeParser.ScalarRowComparisonExprContext ctx, final Expression value) {
+        final List<Expression> scalar = new ArrayList<>();
+        scalar.add(value);
+        return positioned(new RowComparisonExpression(scalar, ctx.op.getText(), elementsOf(ctx.rowRight),
+            true, false), ctx.op);
+    }
+
+    /** A row comparison anchored on its operator, where the account points its refusals. */
+    private static RowComparisonExpression positioned(final RowComparisonExpression row, final Token operator) {
+        row.setPosition(new SourcePosition(operator.getLine(), operator.getCharPositionInLine()));
+        return row;
+    }
+
+    /** The expressions a row constructor of two or more lists. */
+    private List<Expression> elementsOf(final List<FrostlakeParser.ExpressionContext> list) {
+        final List<Expression> elements = new ArrayList<>();
+        for (final FrostlakeParser.ExpressionContext element : list) {
+            elements.add(visit(element));
+        }
+        return elements;
+    }
+
+    /** The expressions a row constructor lists. */
+    private List<Expression> elementsOf(final FrostlakeParser.ExpressionListContext list) {
+        final List<Expression> elements = new ArrayList<>();
+        for (final FrostlakeParser.ExpressionContext element : list.expression()) {
+            elements.add(visit(element));
+        }
+        return elements;
+    }
+
     @Override
     public Expression visitComparisonExpr(final FrostlakeParser.ComparisonExprContext ctx) {
-        return binary(ctx.expression(0), comparisonOperator(ctx.op), ctx.expression(1));
+        return comparisonChain(ctx);
+    }
+
+    /**
+     * A chain of comparison-level operators folded from the left, the way live reads it (see
+     * {@link ComparisonLevelChain}): {@code 'a' LIKE 'a' = TRUE} compares the LIKE's result, and
+     * {@code 'x' = 'y' IN (FALSE)} tests the comparison's.
+     *
+     * @param top the outermost node of the chain as the grammar parsed it
+     * @return the chain's expression
+     */
+    private Expression comparisonChain(final FrostlakeParser.ExpressionContext top) {
+        final List<FrostlakeParser.ExpressionContext> items = ComparisonLevelChain.inWrittenOrder(top);
+        Expression built = visit(items.get(0));
+        int next = 1;
+        while (next < items.size()) {
+            final FrostlakeParser.ExpressionContext step = items.get(next);
+            next++;
+            FrostlakeParser.ExpressionContext right = null;
+            if (ComparisonLevelChain.takesRightOperand(step)) {
+                right = items.get(next);
+                next++;
+            }
+            built = comparisonStep(step, built, right);
+        }
+        return built;
+    }
+
+    /**
+     * One operator of a comparison-level chain over the operand folded so far, and the operand written after it
+     * when it takes one — built after anything the operator holds between the two, in the order written.
+     */
+    private Expression comparisonStep(final FrostlakeParser.ExpressionContext step, final Expression left,
+                                      final FrostlakeParser.ExpressionContext right) {
+        if (step instanceof FrostlakeParser.ComparisonExprContext) {
+            return comparisonNode(left, ((FrostlakeParser.ComparisonExprContext) step).op, visit(right));
+        }
+        if (step instanceof FrostlakeParser.RowComparisonExprContext) {
+            return comparisonNode(left, ((FrostlakeParser.RowComparisonExprContext) step).op, visit(right));
+        }
+        if (step instanceof FrostlakeParser.LikeExprContext) {
+            return likeStep((FrostlakeParser.LikeExprContext) step, left, right);
+        }
+        if (step instanceof FrostlakeParser.RlikeExprContext) {
+            return rlikeStep((FrostlakeParser.RlikeExprContext) step, left, visit(right));
+        }
+        if (step instanceof FrostlakeParser.BetweenExprContext) {
+            return betweenStep((FrostlakeParser.BetweenExprContext) step, left, right);
+        }
+        if (step instanceof FrostlakeParser.InListExprContext) {
+            final FrostlakeParser.InListExprContext in = (FrostlakeParser.InListExprContext) step;
+            return inListStep(left, argList(in.expressionList()), in.NOT(), in.IN());
+        }
+        if (step instanceof FrostlakeParser.InSubqueryExprContext) {
+            final FrostlakeParser.InSubqueryExprContext in = (FrostlakeParser.InSubqueryExprContext) step;
+            return inSubqueryStep(left, in.selectStatement(), in.NOT(), in.IN());
+        }
+        if (step instanceof FrostlakeParser.LikeAnyAllExprContext) {
+            final FrostlakeParser.LikeAnyAllExprContext like = (FrostlakeParser.LikeAnyAllExprContext) step;
+            return likeAnyAllStep(like, left, patternsOf(like));
+        }
+        if (step instanceof FrostlakeParser.QuantifiedComparisonExprContext) {
+            return quantifiedStep((FrostlakeParser.QuantifiedComparisonExprContext) step, left);
+        }
+        if (step instanceof FrostlakeParser.ScalarRowComparisonExprContext) {
+            return scalarRowStep((FrostlakeParser.ScalarRowComparisonExprContext) step, left);
+        }
+        if (step instanceof FrostlakeParser.TupleInFlatListExprContext) {
+            final FrostlakeParser.TupleInFlatListExprContext in = (FrostlakeParser.TupleInFlatListExprContext) step;
+            return inListStep(left, argList(in.expressionList(1)), in.NOT(), in.IN());
+        }
+        if (step instanceof FrostlakeParser.TupleInSubqueryExprContext) {
+            final FrostlakeParser.TupleInSubqueryExprContext in = (FrostlakeParser.TupleInSubqueryExprContext) step;
+            return inSubqueryStep(left, in.selectStatement(), in.NOT(), in.IN());
+        }
+        if (step instanceof FrostlakeParser.TupleInListExprContext) {
+            return scalarRowListStep((FrostlakeParser.TupleInListExprContext) step, left);
+        }
+        return likeAnyValueStep(step, left);
+    }
+
+    /** A comparison over two operands, anchored on its operator. */
+    private Expression comparisonNode(final Expression left, final Token op, final Expression right) {
+        final BinaryOperationExpression node = new BinaryOperationExpression(left, comparisonOperator(op), right);
+        node.setPosition(new SourcePosition(op.getLine(), op.getCharPositionInLine()));
+        return node;
+    }
+
+    /**
+     * One parenthesized value IN a list of parenthesized rows. Rows of one value each are that many values —
+     * {@code (1) IN ((1), (2))} is TRUE — and a wider row is refused by type, with the value typed as the scalar it
+     * is: live, {@code (1) IN ((1, 2))} is "Invalid argument types for function 'IN': (NUMBER(1,0), ROW(NUMBER(1,0),
+     * NUMBER(1,0)))".
+     */
+    private Expression scalarRowListStep(final FrostlakeParser.TupleInListExprContext ctx, final Expression value) {
+        final List<Expression> members = new ArrayList<>();
+        boolean scalars = true;
+        final List<List<Expression>> rows = new ArrayList<>();
+        for (final FrostlakeParser.TupleRowContext row : ctx.tupleRow()) {
+            final List<Expression> elements = argList(row.expressionList());
+            rows.add(elements);
+            if (elements.size() == 1) {
+                members.add(elements.get(0));
+            } else {
+                scalars = false;
+            }
+        }
+        if (scalars) {
+            return inListStep(value, members, ctx.NOT(), ctx.IN());
+        }
+        final List<Expression> values = new ArrayList<>();
+        values.add(value);
+        final TupleInExpression refused = TupleInExpression.ofScalarRows(values, rows, ctx.NOT() != null);
+        refused.setPosition(keywordPosition(ctx.NOT() != null ? ctx.NOT().getSymbol() : ctx.IN().getSymbol()));
+        return refused;
+    }
+
+    /**
+     * Whether a value operator reads a LIKE ANY's pattern list as its operand — the outermost of the operators
+     * written after that list, outside the build of the list's own value (see {@link ComparisonLevelChain}).
+     */
+    private boolean readsPatternList(final FrostlakeParser.ExpressionContext ctx) {
+        final FrostlakeParser.LikeAnyAllExprContext base = ComparisonLevelChain.valueOperandBase(ctx);
+        return base != null && base != patternListBase;
+    }
+
+    /**
+     * A LIKE ANY, LIKE ALL or ILIKE ANY without ESCAPE whose pattern list the value operators written after it
+     * apply to, {@code top} being the outermost of them. A list of one is that value, so {@code 'a' LIKE ANY ('a')
+     * || ''} matches 'a' || '' and {@code 'a' LIKE ANY ('a') + 1} converts 'a' to a number (live-verified). A list of
+     * several is a ROW, which the first operator over it refuses while the statement compiles; where that operator
+     * has no ROW sentence here, the operators apply to the predicate as a whole.
+     */
+    private Expression likeAnyValueStep(final FrostlakeParser.ExpressionContext top, final Expression subject) {
+        final FrostlakeParser.LikeAnyAllExprContext base = ComparisonLevelChain.valueOperandBase(top);
+        if (base.patterns.size() == 1) {
+            final List<Expression> patterns = new ArrayList<>();
+            patterns.add(withPatternList(top, base, visit(base.patterns.get(0))));
+            return likeAnyAllStep(base, subject, patterns);
+        }
+        final LikeAnyAllExpression predicate = likeAnyAllStep(base, subject, patternsOf(base));
+        final PatternRowOperator refusal = patternRowOperator(top, base);
+        if (refusal != null) {
+            predicate.refusePatternRow(refusal);
+            return predicate;
+        }
+        return withPatternList(top, base, predicate);
+    }
+
+    /** {@code top} built with the LIKE ANY {@code base} standing for {@code value} wherever it is read. */
+    private Expression withPatternList(final FrostlakeParser.ExpressionContext top,
+                                       final FrostlakeParser.LikeAnyAllExprContext base, final Expression value) {
+        final FrostlakeParser.LikeAnyAllExprContext enclosingBase = patternListBase;
+        final Expression enclosingValue = patternListValue;
+        patternListBase = base;
+        patternListValue = value;
+        try {
+            return visit(top);
+        } finally {
+            patternListBase = enclosingBase;
+            patternListValue = enclosingValue;
+        }
+    }
+
+    /**
+     * How the first value operator over a LIKE ANY's list of several patterns refuses that ROW, or null when it
+     * has no sentence here. The operator is the one written right after the list; the outer ones never compile.
+     */
+    private PatternRowOperator patternRowOperator(final FrostlakeParser.ExpressionContext top,
+                                                  final FrostlakeParser.LikeAnyAllExprContext base) {
+        FrostlakeParser.ExpressionContext first = top;
+        while (ComparisonLevelChain.valueOperand(first) != base) {
+            first = ComparisonLevelChain.valueOperand(first);
+        }
+        if (first instanceof FrostlakeParser.ConcatExprContext) {
+            final FrostlakeParser.ConcatExprContext concat = (FrostlakeParser.ConcatExprContext) first;
+            return PatternRowOperator.beside("||", visit(concat.expression(1)),
+                keywordPosition(concat.PIPE_PIPE().getSymbol()));
+        }
+        if (first instanceof FrostlakeParser.AdditiveExprContext) {
+            final FrostlakeParser.AdditiveExprContext sum = (FrostlakeParser.AdditiveExprContext) first;
+            return PatternRowOperator.beside(sum.op.getText(), visit(sum.expression(1)), keywordPosition(sum.op));
+        }
+        if (first instanceof FrostlakeParser.MultiplicativeExprContext) {
+            final FrostlakeParser.MultiplicativeExprContext product = (FrostlakeParser.MultiplicativeExprContext) first;
+            return PatternRowOperator.beside(product.op.getText(), visit(product.expression(1)),
+                keywordPosition(product.op));
+        }
+        if (first instanceof FrostlakeParser.IsNullExprContext) {
+            final FrostlakeParser.IsNullExprContext test = (FrostlakeParser.IsNullExprContext) first;
+            return PatternRowOperator.alone(test.NOT() != null ? "IS NOT NULL" : "IS NULL",
+                keywordPosition(test.IS().getSymbol()));
+        }
+        if (first instanceof FrostlakeParser.ObjectAccessExprContext) {
+            final FrostlakeParser.ObjectAccessExprContext path = (FrostlakeParser.ObjectAccessExprContext) first;
+            final LiteralExpression key = new LiteralExpression(variantPathKeyText(path.variantPathKey(0)),
+                LiteralType.STRING);
+            return PatternRowOperator.beside("GET", key, keywordPosition(path.COLON(0).getSymbol()));
+        }
+        if (first instanceof FrostlakeParser.ArrayAccessExprContext) {
+            final FrostlakeParser.ArrayAccessExprContext subscript = (FrostlakeParser.ArrayAccessExprContext) first;
+            return PatternRowOperator.beside("GET", visit(subscript.expression(1)),
+                keywordPosition(subscript.LBRACKET().getSymbol()));
+        }
+        if (first instanceof FrostlakeParser.IsDistinctExprContext) {
+            // Live points this one nowhere: "error line 0 at position -1".
+            return PatternRowOperator.beside("EQUAL_NULL",
+                visit(((FrostlakeParser.IsDistinctExprContext) first).expression(1)), null);
+        }
+        if (first instanceof FrostlakeParser.OuterJoinOperandExprContext) {
+            // The marked operand is the list, named by the parenthesis that opens it.
+            throw new OuterJoinOperandException("(");
+        }
+        if (first instanceof FrostlakeParser.CastExpr2Context) {
+            final FrostlakeParser.CastExpr2Context cast = (FrostlakeParser.CastExpr2Context) first;
+            return PatternRowOperator.cast(typeText(cast.dataTypeName(), cast.typeParameters()));
+        }
+        if (first instanceof FrostlakeParser.CollateExprContext) {
+            return PatternRowOperator.collate();
+        }
+        return null;
     }
 
     @Override
@@ -376,22 +755,42 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitIsNullExpr(final FrostlakeParser.IsNullExprContext ctx) {
-        return new IsNullExpression(visit(ctx.expression()), ctx.NOT() != null);
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
+        final IsNullExpression test = new IsNullExpression(visit(ctx.expression()), ctx.NOT() != null);
+        test.setPosition(new SourcePosition(ctx.IS().getSymbol().getLine(), ctx.IS().getSymbol().getCharPositionInLine()));
+        return test;
     }
 
     @Override
     public Expression visitIsDistinctExpr(final FrostlakeParser.IsDistinctExprContext ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
         // a IS [NOT] DISTINCT FROM b — NULL-safe (in)equality, expressed via EQUAL_NULL(a, b):
         //   IS NOT DISTINCT FROM => EQUAL_NULL(a, b);  IS DISTINCT FROM => NOT EQUAL_NULL(a, b).
         final List<Expression> args = new ArrayList<>();
         args.add(visit(ctx.expression(0)));
         args.add(visit(ctx.expression(1)));
-        final Expression equalNull = new FunctionCallExpression("EQUAL_NULL", args);
-        return ctx.NOT() != null ? equalNull : new UnaryOperationExpression(UnaryOperator.NOT, equalNull);
+        final FunctionCallExpression equalNull = new FunctionCallExpression("EQUAL_NULL", args);
+        if (ctx.NOT() != null) {
+            // The NOT DISTINCT form IS the EQUAL_NULL, refused at its IS; the DISTINCT form negates one and points
+            // nowhere (live-verified).
+            equalNull.setPosition(keywordPosition(ctx.IS().getSymbol()));
+            return equalNull;
+        }
+        return new UnaryOperationExpression(UnaryOperator.NOT, equalNull);
     }
 
     @Override
     public Expression visitLikeExpr(final FrostlakeParser.LikeExprContext ctx) {
+        return comparisonChain(ctx);
+    }
+
+    /** A [NOT] LIKE or ILIKE over the subject a comparison-level chain gave it, and its pattern and ESCAPE. */
+    private Expression likeStep(final FrostlakeParser.LikeExprContext ctx, final Expression subject,
+                                final FrostlakeParser.ExpressionContext patternCtx) {
         final boolean not = ctx.NOT() != null;
         final BinaryOperator op;
         if (ctx.ILIKE() != null) {
@@ -404,9 +803,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         // Carry the optional ESCAPE <char> so evaluation can honor a custom escape character rather
         // than always assuming the default backslash. The grammar admits only a bare literal, NULL or
         // a session variable there, so nothing built from one has to be refused here.
+        final Expression pattern = visit(patternCtx);
         final Expression escape = escapeOperand(ctx.escapeOperand());
-        final BinaryOperationExpression like =
-            new BinaryOperationExpression(visit(ctx.expression(0)), op, visit(ctx.expression(1)), escape);
+        final BinaryOperationExpression like = new BinaryOperationExpression(subject, op, pattern, escape);
         // Anchored on the keyword, where live points a collation LIKE cannot match under.
         final Token keyword = ctx.ILIKE() != null ? ctx.ILIKE().getSymbol() : ctx.LIKE().getSymbol();
         like.setPosition(new SourcePosition(keyword.getLine(), keyword.getCharPositionInLine()));
@@ -415,27 +814,51 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitRlikeExpr(final FrostlakeParser.RlikeExprContext ctx) {
+        return comparisonChain(ctx);
+    }
+
+    /** A [NOT] RLIKE or REGEXP over the operands a comparison-level chain gave it. */
+    private Expression rlikeStep(final FrostlakeParser.RlikeExprContext ctx, final Expression subject,
+                                 final Expression pattern) {
         // Snowflake defines `<subject> [NOT] RLIKE|REGEXP <pattern>` as REGEXP_LIKE(subject, pattern)
         // — a FULL-string regex match — so build exactly that call and inherit its evaluation
         // (including NULL propagation); NOT wraps the call like any negated predicate.
         final List<Expression> args = new ArrayList<>();
-        args.add(visit(ctx.expression(0)));
-        args.add(visit(ctx.expression(1)));
-        final Expression call = new FunctionCallExpression("REGEXP_LIKE", args);
+        args.add(subject);
+        args.add(pattern);
+        final FunctionCallExpression call = new FunctionCallExpression("REGEXP_LIKE", args);
+        // A refusal names the operator as written, at the operator (live-verified).
+        final Token operator = ctx.RLIKE() != null ? ctx.RLIKE().getSymbol() : ctx.REGEXP().getSymbol();
+        call.markOperator(operator.getText().toUpperCase(Locale.ROOT), ctx.NOT() != null);
+        call.setPosition(new SourcePosition(operator.getLine(), operator.getCharPositionInLine()));
         return ctx.NOT() != null ? new UnaryOperationExpression(UnaryOperator.NOT, call) : call;
     }
 
     @Override
     public Expression visitLikeAnyAllExpr(final FrostlakeParser.LikeAnyAllExprContext ctx) {
-        // Snowflake's multi-pattern matching is NOT the OR/AND expansion of the single-pattern
-        // predicate: NULL patterns are skipped rather than propagated as UNKNOWN (live-verified), so
-        // a dedicated node carries the pattern list and the shared ESCAPE.
+        if (ctx == patternListBase) {
+            return patternListValue;
+        }
+        return comparisonChain(ctx);
+    }
+
+    /** The patterns a LIKE ANY lists, each built as written. */
+    private List<Expression> patternsOf(final FrostlakeParser.LikeAnyAllExprContext ctx) {
         final List<Expression> patterns = new ArrayList<>();
         for (final FrostlakeParser.ExpressionContext patternCtx : ctx.patterns) {
             patterns.add(visit(patternCtx));
         }
+        return patterns;
+    }
+
+    /** A LIKE ANY, LIKE ALL or ILIKE ANY over the subject a comparison-level chain gave it. */
+    private LikeAnyAllExpression likeAnyAllStep(final FrostlakeParser.LikeAnyAllExprContext ctx,
+                                                final Expression subject, final List<Expression> patterns) {
+        // Snowflake's multi-pattern matching is NOT the OR/AND expansion of the single-pattern
+        // predicate: NULL patterns are skipped rather than propagated as UNKNOWN (live-verified), so
+        // a dedicated node carries the pattern list and the shared ESCAPE.
         final LikeAnyAllExpression node = new LikeAnyAllExpression(
-            visit(ctx.expression(0)),
+            subject,
             patterns,
             ctx.q.getType() == FrostlakeParser.ALL,
             ctx.ILIKE() != null,
@@ -479,30 +902,68 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitBetweenExpr(final FrostlakeParser.BetweenExprContext ctx) {
-        return new BetweenExpression(
-            visit(ctx.expression(0)), visit(ctx.expression(1)), visit(ctx.expression(2)), ctx.NOT() != null);
+        return comparisonChain(ctx);
+    }
+
+    /** A [NOT] BETWEEN over the value a comparison-level chain gave it; the lower bound is its own. */
+    private Expression betweenStep(final FrostlakeParser.BetweenExprContext ctx, final Expression value,
+                                   final FrostlakeParser.ExpressionContext upperCtx) {
+        final Expression lower = visit(ctx.expression(1));
+        final BetweenExpression between = new BetweenExpression(value, lower, visit(upperCtx), ctx.NOT() != null);
+        between.setPosition(new SourcePosition(ctx.BETWEEN().getSymbol().getLine(),
+            ctx.BETWEEN().getSymbol().getCharPositionInLine()));
+        return between;
     }
 
     @Override
     public Expression visitInListExpr(final FrostlakeParser.InListExprContext ctx) {
-        return new InExpression(visit(ctx.expression()), argList(ctx.expressionList()), ctx.NOT() != null);
+        return comparisonChain(ctx);
     }
 
     @Override
     public Expression visitInSubqueryExpr(final FrostlakeParser.InSubqueryExprContext ctx) {
-        final SubqueryExpression subquery = new SubqueryExpression(originalText(ctx.selectStatement()));
-        subquery.setPosition(new SourcePosition(ctx.selectStatement().getStart().getLine(),
-            ctx.selectStatement().getStart().getCharPositionInLine()));
-        return new InExpression(visit(ctx.expression()), subquery, ctx.NOT() != null);
+        return comparisonChain(ctx);
+    }
+
+    /** A value [NOT] IN a subquery, anchored on the IN or the NOT before it. */
+    private Expression inSubqueryStep(final Expression value, final FrostlakeParser.SelectStatementContext query,
+                                      final TerminalNode not, final TerminalNode in) {
+        final SubqueryExpression subquery = new SubqueryExpression(originalText(query));
+        subquery.setPosition(new SourcePosition(query.getStart().getLine(), query.getStart().getCharPositionInLine()));
+        final InExpression membership = new InExpression(value, subquery, not != null);
+        membership.setPosition(keywordPosition(not != null ? not.getSymbol() : in.getSymbol()));
+        return membership;
+    }
+
+    /**
+     * A value [NOT] IN a list of values, anchored on the IN itself: a refusal of the list's types points there,
+     * whether the value was written bare or parenthesized, as {@code (x) IN (…)} or {@code (x) IN ((a), (b))}.
+     */
+    private static Expression inListStep(final Expression value, final List<Expression> members,
+                                         final TerminalNode not, final TerminalNode in) {
+        final InExpression membership = new InExpression(value, members, not != null);
+        membership.setPosition(keywordPosition(in.getSymbol()));
+        return membership;
+    }
+
+    private static SourcePosition keywordPosition(final Token token) {
+        return new SourcePosition(token.getLine(), token.getCharPositionInLine());
     }
 
     @Override
     public Expression visitQuantifiedComparisonExpr(final FrostlakeParser.QuantifiedComparisonExprContext ctx) {
-        return new QuantifiedComparisonExpression(
-            visit(ctx.expression()),
+        return comparisonChain(ctx);
+    }
+
+    /** A comparison quantified over a subquery, over the value a comparison-level chain gave it. */
+    private Expression quantifiedStep(final FrostlakeParser.QuantifiedComparisonExprContext ctx, final Expression value) {
+        final QuantifiedComparisonExpression quantified = new QuantifiedComparisonExpression(
+            value,
             comparisonOperator(ctx.op),
             Quantifier.valueOf(ctx.quantifier().getText().toUpperCase()),
-            new SubqueryExpression(originalText(ctx.selectStatement())));
+            positionedSubquery(ctx.selectStatement()));
+        quantified.setPosition(keywordPosition(ctx.op));
+        return quantified;
     }
 
     // ------------------------------------------------------------------
@@ -580,17 +1041,25 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     public Expression visitCollateFuncExpr(final FrostlakeParser.CollateFuncExprContext ctx) {
         // COLLATE(expr, 'spec'), the function spelling of the call the infix form below builds too. The
         // specification must be WRITTEN as a string literal: live refuses a computed one while the
-        // statement compiles, in its own sentence.
+        // statement compiles, in its own sentence, but only once the operand has been judged a string —
+        // so a computed one is carried as written and refused where the call is typed.
         final Token spec = specLiteralToken(ctx.expression(1));
         if (spec == null) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Argument number 2 for function 'COLLATE' needs to be a string literal."));
+            final List<Expression> args = new ArrayList<>();
+            args.add(visit(ctx.expression(0)));
+            args.add(visit(ctx.expression(1)));
+            final FunctionCallExpression call = new FunctionCallExpression("COLLATE", args, false, false);
+            call.setPosition(new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+            return call;
         }
         return collateCall(visit(ctx.expression(0)), spec, ctx);
     }
 
     @Override
     public Expression visitCollateExpr(final FrostlakeParser.CollateExprContext ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
         final Token spec = ctx.STRING_LITERAL() != null
             ? ctx.STRING_LITERAL().getSymbol() : ctx.DOLLAR_QUOTED_STRING().getSymbol();
         rejectCollatedEscape(ctx.expression(), spec);
@@ -647,6 +1116,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitCastExpr2(final FrostlakeParser.CastExpr2Context ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
         // The `::` shorthand has no modifier slot in the grammar, matching Snowflake — live,
         // `<expr>::OBJECT(y VARCHAR) RENAME FIELDS` is a SYNTAX error there, not a semantic one.
         // The `::` form reports itself as CAST(...) live: `NULL::FILE` fails with
@@ -672,6 +1144,17 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     // Subqueries, access paths, JSON, interval, function calls, system funcs
     // ------------------------------------------------------------------
 
+    /** A subquery node whose own text is counted from where it begins, with no anchor of its own. */
+    private SubqueryExpression positionedSubquery(final FrostlakeParser.SelectStatementContext query) {
+        final SubqueryExpression subquery = new SubqueryExpression(originalText(query));
+        subquery.setQueryPosition(queryStart(query));
+        return subquery;
+    }
+
+    private static SourcePosition queryStart(final FrostlakeParser.SelectStatementContext query) {
+        return new SourcePosition(query.getStart().getLine(), query.getStart().getCharPositionInLine());
+    }
+
     @Override
     public Expression visitScalarSubqueryExpr(final FrostlakeParser.ScalarSubqueryExprContext ctx) {
         final SubqueryExpression subquery = new SubqueryExpression(originalText(ctx.selectStatement()));
@@ -686,6 +1169,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final SubqueryExpression subquery = new SubqueryExpression(originalText(ctx.selectStatement()));
         subquery.setPosition(new SourcePosition(ctx.EXISTS().getSymbol().getLine(),
             ctx.EXISTS().getSymbol().getCharPositionInLine()));
+        subquery.setQueryPosition(queryStart(ctx.selectStatement()));
         return new UnaryOperationExpression(UnaryOperator.EXISTS, subquery);
     }
 
@@ -704,21 +1188,38 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitObjectAccessExpr(final FrostlakeParser.ObjectAccessExprContext ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
         // Keep the path as its ordered key segments from the parse tree; no flatten-then-re-split.
         final List<String> pathParts = new ArrayList<>();
         for (final FrostlakeParser.VariantPathKeyContext key : ctx.variantPathKey()) {
             pathParts.add(variantPathKeyText(key));
         }
-        return new ObjectAccessExpression(visit(ctx.expression()), pathParts);
+        final ObjectAccessExpression path = new ObjectAccessExpression(visit(ctx.expression()), pathParts);
+        path.setPosition(keywordPosition(ctx.COLON(0).getSymbol()));
+        if (!ctx.DOT().isEmpty()) {
+            path.markDotted();
+        }
+        return path;
     }
 
     @Override
     public Expression visitArrayAccessExpr(final FrostlakeParser.ArrayAccessExprContext ctx) {
-        return new ArrayAccessExpression(visit(ctx.expression(0)), visit(ctx.expression(1)));
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
+        final ArrayAccessExpression subscript =
+            new ArrayAccessExpression(visit(ctx.expression(0)), visit(ctx.expression(1)));
+        subscript.setPosition(keywordPosition(ctx.LBRACKET().getSymbol()));
+        return subscript;
     }
 
     @Override
     public Expression visitFieldAccessExpr(final FrostlakeParser.FieldAccessExprContext ctx) {
+        if (readsPatternList(ctx)) {
+            return comparisonChain(ctx);
+        }
         // A postfix `.field` on a semi-structured value (e.g. the object at c[0] in c[0].b): reuse
         // ObjectAccessExpression as a single-segment path so the same JSON property extraction that
         // powers colon paths applies. A bare column reference a.b stays a QualifiedNameExpr (the
@@ -775,60 +1276,25 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitIntervalExpr(final FrostlakeParser.IntervalExprContext ctx) {
-        // INTERVAL '<n>' <singular-unit> (live-verified: the amount must be quoted, and only the
-        // singular unit keywords act as a suffix — a plural word after the string is an alias).
-        final String amount = unquoteString(ctx.STRING_LITERAL().getText()).trim();
-        try {
-            return new IntervalExpression(
-                new LiteralExpression(Long.parseLong(amount), LiteralType.INTEGER),
-                IntervalUnit.fromSpelling(ctx.intervalUnitSingular().getText()));
-        } catch (final NumberFormatException badNumber) {
-            throw notPorted("INTERVAL literal (non-integer amount '" + amount + "')", ctx);
-        }
+        // INTERVAL '<text>' <qualifier> (live-verified: the text must be quoted). The qualifier is judged
+        // here, while the statement compiles; the text only when a row reaches the literal.
+        final String text = unquoteString(ctx.STRING_LITERAL().getText());
+        final IntervalLiteralSpec literal = IntervalQualifierReader.read(text, ctx.intervalLiteralQualifier());
+        // An expression print shows a plain count as the number it is and any other text as written.
+        final Expression shown = IntervalLiterals.isPlainCount(text)
+            ? new LiteralExpression(Long.parseLong(text), LiteralType.INTEGER)
+            : new LiteralExpression(text, LiteralType.STRING);
+        return new IntervalExpression(shown, IntervalLiterals.leadingUnit(literal), literal);
     }
 
     @Override
     public Expression visitIntervalStringExpr(final FrostlakeParser.IntervalStringExprContext ctx) {
         // Snowflake's quoted interval literal (live-verified): comma-separated `<n> [<unit>]` parts,
         // singular or plural unit words, and a bare number defaulting to SECONDS
-        // (CURRENT_DATE + INTERVAL '10' adds ten seconds). Parts apply in order via the rest chain.
-        final String inner = unquoteString(ctx.STRING_LITERAL().getText());
-        final String[] parts = inner.split(",");
-        IntervalExpression chain = null;
-        for (int i = parts.length - 1; i >= 0; i--) {
-            final String part = parts[i].trim();
-            if (part.isEmpty()) {
-                throw notPorted("INTERVAL string literal (empty part)", ctx);
-            }
-            int digitEnd = 0;
-            if (digitEnd < part.length() && (part.charAt(0) == '-' || part.charAt(0) == '+')) {
-                digitEnd = 1;
-            }
-            while (digitEnd < part.length() && Character.isDigit(part.charAt(digitEnd))) {
-                digitEnd++;
-            }
-            final String numStr = part.substring(0, digitEnd).trim();
-            final String unitStr = part.substring(digitEnd).trim().toUpperCase();
-            final IntervalUnit unit;
-            if (unitStr.isEmpty()) {
-                unit = IntervalUnit.SECOND;
-            } else {
-                unit = IntervalUnit.fromSpelling(unitStr);
-                if (unit == null) {
-                    // Live's own sentence for a unit word it does not know, echoing it AS WRITTEN.
-                    throw new RuntimeException(SqlCompilationError.of(
-                        part.substring(digitEnd).trim() + " is not recognized as a date type."));
-                }
-            }
-            try {
-                chain = new IntervalExpression(
-                    new LiteralExpression(Long.parseLong(numStr), LiteralType.INTEGER), unit, chain);
-            } catch (final NumberFormatException badNumber) {
-                throw notPorted("INTERVAL string literal (non-integer amount '" + numStr + "')", ctx);
-            }
-        }
-        chain.markUnitInString();
-        return chain;
+        // (CURRENT_DATE + INTERVAL '10' adds ten seconds). Parts apply in order via the rest chain, each keeping
+        // its amount and unit word as written; a text that does not read is refused now, in the account's
+        // words — see IntervalStringText.
+        return IntervalStringText.chain(unquoteString(ctx.STRING_LITERAL().getText()));
     }
 
     @Override
@@ -888,6 +1354,16 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
      * the string, so {@code TRIM(BOTH ' ' FROM v)} was refused there instead of on its FROM, where live
      * refuses it. Nothing it matches is ever accepted.
      */
+    /**
+     * A plain word before a string anywhere an expression stands: live reads it as a typed literal and refuses the
+     * unknown type by the pair's text, {@code SELECT val 'x'} being "Unsupported data type literal 'val 'x''".
+     */
+    @Override
+    public Expression visitUnknownTypedLiteralExpr(final FrostlakeParser.UnknownTypedLiteralExprContext ctx) {
+        throw new RuntimeException("SQL compilation error:\nUnsupported data type literal '"
+            + ctx.IDENTIFIER().getText() + " " + ctx.STRING_LITERAL().getText() + "'.");
+    }
+
     @Override
     public Expression visitTypedLiteralArgExpr(
             final FrostlakeParser.TypedLiteralArgExprContext ctx) {
@@ -902,7 +1378,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final String fromFunction = ctx.functionName().getText().toUpperCase();
         if (!fromFunction.equals("EXTRACT")) {
             // Live reports the FROM itself, at its own position, and says nothing about the function:
-            // SUBSTRING(v FROM 2) is "unexpected 'FROM'" and nothing more. Frostlake used to explain
+            // SUBSTRING(v FROM 2) is "unexpected 'FROM'" (a statement meets AnsiFromFormSyntax first, which
+            // also stacks the line live's recovery adds). Frostlake used to explain
             // the refusal in a sentence of its own invention, carrying no line or position at all —
             // the message-level twin of a syntax extension, and it appears on no real account.
             // Refusing HERE rather than in the grammar is what puts it on the FROM: a predicate on
@@ -933,9 +1410,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     }
 
     /** The OVER clause's keys as ASTs, so a message can re-print the window the way the plan spells it. */
-    private void describeOver(final WindowFunctionExpression window,
-                              final FrostlakeParser.FunctionCallExprContext ctx) {
-        final FrostlakeParser.OverClauseContext over = ctx.overClause();
+    private void describeOver(final WindowFunctionExpression window, final FrostlakeParser.OverClauseContext over,
+                              final boolean distinctCall) {
         final List<Expression> partition = new ArrayList<>();
         if (over.partitionByClause() != null) {
             for (final FrostlakeParser.ExpressionContext key : over.partitionByClause().expressionList().expression()) {
@@ -952,7 +1428,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 nullsFirst.add(item.NULLS() == null ? null : Boolean.valueOf(item.FIRST() != null));
             }
         }
-        window.describeOver(ctx.DISTINCT() != null, partition, order, ascending, nullsFirst);
+        window.describeOver(distinctCall, partition, order, ascending, nullsFirst);
     }
 
     @Override
@@ -966,13 +1442,16 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             final WindowFunctionExpression window = new WindowFunctionExpression(originalText(ctx));
             window.describeCall(ctx.functionName().getText().toUpperCase(),
                 argList(ctx.functionArgList()));
+            window.describeNameParts(functionNameParts(ctx.functionName()));
             // ROWS only: a RANGE frame leaves the window CUMULATIVE as far as the declared width goes,
             // so it must not be reported as framed here (live-verified — see isRowsFramed).
             window.describeWindow(ctx.overClause().orderByClause() != null,
                 ctx.overClause().windowFrame() != null
                     && ctx.overClause().windowFrame().ROWS() != null);
             window.describeWithinGroup(withinGroupOrdered(ctx));
-            describeOver(window, ctx);
+            window.describeWithinGroupKeys(withinGroupKeys(ctx.withinGroupClause()));
+            window.describeAll(ctx.ALL() != null);
+            describeOver(window, ctx.overClause(), ctx.DISTINCT() != null);
             window.setPosition(new SourcePosition(ctx.getStart().getLine(),
                 ctx.getStart().getCharPositionInLine()));
             if (ctx.functionArgList() != null && ctx.functionArgList().functionArg().size() == 1
@@ -987,13 +1466,16 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             }
             return window;
         }
-        if (ctx.functionName().KW_IDENTIFIER() != null) {
+        if (ctx.functionName().identifierArgument() != null) {
             // IDENTIFIER('fn') / IDENTIFIER($var) as the function name — resolved per evaluation, so a
             // session-variable name stays correct even though the AST is cached by source text.
-            return new FunctionCallExpression(
+            final FunctionCallExpression named = new FunctionCallExpression(
                 originalText(ctx.functionName()),
-                visit(ctx.functionName().expression()),
+                identifierArgument(ctx.functionName().identifierArgument()),
                 argList(ctx.functionArgList()));
+            // At the IDENTIFIER keyword, where live points a refusal of the name.
+            named.setPosition(new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+            return named;
         }
         final FrostlakeParser.ExpressionContext membership = positionMembershipTest(ctx);
         if (membership != null) {
@@ -1020,7 +1502,28 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         call.setPosition(new SourcePosition(
             ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
         call.describeWithinGroup(withinGroupOrdered(ctx));
+        call.describeShape(quantifier(ctx.DISTINCT(), ctx.ALL()), withinGroupKeys(ctx.withinGroupClause()));
         return call;
+    }
+
+    /** The quantifier a call was written with, {@code DISTINCT} or {@code ALL}, or null. */
+    private static String quantifier(final TerminalNode distinct, final TerminalNode all) {
+        if (distinct != null) {
+            return "DISTINCT";
+        }
+        return all != null ? "ALL" : null;
+    }
+
+    /** Every key of a WITHIN GROUP clause, or null when the call has none. */
+    private List<Expression> withinGroupKeys(final FrostlakeParser.WithinGroupClauseContext clause) {
+        if (clause == null || clause.orderByClause() == null) {
+            return null;
+        }
+        final List<Expression> keys = new ArrayList<>();
+        for (final FrostlakeParser.OrderItemContext item : clause.orderByClause().orderItem()) {
+            keys.add(visit(item.expression()));
+        }
+        return keys;
     }
 
     /**
@@ -1207,16 +1710,46 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     /** A named argument's value expression; a bare subquery value (INPUT => SELECT ...) becomes a
      *  scalar subquery node. */
     private Expression namedArgumentValue(final FrostlakeParser.NamedArgumentContext na) {
+        if (na.argumentRow() != null) {
+            // A parenthesized list is one ROW value; no scalar parameter takes one.
+            final List<Expression> elements = new ArrayList<>();
+            for (final FrostlakeParser.ExpressionContext element : na.argumentRow().expression()) {
+                elements.add(visit(element));
+            }
+            return new ArgumentRowExpression(elements);
+        }
         return na.expression() != null
             ? visit(na.expression())
-            : new SubqueryExpression(originalText(na.selectStatement()));
+            : positionedSubquery(na.selectStatement());
+    }
+
+    /**
+     * A call written with named arguments and OVER that kept its named form: a call the account answers reaches
+     * the tree as the positional call its values spell (see {@link NamedCallRewrite}), so every call here is
+     * refused while its statement compiles — for the kind of the function it names, its arity or the named
+     * arguments themselves. Its node is built the way a positional window call's is, its values in written
+     * order, and is only ever walked, never evaluated.
+     */
+    private Expression namedArgumentWindowCall(final ParserRuleContext ctx,
+                                               final FrostlakeParser.FunctionNameContext name,
+                                               final List<Expression> values,
+                                               final FrostlakeParser.OverClauseContext over,
+                                               final TerminalNode distinct, final TerminalNode all,
+                                               final FrostlakeParser.WithinGroupClauseContext withinGroup) {
+        final WindowFunctionExpression window = new WindowFunctionExpression(originalText(ctx));
+        window.describeCall(name.getText().toUpperCase(), values);
+        window.describeNameParts(functionNameParts(name));
+        window.describeWindow(over.orderByClause() != null,
+            over.windowFrame() != null && over.windowFrame().ROWS() != null);
+        window.describeWithinGroupKeys(withinGroupKeys(withinGroup));
+        window.describeAll(all != null);
+        describeOver(window, over, distinct != null);
+        window.setPosition(new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+        return window;
     }
 
     @Override
     public Expression visitFunctionCallMixedArgsExpr(final FrostlakeParser.FunctionCallMixedArgsExprContext ctx) {
-        if (ctx.overClause() != null) {
-            throw notPorted("window function (OVER) with named arguments", ctx);
-        }
         // One or more leading positional arguments, then one or more named arguments.
         final List<Expression> args = new ArrayList<>();
         final List<String> names = new ArrayList<>();
@@ -1228,9 +1761,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             names.add(na.identifier().getText());
             args.add(namedArgumentValue(na));
         }
+        if (ctx.overClause() != null) {
+            return namedArgumentWindowCall(ctx, ctx.functionName(), args, ctx.overClause(), ctx.DISTINCT(), ctx.ALL(),
+                ctx.withinGroupClause());
+        }
         final FunctionCallExpression namedCall =
             new FunctionCallExpression(
                 SqlIdentifiers.canonicalText(ctx.functionName().getText()), args, names);
+        namedCall.describeShape(quantifier(ctx.DISTINCT(), ctx.ALL()), withinGroupKeys(ctx.withinGroupClause()));
+        namedCall.setNameParts(functionNameParts(ctx.functionName()));
         namedCall.setPosition(new SourcePosition(
             ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
         return namedCall;
@@ -1238,25 +1777,41 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitTupleInListExpr(final FrostlakeParser.TupleInListExprContext ctx) {
+        if (ComparisonLevelChain.isStep(ctx)) {
+            return comparisonChain(ctx);
+        }
         final List<List<Expression>> rows = new ArrayList<>();
         for (final FrostlakeParser.TupleRowContext row : ctx.tupleRow()) {
             rows.add(argList(row.expressionList()));
         }
-        return TupleInExpression.ofTupleRows(argList(ctx.expressionList()), rows, ctx.NOT() != null);
+        final TupleInExpression tuple =
+            TupleInExpression.ofTupleRows(argList(ctx.expressionList()), rows, ctx.NOT() != null);
+        tuple.setPosition(keywordPosition(ctx.NOT() != null ? ctx.NOT().getSymbol() : ctx.IN().getSymbol()));
+        return tuple;
     }
 
     @Override
     public Expression visitTupleInFlatListExpr(final FrostlakeParser.TupleInFlatListExprContext ctx) {
-        return TupleInExpression.ofFlatList(
+        if (ComparisonLevelChain.isStep(ctx)) {
+            return comparisonChain(ctx);
+        }
+        final TupleInExpression tuple = TupleInExpression.ofFlatList(
             argList(ctx.expressionList(0)), argList(ctx.expressionList(1)), ctx.NOT() != null);
+        tuple.setPosition(keywordPosition(ctx.NOT() != null ? ctx.NOT().getSymbol() : ctx.IN().getSymbol()));
+        return tuple;
     }
 
     @Override
     public Expression visitTupleInSubqueryExpr(final FrostlakeParser.TupleInSubqueryExprContext ctx) {
-        return TupleInExpression.ofSubquery(
+        if (ComparisonLevelChain.isStep(ctx)) {
+            return comparisonChain(ctx);
+        }
+        final TupleInExpression tuple = TupleInExpression.ofSubquery(
             argList(ctx.expressionList()),
-            new SubqueryExpression(originalText(ctx.selectStatement())),
+            positionedSubquery(ctx.selectStatement()),
             ctx.NOT() != null);
+        tuple.setPosition(keywordPosition(ctx.NOT() != null ? ctx.NOT().getSymbol() : ctx.IN().getSymbol()));
+        return tuple;
     }
 
     @Override
@@ -1274,10 +1829,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         // parsed for execution — by the client's bind parameters, OPEN … USING or EXECUTE IMMEDIATE …
         // USING — so reaching AST construction means none was supplied. Snowflake refuses that at compile
         // time with the sentence it uses for an unsupplied :1, positioned on the '?' itself.
+        throw unsuppliedPositionalBind(ctx.getStart());
+    }
+
+    /** The refusal of a positional bind '?' that reached the parse unsubstituted, positioned on the '?'. */
+    private static RuntimeException unsuppliedPositionalBind(final Token question) {
         final SourcePosition at = ExpressionSource.resolve(
-            new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+            new SourcePosition(question.getLine(), question.getCharPositionInLine()));
         final String unset = "Bind variable ? not set.";
-        throw new RuntimeException(at != null
+        return new RuntimeException(at != null
             ? SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(), unset)
             : SqlCompilationError.of(unset));
     }
@@ -1288,6 +1848,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         // ILIKE filters carried for the star-aware callers.
         final FunctionCallExpression call = starCall(ctx.functionName().getText().toUpperCase(),
             ctx.DISTINCT() != null, ctx.starQualifiedName(), ctx.starArgumentModifier());
+        // The parse tree's canonical parts, so a user-defined function resolves by its exact name.
+        call.setNameParts(functionNameParts(ctx.functionName()));
         // Positioned like any other call, so the star's expanded-arity refusal can point at it.
         call.setPosition(new SourcePosition(ctx.getStart().getLine(),
             ctx.getStart().getCharPositionInLine()));
@@ -1310,8 +1872,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 call.setStarIlike(written.substring(1, written.length() - 1));
                 continue;
             }
-            for (final FrostlakeParser.IdentifierContext id : mod.identifier()) {
-                excludes.add(SqlIdentifiers.canonical(id).toUpperCase());
+            for (final FrostlakeParser.ExcludedColumnContext id : mod.excludedColumn()) {
+                excludes.add(SelectItemAccessors.excludedName(id));
             }
         }
         call.setStarExcludes(excludes);
@@ -1324,17 +1886,21 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitFunctionCallNamedArgsExpr(final FrostlakeParser.FunctionCallNamedArgsExprContext ctx) {
-        if (ctx.overClause() != null) {
-            throw notPorted("window function (OVER) with named arguments", ctx);
-        }
         final List<Expression> args = new ArrayList<>();
         final List<String> names = new ArrayList<>();
         for (final FrostlakeParser.NamedArgumentContext na : ctx.namedArgumentList().namedArgument()) {
             names.add(na.identifier().getText());
             args.add(namedArgumentValue(na));
         }
+        if (ctx.overClause() != null) {
+            return namedArgumentWindowCall(ctx, ctx.functionName(), args, ctx.overClause(), ctx.DISTINCT(), ctx.ALL(),
+                ctx.withinGroupClause());
+        }
         final FunctionCallExpression namedCall = new FunctionCallExpression(
             SqlIdentifiers.canonicalText(ctx.functionName().getText()), args, names);
+        namedCall.describeShape(quantifier(ctx.DISTINCT(), ctx.ALL()), withinGroupKeys(ctx.withinGroupClause()));
+        // The parse tree's canonical parts, so a user-defined function resolves by its exact name.
+        namedCall.setNameParts(functionNameParts(ctx.functionName()));
         // Positioned like any other call, so a refusal of its arguments points at it the way live does.
         namedCall.setPosition(new SourcePosition(
             ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
@@ -1441,6 +2007,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                     args.add(functionArgument(arg));
                 }
             }
+            if (list.functionArg().size() == 1 && list.functionArg(0).booleanExpr() != null
+                    && args.size() == 1 && args.get(0) instanceof SubqueryExpression) {
+                // A parenthesised subquery that is the whole argument list is the call's query argument,
+                // placed where the argument begins (see SubqueryAnchor); its text still counts from its SELECT.
+                final SubqueryExpression whole = (SubqueryExpression) args.get(0);
+                final Token argumentStart = list.functionArg(0).getStart();
+                whole.setQueryPosition(whole.getQueryPosition());
+                whole.setPosition(new SourcePosition(argumentStart.getLine(), argumentStart.getCharPositionInLine()));
+            }
         }
         return args;
     }
@@ -1536,6 +2111,10 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     }
 
     private String typeText(final FrostlakeParser.DataTypeNameContext type, final FrostlakeParser.TypeParametersContext params) {
+        if (type.INTERVAL() != null) {
+            // An interval target is named as live prints it, INTERVAL HOUR(9): its words are spaced tokens.
+            return DataTypeParser.parse(type, params, DataTypeParser.CAST_STRING_DEFAULT).getName();
+        }
         final String base = writtenBaseType(type);
         return params != null ? base + originalText(params) : base;
     }
@@ -1543,7 +2122,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     /**
      * The cast target's base type AS WRITTEN, with the two spellings that carry no meaning of their own
      * folded onto the name Snowflake itself reports for them. {@code DEC} is a plain {@code NUMBER}
-     * synonym and {@code NVARCHAR2} a plain {@code VARCHAR} one (live: {@code 1.5::DEC(8,4)}
+     * synonym and {@code NVARCHAR2} and {@code VARCHAR2} plain {@code VARCHAR} ones (live: {@code 1.5::DEC(8,4)}
      * is {@code 1.5000} and {@code 'ab'::NVARCHAR2} is a VARCHAR). Folding them HERE, where the written
      * target text is first captured, is what keeps them out of the several downstream tables that are
      * keyed by that text — the cast-value classifier, the static-type inferencer and the error-message
@@ -1553,15 +2132,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         if (type.DEC() != null) {
             return "NUMBER";
         }
-        if (type.NVARCHAR2() != null) {
+        if (type.NVARCHAR2() != null || type.VARCHAR2() != null) {
             return "VARCHAR";
         }
         return type.getText();
     }
 
     /**
-     * The cast target as a parsed type when its PARAMETERS carry meaning — a STRUCTURED type or a
-     * {@code VECTOR(FLOAT|INT, n)} — and null for a plain type. These cannot be recovered from
+     * The cast target as a parsed type when its PARAMETERS carry meaning — a STRUCTURED type, a
+     * {@code VECTOR(FLOAT|INT, n)} or an INTERVAL's fields — and null for a plain type. These cannot be recovered from
      * {@link #typeText}: {@code getText()} concatenates tokens without whitespace, so
      * {@code OBJECT(x VARCHAR)} flattens to {@code OBJECT(xVARCHAR)}. The parse tree is the definitive
      * form, so both the field structure and the vector's element type / dimension are read off it.
@@ -1569,7 +2148,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     private static DataType declaredTarget(final FrostlakeParser.DataTypeNameContext type,
                                            final FrostlakeParser.TypeParametersContext params) {
         final DataType parsed = DataTypeParser.parse(type, params, DataTypeParser.CAST_STRING_DEFAULT);
-        return StructuredTypes.isStructured(parsed) || parsed instanceof VectorType ? parsed : null;
+        return StructuredTypes.isStructured(parsed) || parsed instanceof VectorType
+            || IntervalCasts.isIntervalType(parsed) ? parsed : null;
     }
 
     /**

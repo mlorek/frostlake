@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.BooleanType;
 import tools.jackson.databind.JsonNode;
@@ -36,8 +37,8 @@ public class ArraysOverlap extends BuiltInFunction {
         final ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
         if (a1 == null || a2 == null) return null;
         final Set<String> set = new HashSet<>();
-        for (final JsonNode el : a1) set.add(el.toString());
-        for (final JsonNode el : a2) { if (set.contains(el.toString())) return true; }
+        for (final JsonNode el : a1) set.add(ArrayFunctionHelper.elementKey(el));
+        for (final JsonNode el : a2) { if (set.contains(ArrayFunctionHelper.elementKey(el))) return true; }
         return false;
     }
 
@@ -45,4 +46,10 @@ public class ArraysOverlap extends BuiltInFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /** A VECTOR is no ARRAY: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

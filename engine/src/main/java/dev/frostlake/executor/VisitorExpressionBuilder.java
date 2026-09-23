@@ -17,6 +17,8 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.BinaryOperator;
+import dev.frostlake.executor.expressions.ComparisonLevelChain;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.executor.procedural.BaseExpression;
 import dev.frostlake.executor.procedural.BinaryExpression;
@@ -32,21 +34,22 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.TableStorage;
+import dev.frostlake.task.TaskGraphConfig;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.task.UserTaskCancellation;
 import dev.frostlake.types.NumericLiteralTypes;
+import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
-import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -148,6 +151,11 @@ public class VisitorExpressionBuilder {
     }
 
     private BaseExpression buildValueExpression(final FrostlakeParser.ExpressionContext ctx) {
+        if (ScriptIntervalExpressions.runsAsSql(ctx)) {
+            // An interval literal's type decides what arithmetic on it answers, so the expression around one is
+            // evaluated whole, as SQL (see ScriptIntervalExpressions).
+            return new SqlScalarExpression(ExpressionEvaluator.parse(visitor.getOriginalText(ctx)));
+        }
         if (ctx instanceof FrostlakeParser.LiteralExprContext) {
             final FrostlakeParser.LiteralContext literal = ((FrostlakeParser.LiteralExprContext) ctx).literal();
             // A numeric literal is typed in a scripting expression exactly as it is in a query: an EXACT
@@ -165,6 +173,12 @@ public class VisitorExpressionBuilder {
         if (ctx instanceof FrostlakeParser.QualifiedNameExprContext) {
             final String name = visitor.getText(((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName());
             return new VariableExpression(name);
+        }
+
+        if (ctx instanceof FrostlakeParser.StageReferenceExprContext) {
+            // A CALL in a block passes a stage written bare on as its text, path and all.
+            return new LiteralExpression(
+                StageArgumentSyntax.writtenText((FrostlakeParser.StageReferenceExprContext) ctx));
         }
 
         if (ctx instanceof FrostlakeParser.CurrentTimestampExprContext) { return new FunctionCallExpression("CURRENT_TIMESTAMP", Collections.emptyList()); }
@@ -205,17 +219,21 @@ public class VisitorExpressionBuilder {
                 }
             }
 
-            return new FunctionCallExpression(funcName, args);
+            final FunctionCallExpression call = new FunctionCallExpression(funcName, args);
+            call.describeQuantifier(funcCtx.DISTINCT() != null ? "DISTINCT" : funcCtx.ALL() != null ? "ALL" : null);
+            return call;
         }
 
-        if (ctx instanceof FrostlakeParser.ConcatExprContext) {
+        // A value operator written after a LIKE ANY's pattern list applies to the list, not to the predicate the
+        // grammar gave it ('ab' LIKE ANY ('a') || 'b' matches 'a' || 'b'), so it is read as SQL reads it below.
+        if (ctx instanceof FrostlakeParser.ConcatExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
             final FrostlakeParser.ConcatExprContext concatCtx = (FrostlakeParser.ConcatExprContext) ctx;
             final BaseExpression left = buildExpression(concatCtx.expression(0));
             final BaseExpression right = buildExpression(concatCtx.expression(1));
             return new BinaryExpression(left, BinaryOperator.CONCAT, right);
         }
 
-        if (ctx instanceof FrostlakeParser.MultiplicativeExprContext) {
+        if (ctx instanceof FrostlakeParser.MultiplicativeExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
             final FrostlakeParser.MultiplicativeExprContext binCtx = (FrostlakeParser.MultiplicativeExprContext) ctx;
             final BaseExpression left = buildExpression(binCtx.expression(0));
             final BaseExpression right = buildExpression(binCtx.expression(1));
@@ -223,7 +241,7 @@ public class VisitorExpressionBuilder {
             return new BinaryExpression(left, BinaryOperator.fromSymbol(operator), right);
         }
 
-        if (ctx instanceof FrostlakeParser.AdditiveExprContext) {
+        if (ctx instanceof FrostlakeParser.AdditiveExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
             final FrostlakeParser.AdditiveExprContext binCtx = (FrostlakeParser.AdditiveExprContext) ctx;
             final BaseExpression left = buildExpression(binCtx.expression(0));
             final BaseExpression right = buildExpression(binCtx.expression(1));
@@ -231,12 +249,16 @@ public class VisitorExpressionBuilder {
             return new BinaryExpression(left, BinaryOperator.fromSymbol(operator), right);
         }
 
-        if (ctx instanceof FrostlakeParser.ComparisonExprContext) {
+        // A comparison over an aggregate call is built from its two sides, the call run as its own query:
+        // RETURN COUNT(1) = 1 and MAX(2) > MIN(1) answer TRUE, where the SQL reading below has no group to
+        // aggregate over. A comparison with a comparison-level operator for a side keeps the SQL reading, which
+        // folds the chain as written.
+        if (ctx instanceof FrostlakeParser.ComparisonExprContext
+                && comparesAggregate((FrostlakeParser.ComparisonExprContext) ctx)) {
             final FrostlakeParser.ComparisonExprContext binCtx = (FrostlakeParser.ComparisonExprContext) ctx;
             final BaseExpression left = buildExpression(binCtx.expression(0));
             final BaseExpression right = buildExpression(binCtx.expression(1));
-            final String operator = binCtx.op.getText();
-            return new BinaryExpression(left, BinaryOperator.fromSymbol(operator), right);
+            return new BinaryExpression(left, BinaryOperator.fromSymbol(binCtx.op.getText()), right);
         }
 
         if (ctx instanceof FrostlakeParser.ParenExprContext) {
@@ -274,8 +296,47 @@ public class VisitorExpressionBuilder {
         // with the current procedural variables supplied as a resolution context. The previous fallback
         // ran a standalone "SELECT <text>", which could not see scripting variables — so e.g. w::VARCHAR
         // or CASE … w … END over a script variable silently resolved to NULL.
+        // A comparison is read here too, as SQL reads it: its comparison-level operators fold from the left
+        // ('x' = 'y' IN (FALSE) tests the comparison's result), and a VARIANT beside a variable of another
+        // declared type converts as it does in a query (see ComparisonLevelChain, VariantComparisonOperands).
         final String exprSql = visitor.getOriginalText(ctx);
         return new SqlScalarExpression(ExpressionEvaluator.parse(exprSql));
+    }
+
+    /**
+     * Whether a comparison calls an aggregate outside any subquery and OVER clause, with no comparison-level
+     * operator for either side.
+     */
+    private boolean comparesAggregate(final FrostlakeParser.ComparisonExprContext ctx) {
+        return !ComparisonLevelChain.isStep(ctx.expression(0)) && !ComparisonLevelChain.isStep(ctx.expression(1))
+            && callsAggregate(ctx);
+    }
+
+    /** Whether {@code node} holds an aggregate call not under OVER, outside any subquery. */
+    private boolean callsAggregate(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext || node instanceof FrostlakeParser.OverClauseContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
+            if (call.overClause() == null && namesAggregate(call.functionName().getText())) {
+                return true;
+            }
+        }
+        if (node instanceof FrostlakeParser.FunctionCallStarExprContext
+                && namesAggregate(((FrostlakeParser.FunctionCallStarExprContext) node).functionName().getText())) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (callsAggregate(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean namesAggregate(final String written) {
+        return queryExecutor.getFunctionRegistry().hasAggregateFunction(SqlIdentifiers.canonicalText(written));
     }
 
     /**
@@ -287,17 +348,42 @@ public class VisitorExpressionBuilder {
         try {
             return evaluateExpression(ctx, true);
         } catch (final RuntimeException failed) {
-            // Note WHERE the expression stood as the failure leaves it, so an uncaught wrapper can
-            // name the EXPRESSION_ERROR kind at the expression's own offset — live's split between a
-            // fault raised evaluating an expression and one raised running a statement. Recorded only
-            // inside a block, where a wrapper exists to read it; the record is first-wins, so this
-            // (innermost) one beats the statement record taken as the failure unwinds.
-            final ProceduralExecutor procedural = visitor.getProceduralExecutor();
-            if (procedural != null && procedural.getBlockDepth() > 0 && ctx != null) {
-                procedural.recordExpressionFailure(ctx.getStart().getLine(),
-                    ctx.getStart().getCharPositionInLine());
-            }
+            noteExpressionFailure(ctx);
             throw failed;
+        }
+    }
+
+    /**
+     * A scripting value that may be a boolean operator: a value expression evaluates as above, and a NOT,
+     * an AND or an OR over values evaluates as SQL does over the block's variables — AND and OR decide
+     * on either side ({@code TRUE OR 1/0 = 1} is TRUE), and a side that is no boolean is refused.
+     */
+    public Object evaluateExpression(final FrostlakeParser.BooleanExprContext ctx) {
+        final FrostlakeParser.ExpressionContext value = unwrapValue(ctx);
+        if (value != null) {
+            return evaluateExpression(value);
+        }
+        try {
+            final ProceduralExecutor procedural = visitor.getProceduralExecutor();
+            return procedural != null ? procedural.evaluateExpression(buildExpression(ctx))
+                : firstCellOfSelect(visitor.getOriginalText(ctx));
+        } catch (final RuntimeException failed) {
+            noteExpressionFailure(ctx);
+            throw failed;
+        }
+    }
+
+    /**
+     * Note WHERE the expression stood as the failure leaves it, so an uncaught wrapper can name the
+     * EXPRESSION_ERROR kind at the expression's own offset — live's split between a fault raised
+     * evaluating an expression and one raised running a statement. Recorded only inside a block, where a
+     * wrapper exists to read it; the record is first-wins, so this (innermost) one beats the statement
+     * record taken as the failure unwinds.
+     */
+    private void noteExpressionFailure(final ParserRuleContext ctx) {
+        final ProceduralExecutor procedural = visitor.getProceduralExecutor();
+        if (procedural != null && procedural.getBlockDepth() > 0 && ctx != null) {
+            procedural.recordExpressionFailure(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
         }
     }
 
@@ -312,10 +398,24 @@ public class VisitorExpressionBuilder {
         return evaluateExpression(ctx, false);
     }
 
+    /** A SQL value that may be a boolean operator, evaluated as {@link #evaluateSqlExpression(FrostlakeParser.ExpressionContext)} does. */
+    public Object evaluateSqlExpression(final FrostlakeParser.BooleanExprContext ctx) {
+        final FrostlakeParser.ExpressionContext value = unwrapValue(ctx);
+        return value != null ? evaluateExpression(value, false) : firstCellOfSelect(visitor.getOriginalText(ctx));
+    }
+
     private Object evaluateExpression(final FrostlakeParser.ExpressionContext ctx,
                                       final boolean scriptingNamesVisible) {
+        if (scriptingNamesVisible && visitor.getProceduralExecutor() != null
+                && ScriptIntervalExpressions.runsAsSql(ctx)) {
+            return visitor.getProceduralExecutor().evaluateExpression(buildExpression(ctx));
+        }
         if (ctx instanceof FrostlakeParser.LiteralExprContext) {
             return visitor.parseLiteral(((FrostlakeParser.LiteralExprContext) ctx).literal());
+        }
+        if (ctx instanceof FrostlakeParser.StageReferenceExprContext) {
+            // A CALL passes a stage written bare on as its text, path and all.
+            return StageArgumentSyntax.writtenText((FrostlakeParser.StageReferenceExprContext) ctx);
         }
         if (ctx instanceof FrostlakeParser.SystemUserTaskCancelExprContext) {
             final FrostlakeParser.SystemUserTaskCancelExprContext sctx = (FrostlakeParser.SystemUserTaskCancelExprContext) ctx;
@@ -355,7 +455,7 @@ public class VisitorExpressionBuilder {
         if (ctx instanceof FrostlakeParser.SystemFuncExprContext) {
             return evaluateSystemFunc((FrostlakeParser.SystemFuncExprContext) ctx, scriptingNamesVisible);
         }
-        if (ctx instanceof FrostlakeParser.ConcatExprContext) {
+        if (ctx instanceof FrostlakeParser.ConcatExprContext && !ComparisonLevelChain.appliesToPatternList(ctx)) {
             final FrostlakeParser.ConcatExprContext cc = (FrostlakeParser.ConcatExprContext) ctx;
             final Object left = evaluateExpression(cc.expression(0), scriptingNamesVisible);
             final Object right = evaluateExpression(cc.expression(1), scriptingNamesVisible);
@@ -400,8 +500,12 @@ public class VisitorExpressionBuilder {
             if (sessionVal != null) {
                 return sessionVal;
             }
-            if (!scriptingNamesVisible) {
-                throw new RuntimeException("invalid identifier '" + varName.toUpperCase() + "'");
+            // A dotted name is the query layer's to resolve: SET x = seq.NEXTVAL draws from the sequence. A bare one
+            // is refused where it stands in the statement: SET x = nosuchcol is position 8 (live-verified).
+            if (!scriptingNamesVisible
+                    && ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().namePart().isEmpty()) {
+                throw new RuntimeException(SqlCompilationError.at(ctx.getStart().getLine(),
+                    ctx.getStart().getCharPositionInLine(), "invalid identifier '" + varName.toUpperCase() + "'"));
             }
         }
         if (ctx instanceof FrostlakeParser.ParenExprContext) {
@@ -444,7 +548,7 @@ public class VisitorExpressionBuilder {
             if (!scriptingNamesVisible) {
                 // In a SQL context the failure IS the answer, so it propagates rather than degrading to
                 // the expression's own text (which would silently pass "v" along as a string).
-                return firstCellOfSelect(exprText);
+                return firstCellOfStatementExpression(ctx, exprText);
             }
             try {
                 return firstCellOfSelect(exprText);
@@ -454,6 +558,75 @@ public class VisitorExpressionBuilder {
         }
         return ctx.getText();
     }
+
+    /**
+     * {@link #firstCellOfSelect} for an expression of a SQL statement — a SET's source, a CALL's argument — whose
+     * compilation error is placed where the expression stands in the statement rather than in the query that
+     * evaluates it: {@code SET x = 1 + rv_a.rv_b} is position 12, and a place on a later line of the expression
+     * keeps its own column. A CALL written as a statement of a block runs as a statement of its own, so its place
+     * counts from the CALL: {@code BEGIN CALL p(UPPER(1, 2)); END;} is position 10 (all live-verified).
+     */
+    private Object firstCellOfStatementExpression(final FrostlakeParser.ExpressionContext ctx, final String exprText) {
+        // The query is placed in its own text while it runs, whatever statement or block it stands in.
+        final SourcePosition displaced = LeadingCommentOffset.begin(new SourcePosition(1, 0));
+        final RuntimeException refused;
+        try {
+            return firstCellOfSelect(exprText);
+        } catch (final RuntimeException failed) {
+            refused = failed;
+        } finally {
+            LeadingCommentOffset.end(displaced);
+        }
+        final int[] place = ScriptedErrorPlace.placeOf(refused.getMessage());
+        if (place == null) {
+            throw refused;
+        }
+        final String message = refused.getMessage();
+        final String detail = message.substring(message.indexOf('\n') + 1);
+        final Token call = blockCallStart(ctx);
+        if (call == null) {
+            final int line = ctx.getStart().getLine() + place[0] - 1;
+            final int column = place[0] == 1 ? ctx.getStart().getCharPositionInLine() + place[1] - SELECT_LEAD : place[1];
+            throw new RuntimeException(SqlCompilationError.at(line, column, detail), refused);
+        }
+        final int lineInCall = ctx.getStart().getLine() - call.getLine() + 1;
+        final int columnInCall = ctx.getStart().getCharPositionInLine()
+            - (lineInCall == 1 ? call.getCharPositionInLine() : 0);
+        final int line = lineInCall + place[0] - 1;
+        final int column = place[0] == 1 ? columnInCall + place[1] - SELECT_LEAD : place[1];
+        // Placed in the CALL's own text already, so no origin of the block moves it again.
+        final SourcePosition blockOrigin = LeadingCommentOffset.begin(null);
+        final String placed;
+        try {
+            placed = SqlCompilationError.at(line, column, detail);
+        } finally {
+            LeadingCommentOffset.end(blockOrigin);
+        }
+        throw new RuntimeException(placed, refused);
+    }
+
+    /**
+     * Where the CALL an expression stands in starts, when that CALL is written as a statement of a block, or null
+     * for an expression of any other statement.
+     */
+    private static Token blockCallStart(final ParserRuleContext ctx) {
+        ParseTree node = ctx.getParent();
+        while (node != null && !(node instanceof FrostlakeParser.CallStatementContext)) {
+            node = node.getParent();
+        }
+        if (node == null) {
+            return null;
+        }
+        final ParseTree procedural = node.getParent();
+        final ParseTree statement = procedural == null ? null : procedural.getParent();
+        return procedural instanceof FrostlakeParser.ProceduralStatementContext
+                && statement instanceof FrostlakeParser.StatementContext
+                && statement.getParent() instanceof FrostlakeParser.StatementListContext
+            ? ((FrostlakeParser.StatementContext) statement).getStart() : null;
+    }
+
+    /** The columns {@code SELECT } puts ahead of the expression {@link #firstCellOfSelect} evaluates. */
+    private static final int SELECT_LEAD = "SELECT ".length();
 
     /** The first cell of {@code SELECT <exprText>}, or null when the query yields no row. */
     private Object firstCellOfSelect(final String exprText) {
@@ -475,6 +648,14 @@ public class VisitorExpressionBuilder {
         // the listing does not know about.
         if (!SystemFunctionNames.contains(rawName)) {
             throw new RuntimeException("Unsupported system function: " + rawName);
+        }
+        if ("SYSTEM$TYPEOF".equals(rawName)) {
+            // It types its argument rather than reading a value, so it is evaluated where every expression's
+            // type is known: over the block's names in a scripting expression, as SQL everywhere else.
+            if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
+                return visitor.getProceduralExecutor().evaluateExpression(buildExpression(ctx));
+            }
+            return firstCellOfSelect(visitor.getOriginalText(ctx));
         }
         final List<Object> args = new ArrayList<>();
         if (ctx.booleanExprList() != null) {
@@ -542,7 +723,7 @@ public class VisitorExpressionBuilder {
                 return "{}";
 
             case "SYSTEM$GET_TASK_GRAPH_CONFIG":
-                return "{}";
+                return TaskGraphConfig.readInTask(args);
 
             // ── Stream ─────────────────────────────────────────────────────────
             case "SYSTEM$STREAM_BACKLOG": {
@@ -616,26 +797,6 @@ public class VisitorExpressionBuilder {
             case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
                 return System.currentTimeMillis();
 
-            case "SYSTEM$TYPEOF": {
-                if (!args.isEmpty() && args.get(0) != null) {
-                    final Object v = args.get(0);
-                    if (v instanceof Boolean) return "BOOLEAN[LOB]";
-                    if (v instanceof Long || v instanceof Integer) return "INTEGER[LOB]";
-                    if (v instanceof Double || v instanceof BigDecimal) return "FLOAT[LOB]";
-                    if (v instanceof LocalDateTime || v instanceof LocalDate) return "TIMESTAMP_NTZ[LOB]";
-                    // The two zoned types are their own answers rather than falling through to the
-                    // text branch below, which read them as VARCHAR because their toString starts with
-                    // a digit. The width and the storage tag this still gets wrong are a separate job.
-                    if (v instanceof ZonedDateTime) return "TIMESTAMP_TZ[LOB]";
-                    if (v instanceof OffsetDateTime) return "TIMESTAMP_LTZ[LOB]";
-                    final String s = v.toString().trim();
-                    if (s.startsWith("{")) return "OBJECT[LOB]";
-                    if (s.startsWith("[")) return "ARRAY[LOB]";
-                    return "VARCHAR[LOB]";
-                }
-                return "NULL[LOB]";
-            }
-
             case "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN":
                 return "{\"token\": \"" + UUID.randomUUID() + "\", \"expires_at\": null}";
 
@@ -672,15 +833,8 @@ public class VisitorExpressionBuilder {
             }
 
             // ── Wait ───────────────────────────────────────────────────────────
-            case "SYSTEM$WAIT": {
-                if (!args.isEmpty() && args.get(0) instanceof Number) {
-                    final long ms = (long)(((Number) args.get(0)).doubleValue() * 1000);
-                    if (ms > 0 && ms <= 30_000) { // cap at 30s for safety
-                        try { Thread.sleep(ms); } catch (final InterruptedException ignored) {}
-                    }
-                }
-                return "waited";
-            }
+            case "SYSTEM$WAIT":
+                return SystemWait.waitFor(args);
 
             case "SYSTEM$VALIDATE_STORAGE_INTEGRATION":
             case "SYSTEM$VERIFY_EXTERNAL_VOLUME":

@@ -22,6 +22,7 @@ import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
@@ -55,6 +56,10 @@ public class ToNumber extends BuiltInFunction {
                 return null;
             }
             source = member;
+        }
+        if (source instanceof DayTimeInterval) {
+            // An interval converts to its seconds, as its cast does: 90000 for +1 01:00:00 (live-verified).
+            source = ((DayTimeInterval) source).seconds();
         }
         BigDecimal value = parseNumeric(source, formatModel(args));
         final Integer scale = targetScale(args);

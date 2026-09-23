@@ -20,6 +20,8 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import dev.frostlake.ConcurrentDatabaseEngine;
 import dev.frostlake.ExecutionResult;
+import dev.frostlake.executor.DynamicStatementCount;
+import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.StatementCount;
 import dev.frostlake.values.VariantJsonFormat;
 
@@ -33,7 +35,7 @@ import java.io.IOException;
  * {@code POST /api/execute} — runs SQL in a session.
  *
  * <p>Body: {@code { "sql": "SELECT * FROM users", "sessionId": "optional-session-id",
- * "requireSession": false, "autoCommit": true }}. The wire contract — statuses, fields, the session
+ * "requireSession": true, "autoCommit": true }}. The wire contract — statuses, fields, the session
  * rules — is in {@code docs/http-api.md}.
  */
 final class ExecuteSqlHandler implements HttpHandler {
@@ -71,9 +73,10 @@ final class ExecuteSqlHandler implements HttpHandler {
             final String requestedId = request.getSessionId();
             final boolean named = requestedId != null && !requestedId.isEmpty();
             final SessionContext existing = named ? engine.getSession(requestedId) : null;
-            if (existing == null && named && request.isRequireSession()) {
-                // The caller asked to RESUME a session, not to be handed a fresh one in its place: nothing
-                // runs, so no statement lands in a context the caller never set up.
+            if (existing == null && named && request.refusesUnknownSession()) {
+                // A request naming a session asks to RESUME it, not to be handed a fresh one in its place:
+                // nothing runs, so no statement lands in a context the caller never set up. Only an explicit
+                // requireSession:false asks for the fresh session instead.
                 HttpResponses.send(exchange, 404, MAPPER.writeValueAsString(
                     SqlResponse.error(null, HttpResponses.unknownSession(requestedId))));
                 return;
@@ -92,12 +95,14 @@ final class ExecuteSqlHandler implements HttpHandler {
 
             final long startTime = System.currentTimeMillis();
             SqlResponse response;
+            // The count the request asked for gates the text of an EXECUTE IMMEDIATE among its statements too.
+            final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount(request, session));
             try {
                 final ExecutionResult result = engine.execute(request.getSql(), session, request.getAutoCommit());
                 // The rows are rendered after the statement's own scope has closed, so the session's
                 // JSON_INDENT is bound again for them: a container crosses laid out as the in-process
                 // driver and live's REST answer lay it out.
-                engine.getEngine().bindJsonIndent();
+                engine.bindJsonIndent(session);
                 try {
                     response = result.isSuccess()
                         ? SqlResponse.success(session.getSessionId(), result.getResultSets(),
@@ -113,6 +118,8 @@ final class ExecuteSqlHandler implements HttpHandler {
                 logger.debug("Statement failed in session {}: {}", session.getSessionId(),
                     statementFailure.getMessage());
                 response = SqlResponse.error(session.getSessionId(), messageOf(statementFailure));
+            } finally {
+                DynamicStatementCount.endRequest(displacedCount);
             }
             response.setNewSession(existing == null);
             if (response.isSuccess()) {
@@ -125,14 +132,17 @@ final class ExecuteSqlHandler implements HttpHandler {
             // payload for the exact same parsed content.
             HttpResponses.send(exchange, 200, MAPPER.writeValueAsString(response));
 
-        } catch (final Exception e) {
+        } catch (final Exception | Error e) {
+            // An Error is a server fault like any other: a class that cannot be loaded or an exhausted stack
+            // is answered here, where escaping would end the pool thread with the exchange still open and
+            // leave the client to time out.
             logger.error("Error handling SQL execution", e);
             // Serialised, not hand-assembled: escaping only the quote left every other character that
             // JSON forbids raw in a string to corrupt the body. A backslash, a tab or a newline was
             // enough — and compilation errors always carry a newline, so this was one message away
             // from emitting a response no client could parse.
             HttpResponses.send(exchange, 500, MAPPER.writeValueAsString(
-                SqlResponse.error(null, e.getMessage())));
+                SqlResponse.error(null, messageOf(e))));
         }
     }
 
@@ -141,11 +151,11 @@ final class ExecuteSqlHandler implements HttpHandler {
      * it may run. The count comes from the request when it declares one — the account's driver sends it
      * with the statement — and otherwise from the session's MULTI_STATEMENT_COUNT, which starts at 1.
      * Zero means any number. A script holding no statement is not counted here: it runs and fails as an
-     * empty statement, which is what the account answers for it.
+     * empty statement, which is what the account answers for it. A text that will not parse is refused
+     * for its syntax instead of its count.
      */
     private String multiStatementRefusal(final SqlRequest request, final SessionContext session) {
-        final int desired = request.getMultiStatementCount() != null
-            ? request.getMultiStatementCount().intValue() : session.getMultiStatementCount();
+        final int desired = desiredCount(request, session);
         if (desired == 0) {
             return null;
         }
@@ -153,12 +163,25 @@ final class ExecuteSqlHandler implements HttpHandler {
         if (actual == 0 || actual == desired) {
             return null;
         }
+        // The account compiles the text before it counts it, so a text that will not parse is refused for
+        // its syntax, as it would be refused had its count matched.
+        try {
+            QueryExecutor.requireParses(request.getSql());
+        } catch (final RuntimeException syntaxError) {
+            return messageOf(syntaxError);
+        }
         return "Actual statement count " + actual + " did not match the desired statement count "
             + desired + ".";
     }
 
+    /** The statement count a request asks for: its own, else its session's MULTI_STATEMENT_COUNT. */
+    private static int desiredCount(final SqlRequest request, final SessionContext session) {
+        return request.getMultiStatementCount() != null
+            ? request.getMultiStatementCount().intValue() : session.getMultiStatementCount();
+    }
+
     /** A failure's message, or its class when it carries none — never an empty answer. */
-    private static String messageOf(final RuntimeException failure) {
+    private static String messageOf(final Throwable failure) {
         return failure.getMessage() != null ? failure.getMessage() : failure.toString();
     }
 }

@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.IntegerResultWidths;
+import dev.frostlake.values.VectorValue;
 import tools.jackson.databind.node.ArrayNode;
 
 import java.util.List;
@@ -29,6 +30,8 @@ public class ArraySize extends VariantAccessorFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A VECTOR is array-shaped but no ARRAY, and ARRAY_SIZE answers NULL for it (live-verified).
+        if (args.get(0) instanceof VectorValue) return null;
         final ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(0));
         return arr == null ? null : (long) arr.size();
     }

@@ -21,16 +21,21 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.GeographyType;
+import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 
 /**
- * The compatibility classes of the scalar-UDF return-type check, exactly as a real account divides
+ * The compatibility classes of the SQL UDF return-type checks, exactly as a real account divides
  * them (live-verified): the fixed-point and floating-point numerics are SEPARATE families, the three
  * timestamp flavors are each their own family, and VARIANT / ARRAY / OBJECT match only themselves —
- * VARIANT does not absorb the other two. Length, precision and scale never participate.
+ * VARIANT does not absorb the other two; GEOGRAPHY, GEOMETRY and VECTOR are families of their own.
+ * A number's precision and scale and a text's or binary's length never participate, while a TIME's
+ * and a timestamp's fractional precision must match (see {@link #precisionDiffers}).
  */
 enum ReturnTypeFamily {
     FIXED,
@@ -45,7 +50,10 @@ enum ReturnTypeFamily {
     BINARY,
     VARIANT,
     ARRAY,
-    OBJECT;
+    OBJECT,
+    GEOGRAPHY,
+    GEOMETRY,
+    VECTOR;
 
     /** The family of {@code type}, or null for the kinds the check does not judge. */
     static ReturnTypeFamily of(final DataType type) {
@@ -89,6 +97,29 @@ enum ReturnTypeFamily {
         if (type instanceof ObjectType) {
             return OBJECT;
         }
+        if (type instanceof GeographyType) {
+            return GEOGRAPHY;
+        }
+        if (type instanceof GeometryType) {
+            return GEOMETRY;
+        }
+        if (type instanceof VectorType) {
+            return VECTOR;
+        }
         return null;
+    }
+
+    /**
+     * Whether a TIME or timestamp is declared with another fractional precision than the body's: a
+     * {@code TIMESTAMP_NTZ(3)} result refuses a {@code TIMESTAMP_NTZ(9)} body, and the reverse, and so does
+     * a declared TIME for a {@code TIME(0)} body (live-verified). Other families carry no such rule.
+     */
+    static boolean precisionDiffers(final DataType declared, final DataType actual) {
+        final ReturnTypeFamily family = of(declared);
+        if (family != TIME && family != TIMESTAMP_NTZ && family != TIMESTAMP_LTZ && family != TIMESTAMP_TZ
+                || !(declared instanceof DateTimeType) || !(actual instanceof DateTimeType)) {
+            return false;
+        }
+        return ((DateTimeType) declared).getPrecision() != ((DateTimeType) actual).getPrecision();
     }
 }

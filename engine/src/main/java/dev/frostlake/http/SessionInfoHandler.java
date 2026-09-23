@@ -62,7 +62,7 @@ final class SessionInfoHandler implements HttpHandler {
             } else {
                 HttpResponses.methodNotAllowed(exchange);
             }
-        } catch (final Exception e) {
+        } catch (final Exception | Error e) {
             logger.error("Error handling session request", e);
             HttpResponses.send(exchange, 500, "{\"error\":\"Internal server error\"}");
         }
@@ -102,15 +102,8 @@ final class SessionInfoHandler implements HttpHandler {
                 SqlResponse.error(null, HttpResponses.unknownSession(sessionId))));
             return;
         }
-        if (session.isInTransaction()) {
-            try {
-                engine.execute("ROLLBACK", session);
-            } catch (final RuntimeException e) {
-                // The session goes regardless; its transaction's writes were never committed.
-                logger.warn("Rolling back released session {} failed: {}", sessionId, e.getMessage());
-            }
-        }
-        engine.removeSession(sessionId);
+        // The one ending rule an expired session follows too: roll back, then drop the engine's state.
+        engine.endSession(session);
         HttpResponses.send(exchange, 200, MAPPER.writeValueAsString(new SqlResponse(true, null)));
     }
 

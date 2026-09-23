@@ -55,15 +55,13 @@ public class ResultScan extends TableFunction {
      * @return ResultSet from the cached query
      */
     public ResultSet execute(final String queryId) {
-        validateQueryId(queryId);
-
-        final ResultSet result = resultCache.getResult(queryId);
+        final ResultSet result = queryId == null ? null : resultCache.getResult(queryId);
         if (result == null) {
             // A statement that failed has an ID but never a result, and live says so in those words.
-            if (resultCache.hasFailed(queryId)) {
+            if (queryId != null && resultCache.hasFailed(queryId)) {
                 throw new RuntimeException("Query " + queryId + " has no result because it failed");
             }
-            throw new RuntimeException("Query ID not found or result no longer available: " + queryId);
+            throw new RuntimeException(notFound(queryId));
         }
         // A cached result's DECLARED types are its static types: the scan of a SHOW TABLES declares
         // created_on TIMESTAMP_LTZ(3), the text columns VARCHAR(16777216) and rows / bytes
@@ -85,19 +83,15 @@ public class ResultScan extends TableFunction {
     }
 
     /**
-     * Validate the query ID format
-     * @param queryId The query ID to validate
+     * The refusal for an id that names no statement. Live reads the id as it was given, whatever its
+     * shape: {@code Statement 01b2c3d4-0000-0000-0000-000000000000 not found} for a well-formed id,
+     * {@code Statement abc not found} for any other text, with its spaces kept and nothing between the
+     * two words for an empty one, and {@code Statement NULL not found} when LAST_QUERY_ID answered NULL.
+     *
+     * @param queryId the id the scan was asked for, or null
+     * @return the sentence
      */
-    private void validateQueryId(final String queryId) {
-        if (queryId == null || queryId.trim().isEmpty()) {
-            throw new RuntimeException("RESULT_SCAN requires a non-empty query ID");
-        }
-
-        // Snowflake query IDs are UUIDs
-        // Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-        final String trimmed = queryId.trim();
-        if (!trimmed.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")) {
-            throw new RuntimeException("Invalid query ID format: " + queryId);
-        }
+    public static String notFound(final String queryId) {
+        return "Statement " + (queryId == null ? "NULL" : queryId) + " not found";
     }
 }

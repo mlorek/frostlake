@@ -90,6 +90,20 @@ final class StatementKindText {
         if (statement.showStatement() != null && statement.showStatement().GRANTS() != null) {
             return "SHOW GRANTS";
         }
+        final FrostlakeParser.AccessControlStatementContext access = statement.accessControlStatement();
+        if (access != null) {
+            if (access.GRANTS() != null) {
+                return "SHOW GRANTS";
+            }
+            final String verb = upper(statement.getStart().getText());
+            if (access.MANAGED() != null) {
+                return verb + " MANAGED ACCOUNT" + (access.ACCOUNTS() != null ? "S" : "");
+            }
+            if (access.ACCOUNT() != null) {
+                return verb + " ACCOUNT";
+            }
+            return verb + " DATABASE ROLE" + (access.ROLES() != null ? "S" : "");
+        }
         final FrostlakeParser.DdlStatementContext ddl = statement.ddlStatement();
         if (ddl == null) {
             final String verb = upper(statement.getStart().getText());
@@ -134,6 +148,13 @@ final class StatementKindText {
                     required = 2;
                 } else if (type == FrostlakeParser.COLUMN) {
                     required = 4;
+                } else if (type == FrostlakeParser.DATABASE || type == FrostlakeParser.WAREHOUSE
+                        || type == FrostlakeParser.ROLE || type == FrostlakeParser.USER
+                        || type == FrostlakeParser.POOL) {
+                    // An ACCOUNT-scoped name is whole on its own, so it never wants a current
+                    // database. These kinds used to reach that answer by being spelled `identifier`
+                    // and leaving below; they read an objectName now, so they say it here instead.
+                    required = 1;
                 }
                 continue;
             }

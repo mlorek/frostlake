@@ -51,9 +51,31 @@ public abstract class TextArgumentFunction extends BuiltInFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
+    /**
+     * A predicate is no text either, and is refused in every position — {@code POSITION('x', 'b' IN
+     * (SELECT 'abc'))} and {@code SUBSTR('abc', 1 = 1)} alike — where a BOOLEAN value is read as the
+     * text it spells (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
     /** A VECTOR is no text either, and is refused in every position (live-verified). */
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    /**
+     * Whether a DATE, TIME or timestamp argument is read as its display text — the text {@code ||} gives
+     * it — before the function sees it. True for the family: {@code LENGTH(ts)} over
+     * {@code 2020-01-01 10:00:00} is 23 and {@code CONTAINS(ts, 'T')} FALSE (live-verified). A member that
+     * reads a temporal by its VALUE says no.
+     *
+     * @return true when temporal arguments arrive as text
+     */
+    public boolean readsTemporalsAsText() {
+        return true;
     }
 }

@@ -27,9 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * What a database's INFORMATION_SCHEMA contributes to the listings that walk a whole container.
  *
- * <p>It is a schema full of VIEWS — 62 of them, no tables — so a container-scoped listing counts them
- * too: SHOW VIEWS IN DATABASE over a database holding one user view answers 63, and SHOW OBJECTS 64,
- * while SHOW TABLES answers 1 because none of the 62 is a table. Those totals are asserted here
+ * <p>It is a schema full of VIEWS — 63 of them, no tables — so a container-scoped listing counts them
+ * too: SHOW VIEWS IN DATABASE over a database holding one user view answers 64, and SHOW OBJECTS 65,
+ * while SHOW TABLES answers 1 because none of the 63 is a table. Those totals are asserted here
  * exactly, on both sides.
  *
  * <p>They are owned by NOBODY, which is the cell most easily invented: a created view names the role
@@ -52,20 +52,20 @@ public class InformationSchemaListingTest extends BaseDatabaseTest {
         return engine.executeQuery(sql).getRowCount();
     }
 
-    /** The schema holds 62 views and no tables. */
+    /** The schema holds 63 views and no tables. */
     @Test
-    public void informationSchemaHoldsSixtyTwoViewsAndNoTables() {
-        assertEquals(62, rows("SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA"));
+    public void informationSchemaHoldsSixtyThreeViewsAndNoTables() {
+        assertEquals(63, rows("SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA"));
         assertEquals(0, rows("SHOW TABLES IN SCHEMA test_db.INFORMATION_SCHEMA"));
-        assertEquals(62, rows("SHOW OBJECTS IN SCHEMA test_db.INFORMATION_SCHEMA"));
+        assertEquals(63, rows("SHOW OBJECTS IN SCHEMA test_db.INFORMATION_SCHEMA"));
     }
 
     /** So a database-wide listing counts them beside the user's own objects. */
     @Test
     public void aDatabaseWideListingCountsThemToo() {
-        assertEquals(63, rows("SHOW VIEWS IN DATABASE test_db"), "62 system views plus is_v");
+        assertEquals(64, rows("SHOW VIEWS IN DATABASE test_db"), "63 system views plus is_v");
         assertEquals(1, rows("SHOW TABLES IN DATABASE test_db"), "no system TABLES exist to count");
-        assertEquals(64, rows("SHOW OBJECTS IN DATABASE test_db"), "62 system views plus is_t and is_v");
+        assertEquals(65, rows("SHOW OBJECTS IN DATABASE test_db"), "63 system views plus is_t and is_v");
     }
 
     /** Three schemas, and INFORMATION_SCHEMA is one of them. */
@@ -99,7 +99,7 @@ public class InformationSchemaListingTest extends BaseDatabaseTest {
                 rs.getValue("name") + " should have no owner role type");
             checked++;
         }
-        assertEquals(62, checked);
+        assertEquals(63, checked);
         final ResultSet mine = engine.executeQuery("SHOW OBJECTS IN SCHEMA test_db.test_schema");
         mine.next();
         assertTrue(String.valueOf(mine.getValue("owner")).length() > 0,

@@ -31,7 +31,6 @@
     },
     {
       "name": "duplicate-column-in-create",
-      "skip": {"backends": ["engine","jdbc","http"], "reason": "known gap: frostlake accepts duplicate column names (GAPS.md)"},
       "steps": [
         {"sql": "CREATE TABLE dup (a INTEGER, a INTEGER)", "expect": {"error": {"messageContains": "duplicate"}}}
       ]

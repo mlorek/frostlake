@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.encoding;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.StringType;
 
 import java.util.Base64;
@@ -38,4 +39,13 @@ public class TryBase64Decode extends BuiltInFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /**
+     * A predicate as TRY_BASE64_DECODE_STRING's first argument is refused by the argument types, where a BOOLEAN
+     * value is read as text (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

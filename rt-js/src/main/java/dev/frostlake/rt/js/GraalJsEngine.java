@@ -45,16 +45,38 @@ public final class GraalJsEngine {
 
     /**
      * Run once in every fresh context. The {@code Java} global survives the options above, so it is removed
-     * here, as are the {@code context} and {@code engine} globals the script-engine bridge adds, which a
-     * handler on the account never sees. {@code eval} and the {@code Function} constructor refuse in the account's own words; the
-     * engine-level {@code js.disable-eval} still stands behind every other route to dynamic code. The
-     * {@code Function} wrapper keeps its prototype, so {@code f instanceof Function} holds.
+     * here, as are the {@code context}, {@code engine} and {@code arguments} globals the script-engine bridge
+     * adds, which a handler on the account never sees. {@code eval} and the {@code Function} constructor refuse
+     * in the account's own words; the engine-level {@code js.disable-eval} still stands behind every other
+     * route to dynamic code. The {@code Function} wrapper keeps its prototype, so {@code f instanceof Function}
+     * holds.
+     *
+     * <p>The account's own globals are declared as it declares them for a function and a procedure alike: the
+     * {@code Snowflake} and {@code SnowflakeLogger} constructors, the {@code snowflakeLogger} and
+     * {@code _c_snowflake_logger} objects, and {@code snowflake}, an object with no properties of its own whose
+     * prototype logs: {@code snowflake.log('info', …)} runs in a function too (live-verified). A procedure's
+     * handler adds the statement methods to that prototype (see {@link JavaScriptHandler}).
      */
     private static final String SANDBOX_PRELUDE = """
         (function () {
             delete globalThis.Java;
             delete globalThis.context;
             delete globalThis.engine;
+            delete globalThis.arguments;
+            var Snowflake = function Snowflake() {
+            };
+            var levels = ['log', 'log_trace', 'log_debug', 'log_info', 'log_warn', 'log_error', 'log_fatal'];
+            for (var i = 0; i < levels.length; i++) {
+                Snowflake.prototype[levels[i]] = function () {
+                };
+            }
+            var SnowflakeLogger = function SnowflakeLogger() {
+            };
+            globalThis.Snowflake = Snowflake;
+            globalThis.SnowflakeLogger = SnowflakeLogger;
+            globalThis.snowflake = new Snowflake();
+            globalThis.snowflakeLogger = new SnowflakeLogger();
+            globalThis._c_snowflake_logger = {};
             var refuse = function () {
                 throw new EvalError('Dynamic code evaluation disallowed');
             };

@@ -41,6 +41,7 @@ final class ParameterRegistry {
     private static final Set<String> SESSION = load("session");
     private static final Set<String> TABLE = load("table");
     private static final Set<String> DATABASE = load("database");
+    private static final Set<String> SCHEMA = load("schema");
 
     static {
         // ALTER TABLE SET also takes PROPERTIES that are not SHOW PARAMETERS entries — the staged
@@ -66,6 +67,10 @@ final class ParameterRegistry {
 
     static boolean isDatabaseParameter(final String canonicalName) {
         return DATABASE.contains(canonicalName);
+    }
+
+    static boolean isSchemaParameter(final String canonicalName) {
+        return SCHEMA.contains(canonicalName);
     }
 
     static RuntimeException invalidSessionParameter(final String spelledName) {

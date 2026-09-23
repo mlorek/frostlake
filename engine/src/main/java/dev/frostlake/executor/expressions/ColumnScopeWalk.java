@@ -30,14 +30,32 @@ final class ColumnScopeWalk extends AstPrinterVisitor {
 
     private final ExpressionEvaluatorVisitor context;
 
+    private final CallShapeRules shapes;
+
     ColumnScopeWalk(final ExpressionEvaluatorVisitor context) {
         this.context = context;
+        this.shapes = new CallShapeRules(context);
+    }
+
+    /** A window call's shape is judged at its place, once the names written inside it are (see CallShapeRules). */
+    @Override
+    public String visitWindowFunction(final WindowFunctionExpression expr) {
+        shapes.rejectWindowCall(expr, this);
+        return super.visitWindowFunction(expr);
     }
 
     @Override
     public String visitColumnReference(final ColumnReferenceExpression expr) {
         context.validateColumnReferenceScope(expr);
         return super.visitColumnReference(expr);
+    }
+
+    @Override
+    public String visitBindVariable(final BindVariableExpression expr) {
+        // A bind no block binds resolves to nothing, like an unknown column: refused in the same phase, in
+        // written order among the names, over empty inputs too.
+        context.rejectUnsetBind(expr);
+        return super.visitBindVariable(expr);
     }
 
     @Override
@@ -54,27 +72,34 @@ final class ColumnScopeWalk extends AstPrinterVisitor {
     public String visitFunctionCall(final FunctionCallExpression written) {
         // A star beside other arguments names columns, which is what the walk resolves.
         final FunctionCallExpression expr = context.splicedStarArguments(written);
+        // A bind variable naming the column or the function is refused ahead of the names inside the call.
+        context.rejectUnboundIdentifierBind(expr);
         // A call's ARGUMENTS are where the date/time-unit barewords are exempt, so the phase has to
         // descend in argument position the way the combined walk does.
         final boolean enclosing = context.beginFunctionArgumentScope();
+        final String walked;
         try {
             final int slot = DateTimeUnitSlot.positionIn(
                 expr.getFunctionName().toUpperCase(Locale.ROOT));
             if (slot < 0) {
-                return super.visitFunctionCall(expr);
-            }
-            // A unit SLOT holds a NAME, so there is no reference in it to resolve. Walking it would
-            // refuse DATEADD(zz, …) as an invalid identifier, where live reports the word as a bad
-            // date/time component instead — a different sentence, from a later phase.
-            final List<Expression> args = expr.getArguments();
-            for (int i = 0; i < args.size(); i++) {
-                if (i != slot) {
-                    args.get(i).accept(this);
+                walked = super.visitFunctionCall(expr);
+            } else {
+                // A unit SLOT holds a NAME, so there is no reference in it to resolve. Walking it would
+                // refuse DATEADD(zz, …) as an invalid identifier, where live reports the word as a bad
+                // date/time component instead — a different sentence, from a later phase.
+                final List<Expression> args = expr.getArguments();
+                for (int i = 0; i < args.size(); i++) {
+                    if (i != slot) {
+                        args.get(i).accept(this);
+                    }
                 }
+                walked = "";
             }
-            return "";
         } finally {
             context.endFunctionArgumentScope(enclosing);
         }
+        // The call's own shape as written, once the names inside it are walked (see CallShapeRules).
+        shapes.rejectCall(written, this);
+        return walked;
     }
 }

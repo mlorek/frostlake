@@ -19,6 +19,7 @@ package dev.frostlake.persistence;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /** Serializable snapshot of a user-defined FUNCTION (any language, scalar or table). */
 public class FunctionSnapshot implements Serializable {
@@ -40,4 +41,13 @@ public class FunctionSnapshot implements Serializable {
     public List<String> imports = new ArrayList<>();
     public String comment;
     public String owner;
+
+    // A service function's SERVICE, ENDPOINT and MAX_BATCH_ROWS; null for every other function and on old snapshots.
+    public String serviceName;
+    public String serviceEndpoint;
+    public Long maxBatchRows;
+
+    // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
+    // recorded, which reads back as an object carrying none.
+    public Map<String, String> tags;
 }

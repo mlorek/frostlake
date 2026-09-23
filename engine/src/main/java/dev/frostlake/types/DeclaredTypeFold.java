@@ -89,8 +89,9 @@ public final class DeclaredTypeFold {
         }
         // A temporal's PRECISION is deliberately not compared here. The set-operation path has always
         // treated two same-named temporals as one declared type, and the vendor gate depends on it —
-        // making them differ changed how an EXCEPT compared timestamp columns. The conditional's
-        // measured max-precision rule lives in foldBranches instead, where it cannot reach a set op.
+        // making them differ changed how an EXCEPT compared timestamp columns. The measured
+        // max-precision rule is applied by the folds themselves instead (combine and foldBranches),
+        // which change the declared type and never how two values compare.
         return true;
     }
 
@@ -110,8 +111,8 @@ public final class DeclaredTypeFold {
      *
      * <p>So the unknown-length widening is a BRANCH rule: an arm keeps the width it declares. What both
      * surfaces do share is here — the numeric supertype, the common string and binary width, an
-     * approximate number swallowing an exact one, temporal widening, and a leading BOOLEAN winning over
-     * whatever follows it.
+     * approximate number swallowing an exact one, temporal widening at the wider fractional-second
+     * precision, and a leading BOOLEAN winning over whatever follows it.
      *
      * @param left  one branch's type
      * @param right the other's
@@ -119,7 +120,7 @@ public final class DeclaredTypeFold {
      */
     public static DataType combine(final DataType left, final DataType right) {
         if (sameDeclaredType(left, right)) {
-            return left;
+            return atWiderPrecision(left, left, right);
         }
         if (left == null || right == null) {
             return null;
@@ -150,6 +151,26 @@ public final class DeclaredTypeFold {
         if (left instanceof StringType && right instanceof BooleanType) {
             return left;
         }
+        if (left instanceof IntervalDayTimeType && right instanceof IntervalDayTimeType) {
+            // Two intervals of one family fold to the FIELDS of the one written first, whatever fields the other
+            // spans: INTERVAL '2' HOUR UNION ALL INTERVAL '1' DAY is an INTERVAL HOUR(9), the reverse an INTERVAL
+            // DAY(9), and COALESCE takes its first branch's fields the same way. The digits widen to the larger
+            // of the two, leading and fractional alike: DAY(2) with HOUR(5) is DAY(5), SECOND(2,3) with MINUTE(4)
+            // SECOND(4,3), DAY(3) TO SECOND(3) with HOUR(9) DAY(9) TO SECOND(3) (live-verified). The two
+            // families never meet: a day-time arm beside a year-month one is refused.
+            final IntervalDayTimeType first = (IntervalDayTimeType) left;
+            final IntervalDayTimeType second = (IntervalDayTimeType) right;
+            return IntervalDayTimeType.of(first.getQualifier(),
+                Math.max(first.getLeadingPrecision(), second.getLeadingPrecision()),
+                Math.max(first.getFractionalPrecision(), second.getFractionalPrecision()));
+        }
+        if (left instanceof IntervalYearMonthType && right instanceof IntervalYearMonthType) {
+            // The first one's fields, the larger leading digits: YEAR(2) with MONTH(5) is YEAR(5), the reverse
+            // MONTH(5) (live-verified).
+            return IntervalYearMonthType.of(((IntervalYearMonthType) left).getQualifier(),
+                Math.max(((IntervalYearMonthType) left).getLeadingPrecision(),
+                    ((IntervalYearMonthType) right).getLeadingPrecision()));
+        }
         return widerTemporal(left, right);
     }
 
@@ -169,7 +190,8 @@ public final class DeclaredTypeFold {
      *   TZ       TZ      TZ      TZ      TZ
      * </pre>
      *
-     * <p>TIME is absent from both surfaces: it does not join the family in any order.
+     * <p>TIME is absent from both surfaces: it does not join the family in any order. The flavour that
+     * wins carries the wider precision of the two arms, not its own (see {@link #atWiderPrecision}).
      *
      * @param left  the arm written first
      * @param right the arm written second
@@ -187,7 +209,65 @@ public final class DeclaredTypeFold {
         if (rightRank == TEMPORAL_WIDENING_ORDER.length - 1 && leftRank > 0) {
             return null;
         }
-        return leftRank >= rightRank ? left : right;
+        return atWiderPrecision(leftRank >= rightRank ? left : right, left, right);
+    }
+
+    /**
+     * The temporal a fold settled on, carrying the WIDER fractional-second precision of the two it
+     * folded. The precision folds apart from the flavour: whichever arm wins the flavour, and in
+     * whichever order the two are written, the column keeps every digit either side can hold. Live
+     * declares these for a set operation's arms, and a VALUES list's rows fold the same way — a
+     * TIMESTAMP_NTZ(0) row beside a TIMESTAMP_NTZ(6) one is TIMESTAMP_NTZ(6):
+     *
+     * <pre>
+     *   TIMESTAMP_NTZ(3) with TIMESTAMP_NTZ(9)   TIMESTAMP_NTZ(9)   either order
+     *   TIME(0)          with TIME(9)            TIME(9)
+     *   TIMESTAMP_NTZ(9) with TIMESTAMP_LTZ(3)   TIMESTAMP_LTZ(9)   the flavour of one, the digits of the other
+     *   TIMESTAMP_TZ(0)  with TIMESTAMP_LTZ(3)   TIMESTAMP_TZ(3)
+     *   DATE             with TIMESTAMP_NTZ(3)   TIMESTAMP_NTZ(3)   a DATE carries no fraction to add
+     * </pre>
+     *
+     * <p>A pair that is not two temporals, and a DATE that wins, come back as the winner they were.
+     *
+     * @param winner the type the fold settled on
+     * @param left   one side of the fold
+     * @param right  the other
+     * @return the winner, at the wider precision when both sides are temporals
+     */
+    private static DataType atWiderPrecision(final DataType winner, final DataType left, final DataType right) {
+        if (!(winner instanceof DateTimeType) || !(left instanceof DateTimeType)
+                || !(right instanceof DateTimeType) || "DATE".equalsIgnoreCase(winner.getName())) {
+            return winner;
+        }
+        final DateTimeType held = (DateTimeType) winner;
+        final int precision = Math.max(fractionalDigits((DateTimeType) left), fractionalDigits((DateTimeType) right));
+        return held.getPrecision() == precision ? held
+            : new DateTimeType(held.getName(), precision, held.hasTimeZone());
+    }
+
+    /** A temporal's fractional-second digits; a DATE has none. */
+    private static int fractionalDigits(final DateTimeType temporal) {
+        return "DATE".equalsIgnoreCase(temporal.getName()) ? 0 : temporal.getPrecision();
+    }
+
+    /**
+     * A recursive CTE's column once its recursive term has run: the anchor's type, at the wider
+     * fractional-second precision when the anchor is a TIMESTAMP and the term's is one of the same
+     * flavour. Neither side wins outright — live declares the column of an anchor {@code n3} with a term
+     * {@code DATEADD(day, 1, x)} TIMESTAMP_NTZ(9), and of an anchor {@code n9} with a term
+     * {@code x::TIMESTAMP_NTZ(3)} TIMESTAMP_NTZ(9) too. A TIME is left as the anchor declares it: live
+     * does not fold two TIME precisions here at all, it refuses the pair as a type mismatch between the
+     * anchor and the recursive term. Every other pair keeps the anchor's type as well.
+     *
+     * @param anchor the anchor's column type
+     * @param term   the recursive term's column type
+     * @return the column's type
+     */
+    public static DataType recursiveColumn(final DataType anchor, final DataType term) {
+        if (anchor instanceof DateTimeType && temporalRank(anchor.getName()) > 0 && sameDeclaredType(anchor, term)) {
+            return atWiderPrecision(anchor, anchor, term);
+        }
+        return anchor;
     }
 
     /**
@@ -245,8 +325,8 @@ public final class DeclaredTypeFold {
 
     /**
      * Temporals of ONE flavour fold to the WIDER precision — live declares
-     * {@code IFF(c, TIMESTAMP_NTZ(3), TIMESTAMP_NTZ(9))} at scale 9. Only branches reach this: a set
-     * operation's arms have always taken the first arm's precision, and the vendor suite relies on it.
+     * {@code IFF(c, TIMESTAMP_NTZ(3), TIMESTAMP_NTZ(9))} at scale 9. Only branches reach this; a set
+     * operation's arms fold pairwise in {@link #combine}, which takes the wider precision the same way.
      *
      * @param branchTypes the branch types
      * @return the folded temporal, or null when the branches are not all temporals of one flavour

@@ -36,6 +36,10 @@ public class TableColumn implements Taggable {
     private String comment;
     private String collation;
 
+    // The position the table gave this column, counted from 1 and never reused: dropping a column
+    // leaves its number behind, and the next column added takes one past the highest ever given.
+    private int ordinalPosition;
+
     // Foreign key metadata (not enforced)
     private String referencedTable;
     private String referencedColumn;
@@ -70,6 +74,14 @@ public class TableColumn implements Taggable {
     // a conditional folds the column by (see getSpelledNumber); null for every other column.
     private DataType spelledNumber;
 
+    // A DERIVED relation's column projecting a number or boolean constant wrapped into a VARIANT, which a
+    // cast to a sized VARCHAR converts unchecked (see isUncheckedConstant); false for every other column.
+    private boolean uncheckedConstant;
+
+    // A DERIVED relation's column projecting a double live's compiler folds, which TO_VARIANT wraps keeping
+    // its FLOAT origin (see isFoldedDouble); false for every other column.
+    private boolean foldedDouble;
+
     public TableColumn(final String name, final DataType dataType, final boolean nullable,
                  final Object defaultValue, final boolean primaryKey, final boolean unique,
                  final boolean autoIncrement) {
@@ -96,6 +108,20 @@ public class TableColumn implements Taggable {
 
     public boolean isHiddenFromStar() {
         return hiddenFromStar;
+    }
+
+    /**
+     * The position this column holds in its table, counted from 1 — what INFORMATION_SCHEMA.COLUMNS
+     * reports. A column keeps the number it was given, so a dropped column leaves a gap and no later
+     * column takes its number. 0 on a column that never joined a table (a derived relation's).
+     */
+    public int getOrdinalPosition() {
+        return ordinalPosition;
+    }
+
+    /** Give this column its position; the table does this as the column joins it. */
+    public void setOrdinalPosition(final int ordinalPosition) {
+        this.ordinalPosition = ordinalPosition;
     }
 
     /**
@@ -136,6 +162,38 @@ public class TableColumn implements Taggable {
         this.spelledNumber = spelledNumber;
     }
 
+    /**
+     * Whether this DERIVED relation's column projects a number or boolean constant wrapped into a VARIANT,
+     * or projects another such column. Live folds the constant through the relation, so a cast to a sized
+     * VARCHAR converts it unchecked as it converts the wrap written in place: {@code WITH c AS (SELECT
+     * TO_VARIANT(123) AS v) SELECT v::VARCHAR(1) FROM c} is {@code 123}. A catalog column never is one.
+     *
+     * @return true for such a column
+     */
+    public boolean isUncheckedConstant() {
+        return uncheckedConstant;
+    }
+
+    public void setUncheckedConstant(final boolean uncheckedConstant) {
+        this.uncheckedConstant = uncheckedConstant;
+    }
+
+    /**
+     * Whether this DERIVED relation's column projects a double live's compiler folds, or projects another
+     * such column: {@code WITH c AS (SELECT 2::FLOAT AS f) SELECT TO_VARIANT(f)::VARCHAR FROM c} is
+     * {@code 2.0}, as the wrap of {@code 2::FLOAT} written in place is, where a computed double is {@code 2}.
+     * A catalog column never is one.
+     *
+     * @return true for such a column
+     */
+    public boolean isFoldedDouble() {
+        return foldedDouble;
+    }
+
+    public void setFoldedDouble(final boolean foldedDouble) {
+        this.foldedDouble = foldedDouble;
+    }
+
     /** A copy of this column marked hidden from {@code SELECT *} — used for the right-side duplicate
      *  of a USING / NATURAL join column in a merged join view (the shared catalog instance stays
      *  untouched). */
@@ -155,6 +213,37 @@ public class TableColumn implements Taggable {
         copy.staticallyTyped = staticallyTyped;
         copy.valueRange = valueRange;
         copy.spelledNumber = spelledNumber;
+        copy.uncheckedConstant = uncheckedConstant;
+        copy.foldedDouble = foldedDouble;
+        return copy;
+    }
+
+    /**
+     * A copy of this column carrying another type and nullability, for a shape change that keeps the
+     * column itself — {@code CREATE OR ALTER TABLE} widening a VARCHAR or setting NOT NULL.
+     *
+     * @param newType     the type the column takes
+     * @param newNullable whether it accepts NULL
+     * @return the copy
+     */
+    public TableColumn retypedCopy(final DataType newType, final boolean newNullable) {
+        final TableColumn copy = new TableColumn(name, newType, newNullable, defaultValue, primaryKey,
+            unique, autoIncrement, identityStart, identityIncrement);
+        copy.comment = comment;
+        copy.collation = collation;
+        copy.referencedTable = referencedTable;
+        copy.referencedColumn = referencedColumn;
+        copy.onDelete = onDelete;
+        copy.onUpdate = onUpdate;
+        copy.rely = rely;
+        copy.maskingPolicyName = maskingPolicyName;
+        copy.tags.putAll(tags);
+        copy.hiddenFromStar = hiddenFromStar;
+        copy.staticallyTyped = staticallyTyped;
+        copy.valueRange = valueRange;
+        copy.spelledNumber = spelledNumber;
+        copy.uncheckedConstant = uncheckedConstant;
+        copy.foldedDouble = foldedDouble;
         return copy;
     }
 
@@ -176,6 +265,7 @@ public class TableColumn implements Taggable {
         copy.staticallyTyped = staticallyTyped;
         copy.valueRange = valueRange;
         copy.spelledNumber = spelledNumber;
+        // The null-extended side no longer folds its constant: a cast of it is checked (live-verified).
         return copy;
     }
 

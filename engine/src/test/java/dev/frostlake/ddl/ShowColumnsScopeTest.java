@@ -80,7 +80,7 @@ public class ShowColumnsScopeTest extends BaseDatabaseTest {
     public void qualificationIsCheckedBeforeExistence() {
         assertEquals("Must specify the full search path starting from database for NO_SUCH_SCHEMA",
             refusalOf("SHOW COLUMNS IN SCHEMA no_such_schema"));
-        assertEquals("Schema 'TEST_DB.NO_SUCH_SCHEMA' does not exist or not authorized.",
+        assertEquals(hinted("Schema 'TEST_DB.NO_SUCH_SCHEMA' does not exist or not authorized."),
             refusalOf("SHOW COLUMNS IN SCHEMA test_db.no_such_schema"));
     }
 
@@ -89,7 +89,7 @@ public class ShowColumnsScopeTest extends BaseDatabaseTest {
     public void theDatabaseScopeSpansItsSchemas() {
         assertTrue(columns("SHOW COLUMNS IN DATABASE test_db").getRows().size() >= 3,
             "the database scope should include this schema's three columns at least");
-        assertEquals("Database 'NO_SUCH_DB' does not exist or not authorized.",
+        assertEquals(hinted("Database 'NO_SUCH_DB' does not exist or not authorized."),
             refusalOf("SHOW COLUMNS IN DATABASE no_such_db"));
     }
 

@@ -268,7 +268,7 @@ public class ShowModifierMatrixTest extends BaseDatabaseTest {
             columnNames(engine.executeQuery("SHOW TERSE ROLES")));
         assertEquals(List.of("name", "created_on", "display_name", "first_name", "last_name", "email",
                 "comment", "has_password", "has_rsa_public_key", "type", "has_mfa", "has_pat",
-                "has_workload_identity", "is_from_organization_user"),
+                "has_workload_identity", "allowed_interfaces", "is_from_organization_user"),
             columnNames(engine.executeQuery("SHOW TERSE USERS")));
     }
 

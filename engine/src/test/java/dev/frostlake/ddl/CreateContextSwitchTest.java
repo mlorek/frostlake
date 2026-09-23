@@ -142,8 +142,8 @@ public class CreateContextSwitchTest extends BaseDatabaseTest {
         try {
             engine.execute("CREATE DATABASE fl434d_one");
             assertEquals("FL434D_ONE.PUBLIC", context());
-            assertEquals("SQL compilation error:|Database 'FL434D_MISSING' does not exist"
-                + " or not authorized.",
+            assertEquals(hinted("SQL compilation error:|Database 'FL434D_MISSING' does not exist"
+                + " or not authorized."),
                 answer("CREATE SCHEMA fl434d_missing.s"));
             assertEquals("FL434D_ONE.PUBLIC", context());
         } finally {

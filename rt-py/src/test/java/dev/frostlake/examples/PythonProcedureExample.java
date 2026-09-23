@@ -51,7 +51,7 @@ public final class PythonProcedureExample {
                 CREATE PROCEDURE pysp()
                 RETURNS VARIANT
                 LANGUAGE PYTHON
-                RUNTIME_VERSION = '3.9'
+                RUNTIME_VERSION = '3.11'
                 PACKAGES = ('snowflake-snowpark-python')
                 HANDLER = 'run'
                 AS
@@ -79,7 +79,7 @@ def run(session):
 """;
             final List<String> packages = Arrays.asList("snowflake-snowpark-python");
             final Procedure proc = new Procedure("simple_proc", params, VariantType.VARIANT,
-                                          body, "PYTHON", "run", "3.9", packages);
+                                          body, "PYTHON", "run", "3.11", packages);
 
             final Object result = PythonProcedureExecutor.executePythonProcedure(proc, Arrays.asList(), engine);
             logger.info("   Result: " + result);
@@ -98,7 +98,7 @@ def run(session):
 """;
 
             final Procedure queryProc = new Procedure("count_users", params, VariantType.VARIANT,
-                                               queryBody, "PYTHON", "run", "3.9", packages);
+                                               queryBody, "PYTHON", "run", "3.11", packages);
 
             final Object countResult = PythonProcedureExecutor.executePythonProcedure(queryProc, Arrays.asList(), engine);
             logger.info("   User count query returned: " + countResult + " row(s)");
@@ -111,7 +111,7 @@ def run(session):
 """;
 
             final Procedure dictProc = new Procedure("status_proc", params, VariantType.VARIANT,
-                                              dictBody, "PYTHON", "run", "3.9", packages);
+                                              dictBody, "PYTHON", "run", "3.11", packages);
 
             final Object dictResult = PythonProcedureExecutor.executePythonProcedure(dictProc, Arrays.asList(), engine);
             logger.info("   Result type: " + dictResult.getClass().getSimpleName());
@@ -123,7 +123,7 @@ def run(session):
                 CREATE PROCEDURE multi_package_proc()
                 RETURNS VARIANT
                 LANGUAGE PYTHON
-                RUNTIME_VERSION = '3.9'
+                RUNTIME_VERSION = '3.11'
                 PACKAGES = ('snowflake-snowpark-python', 'pandas', 'numpy')
                 HANDLER = 'process_data'
                 AS
@@ -156,7 +156,7 @@ def run(session):
 """;
 
             final Procedure complexProc = new Procedure("analyze_users", params, VariantType.VARIANT,
-                                                 complexBody, "PYTHON", "run", "3.9", packages);
+                                                 complexBody, "PYTHON", "run", "3.11", packages);
 
             final Object complexResult = PythonProcedureExecutor.executePythonProcedure(complexProc, Arrays.asList(), engine);
             logger.info("   Analysis result: " + complexResult);

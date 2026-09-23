@@ -24,6 +24,8 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StagePathSegments;
+import dev.frostlake.executor.StagePrefix;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
@@ -49,6 +51,7 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.StatementResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.VariantValue;
@@ -73,6 +76,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -96,6 +100,9 @@ import tools.jackson.databind.json.JsonMapper;
  * on the executor and are called back through it.
  */
 public final class CopyCommandExecutor {
+
+    /** A partitioned unload's NULL partition: its name, and the directory its files go under, is {@code \\N}. */
+    private static final String NULL_PARTITION = "\\N";
 
     private static final Logger logger = LoggerFactory.getLogger(CopyCommandExecutor.class);
 
@@ -264,6 +271,8 @@ public final class CopyCommandExecutor {
         Boolean truncateColumns = null;
         long sizeLimit = -1L;
 
+        rejectCredentialsOnInternalStage(ctx);
+
         for (final FrostlakeParser.CopyIntoTableClauseContext clause : ctx.copyIntoTableClause()) {
             if (clause.FROM() != null) {
                 // Get source location
@@ -338,9 +347,8 @@ public final class CopyCommandExecutor {
                                 if (named.getOption("TRIM_SPACE") != null) {
                                     trimSpace = "TRUE".equalsIgnoreCase(named.getOption("TRIM_SPACE"));
                                 }
-                                if (named.getOption("NULL_IF") != null && !named.getOption("NULL_IF").isEmpty()) {
-                                    // Stored comma-joined by CREATE FILE FORMAT (see CreateInfrastructureHandler).
-                                    nullIf = Arrays.asList(named.getOption("NULL_IF").split(","));
+                                if (named.getNullIfValues() != null && !named.getNullIfValues().isEmpty()) {
+                                    nullIf = named.getNullIfValues();
                                 }
                                 if (named.getOption("ERROR_ON_COLUMN_COUNT_MISMATCH") != null) {
                                     errorOnColumnCountMismatch =
@@ -471,13 +479,13 @@ public final class CopyCommandExecutor {
         final List<ResultSetColumn> resultColumns = Arrays.asList(
             new ResultSetColumn("file", StringType.VARCHAR),
             new ResultSetColumn("status", StringType.VARCHAR),
-            new ResultSetColumn("rows_parsed", NumericType.INTEGER),
-            new ResultSetColumn("rows_loaded", NumericType.INTEGER),
-            new ResultSetColumn("error_limit", NumericType.INTEGER),
-            new ResultSetColumn("errors_seen", NumericType.INTEGER),
+            new ResultSetColumn("rows_parsed", StatementResultWidths.LOAD_COUNT),
+            new ResultSetColumn("rows_loaded", StatementResultWidths.LOAD_COUNT),
+            new ResultSetColumn("error_limit", StatementResultWidths.LOAD_COUNT),
+            new ResultSetColumn("errors_seen", StatementResultWidths.LOAD_COUNT),
             new ResultSetColumn("first_error", StringType.VARCHAR),
-            new ResultSetColumn("first_error_line", NumericType.INTEGER),
-            new ResultSetColumn("first_error_character", NumericType.INTEGER),
+            new ResultSetColumn("first_error_line", StatementResultWidths.LOAD_COUNT),
+            new ResultSetColumn("first_error_character", StatementResultWidths.LOAD_COUNT),
             new ResultSetColumn("first_error_column_name", StringType.VARCHAR)
         );
         final List<Row> resultRows = new ArrayList<>();
@@ -492,10 +500,13 @@ public final class CopyCommandExecutor {
 
         // Resolve the local directory backing the FROM location (@stage / s3:// / file://) and load CSV or
         // JSON files from it.
-        final Path baseDir = executor.resolveCopyBaseDir(fromLocation);
+        // A stage reference reads its path as a PREFIX of the staged names (see StagePrefix); a URL or a
+        // local path keeps its directory reading.
+        final StagePrefix staged = executor.resolveStagePrefix(fromLocation);
+        final Path baseDir = staged != null ? staged.getRoot() : executor.resolveCopyBaseDir(fromLocation);
         // Every name in FILES = (…) that is not on the stage. Settled BEFORE anything is read, so an
         // aborting statement leaves the table untouched (see missingNamedFiles for the whole rule).
-        final List<String> missingFiles = missingNamedFiles(baseDir, files);
+        final List<String> missingFiles = missingNamedFiles(staged, baseDir, files);
         if (!missingFiles.isEmpty() && (validationMode != null || abortOnError)) {
             // The two paths that refuse to load rather than report: VALIDATION_MODE = RETURN_<n>_ROWS, and
             // the default ON_ERROR. RETURN_ERRORS is the exception — it reports the miss as a row and is
@@ -536,6 +547,9 @@ public final class CopyCommandExecutor {
                 ? null : enclosedBy.charAt(0);
             final boolean checkColumnCount = csv
                 && columnCountChecked(errorOnColumnCountMismatch, columns, matchByColumnName, transformItems);
+            // The files this statement reads, in path order — the same list for a load and a validation.
+            final List<Path> candidates = staged != null ? stagedCandidates(staged, pattern, files)
+                : executor.listCopyFiles(baseDir, pattern, files, executor.copyPatternPrefix(fromLocation));
 
             // VALIDATION_MODE: validate the staged files WITHOUT loading anything (Snowflake
             // semantics) — RETURN_ERRORS / RETURN_ALL_ERRORS list the rows that would fail;
@@ -543,7 +557,7 @@ public final class CopyCommandExecutor {
             if (validationMode != null) {
                 return validateCopyFiles(validationMode, table, tableCols, fieldToCol,
                     transformItems, transformEval, transformSlots,
-                    baseDir, pattern, files, recordReader, skipHeader, delimiter, enclosure, trimSpace, nullIf,
+                    candidates, recordReader, skipHeader, delimiter, enclosure, trimSpace, nullIf,
                     emptyFieldAsNull, checkColumnCount, skipBlankLines, fromLocationDisplay, missingFiles);
             }
 
@@ -563,15 +577,15 @@ public final class CopyCommandExecutor {
             // starts only while that total does not EXCEED the limit — so at least one file always
             // loads, and a total exactly at the limit still admits one more.
             long bytesRead = 0L;
-            final String patternPrefix = executor.copyPatternPrefix(fromLocation);
-            for (final Path file : executor.listCopyFiles(baseDir, pattern, files, patternPrefix)) {
-                final String fileName = file.getFileName().toString();
+            for (final Path file : candidates) {
+                final String fileName = StagePathSegments.diskName(file);
                 if (sizeLimit >= 0L && bytesRead > sizeLimit) {
                     break;
                 }
                 // ALTER PIPE … REFRESH PREFIX / MODIFIED_AFTER: narrow the loaded set to matching files
                 // (these filters are set only for the duration of a pipe REFRESH; a plain COPY sees none).
-                if (!passesRefreshFilters(file, baseDir)) {
+                if (!passesRefreshFilters(file, staged != null ? staged.relativeToPath(file)
+                        : baseDir.relativize(file).toString().replace('\\', '/'))) {
                     continue;
                 }
                 final String fileKey = copyFileKey(file);
@@ -829,7 +843,7 @@ public final class CopyCommandExecutor {
             final List<TableColumn> tableCols, final int[] fieldToCol,
             final List<FrostlakeParser.CopyTransformItemContext> transformItems,
             final ExpressionEvaluator transformEval, final int transformSlots,
-            final Path baseDir, final String pattern, final List<String> files,
+            final List<Path> candidates,
             final StageFileReader recordReader, final int skipHeader, final char delimiter, final Character enclosure,
             final boolean trimSpace, final List<String> nullIf, final boolean emptyFieldAsNull,
             final boolean checkColumnCount, final boolean skipBlankLines,
@@ -844,7 +858,7 @@ public final class CopyCommandExecutor {
                 columns.add(new ResultSetColumn(col.getName(), col.getDataType()));
             }
             final List<Row> rows = new ArrayList<>();
-            for (final Path file : executor.listCopyFiles(baseDir, pattern, files)) {
+            for (final Path file : candidates) {
                 for (final Row row : parseCopyFileRows(file, table, tableCols, fieldToCol,
                         transformItems, transformEval, transformSlots,
                         recordReader, skipHeader, delimiter, enclosure, trimSpace, nullIf, emptyFieldAsNull,
@@ -873,7 +887,7 @@ public final class CopyCommandExecutor {
             new ResultSetColumn("ROW_START_LINE", NumericType.INTEGER),
             new ResultSetColumn("REJECTED_RECORD", StringType.VARCHAR));
         final List<Row> errorRows = new ArrayList<>();
-        for (final Path file : executor.listCopyFiles(baseDir, pattern, files)) {
+        for (final Path file : candidates) {
             parseCopyFileRows(file, table, tableCols, fieldToCol, transformItems, transformEval,
                 transformSlots, recordReader, skipHeader, delimiter, enclosure, trimSpace, nullIf,
                 emptyFieldAsNull, checkColumnCount, skipBlankLines, errorRows);
@@ -901,7 +915,7 @@ public final class CopyCommandExecutor {
             final StageFileReader recordReader, final int skipHeader, final char delimiter, final Character enclosure,
             final boolean trimSpace, final List<String> nullIf, final boolean emptyFieldAsNull,
             final boolean checkColumnCount, final boolean skipBlankLines, final List<Row> errorCollector) {
-        final String fileName = file.getFileName().toString();
+        final String fileName = StagePathSegments.diskName(file);
         final List<Row> rows = new ArrayList<>();
         try {
             if (recordReader != null) {
@@ -1020,10 +1034,12 @@ public final class CopyCommandExecutor {
         }
     }
 
-    /** Whether a staged file passes the active ALTER PIPE … REFRESH filters (always true when none are set). */
-    private boolean passesRefreshFilters(final Path file, final Path baseDir) {
+    /**
+     * Whether a staged file passes the active ALTER PIPE … REFRESH filters (always true when none are set). The
+     * PREFIX is matched against the file's name relative to the pipe's own COPY location.
+     */
+    private boolean passesRefreshFilters(final Path file, final String relative) {
         if (copyRefreshPrefix != null) {
-            final String relative = baseDir.relativize(file).toString().replace('\\', '/');
             if (!relative.startsWith(copyRefreshPrefix)) {
                 return false;
             }
@@ -1428,6 +1444,26 @@ public final class CopyCommandExecutor {
     }
 
     /**
+     * The files a load from a stage reference reads: every name {@code FILES = (…)} lists that is there, in
+     * the order written — each entry appended to the written path as one string — or else every file the
+     * path selects, PATTERN-filtered. A statement carrying both ignores the PATTERN, as before.
+     */
+    private static List<Path> stagedCandidates(final StagePrefix staged, final String pattern,
+                                               final List<String> files) {
+        if (files == null || files.isEmpty()) {
+            return staged.files(pattern);
+        }
+        final List<Path> named = new ArrayList<>();
+        for (final String name : new LinkedHashSet<>(files)) {
+            final Path file = staged.named(name);
+            if (file != null && Files.isRegularFile(file)) {
+                named.add(file);
+            }
+        }
+        return named;
+    }
+
+    /**
      * The names {@code FILES = (…)} promised but the stage does not hold, in the order the statement wrote
      * them. Naming a file that is not there is an ERROR on Snowflake, not a quiet no-op — the whole point of
      * the clause is that the caller asserted those files exist. Live-verified on a real account,
@@ -1467,13 +1503,13 @@ public final class CopyCommandExecutor {
      * file set across its loaders) with no analogue here. Naming the first one the statement wrote is
      * deterministic and explicable, which is the most that can be matched.
      */
-    private List<String> missingNamedFiles(final Path baseDir, final List<String> files) {
+    private List<String> missingNamedFiles(final StagePrefix staged, final Path baseDir, final List<String> files) {
         if (files == null || files.isEmpty() || baseDir == null) {
             return new ArrayList<>();
         }
         final List<String> missing = new ArrayList<>();
         for (final String name : new LinkedHashSet<>(files)) {
-            final Path resolved = executor.resolveStagedFile(baseDir, name);
+            final Path resolved = staged != null ? staged.named(name) : executor.resolveStagedFile(baseDir, name);
             if (resolved == null || !Files.isRegularFile(resolved)) {
                 missing.add(name);
             }
@@ -1641,7 +1677,27 @@ public final class CopyCommandExecutor {
         if (fromLocation == null || fromLocation.isEmpty()) {
             return fileName;
         }
+        // A stage reference that wrote a path names the file by appending the entry to that path as one
+        // string — '@st/dir' with 'g' is '@st/dirg', and with '/g' it is '@st/dir/g' — while a bare stage
+        // puts one slash between (a bare '@sp' with '/dir/g' is '@sp//dir/g'). Live-verified.
+        if (fromLocation.startsWith("@") && stagePathStart(fromLocation) >= 0) {
+            return fromLocation + fileName;
+        }
         return fromLocation.endsWith("/") ? fromLocation + fileName : fromLocation + "/" + fileName;
+    }
+
+    /** Where the path of a written stage reference begins: its first slash outside a quoted name, or -1. */
+    private static int stagePathStart(final String reference) {
+        boolean quoted = false;
+        for (int i = 0; i < reference.length(); i++) {
+            final char c = reference.charAt(i);
+            if (c == '"') {
+                quoted = !quoted;
+            } else if (c == '/' && !quoted) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /**
@@ -1677,6 +1733,34 @@ public final class CopyCommandExecutor {
     }
 
     /** The string value of a copy option: quotes stripped for a STRING_LITERAL, else the literal token text (CSV, GZIP, CONTINUE, …). */
+    /**
+     * A load from an INTERNAL stage takes no credentials: live refuses them while the statement compiles,
+     * naming the user or table stage as a pair and a named stage on its own, and it refuses before it
+     * looks for any file. An external location ({@code 's3://…'}) keeps its credentials.
+     *
+     * @param ctx the COPY INTO &lt;table&gt; statement
+     */
+    private void rejectCredentialsOnInternalStage(final FrostlakeParser.CopyIntoStatementContext ctx) {
+        FrostlakeParser.StageRefContext source = null;
+        boolean credentials = false;
+        for (final FrostlakeParser.CopyIntoTableClauseContext clause : ctx.copyIntoTableClause()) {
+            if (clause.FROM() != null && clause.copySource() != null) {
+                source = clause.copySource().stageRef() != null ? clause.copySource().stageRef()
+                    : clause.copySource().copyTransformation() != null
+                        ? clause.copySource().copyTransformation().stageRef() : null;
+            } else if (clause.optionKey() != null && clause.parenOptionList() != null
+                    && "CREDENTIALS".equalsIgnoreCase(clause.optionKey().getText())) {
+                credentials = true;
+            }
+        }
+        if (!credentials || source == null) {
+            return;
+        }
+        final boolean ownStage = source.TILDE() != null || source.PERCENT() != null;
+        throw new RuntimeException("SQL compilation error: \n COPY statements targeting a "
+            + (ownStage ? "user or table stage" : "stage") + " do not support credential properties.");
+    }
+
     private String copyOptValue(final FrostlakeParser.CopyOptionValueContext v) {
         if (v == null) {
             return null;
@@ -1740,10 +1824,17 @@ public final class CopyCommandExecutor {
         final int[] mapped = new int[columns.size()];
         for (int f = 0; f < columns.size(); f++) {
             mapped[f] = -1;
+            // The column spelled exactly as the name resolves, and only when none is, one in another case: beside
+            // a quoted "x", X names the column X (live-verified).
             for (int c = 0; c < tableCols.size(); c++) {
-                if (tableCols.get(c).getName().equalsIgnoreCase(columns.get(f))) {
+                if (tableCols.get(c).getName().equals(columns.get(f))) {
                     mapped[f] = c;
                     break;
+                }
+            }
+            for (int c = 0; c < tableCols.size() && mapped[f] < 0; c++) {
+                if (tableCols.get(c).getName().equalsIgnoreCase(columns.get(f))) {
+                    mapped[f] = c;
                 }
             }
             if (mapped[f] < 0) {
@@ -1988,8 +2079,12 @@ public final class CopyCommandExecutor {
 
     /** A file's load-history identity: name + size + last-modified (re-staging a changed file reloads it). */
     private static String copyFileKey(final Path file) {
-        final File f = file.toFile();
-        return f.getName() + "|" + f.length() + "|" + f.lastModified();
+        // The whole path, not the bare name: a load reaches files at any depth, and dir/a.csv and
+        // other/a.csv are two files — live loads the second after the first (live-verified).
+        // A file moved inside the directory of its name, when later names continued it, keeps its key.
+        final File f = file.toAbsolutePath().normalize().toFile();
+        return StagePathSegments.namedPath(file.toAbsolutePath().normalize()) + "|" + f.length() + "|"
+            + f.lastModified();
     }
 
     /**
@@ -2246,29 +2341,72 @@ public final class CopyCommandExecutor {
 
         // Resolve the target directory (file:// stage, mapped s3:// stage, or external location). An
         // unmapped target formats but writes nothing. PARTITION BY splits the rows across per-key files.
-        Path dir = executor.resolveCopyBaseDir(location);
-        // SINGLE = TRUE with a file-shaped target writes exactly that name (the compressed bytes
-        // keep the given name untouched — no .gz is appended), live-verified.
+        final String extension = fileExtension != null ? fileExtension : (json ? "json" : "csv");
+        final StagePrefix target = partitionExpr == null ? executor.resolveStagePrefix(location) : null;
+        Path dir;
         String singleFileName = null;
-        if (single && dir != null && !location.endsWith("/") && location.indexOf('/') >= 0) {
-            singleFileName = dir.getFileName().toString();
-            dir = dir.getParent();
-        }
-        // An occupied destination refuses without OVERWRITE = TRUE, echoing the target as written.
-        if (!overwrite && dir != null && Files.isDirectory(dir) && rowsUnloaded > 0) {
-            final File[] existing = dir.toFile().listFiles();
-            if (existing != null) {
-                for (final File present : existing) {
-                    if (present.isFile()) {
-                        throw new RuntimeException("Files already existing at the unload destination: "
-                            + locationDisplay + ". Use overwrite option to force unloading.");
+        String unloadFileName = null;
+        String unloadRelativeName = null;
+        if (target != null) {
+            // A stage path is a PREFIX of the names the unload writes, not a directory (live-verified). A path
+            // ending in a slash, or none at all, puts the default name `data` after it; any other path IS the
+            // name. SINGLE = TRUE writes that name exactly (no extension, compressed or not), and refuses only
+            // when a file of exactly that name exists — @st/f1 is written beside a staged f1.csv. Several
+            // files are numbered after the name — @st/pfx writes pfx_0_0_0.csv.gz beside @st/pfx/'s
+            // pfx/data_0_0_0.csv.gz — and refuse when ANY staged name starts with it: @st/a refuses over a
+            // staged ab/x, while a bare @st only minds names starting with data.
+            final String written = target.getPrefix();
+            final String namePrefix = written.isEmpty() || written.endsWith("/") ? written + "data" : written;
+            final String relativeName = single ? namePrefix
+                : namePrefix + "_0_0_0." + extension + (gzip ? ".gz" : "");
+            if (!overwrite && rowsUnloaded > 0 && target.getRoot() != null
+                    && (single ? target.occupied(relativeName) : target.anyFileStartingWith(namePrefix))) {
+                throw new RuntimeException("Files already existing at the unload destination: "
+                    + locationDisplay + ". Use overwrite option to force unloading.");
+            }
+            final int slash = relativeName.lastIndexOf('/');
+            // Each segment is escaped the way a stage READ escapes it, or a path holding a '.' or '..'
+            // segment would be written where no listing could reach it — and would climb out of the
+            // stage on the way.
+            dir = target.getRoot() == null ? null
+                : slash < 0 ? target.getRoot()
+                    : StagePathSegments.resolve(target.getRoot(), relativeName.substring(0, slash));
+            if (dir != null && !dir.resolve(relativeName.substring(slash + 1)).normalize()
+                    .startsWith(target.getRoot())) {
+                throw new RuntimeException("Failed to write unload file to " + location
+                    + ": the path leaves the stage");
+            }
+            unloadFileName = relativeName.substring(slash + 1);
+            unloadRelativeName = relativeName;
+        } else {
+            dir = executor.resolveCopyBaseDir(location);
+            // SINGLE = TRUE with a file-shaped target writes exactly that name (the compressed bytes
+            // keep the given name untouched — no .gz is appended), live-verified.
+            if (single && dir != null && !location.endsWith("/") && location.indexOf('/') >= 0) {
+                singleFileName = dir.getFileName().toString();
+                dir = dir.getParent();
+            }
+            // An occupied destination refuses without OVERWRITE = TRUE, echoing the target as written. A
+            // partitioned unload never collides: each run names its files afresh.
+            if (!overwrite && partitionExpr == null && dir != null && Files.isDirectory(dir)
+                    && rowsUnloaded > 0) {
+                final File[] existing = dir.toFile().listFiles();
+                if (existing != null) {
+                    for (final File present : existing) {
+                        if (present.isFile()) {
+                            throw new RuntimeException("Files already existing at the unload destination: "
+                                + locationDisplay + ". Use overwrite option to force unloading.");
+                        }
                     }
                 }
             }
         }
 
-        final String extension = fileExtension != null ? fileExtension : (json ? "json" : "csv");
-        final String defaultName = "data_0_0_0." + extension + (gzip ? ".gz" : "");
+        // SINGLE = TRUE onto a DIRECTORY writes one file named `data`, with no extension at all —
+        // not the format's, and not the compression's: CSV, JSON, uncompressed and GZIP all land as
+        // `data` (live-verified). Only a multi-file unload carries the numbered name and extension.
+        final String defaultName = single
+            ? "data" : "data_0_0_0." + extension + (gzip ? ".gz" : "");
         final List<Row> detailRows = new ArrayList<>();
         int inputBytes = 0;
         int outputBytes = 0;
@@ -2280,30 +2418,50 @@ public final class CopyCommandExecutor {
                 outputBytes = totals[1];
             } else {
                 final String content = json ? formatRowsAsJson(data) : formatRowsAsCsv(data, header);
-                final String fileName = singleFileName != null ? singleFileName : defaultName;
+                final String fileName = unloadFileName != null ? unloadFileName
+                    : singleFileName != null ? singleFileName : defaultName;
                 inputBytes = content.getBytes(StandardCharsets.UTF_8).length;
-                outputBytes = writeUnloadFile(dir, fileName, content, gzip, location, rowsUnloaded);
+                // A stage name that other staged names continue — dir beside dir/g — is written as that
+                // directory's own file (see StagePathSegments).
+                final Path stageFile = unloadRelativeName == null || dir == null ? null
+                    : stageFileToWrite(target.getRoot(), unloadRelativeName, location);
+                outputBytes = stageFile != null
+                    ? writeUnloadFile(stageFile.getParent(), stageFile.getFileName().toString(), content, gzip,
+                        location, rowsUnloaded)
+                    : writeUnloadFile(dir, fileName, content, gzip, location, rowsUnloaded);
                 detailRows.add(new Row(Arrays.asList(fileName, outputBytes, rowsUnloaded)));
             }
         }
 
         // DETAILED_OUTPUT = TRUE swaps the summary for one row per written file, bare names.
         if (detailedOutput) {
-            final List<ResultSetColumn> detailColumns = Arrays.asList(
-                new ResultSetColumn("FILE_NAME", StringType.VARCHAR),
-                new ResultSetColumn("FILE_SIZE", NumericType.INTEGER),
-                new ResultSetColumn("ROW_COUNT", NumericType.INTEGER)
-            );
+            final List<ResultSetColumn> detailColumns = new ArrayList<>();
+            if (partitionExpr != null) {
+                // A partitioned unload's rows say which partition each file holds, ahead of the file.
+                detailColumns.add(new ResultSetColumn("PARTITION_NAME", StatementResultWidths.UNLOAD_FILE_NAME));
+            }
+            detailColumns.add(new ResultSetColumn("FILE_NAME", StatementResultWidths.UNLOAD_FILE_NAME));
+            detailColumns.add(new ResultSetColumn("FILE_SIZE", StatementResultWidths.UNLOAD_FILE_COUNT));
+            detailColumns.add(new ResultSetColumn("ROW_COUNT", StatementResultWidths.UNLOAD_FILE_COUNT));
             return new ResultSet(detailColumns, detailRows);
         }
         final List<ResultSetColumn> resultColumns = Arrays.asList(
-            new ResultSetColumn("rows_unloaded", NumericType.INTEGER),
-            new ResultSetColumn("input_bytes", NumericType.INTEGER),
-            new ResultSetColumn("output_bytes", NumericType.INTEGER)
+            new ResultSetColumn("rows_unloaded", StatementResultWidths.UNLOAD_COUNT),
+            new ResultSetColumn("input_bytes", StatementResultWidths.UNLOAD_COUNT),
+            new ResultSetColumn("output_bytes", StatementResultWidths.UNLOAD_COUNT)
         );
         final List<Row> resultRows = new ArrayList<>();
         resultRows.add(new Row(Arrays.asList(rowsUnloaded, inputBytes, outputBytes)));
         return new ResultSet(resultColumns, resultRows);
+    }
+
+    /** The local path an unload writes a stage-relative name to, its directories made (see StagePathSegments). */
+    private static Path stageFileToWrite(final Path root, final String relativeName, final String location) {
+        try {
+            return StagePathSegments.fileToWrite(root, relativeName);
+        } catch (final IOException e) {
+            throw new RuntimeException("Failed to write unload file to " + location + ": " + e.getMessage(), e);
+        }
     }
 
     /** Write one unload file's content into {@code dir} (created if needed, gzipped when asked); returns bytes written, or 0 if the target has no local dir. */
@@ -2347,7 +2505,7 @@ public final class CopyCommandExecutor {
         final Map<String, List<Row>> groups = new LinkedHashMap<>();
         for (final Row row : data.getRows()) {
             final Object key = partEval.evaluate(exprText, row);
-            final String keyStr = key == null ? "__NULL__" : key.toString();
+            final String keyStr = key == null ? NULL_PARTITION : key.toString();
             List<Row> bucket = groups.get(keyStr);
             if (bucket == null) {
                 bucket = new ArrayList<>();
@@ -2358,7 +2516,9 @@ public final class CopyCommandExecutor {
 
         int inputTotal = 0;
         int outputTotal = 0;
-        final String fileName = "data_0_0_0." + extension + (gzip ? ".gz" : "");
+        // Each unload names its files after itself, so a rerun ADDS files beside the last run's rather than
+        // overwriting them — which is also why a partitioned unload is never refused over existing files.
+        final String fileName = "data_" + UUID.randomUUID() + "_0_0_0." + extension + (gzip ? ".gz" : "");
         for (final Map.Entry<String, List<Row>> entry : groups.entrySet()) {
             final ResultSet part = new ResultSet(data.getColumns(), entry.getValue());
             final String content = json ? formatRowsAsJson(part) : formatRowsAsCsv(part, header);
@@ -2368,13 +2528,17 @@ public final class CopyCommandExecutor {
             final int written = writeUnloadFile(partDir, fileName, content, gzip,
                 location + "/" + subDir, entry.getValue().size());
             outputTotal += written;
-            detailRows.add(new Row(Arrays.asList(subDir + "/" + fileName, written, entry.getValue().size())));
+            detailRows.add(new Row(Arrays.asList((Object) entry.getKey(), subDir + "/" + fileName, written,
+                entry.getValue().size())));
         }
         return new int[] {inputTotal, outputTotal};
     }
 
     /** Make a partition-key value safe to use as a directory name (non-alphanumerics → underscore). */
     private String sanitizePartitionDir(final String key) {
+        if (NULL_PARTITION.equals(key)) {
+            return NULL_PARTITION;   // the NULL partition's own name, which the listing shows as written
+        }
         final StringBuilder sb = new StringBuilder();
         for (int i = 0; i < key.length(); i++) {
             final char c = key.charAt(i);

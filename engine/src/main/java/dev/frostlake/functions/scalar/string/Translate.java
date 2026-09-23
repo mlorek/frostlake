@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 
@@ -31,13 +32,21 @@ public class Translate extends TextArgumentFunction {
         final String str = args.get(0).toString();
         final String from = args.get(1) == null ? "" : args.get(1).toString();
         final String to   = args.get(2) == null ? "" : args.get(2).toString();
+        // Character by character, a supplementary one included: TRANSLATE('a😀b', 'ab', '😀') is 😀😀.
+        final int[] fromPoints = CodePointText.codePoints(from);
+        final int[] toPoints = CodePointText.codePoints(to);
         final StringBuilder result = new StringBuilder();
-        for (final char c : str.toCharArray()) {
-            final int idx = from.indexOf(c);
+        for (final int point : CodePointText.codePoints(str)) {
+            int idx = -1;
+            for (int i = 0; i < fromPoints.length && idx < 0; i++) {
+                if (fromPoints[i] == point) {
+                    idx = i;
+                }
+            }
             if (idx < 0) {
-                result.append(c);
-            } else if (idx < to.length()) {
-                result.append(to.charAt(idx));
+                result.appendCodePoint(point);
+            } else if (idx < toPoints.length) {
+                result.appendCodePoint(toPoints[idx]);
             }
         }
         return result.toString();

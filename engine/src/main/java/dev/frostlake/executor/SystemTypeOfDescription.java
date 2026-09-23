@@ -19,6 +19,8 @@ package dev.frostlake.executor;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.IntervalDayTimeType;
+import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.values.ValueRange;
@@ -46,7 +48,8 @@ import dev.frostlake.values.ValueRange;
  * interval those statistics propagate through it ({@link ValueRange}): {@code c + 1} widens the
  * interval by one, {@code SUM(c)} multiplies it by a trillion, {@code MAX(c)} narrows it to the greatest
  * value, {@code COUNT(c)} runs from zero to the row count. Where no interval can be known — a
- * ROUND, a LENGTH, a ROW_NUMBER, a cast from text — the tag is the declared width's own.
+ * ROUND, a LENGTH, a ROW_NUMBER, a cast of a text column — the tag is the declared width's own. A conversion
+ * of a CONSTANT folds to its value first ({@code '5'::NUMBER} is [SB1]).
  *
  * <p>★ SBn IS THE SMALLEST SIGNED-INTEGER WIDTH THAT HOLDS THE UNSCALED VALUE — the rule itself lives
  * in {@link SignedStorageWidth}, shared with the out-of-representable-range refusal, which reads the same
@@ -119,6 +122,16 @@ public final class SystemTypeOfDescription {
                 return digits <= 7 ? "SB8" : "SB16";
             }
             return digits <= 4 ? "SB4" : "SB8";
+        }
+        if (declared instanceof IntervalDayTimeType) {
+            // The declared leading digits carried to the nanosecond: SB16 for nine digits of days,
+            // SB8 for a SECOND(9,9) or a DAY(5) (live-verified).
+            return ((IntervalDayTimeType) declared).storageTag();
+        }
+        if (declared instanceof IntervalYearMonthType) {
+            // A count of months: SB8 for a YEAR(9) or YEAR(9) TO MONTH, SB4 for a MONTH(9), SB2 for
+            // two digits (live-verified).
+            return ((IntervalYearMonthType) declared).storageTag();
         }
         if (declared instanceof UuidType) {
             // A UUID is its 128 bits (live-verified).

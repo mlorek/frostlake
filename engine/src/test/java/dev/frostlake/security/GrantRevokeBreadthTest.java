@@ -54,7 +54,6 @@ public class GrantRevokeBreadthTest extends BaseDatabaseTest {
 
     @Test
     public void allTablesInSchemaGrant() {
-        // The bulk REVOKE forms are not modelled (grammar has GRANT-only ALL/FUTURE alternatives).
         engine.execute("GRANT SELECT ON ALL TABLES IN SCHEMA test_schema TO ROLE breadth_role");
         final ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE breadth_role");
         assertNotNull(grants);

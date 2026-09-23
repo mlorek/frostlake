@@ -27,9 +27,10 @@ public class SqlRequest {
     // The client's autocommit mode, or null when the request declares none. The session's AUTOCOMMIT
     // follows a declared mode whenever it changes — see SessionContext.followClientAutoCommit.
     private Boolean autoCommit;
-    // When true, a sessionId the server holds no session under is refused (HTTP 404, success:false, the
-    // statement not run) instead of starting a fresh session under it.
-    private boolean requireSession;
+    // Whether a sessionId the server holds no session under is refused (HTTP 404, success:false, the
+    // statement not run), or null when the request does not say. Only an explicit false starts a fresh
+    // session under the id instead.
+    private Boolean requireSession;
     // How many statements this request declares, or null when it declares none. The account's driver
     // sends the count with the statement; here it is optional, and the session's MULTI_STATEMENT_COUNT
     // answers for a request that omits it. Zero means any number.
@@ -87,11 +88,27 @@ public class SqlRequest {
         this.multiStatementCount = multiStatementCount;
     }
 
-    public boolean isRequireSession() {
+    /**
+     * Whether this request asks to be refused when its sessionId names no live session, or null when it
+     * does not say. A null is left out of the JSON, so a client that never sets it sends no field at all.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Boolean getRequireSession() {
         return requireSession;
     }
 
-    public void setRequireSession(final boolean requireSession) {
+    public void setRequireSession(final Boolean requireSession) {
         this.requireSession = requireSession;
+    }
+
+    /**
+     * Whether a sessionId naming no live session is refused rather than answered with a fresh session
+     * under it. A request that does not say is refused: a fresh session holds none of the database,
+     * schema, variables, settings or transaction the caller set up, so running the statement there
+     * would put it somewhere the caller never chose. Only an explicit {@code requireSession: false}
+     * asks for the fresh session.
+     */
+    public boolean refusesUnknownSession() {
+        return requireSession == null || requireSession.booleanValue();
     }
 }

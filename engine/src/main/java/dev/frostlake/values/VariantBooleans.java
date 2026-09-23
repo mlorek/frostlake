@@ -26,7 +26,8 @@ import java.util.Locale;
  * NULL, and a JSON string is read the way TO_BOOLEAN reads text ({@code 'yes'}, {@code 'F'}, {@code '1'},
  * trimmed, any case). Every other value fails the row with {@code Failed to cast variant value <text> to
  * BOOLEAN}, a number included — though a SQL NUMBER converts, a variant one does not — and so does a string
- * that is no boolean spelling, quoted as the variant holds it (all live-verified).
+ * that is no boolean spelling, quoted as the variant holds it; a DOUBLE is spelled in the fifteen-decimal form
+ * a client reads, {@code 1.500000000000000e+00} (all live-verified).
  */
 public final class VariantBooleans {
 
@@ -56,6 +57,7 @@ public final class VariantBooleans {
                 return Boolean.FALSE;
             }
         }
-        throw new RuntimeException("Failed to cast variant value " + value.text() + " to BOOLEAN");
+        throw new RuntimeException("Failed to cast variant value " + VariantJsonText.clientTextOf(value)
+            + " to BOOLEAN");
     }
 }

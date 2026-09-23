@@ -66,6 +66,10 @@ public final class ApproximateValues {
             try {
                 return Double.valueOf(Double.parseDouble(text));
             } catch (final NumberFormatException notNumeric) {
+                final Double hex = HexDoubleText.withoutExponent(text, true);
+                if (hex != null) {
+                    return hex;
+                }
                 throw new RuntimeException("Numeric value '" + value + "' is not recognized");
             }
         }

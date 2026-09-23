@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.UuidTextNode;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
@@ -31,6 +32,8 @@ public class AsVarchar extends StructuredArgumentFunction {
         if (args.get(0) == null) return null;
         final Object v = args.get(0);
         final JsonNode node = JsonTypeHelper.parse(v);
+        // A UUID is no VARCHAR to extract: live, AS_VARCHAR(TO_VARIANT(u)) is NULL.
+        if (UuidTextNode.holds(node)) return null;
         if (node != null) {
             if (node.isTextual()) return node.asText();
             if (node.isValueNode()) return node.asText();

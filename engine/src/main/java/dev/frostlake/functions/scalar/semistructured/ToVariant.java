@@ -18,9 +18,11 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.VariantValue;
 
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -40,7 +42,10 @@ public class ToVariant extends BuiltInFunction {
         }
         // Temporal and binary values keep their NATIVE type inside the variant — the AS_*/IS_*
         // extractors and TYPEOF depend on it, exactly as a ::VARIANT cast preserves them.
-        if (value instanceof java.time.LocalDate || value instanceof java.time.LocalTime
+        if (value instanceof LocalDate) {
+            return SharedFunctionHelpers.variantDate((LocalDate) value);
+        }
+        if (value instanceof java.time.LocalTime
                 || value instanceof java.time.LocalDateTime
                 || value instanceof java.time.OffsetDateTime
                 || value instanceof java.time.ZonedDateTime

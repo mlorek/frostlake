@@ -17,7 +17,7 @@
 package dev.frostlake.functions.scalar;
 
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
@@ -31,7 +31,7 @@ import java.util.List;
 public class GroupingFn extends BuiltInFunction {
 
     public GroupingFn() {
-        super("GROUPING", NumericType.INTEGER);
+        super("GROUPING", IntegerResultWidths.COUNTER);
     }
 
     @Override

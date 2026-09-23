@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.procedural;
 
+import org.antlr.v4.runtime.ParserRuleContext;
+
 public abstract class BaseExpression {
 
     /** 1-based line the expression starts on in the script's source, or -1 when unknown. */
@@ -23,6 +25,20 @@ public abstract class BaseExpression {
 
     /** 0-based column the expression starts at, or -1 when unknown. */
     private int sourcePosition = -1;
+
+    /**
+     * The parse tree of a block's own expression — a RETURN's value, a condition, a value given to a variable —
+     * whose argument types are judged when it is reached, before it is evaluated; null for any other expression.
+     */
+    private ParserRuleContext judgedFrom;
+
+    public ParserRuleContext getJudgedFrom() {
+        return judgedFrom;
+    }
+
+    public void setJudgedFrom(final ParserRuleContext judgedFrom) {
+        this.judgedFrom = judgedFrom;
+    }
 
     public int getSourceLine() {
         return sourceLine;

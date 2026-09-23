@@ -36,16 +36,22 @@ import java.util.List;
  * column / an expression / a non-integral literal are all "needs to be constant". Those checks live in
  * the expression layer, where the STATIC types are known.
  *
- * <p>A dimension of {@code -1} is the one negative the account compiles: the statement is accepted,
- * over an empty table it answers no rows, and each row it does read fails with the account's internal
- * error, the incident number that sentence carries on the account being left out here.
+ * <p>A negative dimension compiles, read in 32 bits, and each row then sizes its result as four bytes an
+ * element in 32 bits too: a negative size fails with the account's internal error (the incident number that
+ * sentence carries on the account being left out here), a size past 16777216 bytes is too long to return,
+ * and any other reads the empty vector — so -1 and -1073741825 fail, -1073741824 and -2147483647 read
+ * {@code []}, and -1879048192 is "Cannot return value of length 1073741824 as it exceeds the maximum length
+ * of 16777216". Over an empty table a dimension of {@code -1} answers no rows.
  */
 public class VectorTrunc extends BuiltInFunction {
 
-    /** The negative dimension that compiles and then fails on every row it is asked of. */
-    public static final int ROW_FAILING_DIMENSION = -1;
+    /** The bytes an element takes when the account sizes a truncated vector. */
+    private static final int BYTES_PER_ELEMENT = 4;
 
-    /** How each row fails under {@link #ROW_FAILING_DIMENSION}. */
+    /** The longest value a row may return. */
+    private static final int MAX_VALUE_LENGTH = 16_777_216;
+
+    /** How each row fails under a negative dimension whose size is negative. */
     private static final String ROW_FAILURE =
         "SQL execution internal error:\nProcessing aborted due to error 300010:2086363262.";
 
@@ -60,10 +66,18 @@ public class VectorTrunc extends BuiltInFunction {
             return null;
         }
         final int requested = ((Number) args.get(1)).intValue();
-        if (requested == ROW_FAILING_DIMENSION) {
-            throw new RuntimeException(ROW_FAILURE);
+        if (requested < 0) {
+            final int length = requested * BYTES_PER_ELEMENT;
+            if (length < 0) {
+                throw new RuntimeException(ROW_FAILURE);
+            }
+            if (length > MAX_VALUE_LENGTH) {
+                throw new RuntimeException("Cannot return value of length " + length
+                    + " as it exceeds the maximum length of " + MAX_VALUE_LENGTH);
+            }
+            return VectorValue.of(source.getElementType(), new double[0]);
         }
-        if (requested < 0 || requested > source.dimension()) {
+        if (requested > source.dimension()) {
             throw new RuntimeException("Requested truncation dimension " + requested + " for " + getName()
                 + " should be less than or equal to the dimension of the provided vector ("
                 + source.dimension() + ").");

@@ -28,6 +28,7 @@ import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -61,11 +62,32 @@ public class QueryHistoryFunction extends TableFunction {
         "QUERY_RETRY_CAUSE", "FAULT_HANDLING_TIME", "BIND_VALUES", "AGENT_TYPE"
     };
 
+    /** SESSION_ID's declared type on the account. */
+    private static final NumericType SESSION_ID_TYPE = new NumericType("NUMBER", 38, 0);
+
     private final QueryHistoryTracker tracker;
+    private final QueryHistoryScope scope;
+    private final QueryHistoryScopeDefaults defaults;
 
     public QueryHistoryFunction(final QueryHistoryTracker tracker) {
-        super("QUERY_HISTORY");
+        this(tracker, QueryHistoryScope.ALL, null);
+    }
+
+    /**
+     * One of the query-history listings: the unscoped one, or a scoped variant filtering by one session, user
+     * or warehouse — the same columns and the same order, fewer rows.
+     *
+     * @param tracker  the statements recorded so far
+     * @param scope    what the listing is limited to
+     * @param defaults the caller's session, user and warehouse, read when the call names none; may be null
+     *                 for the unscoped listing
+     */
+    public QueryHistoryFunction(final QueryHistoryTracker tracker, final QueryHistoryScope scope,
+                                final QueryHistoryScopeDefaults defaults) {
+        super(scope.functionName());
         this.tracker = tracker;
+        this.scope = scope;
+        this.defaults = defaults;
     }
 
     @Override
@@ -75,11 +97,17 @@ public class QueryHistoryFunction extends TableFunction {
 
     @Override
     public ResultSet execute(final List<Object> positionalArgs) {
-        return execute(Collections.<String, Object>emptyMap());
+        // A scoped listing's leading positional argument is the value it filters by.
+        final Map<String, Object> named = new HashMap<String, Object>();
+        if (scope.parameter() != null && positionalArgs != null && !positionalArgs.isEmpty()) {
+            named.put(scope.parameter(), positionalArgs.get(0));
+        }
+        return execute(named);
     }
 
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
+        final Object filter = scope.parameter() == null ? null : scopeValue(namedArgs.get(scope.parameter()));
         int limit = 100;
         final Object resultLimit = namedArgs.get("RESULT_LIMIT");
         if (resultLimit instanceof Number) {
@@ -96,6 +124,9 @@ public class QueryHistoryFunction extends TableFunction {
             if (rows.size() >= limit) {
                 break;
             }
+            if (scope.parameter() != null && !inScope(q, filter)) {
+                continue;
+            }
             final List<Object> values = new ArrayList<Object>(COLUMN_NAMES.length);
             for (final String name : COLUMN_NAMES) {
                 values.add(columnValue(name, q));
@@ -103,6 +134,54 @@ public class QueryHistoryFunction extends TableFunction {
             rows.add(new Row(values));
         }
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * The value a scoped listing filters by: the one the call names, or the caller's own when it names none.
+     * A session is compared by its number, a user or warehouse by its name.
+     */
+    private Object scopeValue(final Object given) {
+        if (given != null) {
+            return given;
+        }
+        if (defaults == null) {
+            return null;
+        }
+        switch (scope) {
+            case SESSION: return defaults.currentSession();
+            case USER: return defaults.currentUser();
+            case WAREHOUSE: return defaults.currentWarehouse();
+            default: return null;
+        }
+    }
+
+    /** Whether one recorded statement falls inside the scope's value. */
+    private boolean inScope(final QueryHistory q, final Object filter) {
+        if (filter == null) {
+            return false;
+        }
+        switch (scope) {
+            case SESSION:
+                return q.getSessionId() != null && sameNumber(q.getSessionId(), filter);
+            case USER:
+                return q.getUser() != null && q.getUser().equalsIgnoreCase(String.valueOf(filter));
+            case WAREHOUSE:
+                return q.getWarehouse() != null && q.getWarehouse().equalsIgnoreCase(String.valueOf(filter));
+            default:
+                return true;
+        }
+    }
+
+    /** A session number against whatever the call passed for it — a number, or its text. */
+    private static boolean sameNumber(final Long session, final Object filter) {
+        if (filter instanceof Number) {
+            return session.longValue() == ((Number) filter).longValue();
+        }
+        try {
+            return session.longValue() == Long.parseLong(String.valueOf(filter).trim());
+        } catch (final NumberFormatException notANumber) {
+            return false;
+        }
     }
 
     private static DataType columnType(final String name) {
@@ -114,6 +193,9 @@ public class QueryHistoryFunction extends TableFunction {
             case "EXECUTION_TIME":
             case "ROWS_INSERTED":
                 return NumericType.INTEGER;
+            case "SESSION_ID":
+                // The session's number, as CURRENT_SESSION() answers it but typed as the account types it.
+                return SESSION_ID_TYPE;
             default:
                 return StringType.VARCHAR;
         }
@@ -126,6 +208,7 @@ public class QueryHistoryFunction extends TableFunction {
             case "DATABASE_NAME": return q.getDatabase();
             case "SCHEMA_NAME": return q.getSchema();
             case "QUERY_TYPE": return q.getQueryType();
+            case "SESSION_ID": return q.getSessionId();
             case "USER_NAME": return q.getUser();
             case "ROLE_NAME": return q.getRole();
             case "WAREHOUSE_NAME": return q.getWarehouse();

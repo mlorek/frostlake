@@ -113,11 +113,12 @@ public class DatabaseConnection implements Connection {
     @Override
     public void setAutoCommit(final boolean autoCommit) throws SQLException {
         checkClosed();
-        this.autoCommit = autoCommit;
         // ALTER SESSION drives the engine's real per-session autocommit flag; a plain SET would only
         // create a session VARIABLE named "autocommit" and leave every statement auto-committing.
-        // Must propagate failures — a silently ignored toggle breaks transaction semantics.
-        httpClient.execute("ALTER SESSION SET AUTOCOMMIT = " + (autoCommit ? "TRUE" : "FALSE"));
+        // Must propagate failures — a silently ignored toggle breaks transaction semantics — and the
+        // connection takes the mode on only once the session has.
+        httpClient.setAutoCommit(autoCommit);
+        this.autoCommit = autoCommit;
     }
 
     @Override
@@ -133,7 +134,7 @@ public class DatabaseConnection implements Connection {
             throw new SQLException("Cannot commit when autocommit is enabled");
         }
         // Direct call, not the lenient execute(): a failed COMMIT must surface to the caller.
-        httpClient.execute("COMMIT");
+        httpClient.endTransaction(true);
     }
 
     @Override
@@ -142,8 +143,9 @@ public class DatabaseConnection implements Connection {
         if (autoCommit) {
             throw new SQLException("Cannot rollback when autocommit is enabled");
         }
-        // Direct call, not the lenient execute(): a failed ROLLBACK must surface to the caller.
-        httpClient.execute("ROLLBACK");
+        // Direct call, not the lenient execute(): a failed ROLLBACK must surface to the caller. A transaction
+        // that went with a lost session is already rolled back, so that one succeeds.
+        httpClient.endTransaction(false);
     }
 
     @Override
@@ -334,10 +336,15 @@ public class DatabaseConnection implements Connection {
 
     @Override
     public boolean isValid(final int timeout) throws SQLException {
+        if (timeout < 0) {
+            throw new SQLException("The timeout is negative: " + timeout);
+        }
         if (closed) {
             return false;
         }
-        return httpClient.isHealthy();
+        // The server's health, not the session's: a session the server no longer holds is replaced by the
+        // next statement when it held nothing, and reported by it when it did.
+        return httpClient.isHealthy(timeout);
     }
 
     int getMultiStatementCount() {
@@ -380,7 +387,9 @@ public class DatabaseConnection implements Connection {
     @Override
     public void setSchema(final String schema) throws SQLException {
         checkClosed();
-        execute("USE SCHEMA " + schema);
+        if (execute("USE SCHEMA " + schema)) {
+            this.schema = schema;
+        }
     }
 
     @Override
@@ -425,12 +434,20 @@ public class DatabaseConnection implements Connection {
         }
     }
 
-    private void execute(final String sql) throws SQLException {
+    /**
+     * Runs a statement that sets session state, ignoring a refusal, and answers whether it ran. A session
+     * lost with state on it is still reported: the state asked for could not be set.
+     */
+    private boolean execute(final String sql) throws SQLException {
         try {
             httpClient.execute(sql);
+            return true;
+        } catch (final FrostlakeSessionLostException lost) {
+            throw lost;
         } catch (final SQLException e) {
             // Ignore errors for setting session state
             logger.debug("Error executing {}: {}", sql, e.getMessage());
+            return false;
         }
     }
 

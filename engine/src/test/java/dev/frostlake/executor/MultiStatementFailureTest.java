@@ -61,35 +61,35 @@ public class MultiStatementFailureTest extends BaseDatabaseTest {
      */
     @Test
     public void aStatementThatFailedInsideAScriptIsNamedInFull() {
-        assertEquals("JavaScript execution error: Uncaught Execution of multiple statements failed on"
+        assertEquals(hinted("JavaScript execution error: Uncaught Execution of multiple statements failed on"
             + " statement \"SELECT * FROM nowhere_xyz\" (at line 1, position 52).\n"
             + "SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized."
             + " in SYSTEM$MULTISTMT at '    throw `Execution of multiple statements failed on statement"
             + " {0} (at line {1}, position {2}).`.replace('{1}', LINES[i])' position 4\n"
-            + "stackstrace: \nSYSTEM$MULTISTMT line: 10",
+            + "stackstrace: \nSYSTEM$MULTISTMT line: 10"),
             messageOf("CREATE TABLE p1 (n INT); INSERT INTO p1 VALUES (1); SELECT * FROM nowhere_xyz"));
     }
 
     /** A statement sent on its own carries its own error and nothing around it. */
     @Test
     public void aStatementSentOnItsOwnAnswersUnadorned() {
-        assertEquals("SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized."),
             messageOf("SELECT * FROM nowhere_xyz"));
     }
 
     /** The line is the statement's own, and the position is its column within that line. */
     @Test
     public void thePositionIsTheStatementsColumnWithinItsOwnLine() {
-        assertEquals(named("SELECT * FROM nowhere_xyz", 3, 2,
-                "SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized."),
+        assertEquals(hinted(named("SELECT * FROM nowhere_xyz", 3, 2,
+                "SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized.")),
             messageOf("SELECT 1;\nSELECT 2;\n  SELECT * FROM nowhere_xyz"));
     }
 
     /** The first statement of a script sits at column zero. */
     @Test
     public void theFirstStatementOfAScriptSitsAtColumnZero() {
-        assertEquals(named("SELECT * FROM nowhere_xyz", 1, 0,
-                "SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized."),
+        assertEquals(hinted(named("SELECT * FROM nowhere_xyz", 1, 0,
+                "SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized.")),
             messageOf("SELECT * FROM nowhere_xyz; SELECT 1"));
     }
 
@@ -113,8 +113,8 @@ public class MultiStatementFailureTest extends BaseDatabaseTest {
     /** A trailing separator after the failing statement is not part of the statement it names. */
     @Test
     public void theNamedStatementExcludesItsSeparator() {
-        assertEquals(named("SELECT * FROM nowhere_xyz", 1, 10,
-                "SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized."),
+        assertEquals(hinted(named("SELECT * FROM nowhere_xyz", 1, 10,
+                "SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized.")),
             messageOf("SELECT 1; SELECT * FROM nowhere_xyz;"));
     }
 }

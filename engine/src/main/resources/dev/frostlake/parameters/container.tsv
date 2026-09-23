@@ -1,0 +1,54 @@
+# The parameters SHOW PARAMETERS IN DATABASE | SCHEMA lists, as a real account lists them: name, default,
+# type, scope (B = database and schema, D = database only, S = schema only) and description, tab-separated.
+ALLOW_ROW_TIMESTAMP	false	BOOLEAN	B	Support row timestamp on table. If set on schema level and higher, the callbacks below will not perform table specific validations and not affect existing tables.  New tables will be created with row timestamp enabled.
+ALLOW_V3_EXPRESSION_DEFAULTS	false	BOOLEAN	B	When true, allows non-constant expression default values on V3 Iceberg columns. Expression defaults are evaluated by Snowflake at write time only. External engines see no default and must supply values or get NULL.
+BASE_LOCATION_PREFIX		STRING	B	The base location prefix for managed or converted Iceberg table data relative to the Iceberg tables' external volume active storage location
+CATALOG		STRING	B	Name of the catalog integration to use for iceberg tables
+CATALOG_SYNC		STRING	B	Name of the catalog integration to sync this table
+CHANGE_TRACKING_DEFAULT	false	BOOLEAN	B	When true, CREATE TABLE / CTAS that omit the CHANGE_TRACKING clause create the table with change tracking enabled. An explicit CHANGE_TRACKING clause in the DDL still wins.
+DATA_METRIC_SCHEDULE	60 MINUTES	STRING	B	Specify the schedule that data metric functions associated to the table must be executed in order to be used for evaluation.
+DATA_RETENTION_TIME_IN_DAYS	1	NUMBER	B	number of days to retain the old version of deleted/updated data
+DEFAULT_DDL_COLLATION		STRING	B	Collation that is used for all the new columns created by the DDL statements (if not specified)
+DEFAULT_METADATA_WRITE_FORMAT	SNOWFLAKE	STRING	B	Default metadata write format for tables created in this database or schema. Valid values: SNOWFLAKE, ICEBERG. Note: catalog-linked databases (CLDs) always promote CREATE TABLE DDLs to Iceberg implicitly, regardless of this parameter's stored value. The parameter cannot be modified on a CLD.
+DEFAULT_NOTEBOOK_COMPUTE_POOL_CPU	SYSTEM_COMPUTE_POOL_CPU	STRING	B	The default CPU compute pool used to run Notebooks.
+DEFAULT_NOTEBOOK_COMPUTE_POOL_GPU	SYSTEM_COMPUTE_POOL_GPU	STRING	B	The default GPU compute pool used to run Notebooks.
+DEFAULT_PYTHON_ARTIFACT_REPOSITORY		STRING	B	Default Python artifact repository for account workloads
+DEFAULT_STREAMLIT_NOTEBOOK_WAREHOUSE	SYSTEM$STREAMLIT_NOTEBOOK_WH	STRING	B	The warehouse to run streamlits/notebooks if the WAREHOUSE property is not explicitly specified on the streamlit/notebook objects
+ENABLE_CONSOLE_OUTPUT	false	BOOLEAN	B	Enable stdout/stderr fast path logging for anonyous stored procs. This is a public parameter (similar to LOG_LEVEL).
+ENABLE_DATA_COMPACTION	true	BOOLEAN	B	User-visible parameter that controls table storage optimization for managed Iceberg tables.
+ENABLE_HORIZON_IRC_UNMANAGED_CREDENTIAL_VENDING	false	BOOLEAN	D	If true, enables Horizon IRC access with credential vending for unmanaged Iceberg tables in this database. When false (default), the tables are not accessible via Horizon IRC with credential vending.
+ENABLE_ICEBERG_MANAGED_TABLE_REPLICATION	false	BOOLEAN	D	Whether to enable iceberg managed tables for replication in Failover group.
+ENABLE_ICEBERG_MERGE_ON_READ	true	BOOLEAN	B	Deprecated. Use ICEBERG_MERGE_ON_READ_BEHAVIOR to control merge-on-read on Iceberg tables.
+ENABLE_SYSTEM_SET_APP_VERSION_IN_CURRENT_CALL_CONTEXT	false	BOOLEAN	D	If enabled for an app package, allow usage of the system function SYSTEM$SET_APP_VERSION_IN_CURRENT_CALL_CONTEXT in its app code
+EVENT_TABLE	snowflake.telemetry.events	STRING	D	Event destination for the given target.
+EXTERNAL_VOLUME		STRING	B	Name of an external volume that will be used for persisted Iceberg metadata and data files.
+ICEBERG_DEFAULT_DDL_COLLATION		STRING	B	Collation that is used for all new columns created by DDL statements on Snowflake-managed Iceberg tables (if not specified).
+ICEBERG_MERGE_ON_READ_BEHAVIOR	auto	STRING	B	Controls merge-on-read behavior on Iceberg tables. Valid values are auto, enabled, and disabled. For 'auto' setting, MoR is enabled by default EXCEPT for v2 managed tables.
+ICEBERG_VERSION_DEFAULT	2	NUMBER	B	Default Iceberg version for new managed Iceberg table creation. Overridden by table-level ICEBERG_VERSION property if specified. Note: the default value must be synced with the default value of ICEBERG_VERSION
+LOG_EVENT_LEVEL	OFF	STRING	B	LOG_EVENT_LEVEL to use when filtering log events
+LOG_LEVEL	OFF	STRING	B	LOG_LEVEL to use when filtering events
+MAX_DATA_EXTENSION_TIME_IN_DAYS	14	NUMBER	B	Maximum number of days to extend data retention beyond the retention period to prevent a stream becoming stale.
+METRIC_LEVEL	NONE	STRING	B	METRIC_LEVEL value to control whether to emit metrics to Event Table
+OAUTH_AUTHORIZATION_SERVER		STRING	B	Name of the External OAuth security integration whose issuer authenticates bearer tokens for API resources in this scope. When unset, Snowflake OAuth is used.
+OAUTH_SCOPES_SUPPORTED		STRING	B	Comma-separated list of OAuth scopes clients should request when authenticating to API resources in this scope. When unset, Snowflake OAuth defaults to session:role:all.
+OPTIMIZE_DATA_LAYOUT	true	BOOLEAN	B	Enable writing Iceberg data files with random subpaths in the data directory for an Iceberg table
+PIPE_EXECUTION_PAUSED	false	BOOLEAN	S	Pause processing of files for a pipe
+PURGE_ON_DROP_TABLE	false	BOOLEAN	B	When set to TRUE on a table, schema, or database in a catalog-linked database, DROP TABLE automatically purges the table's data and metadata files from the external Iceberg catalog.
+QUOTED_IDENTIFIERS_IGNORE_CASE	false	BOOLEAN	B	If true, the case of quoted identifiers is ignored
+REPLACE_INVALID_CHARACTERS	false	BOOLEAN	B	Replace invalid UTF-8 characters found in Iceberg table external data files with the Unicode replacement character
+REPLICABLE_WITH_FAILOVER_GROUPS	UNSET	STRING	B	Indicates whether the current object is replicable with a failover group. Default behavior is UNSET. Accepted values are 'YES' and 'NO'(case-insensitive).
+ROW_TIMESTAMP_DEFAULT	false	BOOLEAN	B	When set to true, new tables are created with row timestamp enabled.
+SERVERLESS_TASK_MAX_STATEMENT_SIZE	X2Large	STRING	B	The maximum warehouse size to use for a serverless Task
+SERVERLESS_TASK_MIN_STATEMENT_SIZE	XSMALL	STRING	B	The minimum warehouse size to use for a serverless Task
+SERVICE_CALLER_TOKEN_VALIDITY_SECS	120	NUMBER	B	Maximum validity period in seconds for service caller tokens. Can be set at the service, schema, database, or account level.
+STAGE_UNDROP_RETENTION_TIME_IN_DAYS	0	NUMBER	B	Number of days a dropped stage can be restored with UNDROP STAGE
+STORAGE_SERIALIZATION_POLICY	OPTIMIZED	STRING	B	Storage serialization policy used for managed Iceberg table. This include encodings and compressions
+SUSPEND_ALERT_AFTER_NUM_FAILURES	0	NUMBER	B	Customer-configurable threshold for the number of consecutive failures before auto-suspending an alert. Can be set at ACCOUNT, DATABASE, or SCHEMA level.
+SUSPEND_TASK_AFTER_NUM_FAILURES	10	NUMBER	B	How many times a task must fail in a row before it is automatically suspended. 0 disables auto-suspending.
+TARGET_FILE_SIZE	AUTO	STRING	B	Target file size for iceberg tables.
+TASK_AUTO_RETRY_ATTEMPTS	0	NUMBER	B	Maximum Automatic Retries Allowed For A User Task
+TRACE_LEVEL	OFF	STRING	B	Trace level value to use when generating/filtering trace events
+USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE	Medium	STRING	B	The initial size of warehouse to use for managed warehouses in the absence of history
+USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS	30	NUMBER	B	Minimum amount of time between Triggered Task executions in seconds
+USER_TASK_TIMEOUT_MS	3600000	NUMBER	B	User task execution timeout in milliseconds
+VENDED_CREDENTIAL_STORAGE_REGION		STRING	B	GCS region for credential-vended Iceberg tables; bypasses getBucketLocation()

@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Function;
@@ -100,10 +101,11 @@ final class ScriptingUdfBodyValidator {
         if (body instanceof FrostlakeParser.FunctionNameContext) {
             final FrostlakeParser.FunctionNameContext name = (FrostlakeParser.FunctionNameContext) body;
             if (name.identifier() != null && !name.identifier().isEmpty()) {
-                final String called = text(name.identifier().get(name.identifier().size() - 1));
+                // The canonical name, so a quoted callee is found by its own spelling.
+                final String called = SqlIdentifiers.canonical(name.identifier().get(name.identifier().size() - 1));
                 if (hasScriptingBody(name, called)) {
                     throw new RuntimeException("Compilation of SQL UDF failed: SQL compilation error: "
-                        + "a SQL UDF body cannot call " + called.toUpperCase()
+                        + "a SQL UDF body cannot call " + SqlIdentifiers.spellCanonical(called)
                         + ", whose own body is a Snowflake Scripting block.");
                 }
             }
@@ -184,8 +186,8 @@ final class ScriptingUdfBodyValidator {
         if (name.identifier() == null || name.identifier().isEmpty()) {
             return;   // IDENTIFIER(expr) — the name is only known at run time
         }
-        final String called = text(name.identifier().get(name.identifier().size() - 1));
-        if (routineName != null && name.identifier().size() == 1 && called.equalsIgnoreCase(routineName)) {
+        final String called = SqlIdentifiers.canonical(name.identifier().get(name.identifier().size() - 1));
+        if (routineName != null && name.identifier().size() == 1 && called.equals(routineName)) {
             throw unsupportedExpression(callSite(name));
         }
         if (isUserDefinedFunction(name, called)) {
@@ -209,8 +211,10 @@ final class ScriptingUdfBodyValidator {
             return null;
         }
         final int parts = name.identifier().size();
-        final String databaseName = parts == 3 ? text(name.identifier().get(0)) : catalog.getCurrentDatabase();
-        final String schemaName = parts >= 2 ? text(name.identifier().get(parts - 2)) : catalog.getCurrentSchema();
+        final String databaseName = parts == 3
+            ? SqlIdentifiers.canonical(name.identifier().get(0)) : catalog.getCurrentDatabase();
+        final String schemaName = parts >= 2
+            ? SqlIdentifiers.canonical(name.identifier().get(parts - 2)) : catalog.getCurrentSchema();
         if (schemaName == null) {
             return null;
         }

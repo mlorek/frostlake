@@ -16,12 +16,16 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.metastore.Taggable;
+import dev.frostlake.storage.SnapshotSequence;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -29,7 +33,7 @@ import java.util.Objects;
  * Represents a Snowflake Stream - Change Data Capture (CDC) mechanism
  * Streams record DML changes (INSERT, UPDATE, DELETE) made to a table
  */
-public class Stream {
+public class Stream implements Taggable {
 
     private final String name;
     private final String sourceTableName;
@@ -41,6 +45,16 @@ public class Stream {
     private long currentOffset;
     private boolean stale;
     private String comment;
+    /**
+     * The rows a SHOW_INITIAL_ROWS stream reports until it is first consumed — the source's rows at the
+     * stream's starting point, as inserts — or null once consumed. While they are pending no change shows;
+     * consuming them leaves the offset at the starting point, so the changes made since then show next.
+     */
+    private List<StreamRecord> initialRecords;
+    /** The same moment in the order table snapshots are taken in, which tells apart moments one millisecond holds. */
+    private long offsetSequence = SnapshotSequence.mark();
+    /** A dynamic-table stream's image of the table's rows at the last refresh it saw. */
+    private List<List<Object>> refreshImage;
 
     public Stream(final String name, final String sourceTableName, final StreamType streamType) {
         this(name, sourceTableName, StreamSourceType.TABLE, streamType, false);
@@ -79,6 +93,43 @@ public class Stream {
         records.add(record);
     }
 
+    /**
+     * Removes a dropped column's slot from the change records, consumed or not, so a record captured
+     * before a DROP COLUMN reads through the table's current columns as the account's streams do. Offsets
+     * index the record list, which keeps its length and order.
+     *
+     * @param index       the dropped column's position before the drop
+     * @param capturedFrom the table the records must have been captured from (upper-case bare name), or
+     *                     null for every record — a table stream's records all come from its one table
+     */
+    public void dropColumnSlot(final int index, final String capturedFrom) {
+        for (int i = 0; i < records.size(); i++) {
+            final StreamRecord record = records.get(i);
+            if (capturedFrom == null || capturedFrom.equalsIgnoreCase(record.getSourceTable())) {
+                records.set(i, record.withoutSlot(index));
+            }
+        }
+    }
+
+    /**
+     * Appends a newly added column's value to the change records, consumed or not, when a record is
+     * exactly one slot short — every record captured before the ADD COLUMN.
+     *
+     * @param width        the table's column count after the add
+     * @param value        the value the new column takes in rows that already exist
+     * @param capturedFrom the table the records must have been captured from (upper-case bare name), or
+     *                     null for every record
+     */
+    public void appendColumnSlot(final int width, final Object value, final String capturedFrom) {
+        for (int i = 0; i < records.size(); i++) {
+            final StreamRecord record = records.get(i);
+            if ((capturedFrom == null || capturedFrom.equalsIgnoreCase(record.getSourceTable()))
+                    && record.getValues() != null && record.getValues().size() == width - 1) {
+                records.set(i, record.withSlotAppended(value));
+            }
+        }
+    }
+
     public List<StreamRecord> getUnconsumedRecords() {
         if (currentOffset >= records.size()) {
             return new ArrayList<>();
@@ -97,6 +148,9 @@ public class Stream {
      * ids. APPEND_ONLY streams record only true INSERTs, so they are returned as-is.
      */
     public List<StreamRecord> getUnconsumedNetRecords() {
+        if (initialRecords != null) {
+            return new ArrayList<>(initialRecords);
+        }
         return netRecordsOf(getUnconsumedRecords());
     }
 
@@ -110,6 +164,9 @@ public class Stream {
      * way before consolidation.
      */
     public List<StreamRecord> getUnconsumedNetRecordsWith(final List<StreamRecord> extraRaw) {
+        if (initialRecords != null) {
+            return new ArrayList<>(initialRecords);
+        }
         return netRecordsOf(unconsumedRecordsWith(extraRaw));
     }
 
@@ -127,6 +184,9 @@ public class Stream {
      * does.
      */
     public List<StreamRecord> getUnconsumedAppendsWith(final List<StreamRecord> extraRaw) {
+        if (initialRecords != null) {
+            return new ArrayList<>(initialRecords);
+        }
         final List<StreamRecord> appends = new ArrayList<>();
         for (final StreamRecord record : unconsumedRecordsWith(extraRaw)) {
             if (isAppend(record)) {
@@ -284,8 +344,14 @@ public class Stream {
     }
 
     public void consume() {
+        // Consuming the initial rows leaves the offset at the starting point.
+        if (initialRecords != null) {
+            initialRecords = null;
+            return;
+        }
         // Consuming a stream advances the offset
         currentOffset = records.size();
+        offsetSequence = SnapshotSequence.mark();
     }
 
     /** Total records ever captured (consumed + unconsumed) — the read-time cut for scoped consumption. */
@@ -304,6 +370,11 @@ public class Stream {
      * must not consume rows the procedure inserts after it.
      */
     public void consumeSeen(final long committedCut, final List<StreamRecord> seenTransient) {
+        if (initialRecords != null) {
+            initialRecords = null;
+            return;
+        }
+        offsetSequence = SnapshotSequence.mark();
         for (final StreamRecord seen : seenTransient) {
             // Only records at/after the cut can be this transaction's own re-emitted changes; matching
             // below it would eat an identical-valued committed record and then over-advance the offset.
@@ -408,7 +479,34 @@ public class Stream {
     }
 
     public int getUnconsumedCount() {
+        if (initialRecords != null) {
+            return initialRecords.size();
+        }
         return records.size() - (int) currentOffset;
+    }
+
+    /** The initial rows pending before the first consumption, or null when none are. */
+    public List<StreamRecord> getInitialRecords() {
+        return initialRecords;
+    }
+
+    /** Hold the rows the stream reports until its first consumption, instead of its changes. */
+    public void setInitialRecords(final List<StreamRecord> rows) {
+        initialRecords = rows == null ? null : new ArrayList<>(rows);
+    }
+
+    /** Where the offset falls in the order table snapshots are taken in. */
+    public long getOffsetSequence() {
+        return offsetSequence;
+    }
+
+    /** A dynamic-table stream's image of the table's rows at the last refresh it saw, or null. */
+    public List<List<Object>> getRefreshImage() {
+        return refreshImage;
+    }
+
+    public void setRefreshImage(final List<List<Object>> refreshImage) {
+        this.refreshImage = refreshImage;
     }
 
     public String getComment() {
@@ -417,5 +515,50 @@ public class Stream {
 
     public void setComment(final String comment) {
         this.comment = comment;
+    }
+    /**
+     * Takes over another stream's pending changes and offset, as a stream created AT another stream's offset
+     * does — its initial rows and its refresh image stay its own.
+     */
+    public void inheritChanges(final Stream source) {
+        records.clear();
+        records.addAll(source.records);
+        currentOffset = source.currentOffset;
+        stale = source.stale;
+        offsetSequence = source.offsetSequence;
+    }
+
+    /** Takes over another stream's pending changes and offset, as a clone of that stream does. */
+    public void inheritOffset(final Stream source) {
+        records.clear();
+        records.addAll(source.records);
+        currentOffset = source.currentOffset;
+        stale = source.stale;
+        offsetSequence = source.offsetSequence;
+        initialRecords = source.initialRecords == null ? null : new ArrayList<>(source.initialRecords);
+        refreshImage = source.refreshImage == null ? null : new ArrayList<>(source.refreshImage);
+    }
+
+    /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -&gt; value). */
+    private final Map<String, String> tags = new LinkedHashMap<>();
+
+    @Override
+    public void setTag(final String tagName, final String value) {
+        tags.put(tagName.toUpperCase(Locale.ROOT), value);
+    }
+
+    @Override
+    public void unsetTag(final String tagName) {
+        tags.remove(tagName.toUpperCase(Locale.ROOT));
+    }
+
+    @Override
+    public String getTagValue(final String tagName) {
+        return tags.get(tagName.toUpperCase(Locale.ROOT));
+    }
+
+    @Override
+    public Map<String, String> getTagValues() {
+        return new LinkedHashMap<>(tags);
     }
 }

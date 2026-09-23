@@ -153,7 +153,7 @@ public final class VariantJsonText {
         if ("null".equals(value) || isQuotedCarrier(value)) {
             return value;
         }
-        return new StringNode(value).toString();
+        return VariantText.canonical(StringNode.valueOf(value));
     }
 
     /** Whether {@code text} is the engine's quoted carrier: a JSON string whose content opens a structure or reads null. */
@@ -167,11 +167,10 @@ public final class VariantJsonText {
      * The text of a semi-structured value under the STRING conversions — {@code ::VARCHAR},
      * TO_VARCHAR, TO_CHAR — which differs from TO_JSON's in one place: a value that IS a double and
      * nothing more converts to a FLOAT's text rather than the fifteen-decimal one
-     * (live-verified cell by cell). A double that came from a FLOAT through TO_VARIANT takes the
-     * shortest round-trip form held to ten significant digits and one more per decade ({@code 1.5},
-     * {@code 3.0}, {@code 1.0E18}, {@code -0.0}, {@code 1.414213562} for SQRT(2)); a double read from
-     * JSON text takes the FLOAT text ({@code 100} for {@code 1e2}, {@code 1e+18}, {@code 1e-07},
-     * {@code -0}). A double INSIDE a container stays in the conversion form
+ * (live-verified cell by cell). A folded FLOAT constant wrapped by TO_VARIANT takes the shortest
+     * round-trip form ({@code 1.5}, {@code 3.0}, {@code 1.0E18}, {@code -0.0}, {@code 0.30000000000000004});
+     * a computed double, and one read from JSON text, takes the FLOAT text ({@code 1.414213562} for SQRT(2),
+     * {@code 100} for {@code 1e2}, {@code 1e+18}, {@code 1e-07}, {@code -0}). A double INSIDE a container stays in the conversion form
      * ({@code [1.500000000000000e+00]}), as does TO_JSON of the bare double.
      *
      * @param value any runtime value
@@ -190,19 +189,12 @@ public final class VariantJsonText {
     }
 
     /**
-     * A FLOAT's spelling through TO_VARIANT and back to text: the shortest round-trip form, held to ten
-     * significant digits plus one per decade — so SQRT(2) is {@code 1.414213562} while a seventeen-digit
-     * 1.2345678901234568E16 keeps every digit — with the non-finite values and the signed zero spelled
-     * as the round-trip form spells them.
+     * A folded FLOAT's spelling through TO_VARIANT and back to text: the shortest round-trip form, every digit
+     * kept — {@code 2.0}, {@code 1.0E20}, {@code 0.30000000000000004}, {@code 3.141592653589793} for PI()
+     * (live-verified). A computed double never gets here; it takes the FLOAT text (see FloatOriginNode).
      */
     static String floatOriginText(final double value) {
-        if (Double.isNaN(value) || Double.isInfinite(value) || value == 0.0) {
-            return Double.toString(value);
-        }
-        final BigDecimal exact = new BigDecimal(Math.abs(value));
-        final int decade = exact.precision() - exact.scale() - 1;
-        final int digits = Math.max(10, 10 + decade);
-        return Double.toString(new BigDecimal(value).round(new MathContext(digits, RoundingMode.HALF_UP)).doubleValue());
+        return Double.toString(value);
     }
 
     /**
@@ -289,7 +281,7 @@ public final class VariantJsonText {
                     out.append(',');
                 }
                 first = false;
-                out.append(StringNode.valueOf(member.getKey()).toString()).append(':');
+                out.append(VariantText.canonical(StringNode.valueOf(member.getKey()))).append(':');
                 append(member.getValue(), out, vectorsToo);
             }
             out.append('}');

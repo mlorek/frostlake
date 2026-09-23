@@ -26,6 +26,9 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.IntervalDayTimeType;
+import dev.frostlake.types.IntervalQualifier;
+import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
@@ -70,10 +73,13 @@ import java.util.List;
  * Frostlake keep working: temporals become {@code java.time} locals, BINARY becomes
  * {@link BinaryValue}, whole {@code BigDecimal}s become {@code Long}, and semi-structured columns'
  * pretty-printed JSON is re-serialized compactly (Snowflake pretty-prints VARIANT output over
- * JDBC; the engine's canonical text is compact). DML submitted over JDBC surfaces as bare update
- * counts, so Snowflake's actual one-cell result ("number of rows inserted" / updated / deleted) is
- * reconstructed from the statement's leading keyword. Statement errors surface as
- * {@link RuntimeException}s, matching the embedded engine's throw-on-error contract.
+ * JDBC; the engine's canonical text is compact). Every statement is read through
+ * {@code executeQuery}, which hands back the account's own result for it — the rows of a query, the
+ * count grid of a DML statement ({@code number of rows inserted}, the UPDATE pair, MERGE's per-action
+ * columns), and the one-row status sentence of everything else — exactly the shapes the embedded
+ * engine returns. A DML grid also carries the engine's affected-row mark, so {@code executeUpdate}
+ * counts what the embedded engine counts. Statement errors surface as {@link RuntimeException}s,
+ * matching the embedded engine's throw-on-error contract.
  */
 public class LiveSnowflakeEngine extends DatabaseEngine {
 
@@ -91,32 +97,21 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         return new ExecutionResult(true, results, null, queryId);
     }
 
+    /**
+     * Runs one statement and records the account's result for it. Every submission is ONE statement —
+     * {@link LiveSnowflake#pinSingleStatement} pins the statement count, so a text holding several is
+     * refused before anything runs — and the account answers every single statement with a result:
+     * its rows, a DML statement's count grid, or the status sentence of anything else
+     * ({@code Table T successfully created.}, {@code Statement executed successfully.}).
+     * {@code executeQuery} surfaces that result as it is; {@code execute()} would hide the last two
+     * behind a bare update count (0 for every DDL and session statement), which is not what the
+     * embedded engine answers.
+     */
     private String executeOne(final String sql, final List<ResultSet> results) {
         try (final Statement statement = LiveSnowflake.shared().createStatement()) {
             LiveSnowflake.pinSingleStatement(statement);
-            // The driver classifies COPY (and the stage file operations) as non-queries under
-            // execute(), answering only an update count and hiding the result rows the server
-            // sends (and the embedded engine returns). executeQuery surfaces them.
-            if (needsResultSetRoute(sql)) {
-                try (final java.sql.ResultSet rs = statement.executeQuery(sql)) {
-                    results.add(convert(rs));
-                }
-                return queryIdOf(statement);
-            }
-            boolean isResultSet = statement.execute(sql);
-            while (true) {
-                if (isResultSet) {
-                    try (final java.sql.ResultSet rs = statement.getResultSet()) {
-                        results.add(convert(rs));
-                    }
-                } else {
-                    final int count = statement.getUpdateCount();
-                    if (count == -1) {
-                        break;
-                    }
-                    results.add(updateCountResult(count, sql));
-                }
-                isResultSet = statement.getMoreResults();
+            try (final java.sql.ResultSet rs = statement.executeQuery(sql)) {
+                results.add(markAffectedRows(sql, convert(rs)));
             }
             return queryIdOf(statement);
         } catch (final SQLException e) {
@@ -125,15 +120,42 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         }
     }
 
-    private static boolean needsResultSetRoute(final String sql) {
-        final String trimmed = sql.trim();
-        int end = 0;
-        while (end < trimmed.length() && Character.isLetter(trimmed.charAt(end))) {
-            end++;
+    /**
+     * Gives a DML statement's count grid the affected-row mark the embedded engine gives its own, so
+     * {@link DatabaseEngine#executeUpdate} answers the same number on both sides: the rows inserted,
+     * updated or deleted, summed across MERGE's actions and a multi-table INSERT's targets, and without
+     * UPDATE's multi-joined column — the engine's rule. Only a DML statement's grid is marked, read off
+     * its leading keyword (an EXECUTE IMMEDIATE by the grid it answers), so a query that merely NAMES
+     * its columns alike counts nothing.
+     */
+    private ResultSet markAffectedRows(final String sql, final ResultSet result) {
+        final String keyword = leadingKeyword(sql);
+        final boolean dml = keyword.equals("INSERT") || keyword.equals("UPDATE") || keyword.equals("DELETE")
+            || keyword.equals("MERGE");
+        if (!dml && !keyword.equals("EXECUTE")) {
+            return result;
         }
-        final String first = trimmed.substring(0, end).toUpperCase();
-        return "COPY".equals(first) || "PUT".equals(first) || "GET".equals(first)
-            || "LIST".equals(first) || "REMOVE".equals(first) || "RM".equals(first);
+        if (result.getRows().size() != 1 || result.getColumns().isEmpty()) {
+            return result;
+        }
+        long affected = 0;
+        for (int i = 0; i < result.getColumns().size(); i++) {
+            final String name = result.getColumns().get(i).getName();
+            if (!name.startsWith("number of ")) {
+                return result;
+            }
+            final Object cell = result.getRows().get(0).getValue(i);
+            if (!name.startsWith("number of multi-joined ") && cell instanceof Number) {
+                affected += ((Number) cell).longValue();
+            }
+        }
+        return result.markUpdateCount(affected);
+    }
+
+    private String leadingKeyword(final String sql) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+        final Token first = nextDefaultToken(lexer);
+        return first.getType() == Token.EOF ? "" : first.getText().toUpperCase();
     }
 
     private String queryIdOf(final Statement statement) {
@@ -218,6 +240,12 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             return;
         }
         final String keyword = first.getText().toUpperCase();
+        // SET and UNSET name a session VARIABLE, which outlives the test that set it just as a role or
+        // a parameter does — and nothing in the parameter baseline reaches one.
+        if (keyword.equals("SET") || keyword.equals("UNSET")) {
+            LiveSnowflake.markSharedDirty();
+            return;
+        }
         if (keyword.equals("BEGIN") || keyword.equals("START") || keyword.equals("ALTER")
                 || keyword.equals("USE") || keyword.equals("CREATE") || keyword.equals("DROP")
                 || keyword.equals("CALL") || keyword.equals("EXECUTE") || keyword.equals("DECLARE")) {
@@ -345,17 +373,21 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         final int columnCount = metaData.getColumnCount();
         final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
         final boolean[] semiStructured = new boolean[columnCount];
+        final boolean[] interval = new boolean[columnCount];
         for (int i = 1; i <= columnCount; i++) {
             columns.add(new ResultSetColumn(metaData.getColumnLabel(i), declaredType(metaData, i)));
             final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase();
             semiStructured[i - 1] = typeName.equals("VARIANT") || typeName.equals("OBJECT")
                 || typeName.equals("ARRAY");
+            interval[i - 1] = typeName.startsWith("INTERVAL");
         }
         final List<Row> rows = new ArrayList<Row>();
         while (rs.next()) {
             final List<Object> values = new ArrayList<Object>(columnCount);
             for (int i = 1; i <= columnCount; i++) {
-                values.add(coerce(rs.getObject(i), semiStructured[i - 1]));
+                // Over JSON results the driver cannot materialize an interval as an object — getObject refuses
+                // it — so its text is read: the nanoseconds or months the wire carries.
+                values.add(interval[i - 1] ? rs.getString(i) : coerce(rs.getObject(i), semiStructured[i - 1]));
             }
             rows.add(new Row(values));
         }
@@ -521,43 +553,13 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
                 return new ObjectType();
             case "ARRAY":
                 return new ArrayType(new VariantType());
+            case "INTERVAL_DAY_TIME":
+                // The driver says which fields the interval spans through the scale.
+                return IntervalDayTimeType.of(IntervalQualifier.ofDriverScale(true, scale));
+            case "INTERVAL_YEAR_MONTH":
+                return IntervalYearMonthType.of(IntervalQualifier.ofDriverScale(false, scale));
             default:
                 return StringType.VARCHAR;
-        }
-    }
-
-    private ResultSet updateCountResult(final int count, final String sql) {
-        final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
-        columns.add(new ResultSetColumn(countColumnName(sql), StringType.VARCHAR));
-        final List<Row> rows = new ArrayList<Row>();
-        final List<Object> values = new ArrayList<Object>();
-        values.add(Long.valueOf(count));
-        rows.add(new Row(values));
-        return new ResultSet(columns, rows);
-    }
-
-    /**
-     * Snowflake's actual DML result is a one-cell result set named for the verb; over JDBC only the
-     * bare count survives, so rebuild the name from the statement's first lexer token. (MERGE
-     * genuinely returns per-action columns that a single count cannot reconstruct — documented
-     * harness caveat.)
-     */
-    private String countColumnName(final String sql) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
-        Token first = lexer.nextToken();
-        while (first.getType() != Token.EOF && first.getChannel() != Token.DEFAULT_CHANNEL) {
-            first = lexer.nextToken();
-        }
-        final String keyword = first.getType() == Token.EOF ? "" : first.getText().toUpperCase();
-        switch (keyword) {
-            case "INSERT":
-                return "number of rows inserted";
-            case "UPDATE":
-                return "number of rows updated";
-            case "DELETE":
-                return "number of rows deleted";
-            default:
-                return "number of rows affected";
         }
     }
 }

@@ -102,8 +102,7 @@ public class SystemFunctionArityTest extends BaseDatabaseTest {
         // The VALUE for a legal call belongs to its own surfaces (the declared-type read and the
         // storage tag), so only the acceptance is pinned here.
         assertTrue(outcome("SELECT SYSTEM$TYPEOF(1)").startsWith("ACCEPTED"));
-        // The two engines word the wait's answer differently ("waited" against "waited 0 seconds"),
-        // which is a value surface — only the acceptance is this test's business.
+        // The wait's answer is a value surface of its own — only the acceptance is this test's business.
         assertTrue(outcome("SELECT SYSTEM$WAIT(0)").startsWith("ACCEPTED waited"));
         // A one-argument call over a stream that does not exist is that function's OWN refusal — the
         // valid-stream-name sentence, already live-verified — and must not become an arity one.

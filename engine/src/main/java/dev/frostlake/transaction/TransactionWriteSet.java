@@ -217,6 +217,82 @@ public class TransactionWriteSet {
         deletes.remove(table);
     }
 
+    /**
+     * Removes a dropped column's slot from the rows this transaction buffered for {@code table}, so a
+     * later COMMIT writes rows as wide as the table has become. The table is matched in any letter case,
+     * as its lock entry is.
+     *
+     * @param table the table whose column was dropped, fully qualified
+     * @param index the dropped column's position before the drop
+     */
+    public void dropColumnSlot(final String table, final int index) {
+        for (final Map.Entry<String, List<Row>> pending : inserts.entrySet()) {
+            if (!pending.getKey().equalsIgnoreCase(table)) {
+                continue;
+            }
+            final List<Row> rows = pending.getValue();
+            for (int i = 0; i < rows.size(); i++) {
+                rows.set(i, withoutSlot(rows.get(i), index));
+            }
+        }
+        for (final Map.Entry<String, Map<Long, Row>> pending : updates.entrySet()) {
+            if (!pending.getKey().equalsIgnoreCase(table)) {
+                continue;
+            }
+            for (final Map.Entry<Long, Row> update : pending.getValue().entrySet()) {
+                update.setValue(withoutSlot(update.getValue(), index));
+            }
+        }
+    }
+
+    /**
+     * Appends a newly added column's value to the rows this transaction buffered for {@code table} while
+     * they were one slot narrower, so a later COMMIT writes rows as wide as the table has become.
+     *
+     * @param table the table the column was added to, fully qualified
+     * @param width the table's column count after the add
+     * @param value the value the new column takes in rows that already exist
+     */
+    public void appendColumnSlot(final String table, final int width, final Object value) {
+        for (final Map.Entry<String, List<Row>> pending : inserts.entrySet()) {
+            if (!pending.getKey().equalsIgnoreCase(table)) {
+                continue;
+            }
+            final List<Row> rows = pending.getValue();
+            for (int i = 0; i < rows.size(); i++) {
+                rows.set(i, withSlotAppended(rows.get(i), width, value));
+            }
+        }
+        for (final Map.Entry<String, Map<Long, Row>> pending : updates.entrySet()) {
+            if (!pending.getKey().equalsIgnoreCase(table)) {
+                continue;
+            }
+            for (final Map.Entry<Long, Row> update : pending.getValue().entrySet()) {
+                update.setValue(withSlotAppended(update.getValue(), width, value));
+            }
+        }
+    }
+
+    /** The row with {@code value} appended when it is exactly one slot short of {@code width}. */
+    private static Row withSlotAppended(final Row row, final int width, final Object value) {
+        if (row == null || row.size() != width - 1) {
+            return row;
+        }
+        final List<Object> values = new ArrayList<>(row.getValues());
+        values.add(value);
+        return Row.of(values);
+    }
+
+    /** The row without the value at {@code index}; a row too short to hold that slot is kept as it is. */
+    private static Row withoutSlot(final Row row, final int index) {
+        if (row == null || index >= row.size()) {
+            return row;
+        }
+        final List<Object> values = new ArrayList<>(row.getValues());
+        values.remove(index);
+        return Row.of(values);
+    }
+
     /** True if this transaction has deleted the base row with the given stable id. */
     public boolean isDeleted(final String table, final long rowId) {
         final Set<Long> del = deletes.get(table);

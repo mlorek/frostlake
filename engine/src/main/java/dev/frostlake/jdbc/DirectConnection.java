@@ -19,6 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.security.SessionContext;
+import dev.frostlake.security.SessionSettings;
 import dev.frostlake.transaction.TransactionManager;
 
 import java.sql.Array;
@@ -37,8 +39,11 @@ import java.sql.SQLXML;
 import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Struct;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 
 /**
@@ -57,14 +62,55 @@ public class DirectConnection implements Connection {
     private String sessionDatabase;
     private String sessionSchema;
     private boolean sessionAutoCommit;
+
+    /**
+     * The id of THIS connection's open transaction, or null when it has none.
+     *
+     * <p>The engine keeps its current transaction in a thread-local, so two connections driven from one
+     * thread would otherwise share it and each would see the other's uncommitted rows. Live keeps them
+     * apart, so the id is held here and rebound before every statement — the same mechanism the HTTP
+     * front-end uses to isolate its sessions.
+     */
+    private Long sessionTransactionId;
+
+    /**
+     * Every transaction a direct connection has opened, across all of them.
+     *
+     * <p>A connection with no transaction of its own must clear a binding left by ANOTHER connection,
+     * or it reads that connection's uncommitted rows — but it must NOT clear a binding left by plain
+     * engine use on the same thread, which the statement machinery carries between statements. Only a
+     * transaction in this set is known to belong to a connection, so only that one is cleared.
+     */
+    private static final Set<Long> CONNECTION_OWNED_TRANSACTIONS =
+        Collections.newSetFromMap(new ConcurrentHashMap<Long, Boolean>());
     /** The session's MULTI_STATEMENT_COUNT (1 = single statement only, 0 = any). */
     private int multiStatementCount = 1;
 
+    /**
+     * This connection's ALTER SESSION parameters and SET variables, bound for each of its statements; or null for a
+     * connection that shares the engine's own. Live keeps them per connection: a TIMEZONE, a QUERY_TAG or a variable
+     * one connection sets is invisible to another connection to the same name.
+     */
+    private final SessionSettings sessionSettings;
+
     public DirectConnection(final DatabaseEngine engine) {
+        this(engine, true);
+    }
+
+    /**
+     * A connection to an engine.
+     *
+     * @param engine the engine
+     * @param ownSession whether the connection keeps session parameters and variables of its own, as every connection
+     *                   a driver URL opens does; false shares the engine's, for a caller that wraps an engine it
+     *                   also reads directly
+     */
+    public DirectConnection(final DatabaseEngine engine, final boolean ownSession) {
         this.engine = engine;
         this.sessionDatabase = engine.getCurrentDatabase();
         this.sessionSchema = engine.getCurrentSchema();
         this.sessionAutoCommit = engine.isAutoCommit();
+        this.sessionSettings = ownSession ? new SessionSettings() : null;
     }
 
     int getMultiStatementCount() {
@@ -78,8 +124,8 @@ public class DirectConnection implements Connection {
     /**
      * Execute one statement under THIS connection's session context: the context is bound to the
      * current thread for the statement's duration (so concurrent connections stay isolated on the
-     * shared engine) and the post-statement context — a USE, an ALTER of autocommit — is captured
-     * back into the connection.
+     * shared engine) and the post-statement context — a USE, an ALTER of autocommit, an opened or
+     * closed transaction — is captured back into the connection.
      */
     ExecutionResult executeScoped(final String sql) {
         // One statement at a time on the shared engine: the embedded engine's procedural state
@@ -91,16 +137,50 @@ public class DirectConnection implements Connection {
             final TransactionManager transactions = engine.getTransactionManager();
             catalog.beginSessionScope(sessionDatabase, sessionSchema);
             transactions.beginSessionAutoCommit(sessionAutoCommit);
+            final SessionContext session = engine.getSecurityManager().getSessionContext();
+            if (sessionSettings != null) {
+                session.bindSettings(sessionSettings);
+            }
+            // Restore this connection's transaction, or clear ANOTHER connection's: skipping that would
+            // let this connection inherit whatever the previous one on this thread left open, and read
+            // its uncommitted writes.
+            bindOwnTransaction(transactions);
             try {
-                final ExecutionResult result = engine.execute(sql);
+                return engine.execute(sql);
+            } finally {
+                // Captured when the request fails too: a request of several statements that fails part-way
+                // keeps what its earlier statements did — a transaction a BEGIN opened stays open in the
+                // session (live-verified) — so the connection must take it as its own. Left on the thread
+                // uncaptured, it was adopted by whichever connection ran next there, or orphaned.
                 sessionDatabase = catalog.getCurrentDatabase();
                 sessionSchema = catalog.getCurrentSchema();
                 sessionAutoCommit = transactions.isAutoCommit();
-                return result;
-            } finally {
+                sessionTransactionId = transactions.getCurrentTransactionId();
+                if (sessionTransactionId != null) {
+                    CONNECTION_OWNED_TRANSACTIONS.add(sessionTransactionId);
+                }
                 catalog.clearSessionScope();
                 transactions.clearSessionAutoCommit();
+                if (sessionSettings != null) {
+                    session.unbindSettings();
+                }
             }
+        }
+    }
+
+    /**
+     * Bind this connection's transaction for the statement about to run.
+     *
+     * @param transactions the engine's transaction manager
+     */
+    private void bindOwnTransaction(final TransactionManager transactions) {
+        if (sessionTransactionId != null) {
+            transactions.setCurrentTransaction(sessionTransactionId);
+            return;
+        }
+        final Long bound = transactions.getCurrentTransactionId();
+        if (bound != null && CONNECTION_OWNED_TRANSACTIONS.contains(bound)) {
+            transactions.setCurrentTransaction(null);
         }
     }
 
@@ -118,7 +198,39 @@ public class DirectConnection implements Connection {
 
     @Override
     public void close() throws SQLException {
+        if (closed) {
+            return;
+        }
         closed = true;
+        endOwnTransaction();
+    }
+
+    /**
+     * Roll back the transaction this connection leaves open, as the HTTP front-end does when a session is
+     * released: the session that owned it is gone, so nothing could ever COMMIT it, and it would otherwise
+     * stay in SHOW TRANSACTIONS for the engine's lifetime. The thread's own binding is put back afterwards.
+     */
+    private void endOwnTransaction() {
+        final Long open = sessionTransactionId;
+        if (open == null) {
+            return;
+        }
+        synchronized (engine) {
+            final TransactionManager transactions = engine.getTransactionManager();
+            final Long bound = transactions.getCurrentTransactionId();
+            transactions.setCurrentTransaction(open);
+            try {
+                if (open.equals(transactions.getCurrentTransactionId())) {
+                    transactions.rollback();
+                }
+            } catch (final RuntimeException ignored) {
+                // The connection goes regardless; its transaction's writes were never committed.
+            } finally {
+                transactions.setCurrentTransaction(open.equals(bound) ? null : bound);
+            }
+        }
+        CONNECTION_OWNED_TRANSACTIONS.remove(open);
+        sessionTransactionId = null;
     }
 
     @Override

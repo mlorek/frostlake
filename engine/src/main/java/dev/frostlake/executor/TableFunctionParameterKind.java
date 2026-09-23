@@ -25,6 +25,7 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 
 /**
  * What a table function's parameter will take. Snowflake type-checks these at COMPILE time and names
@@ -38,14 +39,16 @@ public enum TableFunctionParameterKind {
 
     /**
      * VARIANT, OBJECT or ARRAY. Live refuses VARCHAR, NUMBER, BOOLEAN and DATE alike, so a JSON string
-     * has to be parsed ({@code PARSE_JSON}) or cast before FLATTEN will look at it.
+     * has to be parsed ({@code PARSE_JSON}) or cast before FLATTEN will look at it. A VECTOR is no ARRAY
+     * either: {@code FLATTEN([1,2,3]::VECTOR(FLOAT,3))} is
+     * {@code invalid type [VECTOR(FLOAT, 3)] for parameter '1'} (live-verified).
      */
     SEMI_STRUCTURED {
         @Override
         boolean accepts(final DataType declared) {
             return !(declared instanceof StringType || declared instanceof NumericType
                 || declared instanceof BooleanType || declared instanceof DateTimeType
-                || declared instanceof BinaryType);
+                || declared instanceof BinaryType || declared instanceof VectorType);
         }
     },
 

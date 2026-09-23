@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.DroppedObject;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.CheckConstraint;
@@ -30,14 +31,19 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.types.ColumnTypeJson;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -152,10 +158,27 @@ final class ShowRelationalExecutor {
         }
     }
 
+    /** Where SHOW DATABASES | SCHEMAS HISTORY places dropped_on: right after retention_time. */
+    private static final int DROPPED_ON_AT = 9;
+
     private final Catalog catalog;
 
-    ShowRelationalExecutor(final Catalog catalog) {
+    /** Where a table's rows are, so SHOW TABLES and SHOW OBJECTS can count them. */
+    private final StorageEngine storageEngine;
+
+    ShowRelationalExecutor(final Catalog catalog, final StorageEngine storageEngine) {
         this.catalog = catalog;
+        this.storageEngine = storageEngine;
+    }
+
+    /**
+     * The {@code rows} cell of a visible table: the rows committed to it right now. Its {@code bytes}
+     * neighbour stays 0 — live's figure is the compressed size of its micro-partitions (512 for one INT
+     * row, 1024 for two to a hundred), which in-memory rows cannot reproduce.
+     */
+    private long storedRows(final String dbName, final Schema schema, final Table table) {
+        final String database = schema.getDatabaseName() != null ? schema.getDatabaseName() : dbName;
+        return storageEngine.storedRowCount(QualifiedName.key(database, schema.getName(), table.getName()), false);
     }
 
     // Copied from QueryExecutor (catalog-only helper) so describeView stays self-contained here.
@@ -177,7 +200,15 @@ final class ShowRelationalExecutor {
     }
 
     public ResultSet showDatabases() {
-        final List<ResultSetColumn> columns = Arrays.asList(
+        return showDatabases(false);
+    }
+
+    /**
+     * SHOW DATABASES; with {@code history}, also the dropped databases UNDROP can still restore, and a
+     * {@code dropped_on} column that is NULL for the live ones.
+     */
+    public ResultSet showDatabases(final boolean history) {
+        final List<ResultSetColumn> columns = new ArrayList<>(Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("is_default", StringType.VARCHAR),
@@ -192,15 +223,35 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("object_visibility", new ObjectType()),
             new ResultSetColumn("data_quality_monitoring_settings", new ObjectType()),
             new ResultSetColumn("resharing_settings", new ObjectType())
-        );
+        ));
+        if (history) {
+            // Right after retention_time, where the account lists it.
+            columns.add(DROPPED_ON_AT, new ResultSetColumn("dropped_on", DateTimeType.TIMESTAMP_LTZ));
+        }
         final String cur = catalog.getCurrentDatabase();
         final List<Row> rows = new ArrayList<>();
         for (final Database db : catalog.getAllDatabases()) {
-            rows.add(new Row(Arrays.asList(
+            rows.add(databaseRow(db, db.getName().equals(cur), history, null));
+        }
+        if (history) {
+            for (final DroppedObject dropped : catalog.droppedOfKind("DATABASE")) {
+                if (dropped.getObject() instanceof Database) {
+                    rows.add(databaseRow((Database) dropped.getObject(), false, true, dropped.getDroppedOn()));
+                }
+            }
+            sortByName(rows, 1);
+        }
+        return new ResultSet(columns, rows);
+    }
+
+    /** One SHOW DATABASES row; with {@code history}, followed by its {@code dropped_on}. */
+    private Row databaseRow(final Database db, final boolean current, final boolean history,
+                            final Instant droppedOn) {
+        final List<Object> cells = new ArrayList<>(Arrays.asList(
                 ShowResultHelpers.createdOn(db.getCreatedTime()),
                 db.getName(),
                 "N",
-                db.getName().equals(cur) ? "Y" : "N",
+                current ? "Y" : "N",
                 "",
                 db.getOwner(),
                 ShowResultHelpers.text(db.getComment()),
@@ -211,13 +262,33 @@ final class ShowRelationalExecutor {
                 "STANDARD",
                 ShowResultHelpers.OWNER_ROLE_TYPE,
                 null, null, null
-            )));
+            ));
+        if (history) {
+            cells.add(DROPPED_ON_AT, ShowResultHelpers.createdOn(droppedOn));
         }
-        return new ResultSet(columns, rows);
+        return new Row(cells);
+    }
+
+    /** Orders listing rows by the name in the given column, keeping equal names in their order. */
+    private static void sortByName(final List<Row> rows, final int nameColumn) {
+        Collections.sort(rows, new Comparator<Row>() {
+            @Override
+            public int compare(final Row a, final Row b) {
+                return String.valueOf(a.getValue(nameColumn)).compareTo(String.valueOf(b.getValue(nameColumn)));
+            }
+        });
     }
 
     public ResultSet showSchemas(final String databaseName) {
-        final List<ResultSetColumn> columns = Arrays.asList(
+        return showSchemas(databaseName, false);
+    }
+
+    /**
+     * SHOW SCHEMAS; with {@code history}, also the dropped schemas UNDROP can still restore, and a
+     * {@code dropped_on} column that is NULL for the live ones.
+     */
+    public ResultSet showSchemas(final String databaseName, final boolean history) {
+        final List<ResultSetColumn> columns = new ArrayList<>(Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("is_default", StringType.VARCHAR),
@@ -233,31 +304,78 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("classification_profile", StringType.VARCHAR),
             new ResultSetColumn("object_visibility", new ObjectType()),
             new ResultSetColumn("is_nested", StringType.VARCHAR)
-        );
+        ));
+        if (history) {
+            // Right after retention_time, where the account lists it.
+            columns.add(DROPPED_ON_AT, new ResultSetColumn("dropped_on", DateTimeType.TIMESTAMP_LTZ));
+        }
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database selected");
         final String curSchema = catalog.getCurrentSchema();
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
-            rows.add(new Row(Arrays.asList(
+        final Database database = catalog.getDatabase(dbName);
+        for (final Schema schema : database.getAllSchemas()) {
+            // The current schema is tracked by its stored name; names are unique ignoring case.
+            rows.add(schemaRow(database.getName(), schema, schema.getName().equalsIgnoreCase(curSchema), history,
+                null));
+        }
+        if (history) {
+            for (final DroppedObject dropped : catalog.droppedOfKind("SCHEMA")) {
+                if (dropped.getObject() instanceof Schema
+                        && database.getName().equals(((Schema) dropped.getObject()).getDatabaseName())) {
+                    rows.add(schemaRow(database.getName(), (Schema) dropped.getObject(), false, true,
+                        dropped.getDroppedOn()));
+                }
+            }
+            sortByName(rows, 1);
+        }
+        return new ResultSet(columns, rows);
+    }
+
+    /** One SHOW SCHEMAS row; with {@code history}, followed by its {@code dropped_on}. */
+    private Row schemaRow(final String dbName, final Schema schema, final boolean current, final boolean history,
+                          final Instant droppedOn) {
+        final List<Object> cells = new ArrayList<>(Arrays.asList(
                 ShowResultHelpers.createdOn(schema.getCreatedTime()),
                 schema.getName(),
                 "N",
-                // The current schema is tracked by its stored name; names are unique ignoring case.
-                schema.getName().equalsIgnoreCase(curSchema) ? "Y" : "N",
+                current ? "Y" : "N",
                 dbName,
                 ShowResultHelpers.text(schema.getOwner()),
                 ShowResultHelpers.text(schema.getComment()),
-                schema.isTransientObject() ? "TRANSIENT" : "",
-                effectiveRetention(databaseOrNull(dbName), schema, null),
+                schemaOptions(schema),
+                schemaRetention(dbName, schema),
                 ShowResultHelpers.ownerRoleType(schema.getOwner()),
                 null, null, null, null,
                 // Spelled as the text false, not N — live's is_nested convention differs from the
                 // Y/N flags beside it.
                 "false"
-            )));
+            ));
+        if (history) {
+            cells.add(DROPPED_ON_AT, ShowResultHelpers.createdOn(droppedOn));
         }
-        return new ResultSet(columns, rows);
+        return new Row(cells);
+    }
+
+    /** A schema's retention_time: a transient schema keeps at most one day of what it inherits. */
+    private String schemaRetention(final String dbName, final Schema schema) {
+        final String effective = effectiveRetention(databaseOrNull(dbName), schema, null);
+        if (schema.isTransientObject() && schema.getDataRetentionTimeInDays() == null
+                && effective.matches("[0-9]+") && Integer.parseInt(effective) > 1) {
+            return "1";
+        }
+        return effective;
+    }
+
+    /** A schema's options cell: TRANSIENT and MANAGED ACCESS as they apply, comma-separated, else empty. */
+    private static String schemaOptions(final Schema schema) {
+        if (schema.isTransientObject() && schema.isManagedAccess()) {
+            return "TRANSIENT, MANAGED ACCESS";
+        }
+        if (schema.isManagedAccess()) {
+            return "MANAGED ACCESS";
+        }
+        return schema.isTransientObject() ? "TRANSIENT" : "";
     }
 
     public ResultSet showTables(final String schemaName) {
@@ -277,13 +395,18 @@ final class ShowRelationalExecutor {
 
     /** SHOW SCHEMAS IN ACCOUNT: every schema of every database, ordered database/name. */
     public ResultSet showSchemasInAccount() {
+        return showSchemasInAccount(false);
+    }
+
+    /** SHOW SCHEMAS [HISTORY] IN ACCOUNT: every schema of every database, ordered database/name. */
+    public ResultSet showSchemasInAccount(final boolean history) {
         final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
             @Override
             public ResultSet listIn(final String databaseName) {
-                return showSchemas(databaseName);
+                return showSchemas(databaseName, history);
             }
         });
-        return across != null ? across : showSchemas(null);
+        return across != null ? across : showSchemas(null, history);
     }
 
     /** SHOW OBJECTS IN ACCOUNT: every table and view of every database, ordered database/schema/name. */
@@ -297,6 +420,17 @@ final class ShowRelationalExecutor {
         return across != null ? across : showObjects(null);
     }
 
+    /** SHOW HYBRID TABLES IN ACCOUNT: every hybrid table of every database, ordered database/schema/name. */
+    public ResultSet showHybridTablesInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showHybridTablesInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showHybridTables(null);
+    }
+
     /** SHOW TABLES IN DATABASE &lt;db&gt;: every table across all schemas of the database. */
     public ResultSet showTablesInDatabase(final String databaseName) {
         return showTablesScoped(null, databaseName, false);
@@ -304,11 +438,53 @@ final class ShowRelationalExecutor {
 
     /** SHOW HYBRID TABLES: only tables declared with CREATE HYBRID TABLE. */
     public ResultSet showHybridTables(final String schemaName) {
-        return showTablesScoped(schemaName, null, true);
+        return hybridLayout(showTablesScoped(schemaName, null, true));
     }
 
     public ResultSet showHybridTablesInDatabase(final String databaseName) {
-        return showTablesScoped(null, databaseName, true);
+        return hybridLayout(showTablesScoped(null, databaseName, true));
+    }
+
+    /**
+     * A hybrid table's listing has NINE columns of its own, not the table listing's twenty-seven: it
+     * carries no kind, no clustering, no retention and none of the is_* flags — a hybrid table is the
+     * only thing the listing answers, so it says nothing to tell one from another (live-verified).
+     *
+     * @param tables the rows as the table listing built them
+     * @return the same rows under the hybrid layout
+     */
+    private ResultSet hybridLayout(final ResultSet tables) {
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("database_name", StringType.VARCHAR),
+            new ResultSetColumn("schema_name", StringType.VARCHAR),
+            new ResultSetColumn("owner", StringType.VARCHAR),
+            new ResultSetColumn("rows", NumericType.BIGINT),
+            new ResultSetColumn("bytes", NumericType.BIGINT),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR));
+        final List<Row> rows = new ArrayList<>();
+        for (final Row row : tables.getRows()) {
+            rows.add(new Row(Arrays.asList(
+                cellOf(tables, row, "created_on"), cellOf(tables, row, "name"),
+                cellOf(tables, row, "database_name"), cellOf(tables, row, "schema_name"),
+                cellOf(tables, row, "owner"), cellOf(tables, row, "rows"),
+                cellOf(tables, row, "bytes"), cellOf(tables, row, "comment"),
+                cellOf(tables, row, "owner_role_type"))));
+        }
+        return new ResultSet(columns, rows);
+    }
+
+    /** One named cell of a row built under another listing's layout. */
+    private static Object cellOf(final ResultSet listing, final Row row, final String column) {
+        final List<ResultSetColumn> columns = listing.getColumns();
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).getName().equalsIgnoreCase(column)) {
+                return row.getValue(i);
+            }
+        }
+        return null;
     }
 
     private ResultSet showTablesScoped(final String schemaName, final String databaseName,
@@ -347,9 +523,33 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("error_logging", StringType.VARCHAR)
         );
         final String dbName = databaseName != null ? databaseName : ShowResultHelpers.scopeDatabase(catalog, schemaName);
-        final List<Row> rows = new ArrayList<>();
+        // A DYNAMIC table is listed here too, in NAME order among the rest — it is a table that keeps
+        // itself up to date, so SHOW TABLES carries it with is_dynamic Y and the kind its transience
+        // gives it. SHOW DYNAMIC TABLES is the listing that shows what makes it dynamic.
+        final Map<String, Row> byName = new TreeMap<>();
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, true)) {
             final String scName = schema.getName();
+            if (!hybridOnly) {
+                for (final DynamicTable dt : schema.getDynamicTables()) {
+                    byName.put(scName + "." + dt.getName(), new Row(Arrays.asList(
+                        ShowResultHelpers.createdOn(dt.getCreatedTime()),
+                        dt.getName(),
+                        dbName, scName, dt.isTransient() ? "TRANSIENT" : "TABLE",
+                        ShowResultHelpers.text(dt.getComment()),
+                        clusterByText(dt.getClusterKeys()),
+                        0L,
+                        0L,
+                        ShowResultHelpers.text(dt.getOwner()),
+                        effectiveRetention(databaseOrNull(dbName), schema, null),
+                        "OFF",
+                        // A dynamic table tracks its changes whether it was asked to or not: the
+                        // refresh that keeps it current is what reads them.
+                        "ON",
+                        "OFF", null, null,
+                        "N", "N", "ROLE", "N", "N", "N", "Y", "N", "N", "OFF", "OFF"
+                    )));
+                }
+            }
             for (final Table table : schema.getTables()) {
                 if (hybridOnly && !table.isHybrid()) {
                     continue;
@@ -357,13 +557,13 @@ final class ShowRelationalExecutor {
                 final String kind = table.isHybrid() ? "HYBRID TABLE"
                     : table.isTemporary() ? "TEMPORARY"
                     : table.isTransient() ? "TRANSIENT" : "TABLE";
-                rows.add(new Row(Arrays.asList(
+                byName.put(scName + "." + table.getName(), new Row(Arrays.asList(
                     ShowResultHelpers.createdOn(table.getCreatedTime()),
                     table.getName(),
                     dbName, scName, kind,
                     ShowResultHelpers.text(table.getComment()),
                     clusterByText(table.getClusterKeys()),
-                    (long) table.getRowCount(),
+                    storedRows(dbName, schema, table),
                     0L,
                     ShowResultHelpers.text(table.getOwner()),
                     effectiveRetention(databaseOrNull(dbName), schema, table),
@@ -377,13 +577,13 @@ final class ShowRelationalExecutor {
                     table.hasSearchOptimization() ? "ON" : "OFF",
                     table.hasSearchOptimization() ? "100" : null,
                     table.hasSearchOptimization() ? 0L : null,
-                    "N", table.isSchemaEvolution() ? "Y" : "N", "ROLE", "N",
+                    "N", table.isSchemaEvolution() ? "Y" : "N", "ROLE", table.isEventTable() ? "Y" : "N",
                     table.isHybrid() ? "Y" : "N",
-                    "N", "N", "N", "N", "OFF", "OFF"
+                    table.getIcebergMetadata() != null ? "Y" : "N", "N", "N", "N", "OFF", "OFF"
                 )));
             }
         }
-        return new ResultSet(columns, rows);
+        return new ResultSet(columns, new ArrayList<>(byName.values()));
     }
 
     /**
@@ -457,8 +657,10 @@ final class ShowRelationalExecutor {
                     dbName, scName,
                     ShowResultHelpers.text(view.getOwner()),
                     ShowResultHelpers.text(view.getComment()),
-                    // Snowflake's text column carries the view's full CREATE statement.
-                    view.ddl(scName + "." + view.getName()),
+                    // Snowflake's text column carries the view's full CREATE statement; INFORMATION_SCHEMA's
+                    // views were never created and carry none (live-verified).
+                    "INFORMATION_SCHEMA".equals(scName) ? ""
+                        : view.getListedText() != null ? view.getListedText() : view.ddl(scName + "." + view.getName()),
                     // These two read "true"/"false" on a real account, not the Y/N used elsewhere.
                     String.valueOf(view.isSecure()), "false",
                     ShowResultHelpers.ownerRoleType(view.getOwner()), "OFF"
@@ -502,30 +704,63 @@ final class ShowRelationalExecutor {
     }
 
     private ResultSet showMaterializedViewsScoped(final String schemaName, final String databaseName) {
+        // Live's layout, measured column for column; TERSE answers it whole too. The view names the one
+        // table it reads, and a suspended view reads invalid with live's own reason.
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("reserved", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
+            new ResultSetColumn("cluster_by", StringType.VARCHAR),
+            new ResultSetColumn("rows", NumericType.BIGINT),
+            new ResultSetColumn("bytes", NumericType.BIGINT),
+            new ResultSetColumn("source_database_name", StringType.VARCHAR),
+            new ResultSetColumn("source_schema_name", StringType.VARCHAR),
+            new ResultSetColumn("source_table_name", StringType.VARCHAR),
+            new ResultSetColumn("refreshed_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("compacted_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
+            new ResultSetColumn("invalid", StringType.VARCHAR),
+            new ResultSetColumn("invalid_reason", StringType.VARCHAR),
+            new ResultSetColumn("behind_by", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("text", StringType.VARCHAR),
-            new ResultSetColumn("is_secure", StringType.VARCHAR)
+            new ResultSetColumn("is_secure", StringType.VARCHAR),
+            new ResultSetColumn("automatic_clustering", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR)
         );
         final String dbName = databaseName != null ? databaseName : ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, false)) {
             final String scName = schema.getName();
             for (final MaterializedView mv : schema.getMaterializedViews()) {
+                // The times and the lag describe the data the view materialized, not the view itself.
+                final Object refreshedOn = MaterializedViewRefresh.refreshedOn(mv);
                 rows.add(new Row(Arrays.asList(
                     ShowResultHelpers.createdOn(mv.getCreatedTime()),
                     mv.getName(),
+                    "",
                     dbName, scName,
+                    "",
+                    // The counts read as SHOW TABLES reads a table's.
+                    0L,
+                    0L,
+                    ShowResultHelpers.text(mv.getSourceDatabase()),
+                    ShowResultHelpers.text(mv.getSourceSchema()),
+                    ShowResultHelpers.text(mv.getSourceTable()),
+                    refreshedOn,
+                    refreshedOn,
                     ShowResultHelpers.text(mv.getOwner()),
+                    mv.isSuspended() ? "true" : "false",
+                    mv.isSuspended() ? "Marked Materialized View as invalid manually." : null,
+                    MaterializedViewRefresh.behindBy(catalog, mv),
                     ShowResultHelpers.text(mv.getComment()),
-                    // Snowflake's text column carries the materialized view's full CREATE statement.
-                    mv.ddl(scName + "." + mv.getName()),
-                    mv.isSecure() ? "Y" : "N"
+                    // The full CREATE statement, as written.
+                    mv.getListedText() != null ? mv.getListedText() : mv.ddl(scName + "." + mv.getName()),
+                    mv.isSecure() ? "true" : "false",
+                    "OFF",
+                    "ROLE"
                 )));
             }
         }
@@ -636,9 +871,8 @@ final class ShowRelationalExecutor {
         try {
             return resolveDatabaseOrRefuse(databaseName).getSchema(schemaName);
         } catch (final RuntimeException missing) {
-            throw new RuntimeException(SqlCompilationError.of("Schema '"
-                + databaseName.toUpperCase(Locale.ROOT) + "." + schemaName.toUpperCase(Locale.ROOT)
-                + "' does not exist or not authorized."));
+            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Schema",
+                databaseName.toUpperCase(Locale.ROOT) + "." + schemaName.toUpperCase(Locale.ROOT)));
         }
     }
 
@@ -647,8 +881,8 @@ final class ShowRelationalExecutor {
         try {
             return catalog.getDatabase(databaseName);
         } catch (final RuntimeException missing) {
-            throw new RuntimeException(SqlCompilationError.of("Database '"
-                + databaseName.toUpperCase(Locale.ROOT) + "' does not exist or not authorized."));
+            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Database",
+                databaseName.toUpperCase(Locale.ROOT)));
         }
     }
 
@@ -663,13 +897,14 @@ final class ShowRelationalExecutor {
                 catalog.getCurrentDatabase());
             return new ResultSet(columns, rows);
         }
-        if (view && QualifiedName.parse(name).size() < 3) {
+        if (view && QualifiedName.parse(name).size() != 3) {
             // The VIEW spelling requires the FULL search path, and requires it whatever the object
             // turns out to be — live refuses `SHOW COLUMNS IN VIEW t` for a plain TABLE t with this
-            // same sentence. It is a property of the keyword, not of the relation (live-verified).
+            // same sentence, and a path of four parts as well, naming its last part as it resolves
+            // ("p" is p). It is a property of the keyword, not of the relation (live-verified).
             throw new RuntimeException(SqlCompilationError.of(
                 "Must specify the full search path starting from database for "
-                    + QualifiedName.parse(name).last().toUpperCase()));
+                    + QualifiedName.parse(name).last()));
         }
         rejectWithoutCurrentDatabase(name);
         // The named kind is NOT a filter: TABLE, VIEW and the bare form each resolve a table, a view
@@ -855,7 +1090,7 @@ final class ShowRelationalExecutor {
                     objectRow(ShowResultHelpers.createdOn(t.getCreatedTime()), t.getName(),
                     dbName, scName, t.isTemporary() ? "TEMPORARY" : "TABLE",
                     ShowResultHelpers.text(t.getComment()),
-                    clusterByText(t.getClusterKeys()), (long) t.getRowCount(), ShowResultHelpers.text(t.getOwner()),
+                    clusterByText(t.getClusterKeys()), storedRows(dbName, schema, t), ShowResultHelpers.text(t.getOwner()),
                     effectiveRetention(databaseOrNull(dbName), schema, t), t.isHybrid(), false));
             }
             for (final View v : schema.getViews()) {
@@ -875,6 +1110,8 @@ final class ShowRelationalExecutor {
             for (final DynamicTable dt : schema.getDynamicTables()) {
                 byName.put(scName + "." + dt.getName(),
                     objectRow(ShowResultHelpers.createdOn(dt.getCreatedTime()), dt.getName(),
+                    // As for a transient TABLE, this listing reports a transient dynamic table as
+                    // plain TABLE — SHOW TABLES is the one that spells the transience.
                     dbName, scName, "TABLE", dt.getComment(), "", 0L,
                     ShowResultHelpers.text(dt.getOwner()),
                     effectiveRetention(databaseOrNull(dbName), schema, null), false, true));
@@ -912,6 +1149,73 @@ final class ShowRelationalExecutor {
         // Nothing derived by that name: the table path owns the lookup and its refusal, which is
         // where the named kind is spoken.
         return describeTableColumns(catalog.resolveTableAsWritten(name, reportedKind));
+    }
+
+    /**
+     * Whether a name reaches a table, a view or a materialized view here — the relations a DESCRIBE reads
+     * by name, without the dynamic tables, and without refusing a name that reaches none of them.
+     *
+     * @param name the written name
+     * @return whether one of those three carries it
+     */
+    public boolean namesAStoredRelation(final String name) {
+        if (findViewOrNull(name) != null || findMaterializedViewOrNull(name) != null) {
+            return true;
+        }
+        try {
+            catalog.resolveTableAsWritten(name, "Table");
+            return true;
+        } catch (final RuntimeException notATable) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a relation described by name is a table rather than a view or a materialized view, refusing
+     * a name that resolves to nothing in the named kind's words.
+     */
+    boolean namesTable(final String name, final String reportedKind) {
+        if (findViewOrNull(name) != null || findMaterializedViewOrNull(name) != null) {
+            return false;
+        }
+        catalog.resolveTableAsWritten(name, reportedKind);
+        return true;
+    }
+
+    /** See {@link ShowCommandExecutor#describeSchema}. */
+    ResultSet describeSchema(final String schemaName) {
+        final ResultSet objects = showObjects(schemaName);
+        final int createdOn = objects.getColumnIndex("created_on");
+        final int name = objects.getColumnIndex("name");
+        final int schema = objects.getColumnIndex("schema_name");
+        final int kind = objects.getColumnIndex("kind");
+        final List<Row> rows = new ArrayList<>();
+        for (final Row object : objects.getRows()) {
+            final Object created = "INFORMATION_SCHEMA".equals(object.getValue(schema))
+                ? ShowResultHelpers.createdOn(Instant.EPOCH) : object.getValue(createdOn);
+            rows.add(new Row(Arrays.asList(created, object.getValue(name), object.getValue(kind))));
+        }
+        return new ResultSet(describedListingColumns(), rows);
+    }
+
+    /** See {@link ShowCommandExecutor#describeDatabase}. */
+    ResultSet describeDatabase(final String databaseName) {
+        final Map<String, Row> byName = new TreeMap<>();
+        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+            final Object created = "INFORMATION_SCHEMA".equals(schema.getName())
+                ? ShowResultHelpers.createdOn(StatementClock.instant())
+                : ShowResultHelpers.createdOn(schema.getCreatedTime());
+            byName.put(schema.getName(), new Row(Arrays.asList(created, schema.getName(), "SCHEMA")));
+        }
+        return new ResultSet(describedListingColumns(), new ArrayList<>(byName.values()));
+    }
+
+    /** DESCRIBE SCHEMA's and DESCRIBE DATABASE's three columns. */
+    private static List<ResultSetColumn> describedListingColumns() {
+        return Arrays.asList(
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("kind", StringType.VARCHAR));
     }
 
     /** The view by that name, or null — a name that resolves to nothing at all is the table path's. */
@@ -966,8 +1270,11 @@ final class ShowRelationalExecutor {
         return new ResultSet(describeColumns(), rows);
     }
 
-    /** DESCRIBE's own column shape — the same thirteen for a table, a view and a materialized view. */
-    private List<ResultSetColumn> describeColumns() {
+    /**
+     * DESCRIBE's own column shape — the same thirteen for a table, a view, a materialized view and a dynamic
+     * table. The privacy domain is typed OBJECT, whatever it holds (live-verified over the driver's metadata).
+     */
+    static List<ResultSetColumn> describeColumns() {
         return Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR),
@@ -980,7 +1287,7 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("expression", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("policy name", StringType.VARCHAR),
-            new ResultSetColumn("privacy domain", StringType.VARCHAR),
+            new ResultSetColumn("privacy domain", ObjectType.OBJECT),
             new ResultSetColumn("write default", StringType.VARCHAR)
         );
     }

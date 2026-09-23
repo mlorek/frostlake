@@ -44,7 +44,7 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public boolean isCaseSensitive(final int column) throws SQLException {
-        return true;
+        return DriverColumnMetrics.isCaseSensitive(getColumnTypeName(column));
     }
 
     @Override
@@ -73,15 +73,19 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
     @Override
     public boolean isSigned(final int column) throws SQLException {
         final String type = getColumnTypeName(column);
+        if (DriverColumnMetrics.isInterval(type)) {
+            // An interval is reported unsigned, its negative values notwithstanding (live-verified).
+            return false;
+        }
         return type.contains("INT") || type.contains("DECIMAL") || type.contains("FLOAT") || type.contains("DOUBLE");
     }
 
     @Override
     public int getColumnDisplaySize(final int column) throws SQLException {
         checkColumnIndex(column);
-        // A text or binary column displays at its length, as the account's driver answers.
-        final Integer length = columns.get(column - 1).getLength();
-        return length != null ? length.intValue() : 255;
+        final ColumnData described = columns.get(column - 1);
+        return DriverColumnMetrics.displaySize(getColumnTypeName(column), described.getPrecision(),
+            described.getScale(), described.getLength());
     }
 
     @Override
@@ -103,16 +107,19 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
     @Override
     public int getPrecision(final int column) throws SQLException {
         checkColumnIndex(column);
-        // The account's driver answers a text or binary column's length as its precision; the wire
-        // carries that length for exactly those two families.
+        // The wire carries a NUMBER's precision and scale, and a text or binary column's length.
         final ColumnData described = columns.get(column - 1);
-        return described.getLength() != null ? described.getLength().intValue() : described.getPrecision();
+        return DriverColumnMetrics.precision(getColumnTypeName(column), described.getPrecision(), described.getLength());
     }
 
     @Override
     public int getScale(final int column) throws SQLException {
         checkColumnIndex(column);
-        return columns.get(column - 1).getScale();
+        // The wire's scale is a NUMBER's scale, an interval's field code, and a time or timestamp's
+        // fractional-second precision, so a TIMESTAMP_NTZ(3) reads 3 here as it does in process. A server
+        // that predates the digits sends 0 for every time and timestamp column.
+        final int scale = columns.get(column - 1).getScale();
+        return DriverColumnMetrics.scale(getColumnTypeName(column), scale, scale);
     }
 
     @Override
@@ -129,13 +136,13 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
     public int getColumnType(final int column) throws SQLException {
         // The scale travels on the wire beside the name, and it is what separates an integer column
         // from a decimal one now that every integer alias is NUMBER — so both transports answer alike.
-        return JdbcMarshaling.toSqlType(getColumnTypeName(column), columns.get(column - 1).getScale());
+        return JdbcMarshaling.driverSqlType(getColumnTypeName(column), columns.get(column - 1).getScale());
     }
 
     @Override
     public String getColumnTypeName(final int column) throws SQLException {
         checkColumnIndex(column);
-        return columns.get(column - 1).getDataType();
+        return JdbcMarshaling.driverTypeName(columns.get(column - 1).getDataType());
     }
 
     @Override
@@ -155,7 +162,7 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public String getColumnClassName(final int column) throws SQLException {
-        return JdbcMarshaling.columnClassName(getColumnType(column));
+        return JdbcMarshaling.driverColumnClassName(getColumnType(column));
     }
 
     @Override

@@ -1,248 +1,835 @@
 {
   "suite": "security-policy-enforcement",
   "description": "Column MASKING policies and ROW ACCESS policies: creating them, attaching them, the values they produce, and the roles that bypass them. A masking policy is created with its signature and body and attaches to a COLUMN; an administrative role (SYSADMIN, ACCOUNTADMIN) sees the RAW value while an ordinary role sees the masked one. The masking is applied to the COLUMN REFERENCE rather than to the output, which is the regression the middle group pins: any expression around the column used to leak the raw data, so the masked value is asserted inside a function call, a concatenation, arithmetic and a qualified reference, while a STRING LITERAL that merely happens to spell the column's name is NOT rewritten and an unmasked column in the same SELECT is untouched. Policies can be dropped, replaced, renamed (both spellings), renamed with IF EXISTS as a silent no-op, and a rename of a missing policy throws. Two TAG-DRIVEN policies key off SYSTEM and SYSTEM, so the same policy masks one column and leaves another alone. Row access policies filter ROWS by the same role logic, can block everything, detach from the table, drop as objects and rename. The last test runs both kinds at once. Converted 1:1 from security/PolicyEnforcementTest (now retired); the Java read the catalog directly for every existence and attachment claim, which becomes SHOW MASKING POLICIES / SHOW ROW ACCESS POLICIES LIKE for existence, DESCRIBE MASKING POLICY for the signature and body, and TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(...)) for the attachments - and its setCurrentRole calls become plain USE ROLE.",
-  "tags": ["security", "converted"],
+  "tags": [
+    "security",
+    "converted"
+  ],
   "tests": [
-    {"name": "create-a-masking-policy", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "SHOW MASKING POLICIES LIKE 'salary_mask'", "expect": {"rowCount": 1}},
-      {"sql": "DESCRIBE MASKING POLICY salary_mask"},
-      {"sql": "SELECT \"name\" || '/' || \"signature\" || '/' || \"return_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
-       "expect": {"value": "SALARY_MASK/(VAL FLOAT)/DOUBLE"}}
-    ]},
-    {"name": "set-a-masking-policy-on-a-column", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "SELECT POLICY_NAME, POLICY_KIND, REF_COLUMN_NAME FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'employees', REF_ENTITY_DOMAIN => 'TABLE'))",
-       "expect": {"rows": [["SALARY_MASK","MASKING_POLICY","SALARY"]]}}
-    ]},
-    {"name": "a-masking-policy-is-enforced-for-a-non-privileged-role", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "USE ROLE SYSADMIN"},
-      {"sql": "SELECT salary FROM employees WHERE id = 1", "expect": {"value": 80000}},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT salary FROM employees WHERE id = 1", "expect": {"value": -1}}
-    ]},
-    {"name": "a-masking-policy-is-bypassed-for-sysadmin", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "USE ROLE SYSADMIN"},
-      {"sql": "SELECT salary FROM employees WHERE id = 1", "expect": {"value": 80000}}
-    ]},
-    {"name": "a-masking-policy-is-bypassed-for-accountadmin", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "USE ROLE ACCOUNTADMIN"},
-      {"sql": "SELECT salary FROM employees WHERE id = 1", "expect": {"value": 80000}}
-    ]},
-    {"name": "unset-a-masking-policy", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> '***'"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name UNSET MASKING POLICY"},
-      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'employees', REF_ENTITY_DOMAIN => 'TABLE'))",
-       "expect": {"value": 0}}
-    ]},
-    {"name": "masking-applies-inside-a-function-call", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT UPPER(name) FROM employees WHERE id = 1", "expect": {"value": "***"}}
-    ]},
-    {"name": "masking-applies-in-a-concatenation", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT name || '!' FROM employees WHERE id = 1", "expect": {"value": "***!"}}
-    ]},
-    {"name": "masking-applies-in-arithmetic", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT salary + 0 FROM employees WHERE id = 1", "expect": {"value": -1}}
-    ]},
-    {"name": "masking-applies-to-a-qualified-reference", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT e.salary FROM employees e WHERE e.id = 1", "expect": {"value": -1}}
-    ]},
-    {"name": "a-string-literal-is-not-rewritten", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT 'salary' FROM employees WHERE id = 1", "expect": {"value": "salary"}}
-    ]},
-    {"name": "an-unmasked-column-is-unaffected-in-the-same-select", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT id, salary FROM employees WHERE id = 1", "expect": {"rows": [[1,-1]]}}
-    ]},
-    {"name": "an-admin-sees-the-raw-value-inside-an-expression", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "USE ROLE SYSADMIN"},
-      {"sql": "SELECT salary + 0 FROM employees WHERE id = 1", "expect": {"value": 80000}}
-    ]},
-    {"name": "drop-a-masking-policy", "steps": [
-      {"sql": "CREATE OR REPLACE MASKING POLICY to_drop AS (val VARCHAR) RETURNS VARCHAR -> '***'"},
-      {"sql": "SHOW MASKING POLICIES LIKE 'to_drop'", "expect": {"rowCount": 1}},
-      {"sql": "DROP MASKING POLICY to_drop"},
-      {"sql": "SHOW MASKING POLICIES LIKE 'to_drop'", "expect": {"rowCount": 0}}
-    ]},
-    {"name": "create-or-replace-a-masking-policy", "steps": [
-      {"sql": "CREATE OR REPLACE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> 'v1'"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> 'v2'"},
-      {"sql": "DESCRIBE MASKING POLICY mp"},
-      {"sql": "SELECT \"body\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "'v2'"}}
-    ]},
-    {"name": "rename-a-masking-policy", "steps": [
-      {"sql": "CREATE OR REPLACE MASKING POLICY mp_old AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
-      {"sql": "ALTER MASKING POLICY mp_old RENAME TO mp_new"},
-      {"sql": "SHOW MASKING POLICIES LIKE 'mp_old'", "expect": {"rowCount": 0}},
-      {"sql": "SHOW MASKING POLICIES LIKE 'mp_new'", "expect": {"rowCount": 1}},
-      {"sql": "DESCRIBE MASKING POLICY mp_new"},
-      {"sql": "SELECT \"name\" || '/' || \"body\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "MP_NEW/'***'"}}
-    ]},
-    {"name": "rename-a-masking-policy-in-the-bare-form", "steps": [
-      {"sql": "CREATE OR REPLACE MASKING POLICY mp_bare AS (v VARCHAR) RETURNS VARCHAR -> 'x'"},
-      {"sql": "ALTER MASKING POLICY mp_bare RENAME TO mp_bare2"},
-      {"sql": "SHOW MASKING POLICIES LIKE 'mp_bare'", "expect": {"rowCount": 0}},
-      {"sql": "SHOW MASKING POLICIES LIKE 'mp_bare2'", "expect": {"rowCount": 1}}
-    ]},
-    {"name": "rename-a-missing-masking-policy-with-if-exists-is-a-no-op", "steps": [
-      {"sql": "ALTER MASKING POLICY IF EXISTS no_such_mp RENAME TO whatever"}
-    ]},
-    {"name": "rename-a-missing-masking-policy-throws", "steps": [
-      {"sql": "ALTER MASKING POLICY no_such_mp RENAME TO whatever", "expect": {"error": {}}}
-    ]},
-    {"name": "tag-driven-masking-via-get-tag-on-current-column", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE TAG IF NOT EXISTS classification ALLOWED_VALUES 'PII', 'PUBLIC'"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET TAG classification = 'PII'"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN department SET TAG classification = 'PUBLIC'"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY tag_mask AS (v VARCHAR) RETURNS VARCHAR -> IFF(SYSTEM$GET_TAG_ON_CURRENT_COLUMN('classification') = 'PII', '***', v)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY tag_mask"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN department SET MASKING POLICY tag_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT name, department FROM employees WHERE id = 1", "expect": {"rows": [["***","HR"]]}}
-    ]},
-    {"name": "tag-driven-masking-via-get-tag-on-current-table", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE TAG IF NOT EXISTS classification ALLOWED_VALUES 'PII', 'PUBLIC'"},
-      {"sql": "ALTER TABLE employees SET TAG classification = 'PII'"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY tbl_mask AS (v VARCHAR) RETURNS VARCHAR -> IFF(SYSTEM$GET_TAG_ON_CURRENT_TABLE('classification') = 'PII', '###', v)"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY tbl_mask"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT name FROM employees WHERE id = 1", "expect": {"value": "###"}}
-    ]},
-    {"name": "create-a-row-access-policy", "steps": [
-      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY dept_filter AS (dept VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'ADMIN'"},
-      {"sql": "SHOW ROW ACCESS POLICIES LIKE 'dept_filter'", "expect": {"rowCount": 1}}
-    ]},
-    {"name": "add-a-row-access-policy-to-a-table", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY dept_policy AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"},
-      {"sql": "ALTER TABLE employees ADD ROW ACCESS POLICY dept_policy ON (department)"},
-      {"sql": "SELECT POLICY_NAME, POLICY_KIND FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'employees', REF_ENTITY_DOMAIN => 'TABLE'))",
-       "expect": {"rows": [["DEPT_POLICY","ROW_ACCESS_POLICY"]]}}
-    ]},
-    {"name": "a-row-access-policy-filters-rows", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY it_only AS (dept VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'SYSADMIN' OR dept = 'IT'"},
-      {"sql": "ALTER TABLE employees ADD ROW ACCESS POLICY it_only ON (department)"},
-      {"sql": "USE ROLE SYSADMIN"},
-      {"sql": "SELECT COUNT(*) FROM employees", "expect": {"value": 3}},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT id, name FROM employees", "expect": {"rows": [[2,"Bob"]]}}
-    ]},
-    {"name": "a-row-access-policy-can-block-every-row", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY block_all AS (dept VARCHAR) RETURNS BOOLEAN -> FALSE"},
-      {"sql": "ALTER TABLE employees ADD ROW ACCESS POLICY block_all ON (department)"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT COUNT(*) FROM employees", "expect": {"value": 0}}
-    ]},
-    {"name": "drop-a-row-access-policy-from-a-table", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY p AS (d VARCHAR) RETURNS BOOLEAN -> TRUE"},
-      {"sql": "ALTER TABLE employees ADD ROW ACCESS POLICY p ON (department)"},
-      {"sql": "ALTER TABLE employees DROP ROW ACCESS POLICY p"},
-      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'employees', REF_ENTITY_DOMAIN => 'TABLE'))",
-       "expect": {"value": 0}}
-    ]},
-    {"name": "drop-a-row-access-policy-object", "steps": [
-      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY rp_drop AS (d VARCHAR) RETURNS BOOLEAN -> TRUE"},
-      {"sql": "SHOW ROW ACCESS POLICIES LIKE 'rp_drop'", "expect": {"rowCount": 1}},
-      {"sql": "DROP ROW ACCESS POLICY rp_drop"},
-      {"sql": "SHOW ROW ACCESS POLICIES LIKE 'rp_drop'", "expect": {"rowCount": 0}}
-    ]},
-    {"name": "rename-a-row-access-policy", "steps": [
-      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY rap_old AS (d VARCHAR) RETURNS BOOLEAN -> TRUE"},
-      {"sql": "ALTER ROW ACCESS POLICY rap_old RENAME TO rap_new"},
-      {"sql": "SHOW ROW ACCESS POLICIES LIKE 'rap_old'", "expect": {"rowCount": 0}},
-      {"sql": "SHOW ROW ACCESS POLICIES LIKE 'rap_new'", "expect": {"rowCount": 1}}
-    ]},
-    {"name": "rename-a-missing-row-access-policy-with-if-exists-is-a-no-op", "steps": [
-      {"sql": "ALTER ROW ACCESS POLICY IF EXISTS no_such_rap RENAME TO whatever"}
-    ]},
-    {"name": "masking-and-row-access-together", "steps": [
-      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"},
-      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"},
-      {"sql": "CREATE OR REPLACE MASKING POLICY sal_mask AS (v DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'ADMIN', v, 0.0)"},
-      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY hr_only AS (d VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'ADMIN' OR d = 'HR'"},
-      {"sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY sal_mask"},
-      {"sql": "ALTER TABLE employees ADD ROW ACCESS POLICY hr_only ON (department)"},
-      {"sql": "USE ROLE PUBLIC"},
-      {"sql": "SELECT name, salary FROM employees ORDER BY id", "expect": {"rows": [["Alice",0],["Carol",0]], "ordered": true}}
-    ]}
+    {
+      "name": "create-a-masking-policy",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "SHOW MASKING POLICIES LIKE 'salary_mask'",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "DESCRIBE MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "SELECT \"name\" || '/' || \"signature\" || '/' || \"return_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+          "expect": {
+            "value": "SALARY_MASK/(VAL FLOAT)/DOUBLE"
+          }
+        }
+      ]
+    },
+    {
+      "name": "set-a-masking-policy-on-a-column",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "SELECT POLICY_NAME, POLICY_KIND, REF_COLUMN_NAME FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'employees', REF_ENTITY_DOMAIN => 'TABLE'))",
+          "expect": {
+            "rows": [
+              [
+                "SALARY_MASK",
+                "MASKING_POLICY",
+                "SALARY"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-masking-policy-is-enforced-for-every-role",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "USE ROLE SYSADMIN"
+        },
+        {
+          "sql": "SELECT salary FROM employees WHERE id = 1",
+          "expect": {
+            "value": -1
+          }
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT salary FROM employees WHERE id = 1",
+          "expect": {
+            "value": -1
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-masking-policy-applies-to-sysadmin",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "USE ROLE SYSADMIN"
+        },
+        {
+          "sql": "SELECT salary FROM employees WHERE id = 1",
+          "expect": {
+            "value": -1
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-masking-policy-applies-to-accountadmin",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "USE ROLE ACCOUNTADMIN"
+        },
+        {
+          "sql": "SELECT salary FROM employees WHERE id = 1",
+          "expect": {
+            "value": -1
+          }
+        }
+      ]
+    },
+    {
+      "name": "unset-a-masking-policy",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> '***'"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name UNSET MASKING POLICY"
+        },
+        {
+          "sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'employees', REF_ENTITY_DOMAIN => 'TABLE'))",
+          "expect": {
+            "value": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "masking-applies-inside-a-function-call",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT UPPER(name) FROM employees WHERE id = 1",
+          "expect": {
+            "value": "***"
+          }
+        }
+      ]
+    },
+    {
+      "name": "masking-applies-in-a-concatenation",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT name || '!' FROM employees WHERE id = 1",
+          "expect": {
+            "value": "***!"
+          }
+        }
+      ]
+    },
+    {
+      "name": "masking-applies-in-arithmetic",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT salary + 0 FROM employees WHERE id = 1",
+          "expect": {
+            "value": -1
+          }
+        }
+      ]
+    },
+    {
+      "name": "masking-applies-to-a-qualified-reference",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT e.salary FROM employees e WHERE e.id = 1",
+          "expect": {
+            "value": -1
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-string-literal-is-not-rewritten",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT 'salary' FROM employees WHERE id = 1",
+          "expect": {
+            "value": "salary"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-unmasked-column-is-unaffected-in-the-same-select",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT id, salary FROM employees WHERE id = 1",
+          "expect": {
+            "rows": [
+              [
+                1,
+                -1
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-admin-is-masked-inside-an-expression",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, '***')"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "USE ROLE SYSADMIN"
+        },
+        {
+          "sql": "SELECT salary + 0 FROM employees WHERE id = 1",
+          "expect": {
+            "value": -1
+          }
+        }
+      ]
+    },
+    {
+      "name": "drop-a-masking-policy",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY to_drop AS (val VARCHAR) RETURNS VARCHAR -> '***'"
+        },
+        {
+          "sql": "SHOW MASKING POLICIES LIKE 'to_drop'",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "DROP MASKING POLICY to_drop"
+        },
+        {
+          "sql": "SHOW MASKING POLICIES LIKE 'to_drop'",
+          "expect": {
+            "rowCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "create-or-replace-a-masking-policy",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> 'v1'"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> 'v2'"
+        },
+        {
+          "sql": "DESCRIBE MASKING POLICY mp"
+        },
+        {
+          "sql": "SELECT \"body\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+          "expect": {
+            "value": "'v2'"
+          }
+        }
+      ]
+    },
+    {
+      "name": "rename-a-masking-policy",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY mp_old AS (v VARCHAR) RETURNS VARCHAR -> '***'"
+        },
+        {
+          "sql": "ALTER MASKING POLICY mp_old RENAME TO mp_new"
+        },
+        {
+          "sql": "SHOW MASKING POLICIES LIKE 'mp_old'",
+          "expect": {
+            "rowCount": 0
+          }
+        },
+        {
+          "sql": "SHOW MASKING POLICIES LIKE 'mp_new'",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "DESCRIBE MASKING POLICY mp_new"
+        },
+        {
+          "sql": "SELECT \"name\" || '/' || \"body\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+          "expect": {
+            "value": "MP_NEW/'***'"
+          }
+        }
+      ]
+    },
+    {
+      "name": "rename-a-masking-policy-in-the-bare-form",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY mp_bare AS (v VARCHAR) RETURNS VARCHAR -> 'x'"
+        },
+        {
+          "sql": "ALTER MASKING POLICY mp_bare RENAME TO mp_bare2"
+        },
+        {
+          "sql": "SHOW MASKING POLICIES LIKE 'mp_bare'",
+          "expect": {
+            "rowCount": 0
+          }
+        },
+        {
+          "sql": "SHOW MASKING POLICIES LIKE 'mp_bare2'",
+          "expect": {
+            "rowCount": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "rename-a-missing-masking-policy-with-if-exists-is-a-no-op",
+      "steps": [
+        {
+          "sql": "ALTER MASKING POLICY IF EXISTS no_such_mp RENAME TO whatever"
+        }
+      ]
+    },
+    {
+      "name": "rename-a-missing-masking-policy-throws",
+      "steps": [
+        {
+          "sql": "ALTER MASKING POLICY no_such_mp RENAME TO whatever",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "tag-driven-masking-via-get-tag-on-current-column",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE TAG IF NOT EXISTS classification ALLOWED_VALUES 'PII', 'PUBLIC'"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET TAG classification = 'PII'"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN department SET TAG classification = 'PUBLIC'"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY tag_mask AS (v VARCHAR) RETURNS VARCHAR -> IFF(SYSTEM$GET_TAG_ON_CURRENT_COLUMN('classification') = 'PII', '***', v)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY tag_mask"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN department SET MASKING POLICY tag_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT name, department FROM employees WHERE id = 1",
+          "expect": {
+            "rows": [
+              [
+                "***",
+                "HR"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "tag-driven-masking-via-get-tag-on-current-table",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE TAG IF NOT EXISTS classification ALLOWED_VALUES 'PII', 'PUBLIC'"
+        },
+        {
+          "sql": "ALTER TABLE employees SET TAG classification = 'PII'"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY tbl_mask AS (v VARCHAR) RETURNS VARCHAR -> IFF(SYSTEM$GET_TAG_ON_CURRENT_TABLE('classification') = 'PII', '###', v)"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY tbl_mask"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT name FROM employees WHERE id = 1",
+          "expect": {
+            "value": "###"
+          }
+        }
+      ]
+    },
+    {
+      "name": "create-a-row-access-policy",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE ROW ACCESS POLICY dept_filter AS (dept VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'ADMIN'"
+        },
+        {
+          "sql": "SHOW ROW ACCESS POLICIES LIKE 'dept_filter'",
+          "expect": {
+            "rowCount": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "add-a-row-access-policy-to-a-table",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE ROW ACCESS POLICY dept_policy AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE"
+        },
+        {
+          "sql": "ALTER TABLE employees ADD ROW ACCESS POLICY dept_policy ON (department)"
+        },
+        {
+          "sql": "SELECT POLICY_NAME, POLICY_KIND FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'employees', REF_ENTITY_DOMAIN => 'TABLE'))",
+          "expect": {
+            "rows": [
+              [
+                "DEPT_POLICY",
+                "ROW_ACCESS_POLICY"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-row-access-policy-filters-rows",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE ROW ACCESS POLICY it_only AS (dept VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'SYSADMIN' OR dept = 'IT'"
+        },
+        {
+          "sql": "ALTER TABLE employees ADD ROW ACCESS POLICY it_only ON (department)"
+        },
+        {
+          "sql": "USE ROLE SYSADMIN"
+        },
+        {
+          "sql": "SELECT COUNT(*) FROM employees",
+          "expect": {
+            "value": 3
+          }
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT id, name FROM employees",
+          "expect": {
+            "rows": [
+              [
+                2,
+                "Bob"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-row-access-policy-can-block-every-row",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE ROW ACCESS POLICY block_all AS (dept VARCHAR) RETURNS BOOLEAN -> FALSE"
+        },
+        {
+          "sql": "ALTER TABLE employees ADD ROW ACCESS POLICY block_all ON (department)"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT COUNT(*) FROM employees",
+          "expect": {
+            "value": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "drop-a-row-access-policy-from-a-table",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE ROW ACCESS POLICY p AS (d VARCHAR) RETURNS BOOLEAN -> TRUE"
+        },
+        {
+          "sql": "ALTER TABLE employees ADD ROW ACCESS POLICY p ON (department)"
+        },
+        {
+          "sql": "ALTER TABLE employees DROP ROW ACCESS POLICY p"
+        },
+        {
+          "sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'employees', REF_ENTITY_DOMAIN => 'TABLE'))",
+          "expect": {
+            "value": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "drop-a-row-access-policy-object",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE ROW ACCESS POLICY rp_drop AS (d VARCHAR) RETURNS BOOLEAN -> TRUE"
+        },
+        {
+          "sql": "SHOW ROW ACCESS POLICIES LIKE 'rp_drop'",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "DROP ROW ACCESS POLICY rp_drop"
+        },
+        {
+          "sql": "SHOW ROW ACCESS POLICIES LIKE 'rp_drop'",
+          "expect": {
+            "rowCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "rename-a-row-access-policy",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE ROW ACCESS POLICY rap_old AS (d VARCHAR) RETURNS BOOLEAN -> TRUE"
+        },
+        {
+          "sql": "ALTER ROW ACCESS POLICY rap_old RENAME TO rap_new"
+        },
+        {
+          "sql": "SHOW ROW ACCESS POLICIES LIKE 'rap_old'",
+          "expect": {
+            "rowCount": 0
+          }
+        },
+        {
+          "sql": "SHOW ROW ACCESS POLICIES LIKE 'rap_new'",
+          "expect": {
+            "rowCount": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "rename-a-missing-row-access-policy-with-if-exists-is-a-no-op",
+      "steps": [
+        {
+          "sql": "ALTER ROW ACCESS POLICY IF EXISTS no_such_rap RENAME TO whatever"
+        }
+      ]
+    },
+    {
+      "name": "masking-and-row-access-together",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE, department VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO employees VALUES (1, 'Alice', 80000, 'HR'), (2, 'Bob', 90000, 'IT'), (3, 'Carol', 75000, 'HR')"
+        },
+        {
+          "sql": "CREATE OR REPLACE MASKING POLICY sal_mask AS (v DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'ADMIN', v, 0.0)"
+        },
+        {
+          "sql": "CREATE OR REPLACE ROW ACCESS POLICY hr_only AS (d VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'ADMIN' OR d = 'HR'"
+        },
+        {
+          "sql": "ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY sal_mask"
+        },
+        {
+          "sql": "ALTER TABLE employees ADD ROW ACCESS POLICY hr_only ON (department)"
+        },
+        {
+          "sql": "USE ROLE PUBLIC"
+        },
+        {
+          "sql": "SELECT name, salary FROM employees ORDER BY id",
+          "expect": {
+            "rows": [
+              [
+                "Alice",
+                0
+              ],
+              [
+                "Carol",
+                0
+              ]
+            ],
+            "ordered": true
+          }
+        }
+      ]
+    }
   ]
 }

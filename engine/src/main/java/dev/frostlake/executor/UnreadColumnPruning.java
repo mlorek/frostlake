@@ -255,6 +255,7 @@ final class UnreadColumnPruning {
             case FrostlakeParser.POSITIONAL_PARAMETER:
             case FrostlakeParser.NATURAL:
             case FrostlakeParser.KW_IDENTIFIER:
+            case FrostlakeParser.KW_IDENTIFIER_REF:
                 return false;
             case FrostlakeParser.STAR:
                 return starReadsNothing(terminal);

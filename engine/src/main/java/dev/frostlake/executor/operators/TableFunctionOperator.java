@@ -44,6 +44,7 @@ public class TableFunctionOperator implements Operator {
     private final Map<String, Object> namedArguments;
     private final List<Object> positionalArguments;
     private final ResultSetProvider resultProvider;
+    private final String callText;
 
     /**
      * Create a table function operator with named arguments.
@@ -60,6 +61,7 @@ public class TableFunctionOperator implements Operator {
         this.namedArguments = namedArguments;
         this.positionalArguments = null;
         this.resultProvider = null;
+        this.callText = null;
     }
 
     /**
@@ -77,6 +79,7 @@ public class TableFunctionOperator implements Operator {
         this.namedArguments = null;
         this.positionalArguments = positionalArguments;
         this.resultProvider = null;
+        this.callText = null;
     }
 
     /**
@@ -88,11 +91,25 @@ public class TableFunctionOperator implements Operator {
      */
     public TableFunctionOperator(final String functionName,
                                  final ResultSetProvider resultProvider) {
+        this(functionName, resultProvider, null);
+    }
+
+    /**
+     * Create a table function operator over a planned call: the provider answers the call's result and the
+     * call's own text names the stage in a plan.
+     *
+     * @param functionName   Name of the table function
+     * @param resultProvider Provider that produces the ResultSet
+     * @param callText       The call as written, or null
+     */
+    public TableFunctionOperator(final String functionName,
+                                 final ResultSetProvider resultProvider, final String callText) {
         this.functionName = functionName;
         this.tableFunction = null;
         this.namedArguments = null;
         this.positionalArguments = null;
         this.resultProvider = resultProvider;
+        this.callText = callText;
     }
 
     @Override
@@ -128,6 +145,9 @@ public class TableFunctionOperator implements Operator {
 
     @Override
     public String getDescription() {
+        if (callText != null) {
+            return "TABLE[" + callText + "]";
+        }
         final StringBuilder desc = new StringBuilder();
         desc.append("TABLE[").append(functionName).append("(");
 

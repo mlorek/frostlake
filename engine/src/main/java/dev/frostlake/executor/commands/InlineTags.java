@@ -17,14 +17,17 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ParseTreeText;
-import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Applies a creation-time {@code [WITH] TAG (name = 'value', …)} clause to the object being created,
@@ -41,25 +44,50 @@ final class InlineTags {
      * belong to the object itself — a CREATE TABLE's tail options, say — because a column's tag
      * clause sits in the same statement and belongs to the column, not the table.
      */
-    static void applyFrom(final Taggable target, final List<? extends ParseTree> ownContexts) {
+    static void applyFrom(final Taggable target, final List<? extends ParseTree> ownContexts,
+                          final QueryExecutor queryExecutor) {
         if (ownContexts == null) {
             return;
         }
         for (final ParseTree context : ownContexts) {
             final FrostlakeParser.TagListContext tags = firstTagList(context);
             if (tags != null) {
-                apply(target, tags);
+                apply(target, tags, queryExecutor);
             }
         }
     }
 
-    /** Apply one tag clause's assignments to {@code target}, keyed by the tag's simple name. */
-    static void apply(final Taggable target, final FrostlakeParser.TagListContext tags) {
+    /**
+     * Apply one tag clause's assignments to {@code target}, keyed by the tag's simple name. A tag given twice
+     * must be given the same value both times; two values are refused, naming them in the order written.
+     */
+    static void apply(final Taggable target, final FrostlakeParser.TagListContext tags,
+                      final QueryExecutor queryExecutor) {
+        final Map<String, List<String>> valuesByTag = new LinkedHashMap<>();
+        final Map<String, String> simpleNames = new LinkedHashMap<>();
         for (final FrostlakeParser.TagAssignmentContext assignment : tags.tagAssignment()) {
             final QualifiedName tagName = QualifiedName.of(
                 ParseTreeText.qualifiedNameParts(assignment.qualifiedName()));
-            target.setTag(tagName.last(),
-                SqlStringLiterals.decode(assignment.STRING_LITERAL().getText()));
+            final String value = TagValues.text(assignment.qualifiedName(), assignment.tagValue(), queryExecutor);
+            List<String> values = valuesByTag.get(tagName.toString());
+            if (values == null) {
+                values = new ArrayList<>();
+                valuesByTag.put(tagName.toString(), values);
+                simpleNames.put(tagName.toString(), tagName.last());
+            }
+            values.add(value);
+        }
+        for (final Map.Entry<String, List<String>> tag : valuesByTag.entrySet()) {
+            final List<String> values = tag.getValue();
+            for (final String value : values) {
+                if (!value.equals(values.get(0))) {
+                    throw new RuntimeException("Same tag " + simpleNames.get(tag.getKey())
+                        + " with multiple values provided, values = " + String.join(", ", values));
+                }
+            }
+        }
+        for (final Map.Entry<String, List<String>> tag : valuesByTag.entrySet()) {
+            target.setTag(simpleNames.get(tag.getKey()), tag.getValue().get(0));
         }
     }
 

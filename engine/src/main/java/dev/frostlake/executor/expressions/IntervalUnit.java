@@ -63,7 +63,8 @@ public enum IntervalUnit {
         // FUNCTIONS refuse them: DATEADD(woy, 1, ts) is "['WOY'] is not a valid date/time component
         // for function DATEADD", while DATE_PART(woy, ts) answers the week number. The surfaces
         // disagree, so the refusal lives with those functions rather than being taken out of here.
-        register(WEEK, "week", "weeks", "wk", "woy", "weekofyear");
+        // w is a WEEK in every date function and in INTERVAL; wy, like woy, only where a component is read.
+        register(WEEK, "week", "weeks", "wk", "w", "woy", "weekofyear", "wy");
         register(DAY, "day", "days", "dd", "d", "dayofmonth");
         register(HOUR, "hour", "hours", "hh", "hr", "hrs", "h");
         register(MINUTE, "minute", "minutes", "mi", "min", "mins", "m");

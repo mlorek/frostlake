@@ -17,8 +17,10 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 
 /**
@@ -58,4 +60,21 @@ public class UserSnapshot implements Serializable {
     public String defaultSecondaryRoles;
     public boolean mustChangePassword;
     public String userType;
+    // The countdowns' end instants and the public keys. Null on snapshots that predate them, which restore as none.
+    public Instant expiresAt;
+    public Instant lockedUntil;
+    public Instant mfaBypassUntil;
+    public String rsaPublicKey;
+    public String rsaPublicKeyFp;
+    public Instant rsaPublicKeyLastSetTime;
+    public String rsaPublicKey2;
+    public String rsaPublicKey2Fp;
+    public Instant rsaPublicKey2LastSetTime;
+
+    // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
+    /** Who granted each role in grantedRoles, by role name. */
+    public HashMap<String, String> roleGrantors;
+    /** The database roles granted to this user, by qualified name, each with its grantor. */
+    public HashMap<String, String> databaseRoleGrants;
+    public HashMap<String, String> tags;
 }

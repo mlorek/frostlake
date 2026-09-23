@@ -116,13 +116,48 @@ final class Compare {
             outcome.skipCheck("ERROR_CODE: cannot check error code/sqlState (backend reports message only)");
             return outcome;
         }
-        if (code != null && !code.equals(result.getErrorCode())) {
+        if (code != null && !sameErrorCode(code, result.getErrorCode())) {
             return Outcome.failure("error code [" + result.getErrorCode() + "] != expected [" + code + "]");
         }
         if (state != null && !state.equals(result.getSqlState())) {
             return Outcome.failure("sqlState [" + result.getSqlState() + "] != expected [" + state + "]");
         }
         return outcome;
+    }
+
+    /**
+     * Whether a reported error code is the expected one. A corpus spells a code as the SQL REST API does,
+     * six zero-padded digits ({@code 001003}), while a JDBC driver reports the vendor code as an int
+     * ({@code 1003}), so two all-digit codes compare by their value; anything else compares exactly.
+     */
+    static boolean sameErrorCode(final String expected, final String actual) {
+        if (actual == null) {
+            return false;
+        }
+        if (allDigits(expected) && allDigits(actual)) {
+            return withoutLeadingZeros(expected).equals(withoutLeadingZeros(actual));
+        }
+        return expected.equals(actual);
+    }
+
+    private static boolean allDigits(final String text) {
+        if (text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            if (!Character.isDigit(text.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String withoutLeadingZeros(final String digits) {
+        int start = 0;
+        while (start < digits.length() - 1 && digits.charAt(start) == '0') {
+            start++;
+        }
+        return digits.substring(start);
     }
 
     private static List<List<String>> expectedGrid(final List<Object> rows) {

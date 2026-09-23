@@ -17,6 +17,7 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 import java.util.List;
 import java.util.Map;
 
@@ -52,4 +53,15 @@ public abstract class TableFunction {
      * Validate the arguments passed to the function
      */
     public abstract void validateArgs(final Map<String, Object> namedArgs);
+
+    /**
+     * The columns the function answers for these arguments, when it can tell them without running — what
+     * lets a query over it be planned before any row is produced. Null when only running the function tells.
+     *
+     * @param namedArgs the call's named arguments
+     * @return the columns, or null
+     */
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return null;
+    }
 }

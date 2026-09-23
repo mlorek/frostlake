@@ -21,8 +21,11 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
+import dev.frostlake.metastore.model.Account;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
+import dev.frostlake.metastore.model.ManagedAccount;
+import dev.frostlake.metastore.model.ObjectParameters;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -46,9 +49,11 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -59,6 +64,9 @@ import java.util.Set;
  * facade because it is installed after construction.
  */
 final class ShowSessionExecutor {
+
+    /** The user parameter naming the network policy attached to the user. */
+    private static final String NETWORK_POLICY = "NETWORK_POLICY";
 
     /**
      * When this engine's account was created. Nothing models an account's real birthday, so it is a
@@ -73,9 +81,8 @@ final class ShowSessionExecutor {
     private final TransactionManager transactionManager;
     private final QueryHistoryTracker queryHistoryTracker;
     private final Map<String, Object> sessionVariables;
-    /** The number SHOW TRANSACTIONS' session cell and SHOW LOCKS IN ACCOUNT's session column carry —
-     *  live shows an opaque per-session number, so the engine mints one stable value per instance. */
-    private final long sessionNumber = System.currentTimeMillis();
+    /** When this engine's listings began — the created_on / updated_on SHOW VARIABLES prints. */
+    private final long startedOnMillis = System.currentTimeMillis();
 
     ShowSessionExecutor(final Catalog catalog, final ShowCommandExecutor facade,
                         final TransactionManager transactionManager,
@@ -150,10 +157,55 @@ final class ShowSessionExecutor {
         return new ResultSet(columns, rows);
     }
 
-    /** SHOW … LIKE matching: the pattern's % are wildcards around a case-insensitive substring. */
+    /**
+     * SHOW PARAMETERS IN USER: the parameters a user carries, each at its default, and the network policy attached
+     * to the user, whose level reads USER while one is attached and is empty otherwise. The pattern is a LIKE
+     * pattern, matched case-insensitively.
+     *
+     * @param userName    the user, canonical
+     * @param likePattern the LIKE pattern, or null for every row
+     */
+    public ResultSet showParametersInUser(final String userName, final String likePattern) {
+        final String user = catalog.getUser(userName).getName();
+        final Map<String, SessionParameterRow> known = new HashMap<>();
+        for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {
+            known.put(parameter.getName(), parameter);
+        }
+        for (final SessionParameterRow parameter : SessionParameterCatalog.userOnlyRows()) {
+            known.put(parameter.getName(), parameter);
+        }
+        final List<Row> rows = new ArrayList<>();
+        for (final String key : SessionParameterCatalog.userScopeNames()) {
+            final Row row;
+            final SessionParameterRow parameter = known.get(key);
+            if (parameter == null) {
+                continue;
+            }
+            if (NETWORK_POLICY.equals(key)) {
+                final String policy = catalog.getSecurityObjects().attachment("NETWORK_POLICY|USER|" + user);
+                row = new Row(Arrays.asList(key, policy == null ? "" : policy, parameter.getDefaultValue(),
+                    policy == null ? "" : "USER", parameter.getDescription(), parameter.getType()));
+            } else {
+                row = new Row(Arrays.asList(key, parameter.getDefaultValue(), parameter.getDefaultValue(), "",
+                    parameter.getDescription(), parameter.getType()));
+            }
+            addIfLike(rows, row, likePattern);
+        }
+        return new ResultSet(parameterColumns(), rows);
+    }
+
+    private static void addIfLike(final List<Row> rows, final Row row, final String likePattern) {
+        if (likePattern == null || ShowResultHelpers.matchesLike(String.valueOf(row.getValue(0)), likePattern)) {
+            rows.add(row);
+        }
+    }
+
+    /**
+     * SHOW PARAMETERS … LIKE matching: a LIKE pattern, case-insensitive, so {@code LIKE 'TIMESTAMP'} names only
+     * a parameter called that and {@code LIKE 'week%'} the ones starting with it.
+     */
     private boolean matchesLike(final String name, final String likePattern) {
-        return likePattern == null
-            || name.toUpperCase().contains(likePattern.toUpperCase().replace("%", ""));
+        return likePattern == null || ShowResultHelpers.matchesLike(name, likePattern);
     }
 
     public ResultSet showParametersInTask(final String taskName, final String likePattern) {
@@ -172,7 +224,10 @@ final class ShowSessionExecutor {
                     ? task.getServerlessTaskMaxStatementSize() : "X2Large",
                 "X2Large", "STRING",
                 "The maximum warehouse size to use for a serverless Task"},
-            {"SERVERLESS_TASK_MIN_STATEMENT_SIZE", "XSMALL", "XSMALL", "STRING",
+            {"SERVERLESS_TASK_MIN_STATEMENT_SIZE",
+                task.getServerlessTaskMinStatementSize() != null
+                    ? task.getServerlessTaskMinStatementSize() : "XSMALL",
+                "XSMALL", "STRING",
                 "The minimum warehouse size to use for a serverless Task"},
             {"SUSPEND_TASK_AFTER_NUM_FAILURES",
                 String.valueOf(task.getSuspendTaskAfterNumFailures()), "10", "NUMBER",
@@ -193,14 +248,30 @@ final class ShowSessionExecutor {
                 String.valueOf(task.getUserTaskTimeoutMs()), "3600000", "NUMBER",
                 "User task execution timeout in milliseconds"}
         };
-        final List<Row> rows = new ArrayList<>();
+        final Map<String, Object[]> taskOwn = new HashMap<>();
         for (final Object[] param : params) {
-            final String key = (String) param[0];
+            taskOwn.put((String) param[0], param);
+        }
+        // Every parameter a task carries, in live's order: the task's own above, and the session parameters a
+        // task may set for its runs, each at its default until the task sets it.
+        final List<Row> rows = new ArrayList<>();
+        for (final String key : SessionParameterCatalog.taskScopeNames()) {
             if (!matchesParameterFilter(key, likePattern)) {
                 continue;
             }
-            rows.add(new Row(Arrays.asList(key, param[1], param[2],
-                task.isParameterSetOnTask(key) ? "TASK" : "", param[4], param[3])));
+            final Object[] param = taskOwn.get(key);
+            if (param != null) {
+                rows.add(new Row(Arrays.asList(key, param[1], param[2],
+                    task.isParameterSetOnTask(key) ? "TASK" : "", param[4], param[3])));
+                continue;
+            }
+            final SessionParameterRow row = SessionParameterCatalog.find(key);
+            if (row == null) {
+                continue;
+            }
+            final String set = task.getSessionParameters().get(key);
+            rows.add(new Row(Arrays.asList(key, set != null ? set : row.getDefaultValue(), row.getDefaultValue(),
+                set != null ? "TASK" : "", row.getDescription(), row.getType())));
         }
         return new ResultSet(parameterColumns(), rows);
     }
@@ -240,6 +311,65 @@ final class ShowSessionExecutor {
         return new ResultSet(parameterColumns(), rows);
     }
 
+    /**
+     * SHOW PARAMETERS IN DATABASE: the parameters a database can set on itself, each with the value in force —
+     * the database's own (level {@code DATABASE}) or the account default (level empty).
+     */
+    public ResultSet showParametersInDatabase(final String databaseName, final String likePattern) {
+        final Database database = catalog.databaseExact(databaseName);
+        final List<Row> rows = new ArrayList<>();
+        for (final SessionParameterRow parameter : ContainerParameterCatalog.databaseRows()) {
+            final String key = parameter.getName();
+            if (!matchesParameterFilter(key, likePattern)) {
+                continue;
+            }
+            final String own = containerValue(key, database.getDataRetentionTimeInDays(), database.getParameters());
+            rows.add(new Row(Arrays.asList(key, own != null ? own : parameter.getDefaultValue(),
+                parameter.getDefaultValue(), own != null ? "DATABASE" : "", parameter.getDescription(),
+                parameter.getType())));
+        }
+        return new ResultSet(parameterColumns(), rows);
+    }
+
+    /**
+     * SHOW PARAMETERS IN SCHEMA: the parameters a schema can set on itself, each with the value in force — the
+     * schema's own (level {@code SCHEMA}), its database's (level {@code DATABASE}) or the account default.
+     */
+    public ResultSet showParametersInSchema(final String databaseName, final String schemaName,
+                                            final String likePattern) {
+        final Database database = catalog.databaseExact(databaseName);
+        final Schema schema = database.schemaExact(schemaName);
+        final List<Row> rows = new ArrayList<>();
+        for (final SessionParameterRow parameter : ContainerParameterCatalog.schemaRows()) {
+            final String key = parameter.getName();
+            if (!matchesParameterFilter(key, likePattern)) {
+                continue;
+            }
+            String value = containerValue(key, schema.getDataRetentionTimeInDays(), schema.getParameters());
+            String level = "SCHEMA";
+            if (value == null) {
+                value = containerValue(key, database.getDataRetentionTimeInDays(), database.getParameters());
+                level = "DATABASE";
+            }
+            if (value == null) {
+                value = parameter.getDefaultValue();
+                level = "";
+            }
+            rows.add(new Row(Arrays.asList(key, value, parameter.getDefaultValue(), level,
+                parameter.getDescription(), parameter.getType())));
+        }
+        return new ResultSet(parameterColumns(), rows);
+    }
+
+    /** A container's own setting of a parameter, or null when it inherits it; the retention is kept apart. */
+    private static String containerValue(final String key, final Integer retention,
+                                         final ObjectParameters parameters) {
+        if ("DATA_RETENTION_TIME_IN_DAYS".equals(key)) {
+            return retention == null ? null : String.valueOf(retention);
+        }
+        return parameters.get(key);
+    }
+
     /** Whether a parameter name survives a SHOW PARAMETERS … LIKE filter. */
     private boolean matchesParameterFilter(final String key, final String likePattern) {
         return likePattern == null
@@ -247,8 +377,8 @@ final class ShowSessionExecutor {
     }
 
     /**
-     * The 24 columns SHOW ACCOUNTS answers with, measured — SHOW ORGANIZATION ACCOUNTS answers with
-     * exactly the same shape, which is why both listings share this.
+     * The 25 columns SHOW ACCOUNTS answers with, measured — SHOW ORGANIZATION ACCOUNTS answers with
+     * exactly the same shape, which is why both listings share this. Both end with {@code contract_number}.
      *
      * <p>There is NO {@code region_group} column here, and no {@code org_default_region}: both were
      * Frostlake's own invention and asking a real account for either is an invalid identifier. Four
@@ -280,7 +410,8 @@ final class ShowSessionExecutor {
             new ResultSetColumn("is_events_account", StringType.VARCHAR),
             new ResultSetColumn("is_organization_account", StringType.VARCHAR),
             new ResultSetColumn("tenant_type", StringType.VARCHAR),
-            new ResultSetColumn("domain_names", StringType.VARCHAR)
+            new ResultSetColumn("domain_names", StringType.VARCHAR),
+            new ResultSetColumn("contract_number", StringType.VARCHAR)
         );
     }
 
@@ -315,6 +446,7 @@ final class ShowSessionExecutor {
             "false",
             "false",
             "INTERNAL",
+            null,
             null
         ));
     }
@@ -325,6 +457,101 @@ final class ShowSessionExecutor {
 
     public ResultSet showAccounts() {
         return new ResultSet(accountColumns(), List.of(accountRow()));
+    }
+
+    /**
+     * SHOW ACCOUNTS: this account, then every account CREATE ACCOUNT recorded, in the columns of the one row.
+     * {@code HISTORY} lists the dropped accounts too, and adds their {@code dropped_on},
+     * {@code scheduled_deletion_time} and {@code restored_on} after {@code is_org_admin}.
+     *
+     * @param history whether HISTORY was written
+     * @param created the accounts CREATE ACCOUNT recorded
+     * @param managed how many managed accounts this account has created
+     */
+    public ResultSet showAccounts(final boolean history, final List<Account> created, final int managed) {
+        final List<ResultSetColumn> columns = new ArrayList<>(accountColumns());
+        final int historyAt = 15;
+        // HISTORY also reports where an account moved to and when its organization URL expires, after the old
+        // organization URL's columns; both listings end with the contract number.
+        final int movedAt = 23;
+        if (history) {
+            columns.add(historyAt, new ResultSetColumn("dropped_on", DateTimeType.TIMESTAMP_LTZ));
+            columns.add(historyAt + 1, new ResultSetColumn("scheduled_deletion_time", DateTimeType.TIMESTAMP_LTZ));
+            columns.add(historyAt + 2, new ResultSetColumn("restored_on", DateTimeType.TIMESTAMP_LTZ));
+            columns.add(movedAt, new ResultSetColumn("moved_to_organization", StringType.VARCHAR));
+            columns.add(movedAt + 1, new ResultSetColumn("moved_on", DateTimeType.TIMESTAMP_LTZ));
+            columns.add(movedAt + 2, new ResultSetColumn("organization_URL_expiration_on", DateTimeType.TIMESTAMP_LTZ));
+        }
+        final List<Row> rows = new ArrayList<>();
+        final List<Object> own = new ArrayList<>(accountRow().getValues());
+        own.set(9, (long) managed);
+        if (history) {
+            own.add(historyAt, null);
+            own.add(historyAt + 1, null);
+            own.add(historyAt + 2, null);
+            own.add(movedAt, null);
+            own.add(movedAt + 1, null);
+            own.add(movedAt + 2, null);
+        }
+        rows.add(new Row(own));
+        final String organization = identity.getOrganization();
+        for (final Account account : created) {
+            if (account.isDropped() && !history) {
+                continue;
+            }
+            final String locator = account.getLocator();
+            final List<Object> cells = new ArrayList<>(Arrays.<Object>asList(
+                organization,
+                account.getName(),
+                account.getRegion() != null ? account.getRegion() : identity.getRegion(),
+                account.getEdition(),
+                "https://" + organization.toLowerCase(Locale.ROOT) + "-"
+                    + account.getName().toLowerCase(Locale.ROOT).replace('_', '-') + ".snowflakecomputing.com",
+                ShowResultHelpers.createdOn(account.getCreatedOn()),
+                ShowResultHelpers.text(account.getComment()),
+                locator,
+                "https://" + locator.toLowerCase(Locale.ROOT) + ".snowflakecomputing.com",
+                0L,
+                organization + "_DefaultBE",
+                null, null,
+                ShowResultHelpers.text(null),
+                "false",
+                null, null,
+                ShowResultHelpers.text(null),
+                null, null,
+                "false",
+                "false",
+                "INTERNAL",
+                null));
+            if (history) {
+                cells.add(historyAt, account.getDroppedOn() == null ? null
+                    : ShowResultHelpers.createdOn(account.getDroppedOn()));
+                cells.add(historyAt + 1, account.getScheduledDeletionTime() == null ? null
+                    : ShowResultHelpers.createdOn(account.getScheduledDeletionTime()));
+                cells.add(historyAt + 2, account.getRestoredOn() == null ? null
+                    : ShowResultHelpers.createdOn(account.getRestoredOn()));
+                cells.add(movedAt, null);
+                cells.add(movedAt + 1, null);
+                cells.add(movedAt + 2, null);
+            }
+            cells.add(null);
+            rows.add(new Row(cells));
+        }
+        return new ResultSet(columns, rows);
+    }
+
+    /**
+     * SHOW MANAGED ACCOUNTS: the reader accounts this account created, in this account's cloud and region.
+     *
+     * @param accounts the managed accounts
+     */
+    public ResultSet showManagedAccounts(final List<ManagedAccount> accounts) {
+        final String region = identity.getRegion();
+        final int split = region == null ? -1 : region.indexOf('_');
+        final String cloud = split < 0 ? region : region.substring(0, split);
+        final String location = split < 0 ? region
+            : region.substring(split + 1).toLowerCase(Locale.ROOT).replace('_', '-');
+        return new AccessControlListings(catalog).managedAccounts(accounts, cloud, location);
     }
 
     /**
@@ -355,7 +582,7 @@ final class ShowSessionExecutor {
             for (final Map.Entry<String, TableLock> entry : txn.getAllTableLocks().entrySet()) {
                 final List<Object> cells = new ArrayList<>();
                 if (inAccount) {
-                    cells.add(sessionNumber);
+                    cells.add(sessionNumberOf(txn));
                 }
                 cells.add(entry.getKey());
                 cells.add("PARTITIONS");
@@ -398,7 +625,7 @@ final class ShowSessionExecutor {
             rows.add(new Row(Arrays.asList(
                 transactionDisplayId(txn),
                 currentUserName(),
-                sessionNumber,
+                sessionNumberOf(txn),
                 txn.getName(),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())),
                 "running",
@@ -412,7 +639,31 @@ final class ShowSessionExecutor {
      *  equals its {@code started_on} in epoch nanos), with the engine's own transaction counter in
      *  the sub-millisecond digits so same-millisecond transactions stay distinct. */
     private static long transactionDisplayId(final Transaction txn) {
-        return txn.getStartTime() * 1_000_000L + txn.getId() % 1_000_000L;
+        return txn.getPublicId();
+    }
+
+    /**
+     * The session a transaction belongs to, as SHOW TRANSACTIONS and SHOW LOCKS IN ACCOUNT print it: the number
+     * of the session that began it, which is that session's CURRENT_SESSION() (live-verified — the three agree).
+     *
+     * @param txn the transaction
+     * @return its session's number
+     */
+    private long sessionNumberOf(final Transaction txn) {
+        final Long owner = txn.getSessionNumber();
+        return owner != null ? owner : currentSessionNumber();
+    }
+
+    /**
+     * The number of the session running this statement — SHOW VARIABLES' session_id, the same value its
+     * CURRENT_SESSION() answers.
+     *
+     * @return the session's number
+     */
+    private long currentSessionNumber() {
+        final SecurityManager securityManager = facade.getSecurityManager();
+        return securityManager != null && securityManager.getSessionContext() != null
+            ? securityManager.getSessionContext().getSessionNumber() : startedOnMillis;
     }
 
     /** The session's user name, as SHOW TRANSACTIONS spells it. */
@@ -425,7 +676,7 @@ final class ShowSessionExecutor {
         return user == null ? null : user.toUpperCase();
     }
 
-    public ResultSet showVariables() {
+    public ResultSet showVariables(final String likePattern) {
         final SecurityManager securityManager = facade.getSecurityManager();
         // Live layout: session_id | created_on | updated_on | name | value | type | comment —
         // the variable NAME is folded upper, an unset comment is '', and type names the value's
@@ -444,6 +695,9 @@ final class ShowSessionExecutor {
             ? securityManager.getSessionContext().getAllSessionVariables()
             : sessionVariables;
         for (final Map.Entry<String, Object> e : vars.entrySet()) {
+            if (likePattern != null && !ShowResultHelpers.matchesLike(e.getKey(), likePattern)) {
+                continue;
+            }
             final Object value = e.getValue();
             final String type;
             if (value instanceof Number) {
@@ -454,9 +708,9 @@ final class ShowSessionExecutor {
                 type = "text";
             }
             rows.add(new Row(Arrays.asList(
-                sessionNumber,
-                ShowResultHelpers.createdOn(Instant.ofEpochMilli(sessionNumber)),
-                ShowResultHelpers.createdOn(Instant.ofEpochMilli(sessionNumber)),
+                currentSessionNumber(),
+                ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
+                ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
                 e.getKey().toUpperCase(),
                 value != null ? value.toString() : null,
                 type,
@@ -531,7 +785,8 @@ final class ShowSessionExecutor {
     /**
      * SHOW PRIMARY/UNIQUE KEYS with a scope: one row per key column of every table in the scope —
      * TABLE name (or a bare qualified name), a SCHEMA, a DATABASE, or the whole ACCOUNT; a null
-     * scope name means the current one (a nameless TABLE scope lists the current schema's tables).
+     * scope name means the current one (a nameless TABLE scope lists the current schema's tables), and a
+     * NONE scope — a view or a dynamic table named as the table — lists nothing.
      *
      * <p>The column shape is Snowflake's (live-verified): {@code created_on, database_name, schema_name,
      * table_name, column_name, key_sequence, constraint_name, rely, comment}. Unlike
@@ -583,7 +838,7 @@ final class ShowSessionExecutor {
     private Row keyRow(final String dbName, final Schema schema, final Table table, final String columnName,
                        final int keySequence, final String constraintName, final Boolean rely) {
         return new Row(Arrays.asList(
-            table.getCreatedTime().toString(),
+            ShowResultHelpers.createdOn(table.getCreatedTime()),
             dbName,
             schema.getName(),
             table.getName(),
@@ -746,7 +1001,7 @@ final class ShowSessionExecutor {
         return target != null ? target.primaryKeyConstraintName() : null;
     }
 
-    /** The schemas a keys listing spans: current schema, a named schema, a database's schemas, or all. */
+    /** The schemas a keys listing spans: current schema, a named schema, a database's schemas, all, or none. */
     private List<Schema> schemasInScope(final String scopeKind, final String scopeName) {
         final List<Schema> schemas = new ArrayList<>();
         if ("ACCOUNT".equals(scopeKind)) {
@@ -762,7 +1017,7 @@ final class ShowSessionExecutor {
             }
         } else if ("SCHEMA".equals(scopeKind) && scopeName != null) {
             schemas.add(catalog.resolveSchema(scopeName));
-        } else {
+        } else if (!"NONE".equals(scopeKind)) {
             schemas.add(resolveDescribeSchema());
         }
         return schemas;

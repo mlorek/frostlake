@@ -99,6 +99,16 @@ public class ScopeManager {
         }
     }
 
+    /**
+     * The names DECLARED in the innermost scope, the ones its exit discards.
+     *
+     * @return a copy of the names, upper-cased; empty outside any scope
+     */
+    public Set<String> declaredInCurrentScope() {
+        return declaredInScopeStack.isEmpty()
+            ? Collections.<String>emptySet() : new HashSet<String>(declaredInScopeStack.peek());
+    }
+
     public void setVariable(final String name, final Object value) {
         variables.put(name.toUpperCase(), value);
     }

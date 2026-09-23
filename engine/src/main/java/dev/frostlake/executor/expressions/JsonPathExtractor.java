@@ -18,6 +18,8 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.TypedVectorNode;
+import dev.frostlake.values.UuidTextNode;
+import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 
@@ -120,6 +122,8 @@ final class JsonPathExtractor {
         // extracts as that typed value — live: TYPEOF(OBJECT_CONSTRUCT('b', <binary>):b) is BINARY.
         final Object typedMember = dev.frostlake.values.TypedScalarNode.typedValueOf(node);
         if (typedMember != null) return typedMember;
+        // A UUID member stays the VARIANT that remembers its type — TYPEOF(OBJECT_CONSTRUCT('k', u):k) is UUID.
+        if (UuidTextNode.holds(node)) return VariantValue.ofNode(node);
         if (node.isTextual()) {
             // A STRING whose content itself looks like JSON structure ('["ROLE"]', '{"a":1}') keeps its
             // QUOTED JSON form — unquoting it made a string value indistinguishable from a real
@@ -131,7 +135,7 @@ final class JsonPathExtractor {
             final String text = node.asText();
             final String trimmedText = text.trim();
             if (trimmedText.startsWith("[") || trimmedText.startsWith("{") || "null".equals(text)) {
-                return node.toString();
+                return VariantText.standard(node);
             }
             return text;
         }

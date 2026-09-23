@@ -112,13 +112,13 @@ public class ArgumentTypePositionTest extends BaseDatabaseTest {
     /** The object-not-found family: fully qualified, upper-cased, full stop. */
     @Test
     public void theobjectNotFoundFamilyKeepsItsShape() {
-        assertEquals("SQL compilation error:|Stage 'TEST_DB.TEST_SCHEMA.NOSUCHSTAGE' does not exist"
-            + " or not authorized.", statement("DROP STAGE nosuchstage"));
-        assertEquals("SQL compilation error:|Sequence 'TEST_DB.TEST_SCHEMA.NOSUCHSEQUENCE' does not"
-            + " exist or not authorized.", statement("DROP SEQUENCE nosuchsequence"));
-        assertEquals("SQL compilation error:|Task 'TEST_DB.TEST_SCHEMA.NOSUCHTASK' does not exist"
-            + " or not authorized.", statement("DROP TASK nosuchtask"));
-        assertEquals("SQL compilation error:|Warehouse 'NOSUCHWH' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|Stage 'TEST_DB.TEST_SCHEMA.NOSUCHSTAGE' does not exist"
+            + " or not authorized."), statement("DROP STAGE nosuchstage"));
+        assertEquals(hinted("SQL compilation error:|Sequence 'TEST_DB.TEST_SCHEMA.NOSUCHSEQUENCE' does not"
+            + " exist or not authorized."), statement("DROP SEQUENCE nosuchsequence"));
+        assertEquals(hinted("SQL compilation error:|Task 'TEST_DB.TEST_SCHEMA.NOSUCHTASK' does not exist"
+            + " or not authorized."), statement("DROP TASK nosuchtask"));
+        assertEquals(hinted("SQL compilation error:|Warehouse 'NOSUCHWH' does not exist or not authorized."),
             statement("ALTER WAREHOUSE nosuchwh RESUME"),
             "a warehouse is account-level, so its name carries no schema");
     }

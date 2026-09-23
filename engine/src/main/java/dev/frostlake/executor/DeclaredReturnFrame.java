@@ -30,13 +30,15 @@ import java.util.Set;
  */
 public final class DeclaredReturnFrame {
     private final DataType type;
+    private final boolean table;
     private final int blockDepth;
     private final int compoundDepth;
     private final Set<String> parameterNames;
 
-    public DeclaredReturnFrame(final DataType type, final int blockDepth, final int compoundDepth,
-                               final Set<String> parameterNames) {
+    public DeclaredReturnFrame(final DataType type, final boolean table, final int blockDepth,
+                               final int compoundDepth, final Set<String> parameterNames) {
         this.type = type;
+        this.table = table;
         this.blockDepth = blockDepth;
         this.compoundDepth = compoundDepth;
         this.parameterNames = Collections.unmodifiableSet(parameterNames);
@@ -45,6 +47,11 @@ public final class DeclaredReturnFrame {
     /** The declared RETURNS type, or null for a table-returning or untyped body. */
     public DataType getType() {
         return type;
+    }
+
+    /** Whether the procedure declares RETURNS TABLE, so every RETURN in its body must return a table. */
+    public boolean returnsTable() {
+        return table;
     }
 
     /** The block depth outside the body: the body's own block is one deeper. */

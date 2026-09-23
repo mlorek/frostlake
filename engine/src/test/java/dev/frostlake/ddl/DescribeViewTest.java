@@ -124,12 +124,12 @@ public class DescribeViewTest extends BaseDatabaseTest {
     /** The named kind is spoken only when nothing by that name exists. */
     @Test
     public void aMissingObjectIsRefusedAsTheKindTheStatementNamed() {
-        assertEquals("SQL compilation error:\nView 'NOSUCH_X' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nView 'NOSUCH_X' does not exist or not authorized."),
             refusalOf("DESCRIBE VIEW nosuch_x"));
-        assertEquals("SQL compilation error:\nTable 'NOSUCH_X' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'NOSUCH_X' does not exist or not authorized."),
             refusalOf("DESCRIBE TABLE nosuch_x"));
-        assertEquals("SQL compilation error:\n"
-            + "Materialized view 'NOSUCH_X' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\n"
+            + "Materialized view 'NOSUCH_X' does not exist or not authorized."),
             refusalOf("DESCRIBE MATERIALIZED VIEW nosuch_x"));
     }
 

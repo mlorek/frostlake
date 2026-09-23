@@ -73,7 +73,10 @@ public final class VariantOrder {
             case NUMBER:
                 return compareNumbers(left, right);
             case STRING:
-                return left.asText().compareTo(right.asText());
+                // A UUID never equals the string of its text, so the tie between the two is broken.
+                final int byText = left.asText().compareTo(right.asText());
+                return byText != 0 ? byText
+                    : Boolean.compare(UuidTextNode.holds(left), UuidTextNode.holds(right));
             case OBJECT:
                 return compareObjects(left, right);
             case ARRAY:
@@ -111,7 +114,8 @@ public final class VariantOrder {
                 return;
             case STRING:
                 final String text = node.asText();
-                key.append('S').append(text.length()).append(':').append(text);
+                // A UUID never equals the string of the same text (live-verified), so it keys apart.
+                key.append(UuidTextNode.holds(node) ? 'U' : 'S').append(text.length()).append(':').append(text);
                 return;
             case OBJECT:
                 key.append('{');

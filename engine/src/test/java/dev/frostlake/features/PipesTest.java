@@ -111,8 +111,8 @@ public class PipesTest extends BaseDatabaseTest {
                 engine.execute("CREATE PIPE bad_pipe AS COPY INTO target_table FROM @no_such_stage");
             }
         });
-        assertEquals("SQL compilation error:\n"
-            + "Stage 'TEST_DB.TEST_SCHEMA.NO_SUCH_STAGE' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\n"
+            + "Stage 'TEST_DB.TEST_SCHEMA.NO_SUCH_STAGE' does not exist or not authorized."),
             e.getMessage());
     }
 

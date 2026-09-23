@@ -172,6 +172,18 @@ final class CountStatisticsBound {
 
     /**
      * What the statistics prove of a predicate over every row of the table: TRUE, FALSE, or null when
+     * they prove neither — nor when the predicate cannot be judged over this table at all.
+     */
+    Boolean verdictOver(final Expression predicate) {
+        try {
+            return verdict(predicate);
+        } catch (final RuntimeException unprovable) {
+            return null;
+        }
+    }
+
+    /**
+     * What the statistics prove of a predicate over every row of the table: TRUE, FALSE, or null when
      * they prove neither.
      */
     private Boolean verdict(final Expression predicate) {

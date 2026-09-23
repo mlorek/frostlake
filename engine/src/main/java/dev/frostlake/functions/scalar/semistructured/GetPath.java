@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.VectorValue;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
@@ -37,6 +38,8 @@ public class GetPath extends VariantAccessorFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A VECTOR is no container a path reaches into (live-verified: GET(v, 0) is NULL).
+        if (args.get(0) instanceof VectorValue) return null;
         final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || args.get(1) == null) return null;
         final String accessor = args.get(1).toString();

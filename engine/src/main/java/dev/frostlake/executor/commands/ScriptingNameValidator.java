@@ -16,12 +16,16 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.AssignedStatement;
+import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.QuotedBindName;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -57,8 +61,10 @@ import java.util.Set;
  *   <li>a FIELD of a record — {@code r.nope} raises {@code Given column name/index does not exist}
  *       when the row is read, so only the ROOT of a dotted name is resolved here (live names just the
  *       root too: {@code invalid identifier 'R'});</li>
- *   <li>anything inside an embedded SQL statement — {@code (SELECT nope FROM t)} is an
- *       EXPRESSION_ERROR raised by the query layer, so SQL subtrees are skipped whole;</li>
+ *   <li>the tables and columns of an embedded SQL statement — {@code (SELECT nope FROM t)} is an
+ *       EXPRESSION_ERROR raised by the query layer, so an SQL statement's own names are left alone. Its
+ *       {@code :binds} name the block's variables, though, and compile with it: one nothing declares is
+ *       refused here, its name folded as an unquoted identifier is ({@code invalid identifier 'NOPE'});</li>
  *   <li>an unknown function — {@code missing_fn()} reports {@code Unknown function}, a different
  *       error from a different layer — and a function's ARGUMENTS are left alone with it, because the
  *       grammar admits bare keywords there and the function reads them itself:
@@ -71,7 +77,9 @@ import java.util.Set;
  * is not permitted." at the {@code :=}. An integer range makes one; a cursor loop's record does not,
  * and a LET or DECLARE of the name hides it. For a procedure's own block it also hands each direct
  * statement to a {@link DeclaredReturnJudge}, because live reports whichever of these faults comes
- * FIRST in the body, so they cannot be separate passes.
+ * FIRST in the body, so they cannot be separate passes. The bare names of the block's expressions are
+ * the exception: live resolves them after everything else, so their refusals are held back and raised
+ * at the end of the walk in live's order (see {@link DeferredNameRefusals}).
  *
  * <p>Like the rest of the routine-body checking this fails OPEN: a construct this class cannot read
  * confidently is left alone, because a false refusal here breaks a script that Snowflake runs, which
@@ -96,7 +104,24 @@ final class ScriptingNameValidator {
         SCRIPT_SUPPLIED.add("ACTIVITY_COUNT");
     }
 
+    /**
+     * The script-supplied names an EXECUTE IMMEDIATE's USING may name only inside an exception handler, where the
+     * handler sets them (live-verified: USING (sqlstate) elsewhere is "invalid identifier 'SQLSTATE'", while USING
+     * (sqlcode) binds NULL).
+     */
+    private static final Set<String> HANDLER_SUPPLIED = new HashSet<String>();
+
+    static {
+        HANDLER_SUPPLIED.add("SQLSTATE");
+        HANDLER_SUPPLIED.add("SQLERRM");
+    }
+
     private ScriptingNameValidator() {
+    }
+
+    /** Whether a script may use {@code name}, a canonical name, without declaring it (see {@code SCRIPT_SUPPLIED}). */
+    static boolean isScriptSupplied(final String name) {
+        return SCRIPT_SUPPLIED.contains(name);
     }
 
     /**
@@ -104,22 +129,34 @@ final class ScriptingNameValidator {
      * parameters, or the variables of an enclosing block.
      */
     static void validate(final FrostlakeParser.BeginEndBlockContext block, final Set<String> outerNames) {
-        validate(block, outerNames, null);
+        validate(block, outerNames, null, null, null);
     }
 
     /**
      * {@link #validate(FrostlakeParser.BeginEndBlockContext, Set)} for a block whose direct RETURNs
      * {@code returns} judges in the same source-order pass.
      *
-     * @param returns the judge of a procedure's declared RETURNS type, or null when the block has none
+     * @param returns    the judge of a procedure's declared RETURNS type, or null when the block has none
+     * @param returnKind for a procedure's own block, what EVERY RETURN in it must return — TRUE a table,
+     *                   FALSE a scalar — judged in the same pass; null for any other block
+     * @param compiler   compiles the FROM-less subqueries an untyped declaration infers its type from, or null
      */
     static void validate(final FrostlakeParser.BeginEndBlockContext block, final Set<String> outerNames,
-                         final DeclaredReturnJudge returns) {
+                         final DeclaredReturnJudge returns, final Boolean returnKind,
+                         final InferredInitialiserCompiler compiler) {
         final Set<String> scope = new HashSet<String>(SCRIPT_SUPPLIED);
         for (final String name : outerNames) {
             scope.add(canonical(name));
         }
-        walkBlock(block, scope, new HashSet<String>(), new HashSet<String>(), returns);
+        // A bare name of an expression is resolved after everything else the walk judges (see
+        // DeferredNameRefusals), so the walk holds its refusal back and the first is raised at the end.
+        final DeferredNameRefusals enclosing = DeferredNameRefusals.begin();
+        try {
+            walkBlock(block, scope, new HashSet<String>(), new HashSet<String>(), returns, returnKind, compiler);
+            DeferredNameRefusals.current().raiseFirst(block);
+        } finally {
+            DeferredNameRefusals.end(enclosing);
+        }
     }
 
     /**
@@ -128,26 +165,39 @@ final class ScriptingNameValidator {
      */
     private static void walkBlock(final FrostlakeParser.BeginEndBlockContext block,
                                   final Set<String> scope, final Set<String> counters,
-                                  final Set<String> records, final DeclaredReturnJudge returns) {
+                                  final Set<String> records, final DeclaredReturnJudge returns,
+                                  final Boolean returnKind, final InferredInitialiserCompiler compiler) {
         if (block.declareSection() != null) {
             for (final ParserRuleContext item : declarationsInSourceOrder(block.declareSection())) {
                 if (item instanceof FrostlakeParser.UntypedDeclarationItemContext) {
                     final FrostlakeParser.UntypedDeclarationItemContext inferred =
                         (FrostlakeParser.UntypedDeclarationItemContext) item;
-                    rejectUntypableInitialiser(inferred.expression(), inferred.identifier(),
-                        inferred.identifier().getStart(), scope, records);
+                    rejectUntypableInitialiser(inferred.booleanExpr(), inferred.identifier(),
+                        inferred.identifier().getStart(), scope, records, compiler);
                 }
                 // The initializer is checked BEFORE the name is added: a declaration cannot see itself.
-                checkExpressions(item, scope);
+                if (item instanceof FrostlakeParser.DeclarationItemContext
+                        && ((FrostlakeParser.DeclarationItemContext) item).resultSetSource() != null) {
+                    checkResultSetSource(((FrostlakeParser.DeclarationItemContext) item).resultSetSource(), scope);
+                } else {
+                    checkExpressions(item, scope);
+                }
                 if (item instanceof FrostlakeParser.DeclarationItemContext) {
                     final FrostlakeParser.DeclarationItemContext typed = (FrostlakeParser.DeclarationItemContext) item;
                     declare(typed.identifier(), scope, counters);
+                    if (compiler != null && typed.dataTypeName() != null && typed.identifier() != null) {
+                        compiler.declare(canonical(text(typed.identifier())), typed.dataTypeName(), typed.typeParameters());
+                    }
                     if (returns != null) {
                         returns.declared(typed);
                     }
                 } else {
                     final FrostlakeParser.UntypedDeclarationItemContext untyped =
                         (FrostlakeParser.UntypedDeclarationItemContext) item;
+                    if (compiler != null && untyped.identifier() != null && untyped.booleanExpr() != null) {
+                        compiler.infer(canonical(text(untyped.identifier())), untyped.booleanExpr(),
+                            untyped.identifier().getStart());
+                    }
                     declare(untyped.identifier(), scope, counters);
                     if (returns != null) {
                         returns.declared(untyped);
@@ -155,25 +205,43 @@ final class ScriptingNameValidator {
                 }
             }
         }
-        walkStatementList(block.statementList(), scope, counters, records, returns);
+        walkStatementList(block.statementList(), scope, counters, records, returns, returnKind, compiler);
         if (block.exceptionSection() != null) {
             for (final FrostlakeParser.ExceptionHandlerContext handler
                     : block.exceptionSection().exceptionHandler()) {
                 // A handler's RETURN keeps its own type, so the declared one never judges it.
-                walkStatementList(handler.statementList(), nested(scope), nested(counters), nested(records), null);
+                openScope(compiler);
+                walkStatementList(handler.statementList(), nested(scope), nested(counters), nested(records), null,
+                    returnKind, compiler);
+                closeScope(compiler);
             }
+        }
+    }
+
+    /** A nested body opens: the types it declares end with it (see {@link InferredInitialiserCompiler}). */
+    private static void openScope(final InferredInitialiserCompiler compiler) {
+        if (compiler != null) {
+            compiler.enterScope();
+        }
+    }
+
+    /** The innermost nested body closes. */
+    private static void closeScope(final InferredInitialiserCompiler compiler) {
+        if (compiler != null) {
+            compiler.exitScope();
         }
     }
 
     /** A statement list; {@code returns}, when present, judges its DIRECT statements as they pass. */
     private static void walkStatementList(final FrostlakeParser.StatementListContext list,
                                           final Set<String> scope, final Set<String> counters,
-                                          final Set<String> records, final DeclaredReturnJudge returns) {
+                                          final Set<String> records, final DeclaredReturnJudge returns,
+                                          final Boolean returnKind, final InferredInitialiserCompiler compiler) {
         if (list == null) {
             return;
         }
         for (final FrostlakeParser.StatementContext statement : list.statement()) {
-            walkStatement(statement, scope, counters, records);
+            walkStatement(statement, scope, counters, records, returnKind, compiler);
             if (returns != null) {
                 returns.after(statement);
             }
@@ -185,21 +253,50 @@ final class ScriptingNameValidator {
      * body gets a COPY, so what it declares disappears with it.
      */
     private static void walkStatement(final ParseTree node, final Set<String> scope,
-                                      final Set<String> counters, final Set<String> records) {
+                                      final Set<String> counters, final Set<String> records,
+                                      final Boolean returnKind, final InferredInitialiserCompiler compiler) {
         if (node == null) {
             return;
         }
         if (node instanceof FrostlakeParser.BeginEndBlockContext) {
+            openScope(compiler);
             walkBlock((FrostlakeParser.BeginEndBlockContext) node, nested(scope), nested(counters),
-                nested(records), null);
+                nested(records), null, returnKind, compiler);
+            closeScope(compiler);
             return;
+        }
+        if (node instanceof FrostlakeParser.ReturnStatementContext) {
+            final FrostlakeParser.ReturnStatementContext ret = (FrostlakeParser.ReturnStatementContext) node;
+            rejectReturnKind(ret, returnKind);
+            if (ret.TABLE() != null && ret.expression() instanceof FrostlakeParser.QualifiedNameExprContext) {
+                // RETURN TABLE(rs) names a RESULTSET, and live reports a missing one at the RETURN.
+                final FrostlakeParser.QualifiedNameContext named =
+                    ((FrostlakeParser.QualifiedNameExprContext) ret.expression()).qualifiedName();
+                if (named.nameStartPart() != null) {
+                    requireName(text(named.nameStartPart()), ret, scope);
+                }
+                return;
+            }
         }
         if (node instanceof FrostlakeParser.LetStatementContext) {
             final FrostlakeParser.LetStatementContext let = (FrostlakeParser.LetStatementContext) node;
             if (let.dataTypeName() == null && let.CURSOR() == null && let.RESULTSET() == null) {
-                rejectUntypableInitialiser(let.expression(), let.identifier(), let.getStart(), scope, records);
+                rejectUntypableInitialiser(let.booleanExpr(), let.identifier(), let.getStart(), scope, records,
+                    compiler);
             }
-            checkExpressions(let, scope);
+            if (let.resultSetSource() != null) {
+                checkResultSetSource(let.resultSetSource(), scope);
+            } else {
+                checkExpressions(let, scope);
+            }
+            if (compiler != null && let.identifier() != null) {
+                // Its type is compiled with the block: the one written, or the one its initialiser infers.
+                if (let.dataTypeName() != null) {
+                    compiler.declare(canonical(text(let.identifier())), let.dataTypeName(), let.typeParameters());
+                } else if (let.CURSOR() == null && let.RESULTSET() == null && let.booleanExpr() != null) {
+                    compiler.infer(canonical(text(let.identifier())), let.booleanExpr(), let.getStart());
+                }
+            }
             declare(let.identifier(), scope, counters);
             return;
         }
@@ -211,7 +308,37 @@ final class ScriptingNameValidator {
             final Token assign = set.COLON_EQ().getSymbol();
             requireName(text(set.identifier()), assign, scope);
             refuseCounterAssignment(set.identifier(), assign, counters);
-            checkExpressions(set, scope);
+            final String target = canonical(text(set.identifier()));
+            final ParserRuleContext declaration = DeclarationLookup.declarationOf(set, target);
+            refuseUnassignable(set.identifier(), assign, declaration);
+            final boolean resultSet = DeclarationLookup.RESULTSET.equals(DeclarationLookup.misuse(declaration));
+            if (set.resultSetStatement() != null) {
+                // A statement fills a RESULTSET; assigned to anything else, a command is refused while the block
+                // compiles and any other statement when the assignment runs (see AssignedStatement).
+                if (!resultSet && AssignedStatement.refusedWhileCompiling(set.resultSetStatement())) {
+                    throw AssignedStatement.invalidValue(ParseTreeText.getOriginalText(set.resultSetStatement()));
+                }
+                checkResultSetStatement(set.resultSetStatement(), scope);
+            } else if (set.resultSetBlock() != null) {
+                // A block fills a RESULTSET, and compiles when it runs.
+                if (!resultSet) {
+                    throw AssignedStatement.invalidValue(AssignedStatement.BLOCK);
+                }
+            } else if (set.executeImmediateStatement() != null && !resultSet) {
+                throw AssignedStatement.invalidValue(AssignedStatement.EXECUTE_IMMEDIATE);
+            } else if (set.booleanExpr() instanceof FrostlakeParser.ValueExprContext
+                    && ((FrostlakeParser.ValueExprContext) set.booleanExpr()).expression()
+                        instanceof FrostlakeParser.ScalarSubqueryExprContext
+                    && resultSet) {
+                // A RESULTSET assigned a query holds its rows: the query is SQL the block runs, whose binds fold as
+                // an SQL statement's do — r := (SELECT :nosuch) names 'NOSUCH', where a scalar's x := (SELECT
+                // :nosuch) names 'nosuch' (live-verified).
+                checkEmbeddedBinds(set.booleanExpr(), scope);
+            } else if (set.callStatement() != null) {
+                checkCall(set.callStatement(), scope);
+            } else {
+                checkExpressions(set, scope);
+            }
             return;
         }
         if (node instanceof FrostlakeParser.ForStatementContext) {
@@ -223,6 +350,7 @@ final class ScriptingNameValidator {
             final Set<String> body = nested(scope);
             final Set<String> bodyCounters = nested(counters);
             final Set<String> bodyRecords = nested(records);
+            openScope(compiler);
             if (loop.identifier() != null) {
                 final String counter = canonical(text(loop.identifier()));
                 body.add(counter);
@@ -231,13 +359,24 @@ final class ScriptingNameValidator {
                 if (loop.TO() != null) {
                     bodyCounters.add(counter);
                     bodyRecords.remove(counter);
+                    if (compiler != null) {
+                        compiler.declareCounter(counter);
+                    }
                 } else {
                     bodyCounters.remove(counter);
                     bodyRecords.add(counter);
                 }
             }
-            walkStatementList(loop.statementList(), body, bodyCounters, bodyRecords, null);
+            walkStatementList(loop.statementList(), body, bodyCounters, bodyRecords, null, returnKind, compiler);
+            closeScope(compiler);
             return;
+        }
+        if (node instanceof FrostlakeParser.CaseStatementContext && compiler != null) {
+            // A simple CASE's operand compiles with the block, a branch that never runs included.
+            final FrostlakeParser.CaseStatementContext cased = (FrostlakeParser.CaseStatementContext) node;
+            if (cased.booleanExpr().size() > cased.WHEN().size()) {
+                compiler.judge(cased.booleanExpr(0));
+            }
         }
         if (node instanceof FrostlakeParser.OpenStatementContext
                 || node instanceof FrostlakeParser.CloseStatementContext
@@ -247,13 +386,37 @@ final class ScriptingNameValidator {
             checkExpressions(node, scope);
             return;
         }
+        if (node instanceof FrostlakeParser.SelectIntoStatementContext) {
+            // A SELECT … INTO's own SQL compiles with the block, its INTO clause set aside, so a bind the block
+            // never declared is refused here, before a repeated INTO target is — the names of its tables still
+            // resolve when it runs.
+            final FrostlakeParser.SelectIntoStatementContext into = (FrostlakeParser.SelectIntoStatementContext) node;
+            checkIntoStatementBinds(into, into, scope);
+            return;
+        }
+        if (node instanceof FrostlakeParser.ExecuteImmediateStatementContext) {
+            checkImmediate((FrostlakeParser.ExecuteImmediateStatementContext) node, scope);
+            return;
+        }
+        if (node instanceof FrostlakeParser.SelectStatementContext || isBindingDml(node)) {
+            // A query or DML statement the block runs binds the block's variables, and those compile with the
+            // block; its tables and columns resolve when it runs.
+            checkEmbeddedBinds(node, scope);
+            return;
+        }
         if (isSqlSubtree(node)) {
             // Embedded SQL resolves against tables at run time — not this pass's business.
             return;
         }
+        if (node instanceof FrostlakeParser.CallStatementContext) {
+            checkCall((FrostlakeParser.CallStatementContext) node, scope);
+            return;
+        }
         if (node instanceof FrostlakeParser.StatementListContext) {
+            openScope(compiler);
             walkStatementList((FrostlakeParser.StatementListContext) node, nested(scope), nested(counters),
-                nested(records), null);
+                nested(records), null, returnKind, compiler);
+            closeScope(compiler);
             return;
         }
         if (node instanceof FrostlakeParser.ExpressionContext
@@ -262,8 +425,25 @@ final class ScriptingNameValidator {
             return;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            walkStatement(node.getChild(i), scope, counters, records);
+            walkStatement(node.getChild(i), scope, counters, records, returnKind, compiler);
         }
+    }
+
+    /**
+     * Refuse a RETURN of the other kind than its procedure declares — a scalar in a RETURNS TABLE
+     * procedure, a table in any other — wherever in the body it is written and whatever branch it is on,
+     * at the RETURN (live-verified).
+     *
+     * @param returnKind TRUE when the procedure returns a table, FALSE a scalar, null when no procedure
+     *                   declaration governs the block
+     */
+    private static void rejectReturnKind(final FrostlakeParser.ReturnStatementContext ret, final Boolean returnKind) {
+        if (returnKind == null || (ret.TABLE() != null) == returnKind.booleanValue()) {
+            return;
+        }
+        throw new RuntimeException(SqlCompilationError.at(ret.getStart().getLine(), ret.getStart().getCharPositionInLine(),
+            " Declared return type '" + (returnKind.booleanValue() ? "TABLE" : "SCALAR")
+                + "' is incompatible with actual return type '" + (returnKind.booleanValue() ? "SCALAR" : "TABLE") + "'"));
     }
 
     /**
@@ -308,13 +488,26 @@ final class ScriptingNameValidator {
             checkBindsOnly(node, scope);
             return;
         }
+        if (node instanceof FrostlakeParser.ExecuteImmediateStatementContext) {
+            checkImmediate((FrostlakeParser.ExecuteImmediateStatementContext) node, scope);
+            return;
+        }
         if (isSqlSubtree(node)) {
             return;
         }
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
             final FrostlakeParser.QualifiedNameContext name =
                 ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName();
-            requireRootOf(name, scope);
+            final DeferredNameRefusals deferred = DeferredNameRefusals.current();
+            if (deferred == null) {
+                requireRootOf(name, scope);
+            } else {
+                try {
+                    requireRootOf(name, scope);
+                } catch (final RuntimeException unresolved) {
+                    deferred.defer(name, unresolved.getMessage());
+                }
+            }
             return;
         }
         if (node instanceof FrostlakeParser.BindVarExprContext) {
@@ -353,6 +546,228 @@ final class ScriptingNameValidator {
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             checkBindsOnly(node.getChild(i), scope);
+        }
+    }
+
+    /**
+     * The {@code :bind} references of a SELECT … INTO, each judged against the block's names. Live compiles the
+     * statement without its INTO clause: a bind it cannot place is an identifier of that text, its name folded as
+     * one is, and its position is where it stands once the clause and the space after it are cut out (all
+     * live-verified: {@code SELECT 1, 2 INTO :x, :x WHERE :nosuch = 1} names 'NOSUCH' twelve places back).
+     */
+    private static void checkIntoStatementBinds(final FrostlakeParser.SelectIntoStatementContext into,
+                                                final ParseTree node, final Set<String> scope) {
+        if (node instanceof FrostlakeParser.BindVarExprContext) {
+            final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) node;
+            if (bind.identifier() == null || scope.contains(canonical(text(bind.identifier())))) {
+                return;
+            }
+            final Token at = bind.getStart();
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(),
+                at.getCharPositionInLine() - intoClauseWidthBefore(into, at),
+                invalidIdentifier(text(bind.identifier()), false)));
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            checkIntoStatementBinds(into, node.getChild(i), scope);
+        }
+    }
+
+    /**
+     * The {@code :bind} references of an SQL statement the block runs, each judged against the block's names: live
+     * compiles them with the block, on a branch that never runs too, and refuses one nothing declares as an identifier
+     * whose name is folded as an unquoted one is, at the bind — {@code SELECT :NoSuch} names 'NOSUCH' (live-verified).
+     * A numeric bind is a client's, and a block or task body inside the statement binds names of its own.
+     */
+    private static void checkEmbeddedBinds(final ParseTree node, final Set<String> scope) {
+        if (node instanceof FrostlakeParser.BeginEndBlockContext || node instanceof FrostlakeParser.TaskBodyContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.BindVarExprContext) {
+            final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) node;
+            if (bind.identifier() != null) {
+                requireName(text(bind.identifier()), bind, scope, false);
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            checkEmbeddedBinds(node.getChild(i), scope);
+        }
+    }
+
+    /**
+     * Whether {@code node} is a DML statement whose binds compile with the block: an INSERT, UPDATE, DELETE or MERGE.
+     * A COPY is left to run time.
+     */
+    private static boolean isBindingDml(final ParseTree node) {
+        return node instanceof FrostlakeParser.DmlStatementContext
+            && ((FrostlakeParser.DmlStatementContext) node).copyIntoStatement() == null;
+    }
+
+    /**
+     * What a RESULTSET is filled from. A query, a CALL and a DML statement are SQL the block runs, whose binds are
+     * judged as an SQL statement's (live-verified: {@code LET r RESULTSET := (SELECT :nosuch)} names 'NOSUCH'); an
+     * EXECUTE IMMEDIATE's text and USING names are the block's own expressions.
+     */
+    private static void checkResultSetSource(final FrostlakeParser.ResultSetSourceContext source,
+                                             final Set<String> scope) {
+        if (source.selectStatement() != null) {
+            checkEmbeddedBinds(source.selectStatement(), scope);
+        } else if (source.callStatement() != null) {
+            checkCall(source.callStatement(), scope);
+        } else if (source.executeImmediateStatement() != null) {
+            checkImmediate(source.executeImmediateStatement(), scope);
+        } else if (source.resultSetStatement() != null) {
+            checkResultSetStatement(source.resultSetStatement(), scope);
+        }
+        // A block the RESULTSET is filled from compiles when it runs, as an EXECUTE IMMEDIATE's text does.
+    }
+
+    /**
+     * A CALL the block runs. Its binds are an SQL statement's and compile with the block. A procedure's arguments are
+     * the block's expressions, whose names are judged here; a SYSTEM$ function's are SQL, judged when the CALL runs
+     * (live-verified: {@code IF (1 = 2) THEN CALL SYSTEM$TYPEOF(nosuch); END IF;} compiles).
+     */
+    private static void checkCall(final FrostlakeParser.CallStatementContext call, final Set<String> scope) {
+        checkEmbeddedBinds(call, scope);
+        if (call.systemFunctionName() == null) {
+            checkExpressions(call, scope);
+        }
+    }
+
+    /** A RESULTSET's statement other than a query, a CALL or an EXECUTE IMMEDIATE: a DML statement's binds compile. */
+    private static void checkResultSetStatement(final FrostlakeParser.ResultSetStatementContext statement,
+                                                final Set<String> scope) {
+        if (isBindingDml(statement.dmlStatement())) {
+            checkEmbeddedBinds(statement.dmlStatement(), scope);
+        } else {
+            checkExpressions(statement, scope);
+        }
+    }
+
+    /**
+     * An EXECUTE IMMEDIATE compiles with the block: the expression that gives its text is a scripting expression,
+     * whose bare names fold and whose binds are echoed as written ({@code EXECUTE IMMEDIATE :nosuch} names 'nosuch'),
+     * and then its USING names (all live-verified). The text itself is judged when it runs.
+     */
+    private static void checkImmediate(final FrostlakeParser.ExecuteImmediateStatementContext statement,
+                                       final Set<String> scope) {
+        if (statement.expression() != null) {
+            checkExpressions(statement.expression(), scope);
+        }
+        requireUsingNames(statement, scope);
+    }
+
+    /**
+     * An EXECUTE IMMEDIATE's USING arguments name variables of the block, and compile with it, on a branch that never
+     * runs too, each refused at the argument (all live-verified): a name nothing declares, an exception's, and SQLSTATE
+     * or SQLERRM outside an exception handler are "invalid identifier"; a cursor is " Invalid use of cursor 'C'." and a
+     * RESULTSET " Invalid use of resultset 'R'.". SQLCODE, SQLROWCOUNT, SQLFOUND and SQLNOTFOUND bind anywhere, NULL
+     * until something sets them, and a FOR loop's variable binds too. The text itself is judged when it runs. An
+     * invalid identifier waits with the block's other bare names (see DeferredNameRefusals), while a cursor or a
+     * RESULTSET is refused where the compile meets it (live-verified).
+     */
+    private static void requireUsingNames(final FrostlakeParser.ExecuteImmediateStatementContext statement,
+                                          final Set<String> scope) {
+        for (final FrostlakeParser.UsingArgumentContext argument : statement.usingArgument()) {
+            final String written = text(argument);
+            final String name = canonical(written);
+            final Token at = argument.getStart();
+            final ParserRuleContext declaration = DeclarationLookup.declarationOf(argument, name);
+            final boolean known;
+            if (declaration != null) {
+                known = !DeclarationLookup.isException(declaration);
+            } else if (SCRIPT_SUPPLIED.contains(name)) {
+                known = !HANDLER_SUPPLIED.contains(name) || DeclarationLookup.insideExceptionHandler(argument);
+            } else {
+                known = scope.contains(name);
+            }
+            if (!known) {
+                final String refusal = SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    invalidIdentifier(written, false));
+                final DeferredNameRefusals deferred = DeferredNameRefusals.current();
+                if (deferred == null) {
+                    throw new RuntimeException(refusal);
+                }
+                deferred.defer(argument, refusal);
+                continue;
+            }
+            final String misuse = DeclarationLookup.misuse(declaration);
+            if (misuse != null) {
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    " Invalid use of " + misuse + " '" + name + "'."));
+            }
+        }
+    }
+
+    /**
+     * An assignment's target must be a variable (all live-verified, at the {@code :=}, while the block compiles): a
+     * cursor is " Assignment to variable 'C' is not permitted." whatever it is assigned, and an exception, which
+     * lives in a namespace of its own, is "invalid identifier 'E'".
+     *
+     * @param target      the target as written
+     * @param assign      the {@code :=}
+     * @param declaration the target's declaration in sight, or null
+     */
+    private static void refuseUnassignable(final FrostlakeParser.IdentifierContext target, final Token assign,
+                                           final ParserRuleContext declaration) {
+        if (DeclarationLookup.isException(declaration)) {
+            throw new RuntimeException(SqlCompilationError.at(assign.getLine(), assign.getCharPositionInLine(),
+                invalidIdentifier(text(target), false)));
+        }
+        if (DeclarationLookup.CURSOR.equals(DeclarationLookup.misuse(declaration))) {
+            throw new RuntimeException(SqlCompilationError.at(assign.getLine(), assign.getCharPositionInLine(),
+                " Assignment to variable '" + canonical(text(target)) + "' is not permitted."));
+        }
+    }
+
+    /**
+     * How many characters of the INTO clause, with the space after it, stand before {@code at} on its line: the
+     * clause's whole width when {@code at} follows it on the line the clause ends on, and none otherwise.
+     */
+    private static int intoClauseWidthBefore(final FrostlakeParser.SelectIntoStatementContext into, final Token at) {
+        final Token intoWord = into.INTO().getSymbol();
+        final Token lastTarget = into.intoTargetList().getStop();
+        if (at.getTokenIndex() <= lastTarget.getTokenIndex() || at.getLine() != lastTarget.getLine()
+                || intoWord.getLine() != lastTarget.getLine()) {
+            return 0;
+        }
+        final String line = at.getInputStream().getText(Interval.of(lastTarget.getStopIndex() + 1, at.getStartIndex() - 1));
+        int space = 0;
+        while (space < line.length() && Character.isWhitespace(line.charAt(space))) {
+            space++;
+        }
+        return lastTarget.getStopIndex() + 1 + space - intoWord.getStartIndex();
+    }
+
+    /**
+     * One variable may stand in a SELECT … INTO clause only once. Naming it twice is refused while the
+     * block COMPILES — before any statement of it runs, so no statement-error wrapper carries it — at
+     * the statement's own SELECT and with the name upper-cased (live-verified).
+     *
+     * @param ctx the block being compiled
+     */
+    static void rejectRepeatedIntoTargets(final ParseTree ctx) {
+        if (ctx instanceof FrostlakeParser.ResultSetBlockContext) {
+            // A RESULTSET's block source compiles when it runs.
+            return;
+        }
+        if (ctx instanceof FrostlakeParser.SelectIntoStatementContext) {
+            final FrostlakeParser.SelectIntoStatementContext into =
+                (FrostlakeParser.SelectIntoStatementContext) ctx;
+            final Set<String> seen = new HashSet<String>();
+            for (final FrostlakeParser.IntoTargetContext target : into.intoTargetList().intoTarget()) {
+                final String name = canonical(target.identifier().getText());
+                if (!seen.add(name)) {
+                    final Token select = into.SELECT().getSymbol();
+                    throw new RuntimeException(SqlCompilationError.at(select.getLine(),
+                        select.getCharPositionInLine(),
+                        " Repeated variable with name '" + name + "' inside the INTO clause."));
+                }
+            }
+            return;
+        }
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            rejectRepeatedIntoTargets(ctx.getChild(i));
         }
     }
 
@@ -524,7 +939,7 @@ final class ScriptingNameValidator {
     /** One node of the current scope: a LET introduces a name in it, and anything nested opens a new one. */
     private static void redeclarationsIn(final ParseTree node, final Set<String> names,
                                          final boolean declarationsOnly) {
-        if (node == null || isSqlSubtree(node)) {
+        if (node == null || isSqlSubtree(node) || node instanceof FrostlakeParser.ResultSetBlockContext) {
             return;
         }
         if (node instanceof FrostlakeParser.BeginEndBlockContext) {
@@ -552,19 +967,51 @@ final class ScriptingNameValidator {
     /**
      * An untyped declaration whose initialiser gives it no type is refused while the block compiles —
      * " variable 'A' cannot have its type inferred from initializer", at the LET or at a DECLARE item's
-     * name, ahead of anything later in the body. A bare name that resolves to nothing, a bare NULL and a
-     * cursor record's field are such initialisers; an unknown name inside a larger expression is the
-     * ordinary invalid identifier instead (live-verified).
+     * name, ahead of anything later in the body. A bare name that resolves to nothing, a bare NULL, a
+     * cursor record's field and an initialiser that reads a bind (see {@link #readsABindUntyped}) are such
+     * initialisers; an unknown name inside a larger expression is the ordinary invalid identifier instead,
+     * and a bind no variable declares is refused ahead of all of them (live-verified).
      */
-    private static void rejectUntypableInitialiser(final FrostlakeParser.ExpressionContext initialiser,
+    private static void rejectUntypableInitialiser(final FrostlakeParser.BooleanExprContext initialiser,
                                                    final FrostlakeParser.IdentifierContext name,
                                                    final Token at, final Set<String> scope,
-                                                   final Set<String> records) {
-        if (initialiser == null || name == null || !untypable(initialiser, scope, records)) {
+                                                   final Set<String> records,
+                                                   final InferredInitialiserCompiler compiler) {
+        if (initialiser != null) {
+            // Its binds resolve before its type is inferred: `LET b := missing + :nosuch` names 'nosuch'.
+            checkBindsOnly(initialiser, scope);
+        }
+        // A NOT, an AND or an OR always types its name a BOOLEAN — unless it reads a bind.
+        if (name != null && initialiser != null && (readsABindUntyped(initialiser)
+                || initialiser instanceof FrostlakeParser.ValueExprContext
+                    && untypable(((FrostlakeParser.ValueExprContext) initialiser).expression(), scope, records))) {
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                " variable '" + canonical(text(name)) + "' cannot have its type inferred from initializer"));
+        }
+        if (compiler != null && initialiser != null) {
+            compileFromlessSubqueries(initialiser, compiler);
+        }
+    }
+
+    /**
+     * The account infers an untyped declaration's type by COMPILING its initialiser, so every FROM-less
+     * scalar subquery in it compiles with the block: a name it cannot resolve is refused before anything
+     * runs, on a branch that never runs too, at the name's place in the block. {@code LET a := (SELECT
+     * missing)} is that compilation error, where a typed {@code LET a NUMBER := (SELECT missing)} fails only
+     * when it runs (live-verified).
+     */
+    private static void compileFromlessSubqueries(final ParseTree node, final InferredInitialiserCompiler compiler) {
+        if (node instanceof FrostlakeParser.ScalarSubqueryExprContext) {
+            final FrostlakeParser.SelectStatementContext query =
+                ((FrostlakeParser.ScalarSubqueryExprContext) node).selectStatement();
+            if (query != null && !readsARelation(query)) {
+                compiler.compile(query);
+            }
             return;
         }
-        throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
-            " variable '" + canonical(text(name)) + "' cannot have its type inferred from initializer"));
+        for (int i = 0; i < node.getChildCount(); i++) {
+            compileFromlessSubqueries(node.getChild(i), compiler);
+        }
     }
 
     private static boolean untypable(final FrostlakeParser.ExpressionContext initialiser,
@@ -592,6 +1039,45 @@ final class ScriptingNameValidator {
             }
             final String root = canonical(text(qualified.nameStartPart()));
             return qualified.namePart().isEmpty() ? !scope.contains(root) : records.contains(root);
+        }
+        return false;
+    }
+
+    /**
+     * Whether an initialiser reads a bind the type inference cannot type. The account takes the type of a bind
+     * written alone ({@code LET b := :a}, parenthesised or not) from its variable, and a cast's from its target
+     * whatever it casts ({@code :a::NUMBER}, {@code CAST((SELECT :a) AS VARCHAR)}, {@code TRY_CAST(:s AS
+     * NUMBER)}); any other initialiser holding a bind anywhere — an operand, a call's argument, a NOT, AND or
+     * OR, a subquery — gives the declaration no type (live-verified).
+     */
+    private static boolean readsABindUntyped(final FrostlakeParser.BooleanExprContext initialiser) {
+        if (!holdsABind(initialiser)) {
+            return false;
+        }
+        if (!(initialiser instanceof FrostlakeParser.ValueExprContext)) {
+            return true;
+        }
+        FrostlakeParser.ExpressionContext value = ((FrostlakeParser.ValueExprContext) initialiser).expression();
+        while (value instanceof FrostlakeParser.ParenExprContext
+                && ((FrostlakeParser.ParenExprContext) value).booleanExpr() instanceof FrostlakeParser.ValueExprContext) {
+            value = ((FrostlakeParser.ValueExprContext) ((FrostlakeParser.ParenExprContext) value).booleanExpr())
+                .expression();
+        }
+        return !(value instanceof FrostlakeParser.BindVarExprContext
+            || value instanceof FrostlakeParser.CastExprContext
+            || value instanceof FrostlakeParser.TryCastExprContext
+            || value instanceof FrostlakeParser.CastExpr2Context);
+    }
+
+    /** Whether a named {@code :bind} stands anywhere under {@code node}. */
+    private static boolean holdsABind(final ParseTree node) {
+        if (node instanceof FrostlakeParser.BindVarExprContext) {
+            return ((FrostlakeParser.BindVarExprContext) node).identifier() != null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsABind(node.getChild(i))) {
+                return true;
+            }
         }
         return false;
     }
@@ -633,7 +1119,8 @@ final class ScriptingNameValidator {
 
     /** The walk, carrying whether the current subtree sits inside an embedded SQL statement. */
     private static void rejectUnnamedBinds(final ParseTree node, final boolean insideSqlStatement) {
-        if (node instanceof FrostlakeParser.CursorDeclarationContext) {
+        if (node instanceof FrostlakeParser.CursorDeclarationContext || node instanceof FrostlakeParser.ResultSetBlockContext) {
+            // A RESULTSET's block source compiles when it runs.
             return;
         }
         if (node instanceof FrostlakeParser.DeclarationItemContext
@@ -673,6 +1160,11 @@ final class ScriptingNameValidator {
      * @param node the block, or any part of it
      */
     static void rejectDottedBindVariables(final ParseTree node) {
+        // A bind with a quoted name is the same kind of fault, judged in the same order of the text.
+        final Token quoted = QuotedBindName.of(node);
+        if (quoted != null) {
+            throw QuotedBindName.refusal(quoted);
+        }
         if (node instanceof FrostlakeParser.FieldAccessExprContext) {
             final FrostlakeParser.FieldAccessExprContext access = (FrostlakeParser.FieldAccessExprContext) node;
             if (access.expression() instanceof FrostlakeParser.BindVarExprContext && access.DOT() != null) {
@@ -683,6 +1175,11 @@ final class ScriptingNameValidator {
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             rejectDottedBindVariables(node.getChild(i));
+        }
+        // So is a semicolon closing a parenthesized statement: its last token, after every fault inside it.
+        final Token semicolon = ParenthesizedStatementEnd.of(node);
+        if (semicolon != null) {
+            throw ParenthesizedStatementEnd.refusal(semicolon);
         }
     }
 
