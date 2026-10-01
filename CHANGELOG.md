@@ -8,7 +8,7 @@ fix, not a regression**: SQL that Snowflake rejects and Frostlake accepted was a
 closing it can break code that relied on the leniency. Those changes are listed first in every release
 for exactly that reason.
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-10-01
 
 Changes since 0.1.0 accumulate here as they land.
 
