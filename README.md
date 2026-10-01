@@ -23,6 +23,9 @@ mvn test                        # full test suite
 mvn verify                      # + Apache RAT license-header audit
 ```
 
+The suite's other modes — through Frostlake's own JDBC driver, against a live Snowflake account, and the
+language-neutral testkit corpus — are described in [`docs/testing.md`](docs/testing.md).
+
 ## Trademarks & Disclaimer
 
 Frostlake is an independent project and is **not affiliated with, endorsed by, or sponsored

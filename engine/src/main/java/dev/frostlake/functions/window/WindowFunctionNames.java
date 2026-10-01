@@ -18,6 +18,7 @@ package dev.frostlake.functions.window;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
@@ -68,7 +69,27 @@ public final class WindowFunctionNames {
             "SUM"
         )));
 
+    /**
+     * The window functions whose window must carry an ORDER BY. Live refuses each of them without one — "Window
+     * function type [ROW_NUMBER] requires ORDER BY in window specification.", naming the function — and a
+     * PARTITION BY alone does not satisfy it. The aggregates used as windows are not among them: SUM(a) OVER ()
+     * answers.
+     */
+    private static final Set<String> ORDER_REQUIRED = Set.of(
+        "ROW_NUMBER", "RANK", "DENSE_RANK", "PERCENT_RANK", "CUME_DIST", "NTILE",
+        "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE", "NTH_VALUE");
+
     private WindowFunctionNames() {
+    }
+
+    /**
+     * Whether the window function needs an ORDER BY in its window.
+     *
+     * @param name the function's name, upper-cased
+     * @return whether a window without an ORDER BY is refused for it
+     */
+    public static boolean requiresOrderBy(final String name) {
+        return name != null && ORDER_REQUIRED.contains(name);
     }
 
     /** Whether {@code WindowFunctionEvaluator} implements this name itself (case-insensitive). */

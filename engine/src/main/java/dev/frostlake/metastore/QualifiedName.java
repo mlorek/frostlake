@@ -46,8 +46,10 @@ public final class QualifiedName {
     /**
      * Split a flattened dotted name into its parts — for a name available only as a string. A dot inside
      * double quotes belongs to its part: {@code db.s."a.b"} is three parts, the last one {@code a.b}, which
-     * is how {@link #join} spells a part that holds a dot. A quoted part without a dot is kept as written,
-     * quotes and all, exactly as a plain split always kept it.
+     * is how {@link #join} spells a part that holds a dot. A quote opens a quoted run only where a part
+     * starts, and inside one a doubled quote is one character, so a name that holds a quote, {@code db.s"t.x},
+     * splits at its dots like any other. A quoted part without a dot is kept as written, quotes and all,
+     * exactly as a plain split always kept it.
      */
     public static QualifiedName parse(final String dotted) {
         if (dotted.indexOf('"') < 0) {
@@ -58,7 +60,10 @@ public final class QualifiedName {
         boolean quoted = false;
         for (int i = 0; i < dotted.length(); i++) {
             final char c = dotted.charAt(i);
-            if (c == '"') {
+            if (c == '"' && quoted && i + 1 < dotted.length() && dotted.charAt(i + 1) == '"') {
+                part.append("\"\"");
+                i++;
+            } else if (c == '"' && (quoted || part.length() == 0)) {
                 quoted = !quoted;
                 part.append(c);
             } else if (c == '.' && !quoted) {

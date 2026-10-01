@@ -51,6 +51,8 @@ public class CortexSearchService {
     private String comment;
     private final LocalDateTime createdOn;
     private String owner;
+    private boolean indexingSuspended;
+    private boolean servingSuspended;
 
     public CortexSearchService(final String name, final String searchColumn,
                                final List<String> attributeColumns, final List<String> columns,
@@ -138,5 +140,25 @@ public class CortexSearchService {
 
     public void setOwner(final String owner) {
         this.owner = owner;
+    }
+
+    /** Whether indexing is suspended ({@code ALTER … SUSPEND INDEXING}). */
+    public boolean isIndexingSuspended() {
+        return indexingSuspended;
+    }
+
+    /** Suspends or resumes indexing. */
+    public void setIndexingSuspended(final boolean indexingSuspended) {
+        this.indexingSuspended = indexingSuspended;
+    }
+
+    /** Whether serving is suspended ({@code ALTER … SUSPEND SERVING}). */
+    public boolean isServingSuspended() {
+        return servingSuspended;
+    }
+
+    /** Suspends or resumes serving. */
+    public void setServingSuspended(final boolean servingSuspended) {
+        this.servingSuspended = servingSuspended;
     }
 }

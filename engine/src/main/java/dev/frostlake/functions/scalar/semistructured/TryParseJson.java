@@ -41,7 +41,8 @@ public class TryParseJson extends BuiltInFunction {
         // Parse leniently (Snowflake tolerates \' and invalid backslash escapes such as a regex \d);
         // TRY_ variant returns NULL when it still cannot be parsed.
         final JsonNode node = JsonTypeHelper.parseLenient(input);
-        return node == null ? null : VariantValue.ofNode(node);
+        // A raw line break inside a string does not read, as PARSE_JSON refuses it.
+        return node == null || JsonFaultReader.lineBreakFault(input) != null ? null : VariantValue.ofNode(node);
     }
 
     @Override

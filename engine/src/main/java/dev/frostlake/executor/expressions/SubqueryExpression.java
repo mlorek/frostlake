@@ -22,6 +22,7 @@ package dev.frostlake.executor.expressions;
 public class SubqueryExpression implements Expression {
     private final String subquery;  // SQL text of the subquery
     private SourcePosition position;
+    private SourcePosition queryPosition;
 
     public SubqueryExpression(final String subquery) {
         this.subquery = subquery;
@@ -32,8 +33,8 @@ public class SubqueryExpression implements Expression {
     }
 
     /**
-     * Where the subquery's own SELECT begins in the statement — what a refusal of the subquery's shape
-     * is anchored on.
+     * Where a refusal of the subquery's shape is anchored in the statement: its own SELECT, or the first
+     * parenthesis of the call argument it is the whole of (see {@link SubqueryAnchor}).
      *
      * @return the position, or null
      */
@@ -43,6 +44,33 @@ public class SubqueryExpression implements Expression {
 
     public void setPosition(final SourcePosition position) {
         this.position = position;
+    }
+
+    /**
+     * Where the subquery's own text begins in the statement, which every position inside it counts from.
+     * That is its {@link #getPosition} unless the subquery is anchored elsewhere, as an EXISTS is on its
+     * keyword.
+     *
+     * @return the position, or null
+     */
+    public SourcePosition getQueryPosition() {
+        return queryPosition != null ? queryPosition : position;
+    }
+
+    public void setQueryPosition(final SourcePosition queryPosition) {
+        this.queryPosition = queryPosition;
+    }
+
+    /**
+     * Whether an expression holds a subquery anywhere outside a lambda's body.
+     *
+     * @param expression the expression
+     * @return true when a subquery occurs in it
+     */
+    public static boolean occursIn(final Expression expression) {
+        final SubqueryCollectWalk walk = new SubqueryCollectWalk();
+        expression.accept(walk);
+        return !walk.subqueries().isEmpty();
     }
 
     @Override

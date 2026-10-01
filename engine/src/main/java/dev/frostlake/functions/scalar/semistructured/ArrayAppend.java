@@ -16,9 +16,11 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.UuidTextNode;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.ObjectMapper;
@@ -54,6 +56,9 @@ public class ArrayAppend extends VariantAccessorFunction {
                 array.add(VariantUndefined.node());
             } else if (value instanceof Boolean) {
                 array.add((Boolean) value);
+            } else if (value instanceof VariantValue && UuidTextNode.holds(((VariantValue) value).node())) {
+                // A UUID member keeps its type (see UuidTextNode).
+                array.add(((VariantValue) value).node());
             } else if (value instanceof Number) {
                 // Numbers go through the shared conversion so an appended element normalises like a
                 // constructed one — live ARRAY_APPEND(ARRAY_CONSTRUCT(), 1.00) is [1], not [1.0]. Routing
@@ -80,4 +85,10 @@ public class ArrayAppend extends VariantAccessorFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /** A VECTOR is no ARRAY: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

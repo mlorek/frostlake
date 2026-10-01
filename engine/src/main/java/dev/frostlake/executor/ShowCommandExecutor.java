@@ -21,9 +21,16 @@ import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QueryHistoryTracker;
+import dev.frostlake.metastore.model.Account;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.ManagedAccount;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.transaction.TransactionManager;
+import dev.frostlake.types.DataType;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -56,12 +63,12 @@ public class ShowCommandExecutor {
                                final QueryHistoryTracker queryHistoryTracker,
                                final Map<String, Object> sessionVariables,
                                final FunctionRegistry functionRegistry,
-                               final AccountIdentity identity) {
+                               final AccountIdentity identity, final StorageEngine storageEngine) {
         this.catalog = catalog;
         this.transactionManager = transactionManager;
         this.queryHistoryTracker = queryHistoryTracker;
         this.sessionVariables = sessionVariables;
-        this.relationalExecutor = new ShowRelationalExecutor(catalog);
+        this.relationalExecutor = new ShowRelationalExecutor(catalog, storageEngine);
         this.pipelineExecutor = new ShowPipelineExecutor(catalog);
         this.routineExecutor = new ShowRoutineExecutor(catalog, functionRegistry);
         this.infraExecutor = new ShowInfraExecutor(catalog);
@@ -85,8 +92,34 @@ public class ShowCommandExecutor {
         return relationalExecutor.showDatabases();
     }
 
+    /** SHOW DATABASES, with the dropped databases UNDROP can still restore when {@code history} is set. */
+    public ResultSet showDatabases(final boolean history) {
+        return relationalExecutor.showDatabases(history);
+    }
+
     public ResultSet showSchemas(final String databaseName) {
         return relationalExecutor.showSchemas(databaseName);
+    }
+
+    /** SHOW SCHEMAS, with the dropped schemas UNDROP can still restore when {@code history} is set. */
+    public ResultSet showSchemas(final String databaseName, final boolean history) {
+        return relationalExecutor.showSchemas(databaseName, history);
+    }
+
+    /** SHOW SCHEMAS IN ACCOUNT, with the dropped schemas when {@code history} is set. */
+    public ResultSet showSchemasInAccount(final boolean history) {
+        return relationalExecutor.showSchemasInAccount(history);
+    }
+
+    /** SHOW PARAMETERS IN DATABASE. */
+    public ResultSet showParametersInDatabase(final String databaseName, final String likePattern) {
+        return sessionExecutor.showParametersInDatabase(databaseName, likePattern);
+    }
+
+    /** SHOW PARAMETERS IN SCHEMA. */
+    public ResultSet showParametersInSchema(final String databaseName, final String schemaName,
+                                            final String likePattern) {
+        return sessionExecutor.showParametersInSchema(databaseName, schemaName, likePattern);
     }
 
     public ResultSet showTables(final String schemaName) {
@@ -119,6 +152,10 @@ public class ShowCommandExecutor {
 
     public ResultSet showHybridTablesInDatabase(final String databaseName) {
         return relationalExecutor.showHybridTablesInDatabase(databaseName);
+    }
+
+    public ResultSet showHybridTablesInAccount() {
+        return relationalExecutor.showHybridTablesInAccount();
     }
 
     public ResultSet showViewsInDatabase(final String databaseName) {
@@ -255,6 +292,94 @@ public class ShowCommandExecutor {
         return relationalExecutor.describeRelation(name, reportedKind);
     }
 
+    /**
+     * DESCRIBE … TYPE = STAGE: a table's own stage in DESC STAGE's property tree without its DIRECTORY
+     * group — the CSV file format and the copy options at their defaults, then the empty location — and a
+     * view's or a materialized view's location alone (live-verified). The relation is looked up as its columns
+     * are, so a missing one is refused in the named kind's words.
+     */
+    public ResultSet describeRelationStage(final String name, final String reportedKind) {
+        return infraExecutor.describeRelationStage(relationalExecutor.namesTable(name, reportedKind));
+    }
+
+    /**
+     * Whether a name reaches a table, view or materialized view — see
+     * {@link ShowRelationalExecutor#namesAStoredRelation}.
+     *
+     * @param name the written name
+     * @return whether one of those carries it
+     */
+    public boolean namesAStoredRelation(final String name) {
+        return relationalExecutor.namesAStoredRelation(name);
+    }
+
+    /**
+     * Whether a name reaches a DYNAMIC TABLE of the current schema.
+     *
+     * @param name the written name
+     * @return whether one carries it
+     */
+    /**
+     * The stage properties of a relation already known to be one, without the kind lookup: a dynamic
+     * table answers the table's properties.
+     *
+     * @return the property rows
+     */
+    public ResultSet describeStoredRelationStage() {
+        return infraExecutor.describeRelationStage(true);
+    }
+
+    /**
+     * The stage properties of a TABLE, which reports the file format and copy options it was created with.
+     *
+     * @param name the table's written name
+     * @return the property rows
+     */
+    /**
+     * Whether a described name reaches a TABLE rather than a view or a materialized view.
+     *
+     * @param name the written name
+     * @param reportedKind the kind a missing name is refused as
+     * @return whether a table carries it
+     */
+    public boolean namesTable(final String name, final String reportedKind) {
+        return relationalExecutor.namesTable(name, reportedKind);
+    }
+
+    public ResultSet describeTableStage(final String name) {
+        final Table described = catalog.resolveTableAsWritten(name, "Table");
+        return infraExecutor.describeTableStage(described.getStageFileFormat(), described.getStageCopyOptions());
+    }
+
+    public boolean namesDynamicTable(final String name) {
+        if (catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null) {
+            return false;   // with no current schema the lookup has nowhere to look
+        }
+        try {
+            return catalog.getDatabase(catalog.getCurrentDatabase())
+                .getSchema(catalog.getCurrentSchema()).hasDynamicTable(name);
+        } catch (final RuntimeException noSuchSchema) {
+            return false;
+        }
+    }
+
+    /**
+     * DESCRIBE SCHEMA: the schema's tables and views as SHOW OBJECTS lists them, by name, each with its
+     * creation time and kind (TABLE, TEMPORARY or VIEW). INFORMATION_SCHEMA's views were never created and
+     * carry the epoch (live-verified).
+     */
+    public ResultSet describeSchema(final String schemaName) {
+        return relationalExecutor.describeSchema(schemaName);
+    }
+
+    /**
+     * DESCRIBE DATABASE: the database's schemas by name, each with its creation time and the kind SCHEMA.
+     * INFORMATION_SCHEMA is made as it is read, so it carries the statement's time (live-verified).
+     */
+    public ResultSet describeDatabase(final String databaseName) {
+        return relationalExecutor.describeDatabase(databaseName);
+    }
+
     public ResultSet describeStream(final String streamName) {
         return pipelineExecutor.describeStream(streamName);
     }
@@ -315,12 +440,12 @@ public class ShowCommandExecutor {
         return routineExecutor.describeTag(tagName);
     }
 
-    public ResultSet describeFunction(final String name) {
-        return routineExecutor.describeFunction(name);
+    public ResultSet describeFunction(final String[] parts, final List<DataType> argumentTypes) {
+        return routineExecutor.describeFunction(parts, argumentTypes);
     }
 
-    public ResultSet describeProcedure(final String name) {
-        return routineExecutor.describeProcedure(name);
+    public ResultSet describeProcedure(final String[] parts, final List<DataType> argumentTypes) {
+        return routineExecutor.describeProcedure(parts, argumentTypes);
     }
 
     public ResultSet describeUser(final String name) {
@@ -497,6 +622,15 @@ public class ShowCommandExecutor {
         return securityExecutor.showRoles();
     }
 
+    public ResultSet showDatabaseRoles() {
+        return securityExecutor.showDatabaseRoles();
+    }
+
+    /** SHOW ROLES IN DATABASE: the database's own roles. */
+    public ResultSet showDatabaseRoles(final Database database) {
+        return securityExecutor.showDatabaseRoles(database);
+    }
+
     public ResultSet showCortexSearchServices(final String schemaName, final String like) {
         return pipelineExecutor.showCortexSearchServices(schemaName, like);
     }
@@ -537,6 +671,10 @@ public class ShowCommandExecutor {
         return sessionExecutor.showParametersInTask(taskName, likePattern);
     }
 
+    public ResultSet showParametersInUser(final String userName, final String likePattern) {
+        return sessionExecutor.showParametersInUser(userName, likePattern);
+    }
+
     public ResultSet showParametersInWarehouse(final String warehouseName, final String likePattern) {
         return sessionExecutor.showParametersInWarehouse(warehouseName, likePattern);
     }
@@ -557,6 +695,16 @@ public class ShowCommandExecutor {
         return sessionExecutor.showAccounts();
     }
 
+    /** SHOW ACCOUNTS [HISTORY]: this account and the accounts CREATE ACCOUNT recorded. */
+    public ResultSet showAccounts(final boolean history, final List<Account> created, final int managed) {
+        return sessionExecutor.showAccounts(history, created, managed);
+    }
+
+    /** SHOW MANAGED ACCOUNTS. */
+    public ResultSet showManagedAccounts(final List<ManagedAccount> accounts) {
+        return sessionExecutor.showManagedAccounts(accounts);
+    }
+
     public ResultSet showLocks(final boolean inAccount) {
         return sessionExecutor.showLocks(inAccount);
     }
@@ -565,16 +713,16 @@ public class ShowCommandExecutor {
         return sessionExecutor.showTransactions(likePattern);
     }
 
-    public ResultSet showVariables() {
-        return sessionExecutor.showVariables();
+    public ResultSet showVariables(final String likePattern) {
+        return sessionExecutor.showVariables(likePattern);
     }
 
     public ResultSet showQueryHistory(final Integer limit) {
         return sessionExecutor.showQueryHistory(limit);
     }
 
-    public ResultSet showGrantsOnObject(final String objectType, final String objectName) {
-        return securityExecutor.showGrantsOnObject(objectType, objectName);
+    public ResultSet showGrantsOnObject(final String objectType, final String objectName, final GrantedObject granted) {
+        return securityExecutor.showGrantsOnObject(objectType, objectName, granted);
     }
 
     public ResultSet showGrantsTo(final String targetType, final String targetName) {

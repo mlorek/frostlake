@@ -105,7 +105,7 @@ public class AccountQualifiedNameTest extends BaseDatabaseTest {
         assertEquals(MISSING, refusal("SELECT s FROM \"" + account.toLowerCase() + "\".test_db.acs.two"));
         assertEquals(MISSING, refusal("SELECT s FROM " + four("two") + ".x"));
         // Past the account, a missing table is spelled without it.
-        assertEquals("SQL compilation error:|Object 'TEST_DB.ACS.NOSUCHTAB' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|Object 'TEST_DB.ACS.NOSUCHTAB' does not exist or not authorized."),
             refusal("SELECT * FROM " + four("nosuchtab")));
     }
 

@@ -43,10 +43,12 @@ public final class TableFunctionArguments {
 
     private static final String FLATTEN = "FLATTEN";
     private static final String SPLIT_TO_TABLE = "SPLIT_TO_TABLE";
+    private static final String STRTOK_SPLIT_TO_TABLE = "STRTOK_SPLIT_TO_TABLE";
     private static final String TO_QUERY = "TO_QUERY";
     private static final String QUERY_HISTORY = "QUERY_HISTORY";
     private static final String TASK_HISTORY = "TASK_HISTORY";
     private static final String TAG_REFERENCES = "TAG_REFERENCES";
+    private static final String ALERT_HISTORY = "ALERT_HISTORY";
 
     /** The schema the INFORMATION_SCHEMA-only functions must be qualified with. */
     private static final String INFORMATION_SCHEMA = "INFORMATION_SCHEMA";
@@ -57,7 +59,9 @@ public final class TableFunctionArguments {
      * {@code INFORMATION_SCHEMA.QUERY_HISTORY} and {@code <db>.INFORMATION_SCHEMA.QUERY_HISTORY} run.
      */
     private static final Set<String> INFORMATION_SCHEMA_ONLY =
-        new HashSet<>(Arrays.asList(QUERY_HISTORY, TASK_HISTORY, TAG_REFERENCES));
+        new HashSet<>(Arrays.asList(QUERY_HISTORY, "QUERY_HISTORY_BY_SESSION", "QUERY_HISTORY_BY_USER",
+            "QUERY_HISTORY_BY_WAREHOUSE", TASK_HISTORY, TAG_REFERENCES, ALERT_HISTORY, "TASK_DEPENDENTS",
+            "CURRENT_TASK_GRAPHS", "COMPLETE_TASK_GRAPHS"));
 
     /**
      * How live NAMES a positional parameter, by function. Most report the 1-based position
@@ -91,6 +95,8 @@ public final class TableFunctionArguments {
     static {
         ACCEPTED_NAMES.put(FLATTEN, FLATTEN_PARAMETERS);
         ACCEPTED_NAMES.put(SPLIT_TO_TABLE, new ArrayList<String>());
+        ACCEPTED_NAMES.put(STRTOK_SPLIT_TO_TABLE, new ArrayList<String>());
+        ACCEPTED_NAMES.put(InferSchemaArguments.FUNCTION, InferSchemaArguments.PARAMETERS);
         // TO_QUERY is deliberately absent: beyond SQL it takes ARBITRARY names, which bind to the
         // :name placeholders inside the text, so there is no list to check against.
 
@@ -112,6 +118,12 @@ public final class TableFunctionArguments {
         splitToTable.put("1", TableFunctionParameterKind.STRING);
         splitToTable.put("2", TableFunctionParameterKind.STRING);
         PARAMETER_KINDS.put(SPLIT_TO_TABLE, splitToTable);
+
+        // The tokenizing sibling takes the same two texts, the second one a SET of delimiter characters.
+        final Map<String, TableFunctionParameterKind> strtokSplitToTable = new HashMap<>();
+        strtokSplitToTable.put("1", TableFunctionParameterKind.STRING);
+        strtokSplitToTable.put("2", TableFunctionParameterKind.STRING);
+        PARAMETER_KINDS.put(STRTOK_SPLIT_TO_TABLE, strtokSplitToTable);
 
         POSITIONAL_PARAMETER_NAMES.put(QUERY_HISTORY, Arrays.asList("END_TIME_RANGE_START"));
         POSITIONAL_PARAMETER_NAMES.put(TASK_HISTORY, Arrays.asList("SCHEDULED_TIME_RANGE_START"));
@@ -160,7 +172,8 @@ public final class TableFunctionArguments {
         if (accepted != null) {
             for (int i = 0; i < namesInOrder.size(); i++) {
                 final String written = namesInOrder.get(i);
-                if (written != null && !accepted.contains(unquoted(written))) {
+                // A quoted name matches no parameter, whatever it spells: FLATTEN("INPUT" => …) is refused.
+                if (written != null && !accepted.contains(written)) {
                     throw new RuntimeException(at(nameToken, "invalid argument for function ["
                         + functionName + "] unexpected argument [" + written + "] at position "
                         + (i + 1) + ","));
@@ -257,8 +270,8 @@ public final class TableFunctionArguments {
     }
 
     /**
-     * A quoted argument name keeps its quotes in the refusal ({@code ["STRING"]}) but is matched
-     * against the parameter list without them — and live upper-cases either spelling.
+     * A quoted argument name without its quotes. The refusal of one keeps them ({@code ["STRING"]}), and live
+     * upper-cases either spelling.
      */
     private static String unquoted(final String written) {
         return written.length() > 1 && written.startsWith("\"") && written.endsWith("\"")

@@ -53,7 +53,7 @@ public class PythonTableFunctionTest {
             CREATE OR REPLACE FUNCTION stock_sale_average(symbol VARCHAR, quantity NUMBER, price NUMBER)
               RETURNS TABLE (symbol VARCHAR, total NUMBER)
               LANGUAGE PYTHON
-              RUNTIME_VERSION = '3.9'
+              RUNTIME_VERSION = '3.11'
               PACKAGES = ('snowflake-snowpark-python')
               HANDLER = 'StockSaleAverage'
             AS $$
@@ -148,7 +148,7 @@ public class PythonTableFunctionTest {
             CREATE FUNCTION meta_fn(x NUMBER)
               RETURNS TABLE (out_val NUMBER)
               LANGUAGE PYTHON
-              RUNTIME_VERSION = '3.9'
+              RUNTIME_VERSION = '3.11'
               PACKAGES = ('numpy')
               HANDLER = 'MyHandler'
             AS $$
@@ -163,7 +163,7 @@ public class PythonTableFunctionTest {
         assertNotNull(f);
         assertTrue(f.isTableFunction());
         assertEquals("PYTHON", f.getLanguage());
-        assertEquals("3.9", f.getRuntimeVersion());
+        assertEquals("3.11", f.getRuntimeVersion());
         assertEquals("MyHandler", f.getHandler());
         assertEquals(1, f.getReturnColumns().size());
         assertEquals("OUT_VAL", f.getReturnColumns().get(0).getName());

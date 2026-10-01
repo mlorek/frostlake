@@ -136,8 +136,8 @@ public class AggregationPolicyTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE ag_t SET AGGREGATION POLICY no_such_ap");
             }
         });
-        assertEquals("SQL compilation error:\nAggregation policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_AP'"
-            + " does not exist or not authorized.", ex.getMessage());
+        assertEquals(hinted("SQL compilation error:\nAggregation policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_AP'"
+            + " does not exist or not authorized."), ex.getMessage());
     }
 
     /** Detaching when nothing is attached is an ERROR here — the opposite of a projection policy. */

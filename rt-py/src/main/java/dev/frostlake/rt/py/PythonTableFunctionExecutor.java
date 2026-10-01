@@ -77,8 +77,13 @@ public final class PythonTableFunctionExecutor {
         try {
             PythonRuntime.eval(dedent(function.getBody()));
 
-            // Instantiate the handler class
-            PythonRuntime.eval("__handler_instance = " + handlerClassName + "()");
+            // Instantiate the handler class; a dotted one is a module's attribute, imported as CREATE resolved it.
+            if (PythonHandlerCheck.isDotted(handlerClassName)) {
+                PythonRuntime.bind("__fl_handler_name", handlerClassName);
+                PythonRuntime.eval(PythonHandlerCheck.RESOLVE_DOTTED + "__handler_instance = __fl_handler()");
+            } else {
+                PythonRuntime.eval("__handler_instance = " + handlerClassName + "()");
+            }
 
             // Call process() for each input row
             final List<Parameter> params = function.getParameters();

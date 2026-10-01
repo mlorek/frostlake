@@ -20,9 +20,6 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.LiveSnowflake;
 import dev.frostlake.storage.ResultSet;
 
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -64,20 +61,6 @@ public class TaskScheduleAndExecuteRulesTest extends BaseDatabaseTest {
     }
 
     private String statusOf(final String sql) {
-        if (LiveSnowflake.enabled()) {
-            try {
-                final Connection connection = LiveSnowflake.shared();
-                final Statement st = connection.createStatement();
-                final java.sql.ResultSet rs = st.executeQuery(sql);
-                rs.next();
-                final String value = rs.getString(1);
-                rs.close();
-                st.close();
-                return value;
-            } catch (final SQLException e) {
-                return "ERR " + e.getMessage();
-            }
-        }
         try {
             final ResultSet rs = engine.executeQuery(sql);
             return String.valueOf(rs.getRows().get(0).getValue(0));
@@ -143,8 +126,8 @@ public class TaskScheduleAndExecuteRulesTest extends BaseDatabaseTest {
         try {
             assertEquals("Task XR_RUN is scheduled to run immediately.",
                 statusOf("EXECUTE TASK test_db.test_schema.xr_run"));
-            assertEquals("ERR SQL compilation error:\nTask 'XR_OTHER_DB.PUBLIC.XR_RUN' does not exist or not"
-                + " authorized.", statusOf("EXECUTE TASK public.xr_run"));
+            assertEquals(hinted("ERR SQL compilation error:\nTask 'XR_OTHER_DB.PUBLIC.XR_RUN' does not exist or not"
+                + " authorized."), statusOf("EXECUTE TASK public.xr_run"));
         } finally {
             statusOf("USE DATABASE test_db");
             statusOf("USE SCHEMA test_schema");

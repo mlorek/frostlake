@@ -16,7 +16,7 @@
 
 package dev.frostlake.executor.operators;
 
-import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import dev.frostlake.values.VariantValue;
@@ -45,7 +45,8 @@ public class JoinOperator implements Operator {
 
     private final Table leftTable;
     private final Table rightTable;
-    private final List<Row> rightRows;
+    private final RowsProvider rightSide;
+    private List<Row> rightRows;
     private final JoinType joinType;
     private final String joinCondition;
     private final JoinConditionEvaluator conditionEvaluator;
@@ -71,7 +72,7 @@ public class JoinOperator implements Operator {
                        final JoinConditionEvaluator conditionEvaluator) {
         this.leftTable = leftTable;
         this.rightTable = rightTable;
-        this.rightRows = rightRows;
+        this.rightSide = RowsProvider.of(rightRows);
         this.joinType = joinType;
         this.joinCondition = joinCondition;
         this.conditionEvaluator = conditionEvaluator;
@@ -80,8 +81,34 @@ public class JoinOperator implements Operator {
     /**
      * Create a CROSS JOIN operator (no condition).
      */
+    /**
+     * A join whose right side is read when the join runs — a relation planned as a pipeline of its own.
+     *
+     * @param leftTable          the left relation
+     * @param rightTable         the right relation's shape
+     * @param rightSide          the right relation's rows, read when the join runs
+     * @param joinType           the join type
+     * @param joinCondition      the condition's text, or null
+     * @param conditionEvaluator the condition, or null for a cross join
+     */
+    public JoinOperator(final Table leftTable, final Table rightTable, final RowsProvider rightSide,
+                        final JoinType joinType, final String joinCondition,
+                        final JoinConditionEvaluator conditionEvaluator) {
+        this.leftTable = leftTable;
+        this.rightTable = rightTable;
+        this.rightSide = rightSide;
+        this.joinType = joinType;
+        this.joinCondition = joinCondition;
+        this.conditionEvaluator = conditionEvaluator;
+    }
+
     public static JoinOperator cross(final Table leftTable, final Table rightTable, final List<Row> rightRows) {
         return new JoinOperator(leftTable, rightTable, rightRows, JoinType.CROSS, null, null);
+    }
+
+    /** A cross join whose right side is read when the join runs. */
+    public static JoinOperator cross(final Table leftTable, final Table rightTable, final RowsProvider rightSide) {
+        return new JoinOperator(leftTable, rightTable, rightSide, JoinType.CROSS, null, null);
     }
 
     /** Enable hash-join candidate filtering using the given equi-join key column indices. */
@@ -93,6 +120,7 @@ public class JoinOperator implements Operator {
 
     @Override
     public List<Row> execute(final List<Row> leftRows, final OperatorContext context) {
+        rightRows = rightSide.rows();
         logger.debug("Executing {} JOIN: {} rows (left) x {} rows (right)",
             joinType, leftRows.size(), rightRows.size());
 
@@ -115,17 +143,19 @@ public class JoinOperator implements Operator {
 
     @Override
     public String getDescription() {
-        if (joinType == JoinType.CROSS || (joinCondition == null && conditionEvaluator == null)) {
-            return String.format("%s JOIN[%s x %s]",
-                joinType, leftTable.getName(), rightTable.getName());
+        // A USING or NATURAL join matches by key through its evaluator and carries no condition text.
+        final String rightSideRead = rightSide.describe() == null ? "" : "{" + rightSide.describe() + "}";
+        if (joinType == JoinType.CROSS || joinCondition == null) {
+            return String.format("%s JOIN[%s x %s]%s",
+                joinType, leftTable.getName(), rightTable.getName(), rightSideRead);
         }
 
         final String conditionPreview = joinCondition.length() > 30
             ? joinCondition.substring(0, 27) + "..."
             : joinCondition;
 
-        return String.format("%s JOIN[%s x %s ON %s]",
-            joinType, leftTable.getName(), rightTable.getName(), conditionPreview);
+        return String.format("%s JOIN[%s x %s ON %s]%s",
+            joinType, leftTable.getName(), rightTable.getName(), conditionPreview, rightSideRead);
     }
 
     /**
@@ -248,7 +278,8 @@ public class JoinOperator implements Operator {
     private List<Object> buildKey(final Row row, final int[] keyIdx) {
         final List<Object> key = new ArrayList<>(keyIdx.length);
         for (int i = 0; i < keyIdx.length; i++) {
-            key.add(normalizeKey(row.getValue(keyIdx[i])));
+            // Joining reads each key, so a cell a relation deferred raises its fault here.
+            key.add(normalizeKey(DeferredFault.read(row.getValue(keyIdx[i]))));
         }
         return key;
     }
@@ -312,18 +343,9 @@ public class JoinOperator implements Operator {
             return false;
         }
 
-        try {
-            return conditionEvaluator.matches(leftRow, rightRow);
-        } catch (final RuntimeException e) {
-            // A compile-time refusal is the statement's rather than this pair's — two collations that
-            // disagree in ON are refused however the rows compare — so it must not read as a condition
-            // that merely failed to hold.
-            if (SqlCompilationError.isCompilationError(e.getMessage())) {
-                throw e;
-            }
-            logger.warn("Failed to evaluate join condition: {}", e.getMessage());
-            return false;
-        }
+        // A refusal is the statement's rather than this pair's: two collations that disagree in ON are refused
+        // however the rows compare, and so is a value the condition cannot compute (live-verified).
+        return conditionEvaluator.matches(leftRow, rightRow);
     }
 
     /**

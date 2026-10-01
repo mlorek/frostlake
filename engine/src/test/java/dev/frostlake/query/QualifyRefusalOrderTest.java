@@ -124,7 +124,7 @@ public class QualifyRefusalOrderTest extends BaseDatabaseTest {
     /** A missing RELATION still speaks before any of it. */
     @Test
     public void theRelationIsSettledFirst() {
-        assertEquals("SQL compilation error:|Object 'NOSUCHTABLE' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|Object 'NOSUCHTABLE' does not exist or not authorized."),
             answer("SELECT a FROM nosuchtable QUALIFY nosuchcol > 1"));
     }
 

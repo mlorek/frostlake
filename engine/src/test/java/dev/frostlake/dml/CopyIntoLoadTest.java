@@ -27,6 +27,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -286,11 +287,17 @@ public class CopyIntoLoadTest {
         engine.execute("CREATE TABLE up (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO up VALUES (1, 'Alice')");
 
+        // The path is a PREFIX of the written names, not a directory: @stage/out names its file
+        // out_0_0_0.csv beside the others, and only a path ending in a slash puts data_0_0_0.csv under it.
         engine.executeQuery("COPY INTO @data_stage/out FROM up FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)");
-
-        final Path csv = stageDir.resolve("out").resolve("data_0_0_0.csv");
-        assertTrue(Files.exists(csv), "unload to @stage/out should write beneath the sub-path");
+        final Path csv = stageDir.resolve("out_0_0_0.csv");
+        assertTrue(Files.exists(csv), "unload to @stage/out should name its file after the prefix");
         assertTrue(Files.readString(csv).contains("1,Alice"));
+
+        engine.executeQuery("COPY INTO @data_stage/sub/ FROM up FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)");
+        final Path nested = stageDir.resolve("sub").resolve("data_0_0_0.csv");
+        assertTrue(Files.exists(nested), "unload to @stage/sub/ should write beneath the sub-path");
+        assertTrue(Files.readString(nested).contains("1,Alice"));
     }
 
     @Test
@@ -317,14 +324,30 @@ public class CopyIntoLoadTest {
             "COPY INTO @data_stage FROM part_t PARTITION BY region FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)");
         assertEquals(3, ((Number) rs.getRows().get(0).getValue(0)).intValue());
 
-        // Each distinct partition value lands in its own sub-directory with a data file.
-        final Path eastCsv = stageDir.resolve("EAST").resolve("data_0_0_0.csv");
-        final Path westCsv = stageDir.resolve("WEST").resolve("data_0_0_0.csv");
+        // Each distinct partition value lands in its own sub-directory with a data file, named as the account
+        // names a partition's file: data_<query id>_0_0_0.csv.
+        final Path eastCsv = partitionFile(stageDir.resolve("EAST"), ".csv");
+        final Path westCsv = partitionFile(stageDir.resolve("WEST"), ".csv");
         assertTrue(Files.exists(eastCsv), "PARTITION BY should create an EAST partition file");
         assertTrue(Files.exists(westCsv), "PARTITION BY should create a WEST partition file");
         final String east = Files.readString(eastCsv);
         assertTrue(east.contains("1,EAST") && east.contains("3,EAST"), "EAST partition should hold both EAST rows");
         assertTrue(Files.readString(westCsv).contains("2,WEST"), "WEST partition should hold the WEST row");
+    }
+
+    /** The one data_&lt;id&gt;_0_0_0 file a partition's directory holds, or the directory itself when it holds none. */
+    static Path partitionFile(final Path directory, final String extension) throws IOException {
+        if (Files.isDirectory(directory)) {
+            try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {
+                for (final Path file : files) {
+                    final String name = file.getFileName().toString();
+                    if (name.startsWith("data_") && name.endsWith("_0_0_0" + extension)) {
+                        return file;
+                    }
+                }
+            }
+        }
+        return directory;
     }
 
     @Test

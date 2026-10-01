@@ -18,10 +18,12 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.CollationMatching;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 
@@ -52,7 +54,7 @@ public class Position extends TextArgumentFunction {
         }
         final String needle = args.get(0).toString();
         final String haystack = args.get(1).toString();
-        final int idx = haystack.indexOf(needle, startPos);
+        final int idx = CodePointText.indexOf(haystack, needle, startPos);
         return idx < 0 ? 0L : (long) (idx + 1);
     }
 
@@ -65,13 +67,20 @@ public class Position extends TextArgumentFunction {
         }
         int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
         startPos = Math.max(0, startPos);
-        final int[] found = CollationMatching.findUnder(collation, args.get(1).toString(),
-            args.get(0).toString(), startPos);
-        return found == null ? 0L : (long) (found[0] + 1);
+        final String haystack = args.get(1).toString();
+        final int[] found = CollationMatching.findUnder(collation, haystack,
+            args.get(0).toString(), CodePointText.offset(haystack, startPos));
+        return found == null ? 0L : (long) (CodePointText.characterIndex(haystack, found[0]) + 1);
     }
 
     @Override
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 3; }
+
+    /** A BOOLEAN start position is refused by the argument types as the call compiles (live-verified). */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 2 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

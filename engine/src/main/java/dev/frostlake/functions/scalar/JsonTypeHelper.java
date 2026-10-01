@@ -96,7 +96,10 @@ public final class JsonTypeHelper {
         // rather than a refusal (or, for a trailing comma, rather than a silently shorter array).
         // Every KEYWORD is read case-insensitively, and the two that no JSON parser has a number for —
         // nan and inf/infinity — are rewritten to a placeholder here and restored below.
-        final String marked = VariantUndefined.markTokens(JsonKeywords.normalize(JsonArrayHoles.fill(input)));
+        // A hexadecimal number is rewritten to the decimal it stands for first: no JSON parser reads one,
+        // and live's does (0x10 is 16, 0x1.5 a DOUBLE).
+        final String marked = VariantUndefined.markTokens(
+            JsonKeywords.normalize(JsonHexNumbers.normalize(JsonArrayHoles.fill(input))));
         try {
             return restoreAll(marked, readTree(MAPPER, marked));
         } catch (final Exception e) {
@@ -160,7 +163,8 @@ public final class JsonTypeHelper {
     /**
      * DROP every backslash that does not begin a valid JSON escape (i.e. is not followed by one of
      * the characters {@code " \ / b f n r t u}) — live-verified: Snowflake's PARSE_JSON turns
-     * {@code "a\d+"} into {@code ad+}, discarding the invalid backslash rather than keeping it.
+     * {@code "a\d+"} into {@code ad+}, discarding the invalid backslash rather than keeping it. A backslash
+     * before a line feed continues the string: both are dropped, so {@code "a\<LF>b"} reads {@code ab}.
      * Valid escapes and already-escaped backslashes are left untouched.
      */
     public static String escapeInvalidBackslashes(final String s) {
@@ -172,6 +176,10 @@ public final class JsonTypeHelper {
                 continue;
             }
             final char next = i + 1 < s.length() ? s.charAt(i + 1) : '\0';
+            if (next == '\n') {
+                i++;
+                continue;
+            }
             if (next == '"' || next == '\\' || next == '/' || next == 'b' || next == 'f'
                     || next == 'n' || next == 'r' || next == 't' || next == 'u') {
                 sb.append(c).append(next);

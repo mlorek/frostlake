@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.BooleanType;
+import dev.frostlake.values.UuidTextNode;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 
@@ -37,7 +38,8 @@ public class IsVarchar extends StructuredArgumentFunction {
         final Object v = args.get(0);
         // Try to parse as JSON first — PARSE_JSON output arrives as a JSON-encoded string
         final JsonNode node = JsonTypeHelper.parse(v);
-        if (node != null) return node.isTextual();
+        // A UUID is a string node only in its JSON text: live, IS_VARCHAR(TO_VARIANT(u)) is FALSE.
+        if (node != null) return node.isTextual() && !UuidTextNode.holds(node);
         // If not valid JSON, it's a bare Java String = VARCHAR
         return v instanceof String;
     }

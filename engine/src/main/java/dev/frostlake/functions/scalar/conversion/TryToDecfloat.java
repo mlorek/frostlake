@@ -35,7 +35,10 @@ import java.util.List;
  *   TRY_TO_DECFLOAT('1e5', '9e9')     NULL         a model that is not one
  * </pre>
  *
- * <p>A BOOLEAN is NULL, as it was when this function read text as TRY_TO_DOUBLE.
+ * <p>Like every TRY_TO_ conversion it is a TRY_CAST, so a source that is not text is judged while the
+ * statement compiles, by the conversion matrix the TRY_TO_ family shares: TRY_TO_DECFLOAT(TRUE) keeps
+ * TRY_CAST's sentence and TRY_TO_DECFLOAT(d) over a DATE takes the conversion one. A BOOLEAN that
+ * reaches a row all the same is NULL.
  */
 public class TryToDecfloat extends BuiltInFunction {
 

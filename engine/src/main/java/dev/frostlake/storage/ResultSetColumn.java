@@ -52,6 +52,13 @@ public class ResultSetColumn {
     // stamps it from the expression it projects, so a derived relation, a view and a CTAS all carry the
     // collation out to whoever reads the column next.
     private final String collation;
+    // Whether the projection is a number or boolean constant wrapped into a VARIANT, or a column carrying
+    // one out of a derived relation — the value a cast to a sized VARCHAR converts unchecked. Read only by
+    // that cast, through a derived relation or a scalar subquery built from this result set.
+    private final boolean uncheckedConstant;
+    // Whether the projection is a double live's compiler folds, or a column carrying one out of a derived
+    // relation — which TO_VARIANT wraps keeping its FLOAT origin. Read only by that wrap.
+    private final boolean foldedDouble;
 
     public ResultSetColumn(final String name, final DataType dataType) {
         this(name, dataType, null);
@@ -89,13 +96,15 @@ public class ResultSetColumn {
                            final DataType staticType, final boolean nullable,
                            final boolean nullabilityKnown, final ValueRange valueRange,
                            final DataType spelledNumber) {
-        this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, null);
+        this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, null,
+            false, false);
     }
 
     private ResultSetColumn(final String name, final DataType dataType, final String tableName,
                             final DataType staticType, final boolean nullable,
                             final boolean nullabilityKnown, final ValueRange valueRange,
-                            final DataType spelledNumber, final String collation) {
+                            final DataType spelledNumber, final String collation,
+                            final boolean uncheckedConstant, final boolean foldedDouble) {
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
@@ -105,6 +114,8 @@ public class ResultSetColumn {
         this.valueRange = valueRange;
         this.spelledNumber = spelledNumber;
         this.collation = collation;
+        this.uncheckedConstant = uncheckedConstant;
+        this.foldedDouble = foldedDouble;
     }
 
     /**
@@ -116,7 +127,47 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withCollation(final String spec) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, spec);
+            valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble);
+    }
+
+    /**
+     * This column marked as projecting a constant wrapped into a VARIANT, which a cast to a sized VARCHAR
+     * converts unchecked through the derived relation or scalar subquery built from this result set.
+     *
+     * @return a copy of this column so marked
+     */
+    public ResultSetColumn withUncheckedConstant() {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, true, foldedDouble);
+    }
+
+    /**
+     * This column marked as projecting a double live's compiler folds, which TO_VARIANT wraps keeping its
+     * FLOAT origin through the derived relation or scalar subquery built from this result set.
+     *
+     * @return a copy of this column so marked
+     */
+    public ResultSetColumn withFoldedDouble() {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, true);
+    }
+
+    /**
+     * Whether this column projects a double live's compiler folds (see {@link #withFoldedDouble}).
+     *
+     * @return true for such a column
+     */
+    public boolean isFoldedDouble() {
+        return foldedDouble;
+    }
+
+    /**
+     * Whether this column projects a constant wrapped into a VARIANT (see {@link #withUncheckedConstant}).
+     *
+     * @return true for such a column
+     */
+    public boolean isUncheckedConstant() {
+        return uncheckedConstant;
     }
 
     /**

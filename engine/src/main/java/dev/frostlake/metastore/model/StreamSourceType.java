@@ -17,9 +17,12 @@
 package dev.frostlake.metastore.model;
 
 /**
- * Represents the type of source object for a Stream
+ * Represents the type of source object for a Stream. A stream on an event table is a TABLE stream; a STAGE
+ * stream tracks the stage's directory table, and a DYNAMIC_TABLE stream a dynamic table's refreshes.
  */
 public enum StreamSourceType {
     TABLE,
-    VIEW
+    VIEW,
+    STAGE,
+    DYNAMIC_TABLE
 }

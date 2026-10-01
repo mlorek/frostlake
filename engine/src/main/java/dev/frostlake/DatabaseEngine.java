@@ -21,11 +21,13 @@ import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.QueryResultCache;
+import dev.frostlake.executor.StatementBoundaries;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.TableShadows;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Procedure;
@@ -113,7 +115,7 @@ public class DatabaseEngine {
         this.sessionContext = new SessionContext();
         this.functionRegistry = new FunctionRegistry(catalog, sessionContext, config);
         this.transactionManager = new TransactionManager(catalog, storageEngine);
-        this.systemViews = new SystemViews(catalog);
+        this.systemViews = new SystemViews(catalog, storageEngine);
         this.streamManager = new StreamManager(catalog);
         this.securityManager = new SecurityManager(catalog, sessionContext);
         this.persistenceManager = new PersistenceManager(config);
@@ -165,6 +167,7 @@ public class DatabaseEngine {
         transactionManager.setStreamManager(streamManager);
         queryExecutor.setTaskScheduler(taskScheduler);
         functionRegistry.setTaskScheduler(taskScheduler);
+        functionRegistry.setTransactionManager(transactionManager);
 
         initializeSystemObjects();
         initializePersistence();
@@ -230,12 +233,16 @@ public class DatabaseEngine {
      * already folded into that snapshot, so they are skipped — no double-apply.
      */
     private void replayWal() {
+        final boolean securityWasEnabled = sessionContext.isSecurityEnabled();
         try {
             final List<WalRecord> records = wal.readAll();
             if (records.isEmpty()) {
                 return;
             }
             replaying = true;
+            // The logged statements were authorized when they first ran; replaying them re-applies what was
+            // committed, under whatever role and session happen to be current now.
+            sessionContext.setSecurityEnabled(false);
 
             int lastCheckpoint = -1;
             for (int i = 0; i < records.size(); i++) {
@@ -271,6 +278,9 @@ public class DatabaseEngine {
         } catch (final Exception e) {
             logger.error("Write-ahead log replay failed", e);
         } finally {
+            if (replaying) {
+                sessionContext.setSecurityEnabled(securityWasEnabled);
+            }
             replaying = false;
         }
     }
@@ -555,6 +565,36 @@ public class DatabaseEngine {
             (config.isDeferredApply() && transactionManager.isExplicitTransaction())
                 ? transactionManager.getCurrentTransaction().getWriteSet().beginStatementSavepoint() : null;
 
+        // A request of several statements commits, logs and rolls back statement by statement, as the
+        // account does; the flag records that its boundaries were reported, so the request as a whole is
+        // neither logged again nor rolled back again below.
+        final boolean[] statementByStatement = {false};
+        final WriteSetSavepoint[] statementSavepoint = {null};
+        final StatementBoundaries displacedBoundaries = queryExecutor.bindStatementBoundaries(new StatementBoundaries() {
+            @Override
+            public void begin() {
+                statementByStatement[0] = true;
+                statementSavepoint[0] = config.isDeferredApply() && transactionManager.isExplicitTransaction()
+                    ? transactionManager.getCurrentTransaction().getWriteSet().beginStatementSavepoint() : null;
+            }
+
+            @Override
+            public void complete(final String statementText) {
+                recordStatementForWal(statementText);
+                transactionManager.autocommitStatementEnd();
+                if (statementSavepoint[0] != null && transactionManager.isExplicitTransaction()) {
+                    transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint();
+                }
+                statementSavepoint[0] = null;
+            }
+
+            @Override
+            public void fail() {
+                rollbackFailedStatement(statementSavepoint[0]);
+                statementSavepoint[0] = null;
+            }
+        });
+
         try {
             // Parse and execute the SQL. Dirty-mark BEFORE executing: an attempt is enough (see
             // noteStatementExecuted), and marking after a success would miss failure side effects.
@@ -563,7 +603,9 @@ public class DatabaseEngine {
 
             // Record this statement for the WAL before the autocommit commit, so the commit logs it as part
             // of its transaction; an explicit BEGIN…COMMIT buffers each statement until COMMIT.
-            recordStatementForWal(sql);
+            if (!statementByStatement[0]) {
+                recordStatementForWal(sql);
+            }
 
             // Autocommit commits at statement end — UNLESS an explicit BEGIN is in effect, which suspends
             // autocommit until COMMIT/ROLLBACK (Snowflake semantics).
@@ -584,14 +626,20 @@ public class DatabaseEngine {
         } catch (final SqlSyntaxException e) {
             // Log syntax errors with the failed query
             logger.error("SQL syntax error in query:\n{}\nError details:\n{}", sql, e.getMessage());
-            rollbackFailedStatement(stmtSavepoint);
+            if (!statementByStatement[0]) {
+                rollbackFailedStatement(stmtSavepoint);
+            }
             // Re-throw exception so tests and callers can handle it
             throw e;
         } catch (final Exception e) {
             logger.error("Error executing SQL:\n{}\nError: {}", sql, e.getMessage(), e);
-            rollbackFailedStatement(stmtSavepoint);
+            if (!statementByStatement[0]) {
+                rollbackFailedStatement(stmtSavepoint);
+            }
             // Re-throw exception so tests can catch it
             throw e;
+        } finally {
+            queryExecutor.restoreStatementBoundaries(displacedBoundaries);
         }
     }
 
@@ -897,6 +945,10 @@ public class DatabaseEngine {
                         logger.debug("Dropped temporary table: {}", fqn);
                     }
                 }
+                // Each permanent table a temporary one hid is uncovered.
+                for (final Table hidden : schema.getShadowedTables()) {
+                    TableShadows.settle(schema, storageEngine, db.getName(), hidden.getName());
+                }
                 for (final View view : new ArrayList<>(schema.getViews())) {
                     if (view.isTemporary()) {
                         schema.dropView(view.getName());
@@ -905,13 +957,13 @@ public class DatabaseEngine {
                 }
                 for (final Function function : new ArrayList<>(schema.getFunctions())) {
                     if (function.isTemporary()) {
-                        schema.dropFunction(function.getName());
+                        schema.removeFunction(function);
                         logger.debug("Dropped temporary function: {}", function.getName());
                     }
                 }
                 for (final Procedure procedure : new ArrayList<>(schema.getProcedures())) {
                     if (procedure.isTemporary()) {
-                        schema.dropProcedure(procedure.getName());
+                        schema.removeProcedure(procedure);
                         logger.debug("Dropped temporary procedure: {}", procedure.getName());
                     }
                 }

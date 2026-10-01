@@ -25,7 +25,7 @@
       {"sql": "BEGIN SELECT * FROM no_such_table_xyz; EXCEPTION WHEN OTHER THEN RETURN SQLSTATE; END", "expect": {"value": "42S02"}}
     ]},
     {"name": "a-missing-objects-sqlerrm-mentions-the-object", "steps": [
-      {"sql": "BEGIN SELECT * FROM no_such_table_xyz; EXCEPTION WHEN OTHER THEN RETURN REPLACE(UPPER(SQLERRM), CHAR(10), ' '); END",
+      {"sql": "BEGIN SELECT * FROM no_such_table_xyz; EXCEPTION WHEN OTHER THEN RETURN REPLACE(UPPER(SPLIT_PART(SQLERRM, ' Your primary role', 1)), CHAR(10), ' '); END",
        "expect": {"value": "SQL COMPILATION ERROR: OBJECT 'NO_SUCH_TABLE_XYZ' DOES NOT EXIST OR NOT AUTHORIZED."}}
     ]},
     {"name": "a-handler-logs-sqlerrm-through-the-bind-form", "steps": [

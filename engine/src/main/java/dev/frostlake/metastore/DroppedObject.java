@@ -18,6 +18,7 @@ package dev.frostlake.metastore;
 
 import dev.frostlake.storage.Row;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -33,19 +34,29 @@ public class DroppedObject {
     private final Object object;
     private final List<Row> rows;
     private final Map<String, List<Row>> tableRows;
+    private final Map<String, List<Row>> hiddenTableRows;
+    private final Instant droppedOn = Instant.now();
 
     public DroppedObject(final Object object, final List<Row> rows) {
-        this(object, rows, null);
+        this(object, rows, null, null);
     }
 
-    public DroppedObject(final Object object, final Map<String, List<Row>> tableRows) {
-        this(object, null, tableRows);
+    public DroppedObject(final Object object, final Map<String, List<Row>> tableRows,
+                         final Map<String, List<Row>> hiddenTableRows) {
+        this(object, null, tableRows, hiddenTableRows);
     }
 
-    private DroppedObject(final Object object, final List<Row> rows, final Map<String, List<Row>> tableRows) {
+    private DroppedObject(final Object object, final List<Row> rows, final Map<String, List<Row>> tableRows,
+                          final Map<String, List<Row>> hiddenTableRows) {
         this.object = object;
         this.rows = rows;
         this.tableRows = tableRows;
+        this.hiddenTableRows = hiddenTableRows;
+    }
+
+    /** When the object was dropped. */
+    public Instant getDroppedOn() {
+        return droppedOn;
     }
 
     public Object getObject() {
@@ -59,5 +70,13 @@ public class DroppedObject {
     /** Rows of every table in a dropped schema/database, keyed by fully-qualified name; null for a table. */
     public Map<String, List<Row>> getTableRows() {
         return tableRows;
+    }
+
+    /**
+     * Rows of every permanent table a temporary one hid in a dropped schema/database, keyed like
+     * {@link #getTableRows()}; null for a table.
+     */
+    public Map<String, List<Row>> getHiddenTableRows() {
+        return hiddenTableRows;
     }
 }

@@ -8,7 +8,7 @@
       {"sql": "INSERT INTO t VALUES (1,'a'), (2,'b'), (3,'c')", "expect": {"updateCount": 3}}
     ]},
     {"name": "insert-result-set-is-snowflake-shaped",
-     "skip": {"backends": ["js", "php", "python", "ruby", "ada"], "reason": "these drivers surface the DML status grid as a single affected-row count; the grid's own columns and rows are not observable through them"},
+     "skip": {"backends": ["jdbc", "snowflake", "js", "php", "python", "ruby", "ada"], "reason": "these transports surface the DML status grid as a single affected-row count - JDBC as the statement's update count - so the grid's own columns and rows are not observable through them"},
      "steps": [
       {"sql": "CREATE TABLE t (id INTEGER)"},
       {"sql": "INSERT INTO t VALUES (1), (2)",
@@ -45,7 +45,7 @@
       {"sql": "DELETE FROM t USING gone WHERE t.id = gone.id", "expect": {"updateCount": 2}}
     ]},
     {"name": "merge-reports-per-action-counts",
-     "skip": {"backends": ["snowflake", "js", "php", "python", "ruby", "ada"], "reason": "reads MERGE's PER-ACTION result columns; a live statement reaches the harness over JDBC as a single update count, and the js/php/python/ruby/ada drivers likewise fold the status grid into one affected-row count"},
+     "skip": {"backends": ["jdbc", "snowflake", "js", "php", "python", "ruby", "ada"], "reason": "reads MERGE's PER-ACTION result columns; over JDBC - a live account's driver or Frostlake's - the statement reaches the harness as a single update count, and the js/php/python/ruby/ada drivers likewise fold the status grid into one affected-row count"},
      "steps": [
       {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
       {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
@@ -55,17 +55,17 @@
        "expect": {"columns": ["number of rows inserted", "number of rows updated"], "rows": [["1", "1"]]}}
     ]},
     {"name": "merge-delete-reports-deleted-count",
-     "skip": {"backends": ["snowflake", "js", "php", "python", "ruby", "ada"], "reason": "reads MERGE's PER-ACTION result columns; a live statement reaches the harness over JDBC as a single update count, and the js/php/python/ruby/ada drivers likewise fold the status grid into one affected-row count"},
+     "skip": {"backends": ["jdbc", "snowflake", "js", "php", "python", "ruby", "ada"], "reason": "reads MERGE's PER-ACTION result columns; over JDBC - a live account's driver or Frostlake's - the statement reaches the harness as a single update count, and the js/php/python/ruby/ada drivers likewise fold the status grid into one affected-row count"},
      "steps": [
       {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
       {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
       {"sql": "CREATE TABLE src (id INTEGER)"},
       {"sql": "INSERT INTO src VALUES (2)"},
       {"sql": "MERGE INTO t USING src ON t.id = src.id WHEN MATCHED THEN DELETE",
-       "expect": {"columns": ["number of rows inserted", "number of rows updated", "number of rows deleted"], "rows": [["0", "0", "1"]]}}
+       "expect": {"columns": ["number of rows deleted"], "rows": [["1"]]}}
     ]},
     {"name": "ddl-reports-zero",
-     "skip": {"backends": ["jdbc", "http", "snowflake", "dotnet"], "reason": "DatabaseEngine.executeUpdate answers 0 for DDL; every JDBC-shaped transport reports -1 (the JDBC no-update-count convention), so the zero is an embedded-API surface"},
+     "skip": {"backends": ["http", "dotnet"], "reason": "a DDL statement's update count is 0 on the embedded API and over JDBC, Frostlake's driver and the account's alike; the HTTP wire's updateCount counts DML only (-1 for every other statement; the JDBC-shaped count is its separate jdbcUpdateCount), and the .NET runner derives its count from the status grid, so neither observes the zero"},
      "steps": [
       {"sql": "CREATE TABLE ddl_only (id INTEGER)", "expect": {"updateCount": 0}}
     ]},

@@ -21,6 +21,8 @@ import java.util.List;
 public class FunctionCallExpression extends BaseExpression {
     private final String functionName;
     private final List<BaseExpression> arguments;
+    /** The quantifier written before the arguments, {@code DISTINCT} or {@code ALL}, or null. */
+    private String quantifier;
 
     public FunctionCallExpression(final String functionName, final List<BaseExpression> arguments) {
         this.functionName = functionName;
@@ -33,5 +35,20 @@ public class FunctionCallExpression extends BaseExpression {
 
     public List<BaseExpression> getArguments() {
         return arguments;
+    }
+
+    /**
+     * Record the quantifier the call was written with, which the call keeps when it is compiled as SQL: a scalar
+     * refuses it there as it refuses it in a query.
+     *
+     * @param written {@code DISTINCT}, {@code ALL}, or null
+     */
+    public void describeQuantifier(final String written) {
+        this.quantifier = written;
+    }
+
+    /** The quantifier written before the arguments, {@code DISTINCT} or {@code ALL}, or null. */
+    public String getQuantifier() {
+        return quantifier;
     }
 }

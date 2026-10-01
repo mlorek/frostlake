@@ -20,12 +20,18 @@ import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.datetime.DateShiftAmount;
+import dev.frostlake.functions.scalar.datetime.ZonedTimestampShift;
 import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DayTimeInterval;
+import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.NonFiniteDoubles;
+import dev.frostlake.values.VariantBooleans;
 import dev.frostlake.values.VariantJsonNulls;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.XmlVariants;
+import dev.frostlake.values.YearMonthInterval;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -83,6 +89,23 @@ public final class ExpressionArithmetic {
     }
 
     /**
+     * A text as the number it spells where a text converts to FLOAT — beside another text or a FLOAT, and
+     * under a sign: a decimal number, or a hexadecimal one ({@code '0x10'} is 16, see {@link HexDoubleText});
+     * null for a text that spells neither. Beside a NUMBER a text converts to FIXED instead, which refuses
+     * hexadecimal (live-verified). Any other value is {@link #asNumber}'s.
+     *
+     * @param value the operand
+     * @return its number, or null
+     */
+    static Number floatText(final Object value) {
+        final Number decimal = asNumber(value);
+        if (decimal != null || !(value instanceof CharSequence)) {
+            return decimal;
+        }
+        return HexDoubleText.withoutExponent(value.toString().trim(), true);
+    }
+
+    /**
      * The row-time refusal an arithmetic operator raises over a TEXT operand that reads as no number —
      * live's own sentence, "Numeric value 'x' is not recognized", the LEFT operand named first
      * ({@code 'x' + 'y'} names 'x'), the text echoed trimmed — or the engine's fallback sentence when
@@ -111,7 +134,7 @@ public final class ExpressionArithmetic {
         final Number leftNumber = asNumber(left);
         final Number rightNumber = asNumber(right);
         if (leftNumber == null || rightNumber == null) {
-            return null;
+            return hexadecimalAsFloat(left, right);
         }
         // Snowflake's implicit VARCHAR coercion depends on WHAT IT IS MIXED WITH (live-verified):
         //   '3' + 1     -> NUMBER(19,0) 4        a VARCHAR against a NUMBER converts to FIXED-POINT,
@@ -122,6 +145,22 @@ public final class ExpressionArithmetic {
             return new Number[] {Double.valueOf(leftNumber.doubleValue()), Double.valueOf(rightNumber.doubleValue())};
         }
         return new Number[] {leftNumber, rightNumber};
+    }
+
+    /**
+     * Two operands one of which is a hexadecimal text, as doubles, where the text converts to FLOAT: each
+     * operand a text or a FLOAT ({@code '0x10' + '0x1'} is 17 and {@code f * '0x2'} over a FLOAT 16 is 32,
+     * where {@code '0x10' + 1} is refused); null otherwise.
+     */
+    private static Number[] hexadecimalAsFloat(final Object left, final Object right) {
+        if (!(left instanceof CharSequence || ApproximateValues.isApproximate(left))
+                || !(right instanceof CharSequence || ApproximateValues.isApproximate(right))) {
+            return null;
+        }
+        final Number leftNumber = floatText(left);
+        final Number rightNumber = floatText(right);
+        return leftNumber == null || rightNumber == null ? null
+            : new Number[] {Double.valueOf(leftNumber.doubleValue()), Double.valueOf(rightNumber.doubleValue())};
     }
 
     /**
@@ -200,6 +239,11 @@ public final class ExpressionArithmetic {
      *   NOT 'x'              Boolean value 'x' is not recognized
      * </pre>
      *
+     * <p>A VARIANT converts as a cast to BOOLEAN converts it (see {@link VariantBooleans}): a JSON boolean is
+     * itself, a boolean spelling converts, a JSON null is UNKNOWN, and a number, an array, an object or any other
+     * text fails the row — {@code NOT TO_VARIANT(TRUE)} is FALSE and {@code NOT PARSE_JSON('1')} is "Failed to
+     * cast variant value 1 to BOOLEAN" (live-verified).
+     *
      * <p>Kept SEPARATE from {@link #isTrue} on purpose: the lenient false-for-anything reading is what
      * predicate FILTERING relies on ({@code WHERE is_direct} over text — the relationship-loader
      * idiom), and this strictness belongs to the operators alone.
@@ -207,6 +251,9 @@ public final class ExpressionArithmetic {
     static Boolean strictBooleanOrNull(final Object value) {
         if (value == null) {
             return null;
+        }
+        if (value instanceof VariantValue) {
+            return VariantBooleans.convert((VariantValue) value);
         }
         if (value instanceof String) {
             final String text = ((String) value).trim().toLowerCase();
@@ -255,6 +302,26 @@ public final class ExpressionArithmetic {
             requireRawResultFits(result);
             return result;
         }
+        final Object intervalSum = DayTimeIntervalArithmetic.add(left, right);
+        if (intervalSum != null) {
+            return intervalSum;
+        }
+        final Object monthsSum = YearMonthIntervalArithmetic.add(left, right);
+        if (monthsSum != null) {
+            return monthsSum;
+        }
+        // An INTERVAL is added TO a date or a timestamp, and never the reverse: live refuses
+        // `INTERVAL '1 day' + d` by its argument types, at the operator.
+        final String temporalAfterInterval = left instanceof IntervalValue ? temporalTypeName(right) : null;
+        if (temporalAfterInterval != null) {
+            final String detail = "Invalid argument types for function '+': (INTERVAL, " + temporalAfterInterval + ")";
+            throw new RuntimeException(at != null
+                ? SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(), detail)
+                : SqlCompilationError.of(detail));
+        }
+        if (ZonedTimestampShift.isZoned(left) && right instanceof IntervalValue) {
+            return applyZonedInterval(left, (IntervalValue) right, 1);
+        }
         // Date/time addition (commutative): temporal + integer (days) or temporal + INTERVAL. Normalize so
         // `temporal` is the DATE/TIMESTAMP operand and `other` is the integer/interval being added.
         final Object temporal = asTemporal(left) != null ? left : (asTemporal(right) != null ? right : null);
@@ -265,7 +332,7 @@ public final class ExpressionArithmetic {
             }
             if (other instanceof Number) {
                 rejectTimestampPlusNumber(temporal, other, "+", at);
-                return addDays(temporal, ((Number) other).longValue());
+                return addDays(temporal, DateShiftAmount.within32Bits(wholeDays((Number) other)));
             }
         }
         // Retry with VARIANT / numeric-VARCHAR operands coerced to FLOAT (Snowflake's implicit conversion).
@@ -342,6 +409,18 @@ public final class ExpressionArithmetic {
             requireRawResultFits(result);
             return result;
         }
+        // Two timestamps are an interval apart, and an interval moves a timestamp or meets another.
+        final Object intervalDifference = DayTimeIntervalArithmetic.subtract(left, right);
+        if (intervalDifference != null) {
+            return intervalDifference;
+        }
+        final Object monthsDifference = YearMonthIntervalArithmetic.subtract(left, right);
+        if (monthsDifference != null) {
+            return monthsDifference;
+        }
+        if (ZonedTimestampShift.isZoned(left) && right instanceof IntervalValue) {
+            return applyZonedInterval(left, (IntervalValue) right, -1);
+        }
         // Date/time subtraction (NOT commutative — the left operand must be the DATE/TIMESTAMP):
         // temporal - integer (days), temporal - INTERVAL, or temporal - temporal (difference in days).
         final LocalDateTime leftTemporal = asTemporal(left);
@@ -351,12 +430,12 @@ public final class ExpressionArithmetic {
             }
             if (right instanceof Number) {
                 rejectTimestampPlusNumber(left, right, "-", at);
-                return addDays(left, -((Number) right).longValue());
+                // The count checked is the one the date moves by: d - 2147483649 is out of range as -2147483649.
+                return addDays(left, DateShiftAmount.within32Bits(-wholeDays((Number) right)));
             }
             final LocalDateTime rightTemporal = asTemporal(right);
             if (rightTemporal != null) {
-                // DATE - DATE → whole days between. TIMESTAMP - TIMESTAMP is an INTERVAL in Snowflake; we
-                // approximate it as the whole-day difference (use DATEDIFF for finer units).
+                // DATE - DATE → whole days between; a timestamp pair was answered as an interval above.
                 if (isDateOnly(left) && isDateOnly(right)) {
                     return ChronoUnit.DAYS.between(rightTemporal.toLocalDate(), leftTemporal.toLocalDate());
                 }
@@ -423,6 +502,20 @@ public final class ExpressionArithmetic {
         return false;
     }
 
+    /**
+     * The whole number of days an amount shifts a DATE by. The amount is converted to a whole NUMBER
+     * first, so a fraction ROUNDS, half away from zero: {@code d + 1.5} is two days later,
+     * {@code d + 1.4} one, {@code d - 2.5} three days earlier (live-verified).
+     */
+    static long wholeDays(final Number amount) {
+        if (isIntegerType(amount)) {
+            return amount.longValue();
+        }
+        final BigDecimal exact = amount instanceof Double || amount instanceof Float
+            ? BigDecimal.valueOf(amount.doubleValue()) : new BigDecimal(amount.toString());
+        return DateShiftAmount.rounded(exact);
+    }
+
     /** temporal ± n days. A DATE stays a DATE (returns {@link LocalDate}); a TIMESTAMP stays a TIMESTAMP. */
     private static Object addDays(final Object temporal, final long days) {
         final LocalDateTime dt = asTemporal(temporal).plusDays(days);
@@ -437,11 +530,63 @@ public final class ExpressionArithmetic {
      */
     private static Object applyInterval(final Object temporal, final IntervalValue interval, final int sign) {
         // Multi-part intervals ('1 day, 2 hours') chain via rest; apply each part in order.
+        requireCountable(interval, sign);
         Object result = applyIntervalPart(temporal, interval, sign);
         for (IntervalValue part = interval.getRest(); part != null; part = part.getRest()) {
+            requireCountable(part, sign);
             result = applyIntervalPart(result, part, sign);
         }
         return result;
+    }
+
+    /**
+     * Refuse a quoted-string part whose amount, signed as the operator applies it, its unit cannot count: the
+     * account refuses {@code ts - INTERVAL '1e30 hours'} naming the value {@code -1e+30} (see
+     * {@link IntervalStringText#requireRepresentable}).
+     */
+    private static void requireCountable(final IntervalValue part, final int sign) {
+        if (!part.isUnitInString()) {
+            return;
+        }
+        final Object amount = part.getValue();
+        if (sign > 0 || !(amount instanceof Number)) {
+            IntervalStringText.requireRepresentable(amount, part.getUnit());
+            return;
+        }
+        IntervalStringText.requireRepresentable(amount instanceof BigDecimal ? ((BigDecimal) amount).negate()
+            : BigDecimal.valueOf(((Number) amount).longValue()).negate(), part.getUnit());
+    }
+
+    /**
+     * A TIMESTAMP_LTZ or TIMESTAMP_TZ moved by an INTERVAL, one part after another in written order, each as
+     * its flavour moves (see {@link ZonedTimestampShift}): the result keeps the flavour, so a TIMESTAMP_LTZ
+     * plus {@code INTERVAL '1 day'} is still an instant in the session's zone. Live-verified.
+     */
+    private static Object applyZonedInterval(final Object zoned, final IntervalValue interval, final int sign) {
+        requireCountable(interval, sign);
+        Object result = ZonedTimestampShift.shift(zoned, interval.getUnit(), sign * interval.getValueAsLong());
+        for (IntervalValue part = interval.getRest(); part != null; part = part.getRest()) {
+            requireCountable(part, sign);
+            result = ZonedTimestampShift.shift(result, part.getUnit(), sign * part.getValueAsLong());
+        }
+        return result;
+    }
+
+    /** How an argument-type refusal names a typed date or timestamp value, or null for any other value. */
+    private static String temporalTypeName(final Object value) {
+        if (value instanceof LocalDate) {
+            return "DATE";
+        }
+        if (value instanceof LocalDateTime) {
+            return "TIMESTAMP_NTZ(9)";
+        }
+        if (value instanceof OffsetDateTime) {
+            return "TIMESTAMP_LTZ(9)";
+        }
+        if (value instanceof ZonedDateTime) {
+            return "TIMESTAMP_TZ(9)";
+        }
+        return null;
     }
 
     private static Object applyIntervalPart(final Object temporal, final IntervalValue interval, final int sign) {
@@ -507,6 +652,14 @@ public final class ExpressionArithmetic {
         if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
+        final Object scaledInterval = DayTimeIntervalArithmetic.multiply(left, right);
+        if (scaledInterval != null) {
+            return scaledInterval;
+        }
+        final Object scaledMonths = YearMonthIntervalArithmetic.multiply(left, right);
+        if (scaledMonths != null) {
+            return scaledMonths;
+        }
         if (left instanceof Number && right instanceof Number) {
             if (isIntegerType(left) && isIntegerType(right)) {
                 try {
@@ -538,6 +691,14 @@ public final class ExpressionArithmetic {
     static Object divide(final Object left, final Object right) {
         if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
+        }
+        final Object dividedInterval = DayTimeIntervalArithmetic.divide(left, right);
+        if (dividedInterval != null) {
+            return dividedInterval;
+        }
+        final Object dividedMonths = YearMonthIntervalArithmetic.divide(left, right);
+        if (dividedMonths != null) {
+            return dividedMonths;
         }
         if (left instanceof Number && right instanceof Number) {
             final double divisor = ((Number) right).doubleValue();
@@ -697,6 +858,10 @@ public final class ExpressionArithmetic {
             }
             return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString())) == 0;
         }
+        final Integer intervals = intervalOrder(left, right);
+        if (intervals != null) {
+            return intervals == 0;
+        }
         final Integer booleanNumeric = booleanVsNumber(left, right);
         if (booleanNumeric != null) {
             return booleanNumeric == 0;
@@ -752,6 +917,10 @@ public final class ExpressionArithmetic {
                     ((Number) right).doubleValue());
             }
             return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString()));
+        }
+        final Integer intervalPair = intervalOrder(left, right);
+        if (intervalPair != null) {
+            return intervalPair;
         }
         final Integer booleanNumeric = booleanVsNumber(left, right);
         if (booleanNumeric != null) {
@@ -1034,6 +1203,14 @@ public final class ExpressionArithmetic {
         try {
             return new BigDecimal(left.toString().trim()).compareTo(new BigDecimal(right.toString().trim()));
         } catch (final NumberFormatException notANumericString) {
+            // Against a FLOAT the text converts to FLOAT, where a hexadecimal number reads too.
+            final Object number = text == right ? left : right;
+            final Number asFloat = ApproximateValues.isApproximate(number) ? floatText(text) : null;
+            if (asFloat != null) {
+                return text == right
+                    ? ApproximateValues.compare(((Number) left).doubleValue(), asFloat.doubleValue())
+                    : ApproximateValues.compare(asFloat.doubleValue(), ((Number) right).doubleValue());
+            }
             throw new RuntimeException("Numeric value '" + text + "' is not recognized");
         }
     }
@@ -1075,6 +1252,42 @@ public final class ExpressionArithmetic {
 
     /** Three-valued single comparison for quantified (ALL/ANY) evaluation: a NULL on either side is
      *  UNKNOWN (null), never a match or a mismatch. */
+    /**
+     * Two intervals of one family ordered by their SPAN, whatever unit each was written in, and an interval
+     * beside a string read in the interval's own fields: live, {@code INTERVAL '1' DAY = INTERVAL '24' HOUR}
+     * and {@code INTERVAL '1' YEAR = INTERVAL '12' MONTH} are TRUE, {@code INTERVAL '1' DAY = '1'} is TRUE
+     * and {@code INTERVAL '24' HOUR = '1'} FALSE. The two families never meet — the statement is refused
+     * while it compiles — so a pair across them is left to the other rules.
+     *
+     * @param left  one operand
+     * @param right the other
+     * @return the order, or null when the pair is not an interval comparison
+     */
+    private static Integer intervalOrder(final Object left, final Object right) {
+        if (left instanceof String && isSpanInterval(right)) {
+            return spanOrder(IntervalText.parse((String) left, IntervalText.ownQualifier(right)), right);
+        }
+        if (isSpanInterval(left) && right instanceof String) {
+            return spanOrder(left, IntervalText.parse((String) right, IntervalText.ownQualifier(left)));
+        }
+        return spanOrder(left, right);
+    }
+
+    private static boolean isSpanInterval(final Object value) {
+        return value instanceof DayTimeInterval || value instanceof YearMonthInterval;
+    }
+
+    /** Two spans of one family in order, or null for anything else. */
+    private static Integer spanOrder(final Object left, final Object right) {
+        if (left instanceof DayTimeInterval && right instanceof DayTimeInterval) {
+            return ((DayTimeInterval) left).compareTo((DayTimeInterval) right);
+        }
+        if (left instanceof YearMonthInterval && right instanceof YearMonthInterval) {
+            return ((YearMonthInterval) left).compareTo((YearMonthInterval) right);
+        }
+        return null;
+    }
+
     static Boolean compareWithOperator(final Object left, final Object right,
                                         final BinaryOperator operator) {
         if (left == null || right == null) {

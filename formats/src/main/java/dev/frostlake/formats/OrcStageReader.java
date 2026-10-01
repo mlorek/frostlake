@@ -17,6 +17,7 @@
 package dev.frostlake.formats;
 
 import dev.frostlake.executor.copy.StageFileReader;
+import dev.frostlake.executor.copy.StagedFileColumn;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.OrcFile;
@@ -29,6 +30,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * ORC staged-file reader. Reads a local {@code .orc} file (via the Hadoop LocalFileSystem — the
@@ -65,5 +67,11 @@ public class OrcStageReader implements StageFileReader {
     @Override
     public String formatType() {
         return "ORC";
+    }
+
+    @Override
+    public List<StagedFileColumn> readColumns(final Path file, final Map<String, String> formatOptions,
+                                              final boolean iceberg) {
+        return OrcColumnTypes.read(file);
     }
 }

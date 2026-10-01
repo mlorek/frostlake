@@ -30,4 +30,11 @@ public interface TableDataStore {
 
     /** The saved data for a table, or null when none was recorded (an empty table). */
     TableDataSnapshot load(String database, String schema, String table) throws IOException, ClassNotFoundException;
+
+    /** Save the rows of a permanent table a temporary table of the same name hides, apart from that table's. */
+    void saveShadowed(String database, String schema, String table, TableDataSnapshot data) throws IOException;
+
+    /** The saved rows of a hidden permanent table, or null when none were recorded. */
+    TableDataSnapshot loadShadowed(String database, String schema, String table)
+        throws IOException, ClassNotFoundException;
 }

@@ -59,6 +59,11 @@ public final class NumericFormatModel {
     /** TO_DECFLOAT's target, in the refusal's own word. */
     public static final String DECFLOAT = "DECFLOAT";
 
+    /** A model a text is read with, in the refusal's own word. */
+    private static final String INPUT = "input";
+    /** A model a number is printed with, TO_CHAR's, in the refusal's own word. */
+    private static final String OUTPUT = "output";
+
     /** The longest exponent element, seven E's; an eighth starts another element. */
     private static final int LONGEST_EXPONENT = 7;
     /** The characters a model may carry as themselves; any other that is no element is refused. */
@@ -94,9 +99,22 @@ public final class NumericFormatModel {
         }
         final List<NumericFormatAlternative> alternatives = new ArrayList<>();
         for (final String piece : pieces) {
-            alternatives.add(scan(format, piece, target));
+            alternatives.add(scan(format, piece, target, INPUT));
         }
         return new NumericFormatModel(alternatives);
+    }
+
+    /**
+     * An OUTPUT model — TO_CHAR's and TO_VARCHAR's over a number — scanned whole and checked as an input
+     * model is, its refusals naming the output model (live-verified): {@code TO_CHAR(1, '9Q')} is "Bad
+     * output format model '9Q' for FIXED: invalid numeric format keyword: 'Q'". A model of punctuation and
+     * literals alone is no refusal there — {@code TO_CHAR(1, ',')} prints the comma.
+     *
+     * @param format the model as written
+     * @return its elements
+     */
+    static NumericFormatAlternative output(final String format) {
+        return scan(format, format, FIXED, OUTPUT);
     }
 
     /**
@@ -133,15 +151,16 @@ public final class NumericFormatModel {
         return null;
     }
 
-    private static NumericFormatAlternative scan(final String format, final String alternative, final String target) {
+    private static NumericFormatAlternative scan(final String format, final String alternative, final String target,
+                                                 final String direction) {
         if (alternative.isEmpty()) {
-            throw refusal(format, target, "missing required input format element(s)");
+            throw refusal(format, target, direction, "missing required input format element(s)");
         }
         if (alternative.regionMatches(true, 0, "AUTO", 0, 4)) {
             if (alternative.length() == 4) {
                 return NumericFormatAlternative.automatic();
             }
-            throw refusal(format, target, "bad AUTO format specification");
+            throw refusal(format, target, direction, "bad AUTO format specification");
         }
         final List<NumericFormatElement> kinds = new ArrayList<>();
         final List<String> spellings = new ArrayList<>();
@@ -159,7 +178,7 @@ public final class NumericFormatModel {
             if (c == '"') {
                 final int close = alternative.indexOf('"', at + 1);
                 if (close < 0) {
-                    throw refusal(format, target, "missing closing \" in the literal: '" + alternative + "'");
+                    throw refusal(format, target, direction, "missing closing \" in the literal: '" + alternative + "'");
                 }
                 kind = NumericFormatElement.LITERAL;
                 end = close + 1;
@@ -175,7 +194,7 @@ public final class NumericFormatModel {
                     kind = NumericFormatElement.TEXT_MINIMAL_POSITIONAL;
                     end = at + 3;
                     if (end < length && alternative.charAt(end) == '(') {
-                        final int[] parameters = textMinimalParameters(format, target, alternative, end);
+                        final int[] parameters = textMinimalParameters(format, target, direction, alternative, end);
                         end = parameters[0];
                         groupSize = parameters[1];
                     }
@@ -201,21 +220,21 @@ public final class NumericFormatModel {
                     while (runEnd < length && isKeywordCharacter(alternative.charAt(runEnd))) {
                         runEnd++;
                     }
-                    throw refusal(format, target, "invalid numeric format keyword: '"
+                    throw refusal(format, target, direction, "invalid numeric format keyword: '"
                         + alternative.substring(at, runEnd) + "'");
                 }
                 if (LITERAL_CHARACTERS.indexOf(c) < 0) {
-                    throw refusal(format, target, "invalid character in the format string: '"
+                    throw refusal(format, target, direction, "invalid character in the format string: '"
                         + shownCharacter(alternative, at) + "'");
                 }
                 kind = NumericFormatElement.LITERAL;
             }
             final String spelling = alternative.substring(at, end);
             if (exponentSeen && placesDigit(kind)) {
-                throw refusal(format, target, "digit position after an exponent format element: '"
+                throw refusal(format, target, direction, "digit position after an exponent format element: '"
                     + alternative + "'");
             }
-            requireFirstOfFamily(format, target, firstOfFamily, kind, spelling);
+            requireFirstOfFamily(format, target, direction, firstOfFamily, kind, spelling);
             exponentSeen = exponentSeen || kind == NumericFormatElement.EXPONENT;
             final int last = kinds.size() - 1;
             if (kind == NumericFormatElement.LITERAL && c != '"' && last >= 0
@@ -228,7 +247,7 @@ public final class NumericFormatModel {
             }
             at = end;
         }
-        requireCoherent(format, target, alternative, kinds, spellings);
+        requireCoherent(format, target, direction, alternative, kinds, spellings);
         return new NumericFormatAlternative(kinds, spellings, groupSize);
     }
 
@@ -269,8 +288,8 @@ public final class NumericFormatModel {
      *
      * @return the index past the closing parenthesis, then the group size (0 when none is given)
      */
-    private static int[] textMinimalParameters(final String format, final String target, final String alternative,
-                                               final int open) {
+    private static int[] textMinimalParameters(final String format, final String target, final String direction,
+                                               final String alternative, final int open) {
         final int length = alternative.length();
         int at = open + 1;
         final int digitsStart = at;
@@ -279,7 +298,7 @@ public final class NumericFormatModel {
         }
         if (at == digitsStart) {
             if (!alternative.regionMatches(true, at, "ALL", 0, 3)) {
-                throw refusal(format, target, "TM9 requires parameter (number or ALL) after '('");
+                throw refusal(format, target, direction, "TM9 requires parameter (number or ALL) after '('");
             }
             at += 3;
         }
@@ -291,13 +310,13 @@ public final class NumericFormatModel {
                 at++;
             }
             if (at == groupStart) {
-                throw refusal(format, target, "TM9 requires numeric value after comma");
+                throw refusal(format, target, direction, "TM9 requires numeric value after comma");
             }
             groupSize = at - groupStart > GROUP_SIZE_DIGITS ? Integer.MAX_VALUE
                 : Integer.parseInt(alternative.substring(groupStart, at));
         }
         if (at >= length || alternative.charAt(at) != ')') {
-            throw refusal(format, target, "TM9 missing closing ')'");
+            throw refusal(format, target, direction, "TM9 missing closing ')'");
         }
         return new int[] {at + 1, groupSize};
     }
@@ -307,7 +326,7 @@ public final class NumericFormatModel {
      * another of its family — the other decimal point, the other sign, another exponent width, another TM
      * form — "conflicts with preceding element(s)"; both echo the element as written.
      */
-    private static void requireFirstOfFamily(final String format, final String target,
+    private static void requireFirstOfFamily(final String format, final String target, final String direction,
                                              final Map<String, String> firstOfFamily,
                                              final NumericFormatElement kind, final String spelling) {
         final String family = familyOf(kind);
@@ -320,7 +339,7 @@ public final class NumericFormatModel {
         if (first == null) {
             return;
         }
-        throw refusal(format, target, (first.equals(identity) ? "format element occurs more than once: '"
+        throw refusal(format, target, direction, (first.equals(identity) ? "format element occurs more than once: '"
             : "format element conflicts with preceding element(s): '") + spelling + "'");
     }
 
@@ -355,25 +374,26 @@ public final class NumericFormatModel {
      * "missing required input format element(s)" where {@code 'G'} alone is "no digit format elements" —
      * and a hexadecimal model is FIXED's alone, so {@code 'XX'} for REAL places nothing either.
      */
-    private static void requireCoherent(final String format, final String target, final String alternative,
-                                        final List<NumericFormatElement> kinds, final List<String> spellings) {
+    private static void requireCoherent(final String format, final String target, final String direction,
+                                        final String alternative, final List<NumericFormatElement> kinds,
+                                        final List<String> spellings) {
         final boolean hexadecimal = kinds.contains(NumericFormatElement.HEX);
         final boolean textMinimal = containsTextMinimal(kinds);
         if (hexadecimal && (kinds.contains(NumericFormatElement.DIGIT) || textMinimal)) {
-            throw refusal(format, target, "cannot mix hexadecimal and decimal format elements: '" + alternative + "'");
+            throw refusal(format, target, direction, "cannot mix hexadecimal and decimal format elements: '" + alternative + "'");
         }
         if (hexadecimal && kinds.contains(NumericFormatElement.EXPONENT)) {
-            throw refusal(format, target, "hexadecimal exponents are not supported: '" + alternative + "'");
+            throw refusal(format, target, direction, "hexadecimal exponents are not supported: '" + alternative + "'");
         }
         if (hexadecimal && kinds.contains(NumericFormatElement.GROUP)) {
-            throw refusal(format, target, "hexadecimal digit group separators are not supported: '"
+            throw refusal(format, target, direction, "hexadecimal digit group separators are not supported: '"
                 + alternative + "'");
         }
         if (hexadecimal && zeroAfterPoint(kinds)) {
-            throw refusal(format, target, "hexadecimal fractions are not supported: '" + alternative + "'");
+            throw refusal(format, target, direction, "hexadecimal fractions are not supported: '" + alternative + "'");
         }
         if (textMinimal && (kinds.contains(NumericFormatElement.DIGIT) || kinds.contains(NumericFormatElement.ZERO))) {
-            throw refusal(format, target, "cannot mix TM and digit-based numeric format elements: '"
+            throw refusal(format, target, direction, "cannot mix TM and digit-based numeric format elements: '"
                 + alternative + "'");
         }
         final boolean hexadecimalTarget = FIXED.equals(target);
@@ -395,10 +415,13 @@ public final class NumericFormatModel {
             }
         }
         if (elements == 0) {
-            throw refusal(format, target, "missing required input format element(s)");
+            if (OUTPUT.equals(direction)) {
+                return;
+            }
+            throw refusal(format, target, direction, "missing required input format element(s)");
         }
         if (digits == 0) {
-            throw refusal(format, target, "no digit format elements in a numeric format: '" + alternative + "'");
+            throw refusal(format, target, direction, "no digit format elements in a numeric format: '" + alternative + "'");
         }
     }
 
@@ -463,7 +486,8 @@ public final class NumericFormatModel {
         return c >= 'a' && c <= 'z' ? (char) (c - ('a' - 'A')) : c;
     }
 
-    private static RuntimeException refusal(final String format, final String target, final String detail) {
-        return new RuntimeException("Bad input format model '" + format + "' for " + target + ": " + detail);
+    private static RuntimeException refusal(final String format, final String target, final String direction,
+                                            final String detail) {
+        return new RuntimeException("Bad " + direction + " format model '" + format + "' for " + target + ": " + detail);
     }
 }

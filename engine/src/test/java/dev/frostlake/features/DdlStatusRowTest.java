@@ -19,23 +19,13 @@ package dev.frostlake.features;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.LiveSnowflake;
 import dev.frostlake.storage.ResultSet;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 import org.junit.jupiter.api.Test;
 
 /**
  * A statement that produces no rows of its own still ANSWERS ONE: a VARCHAR column named {@code status}
  * carrying a sentence. Frostlake returned nothing at all, so a client reading the first result set of a
  * CREATE saw an empty set where a real account hands back "Table T successfully created."
- *
- * <p>★ THIS TEST OPENS ITS OWN CONNECTION IN LIVE MODE, deliberately. BaseDatabaseTest's live harness
- * REWRITES every non-SELECT result into a one-cell count named from the first lexer token, so asking it
- * would compare Frostlake against the harness rather than against Snowflake — the live-rewrite blind spot
- * this surface sits in. The sentences below were read off a raw JDBC connection, and that is how they
- * are re-checked.
  *
  * <p>★ ONLY CREATE NAMES THE KIND, and two of the kind words are surprises: a STAGE is a "Stage area"
  * and a PROCEDURE is a "Function". DROP names no kind at all, and everything else — USE, ALTER, TRUNCATE
@@ -49,27 +39,8 @@ public class DdlStatusRowTest extends BaseDatabaseTest {
 
     /** The status column's name and its single value, from whichever engine is under test. */
     private String statusOf(final String sql) {
-        if (LiveSnowflake.enabled()) {
-            return liveStatusOf(sql);
-        }
         final ResultSet rs = engine.executeQuery(sql);
         return rs.getColumns().get(0).getName() + ": " + String.valueOf(rs.getRows().get(0).getValue(0));
-    }
-
-    private String liveStatusOf(final String sql) {
-        try {
-            final Connection connection = LiveSnowflake.shared();
-            final Statement st = connection.createStatement();
-            final java.sql.ResultSet rs = st.executeQuery(sql);
-            final String column = rs.getMetaData().getColumnName(1);
-            rs.next();
-            final String value = rs.getString(1);
-            rs.close();
-            st.close();
-            return column + ": " + value;
-        } catch (final SQLException e) {
-            throw new IllegalStateException(sql + " failed on live: " + e.getMessage(), e);
-        }
     }
 
     @Test
@@ -104,18 +75,12 @@ public class DdlStatusRowTest extends BaseDatabaseTest {
     @Test
     public void aDropNamesNoKind() {
         engine.execute("CREATE OR REPLACE TABLE ds_gone (a INT)");
-        if (LiveSnowflake.enabled()) {
-            liveStatusOf("CREATE OR REPLACE TABLE ds_gone (a INT)");
-        }
         assertEquals("status: DS_GONE successfully dropped.", statusOf("DROP TABLE ds_gone"));
     }
 
     @Test
     public void everythingElseIsOneFlatSentence() {
         engine.execute("CREATE OR REPLACE TABLE ds_alter (a INT)");
-        if (LiveSnowflake.enabled()) {
-            liveStatusOf("CREATE OR REPLACE TABLE ds_alter (a INT)");
-        }
         assertEquals("status: Statement executed successfully.",
             statusOf("ALTER TABLE ds_alter ADD COLUMN b VARCHAR"));
         assertEquals("status: Statement executed successfully.", statusOf("TRUNCATE TABLE ds_alter"));
@@ -128,9 +93,6 @@ public class DdlStatusRowTest extends BaseDatabaseTest {
     @Test
     public void aDmlStatementKeepsItsOwnCountColumn() {
         engine.execute("CREATE OR REPLACE TABLE ds_dml (a INT)");
-        if (LiveSnowflake.enabled()) {
-            liveStatusOf("CREATE OR REPLACE TABLE ds_dml (a INT)");
-        }
         assertEquals("number of rows inserted: 2", statusOf("INSERT INTO ds_dml VALUES (1), (2)"));
     }
 

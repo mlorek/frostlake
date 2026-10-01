@@ -19,23 +19,29 @@ package dev.frostlake.jdbc;
 import dev.frostlake.http.DatabaseHttpServer;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.sql.Connection;
+import java.sql.Date;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -92,7 +98,10 @@ public class HttpWireJdbcTest {
             + "'12:34:56.5'::TIME, '2024-01-01 00:00:00.123456789 +0200'::TIMESTAMP_TZ")) {
             assertTrue(rs.next());
             assertEquals("2024-01-01 00:00:00.123", rs.getString(1));
-            assertEquals("2024-01-01 00:00:00.123", rs.getObject(1));
+            // getObject answers the java.sql.Timestamp the metadata names, which keeps the WHOLE
+            // fraction where the display text is cut to the column's scale.
+            assertEquals(Timestamp.class, rs.getObject(1).getClass());
+            assertEquals("2024-01-01 00:00:00.123456789", rs.getObject(1).toString());
             assertEquals(123456789, rs.getTimestamp(1).getNanos());
             assertEquals("12:34:56", rs.getString(2));
             assertEquals("2024-01-01 00:00:00.123 +0200", rs.getString(3));
@@ -100,12 +109,56 @@ public class HttpWireJdbcTest {
         }
     }
 
+    /**
+     * Over the wire too, getObject answers the class the metadata names: a temporal cell is no longer the
+     * text it crossed as, and a small whole number no longer the Integer the JSON parsed to.
+     */
+    @Test
+    public void getObjectAnswersTheClassTheMetadataNames() throws SQLException {
+        try (final ResultSet rs = statement.executeQuery("SELECT '2024-01-15'::DATE, '12:34:56'::TIME, "
+            + "'2024-01-15 12:34:56'::TIMESTAMP_NTZ, '2024-01-15 12:34:56 +0200'::TIMESTAMP_TZ, "
+            + "1, 12345678901234567890123456789012345678, 1.25")) {
+            assertTrue(rs.next());
+            assertEquals(Date.class, rs.getObject(1).getClass());
+            assertEquals("2024-01-15", rs.getObject(1).toString());
+            assertEquals(Time.class, rs.getObject(2).getClass());
+            assertEquals(Timestamp.class, rs.getObject(3).getClass());
+            assertEquals(Timestamp.class, rs.getObject(4).getClass());
+            assertEquals(Long.valueOf(1L), rs.getObject(5));
+            assertEquals(BigDecimal.class, rs.getObject(6).getClass());
+            assertEquals("12345678901234567890123456789012345678", rs.getObject(6).toString());
+            assertEquals(BigDecimal.class, rs.getObject(7).getClass());
+            // Column 6 is the one place the account itself is not self-consistent: a NUMBER(38,0)'s
+            // metadata names Long while a value past a Long comes back as a BigDecimal.
+            for (int column = 1; column <= 7; column++) {
+                if (column != 6) {
+                    assertEquals(rs.getMetaData().getColumnClassName(column),
+                        rs.getObject(column).getClass().getName(),
+                        "column " + column + " must answer the class its metadata names");
+                }
+            }
+        }
+    }
+
+    /**
+     * The count is the one the server marked the statement with. A query whose column merely carries a count's
+     * name is still a query, and executeUpdate refuses it the way Snowflake's driver refuses every query.
+     */
     @Test
     public void executeUpdateCountsOnlyWhatTheServerMarked() throws SQLException {
         statement.execute("CREATE TABLE t (i INT)");
         assertEquals(2, statement.executeUpdate("INSERT INTO t VALUES (1), (2)"));
         assertEquals(1, statement.executeUpdate("UPDATE t SET i = 3 WHERE i = 1"));
-        assertEquals(0, statement.executeUpdate("SELECT 9 AS \"number of rows inserted\""));
+        final SQLException refused = assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeUpdate("SELECT 9 AS \"number of rows inserted\"");
+            }
+        });
+        assertEquals("Statement 'SELECT 9 AS \"number ...' cannot be executed using current API.",
+            refused.getMessage());
+        assertEquals("0A000", refused.getSQLState());
+        assertEquals(200042, refused.getErrorCode());
     }
 
     @Test

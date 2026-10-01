@@ -55,6 +55,16 @@ public abstract class BaseDatabaseTest {
             try {
                 createTestContext("CREATE OR REPLACE DATABASE test_db");
             } catch (final RuntimeException storm) {
+                // A NETWORK RULE a NETWORK POLICY still names keeps the database alive whatever the
+                // drop says: the association is the POLICY's. Clear it and the replace goes through —
+                // without this, one test's leftovers stop every test after it.
+                if (String.valueOf(storm.getMessage()).contains(LiveNetworkRuleAssociations.REFUSAL)) {
+                    LiveNetworkRuleAssociations.clearFor(LiveSnowflake.shared(), "test_db");
+                    createTestContext("CREATE OR REPLACE DATABASE test_db");
+                    LiveAccountObjects.beginTest();
+                    setupTest();
+                    return;
+                }
                 // A long shared session can hit a storm — the driver executing a statement late
                 // or twice under load, so the sequence fails with a temporally impossible error
                 // (USE SCHEMA missing right after its CREATE, CREATE SCHEMA 'already exists'
@@ -176,6 +186,24 @@ public abstract class BaseDatabaseTest {
     protected final String describeCell(final String table, final String columnName, final String header) {
         final ResultSet rs = engine.executeQuery("DESCRIBE TABLE " + table);
         return cell(rs, soleRowWhere(rs, "name", columnName), header);
+    }
+
+    /**
+     * An expected missing-object refusal with the privilege hint that ends it, addressed to the role this session
+     * runs as (see {@link MissingObjectHint}), so one expectation holds embedded and live.
+     */
+    protected final String hinted(final String expected) {
+        final String[] principal = sessionPrincipal();
+        return MissingObjectHint.of(expected, principal[0], false, principal[1]);
+    }
+
+    /** The session's current role and account: asked of the account live, read from the engine embedded. */
+    private String[] sessionPrincipal() {
+        if (isLiveSnowflake()) {
+            final Row row = engine.executeQuery("SELECT CURRENT_ROLE(), CURRENT_ACCOUNT()").getRows().get(0);
+            return new String[] {String.valueOf(row.getValue(0)), String.valueOf(row.getValue(1))};
+        }
+        return new String[] {engine.getCurrentRole(), engine.getConfig().getAccountId()};
     }
 
     /**

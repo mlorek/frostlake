@@ -288,6 +288,19 @@ public abstract class BuiltInFunction {
     }
 
     /**
+     * The refusal this position gives a PREDICATE — a comparison, an IN, a LIKE, an EXISTS, a type test
+     * — as opposed to a BOOLEAN value. A predicate never becomes text: the functions that read text refuse
+     * {@code UPPER(1 = 1)} as "Invalid argument types for function 'UPPER': (BOOLEAN)" where they read
+     * {@code UPPER(TRUE)} as 'TRUE'. Declared per function and per position, by measurement.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the refusal this position gives a predicate; by default none
+     */
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return SemiStructuredRejection.NONE;
+    }
+
+    /**
      * The refusal this position gives a declared DATE / TIME / TIMESTAMP argument. Declared per
      * function: the numeric family refuses every temporal flavour at compile time, each named with
      * its own parameters — (DATE), (TIME(9)), (TIMESTAMP_NTZ(9)) and the LTZ/TZ twins — where the

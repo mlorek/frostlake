@@ -29,7 +29,7 @@ import java.util.List;
  * them by at most a WHERE. Whether that WHERE lets every row through is the clause's own statistics
  * bound, asked only when a query over the result needs it, so no other query reads the table for it.
  */
-final class DerivedStatistics implements RelationStatistics {
+final class DerivedStatistics implements MergedRelationStatistics {
 
     private final QueryExecutor executor;
     private final CountStatisticsBound clauseBound;
@@ -71,6 +71,17 @@ final class DerivedStatistics implements RelationStatistics {
             return true;
         }
         return index >= 0 && index < columnSources.size() && passesStoredColumn(source, columnSources.get(index));
+    }
+
+    @Override
+    public Table sourceRelation() {
+        return source;
+    }
+
+    /** Null where every column is the source's own, the column at the same position ({@link #passesStoredColumn}). */
+    @Override
+    public String columnSource(final int index) {
+        return columnSources != null && index >= 0 && index < columnSources.size() ? columnSources.get(index) : null;
     }
 
     /**

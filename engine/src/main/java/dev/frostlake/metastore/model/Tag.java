@@ -39,6 +39,39 @@ public class Tag extends SqlObject {
         this.comment = comment;
     }
 
+    /** How the tag propagates to target objects ({@code ON_DEPENDENCY} …), or null when it does not. */
+    private String propagate;
+    /** What a conflicting propagated value becomes: a string or {@code ALLOWED_VALUES_SEQUENCE}; null when unset. */
+    private String onConflict;
+
+    /** The tag's propagation mode, or null when it does not propagate. */
+    public String getPropagate() {
+        return propagate;
+    }
+
+    /** Sets the tag's propagation mode; null stops propagation. */
+    public void setPropagate(final String propagate) {
+        this.propagate = propagate;
+    }
+
+    /** The tag's propagation conflict rule, or null when unset. */
+    public String getOnConflict() {
+        return onConflict;
+    }
+
+    /** Sets the tag's propagation conflict rule; null unsets it. */
+    public void setOnConflict(final String onConflict) {
+        this.onConflict = onConflict;
+    }
+
+    /** Replaces the whole ALLOWED_VALUES list. */
+    public void setAllowedValues(final List<String> values) {
+        allowedValues.clear();
+        for (final String value : values) {
+            addAllowedValue(value);
+        }
+    }
+
     public List<String> getAllowedValues() {
         return new ArrayList<>(allowedValues);
     }

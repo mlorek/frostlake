@@ -76,6 +76,20 @@ public final class VariantJsonFormat {
         return out.toString();
     }
 
+    /**
+     * {@code node} rendered at the given width, whatever width the session is at: a scalar as its JSON text, an
+     * array or object across lines.
+     *
+     * @param node   the value
+     * @param indent the spaces per level
+     * @return the rendered text
+     */
+    public static String indented(final JsonNode node, final int indent) {
+        final StringBuilder out = new StringBuilder();
+        write(node, indent, 0, out);
+        return out.toString();
+    }
+
     private static void write(final JsonNode node, final int indent, final int depth,
                               final StringBuilder out) {
         if (node.isArray()) {

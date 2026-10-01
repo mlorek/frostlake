@@ -19,6 +19,8 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.DefaultMarkerExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.operators.MemoizedRows;
+import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -29,7 +31,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.transaction.TransactionWriteSet;
 import dev.frostlake.types.DataType;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StatementResultWidths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -46,7 +48,9 @@ import org.slf4j.LoggerFactory;
  * (VALUES / table / STREAM / subquery, with optional column aliases), ON-condition matching, the
  * WHEN MATCHED UPDATE/DELETE and WHEN NOT MATCHED INSERT clauses, and the buffered (deferred-apply)
  * vs. immediate write with stream tracking — plus the merged-context expression evaluation helpers and
- * the MERGE per-action count result. Shared services (constraint enforcement, per-column value
+ * the MERGE per-action count result. The statement is planned whole and run as one pipeline over the
+ * target's rows ({@link SelectPlan}): the match, the one-update-per-row check, the WHEN MATCHED writes and
+ * the WHEN NOT MATCHED inserts are its stages. Shared services (constraint enforcement, per-column value
  * resolution, CTE execution, stream/alias resolution, name/text helpers) stay on the owning executor
  * and are reached through {@code executor}; mutable per-query flags (deferred-apply, the nullable
  * late-wired stream manager) are read live so semantics stay byte-for-byte identical to the
@@ -89,6 +93,11 @@ final class MergeExecutor {
         return shape;
     }
 
+    /**
+     * Execute MERGE from parsed context. The statement is planned whole — target and source resolved, names and
+     * branch values judged — and then run as one pipeline over the target's rows: the match against the source,
+     * the one-update-per-row check, the WHEN MATCHED updates and deletes, and the WHEN NOT MATCHED inserts.
+     */
     Object executeMergeFromContext(final FrostlakeParser.MergeStatementContext ctx) {
         shapeCache.get().clear();
         try {
@@ -99,15 +108,11 @@ final class MergeExecutor {
             }
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
             final Map<String, ResultSet> cteResults = null;
-
             // Get target table
             final String targetTableName = executor.getQualifiedName(ctx.qualifiedName());
             // The target is looked up the way a FROM clause looks a table up: a missing one is a missing
             // Object, named as written (live-verified).
             final Table targetTable = executor.getCatalog().resolveTableAsWritten(targetTableName, "Object");
-            int mergeInserted = 0;
-            int mergeUpdated = 0;
-
             // Get optional target and source aliases. Both are direct identifier children of the
             // merge rule and either may be absent, so index alone cannot tell them apart: an
             // identifier before the USING token is the target's alias, after it the source's.
@@ -121,12 +126,13 @@ final class MergeExecutor {
                     sourceAlias = executor.getIdentifier(aliasCtx);
                 }
             }
-
+            final String mergeTargetAlias = targetAlias;
+            final String mergeSourceAlias = sourceAlias;
             // Get source data and source table structure
             List<Row> sourceRows = new ArrayList<>();
             Table sourceTable = null;
+            String sourceDescription = "VALUES";
             final FrostlakeParser.MergeSourceContext mergeSource = ctx.mergeSource();
-
             if (mergeSource instanceof FrostlakeParser.MergeSourceValuesContext) {
                 // USING (VALUES (...))
                 final FrostlakeParser.MergeSourceValuesContext valuesCtx = (FrostlakeParser.MergeSourceValuesContext) mergeSource;
@@ -152,32 +158,40 @@ final class MergeExecutor {
                 if (streamSource != null) {
                     sourceRows = streamSource.rows;
                     sourceTable = streamSource.table;
+                    sourceDescription = streamSource.describe();
                 } else {
                     // Looked up the way a FROM clause looks a table up, before any row is read, so a missing
                     // source is a missing Object rather than missing storage (live-verified).
                     sourceTable = executor.getCatalog().resolveTableAsWritten(sourceTableName, "Object");
                     final String fullyQualifiedSourceName = executor.getFullyQualifiedTableName(sourceTableName);
                     // Overlay-aware: a stage table populated by THIS transaction must be visible as the
-                    // merge source (a raw scan saw only the committed base — empty for a fresh stage).
-                    sourceRows = executor.readTableRowsForTransaction(fullyQualifiedSourceName);
+                    // merge source (a raw scan saw only the committed base — empty for a fresh stage). Read
+                    // when the match stage runs.
+                    sourceRows = new DeferredRows(new MemoizedRows(executor.transactionScan(fullyQualifiedSourceName)));
+                    sourceDescription = "SCAN[" + sourceTable.getName() + "]";
                 }
             } else if (mergeSource instanceof FrostlakeParser.MergeSourceSubqueryContext) {
                 // USING (SELECT ...) — pass CTEs so subquery can reference them
                 final FrostlakeParser.MergeSourceSubqueryContext subqueryCtx = (FrostlakeParser.MergeSourceSubqueryContext) mergeSource;
-                final ResultSet subqueryResult = cteResults != null
-                    ? executor.executeSelectFromContextWithCTEs(subqueryCtx.selectStatement(), null, cteResults)
-                    : executor.executeSelectFromContext(subqueryCtx.selectStatement());
-                sourceRows = subqueryResult.getRows();
-
-                // Create a table structure from ResultSet columns
+                // Planned here for its shape; its rows flow when the match stage runs.
+                final PlannedQuery subquery = cteResults != null
+                    ? executor.planSelectFromContext(subqueryCtx.selectStatement(), null, cteResults)
+                    : executor.planSelectStatement(subqueryCtx.selectStatement());
+                sourceRows = new DeferredRows(new MemoizedRows(QueryExecutor.plannedRows(subquery)));
+                sourceDescription = "SUBQUERY{" + subquery.description + "}";
+                // Create a table structure from the planned shape's columns
                 final List<TableColumn> sourceColumns = new ArrayList<>();
-                for (final ResultSetColumn rsCol : subqueryResult.getColumns()) {
+                for (final ResultSetColumn rsCol : subquery.shape.getColumns()) {
                     final TableColumn col = new TableColumn(rsCol.getName(), rsCol.getDataType(), true, null, false, false, false);
+                    // A branch value read through the source alias types like any other column, and so
+                    // meets the compile-time match against the target's column — but only where the
+                    // shape KNOWS the type. A projected bare NULL has none, and an untyped NULL is
+                    // assignable to every column.
+                    col.setStaticallyTyped(rsCol.getStaticType() != null);
                     sourceColumns.add(col);
                 }
                 sourceTable = new Table("SOURCE", sourceColumns, false);
             }
-
             // Apply source column aliases if specified: USING (...) AS s (col1, col2, col3)
             if (ctx.identifierList() != null && sourceTable != null) {
                 final List<String> aliases = new ArrayList<>();
@@ -186,28 +200,30 @@ final class MergeExecutor {
                 }
                 sourceTable = executor.applyColumnAliases(sourceTable, aliases);
             }
-
+            final List<Row> mergeSourceRows = sourceRows;
+            final Table mergeSourceTable = sourceTable;
+            final String mergeSourceDescription = sourceDescription;
             // The target and the source each register a name (see FromSourceNames), and the same one twice
             // is refused: MERGE INTO t USING s t is "duplicate alias 'T'" (live-verified).
             final FromSourceNames sourceNames = new FromSourceNames(executor);
             sourceNames.register(targetAlias != null ? targetAlias
                 : FromSourceNames.lastPart(ParseTreeText.qualifiedNameParts(ctx.qualifiedName())));
-            sourceNames.register(sourceAlias != null ? sourceAlias : FromSourceNames.mergeSourceName(mergeSource));
+            final String sourceName = sourceAlias != null ? sourceAlias : FromSourceNames.mergeSourceName(mergeSource);
+            sourceNames.register(sourceName);
             sourceNames.rejectDuplicate();
-
+            // The statement compiles once, before any row is read (see MergeCompilation).
+            final RuntimeException subqueryRefusal = new MergeCompilation(executor).compile(ctx, targetTable,
+                targetAlias, sourceTable, sourceAlias, !(mergeSource instanceof FrostlakeParser.MergeSourceValuesContext));
             // Get ON condition (preserve whitespace for proper AND/OR parsing)
             final String onCondition = executor.getOriginalText(ctx.booleanExpr());
-
             // Get target table rows - use fully qualified name
             final String fullyQualifiedTargetName = executor.getFullyQualifiedTableName(targetTableName);
-
             // The PARTITIONS lock registers per STATEMENT KIND, not per matched row — a MERGE
             // locks its target table however its branches fire (live-verified).
             final var rewriteTxn = executor.getTransactionManager().getCurrentTransaction();
             if (rewriteTxn != null) {
                 rewriteTxn.recordTableTouch(fullyQualifiedTargetName);
             }
-
             final TableStorage targetStorage =
                 executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName);
             List<Row> targetRows = targetStorage.scan();
@@ -246,14 +262,13 @@ final class MergeExecutor {
                     targetPendingIdx.add(i);
                 }
             }
-
+            final List<Long> mergeTargetRowIds = targetRowIds;
+            final List<Integer> mergeTargetPendingIdx = targetPendingIdx;
             // Track which source rows matched
             final Set<Integer> matchedSourceIndices = new HashSet<>();
-
             // Collect merge clauses (can have multiple WHEN MATCHED clauses with different conditions)
             final List<FrostlakeParser.MergeClauseContext> matchedClauses = new ArrayList<>();
             final List<FrostlakeParser.MergeClauseContext> notMatchedClauses = new ArrayList<>();
-
             for (final FrostlakeParser.MergeClauseContext clause : ctx.mergeClause()) {
                 if (clause.MATCHED() != null && clause.NOT() == null) {
                     matchedClauses.add(clause);
@@ -261,27 +276,36 @@ final class MergeExecutor {
                     notMatchedClauses.add(clause);
                 }
             }
-
             // Every value a branch writes is type-matched against its column before any row is read, as an
             // INSERT's is: WHEN MATCHED THEN UPDATE SET n = (1 = 1) is refused even when nothing matches.
             rejectMistypedBranchValues(targetTable, targetAlias, sourceTable, sourceAlias, matchedClauses,
                 notMatchedClauses);
-
+            if (subqueryRefusal != null) {
+                throw subqueryRefusal;
+            }
+            // The plan over the target's rows; the source is the relation every stage reads beside them.
+            final SelectPlan plan = new SelectPlan(executor, executor.getFunctionRegistry());
+            plan.source(targetRows, "TARGET[" + targetTableName + "]");
             // A source row that joins to ANY target is "matched", so WHEN NOT MATCHED must skip it. Determine
             // this fully up front: the per-target update loop below stops at each target's FIRST matching
             // source, so relying on it to populate the matched set would leave a second source that matches
             // the same target unmarked — and it would then be wrongly INSERTed as a duplicate.
-            for (int sourceIdx = 0; sourceIdx < sourceRows.size(); sourceIdx++) {
-                final Row sourceRow = sourceRows.get(sourceIdx);
-                for (int targetIdx = 0; targetIdx < targetRows.size(); targetIdx++) {
-                    if (evaluateMergeCondition(onCondition, targetRows.get(targetIdx), sourceRow,
-                            targetTable, sourceTable, targetAlias, sourceAlias)) {
-                        matchedSourceIndices.add(sourceIdx);
-                        break;
+            plan.add(new StageOperator("MERGE MATCH[" + onCondition + "]{" + mergeSourceDescription + "}") {
+                @Override
+                protected List<Row> apply(final List<Row> targets) {
+                    for (int sourceIdx = 0; sourceIdx < mergeSourceRows.size(); sourceIdx++) {
+                        final Row sourceRow = mergeSourceRows.get(sourceIdx);
+                        for (int targetIdx = 0; targetIdx < targets.size(); targetIdx++) {
+                            if (evaluateMergeCondition(onCondition, targets.get(targetIdx), sourceRow,
+                                    targetTable, mergeSourceTable, mergeTargetAlias, mergeSourceAlias)) {
+                                matchedSourceIndices.add(sourceIdx);
+                                break;
+                            }
+                        }
                     }
+                    return targets;
                 }
-            }
-
+            });
             // Snowflake refuses a merge-UPDATE whose target row joins MORE THAN ONE source row: the
             // update would be non-deterministic. Live-verified on a real account: a target
             // (1,'x') joined by two sources fails "Duplicate row detected during DML action Row Values:
@@ -292,226 +316,247 @@ final class MergeExecutor {
             // ERROR_ON_NONDETERMINISTIC_MERGE = true by default; setting it FALSE picks one source
             // arbitrarily instead.
             if (errorOnNondeterministicMerge() && !matchedClauses.isEmpty()) {
-                for (int targetIdx = 0; targetIdx < targetRows.size(); targetIdx++) {
-                    final Row targetRow = targetRows.get(targetIdx);
-                    int updatingSources = 0;
-                    for (int sourceIdx = 0; sourceIdx < sourceRows.size(); sourceIdx++) {
-                        final Row sourceRow = sourceRows.get(sourceIdx);
-                        if (!evaluateMergeCondition(onCondition, targetRow, sourceRow, targetTable,
-                                sourceTable, targetAlias, sourceAlias)) {
-                            continue;
+                plan.add(new StageOperator("MERGE CHECK[one updating source per target row]") {
+                    @Override
+                    protected List<Row> apply(final List<Row> targets) {
+                        for (int targetIdx = 0; targetIdx < targets.size(); targetIdx++) {
+                            final Row targetRow = targets.get(targetIdx);
+                            int updatingSources = 0;
+                            for (int sourceIdx = 0; sourceIdx < mergeSourceRows.size(); sourceIdx++) {
+                                final Row sourceRow = mergeSourceRows.get(sourceIdx);
+                                if (!evaluateMergeCondition(onCondition, targetRow, sourceRow, targetTable,
+                                        mergeSourceTable, mergeTargetAlias, mergeSourceAlias)) {
+                                    continue;
+                                }
+                                if (firstMatchedClauseIsUpdate(matchedClauses, targetRow, sourceRow, targetTable,
+                                        mergeSourceTable, mergeTargetAlias, mergeSourceAlias)) {
+                                    updatingSources++;
+                                }
+                            }
+                            if (updatingSources > 1) {
+                                throw new RuntimeException("Duplicate row detected during DML action Row Values: "
+                                    + renderRowValues(targetRow));
+                            }
                         }
-                        if (firstMatchedClauseIsUpdate(matchedClauses, targetRow, sourceRow, targetTable,
-                                sourceTable, targetAlias, sourceAlias)) {
-                            updatingSources++;
-                        }
+                        return targets;
                     }
-                    if (updatingSources > 1) {
-                        throw new RuntimeException("Duplicate row detected during DML action Row Values: "
-                            + renderRowValues(targetRow));
-                    }
-                }
+                });
             }
-
-            // First pass: Process matched rows
+            // inserted, updated, deleted
+            final long[] counts = new long[3];
             // Track rows to delete (can't delete while iterating)
             final List<Integer> rowsToDelete = new ArrayList<>();
-
-            for (int targetIdx = 0; targetIdx < targetRows.size(); targetIdx++) {
-                Row targetRow = targetRows.get(targetIdx);
-
-                // Check if this target row matches any source row
-                for (int sourceIdx = 0; sourceIdx < sourceRows.size(); sourceIdx++) {
-                    final Row sourceRow = sourceRows.get(sourceIdx);
-
-                    if (evaluateMergeCondition(onCondition, targetRow, sourceRow, targetTable, sourceTable, targetAlias, sourceAlias)) {
-                        matchedSourceIndices.add(sourceIdx);
-
-                        // Try each WHEN MATCHED clause until one matches
-                        boolean clauseExecuted = false;
-                        for (final FrostlakeParser.MergeClauseContext matchedClause : matchedClauses) {
-                            // Check optional AND condition
-                            boolean conditionMatches = true;
-                            if (matchedClause.booleanExpr() != null) {
-                                final String additionalCondition = executor.getOriginalText(matchedClause.booleanExpr());
-                                conditionMatches = evaluateMergeCondition(additionalCondition, targetRow, sourceRow, targetTable, sourceTable, targetAlias, sourceAlias);
-                            }
-
-                            if (conditionMatches) {
-                                // Execute UPDATE
-                                if (matchedClause.UPDATE() != null) {
-                                    for (final FrostlakeParser.AssignmentContext assign : matchedClause.assignmentList().assignment()) {
-                                        // Handle qualified identifiers (table.column) or simple identifiers
-                                        final String colName = ParseTreeText.namePartText(assign.namePart());
-                                        final String valueExpr = executor.getOriginalText(assign.expression());
-
-                                        final int colIndex = targetTable.getColumnIndex(colName);
-                                        // Evaluate using merged table context (same approach as evaluateMergeCondition)
-                                        final Object newValue =
-                                            ExpressionEvaluator.parse(valueExpr)
-                                                    instanceof DefaultMarkerExpression
-                                            ? executor.declaredDefaultFor(targetTable, colIndex,
-                                                fullyQualifiedTargetName)
-                                            : evaluateMergeValue(valueExpr, targetRow, sourceRow,
-                                                targetTable, sourceTable, targetAlias, sourceAlias);
-
-                                        final List<Object> newValues = new ArrayList<>(targetRow.getValues());
-                                        newValues.set(colIndex, newValue);
-                                        final Row updatedRow = new Row(newValues);
-                                        executor.enforceColumnConstraintsForDml(targetTable, updatedRow, false,
-                                            targetTableName);
-
-                                        if (executor.isDeferredApply()) {
-                                            final Long targetRowId = targetRowIds.get(targetIdx);
-                                            if (targetRowId != null) {
-                                                mergeWriteSet.recordUpdate(fullyQualifiedTargetName, targetRowId, updatedRow);
-                                            } else {
-                                                // Matched one of this transaction's own pending inserts.
-                                                mergeWriteSet.setPendingInsert(fullyQualifiedTargetName, targetPendingIdx.get(targetIdx), updatedRow);
-                                            }
-                                        } else {
-                                            executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).update(targetIdx, updatedRow);
-                                        }
-                                        targetRow = updatedRow;
+            // First pass: Process matched rows
+            plan.add(new StageOperator("WHEN MATCHED[" + matchedClauses.size() + " clauses]") {
+                @Override
+                protected List<Row> apply(final List<Row> targets) {
+                    for (int targetIdx = 0; targetIdx < targets.size(); targetIdx++) {
+                        Row targetRow = targets.get(targetIdx);
+                        // Check if this target row matches any source row
+                        for (int sourceIdx = 0; sourceIdx < mergeSourceRows.size(); sourceIdx++) {
+                            final Row sourceRow = mergeSourceRows.get(sourceIdx);
+                            if (evaluateMergeCondition(onCondition, targetRow, sourceRow, targetTable, mergeSourceTable,
+                                    mergeTargetAlias, mergeSourceAlias)) {
+                                matchedSourceIndices.add(sourceIdx);
+                                // Try each WHEN MATCHED clause until one matches
+                                boolean clauseExecuted = false;
+                                for (final FrostlakeParser.MergeClauseContext matchedClause : matchedClauses) {
+                                    // Check optional AND condition
+                                    boolean conditionMatches = true;
+                                    if (matchedClause.booleanExpr() != null) {
+                                        final String additionalCondition =
+                                            executor.getOriginalText(matchedClause.booleanExpr());
+                                        conditionMatches = evaluateMergeCondition(additionalCondition, targetRow,
+                                            sourceRow, targetTable, mergeSourceTable, mergeTargetAlias, mergeSourceAlias);
                                     }
-                                    mergeUpdated++;
-                                    clauseExecuted = true;
-                                    break;
+                                    if (conditionMatches) {
+                                        // Execute UPDATE
+                                        if (matchedClause.UPDATE() != null) {
+                                            for (final FrostlakeParser.AssignmentContext assign
+                                                    : matchedClause.assignmentList().assignment()) {
+                                                // Handle qualified identifiers (table.column) or simple identifiers
+                                                final String colName = ParseTreeText.namePartText(assign.namePart());
+                                                final String valueExpr = executor.getOriginalText(assign.expression());
+                                                final int colIndex = targetTable.getColumnIndex(colName);
+                                                // Evaluate using merged table context (as evaluateMergeCondition does)
+                                                final Object newValue =
+                                                    ExpressionEvaluator.parse(valueExpr)
+                                                            instanceof DefaultMarkerExpression
+                                                    ? executor.declaredDefaultFor(targetTable, colIndex,
+                                                        fullyQualifiedTargetName)
+                                                    : evaluateMergeValue(valueExpr, targetRow, sourceRow, targetTable,
+                                                        mergeSourceTable, mergeTargetAlias, mergeSourceAlias);
+                                                final List<Object> newValues = new ArrayList<>(targetRow.getValues());
+                                                newValues.set(colIndex, newValue);
+                                                final Row updatedRow = new Row(newValues);
+                                                executor.enforceColumnConstraintsForDml(targetTable, updatedRow, false,
+                                                    targetTableName);
+                                                if (executor.isDeferredApply()) {
+                                                    final Long targetRowId = mergeTargetRowIds.get(targetIdx);
+                                                    if (targetRowId != null) {
+                                                        mergeWriteSet.recordUpdate(fullyQualifiedTargetName, targetRowId, updatedRow);
+                                                    } else {
+                                                        // Matched one of this transaction's own pending inserts.
+                                                        mergeWriteSet.setPendingInsert(fullyQualifiedTargetName,
+                                                            mergeTargetPendingIdx.get(targetIdx), updatedRow);
+                                                    }
+                                                } else {
+                                                    executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName)
+                                                        .update(targetIdx, updatedRow);
+                                                }
+                                                targetRow = updatedRow;
+                                            }
+                                            counts[1]++;
+                                            clauseExecuted = true;
+                                            break;
+                                        }
+                                        // Execute DELETE
+                                        else if (matchedClause.DELETE() != null) {
+                                            rowsToDelete.add(targetIdx);
+                                            clauseExecuted = true;
+                                            break;
+                                        }
+                                    }
                                 }
-                                // Execute DELETE
-                                else if (matchedClause.DELETE() != null) {
-                                    rowsToDelete.add(targetIdx);
-                                    clauseExecuted = true;
-                                    break;
-                                }
+                                break; // Move to next target row after first match
                             }
                         }
-
-                        break; // Move to next target row after first match
                     }
+                    // Delete marked rows (in reverse order to maintain indices)
+                    for (int i = rowsToDelete.size() - 1; i >= 0; i--) {
+                        final int rowIdx = rowsToDelete.get(i);
+                        final Row deletedRow = targets.get(rowIdx);
+                        if (executor.isDeferredApply()) {
+                            final Long targetRowId = mergeTargetRowIds.get(rowIdx);
+                            if (targetRowId != null) {
+                                mergeWriteSet.recordDelete(fullyQualifiedTargetName, targetRowId);
+                            } else {
+                                // Deleting one of this transaction's own pending inserts: drop it from the write
+                                // set (reverse iteration keeps the remaining pending indices valid).
+                                mergeWriteSet.removePendingInsert(fullyQualifiedTargetName, mergeTargetPendingIdx.get(rowIdx));
+                            }
+                        } else {
+                            executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).delete(rowIdx);
+                            // Track stream changes
+                            if (executor.getStreamManager() != null) {
+                                executor.getStreamManager().trackDelete(fullyQualifiedTargetName, deletedRow);
+                            }
+                        }
+                    }
+                    counts[2] = rowsToDelete.size();
+                    return targets;
                 }
-            }
-
-            // Delete marked rows (in reverse order to maintain indices)
-            for (int i = rowsToDelete.size() - 1; i >= 0; i--) {
-                final int rowIdx = rowsToDelete.get(i);
-                final Row deletedRow = targetRows.get(rowIdx);
-                if (executor.isDeferredApply()) {
-                    final Long targetRowId = targetRowIds.get(rowIdx);
-                    if (targetRowId != null) {
-                        mergeWriteSet.recordDelete(fullyQualifiedTargetName, targetRowId);
-                    } else {
-                        // Deleting one of this transaction's own pending inserts: drop it from the write
-                        // set (reverse iteration keeps the remaining pending indices valid).
-                        mergeWriteSet.removePendingInsert(fullyQualifiedTargetName, targetPendingIdx.get(rowIdx));
-                    }
-                } else {
-                    executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).delete(rowIdx);
-
-                    // Track stream changes
-                    if (executor.getStreamManager() != null) {
-                        executor.getStreamManager().trackDelete(fullyQualifiedTargetName, deletedRow);
-                    }
-                }
-            }
-
+            });
             // Process WHEN NOT MATCHED clauses: a source that matched no target uses the FIRST NOT MATCHED
             // clause whose condition holds (multiple conditional INSERTs are allowed — earlier ones must not
             // be dropped). Omitted columns get their DEFAULT / AUTOINCREMENT, exactly like a plain INSERT.
-            for (int sourceIdx = 0; sourceIdx < sourceRows.size(); sourceIdx++) {
-                if (matchedSourceIndices.contains(sourceIdx)) {
-                    continue;
-                }
-                final Row sourceRow = sourceRows.get(sourceIdx);
-                for (final FrostlakeParser.MergeClauseContext notMatchedClause : notMatchedClauses) {
-                    if (notMatchedClause.booleanExpr() != null) {
-                        final String additionalCondition = executor.getOriginalText(notMatchedClause.booleanExpr());
-                        final Row dummyTargetRow = new Row(new ArrayList<>());
-                        if (!evaluateMergeCondition(additionalCondition, dummyTargetRow, sourceRow,
-                                targetTable, sourceTable, targetAlias, sourceAlias)) {
-                            continue;   // condition failed — try the next NOT MATCHED clause
+            plan.add(new StageOperator("WHEN NOT MATCHED[" + notMatchedClauses.size() + " clauses]") {
+                @Override
+                protected List<Row> apply(final List<Row> targets) {
+                    for (int sourceIdx = 0; sourceIdx < mergeSourceRows.size(); sourceIdx++) {
+                        if (matchedSourceIndices.contains(sourceIdx)) {
+                            continue;
                         }
-                    }
-                    // First matching NOT MATCHED clause for this source wins.
-                    if (notMatchedClause.INSERT() != null) {
-                        List<Object> values = new ArrayList<>();
-                        if (notMatchedClause.valueTuple() != null) {
-                            final Row emptyTargetRow = new Row(new ArrayList<>());
-                            final List<FrostlakeParser.BooleanExprContext> valueExprs =
-                                notMatchedClause.valueTuple().valueList().booleanExpr();
-                            for (int v = 0; v < valueExprs.size(); v++) {
-                                // A bare DEFAULT travels as the MARKER and is substituted per target
-                                // column below, the same way INSERT … VALUES does it.
-                                final String valueText = executor.getOriginalText(valueExprs.get(v));
-                                final Expression parsedValue = ExpressionEvaluator.parse(valueText);
-                                try {
-                                    values.add(parsedValue instanceof DefaultMarkerExpression ? parsedValue
-                                        : evaluateMergeValue(valueText, emptyTargetRow, sourceRow,
-                                            targetTable, sourceTable, targetAlias, sourceAlias, true));
-                                } catch (final RuntimeException failed) {
-                                    // A VALUES item that cannot be computed is a DML failure on the
-                                    // column it feeds, live-verified — the target as the MERGE wrote it.
-                                    throw DmlWriteTarget.isRowTimeFailure(failed)
-                                        ? DmlWriteTarget.failedOnColumn(targetTableName,
-                                            mergeInsertColumnName(notMatchedClause, targetTable, v), failed)
-                                        : failed;
+                        final Row sourceRow = mergeSourceRows.get(sourceIdx);
+                        for (final FrostlakeParser.MergeClauseContext notMatchedClause : notMatchedClauses) {
+                            if (notMatchedClause.booleanExpr() != null) {
+                                final String additionalCondition = executor.getOriginalText(notMatchedClause.booleanExpr());
+                                final Row dummyTargetRow = new Row(new ArrayList<>());
+                                if (!evaluateMergeCondition(additionalCondition, dummyTargetRow, sourceRow,
+                                        targetTable, mergeSourceTable, mergeTargetAlias, mergeSourceAlias)) {
+                                    continue;   // condition failed — try the next NOT MATCHED clause
                                 }
                             }
-                        } else {
-                            values = new ArrayList<>(sourceRow.getValues());
-                        }
-
-                        // Value-by-column-name (explicit list, else positional), then build the row applying
-                        // DEFAULT / AUTOINCREMENT to omitted columns via the shared insertColumnValue.
-                        final List<String> columnNames = new ArrayList<>();
-                        if (notMatchedClause.mergeInsertColumnList() != null) {
-                            for (final FrostlakeParser.MergeInsertColumnContext mic : notMatchedClause.mergeInsertColumnList().mergeInsertColumn()) {
-                                // An optional target-alias qualifier (t.col) may precede the column; the
-                                // last identifier is the column name.
-                                final List<FrostlakeParser.IdentifierContext> parts = mic.identifier();
-                                columnNames.add(executor.getIdentifier(parts.get(parts.size() - 1)).toUpperCase());
+                            // First matching NOT MATCHED clause for this source wins.
+                            if (notMatchedClause.INSERT() != null) {
+                                List<Object> values = new ArrayList<>();
+                                if (notMatchedClause.valueTuple() != null) {
+                                    final Row emptyTargetRow = new Row(new ArrayList<>());
+                                    final List<FrostlakeParser.BooleanExprContext> valueExprs =
+                                        notMatchedClause.valueTuple().valueList().booleanExpr();
+                                    for (int v = 0; v < valueExprs.size(); v++) {
+                                        // A bare DEFAULT travels as the MARKER and is substituted per target
+                                        // column below, the same way INSERT … VALUES does it.
+                                        final String valueText = executor.getOriginalText(valueExprs.get(v));
+                                        final Expression parsedValue = ExpressionEvaluator.parse(valueText);
+                                        try {
+                                            values.add(parsedValue instanceof DefaultMarkerExpression ? parsedValue
+                                                : evaluateMergeValue(valueText, emptyTargetRow, sourceRow,
+                                                    targetTable, mergeSourceTable, mergeTargetAlias, mergeSourceAlias, true));
+                                        } catch (final RuntimeException failed) {
+                                            // A VALUES item that cannot be computed is a DML failure on the
+                                            // column it feeds, live-verified — the target as the MERGE wrote it.
+                                            throw DmlWriteTarget.isRowTimeFailure(failed)
+                                                ? DmlWriteTarget.failedOnColumn(targetTableName,
+                                                    mergeInsertColumnName(notMatchedClause, targetTable, v).toUpperCase(),
+                                                    failed)
+                                                : failed;
+                                        }
+                                    }
+                                } else {
+                                    values = new ArrayList<>(sourceRow.getValues());
+                                    // Writing reads every cell, so a fault a relation deferred raises here.
+                                    for (final Object value : values) {
+                                        DeferredFault.read(value);
+                                    }
+                                }
+                                // Value-by-column-name (explicit list, else positional), then build the row applying
+                                // DEFAULT / AUTOINCREMENT to omitted columns via the shared insertColumnValue.
+                                // Keyed by each column's CANONICAL spelling, the listed name resolved through the
+                                // target's own lookup: INSERT ("x", "X") fills two different columns.
+                                final List<String> columnNames = new ArrayList<>();
+                                if (notMatchedClause.mergeInsertColumnList() != null) {
+                                    for (final FrostlakeParser.MergeInsertColumnContext mic : notMatchedClause.mergeInsertColumnList().mergeInsertColumn()) {
+                                        // An optional target-alias qualifier (t.col) may precede the column; the
+                                        // last identifier is the column name.
+                                        final List<FrostlakeParser.IdentifierContext> parts = mic.identifier();
+                                        final String listed = executor.getIdentifier(parts.get(parts.size() - 1));
+                                        columnNames.add(targetTable.hasColumn(listed)
+                                            ? targetTable.getColumn(listed).getName() : listed);
+                                    }
+                                } else {
+                                    for (final TableColumn col : targetTable.getColumns()) {
+                                        columnNames.add(col.getName());
+                                    }
+                                }
+                                final Map<String, Object> valueMap = new HashMap<>();
+                                for (int i = 0; i < columnNames.size() && i < values.size(); i++) {
+                                    valueMap.put(columnNames.get(i), values.get(i));
+                                }
+                                final List<Object> orderedValues = new ArrayList<>();
+                                for (final TableColumn col : targetTable.getColumns()) {
+                                    final String key = col.getName();
+                                    // A column covered by the INSERT clause keeps its explicit value — even NULL;
+                                    // DEFAULT / AUTOINCREMENT apply only to columns omitted from it (Snowflake).
+                                    if (valueMap.containsKey(key)
+                                            && !(valueMap.get(key) instanceof DefaultMarkerExpression)) {
+                                        orderedValues.add(valueMap.get(key));
+                                    } else {
+                                        orderedValues.add(executor.insertColumnValue(col, fullyQualifiedTargetName, null));
+                                    }
+                                }
+                                final Row newRow = new Row(orderedValues);
+                                executor.enforceColumnConstraintsForDml(targetTable, newRow, false, targetTableName);
+                                if (executor.isDeferredApply()) {
+                                    mergeWriteSet.recordInsert(fullyQualifiedTargetName, newRow);
+                                } else {
+                                    executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).insert(newRow);
+                                    if (executor.getStreamManager() != null) {
+                                        executor.getStreamManager().trackInsert(fullyQualifiedTargetName, newRow);
+                                    }
+                                }
+                                counts[0]++;
                             }
-                        } else {
-                            for (final TableColumn col : targetTable.getColumns()) {
-                                columnNames.add(col.getName().toUpperCase());
-                            }
+                            break;
                         }
-                        final Map<String, Object> valueMap = new HashMap<>();
-                        for (int i = 0; i < columnNames.size() && i < values.size(); i++) {
-                            valueMap.put(columnNames.get(i), values.get(i));
-                        }
-                        final List<Object> orderedValues = new ArrayList<>();
-                        for (final TableColumn col : targetTable.getColumns()) {
-                            final String key = col.getName().toUpperCase();
-                            // A column covered by the INSERT clause keeps its explicit value — even NULL;
-                            // DEFAULT / AUTOINCREMENT apply only to columns omitted from it (Snowflake).
-                            if (valueMap.containsKey(key)
-                                    && !(valueMap.get(key) instanceof DefaultMarkerExpression)) {
-                                orderedValues.add(valueMap.get(key));
-                            } else {
-                                orderedValues.add(executor.insertColumnValue(col, fullyQualifiedTargetName, null));
-                            }
-                        }
-
-                        final Row newRow = new Row(orderedValues);
-                        executor.enforceColumnConstraintsForDml(targetTable, newRow, false, targetTableName);
-                        if (executor.isDeferredApply()) {
-                            mergeWriteSet.recordInsert(fullyQualifiedTargetName, newRow);
-                        } else {
-                            executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).insert(newRow);
-                            if (executor.getStreamManager() != null) {
-                                executor.getStreamManager().trackInsert(fullyQualifiedTargetName, newRow);
-                            }
-                        }
-                        mergeInserted++;
                     }
-                    break;
+                    return targets;
                 }
-            }
-
+            });
+            executor.recordPlan(plan);
+            plan.execute();
             logger.info("Executed MERGE on table: {}", targetTableName);
-            return mergeCountResult(mergeInserted, mergeUpdated, rowsToDelete.size());
-
+            return mergeCountResult(ctx, counts[0], counts[1], counts[2]);
         } catch (final Exception e) {
             // The frame that used to be appended to the message is diagnosis, not part of what Snowflake
             // reports, so it goes to the log and the failure propagates with its own message.
@@ -520,16 +565,34 @@ final class MergeExecutor {
         }
     }
 
-    /** Snowflake-style MERGE result: per-action counts (the deleted column only when rows were deleted). */
-    private ResultSet mergeCountResult(final long inserted, final long updated, final long deleted) {
+    /**
+     * The MERGE result: one count column for each KIND of action the statement WRITES, in the order inserted,
+     * updated, deleted. The columns follow the WHEN clauses, not what happened: a MERGE whose only clause is a
+     * WHEN MATCHED UPDATE answers {@code number of rows updated} = 0 when nothing matched, and never a column for
+     * a kind of action it has no clause for.
+     */
+    private ResultSet mergeCountResult(final FrostlakeParser.MergeStatementContext ctx, final long inserted,
+                                       final long updated, final long deleted) {
+        boolean writesInsert = false;
+        boolean writesUpdate = false;
+        boolean writesDelete = false;
+        for (final FrostlakeParser.MergeClauseContext clause : ctx.mergeClause()) {
+            writesInsert |= clause.INSERT() != null;
+            writesUpdate |= clause.UPDATE() != null;
+            writesDelete |= clause.DELETE() != null;
+        }
         final List<ResultSetColumn> columns = new ArrayList<>();
         final List<Object> values = new ArrayList<>();
-        columns.add(new ResultSetColumn("number of rows inserted", NumericType.NUMBER));
-        values.add(inserted);
-        columns.add(new ResultSetColumn("number of rows updated", NumericType.NUMBER));
-        values.add(updated);
-        if (deleted > 0) {
-            columns.add(new ResultSetColumn("number of rows deleted", NumericType.NUMBER));
+        if (writesInsert) {
+            columns.add(new ResultSetColumn("number of rows inserted", StatementResultWidths.DML_COUNT));
+            values.add(inserted);
+        }
+        if (writesUpdate) {
+            columns.add(new ResultSetColumn("number of rows updated", StatementResultWidths.DML_COUNT));
+            values.add(updated);
+        }
+        if (writesDelete) {
+            columns.add(new ResultSetColumn("number of rows deleted", StatementResultWidths.DML_COUNT));
             values.add(deleted);
         }
         final List<Row> rows = new ArrayList<>();
@@ -681,9 +744,13 @@ final class MergeExecutor {
         final List<Table> allTables = new ArrayList<>();
         aliasToTable.put((targetAlias != null ? targetAlias : targetTable.getName()).toUpperCase(), targetTable);
         allTables.add(targetTable);
-        if (sourceTable != null && sourceTable != targetTable) {
+        if (sourceTable != null) {
+            // A table merged into itself is still read through its source alias: MERGE INTO t USING t s … SET a = s.b
+            // types s.b as t's column.
             aliasToTable.put((sourceAlias != null ? sourceAlias : sourceTable.getName()).toUpperCase(), sourceTable);
-            allTables.add(sourceTable);
+            if (sourceTable != targetTable) {
+                allTables.add(sourceTable);
+            }
         }
         final ExpressionEvaluator scope = new ExpressionEvaluator(targetTable, executor.getFunctionRegistry(),
             executor.getCatalog(), executor);
@@ -694,10 +761,12 @@ final class MergeExecutor {
             }
             final Map<String, ParserRuleContext> assigned = new HashMap<>();
             for (final FrostlakeParser.AssignmentContext assign : clause.assignmentList().assignment()) {
-                assigned.put(ParseTreeText.namePartText(assign.namePart()).toUpperCase(), assign.expression());
+                final String named = ParseTreeText.namePartText(assign.namePart());
+                assigned.put(targetTable.hasColumn(named) ? targetTable.getColumn(named).getName() : named,
+                    assign.expression());
             }
             for (final TableColumn column : targetTable.getColumns()) {
-                final ParserRuleContext value = assigned.get(column.getName().toUpperCase());
+                final ParserRuleContext value = assigned.get(column.getName());
                 if (value != null) {
                     rejectMistypedValue(scope, column, value);
                 }
@@ -733,7 +802,7 @@ final class MergeExecutor {
         ColumnTypeFamilies.rejectMismatch(column, sourceType);
     }
 
-    /** The target column the {@code index}-th VALUES item of a MERGE's INSERT feeds, upper-cased. */
+    /** The target column the {@code index}-th VALUES item of a MERGE's INSERT feeds, by its canonical name. */
     private String mergeInsertColumnName(final FrostlakeParser.MergeClauseContext clause,
                                          final Table targetTable, final int index) {
         if (clause.mergeInsertColumnList() != null) {
@@ -741,11 +810,11 @@ final class MergeExecutor {
                 clause.mergeInsertColumnList().mergeInsertColumn();
             if (index < columns.size()) {
                 final List<FrostlakeParser.IdentifierContext> parts = columns.get(index).identifier();
-                return executor.getIdentifier(parts.get(parts.size() - 1)).toUpperCase();
+                return executor.getIdentifier(parts.get(parts.size() - 1));
             }
         }
         return index < targetTable.getColumns().size()
-            ? targetTable.getColumns().get(index).getName().toUpperCase() : "?";
+            ? targetTable.getColumns().get(index).getName() : "?";
     }
 
     private Object evaluateMergeValue(final String expr, final Row targetRow, final Row sourceRow,

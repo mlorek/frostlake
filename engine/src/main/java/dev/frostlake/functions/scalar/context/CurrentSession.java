@@ -18,10 +18,10 @@ package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.security.SessionContext;
+import dev.frostlake.security.SessionSettings;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
-import java.util.UUID;
 
 public class CurrentSession extends BuiltInFunction {
     private final SessionContext sessionContext;
@@ -31,8 +31,9 @@ public class CurrentSession extends BuiltInFunction {
         this.sessionContext = sessionContext;
     }
 
+    /** The id answered where no session context is wired: a session number of its own, in the same shape. */
     private static final String FALLBACK_SESSION_ID =
-        String.valueOf(Math.abs(UUID.randomUUID().getMostSignificantBits()));
+        String.valueOf(new SessionSettings().getSessionNumber());
 
     @Override
     public Object evaluate(final List<Object> args) {

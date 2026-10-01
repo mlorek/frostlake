@@ -39,6 +39,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
+import java.security.KeyPairGenerator;
+import java.util.Base64;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -176,6 +179,35 @@ public class PersistenceFieldFidelityTest {
         final User user = engine2.getCatalog().getUser("PERSIST_U");
         assertNull(user.getDisplayName(), "an unset display name must not come back as the name");
         assertNull(user.getFirstName());
+        engine2.shutdown();
+    }
+
+    /** A user's countdowns and public keys survive a reload, the keys' fingerprints and set times included. */
+    @Test
+    public void userCountdownsAndKeysSurviveAReload() throws GeneralSecurityException {
+        final KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        final String key = Base64.getEncoder().encodeToString(generator.generateKeyPair().getPublic().getEncoded());
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE USER persist_k DAYS_TO_EXPIRY = 30 MINS_TO_UNLOCK = 10 MINS_TO_BYPASS_MFA = 5"
+            + " RSA_PUBLIC_KEY_2 = '" + key + "'");
+        engine1.execute("ALTER USER persist_k SET RSA_PUBLIC_KEY = '" + key + "'");
+        engine1.execute("ALTER USER persist_k UNSET RSA_PUBLIC_KEY");
+        final User before = engine1.getCatalog().getUser("PERSIST_K");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final User user = engine2.getCatalog().getUser("PERSIST_K");
+        assertEquals(before.getExpiresAt(), user.getExpiresAt());
+        assertEquals(before.getLockedUntil(), user.getLockedUntil());
+        assertEquals(before.getMfaBypassUntil(), user.getMfaBypassUntil());
+        assertNull(user.getRsaPublicKey());
+        assertNotNull(user.getRsaPublicKeyLastSetTime(), "clearing a key keeps its set time");
+        assertEquals(before.getRsaPublicKeyLastSetTime(), user.getRsaPublicKeyLastSetTime());
+        assertEquals(key, user.getRsaPublicKey2());
+        assertEquals(before.getRsaPublicKey2Fp(), user.getRsaPublicKey2Fp());
+        assertEquals(before.getRsaPublicKey2LastSetTime(), user.getRsaPublicKey2LastSetTime());
+        assertTrue(user.hasRsaPublicKey());
         engine2.shutdown();
     }
 

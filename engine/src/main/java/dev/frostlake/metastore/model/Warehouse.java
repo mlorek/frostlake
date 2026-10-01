@@ -271,6 +271,11 @@ public class Warehouse implements Taggable {
         explicitParameters.add(parameterName.toUpperCase());
     }
 
+    /** Every parameter the warehouse set itself, upper-cased — a copy. */
+    public List<String> getParametersSet() {
+        return new ArrayList<>(explicitParameters);
+    }
+
     /** Whether the warehouse set this parameter itself — a WAREHOUSE level rather than a blank one. */
     public boolean isParameterSetOnWarehouse(final String parameterName) {
         return explicitParameters.contains(parameterName.toUpperCase());
@@ -293,6 +298,39 @@ public class Warehouse implements Taggable {
 
     public String getGeneration() { return generation; }
     public void setGeneration(final String generation) { this.generation = generation; }
+
+    /** A memory resource constraint set on the warehouse, or null when it follows its type and generation. */
+    private String resourceConstraint;
+
+    /** Whether an adaptive warehouse accepts new jobs (ALTER WAREHOUSE … ENABLE | DISABLE). */
+    private boolean enabled = true;
+
+    /**
+     * The resource constraint SHOW WAREHOUSES reports: the one set on the warehouse, else MEMORY_16X for a
+     * Snowpark-optimized warehouse and STANDARD_GEN_1 or STANDARD_GEN_2 for a standard one, by its generation.
+     */
+    public String getResourceConstraint() {
+        if (resourceConstraint != null) {
+            return resourceConstraint;
+        }
+        if ("SNOWPARK-OPTIMIZED".equals(warehouseType)) {
+            return "MEMORY_16X";
+        }
+        return "1".equals(generation) ? "STANDARD_GEN_1" : "STANDARD_GEN_2";
+    }
+
+    /** The resource constraint set on the warehouse itself, or null when it follows its type and generation. */
+    public String getResourceConstraintSetting() {
+        return resourceConstraint;
+    }
+
+    /** Sets a memory resource constraint; null returns the warehouse to its type's and generation's. */
+    public void setResourceConstraint(final String resourceConstraint) {
+        this.resourceConstraint = resourceConstraint;
+    }
+
+    public boolean isEnabled() { return enabled; }
+    public void setEnabled(final boolean enabled) { this.enabled = enabled; }
 
     public void rename(final String newName) {
         this.name = newName;

@@ -37,4 +37,6 @@ public class CortexSearchServiceSnapshot implements Serializable {
     public String definition;
     public String comment;
     public String owner;
+    public boolean indexingSuspended;
+    public boolean servingSuspended;
 }

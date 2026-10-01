@@ -40,6 +40,7 @@ import java.util.Set;
  *   HEX_ENCODE(v)                             VARCHAR(40)          8 per character, 2 per BINARY byte
  *   BASE64_ENCODE(v)                          VARCHAR(28)          4 per 3 bytes, and a character is 4 bytes
  *   TO_CHAR / CAST(x AS VARCHAR) / CURRENT_*  VARCHAR(134217728)   nothing bounds it, so the maximum
+ *   UPPER(d) / SUBSTR(n, 1, 2)                VARCHAR(134217728)   a number, date or BOOLEAN converted to text first
  * </pre>
  *
  * <p>Everything saturates at 134217728: {@code CONCAT} of eight 16MB columns is exactly that, and of
@@ -62,6 +63,21 @@ public final class StringResultWidths {
     private static final Set<String> TRIPLES_SOURCE_WIDTH = new HashSet<>(Arrays.asList(
         "UPPER", "INITCAP"));
 
+    /** The functions that declare a bare VARCHAR, whose answer is widthless whatever went in (live-verified). */
+    private static final Set<String> WIDTHLESS_RESULT = new HashSet<>(Arrays.asList(
+        "REPLACE", "TO_VARCHAR", "TO_CHAR", "TO_JSON", "ARRAY_TO_STRING", "TYPEOF", "COLLATION", "LAST_QUERY_ID",
+        "CURRENT_DATABASE", "CURRENT_SCHEMA", "CURRENT_USER", "CURRENT_ROLE", "CURRENT_WAREHOUSE", "CURRENT_VERSION",
+        "CURRENT_REGION", "CURRENT_ACCOUNT", "CURRENT_STATEMENT", "CURRENT_SESSION", "GETVARIABLE",
+        "CURRENT_TRANSACTION", "LAST_TRANSACTION",
+        // A replacement can be any length, so the account bounds it at nothing at all — a widthless
+        // VARCHAR, not the 128MB one, at every arity and over a column as well as a literal.
+        "REGEXP_REPLACE"));
+
+    /** Of the functions that keep their source's width, those that take a bare cut of it: over a widthless source
+     *  SUBSTR and LEFT answer the width nothing bounds, where LOWER or TRIM stay widthless (live-verified). */
+    private static final Set<String> CUTS_SOURCE = new HashSet<>(Arrays.asList(
+        "SUBSTR", "SUBSTRING", "MID", "LEFT", "RIGHT", "REGEXP_SUBSTR", "STRTOK"));
+
     /** The functions whose answer is a fixed width whatever went in. */
     private static final Map<String, Integer> FIXED_WIDTH = new HashMap<>();
 
@@ -73,6 +89,7 @@ public final class StringResultWidths {
         FIXED_WIDTH.put("SHA2", Integer.valueOf(128));
         FIXED_WIDTH.put("SHA2_HEX", Integer.valueOf(128));
         FIXED_WIDTH.put("SOUNDEX", Integer.valueOf(7));
+        FIXED_WIDTH.put("SOUNDEX_P123", Integer.valueOf(7));
         FIXED_WIDTH.put("UUID_STRING", Integer.valueOf(36));
         FIXED_WIDTH.put("CHR", Integer.valueOf(1));
         FIXED_WIDTH.put("CHAR", Integer.valueOf(1));
@@ -96,10 +113,32 @@ public final class StringResultWidths {
         if (fixed != null) {
             return varchar(fixed.intValue());
         }
+        if (WIDTHLESS_RESULT.contains(funcName)) {
+            return WidthlessStringType.WIDTHLESS;
+        }
+        final boolean widthlessSource = !argTypes.isEmpty() && (argTypes.get(0) instanceof WidthlessStringType
+            || argTypes.get(0) instanceof LengthlessStringType);
         if (KEEPS_SOURCE_WIDTH.contains(funcName) || TRIPLES_SOURCE_WIDTH.contains(funcName)) {
+            if (widthlessSource) {
+                return CUTS_SOURCE.contains(funcName) ? varchar(UNBOUNDED) : WidthlessStringType.WIDTHLESS;
+            }
+            // A COLLATE over an untyped NULL has no width to keep: NULL COLLATE 'en-ci' is a bare VARCHAR.
+            if (funcName.equals("COLLATE") && !argTypes.isEmpty() && argTypes.get(0) == null) {
+                return WidthlessStringType.WIDTHLESS;
+            }
             final long source = stringWidth(argTypes, 0);
             if (source < 0) {
-                return null;
+                // A number, a date or time or a BOOLEAN is converted to text first, which nothing bounds:
+                // UPPER(d) and SUBSTR(n, 1, 2) are VARCHAR(134217728) (live-verified).
+                return convertedToText(argTypes.isEmpty() ? null : argTypes.get(0)) ? varchar(UNBOUNDED) : null;
+            }
+            if (funcName.equals("REGEXP_SUBSTR")) {
+                // The match can be no longer than the source, but the account declares the WIDER of the
+                // source and the PATTERN: REGEXP_SUBSTR('abcd', '[a-z]') is VARCHAR(5) for a four-character
+                // source and a five-character pattern, and a twenty-eight-character pattern over a
+                // VARCHAR(20) column is VARCHAR(28). Arity has nothing to do with it.
+                final long pattern = stringWidth(argTypes, 1);
+                return varchar(Math.max(source, pattern));
             }
             return varchar(TRIPLES_SOURCE_WIDTH.contains(funcName) ? source * 3 : source);
         }
@@ -109,14 +148,21 @@ public final class StringResultWidths {
         if (funcName.equals("CONCAT_WS")) {
             final long separator = stringWidth(argTypes, 0);
             if (separator < 0 || argTypes.size() < 2) {
-                return null;
+                return separator < 0 && joinsAsText(argTypes, 0) ? varchar(UNBOUNDED) : null;
             }
             return summedWidth(argTypes, 1, separator * (argTypes.size() - 2));
         }
         if (funcName.equals("INSERT")) {
             final long base = stringWidth(argTypes, 0);
             final long inserted = stringWidth(argTypes, 3);
-            return base < 0 || inserted < 0 ? null : varchar(base * 2 + inserted);
+            if (base < 0 || inserted < 0) {
+                return (base >= 0 || joinsAsText(argTypes, 0)) && (inserted >= 0 || joinsAsText(argTypes, 3))
+                    ? varchar(UNBOUNDED) : null;
+            }
+            return varchar(base * 2 + inserted);
+        }
+        if (widthlessSource && funcName.equals("HEX_ENCODE")) {
+            return WidthlessStringType.WIDTHLESS;
         }
         final DataType encoded = encodedWidth(funcName, argTypes);
         return encoded != null ? encoded : varchar(UNBOUNDED);
@@ -175,6 +221,11 @@ public final class StringResultWidths {
      * @param index    the position to read
      * @return the width, or -1
      */
+    /** Whether a string function reads a value of this type through its conversion to text. */
+    private static boolean convertedToText(final DataType type) {
+        return type instanceof NumericType || type instanceof DateTimeType || type instanceof BooleanType;
+    }
+
     private static long stringWidth(final List<DataType> argTypes, final int index) {
         if (index >= argTypes.size() || !(argTypes.get(index) instanceof StringType)) {
             return -1;
@@ -193,14 +244,36 @@ public final class StringResultWidths {
     private static DataType summedWidth(final List<DataType> argTypes, final int from,
                                         final long extra) {
         long total = extra;
+        boolean unbounded = false;
         for (int i = from; i < argTypes.size(); i++) {
             final long width = stringWidth(argTypes, i);
             if (width < 0) {
-                return null;
+                if (!joinsAsText(argTypes, i)) {
+                    return null;
+                }
+                unbounded = true;
             }
-            total += width;
+            total += Math.max(width, 0);
         }
-        return varchar(total);
+        return varchar(unbounded ? UNBOUNDED : total);
+    }
+
+    /**
+     * Whether a concatenation's argument joins through its conversion to text, which nothing bounds: a
+     * number, a date or time, a BOOLEAN or a VARIANT makes CONCAT, CONCAT_WS and INSERT VARCHAR(134217728)
+     * — {@code CONCAT(i, 'a')}, {@code CONCAT(ts, v)} and {@code INSERT(d, 1, 1, 'x')} alike
+     * (live-verified).
+     *
+     * @param argTypes the argument types
+     * @param index    the position to read
+     * @return true when that argument is present and converts to text
+     */
+    private static boolean joinsAsText(final List<DataType> argTypes, final int index) {
+        if (index >= argTypes.size()) {
+            return false;
+        }
+        final DataType type = argTypes.get(index);
+        return convertedToText(type) || type instanceof VariantType;
     }
 
     /**

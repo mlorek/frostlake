@@ -40,8 +40,12 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.IntervalDayTimeType;
+import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
@@ -67,13 +71,20 @@ public class SystemViews {
     /** Data retention, in days: this engine keeps no time-travel history, and a real account's
      *  default for a standard database is 1 — reported as text, as live does. */
     private static final Long DEFAULT_RETENTION_TIME = 1L;
+    /** A foreign key's MATCH_OPTION: FULL for every key, inline REFERENCES or table-level (live-verified). */
+    private static final String FOREIGN_KEY_MATCH = "FULL";
+
     /** Every object here is owned by a role, never directly by a user. */
     private static final String OWNER_ROLE_TYPE = "ROLE";
 
     private final Catalog catalog;
 
-    public SystemViews(final Catalog catalog) {
+    /** Where a table's rows are, so TABLES can count them as it lists the table. */
+    private final StorageEngine storageEngine;
+
+    public SystemViews(final Catalog catalog, final StorageEngine storageEngine) {
         this.catalog = catalog;
+        this.storageEngine = storageEngine;
     }
 
     // ── DATABASES ─────────────────────────────────────────────────────────────
@@ -104,12 +115,12 @@ public class SystemViews {
 
     public ResultSet querySchemata(final String databaseName) {
         final ResultSet result = new ResultSet(Arrays.asList(
-            col("CATALOG_NAME"), col("SCHEMA_NAME"), col("SCHEMA_OWNER"),
+            col("CATALOG_NAME"), col("SCHEMA_NAME"), colText("SCHEMA_OWNER", 134217728),
             colYesNo("IS_TRANSIENT"), colYesNo("IS_MANAGED_ACCESS"), colLong("RETENTION_TIME"),
-            col("DEFAULT_CHARACTER_SET_CATALOG"), col("DEFAULT_CHARACTER_SET_SCHEMA"),
-            col("DEFAULT_CHARACTER_SET_NAME"), col("SQL_PATH"),
+            colNull("DEFAULT_CHARACTER_SET_CATALOG"), colNull("DEFAULT_CHARACTER_SET_SCHEMA"),
+            colNull("DEFAULT_CHARACTER_SET_NAME"), colNull("SQL_PATH"),
             colLtz("CREATED"), colLtz("LAST_ALTERED"), col("COMMENT"),
-            col("REPLICABLE_WITH_FAILOVER_GROUPS"), col("OWNER_ROLE_TYPE")
+            colText("REPLICABLE_WITH_FAILOVER_GROUPS", 134217728), colText("OWNER_ROLE_TYPE", 134217728)
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : db.getAllSchemas()) {
@@ -159,43 +170,56 @@ public class SystemViews {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"),
             col("TABLE_OWNER"), colText("TABLE_TYPE", 134217728),
-            colText("IS_TRANSIENT", 134217728), col("CLUSTERING_KEY"),
+            colText("IS_TRANSIENT", 134217728), colText("CLUSTERING_KEY", 134217728),
             colLong("ROW_COUNT"), colLong("BYTES"), colLong("RETENTION_TIME"),
-            col("SELF_REFERENCING_COLUMN_NAME"), col("REFERENCE_GENERATION"),
-            col("USER_DEFINED_TYPE_CATALOG"), col("USER_DEFINED_TYPE_SCHEMA"),
-            col("USER_DEFINED_TYPE_NAME"), col("IS_INSERTABLE_INTO"), col("IS_TYPED"),
-            col("COMMIT_ACTION"), colLtz("CREATED"), colLtz("LAST_ALTERED"),
-            col("LAST_DDL"), col("LAST_DDL_BY"), col("AUTO_CLUSTERING_ON"), col("COMMENT"),
-            col("IS_TEMPORARY"), col("IS_ICEBERG"), col("IS_DYNAMIC"), col("IS_IMMUTABLE"),
-            col("IS_HYBRID"), col("ROW_TIMESTAMP_ON"), col("ERROR_LOGGING"), col("IS_INTERACTIVE")
+            colNull("SELF_REFERENCING_COLUMN_NAME"), colNull("REFERENCE_GENERATION"),
+            colNull("USER_DEFINED_TYPE_CATALOG"), colNull("USER_DEFINED_TYPE_SCHEMA"),
+            colNull("USER_DEFINED_TYPE_NAME"), colYesNo("IS_INSERTABLE_INTO"), colYesNo("IS_TYPED"),
+            colNull("COMMIT_ACTION"), colLtz("CREATED"), colLtz("LAST_ALTERED"),
+            colLtz("LAST_DDL"), col("LAST_DDL_BY"), colYesNo("AUTO_CLUSTERING_ON"), col("COMMENT"),
+            colYesNo("IS_TEMPORARY"), colYesNo("IS_ICEBERG"), colYesNo("IS_DYNAMIC"), colYesNo("IS_IMMUTABLE"),
+            colYesNo("IS_HYBRID"), colYesNo("ROW_TIMESTAMP_ON"), colYesNo("ERROR_LOGGING"), colYesNo("IS_INTERACTIVE")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
-                for (final Table table : schema.getTables()) {
+                // A permanent table a temporary one hides is listed beside it (live-verified), and
+                // counted from the rows hidden under the shared name.
+                final List<Table> tables = schema.getTables();
+                final int visible = tables.size();
+                tables.addAll(schema.getShadowedTables());
+                for (int i = 0; i < tables.size(); i++) {
+                    final Table table = tables.get(i);
                     final String type = table.isTemporary() ? "LOCAL TEMPORARY" : "BASE TABLE";
+                    // ROW_COUNT is the committed rows; BYTES stays 0 — live's figure is the compressed
+                    // size of its micro-partitions (512 for one INT row, 1024 for two to a hundred,
+                    // 2048 for one row of a thousand random characters), which in-memory rows cannot
+                    // reproduce.
+                    final long rowCount = storageEngine.storedRowCount(
+                        QualifiedName.key(db.getName(), schema.getName(), table.getName()), i >= visible);
                     result.addRow(new Row(
                         db.getName(), schema.getName(), table.getName(), table.getOwner(),
                         type, yesNo(table.isTransient()),
                         table.getClusterKeys().isEmpty() ? null : String.join(", ", table.getClusterKeys()),
-                        (long) table.getRowCount(), 0L, DEFAULT_RETENTION_TIME,
+                        rowCount, 0L, DEFAULT_RETENTION_TIME,
                         null, null, null, null, null, YES_NO_TRUE, YES_NO_TRUE, null,
                         table.getCreatedTime(), table.getCreatedTime(), table.getCreatedTime(),
-                        table.getOwner(), YES_NO_FALSE, table.getComment(),
+                        table.getLastDdlBy(), YES_NO_FALSE, table.getComment(),
                         yesNo(table.isTemporary()), YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE,
                         yesNo(table.isHybrid()), YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE
                     ));
                 }
                 for (final View view : schema.getViews()) {
-                    result.addRow(tableShapedRow(db, schema, view.getName(), view.getOwner(),
-                        "VIEW", view.getCreatedTime(), view.getComment()));
+                    result.addRow(viewRow(db, schema, view.getName(), view.getOwner(), view.getLastDdlBy(),
+                        "VIEW", systemViewTime(schema, view), view.getComment(), null));
                 }
                 for (final MaterializedView view : schema.getMaterializedViews()) {
-                    result.addRow(tableShapedRow(db, schema, view.getName(), view.getOwner(),
-                        "MATERIALIZED VIEW", view.getCreatedTime(), view.getComment()));
+                    result.addRow(viewRow(db, schema, view.getName(), view.getOwner(), view.getLastDdlBy(),
+                        "MATERIALIZED VIEW", view.getCreatedTime(), view.getComment(), DEFAULT_RETENTION_TIME));
                 }
                 for (final DynamicTable dynamicTable : schema.getDynamicTables()) {
                     result.addRow(tableShapedRow(db, schema, dynamicTable.getName(), dynamicTable.getOwner(),
-                        "BASE TABLE", dynamicTable.getCreatedTime(), dynamicTable.getComment()));
+                        dynamicTable.getLastDdlBy(), "BASE TABLE", dynamicTable.getCreatedTime(), dynamicTable.getComment(),
+                        dynamicTable.isTransient()));
                 }
             }
         }
@@ -203,21 +227,44 @@ public class SystemViews {
     }
 
     /**
-     * A TABLES row for an object with no stored rows of its own — a view, a materialized view or a
-     * dynamic table. Live leaves IS_TRANSIENT, CLUSTERING_KEY and the size columns empty for these.
+     * A TABLES row for a view or a materialized view (live-verified): no transience at all, and a
+     * retention time only for a materialized view, which keeps data — a view's, INFORMATION_SCHEMA's own
+     * included, is empty.
      */
-    /** A non-table relation (view, materialized view, dynamic table) in the TABLES row shape. */
+    private Row viewRow(final Database db, final Schema schema, final String name, final String owner,
+                        final String lastDdlBy, final String type, final Instant created, final String comment,
+                        final Long retention) {
+        return shapedRow(db, schema, name, owner, lastDdlBy, type, created, comment, null, retention);
+    }
+
+    /** A dynamic table's TABLES row: listed as a BASE TABLE, TRANSIENT as it was declared, retained a day. */
     private Row tableShapedRow(final Database db, final Schema schema, final String name,
-                               final String owner, final String type, final Instant created,
-                               final String comment) {
+                               final String owner, final String lastDdlBy, final String type, final Instant created,
+                               final String comment, final boolean transientRelation) {
+        return shapedRow(db, schema, name, owner, lastDdlBy, type, created, comment,
+            transientRelation ? YES_NO_TRUE : YES_NO_FALSE, DEFAULT_RETENTION_TIME);
+    }
+
+    /** A relation with no stored rows of its own in the TABLES row shape: no clustering key, no sizes. */
+    private Row shapedRow(final Database db, final Schema schema, final String name, final String owner,
+                          final String lastDdlBy, final String type, final Instant created, final String comment,
+                          final String transience, final Long retention) {
         return new Row(
             db.getName(), schema.getName(), name, owner, type,
-            YES_NO_FALSE, null, null, null, DEFAULT_RETENTION_TIME,
+            transience, null, null, null, retention,
             null, null, null, null, null, YES_NO_TRUE, YES_NO_TRUE, null,
-            created, created, created, owner, YES_NO_FALSE, comment,
+            created, created, created, lastDdlBy, YES_NO_FALSE, comment,
             YES_NO_FALSE, YES_NO_FALSE, "DYNAMIC TABLE".equals(type) ? YES_NO_TRUE : YES_NO_FALSE,
             YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE
         );
+    }
+
+    /**
+     * A view's creation time as INFORMATION_SCHEMA.TABLES and VIEWS report it: none at all for one of
+     * INFORMATION_SCHEMA's own views, which were never created (live-verified), and the view's own otherwise.
+     */
+    private static Instant systemViewTime(final Schema schema, final View view) {
+        return "INFORMATION_SCHEMA".equals(schema.getName()) ? null : view.getCreatedTime();
     }
 
     // ── COLUMNS ───────────────────────────────────────────────────────────────
@@ -253,27 +300,31 @@ public class SystemViews {
             col("COLUMN_NAME"), colInt("ORDINAL_POSITION"),
             colText("COLUMN_DEFAULT", 134217728), colYesNo("IS_NULLABLE"),
             col("DATA_TYPE"), colInt("CHARACTER_MAXIMUM_LENGTH"), colInt("CHARACTER_OCTET_LENGTH"),
-            colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX"), colInt("NUMERIC_SCALE"),
-            colInt("DATETIME_PRECISION"), col("INTERVAL_TYPE"), col("INTERVAL_PRECISION"),
-            col("CHARACTER_SET_CATALOG"), col("CHARACTER_SET_SCHEMA"), col("CHARACTER_SET_NAME"),
-            col("COLLATION_CATALOG"), col("COLLATION_SCHEMA"), col("COLLATION_NAME"),
-            col("DOMAIN_CATALOG"), col("DOMAIN_SCHEMA"), col("DOMAIN_NAME"),
-            col("UDT_CATALOG"), col("UDT_SCHEMA"), col("UDT_NAME"),
-            col("SCOPE_CATALOG"), col("SCOPE_SCHEMA"), col("SCOPE_NAME"),
-            col("MAXIMUM_CARDINALITY"), col("DTD_IDENTIFIER"), col("IS_SELF_REFERENCING"),
-            colYesNo("IS_IDENTITY"), col("IDENTITY_GENERATION"),
-            col("IDENTITY_START"), col("IDENTITY_INCREMENT"),
-            col("IDENTITY_MAXIMUM"), col("IDENTITY_MINIMUM"),
-            col("IDENTITY_CYCLE"), col("IDENTITY_ORDERED"),
+            colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX", 2), colInt("NUMERIC_SCALE"),
+            colInt("DATETIME_PRECISION"), colNull("INTERVAL_TYPE"), colLong("INTERVAL_PRECISION"),
+            colNull("CHARACTER_SET_CATALOG"), colNull("CHARACTER_SET_SCHEMA"), colNull("CHARACTER_SET_NAME"),
+            colNull("COLLATION_CATALOG"), colNull("COLLATION_SCHEMA"), col("COLLATION_NAME"),
+            colNull("DOMAIN_CATALOG"), colNull("DOMAIN_SCHEMA"), colNull("DOMAIN_NAME"),
+            colNull("UDT_CATALOG"), colNull("UDT_SCHEMA"), colNull("UDT_NAME"),
+            colNull("SCOPE_CATALOG"), colNull("SCOPE_SCHEMA"), colNull("SCOPE_NAME"),
+            colNull("MAXIMUM_CARDINALITY"), colText("DTD_IDENTIFIER", 134217728), colText("IS_SELF_REFERENCING", 2),
+            colYesNo("IS_IDENTITY"), colText("IDENTITY_GENERATION", 134217728),
+            colLong("IDENTITY_START"), colLong("IDENTITY_INCREMENT"),
+            colNull("IDENTITY_MAXIMUM"), colNull("IDENTITY_MINIMUM"),
+            colText("IDENTITY_CYCLE", 134217728), colText("IDENTITY_ORDERED", 134217728),
             col("SCHEMA_EVOLUTION_RECORD"), col("DATA_TYPE_ALIAS"), col("COMMENT"),
-            col("EXPRESSION"), col("KIND")
+            col("EXPRESSION"), colText("KIND", 134217728)
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Table table : tablesFor(schema, tableName)) {
                     int pos = 1;
                     for (final TableColumn col : table.getColumns()) {
-                        result.addRow(columnRow(db, schema, table.getName(), col, pos++, true));
+                        // The position the column was GIVEN, not where it sits today: a dropped column
+                        // leaves its number behind, and no later column takes it.
+                        result.addRow(columnRow(db, schema, table.getName(), col,
+                            col.getOrdinalPosition() > 0 ? col.getOrdinalPosition() : pos, true));
+                        pos++;
                     }
                 }
                 for (final View view : schema.getViews()) {
@@ -291,15 +342,21 @@ public class SystemViews {
         return result;
     }
 
-    /** The base tables a COLUMNS read covers: one named table, or all of them. A name that is not a
-     *  table (a view's, say) selects no table rather than failing the whole read. */
+    /** The base tables a COLUMNS read covers: one named table, or all of them, each with the permanent
+     *  table a temporary one of its name hides (live-verified). A name that is not a table (a view's,
+     *  say) selects no table rather than failing the whole read. */
     private List<Table> tablesFor(final Schema schema, final String tableName) {
         if (tableName == null) {
-            return schema.getTables();
+            final List<Table> tables = schema.getTables();
+            tables.addAll(schema.getShadowedTables());
+            return tables;
         }
-        return schema.hasTable(tableName)
-            ? Collections.singletonList(schema.getTable(tableName))
-            : Collections.<Table>emptyList();
+        if (!schema.hasTable(tableName)) {
+            return Collections.<Table>emptyList();
+        }
+        final Table table = schema.getTable(tableName);
+        final Table hidden = schema.shadowedTable(table.getName());
+        return hidden == null ? Collections.singletonList(table) : Arrays.asList(table, hidden);
     }
 
     private boolean matchesName(final String name, final String requested) {
@@ -328,7 +385,12 @@ public class SystemViews {
                           final TableColumn col, final int position, final boolean fromBaseTable) {
         final DataType dataType = col.getDataType();
         final String typeName = dataType.getName().toUpperCase();
-        final String canonical = canonicalDataType(typeName);
+        // An interval reports its fields without their precisions, INTERVAL DAY TO SECOND (live-verified).
+        final String canonical = dataType instanceof IntervalDayTimeType
+            ? "INTERVAL " + ((IntervalDayTimeType) dataType).getQualifier().fieldsName()
+            : dataType instanceof IntervalYearMonthType
+            ? "INTERVAL " + ((IntervalYearMonthType) dataType).getQualifier().fieldsName()
+            : canonicalDataType(typeName);
         // A string's length stops at the widest a column can declare, as DESCRIBE's does — a view over
         // UPPER or || of a 16MB column reads 16777216 here although the expression itself is wider —
         // and its octet length is four bytes a character, uncapped: VARCHAR(5) reads 20 and the
@@ -374,8 +436,8 @@ public class SystemViews {
             null, null, null,
             null, null, YES_NO_FALSE,
             identity ? YES_NO_TRUE : YES_NO_FALSE, identity ? "BY DEFAULT" : null,
-            identity ? "1" : null,
-            identity ? "1" : null,
+            identity ? Long.valueOf(col.getIdentityStart()) : null,
+            identity ? Long.valueOf(col.getIdentityIncrement()) : null,
             null, null,
             identity ? YES_NO_FALSE : null, identity ? YES_NO_FALSE : null,
             null, dataType.getName(), fromBaseTable ? col.getComment() : null,
@@ -430,9 +492,9 @@ public class SystemViews {
     public ResultSet queryViews(final String databaseName, final String schemaName) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"),
-            col("TABLE_OWNER"), col("VIEW_DEFINITION"), col("CHECK_OPTION"),
-            col("IS_UPDATABLE"), col("INSERTABLE_INTO"), colYesNo("IS_SECURE"),
-            colLtz("CREATED"), colLtz("LAST_ALTERED"), col("LAST_DDL"), col("LAST_DDL_BY"),
+            col("TABLE_OWNER"), col("VIEW_DEFINITION"), colText("CHECK_OPTION", 4),
+            colText("IS_UPDATABLE", 2), colText("INSERTABLE_INTO", 2), colYesNo("IS_SECURE"),
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), colLtz("LAST_DDL"), col("LAST_DDL_BY"),
             col("COMMENT")
         ));
         for (final Database db : databases(databaseName)) {
@@ -440,12 +502,15 @@ public class SystemViews {
                 for (final View view : schema.getViews()) {
                     // Snowflake's VIEW_DEFINITION is the view's full executable DDL, not just its
                     // query: deployment tooling recreates views via EXECUTE IMMEDIATE of this text.
+                    // INFORMATION_SCHEMA's own views were never created: no definition, no times.
+                    final Instant created = systemViewTime(schema, view);
                     result.addRow(new Row(
                         db.getName(), schema.getName(), view.getName(), view.getOwner(),
-                        view.ddl(schema.getName() + "." + view.getName()), "NONE",
+                        created == null ? null : view.getDefinitionText() != null ? view.getDefinitionText()
+                            : view.ddl(schema.getName() + "." + view.getName()), "NONE",
                         YES_NO_FALSE, YES_NO_FALSE, yesNo(view.isSecure()),
-                        view.getCreatedTime(), view.getCreatedTime(), view.getCreatedTime(),
-                        view.getOwner(), view.getComment()
+                        created, created, created,
+                        view.getLastDdlBy(), view.getComment()
                     ));
                 }
             }
@@ -459,8 +524,8 @@ public class SystemViews {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("CONSTRAINT_CATALOG"), col("CONSTRAINT_SCHEMA"), col("CONSTRAINT_NAME"),
             col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"),
-            col("CONSTRAINT_TYPE"), col("IS_DEFERRABLE"), col("INITIALLY_DEFERRED"),
-            col("ENFORCED"), col("COMMENT"), col("CREATED"), col("LAST_ALTERED"), col("RELY")
+            colText("CONSTRAINT_TYPE", 134217728), colYesNo("IS_DEFERRABLE"), colYesNo("INITIALLY_DEFERRED"),
+            colYesNo("ENFORCED"), col("COMMENT"), colLtz("CREATED"), colLtz("LAST_ALTERED"), colYesNo("RELY")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
@@ -547,8 +612,8 @@ public class SystemViews {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("CONSTRAINT_CATALOG"), col("CONSTRAINT_SCHEMA"), col("CONSTRAINT_NAME"),
             col("UNIQUE_CONSTRAINT_CATALOG"), col("UNIQUE_CONSTRAINT_SCHEMA"), col("UNIQUE_CONSTRAINT_NAME"),
-            col("MATCH_OPTION"), col("UPDATE_RULE"), col("DELETE_RULE"), col("COMMENT"),
-            col("CREATED"), col("LAST_ALTERED")
+            colText("MATCH_OPTION", 134217728), colText("UPDATE_RULE", 134217728), colText("DELETE_RULE", 134217728), col("COMMENT"),
+            colLtz("CREATED"), colLtz("LAST_ALTERED")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
@@ -560,7 +625,7 @@ public class SystemViews {
                                 table.columnForeignKeyConstraintName(col.getName()),
                                 db.getName(), schema.getName(),
                                 referencedPrimaryKeyName(schema, col.getReferencedTable()),
-                                "NONE", "NO ACTION", "NO ACTION", null,
+                                FOREIGN_KEY_MATCH, "NO ACTION", "NO ACTION", null,
                                 table.getCreatedTime(), table.getCreatedTime()
                             ));
                         }
@@ -572,10 +637,10 @@ public class SystemViews {
                             fk.getConstraintName(),
                             db.getName(), schema.getName(),
                             referencedPrimaryKeyName(schema, fk.getReferencedTable()),
-                            "NONE",
+                            FOREIGN_KEY_MATCH,
                             fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
                             fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",
-                            null
+                            null, table.getCreatedTime(), table.getCreatedTime()
                         ));
                     }
                 }
@@ -591,11 +656,11 @@ public class SystemViews {
             col("PROCEDURE_CATALOG"), col("PROCEDURE_SCHEMA"), col("PROCEDURE_NAME"),
             col("PROCEDURE_OWNER"), col("ARGUMENT_SIGNATURE"), col("DATA_TYPE"),
             colInt("CHARACTER_MAXIMUM_LENGTH"), colInt("CHARACTER_OCTET_LENGTH"),
-            colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX"), colInt("NUMERIC_SCALE"),
-            col("PROCEDURE_LANGUAGE"), col("PROCEDURE_DEFINITION"),
-            col("CREATED"), col("LAST_ALTERED"), col("COMMENT"),
+            colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX", 2), colInt("NUMERIC_SCALE"),
+            colText("PROCEDURE_LANGUAGE", 134217728), col("PROCEDURE_DEFINITION"),
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), col("COMMENT"),
             col("EXTERNAL_ACCESS_INTEGRATIONS"), col("SECRETS"),
-            col("RUNTIME_VERSION"), col("PACKAGES"), col("INSTALLED_PACKAGES"),
+            col("RUNTIME_VERSION"), col("PACKAGES"), colText("INSTALLED_PACKAGES", 134217728),
             col("ARTIFACT_REPOSITORY")
         ));
         for (final Database db : databases(databaseName)) {
@@ -629,16 +694,16 @@ public class SystemViews {
             col("FUNCTION_CATALOG"), col("FUNCTION_SCHEMA"), col("FUNCTION_NAME"),
             col("FUNCTION_OWNER"), col("ARGUMENT_SIGNATURE"), col("DATA_TYPE"),
             colInt("CHARACTER_MAXIMUM_LENGTH"), colInt("CHARACTER_OCTET_LENGTH"),
-            colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX"), colInt("NUMERIC_SCALE"),
-            col("FUNCTION_LANGUAGE"), col("FUNCTION_DEFINITION"),
-            col("VOLATILITY"), col("IS_NULL_CALL"), col("IS_SECURE"),
-            col("CREATED"), col("LAST_ALTERED"), col("COMMENT"),
-            col("IS_EXTERNAL"), col("API_INTEGRATION"), col("CONTEXT_HEADERS"),
-            col("MAX_BATCH_ROWS"), col("REQUEST_TRANSLATOR"), col("RESPONSE_TRANSLATOR"),
+            colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX", 2), colInt("NUMERIC_SCALE"),
+            colText("FUNCTION_LANGUAGE", 134217728), col("FUNCTION_DEFINITION"),
+            colText("VOLATILITY", 134217728), colYesNo("IS_NULL_CALL"), colYesNo("IS_SECURE"),
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), col("COMMENT"),
+            colYesNo("IS_EXTERNAL"), col("API_INTEGRATION"), col("CONTEXT_HEADERS"),
+            colLong("MAX_BATCH_ROWS"), col("REQUEST_TRANSLATOR"), col("RESPONSE_TRANSLATOR"),
             col("COMPRESSION"), col("IMPORTS"), col("HANDLER"), col("TARGET_PATH"),
-            col("RUNTIME_VERSION"), col("PACKAGES"), col("INSTALLED_PACKAGES"),
-            col("IS_MEMOIZABLE"), col("EXTERNAL_ACCESS_INTEGRATIONS"), col("SECRETS"),
-            col("IS_DATA_METRIC"), col("IS_AGGREGATE"), col("ARTIFACT_REPOSITORY")
+            col("RUNTIME_VERSION"), col("PACKAGES"), colText("INSTALLED_PACKAGES", 134217728),
+            colYesNo("IS_MEMOIZABLE"), col("EXTERNAL_ACCESS_INTEGRATIONS"), col("SECRETS"),
+            colYesNo("IS_DATA_METRIC"), colYesNo("IS_AGGREGATE"), col("ARTIFACT_REPOSITORY")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
@@ -680,11 +745,11 @@ public class SystemViews {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("SEQUENCE_CATALOG"), col("SEQUENCE_SCHEMA"), col("SEQUENCE_NAME"),
             col("SEQUENCE_OWNER"), colText("DATA_TYPE", 6),
-            colNumber("NUMERIC_PRECISION", 2), colLong("NUMERIC_PRECISION_RADIX"), colLong("NUMERIC_SCALE"),
+            colNumber("NUMERIC_PRECISION", 2), colNumber("NUMERIC_PRECISION_RADIX", 2), colNumber("NUMERIC_SCALE", 1),
             // The five bounds are TEXT on the account, as the standard's view defines them — only the
             // three NUMERIC_* cells are numbers.
-            col("START_VALUE"), col("MINIMUM_VALUE"), col("MAXIMUM_VALUE"),
-            col("NEXT_VALUE"), col("INCREMENT"), col("CYCLE_OPTION"),
+            col("START_VALUE"), colText("MINIMUM_VALUE", 20), colText("MAXIMUM_VALUE", 19),
+            col("NEXT_VALUE"), col("INCREMENT"), colText("CYCLE_OPTION", 2),
             colLtz("CREATED"), colLtz("LAST_ALTERED"), colYesNo("ORDERED"), col("COMMENT")
         ));
         for (final Database db : databases(databaseName)) {
@@ -712,9 +777,9 @@ public class SystemViews {
     public ResultSet queryStages(final String databaseName, final String schemaName) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("STAGE_CATALOG"), col("STAGE_SCHEMA"), col("STAGE_NAME"),
-            col("STAGE_URL"), col("STAGE_REGION"), col("STAGE_TYPE"), col("STAGE_OWNER"),
-            col("COMMENT"), col("CREATED"), col("LAST_ALTERED"),
-            col("ENDPOINT"), col("DIRECTORY_ENABLED")
+            col("STAGE_URL"), col("STAGE_REGION"), colText("STAGE_TYPE", 134217728), col("STAGE_OWNER"),
+            col("COMMENT"), colLtz("CREATED"), colLtz("LAST_ALTERED"),
+            col("ENDPOINT"), colBool("DIRECTORY_ENABLED")
         ));
         try {
             final String dbN = databaseName != null ? databaseName : catalog.getCurrentDatabase();
@@ -731,7 +796,8 @@ public class SystemViews {
                         external ? url : null, null,
                         external ? "External Named" : "Internal Named", stage.getOwner(),
                         stage.getComment(), stage.getCreatedAt(), stage.getCreatedAt(),
-                        null, null
+                        // A stage declared without DIRECTORY reports NULL here, one with it enabled TRUE (live-verified).
+                        null, stage.isDirectoryEnabled() ? Boolean.TRUE : null
                     ));
                 }
             }
@@ -748,9 +814,9 @@ public class SystemViews {
     public ResultSet queryPipes(final String databaseName, final String schemaName) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("PIPE_CATALOG"), col("PIPE_SCHEMA"), col("PIPE_NAME"),
-            col("PIPE_OWNER"), col("DEFINITION"), col("IS_AUTOINGEST_ENABLED"),
+            col("PIPE_OWNER"), col("DEFINITION"), colYesNo("IS_AUTOINGEST_ENABLED"),
             col("NOTIFICATION_CHANNEL_NAME"),
-            col("CREATED"), col("LAST_ALTERED"), col("COMMENT"), col("PATTERN")
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), col("COMMENT"), col("PATTERN")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
@@ -781,7 +847,7 @@ public class SystemViews {
 
     public ResultSet queryApplicableRoles() {
         final ResultSet result = new ResultSet(Arrays.asList(
-            col("GRANTEE"), col("ROLE_NAME"), col("ROLE_OWNER"), col("IS_GRANTABLE")
+            col("GRANTEE"), col("ROLE_NAME"), col("ROLE_OWNER"), colText("IS_GRANTABLE", 2)
         ));
         for (final User user : catalog.getAllUsers()) {
             for (final String role : user.getGrantedRoles()) {
@@ -795,9 +861,9 @@ public class SystemViews {
 
     public ResultSet queryTablePrivileges(final String databaseName, final String schemaName) {
         final ResultSet result = new ResultSet(Arrays.asList(
-            col("GRANTOR"), col("GRANTEE"), col("GRANTED_TO"), col("TABLE_CATALOG"),
+            col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("TABLE_CATALOG"),
             col("TABLE_SCHEMA"), col("TABLE_NAME"),
-            col("PRIVILEGE_TYPE"), col("IS_GRANTABLE"), col("WITH_HIERARCHY"), colLtz("CREATED")
+            col("PRIVILEGE_TYPE"), colText("IS_GRANTABLE", 134217728), colText("WITH_HIERARCHY", 2), colLtz("CREATED")
         ));
         // Privileges are not fully tracked yet; return empty result set
         return result;
@@ -807,9 +873,9 @@ public class SystemViews {
 
     public ResultSet queryObjectPrivileges() {
         final ResultSet result = new ResultSet(Arrays.asList(
-            col("GRANTOR"), col("GRANTEE"), col("GRANTED_TO"), col("OBJECT_CATALOG"),
-            col("OBJECT_SCHEMA"), col("OBJECT_NAME"), col("OBJECT_TYPE"),
-            col("PRIVILEGE_TYPE"), col("IS_GRANTABLE"), col("CREATED")
+            col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("OBJECT_CATALOG"),
+            col("OBJECT_SCHEMA"), col("OBJECT_NAME"), colText("OBJECT_TYPE", 134217728),
+            col("PRIVILEGE_TYPE"), colText("IS_GRANTABLE", 134217728), colLtz("CREATED")
         ));
         return result;
     }
@@ -818,9 +884,9 @@ public class SystemViews {
 
     public ResultSet queryUsagePrivileges() {
         final ResultSet result = new ResultSet(Arrays.asList(
-            col("GRANTOR"), col("GRANTEE"), col("GRANTED_TO"), col("OBJECT_CATALOG"),
-            col("OBJECT_SCHEMA"), col("OBJECT_NAME"), col("OBJECT_TYPE"),
-            col("PRIVILEGE_TYPE"), col("IS_GRANTABLE"), col("CREATED")
+            col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("OBJECT_CATALOG"),
+            col("OBJECT_SCHEMA"), col("OBJECT_NAME"), colText("OBJECT_TYPE", 30),
+            colText("PRIVILEGE_TYPE", 5), colText("IS_GRANTABLE", 134217728), colLtz("CREATED")
         ));
         return result;
     }
@@ -837,7 +903,7 @@ public class SystemViews {
             col("TIMESTAMP_FORMAT"), col("BINARY_FORMAT"), col("ESCAPE"),
             col("ESCAPE_UNENCLOSED_FIELD"), col("TRIM_SPACE"), col("FIELD_OPTIONALLY_ENCLOSED_BY"),
             col("NULL_IF"), col("COMPRESSION"), col("ERROR_ON_COLUMN_COUNT_MISMATCH"),
-            col("CREATED"), col("LAST_ALTERED"), col("COMMENT")
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), col("COMMENT")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
@@ -850,14 +916,20 @@ public class SystemViews {
                         format.getOption("TIMESTAMP_FORMAT"), format.getOption("BINARY_FORMAT"),
                         format.getOption("ESCAPE"), format.getOption("ESCAPE_UNENCLOSED_FIELD"),
                         format.getOption("TRIM_SPACE"), format.getOption("FIELD_OPTIONALLY_ENCLOSED_BY"),
-                        format.getOption("NULL_IF"), format.getOption("COMPRESSION"),
-                        format.getOption("ERROR_ON_COLUMN_COUNT_MISMATCH"), null, null,
+                        nullIfText(format), format.getOption("COMPRESSION"),
+                        format.getOption("ERROR_ON_COLUMN_COUNT_MISMATCH"), format.getCreatedTime(), format.getCreatedTime(),
                         format.getComment()
                     ));
                 }
             }
         }
         return result;
+    }
+
+    /** The format's NULL_IF values joined by commas, or null when it sets none. */
+    private String nullIfText(final FileFormat format) {
+        final List<String> values = format.getNullIfValues();
+        return values == null ? null : String.join(",", values);
     }
 
     /** The format's SKIP_HEADER as a count; 0 when unset or not a number (live reports a number). */
@@ -879,7 +951,7 @@ public class SystemViews {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("CATALOG"), col("SCHEMA"), col("NAME"), col("OWNER"),
             colLong("ROW_COUNT"), colLong("BYTES"), colLong("RETENTION_TIME"),
-            col("CREATED"), col("LAST_ALTERED"), col("COMMENT")
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), col("COMMENT")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
@@ -889,7 +961,9 @@ public class SystemViews {
                     }
                     result.addRow(new Row(
                         db.getName(), schema.getName(), table.getName(), table.getOwner(),
-                        table.getRowCount(), 0L, 1L,
+                        storageEngine.storedRowCount(
+                            QualifiedName.key(db.getName(), schema.getName(), table.getName()), false),
+                        0L, 1L,
                         table.getCreatedTime(), table.getCreatedTime(), table.getComment()
                     ));
                 }
@@ -904,12 +978,12 @@ public class SystemViews {
      *  no time-travel copies and no fail-safe, so zero is the honest figure for each. */
     public ResultSet queryTableStorageMetrics(final String databaseName, final String schemaName) {
         final ResultSet result = new ResultSet(Arrays.asList(
-            col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"), colLong("ID"),
-            colLong("CLONE_GROUP_ID"), col("IS_TRANSIENT"), colLong("ACTIVE_BYTES"),
+            col("TABLE_CATALOG"), col("TABLE_SCHEMA"), colText("TABLE_NAME", 134217728), colLong("ID"),
+            colLong("CLONE_GROUP_ID"), colYesNo("IS_TRANSIENT"), colLong("ACTIVE_BYTES"),
             colLong("TIME_TRAVEL_BYTES"), colLong("FAILSAFE_BYTES"),
-            colLong("RETAINED_FOR_CLONE_BYTES"), col("TABLE_CREATED"), col("TABLE_DROPPED"),
-            col("TABLE_ENTERED_FAILSAFE"), col("CATALOG_CREATED"), col("CATALOG_DROPPED"),
-            col("SCHEMA_CREATED"), col("SCHEMA_DROPPED"), col("COMMENT")
+            colLong("RETAINED_FOR_CLONE_BYTES"), colLtz("TABLE_CREATED"), colLtz("TABLE_DROPPED"),
+            colLtz("TABLE_ENTERED_FAILSAFE"), colLtz("CATALOG_CREATED"), colLtz("CATALOG_DROPPED"),
+            colLtz("SCHEMA_CREATED"), colLtz("SCHEMA_DROPPED"), col("COMMENT")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
@@ -967,6 +1041,20 @@ public class SystemViews {
         return new ResultSetColumn(name, StringType.VARCHAR, null, new LengthlessStringType());
     }
 
+    /**
+     * A column the account's view fills with a bare NULL (the SQL-standard placeholders): VARCHAR(0) in the result
+     * metadata and NULL to SYSTEM$TYPEOF. Like a bare NULL select item it reports the zero width and leaves its
+     * static type undetermined, so no INSERT type check reads it as a string.
+     */
+    private ResultSetColumn colNull(final String name) {
+        return new ResultSetColumn(name, new StringType("VARCHAR", 0));
+    }
+
+    /** A BOOLEAN cell (STAGES.DIRECTORY_ENABLED). */
+    private ResultSetColumn colBool(final String name) {
+        return new ResultSetColumn(name, new BooleanType(), null, new BooleanType());
+    }
+
     /** A YES / NO cell: VARCHAR(3) on the account (IS_NULLABLE, IS_SECURE, ORDERED, …). */
     private ResultSetColumn colYesNo(final String name) {
         return new ResultSetColumn(name, StringType.VARCHAR, null, new StringType("VARCHAR", 3));
@@ -980,6 +1068,11 @@ public class SystemViews {
     /** A whole-number cell: NUMBER(38,0) on the account, whatever it counts. */
     private ResultSetColumn colInt(final String name) {
         return new ResultSetColumn(name, NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0));
+    }
+
+    /** A whole-number cell held as an Integer that the account declares narrower — NUMBER(2,0) for a radix. */
+    private ResultSetColumn colInt(final String name, final int precision) {
+        return new ResultSetColumn(name, NumericType.INTEGER, null, new NumericType("NUMBER", precision, 0));
     }
 
     private ResultSetColumn colLong(final String name) {

@@ -23,7 +23,7 @@ import java.util.List;
 
 /** TIMEDIFF(unit, start, end) — alias of DATEDIFF. */
 public class TimeDiff extends BuiltInFunction {
-    private final DateDiff delegate = new DateDiff();
+    private final DateDiff delegate = new DateDiff("TIMEDIFF");
 
     public TimeDiff() { super("TIMEDIFF", NumericType.NUMBER); }
 

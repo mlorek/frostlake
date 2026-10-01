@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.OperatorFunctionNames;
+import dev.frostlake.functions.UnlistedFunctionNames;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -40,11 +41,14 @@ import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -165,7 +169,14 @@ final class ShowRoutineExecutor {
     }
 
     private void appendUserProcedureRows(final Schema schema, final String dbName, final List<Row> rows) {
-        for (final Procedure proc : schema.getProcedures()) {
+        final List<Procedure> procedures = schema.getProcedures();
+        Collections.sort(procedures, new Comparator<Procedure>() {
+            @Override
+            public int compare(final Procedure left, final Procedure right) {
+                return listingOrder(left.getName(), left.getParameters(), right.getName(), right.getParameters());
+            }
+        });
+        for (final Procedure proc : procedures) {
             final String sig = proc.getName() + buildArgSig(proc.getParameters())
                 + " RETURN " + proc.getReturnType().getName();
             rows.add(new Row(Arrays.asList(
@@ -178,7 +189,9 @@ final class ShowRoutineExecutor {
                 routineDescription(proc.getComment(), "user-defined procedure"),
                 dbName,
                 "N", "N", "N",
-                null, null
+                // Live leaves secrets and external_access_integrations EMPTY, not null, as for a function
+                // (live-verified).
+                "", ""
             )));
         }
     }
@@ -196,7 +209,7 @@ final class ShowRoutineExecutor {
      * last two are not SHOW PROCEDURES columns at all on a real account; both surface under
      * {@code DESCRIBE PROCEDURE} instead, which answers {@code language | SQL} and
      * {@code execute as | OWNER} property rows (live-verified the same day), and which
-     * {@link #describeProcedure(String)} already reports.
+     * {@link #describeProcedure(String[], List)} already reports.
      */
     private List<ResultSetColumn> procedureColumns() {
         return Arrays.asList(
@@ -264,10 +277,13 @@ final class ShowRoutineExecutor {
      * {@code BuiltInFunction.getName()}, so every alias reported its canonical name instead (SUBSTR showed
      * as a second SUBSTRING row, and ARRAYAGG, RLIKE, DAYOFMONTH, BIT_OR_AGG, … never appeared at all),
      * and the window, higher-order, SYSTEM$ and operator families are not in those maps to begin with.
+     * The built-ins the account itself leaves out of the listing ({@link UnlistedFunctionNames}) stay out.
      */
     private void appendBuiltinFunctionRows(final List<Row> rows) {
         for (final String name : functionRegistry.allDispatchableNames()) {
-            rows.add(builtinRow(name));
+            if (!UnlistedFunctionNames.contains(name)) {
+                rows.add(builtinRow(name));
+            }
         }
     }
 
@@ -320,7 +336,14 @@ final class ShowRoutineExecutor {
     }
 
     private void appendUserFunctionRows(final Schema schema, final String dbName, final List<Row> rows) {
-        for (final Function func : schema.getFunctions()) {
+        final List<Function> functions = schema.getFunctions();
+        Collections.sort(functions, new Comparator<Function>() {
+            @Override
+            public int compare(final Function left, final Function right) {
+                return listingOrder(left.getName(), left.getParameters(), right.getName(), right.getParameters());
+            }
+        });
+        for (final Function func : functions) {
             final String sig = func.getName() + buildArgSig(func.getParameters())
                 + " RETURN " + func.getReturnType().getName();
             rows.add(new Row(Arrays.asList(
@@ -333,7 +356,7 @@ final class ShowRoutineExecutor {
                 routineDescription(func.getComment(), "user-defined function"),
                 dbName,
                 func.isTableFunction() ? "Y" : "N",
-                "N", "N",
+                "N", func.isSecure() ? "Y" : "N",
                 // Live leaves secrets and external_access_integrations EMPTY, not null (live-verified).
                 "", "",
                 "N",
@@ -446,6 +469,27 @@ final class ShowRoutineExecutor {
         return comment == null || comment.isEmpty() ? placeholder : comment;
     }
 
+    /**
+     * The order a schema's routines are listed in: by name, then by argument types, each compared as a
+     * binary string, so quoted lower-case names follow every upper-case one — {@code A, B, _z, a, b} — and
+     * {@code F()} comes before {@code F(BOOLEAN)}, {@code F(NUMBER)} before {@code F(NUMBER, NUMBER)}
+     * (live-verified).
+     */
+    private static int listingOrder(final String leftName, final List<Parameter> leftParameters,
+                                    final String rightName, final List<Parameter> rightParameters) {
+        final int byName = leftName.compareTo(rightName);
+        return byName != 0 ? byName : argumentTypesText(leftParameters).compareTo(argumentTypesText(rightParameters));
+    }
+
+    /** A signature's argument types alone, {@code (NUMBER, VARCHAR)}. */
+    private static String argumentTypesText(final List<Parameter> params) {
+        final StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; params != null && i < params.size(); i++) {
+            sb.append(i > 0 ? ", " : "").append(params.get(i).getDataType().getName());
+        }
+        return sb.append(")").toString();
+    }
+
     private String buildArgSig(final List<Parameter> params) {
         if (params == null || params.isEmpty()) return "()";
         final StringBuilder sb = new StringBuilder("(");
@@ -499,8 +543,8 @@ final class ShowRoutineExecutor {
                 ShowResultHelpers.text(tag.getComment()),
                 av,
                 ShowResultHelpers.OWNER_ROLE_TYPE,
-                "NONE",
-                null,
+                tag.getPropagate() != null ? tag.getPropagate() : "NONE",
+                tag.getOnConflict(),
                 "false"
             )));
         }
@@ -558,15 +602,23 @@ final class ShowRoutineExecutor {
         return new ResultSet(columns, rows);
     }
 
-    public ResultSet describeFunction(final String name) {
-        final Schema owner = routineSchema(name);
-        final Function fn = owner == null ? null : owner.getFunction(lastSegment(name));
-        if (fn == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", name));
+    /**
+     * DESCRIBE FUNCTION: the overload the written signature picks, by the function's exact canonical name.
+     *
+     * @param parts         the name's canonical parts
+     * @param argumentTypes the argument types written after it
+     * @return the property rows
+     */
+    public ResultSet describeFunction(final String[] parts, final List<DataType> argumentTypes) {
+        final Schema owner = routineSchema(parts);
+        if (owner == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", QualifiedName.join(parts)));
         }
+        final Function fn = owner.getFunctionBySignature(parts[parts.length - 1], argumentTypes);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", routineSignature(fn.getParameters()))));
-        rows.add(new Row(Arrays.asList("returns", SqlTypeNames.routineType(fn.getReturnType()))));
+        rows.add(new Row(Arrays.asList("returns", fn.isTableFunction()
+            ? "TABLE " + routineSignature(fn.getReturnColumns()) : SqlTypeNames.routineType(fn.getReturnType()))));
         rows.add(new Row(Arrays.asList("language", fn.getLanguage() != null ? fn.getLanguage() : "SQL")));
         if (!isSqlLanguage(fn.getLanguage())) {
             rows.add(new Row(Arrays.asList("null handling", fn.getNullHandling())));
@@ -575,15 +627,29 @@ final class ShowRoutineExecutor {
         if (fn.getBody() != null) {
             rows.add(new Row(Arrays.asList("body", fn.getBody())));
         }
+        if (fn.isServiceFunction()) {
+            rows.add(new Row(Arrays.asList("service", fn.getServiceName())));
+            rows.add(new Row(Arrays.asList("endpoint", fn.getServiceEndpoint())));
+            if (fn.getMaxBatchRows() != null) {
+                rows.add(new Row(Arrays.asList("max_batch_rows", fn.getMaxBatchRows().toString())));
+            }
+        }
         return propertyValueResult(rows);
     }
 
-    public ResultSet describeProcedure(final String name) {
-        final Schema owner = routineSchema(name);
-        final Procedure proc = owner == null ? null : owner.getProcedure(lastSegment(name));
-        if (proc == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", name));
+    /**
+     * DESCRIBE PROCEDURE: the overload the written signature picks, by the procedure's exact canonical name.
+     *
+     * @param parts         the name's canonical parts
+     * @param argumentTypes the argument types written after it
+     * @return the property rows
+     */
+    public ResultSet describeProcedure(final String[] parts, final List<DataType> argumentTypes) {
+        final Schema owner = routineSchema(parts);
+        if (owner == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", QualifiedName.join(parts)));
         }
+        final Procedure proc = owner.getProcedureBySignature(parts[parts.length - 1], argumentTypes);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", routineSignature(proc.getParameters()))));
         rows.add(new Row(Arrays.asList("returns", SqlTypeNames.routineType(proc.getReturnType()))));
@@ -672,7 +738,7 @@ final class ShowRoutineExecutor {
             if (value == null) {
                 value = "TYPE".equals(property.name) ? ff.getType() : property.valueDefault;
             } else if ("NULL_IF".equals(property.name)) {
-                value = "[" + value.replace(",", ", ") + "]";
+                value = "[" + String.join(", ", ff.getNullIfValues()) + "]";
             }
             rows.add(new Row(Arrays.asList(property.name, property.type, value, property.shownDefault)));
         }
@@ -764,7 +830,7 @@ final class ShowRoutineExecutor {
                     || "Boolean".equals(property.type)) {
                 json.append(value.isEmpty() ? "null" : value);
             } else if ("List".equals(property.type)) {
-                json.append(nullIfJsonArray(format.getOptions().get(property.name), property.valueDefault));
+                json.append(nullIfJsonArray(format.getNullIfValues(), property.valueDefault));
             } else if ("FILE_EXTENSION".equals(property.name)
                     && format.getOptions().get(property.name) == null) {
                 json.append("null");
@@ -775,21 +841,17 @@ final class ShowRoutineExecutor {
         return json.append('}').toString();
     }
 
-    /** NULL_IF as a JSON string array: the stored comma-joined values, or the type's default. */
-    private static String nullIfJsonArray(final String stored, final String valueDefault) {
-        if (stored == null) {
+    /** NULL_IF as a JSON string array: the format's own values, or the type's default when it sets none. */
+    private static String nullIfJsonArray(final List<String> values, final String valueDefault) {
+        if (values == null) {
             return "[]".equals(valueDefault) ? "[]" : "[\"\\\\N\"]";
         }
-        if (stored.isEmpty()) {
-            return "[]";
-        }
         final StringBuilder array = new StringBuilder("[");
-        final String[] parts = stored.split(",");
-        for (int i = 0; i < parts.length; i++) {
+        for (int i = 0; i < values.size(); i++) {
             if (i > 0) {
                 array.append(',');
             }
-            array.append('"').append(parts[i].replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+            array.append('"').append(values.get(i).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
         }
         return array.append(']').toString();
     }
@@ -834,7 +896,9 @@ final class ShowRoutineExecutor {
                 dbName, scName,
                 "MASKING_POLICY",
                 mp.getOwner(),
-                mp.getComment()
+                ShowResultHelpers.text(mp.getComment()),
+                "ROLE",
+                ""
             )));
         }
     }
@@ -879,7 +943,9 @@ final class ShowRoutineExecutor {
                 dbName, scName,
                 "ROW_ACCESS_POLICY",
                 rap.getOwner(),
-                rap.getComment()
+                ShowResultHelpers.text(rap.getComment()),
+                "ROLE",
+                ""
             )));
         }
     }
@@ -1203,7 +1269,10 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("kind", StringType.VARCHAR),
             new ResultSetColumn("owner", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR)
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            // The account's two trailing columns, measured on both listings, TERSE included.
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("options", StringType.VARCHAR)
         );
     }
 
@@ -1229,8 +1298,8 @@ final class ShowRoutineExecutor {
      * The schema a routine name belongs to: the one it names when qualified ({@code db..f} names
      * PUBLIC's), else the current one.
      */
-    private Schema routineSchema(final String name) {
-        final String[] parts = catalog.withoutAccount(QualifiedName.parse(name).parts(), 3);
+    private Schema routineSchema(final String[] written) {
+        final String[] parts = catalog.withoutAccount(written, 3);
         if (parts.length == 1) {
             return resolveDescribeSchema();
         }

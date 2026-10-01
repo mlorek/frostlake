@@ -60,7 +60,7 @@ public class MissingRelationNamingTest extends BaseDatabaseTest {
     }
 
     private String missing(final String kind, final String name) {
-        return "SQL compilation error:\n" + kind + " '" + name + "' does not exist or not authorized.";
+        return hinted("SQL compilation error:\n" + kind + " '" + name + "' does not exist or not authorized.");
     }
 
     /** A read of a bare name reports it bare, as an Object. */

@@ -61,11 +61,19 @@ final class SemiStructuredCasts {
     }
 
     /**
-     * A value cast to OBJECT: an object passes through unchanged and JSON null yields null. A scalar cannot
-     * become an object (Snowflake rejects it), so it is reported rather than silently kept.
+     * A value cast to OBJECT: an object passes through unchanged and JSON null yields null. A VARIANT string
+     * whose text is an object reads as that object — {@code CAST('{}'::VARIANT AS OBJECT)} is {@code {}}, and
+     * {@code ' {"a": 1} '} with its spaces is {@code {"a":1}} — while one spelling anything else, an array
+     * included, is refused (live-verified). A scalar cannot become an object either, so it is reported rather
+     * than silently kept.
      */
     static Object toObjectText(final Object value) {
-        if (quotedJsonStringText(value) != null) {
+        final String quoted = quotedJsonStringText(value);
+        if (quoted != null) {
+            final JsonNode spelled = JsonTypeHelper.parseLenient(quoted);
+            if (spelled != null && spelled.isObject()) {
+                return VariantValue.ofNode(spelled);
+            }
             throw objectCastFailure(value);
         }
         final JsonNode node = ArrayFunctionHelper.parseNode(value);
@@ -87,6 +95,11 @@ final class SemiStructuredCasts {
         if (value instanceof VariantValue) {
             return new RuntimeException("Failed to cast variant value "
                 + ((VariantValue) value).text() + " to OBJECT");
+        }
+        if (quotedJsonStringText(value) != null) {
+            // A string member read out of a VARIANT is still that variant's value: "Failed to cast variant
+            // value "[1]" to OBJECT" for PARSE_JSON('{"s":"[1]"}'):s (live-verified).
+            return new RuntimeException("Failed to cast variant value " + value.toString().trim() + " to OBJECT");
         }
         return new RuntimeException("Cannot cast value to OBJECT: " + value);
     }

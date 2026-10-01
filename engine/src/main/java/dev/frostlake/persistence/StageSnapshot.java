@@ -18,6 +18,9 @@ package dev.frostlake.persistence;
 
 import java.io.Serializable;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 
 /**
  * Serializable snapshot of a stage definition. The DEFINITION is what round-trips (name, type, url,
@@ -35,4 +38,12 @@ public class StageSnapshot implements Serializable {
     public boolean encryption;
     public String comment;
     public Instant createdAt;
+
+    // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
+    public String encryptionType;
+    public boolean directoryEnabled;
+    public HashMap<String, String> fileFormatOptions;
+    public HashMap<String, String> copyOptions;
+    /** The files the directory table has registered, by stage-relative path, each with its directory row. */
+    public LinkedHashMap<String, ArrayList<Object>> directoryRegistry;
 }

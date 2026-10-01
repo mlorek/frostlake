@@ -16,9 +16,11 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
 
 import java.util.Arrays;
 import java.util.List;
@@ -48,8 +50,8 @@ public class Substring extends TextArgumentFunction {
             return BinaryValue.of(Arrays.copyOfRange(bytes, window[0], window[1]));
         }
         final String str = value.toString();
-        final int[] window = window(str.length(), start, length);
-        return str.substring(window[0], window[1]);
+        final int[] window = window(CodePointText.length(str), start, length);
+        return CodePointText.slice(str, window[0], window[1]);
     }
 
     /**
@@ -79,4 +81,13 @@ public class Substring extends TextArgumentFunction {
 
     @Override
     public int getMaxArgCount() { return 3; }
+
+    /**
+     * A BOOLEAN start or length is refused by the argument types as the call compiles, where a BOOLEAN
+     * string is read as its text: SUBSTR('abc', TRUE) is 'SUBSTR': (VARCHAR(3), BOOLEAN) (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position >= 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

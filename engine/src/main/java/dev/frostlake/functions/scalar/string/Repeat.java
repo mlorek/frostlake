@@ -50,4 +50,19 @@ public class Repeat extends TextArgumentFunction {
     public SemiStructuredRejection binaryRejection(final int position) {
         return SemiStructuredRejection.REPEAT_REWRITE_OPERANDS;
     }
+
+    /**
+     * A predicate count is judged as the product the call is planned with, '*': (BOOLEAN, NUMBER(18,0))
+     * (live-verified); a predicate string is refused as any text function refuses one.
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.REPEAT_REWRITE_OPERANDS : SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    /** A BOOLEAN count is judged as the product the call is planned with, like a predicate one (live-verified). */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.REPEAT_REWRITE_OPERANDS : SemiStructuredRejection.NONE;
+    }
 }

@@ -98,7 +98,7 @@ public class CopyUnloadStagePathTest extends BaseDatabaseTest {
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
 
         // COMPRESSION = GZIP names the file .json.gz and writes gzip bytes, as the account does.
-        final Path out = stageDir.resolve("exports/orders/full-2026-07-28/data_0_0_0.json.gz");
+        final Path out = CopyIntoLoadTest.partitionFile(stageDir.resolve("exports/orders/full-2026-07-28"), ".json.gz");
         assertTrue(Files.exists(out), "partitioned unload must write under <sub-path>/<partition-key>/");
         final String content = gunzip(out);
         logger.info("Unloaded JSON content: {}", content);

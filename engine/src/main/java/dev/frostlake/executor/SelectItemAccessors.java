@@ -16,10 +16,17 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.IntervalStringText;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlSyntaxException;
+import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.misc.Interval;
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -53,18 +60,33 @@ public final class SelectItemAccessors {
 
     /**
      * A braced star accepts only the modifiers that PICK columns — {@code EXCLUDE} and {@code ILIKE}.
-     * {@code RENAME} and {@code REPLACE} rewrite the projection and Snowflake rejects them there
-     * (live-verified: {@code {* RENAME (a AS z)}} and {@code {* REPLACE (a + 1 AS a)}} both fail, while
-     * {@code {* EXCLUDE (a)}} and {@code {* ILIKE 'a%'}} run). They stay legal on a plain {@code *}.
+     * {@code RENAME} and {@code REPLACE} rewrite the projection, and Snowflake's grammar has no place for them
+     * there: the keyword is a syntax error and so is the token after it — {@code {* REPLACE (a + 1 AS a)}} is
+     * "unexpected 'REPLACE'" then "unexpected '('", {@code {* RENAME a AS z}} "unexpected 'RENAME'" then
+     * "unexpected 'a'" (live-verified), while {@code {* EXCLUDE (a)}} and {@code {* ILIKE 'a%'}} run. They
+     * stay legal on a plain {@code *}.
      */
     private static void rejectProjectionRewritingModifiers(final FrostlakeParser.ObjectStarItemContext star) {
         for (final FrostlakeParser.StarModifierContext modifier : star.starModifier()) {
-            if (modifier.RENAME() != null || modifier.REPLACE() != null) {
-                throw new RuntimeException("SQL compilation error:\nsyntax error unexpected '"
-                    + (modifier.RENAME() != null ? "RENAME" : "REPLACE")
-                    + "'. A braced star {*} accepts only EXCLUDE and ILIKE.");
+            if (modifier.RENAME() == null && modifier.REPLACE() == null) {
+                continue;
             }
+            final ParseTree after = modifier.getChild(1);
+            final Token next = after instanceof TerminalNode ? ((TerminalNode) after).getSymbol()
+                : ((ParserRuleContext) after).getStart();
+            final List<String> lines = new ArrayList<>();
+            lines.add(unexpected(modifier.getStart()));
+            lines.add(unexpected(next));
+            final CharStream text = modifier.getStart().getInputStream();
+            throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines,
+                text.getText(Interval.of(0, text.size() - 1)));
         }
+    }
+
+    /** One syntax-error line naming a token where it was written. */
+    private static String unexpected(final Token token) {
+        final int[] shown = LeadingCommentOffset.rebase(token.getLine(), token.getCharPositionInLine());
+        return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + token.getText() + "'.";
     }
 
     public static boolean isExprItem(final FrostlakeParser.SelectItemContext item) {
@@ -74,7 +96,7 @@ public final class SelectItemAccessors {
     /**
      * Snowflake refuses to project the UNIT-LESS interval literal on its own: {@code SELECT INTERVAL
      * '1 day'} and the multi-part {@code SELECT INTERVAL '1 day, 2 hours'} both fail with "interval
-     * literal is not supported in this form" (live-verified). The UNIT-SUFFIXED spelling is a first-class
+     * literal is not supported in this form", whose detail line opens with {@code ": "} (live-verified). The UNIT-SUFFIXED spelling is a first-class
      * value and projects fine — {@code SELECT INTERVAL '1' DAY} is typed {@code INTERVAL DAY(9)}, aliases
      * fine, and {@code TO_VARCHAR} of it is {@code +1} — so only {@code IntervalStringExpr} is rejected
      * here, never {@code IntervalExpr}.
@@ -88,9 +110,14 @@ public final class SelectItemAccessors {
             return;
         }
         for (final FrostlakeParser.SelectItemContext item : selectList.selectItem()) {
-            if (getItemValueExpr(item) instanceof FrostlakeParser.IntervalStringExprContext) {
+            final ParserRuleContext value = getItemValueExpr(item);
+            if (value instanceof FrostlakeParser.IntervalStringExprContext) {
+                // The literal's text is read first: one that does not read is refused as such, at its own
+                // token, ahead of this sentence (live-verified).
+                IntervalStringText.chain(SqlStringLiterals.decode(
+                    ((FrostlakeParser.IntervalStringExprContext) value).STRING_LITERAL().getText()));
                 throw new RuntimeException(SqlCompilationError.at(0, -1,
-                    "interval literal is not supported in this form."));
+                    ": interval literal is not supported in this form."));
             }
         }
     }
@@ -137,6 +164,22 @@ public final class SelectItemAccessors {
             current = inner;
         }
         return current;
+    }
+
+    /**
+     * Whether a select item's value is, under any wrapping parentheses, a sequence read: a reference of two or
+     * more parts whose last is {@code NEXTVAL}. Unaliased it is named after that pseudo-column however it is
+     * qualified or spaced — {@code SELECT s1.nextval}, {@code SELECT "q""x".nextval}, {@code SELECT (s1.nextval)}
+     * and {@code SELECT s1 . nextval} all come back labelled NEXTVAL (live-verified).
+     */
+    public static boolean isSequenceRead(final FrostlakeParser.ExpressionContext value) {
+        final FrostlakeParser.ExpressionContext simple = value == null ? null : unwrapParens(value);
+        if (!(simple instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return false;
+        }
+        final String[] parts = ParseTreeText.qualifiedNameParts(
+            ((FrostlakeParser.QualifiedNameExprContext) simple).qualifiedName());
+        return parts.length > 1 && "NEXTVAL".equalsIgnoreCase(parts[parts.length - 1]);
     }
 
     /**
@@ -199,6 +242,24 @@ public final class SelectItemAccessors {
     }
 
     /**
+     * The expressions a plain or qualified star's REPLACE substitutes, in the order written — the SELECT list's
+     * own names, which live resolves where they stand: {@code SELECT * REPLACE (nosuch AS id), nosuch2} refuses
+     * NOSUCH at its own position first. Empty for any other item.
+     */
+    public static List<ParserRuleContext> getStarReplaceExpressions(final FrostlakeParser.SelectItemContext item) {
+        if (!isStarItem(item) && !isQualifiedStarItem(item)) {
+            return Collections.emptyList();
+        }
+        final List<ParserRuleContext> replaced = new ArrayList<>();
+        for (final FrostlakeParser.StarModifierContext modifier : getStarModifiers(item)) {
+            for (final FrostlakeParser.StarReplaceItemContext replace : modifier.starReplaceItem()) {
+                replaced.add(replace.expression());
+            }
+        }
+        return replaced;
+    }
+
+    /**
      * The modifiers come in ONE fixed sequence — ILIKE-or-EXCLUDE (mutually exclusive), then
      * REPLACE, then RENAME, each at most once. Anything out of order, repeated, or combining ILIKE
      * with EXCLUDE is a syntax error at the offending keyword, live-verified cell by cell
@@ -222,6 +283,51 @@ public final class SelectItemAccessors {
     }
 
     /** Returns qualifier for the {@code t.*} / {@code {t.*}} forms, or null for a bare star. */
+    /**
+     * A qualified star's qualifier by its canonical parts, quotes read: {@code "fz".*} is {@code fz}, {@code fz.*} is
+     * {@code FZ}; null for an item that is no qualified star.
+     */
+    public static String[] getItemQualifierParts(final FrostlakeParser.SelectItemContext item) {
+        final FrostlakeParser.StarQualifiedNameContext qualifier = item instanceof FrostlakeParser.QualifiedStarItemContext
+            ? ((FrostlakeParser.QualifiedStarItemContext) item).starQualifiedName()
+            : item instanceof FrostlakeParser.ObjectStarItemContext
+                ? ((FrostlakeParser.ObjectStarItemContext) item).starQualifiedName() : null;
+        return qualifier == null ? null : ParseTreeText.qualifiedNameParts(qualifier);
+    }
+
+    /**
+     * A qualified star's qualifier spelled back from its canonical parts as SQL text that reads as the same
+     * relation again: {@code "fz"}, {@code FZ}, {@code DB.PUBLIC."x y"}, {@code "a""b"}; null for an item that
+     * is no qualified star.
+     */
+    public static String getItemQualifierSpelled(final FrostlakeParser.SelectItemContext item) {
+        final String[] parts = getItemQualifierParts(item);
+        if (parts == null) {
+            return null;
+        }
+        final StringBuilder spelled = new StringBuilder();
+        for (final String part : parts) {
+            spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonicalEscaped(part));
+        }
+        return spelled.toString();
+    }
+
+    /**
+     * A qualified star's qualifier as a refusal echoes it: {@link #getItemQualifierSpelled} with a quote a part
+     * holds printed once, {@code "a"b"}; null for an item that is no qualified star.
+     */
+    public static String getItemQualifierEchoed(final FrostlakeParser.SelectItemContext item) {
+        final String[] parts = getItemQualifierParts(item);
+        if (parts == null) {
+            return null;
+        }
+        final StringBuilder spelled = new StringBuilder();
+        for (final String part : parts) {
+            spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+        }
+        return spelled.toString();
+    }
+
     public static String getItemQualifier(final FrostlakeParser.SelectItemContext item) {
         if (item instanceof FrostlakeParser.QualifiedStarItemContext)
             return ParseTreeText.writtenText(((FrostlakeParser.QualifiedStarItemContext) item).starQualifiedName());
@@ -246,7 +352,15 @@ public final class SelectItemAccessors {
         }
         final StringBuilder label = new StringBuilder("{");
         if (star.starQualifiedName() != null) {
-            label.append(ParseTreeText.getQualifiedName(star.starQualifiedName())).append('.');
+            // The qualifier as written, unquoted parts upper-cased and quoted ones kept whole: {"FZ".*} (live-verified).
+            final List<ParseTree> parts = new ArrayList<>();
+            parts.add(star.starQualifiedName().nameStartPart());
+            parts.addAll(star.starQualifiedName().namePart());
+            for (int i = 0; i < parts.size(); i++) {
+                final String written = parts.get(i).getText();
+                label.append(i > 0 ? "." : "").append(written.startsWith("\"") ? written : written.toUpperCase());
+            }
+            label.append('.');
         }
         label.append('*');
         for (final FrostlakeParser.StarModifierContext modifier : star.starModifier()) {
@@ -255,20 +369,30 @@ public final class SelectItemAccessors {
         return label.append('}').toString();
     }
 
+    /** An excluded column's name, whichever word wrote it — DEFAULT reaches this list and no other. */
+    public static String excludedName(final FrostlakeParser.ExcludedColumnContext excluded) {
+        return excluded.identifier() != null ? ParseTreeText.getIdentifier(excluded.identifier())
+            : excluded.getText().toUpperCase(java.util.Locale.ROOT);
+    }
+
     /** One star modifier rendered back in Snowflake's echoed form, identifiers canonicalised. */
     private static String starModifierLabel(final FrostlakeParser.StarModifierContext modifier) {
         if (modifier.ILIKE() != null) {
             return "ILIKE " + modifier.STRING_LITERAL().getText();
         }
         if (modifier.EXCLUDE() != null) {
-            final StringBuilder excluded = new StringBuilder("EXCLUDE (");
-            for (int i = 0; i < modifier.identifier().size(); i++) {
+            // The account echoes the modifier AS WRITTEN: a bare list stays bare, a parenthesised one
+            // keeps its parentheses. A client reading the column by name misses it otherwise.
+            final boolean parenthesised = modifier.LPAREN() != null;
+            final StringBuilder excluded = new StringBuilder("EXCLUDE ");
+            excluded.append(parenthesised ? "(" : "");
+            for (int i = 0; i < modifier.excludedColumn().size(); i++) {
                 if (i > 0) {
                     excluded.append(", ");
                 }
-                excluded.append(ParseTreeText.getIdentifier(modifier.identifier(i)));
+                excluded.append(excludedName(modifier.excludedColumn(i)));
             }
-            return excluded.append(')').toString();
+            return excluded.append(parenthesised ? ")" : "").toString();
         }
         if (modifier.RENAME() != null) {
             final StringBuilder renamed = new StringBuilder("RENAME (");

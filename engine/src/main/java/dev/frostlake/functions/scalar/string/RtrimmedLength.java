@@ -16,8 +16,10 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.IntegerResultWidths;
+import dev.frostlake.values.CodePointText;
 import java.util.List;
 
 /** RTRIMMED_LENGTH(s) — the length of the string without trailing blanks. */
@@ -32,11 +34,17 @@ public class RtrimmedLength extends TextArgumentFunction {
         while (end > 0 && s.charAt(end - 1) == ' ') {
             end--;
         }
-        return (long) end;
+        return (long) CodePointText.characterIndex(s, end);
     }
 
     @Override
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 1; }
+
+    /** A BINARY is no text here: the account refuses it by the argument types, as 'RTRIM' (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

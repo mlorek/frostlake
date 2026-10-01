@@ -39,7 +39,7 @@
     {
       "name": "information-schema-has-system-views",
       "steps": [
-        {"sql": "SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 62}}
+        {"sql": "SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 63}}
       ]
     },
     {

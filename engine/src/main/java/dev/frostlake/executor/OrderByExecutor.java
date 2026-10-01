@@ -20,12 +20,18 @@ import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.CollatedKey;
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.ColumnReferenceCollectWalk;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.SortKeyRole;
+import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
+import dev.frostlake.executor.operators.Operator;
+import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -57,12 +63,18 @@ final class OrderByExecutor {
         this.executor = executor;
     }
 
-    List<Row> orderBy(final List<Row> rows, final Table table, final FrostlakeParser.SelectStatementContext ctx,
-                      final Map<String, Table> aliasToTable, final List<Table> allTables) {
+    /**
+     * The ORDER BY stage over the FROM-shaped rows: the keys are resolved and judged here, while planning,
+     * and the sort itself runs when the pipeline reaches the stage.
+     */
+    Operator planOrderBy(final Table table, final FrostlakeParser.SelectStatementContext ctx,
+                         final Map<String, Table> aliasToTable, final List<Table> allTables) {
         // Parse order items
         final List<String> orderColumns = new ArrayList<>();
         final List<Boolean> ascending = new ArrayList<>();
         final List<Boolean> nullsFirst = new ArrayList<>();
+        // Where each key written as itself begins, so a refusal its evaluation raises is placed in the statement.
+        final List<SourcePosition> keyOrigins = new ArrayList<>();
 
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
             // Resolve the ORDER BY key to text we can evaluate per row: a positional ordinal → the N-th
@@ -75,66 +87,92 @@ final class OrderByExecutor {
             // unaffected by spacing.)
             String colName = resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), ctx,
                 table, aliasToTable);
-            colName = resolveOrderAlias(colName, ctx);
+            colName = resolveOrderAlias(colName, ctx, table, aliasToTable);
             orderColumns.add(colName);
+            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(item.expression()))
+                ? new SourcePosition(item.expression().getStart().getLine(),
+                    item.expression().getStart().getCharPositionInLine())
+                : null);
             ascending.add(item.DESC() == null); // Default is ASC
             nullsFirst.add(ValueComparisons.nullsFirstFlag(item));
         }
 
-        rejectFileSortKeys(orderColumns, table, aliasToTable, allTables);
+        rejectFileSortKeys(orderColumns, keyOrigins, table, aliasToTable, allTables);
         validateOrderKeyScope(ctx, table, aliasToTable, allTables);
-
-        if (rows.size() <= 1) {
-            return rows; // nothing to compare; also avoids resolving keys for a degenerate result
+        // A key holding a subquery raises what the subquery raises as it is evaluated — its own compilation
+        // refusal, or a row-time fault such as a second row — not an unresolvable key: the key's own names
+        // were settled above.
+        final boolean[] keyHoldsSubquery = new boolean[orderColumns.size()];
+        for (int i = 0; i < orderColumns.size(); i++) {
+            keyHoldsSubquery[i] = holdsSubquery(orderColumns.get(i));
         }
 
-        // Decorate-sort-undecorate: resolve each row's sort-key vector exactly ONCE (the old comparator
-        // re-resolved every column — string parse + alias scan — for both operands on every comparison,
-        // i.e. O(n log n) resolutions; this is O(n)).
-        final int keyCount = orderColumns.size();
-        final Object[][] sortKeys = new Object[rows.size()][keyCount];
-        // Per-key resolution PLAN, learned once on the first row — a key's kind is row-invariant,
-        // so later rows skip the throw-and-fall-through chain (two exception constructions plus a
-        // fresh evaluator per row-and-key on the expression path).
-        final int[] keyKind = new int[keyCount];
-        final int[] keyIndex = new int[keyCount];
-        final ExpressionEvaluator[] keyEvaluator = new ExpressionEvaluator[keyCount];
-        // A key that carries a collation sorts under it, not by code point.
-        final CollationSpec[] keyRules = keyCollations(orderColumns, table, aliasToTable, allTables);
-        for (int r = 0; r < rows.size(); r++) {
-            final Row row = rows.get(r);
-            for (int i = 0; i < keyCount; i++) {
-                sortKeys[r][i] = CollatedKey.of(resolveOrderValuePlanned(row, orderColumns.get(i), table,
-                    aliasToTable, allTables, keyKind, keyIndex, keyEvaluator, i), keyRules[i]);
-            }
-        }
-
-        // Sort an index array against the precomputed keys (TimSort is stable, so equal keys keep their
-        // original order — identical to the previous rows.sort), then rebuild the list.
-        final Integer[] order = new Integer[rows.size()];
-        for (int i = 0; i < order.length; i++) {
-            order[i] = i;
-        }
-        Arrays.sort(order, new Comparator<Integer>() {
+        return new StageOperator("ORDER BY[" + String.join(", ", orderColumns) + "]") {
             @Override
-            public int compare(final Integer a, final Integer b) {
-                for (int i = 0; i < keyCount; i++) {
-                    final int cmp = ValueComparisons.compareOrderKey(sortKeys[a][i], sortKeys[b][i], ascending.get(i), nullsFirst.get(i));
-                    if (cmp != 0) {
-                        return cmp;
+            protected List<Row> apply(final List<Row> rows) {
+                if (rows.size() <= 1) {
+                    return rows; // nothing to compare; also avoids resolving keys for a degenerate result
+                }
+
+                // Decorate-sort-undecorate: resolve each row's sort-key vector exactly ONCE (the old comparator
+                // re-resolved every column — string parse + alias scan — for both operands on every comparison,
+                // i.e. O(n log n) resolutions; this is O(n)).
+                final int keyCount = orderColumns.size();
+                final Object[][] sortKeys = new Object[rows.size()][keyCount];
+                // Per-key resolution PLAN, learned once on the first row — a key's kind is row-invariant,
+                // so later rows skip the throw-and-fall-through chain (two exception constructions plus a
+                // fresh evaluator per row-and-key on the expression path).
+                final int[] keyKind = new int[keyCount];
+                final int[] keyIndex = new int[keyCount];
+                final ExpressionEvaluator[] keyEvaluator = new ExpressionEvaluator[keyCount];
+                // A key that carries a collation sorts under it, not by code point.
+                final CollationSpec[] keyRules = keyCollations(orderColumns, table, aliasToTable, allTables);
+                for (int r = 0; r < rows.size(); r++) {
+                    final Row row = rows.get(r);
+                    for (int i = 0; i < keyCount; i++) {
+                        final SourcePosition displaced = keyOrigins.get(i) == null ? null
+                            : ExpressionSource.beginNested(keyOrigins.get(i));
+                        try {
+                            // Sorting reads each key, so a cell a relation deferred raises its fault here.
+                            sortKeys[r][i] = CollatedKey.of(DeferredFault.read(resolveOrderValuePlanned(row, orderColumns.get(i),
+                                table, aliasToTable, allTables, keyKind, keyIndex, keyEvaluator, i,
+                                keyHoldsSubquery[i])), keyRules[i]);
+                        } finally {
+                            if (keyOrigins.get(i) != null) {
+                                ExpressionSource.end(displaced);
+                            }
+                        }
                     }
                 }
-                return 0;
-            }
-        });
 
-        final List<Row> sorted = new ArrayList<>(rows.size());
-        for (int i = 0; i < order.length; i++) {
-            sorted.add(rows.get(order[i]));
-        }
-        rows.clear();
-        rows.addAll(sorted);
-        return rows;
+                // Sort an index array against the precomputed keys (TimSort is stable, so equal keys keep their
+                // original order — identical to the previous rows.sort), then rebuild the list.
+                final Integer[] order = new Integer[rows.size()];
+                for (int i = 0; i < order.length; i++) {
+                    order[i] = i;
+                }
+                Arrays.sort(order, new Comparator<Integer>() {
+                    @Override
+                    public int compare(final Integer a, final Integer b) {
+                        for (int i = 0; i < keyCount; i++) {
+                            final int cmp = ValueComparisons.compareOrderKey(sortKeys[a][i], sortKeys[b][i], ascending.get(i), nullsFirst.get(i));
+                            if (cmp != 0) {
+                                return cmp;
+                            }
+                        }
+                        return 0;
+                    }
+                });
+
+                final List<Row> sorted = new ArrayList<>(rows.size());
+                for (int i = 0; i < order.length; i++) {
+                    sorted.add(rows.get(order[i]));
+                }
+                rows.clear();
+                rows.addAll(sorted);
+                return rows;
+            }
+        };
     }
 
     /**
@@ -166,15 +204,25 @@ final class OrderByExecutor {
      * the single-row short circuit: the rejection is a compile-time one live, so it must not depend on
      * how many rows came back.
      */
-    private void rejectFileSortKeys(final List<String> orderColumns, final Table table,
-                                    final Map<String, Table> aliasToTable, final List<Table> allTables) {
+    private void rejectFileSortKeys(final List<String> orderColumns, final List<SourcePosition> keyOrigins,
+                                    final Table table, final Map<String, Table> aliasToTable,
+                                    final List<Table> allTables) {
         final ExpressionEvaluator keyChecker = new ExpressionEvaluator(table,
             executor.getFunctionRegistry(), executor.getCatalog(), executor);
         if (allTables != null) {
             keyChecker.setMultiTableContext(aliasToTable, allTables);
         }
-        for (final String key : orderColumns) {
-            keyChecker.validateKey(ExpressionEvaluator.parse(key), SortKeyRole.ORDER_BY);
+        for (int i = 0; i < orderColumns.size(); i++) {
+            // Typing a key judges what it holds, so a key written as itself places a refusal in the statement.
+            final SourcePosition origin = keyOrigins.get(i);
+            final SourcePosition displaced = origin == null ? null : ExpressionSource.beginNested(origin);
+            try {
+                keyChecker.validateKey(ExpressionEvaluator.parse(orderColumns.get(i)), SortKeyRole.ORDER_BY);
+            } finally {
+                if (origin != null) {
+                    ExpressionSource.end(displaced);
+                }
+            }
         }
     }
 
@@ -191,6 +239,26 @@ final class OrderByExecutor {
      */
     void validateOrderKeyScope(final FrostlakeParser.SelectStatementContext ctx, final Table table,
                                        final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        validateOrderKeys(ctx, table, aliasToTable, allTables, false);
+    }
+
+    /**
+     * {@link #validateOrderKeyScope} narrowed to the keys' column references, for a caller that raises a refusal
+     * of another clause's types ahead of theirs.
+     *
+     * @param ctx          the statement, with its ORDER BY
+     * @param table        the query's relation
+     * @param aliasToTable its relations by the name the query gives each
+     * @param allTables    every relation in scope
+     */
+    void validateOrderKeyNames(final FrostlakeParser.SelectStatementContext ctx, final Table table,
+                               final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        validateOrderKeys(ctx, table, aliasToTable, allTables, true);
+    }
+
+    private void validateOrderKeys(final FrostlakeParser.SelectStatementContext ctx, final Table table,
+                                   final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                   final boolean namesOnly) {
         if (ctx.selectOperand().size() > 1) {
             return;
         }
@@ -223,6 +291,12 @@ final class OrderByExecutor {
             if (SelectItemAccessors.isStarItem(item) || SelectItemAccessors.isQualifiedStarItem(item)) {
                 for (final StarColumn column : executor.starItemColumns(item, table, aliasToTable)) {
                     echoedBare.add(column.getOutputName().toUpperCase());
+                    if (column.isReplaced()) {
+                        // A REPLACE'd column keeps the source column's name while carrying an
+                        // expression of its own, so the name is an OUTPUT name here — even where the
+                        // source column it shadows is ambiguous across the join.
+                        outputNames.add(column.getOutputName().toUpperCase());
+                    }
                 }
             }
         }
@@ -240,6 +314,11 @@ final class OrderByExecutor {
             if (outputNames.contains(asWritten.toUpperCase())) {
                 continue;
             }
+            if (namesOnly) {
+                executor.validateClauseColumnScope(asWritten, table, aliasToTable, allTables, outputNames,
+                    item.expression());
+                continue;
+            }
             executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames,
                 item.expression(), echoedBare);
         }
@@ -254,7 +333,8 @@ final class OrderByExecutor {
     private Object resolveOrderValuePlanned(final Row row, final String colName, final Table table,
                                             final Map<String, Table> aliasToTable, final List<Table> allTables,
                                             final int[] keyKind, final int[] keyIndex,
-                                            final ExpressionEvaluator[] keyEvaluator, final int i) {
+                                            final ExpressionEvaluator[] keyEvaluator, final int i,
+                                            final boolean holdsSubquery) {
         switch (keyKind[i]) {
             case 1:
                 try {
@@ -263,7 +343,7 @@ final class OrderByExecutor {
                 } catch (final InvalidQualifierException invalidQualifier) {
                     throw invalidQualifier;
                 } catch (final Exception rowSpecificMiss) {
-                    return resolveOrderValue(row, colName, table, aliasToTable, allTables);
+                    return resolveOrderValue(row, colName, table, aliasToTable, allTables, holdsSubquery);
                 }
             case 2:
                 return row.getValue(keyIndex[i]);
@@ -273,7 +353,7 @@ final class OrderByExecutor {
                 } catch (final UnsupportedSubqueryException unsupported) {
                     throw unsupported;
                 } catch (final Exception e3) {
-                    throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName), e3);
+                    throw unresolvableKey(colName, e3, holdsSubquery);
                 }
             default:
                 break;
@@ -287,15 +367,14 @@ final class OrderByExecutor {
         } catch (final InvalidQualifierException invalidQualifier) {
             throw invalidQualifier;
         } catch (final Exception notAQualifiedColumn) {
-            final int colIndex = table != null ? ValueComparisons.findColumnIndex(table, colName) : -1;
+            final int colIndex = table != null ? ValueComparisons.findWrittenColumnIndex(table, colName) : -1;
             if (colIndex >= 0) {
                 keyKind[i] = 2;
                 keyIndex[i] = colIndex;
                 return row.getValue(colIndex);
             }
             try {
-                final ExpressionEvaluator evaluator =
-                    new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
+                final ExpressionEvaluator evaluator = keyEvaluator(colName, table, aliasToTable, allTables);
                 final Object value = evaluator.evaluate(colName, row);
                 keyKind[i] = 3;
                 keyEvaluator[i] = evaluator;
@@ -303,8 +382,60 @@ final class OrderByExecutor {
             } catch (final UnsupportedSubqueryException unsupported) {
                 throw unsupported;
             } catch (final Exception e3) {
-                throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName), e3);
+                throw unresolvableKey(colName, e3, holdsSubquery);
             }
+        }
+    }
+
+    /**
+     * What a key's failed evaluation raises: a fault a relation deferred, or anything a subquery in the key
+     * raised, as it is; otherwise the key as an identifier nothing resolves.
+     */
+    private static RuntimeException unresolvableKey(final String colName, final Exception failure,
+                                                    final boolean holdsSubquery) {
+        if (DeferredFault.isHeld(failure) || (holdsSubquery && failure instanceof RuntimeException)) {
+            return (RuntimeException) failure;
+        }
+        return new RuntimeException(SqlCompilationError.invalidIdentifier(colName), failure);
+    }
+
+    /**
+     * The evaluator of a key that names no plain column. A key reading a position ({@code $n}, {@code t.$n})
+     * reads it through the FROM clause's relations, as the select list does: over a join, {@code $2} is the
+     * second column of the one relation wide enough, not the combined row's second value.
+     */
+    private ExpressionEvaluator keyEvaluator(final String colName, final Table table,
+                                             final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final ExpressionEvaluator evaluator =
+            new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        if (allTables != null && allTables.size() > 1 && readsPosition(colName)) {
+            evaluator.setMultiTableContext(aliasToTable, allTables);
+        }
+        return evaluator;
+    }
+
+    /** Whether a key's text reads a position of the row it sorts; a key that does not parse reads none. */
+    private static boolean readsPosition(final String keyText) {
+        final ColumnReferenceCollectWalk walk = new ColumnReferenceCollectWalk();
+        try {
+            ExpressionEvaluator.parse(keyText).accept(walk);
+        } catch (final RuntimeException unparseable) {
+            return false;
+        }
+        for (final ColumnReferenceExpression reference : walk.references()) {
+            if (reference.getPositionalOrdinal() > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a key's text holds a subquery; a key that does not parse holds none. */
+    private static boolean holdsSubquery(final String keyText) {
+        try {
+            return SubqueryExpression.occursIn(ExpressionEvaluator.parse(keyText));
+        } catch (final RuntimeException unparseable) {
+            return false;
         }
     }
 
@@ -313,7 +444,8 @@ final class OrderByExecutor {
      * (table.column / alias.column), else a bare column-index lookup, else a "column not found" error.
      */
     private Object resolveOrderValue(final Row row, final String colName, final Table table,
-                                     final Map<String, Table> aliasToTable, final List<Table> allTables) {
+                                     final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                     final boolean holdsSubquery) {
         try {
             return executor.getQualifiedColumnValueFromTables(row, allTables, aliasToTable, colName,
                 table != null ? table.getJoinKeyNames() : null);
@@ -323,27 +455,26 @@ final class OrderByExecutor {
             throw invalidQualifier;
         } catch (final Exception e) {
             try {
-                final int colIndex = ValueComparisons.getColumnIndex(table, colName);
+                final int colIndex = ValueComparisons.getWrittenColumnIndex(table, colName);
                 return row.getValue(colIndex);
             } catch (final Exception e2) {
                 // Not a plain column: evaluate as an expression against the row so ORDER BY can sort by an
                 // arbitrary expression or function (e.g. ORDER BY a+b, ABS(a)) — Snowflake allows any
                 // expression over the in-scope tables as a sort key.
                 try {
-                    final ExpressionEvaluator evaluator =
-                        new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
-                    return evaluator.evaluate(colName, row);
+                    return keyEvaluator(colName, table, aliasToTable, allTables).evaluate(colName, row);
                 } catch (final UnsupportedSubqueryException unsupported) {
                     throw unsupported;
                 } catch (final Exception e3) {
-                    throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName), e3);
+                    throw unresolvableKey(colName, e3, holdsSubquery);
                 }
             }
         }
     }
 
     /** ORDER BY by a SELECT alias → that item's expression text, so it can be evaluated per row. */
-    private String resolveOrderAlias(final String text, final FrostlakeParser.SelectStatementContext ctx) {
+    private String resolveOrderAlias(final String text, final FrostlakeParser.SelectStatementContext ctx,
+                                     final Table table, final Map<String, Table> aliasToTable) {
         final FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
         final FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
             ? firstOp.selectClause()
@@ -358,6 +489,36 @@ final class OrderByExecutor {
                 final ParserRuleContext e = SelectItemAccessors.getItemExpression(item);
                 if (e != null) {
                     return ParseTreeText.getOriginalText(e);
+                }
+            }
+        }
+        return resolveStarOutputName(text, firstClause, table, aliasToTable);
+    }
+
+    /**
+     * ORDER BY by the OUTPUT name of a star's column, where the star's REPLACE or RENAME gave that column
+     * an expression of its own: {@code SELECT * REPLACE (id * -1 AS id) … ORDER BY id} sorts by the
+     * REPLACED value, and {@code SELECT * RENAME (id AS k) … ORDER BY k} sorts by the renamed column —
+     * each exactly as a written alias would. The star's output name wins over a source column of the same
+     * name, and over an ambiguous one across a join, since it names an output rather than a relation.
+     * A column the star passes through unchanged is not answered here, so it resolves against the
+     * relation as before; a qualified key ({@code ORDER BY fz.id}) names the source column and is left
+     * alone, as live leaves it.
+     */
+    private String resolveStarOutputName(final String text, final FrostlakeParser.SelectClauseContext clause,
+                                         final Table table, final Map<String, Table> aliasToTable) {
+        final String wanted = SqlIdentifiers.canonicalText(text);
+        if (table == null || wanted == null) {
+            return text;
+        }
+        for (final FrostlakeParser.SelectItemContext item : clause.selectList().selectItem()) {
+            if (SelectItemAccessors.getStarModifiers(item).isEmpty()
+                    || SelectItemAccessors.isObjectStarItem(item)) {
+                continue;
+            }
+            for (final StarColumn column : executor.starItemColumns(item, table, aliasToTable)) {
+                if ((column.isReplaced() || column.isRenamed()) && column.getOutputName().equals(wanted)) {
+                    return column.getExpression();
                 }
             }
         }
@@ -394,8 +555,8 @@ final class OrderByExecutor {
 
     /**
      * ORDER BY &lt;n&gt; positional reference, resolved to the N-th SELECT item's expression text. A
-     * position past the select list is REFUSED with live's sentence, which echoes the literal exactly
-     * as written — {@code [9.5]}, not the 9 it truncates to.
+     * position past the select list is REFUSED with live's sentence, which echoes the value the
+     * literal FOLDS to — {@code [9.5]}, not the 9 it truncates to, and {@code [10]} for {@code 1e1}.
      *
      * <p>A star item makes the width depend on the relation, so the check needs it: with no relation
      * to expand against the range check is skipped rather than guessed, and the caller that DOES have
@@ -421,7 +582,7 @@ final class OrderByExecutor {
         }
         if (position < 1 || position > projected.size()) {
             throw new RuntimeException(SqlCompilationError.of(
-                "[" + text.trim() + "] is not a valid order by expression"));
+                "[" + OrdinalLiteral.echo(text) + "] is not a valid order by expression"));
         }
         return projected.get((int) position - 1);
     }
@@ -567,8 +728,8 @@ final class OrderByExecutor {
         for (int r = 0; r < rows.size(); r++) {
             final Object[] rowKeys = new Object[nKeys];
             for (int k = 0; k < nKeys; k++) {
-                rowKeys[k] = CollatedKey.of(colIndex[k] >= 0 ? rows.get(r).getValue(colIndex[k])
-                    : resolver.resolve(r, items.get(k)), keyRules[k]);
+                rowKeys[k] = CollatedKey.of(DeferredFault.read(colIndex[k] >= 0 ? rows.get(r).getValue(colIndex[k])
+                    : resolver.resolve(r, items.get(k))), keyRules[k]);
             }
             keys.add(rowKeys);
         }
@@ -627,9 +788,11 @@ final class OrderByExecutor {
         final Set<String> groupKeyTexts = new HashSet<>();
         final Set<String> groupKeyNames = new HashSet<>();
         final FrostlakeParser.GroupByClauseContext groupBy = selectCtx.groupByClause();
-        collectGroupKeys(groupBy, groupKeyTexts, groupKeyNames);
+        final GroupedKeyColumns groupedColumns = new GroupedKeyColumns(table, aliasToTable, allTables, selectCtx);
+        collectGroupKeys(groupBy, groupKeyTexts, groupKeyNames, groupedColumns);
 
         for (final FrostlakeParser.OrderItemContext item : stmtCtx.orderByClause().orderItem()) {
+            rejectCaseVariantOrderKey(item, selectItems, groupBy, table, allTables);
             if (matchOrderItem(item.expression().getText(), selectItems, false) >= 0) {
                 continue;
             }
@@ -642,8 +805,140 @@ final class OrderByExecutor {
                 item.expression());
             if (groupBy != null && groupBy.ALL() == null) {
                 rejectUngroupedOrderReference(ExpressionEvaluator.parse(asWritten), table, allTables,
-                    outputNames, groupKeyNames);
+                    outputNames, groupKeyNames, groupedColumns);
             }
+        }
+    }
+
+    /**
+     * A grouped query's ORDER BY key naming a column that has a case variant beside it: the key matches an output
+     * column or a grouping key only when spelled exactly as it resolves, so {@code SELECT "x" … GROUP BY "x"
+     * ORDER BY X} is "[CV.X] is not a valid order by expression" (live-verified).
+     */
+    private void rejectCaseVariantOrderKey(final FrostlakeParser.OrderItemContext item,
+                                           final List<FrostlakeParser.SelectItemContext> selectItems,
+                                           final FrostlakeParser.GroupByClauseContext groupBy, final Table table,
+                                           final List<Table> allTables) {
+        final Expression key;
+        try {
+            key = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(item.expression()).trim());
+        } catch (final RuntimeException unparsed) {
+            return;
+        }
+        if (!(key instanceof ColumnReferenceExpression) || groupBy == null || groupBy.ALL() != null) {
+            return;
+        }
+        final ColumnReferenceExpression ref = (ColumnReferenceExpression) key;
+        final String exact = ref.getColumnName();
+        if (!CaseVariantColumns.present(table, allTables, exact)) {
+            return;
+        }
+        for (final FrostlakeParser.SelectItemContext selectItem : selectItems) {
+            final String alias = SelectItemAccessors.getItemAlias(selectItem);
+            final String produced = alias != null ? alias : producedColumnName(selectItem);
+            if (exact.equals(produced)) {
+                return;
+            }
+        }
+        for (final FrostlakeParser.GroupByElementContext element : groupBy.groupByElement()) {
+            try {
+                final Expression grouped = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(element).trim());
+                if (grouped instanceof ColumnReferenceExpression
+                        && exact.equals(((ColumnReferenceExpression) grouped).getColumnName())) {
+                    return;
+                }
+            } catch (final RuntimeException unparsed) {
+                // not a column key
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.of("[" + ownerQualifier(ref, table, allTables) + "."
+            + SqlIdentifiers.spellCanonicalEscaped(exact) + "] is not a valid order by expression"));
+    }
+
+    /**
+     * A GROUPED or DISTINCT query's ORDER BY may hold no subquery at all — correlated or not. Live refuses
+     * the key by re-printing the subquery from its plan: {@code [(SELECT MAX(G.V) AS "MAX(V)" FROM G AS G)]
+     * is not a valid order by expression}, where the same key over an ungrouped query is answered, and a
+     * key that names the subquery through the select list's alias or by its ordinal stays legal. A query
+     * that groups only implicitly ({@code SELECT MAX(id) FROM fz ORDER BY (SELECT …)}) is answered too
+     * (live-verified).
+     *
+     * <p>A subquery an aggregate call takes as its argument is computed with the aggregate, row by row, and is
+     * not a key of its own: {@code ORDER BY MAX((SELECT MAX(v) FROM g))} is answered, and a correlated one is
+     * judged as the correlation rules judge it ({@code MAX((SELECT MAX(fz.id + g.v) FROM g))} is an unsupported
+     * subquery). {@code ABS((SELECT …))} and {@code (SELECT …) + 1} are refused here, and so is a key holding
+     * such a subquery beside an aggregated one, whichever comes first (live-verified).
+     *
+     * @param stmtCtx      the statement, whose ORDER BY is judged
+     * @param selectCtx    its select clause
+     * @param table        the relation the query reads
+     * @param aliasToTable its FROM-clause keys
+     * @param allTables    every relation in scope
+     */
+    void rejectSubqueryInGroupedOrderKey(final FrostlakeParser.SelectStatementContext stmtCtx,
+                                         final FrostlakeParser.SelectClauseContext selectCtx,
+                                         final Table table, final Map<String, Table> aliasToTable,
+                                         final List<Table> allTables) {
+        if (stmtCtx.orderByClause() == null || stmtCtx.selectOperand().size() > 1
+                || selectCtx.groupByClause() == null && selectCtx.DISTINCT() == null) {
+            return;
+        }
+        for (final FrostlakeParser.OrderItemContext item : stmtCtx.orderByClause().orderItem()) {
+            final ParserRuleContext subquery = firstUnaggregatedSubqueryIn(item.expression());
+            if (subquery != null) {
+                throw new RuntimeException(SqlCompilationError.of("[" + plannedSubquery(subquery, table,
+                    aliasToTable, allTables) + "] is not a valid order by expression"));
+            }
+        }
+    }
+
+    /**
+     * The first subquery a key holds outside every aggregate call, outermost first, or null when it holds
+     * none: a parenthesised one, or the argument a call takes as a subquery written without parentheses,
+     * {@code ABS(SELECT …)}. A window call is no aggregate here: it is judged whole as a key.
+     */
+    private ParserRuleContext firstUnaggregatedSubqueryIn(final ParseTree node) {
+        if (node instanceof FrostlakeParser.ScalarSubqueryExprContext) {
+            return (FrostlakeParser.ScalarSubqueryExprContext) node;
+        }
+        if (node instanceof FrostlakeParser.FunctionArgContext
+                && ((FrostlakeParser.FunctionArgContext) node).selectStatement() != null) {
+            return (FrostlakeParser.FunctionArgContext) node;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext
+                && ((FrostlakeParser.FunctionCallExprContext) node).overClause() == null
+                && executor.getFunctionRegistry().hasAggregateFunction(
+                    ((FrostlakeParser.FunctionCallExprContext) node).functionName().getText())) {
+            return null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final ParserRuleContext found = firstUnaggregatedSubqueryIn(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /** The subquery re-printed from its plan, as the refusal echoes it; its written text where the shape
+     *  is not modelled. */
+    private String plannedSubquery(final ParserRuleContext subquery, final Table table,
+                                   final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final String written = ParseTreeText.getOriginalText(subquery);
+        try {
+            final ExpressionEvaluator printer = new ExpressionEvaluator(table,
+                executor.getFunctionRegistry(), executor.getCatalog(), executor);
+            if (allTables != null && !allTables.isEmpty()) {
+                printer.setMultiTableContext(aliasToTable, allTables);
+            }
+            final Expression parsed = subquery instanceof FrostlakeParser.FunctionArgContext
+                ? new SubqueryExpression(ParseTreeText.getOriginalText(
+                    ((FrostlakeParser.FunctionArgContext) subquery).selectStatement()))
+                : ExpressionEvaluator.parse(written);
+            final String printed = printer.plannedText(parsed);
+            return printed == null ? written : printed;
+        } catch (final RuntimeException notModelled) {
+            return written;
         }
     }
 
@@ -763,7 +1058,8 @@ final class OrderByExecutor {
      *  legal) and — for plain column keys — their column names. ROLLUP / CUBE / GROUPING SETS
      *  members are keys all the same. */
     private void collectGroupKeys(final FrostlakeParser.GroupByClauseContext groupBy,
-                                  final Set<String> keyTexts, final Set<String> keyNames) {
+                                  final Set<String> keyTexts, final Set<String> keyNames,
+                                  final GroupedKeyColumns groupedColumns) {
         if (groupBy == null || groupBy.ALL() != null) {
             return;
         }
@@ -783,6 +1079,7 @@ final class OrderByExecutor {
         }
         for (final FrostlakeParser.ExpressionContext key : keys) {
             keyTexts.add(key.getText().toUpperCase());
+            groupedColumns.add(ParseTreeText.getOriginalText(key));
             try {
                 final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(key));
                 if (parsed instanceof ColumnReferenceExpression) {
@@ -803,11 +1100,15 @@ final class OrderByExecutor {
      */
     private void rejectUngroupedOrderReference(final Expression expr, final Table table,
                                                final List<Table> allTables, final Set<String> outputNames,
-                                               final Set<String> groupKeyNames) {
+                                               final Set<String> groupKeyNames,
+                                               final GroupedKeyColumns groupedColumns) {
         if (expr instanceof ColumnReferenceExpression) {
             final ColumnReferenceExpression ref = (ColumnReferenceExpression) expr;
             final String colName = ref.getColumnName().toUpperCase();
-            if (outputNames.contains(colName) || groupKeyNames.contains(colName)) {
+            // A qualified reference is held to its own relation's key: ORDER BY b.x beside GROUP BY a.x is refused.
+            final boolean grouped = ref.getTableName() == null ? groupKeyNames.contains(colName)
+                : groupKeyNames.contains(colName) && groupedColumns.grouped(ref.getTableName(), colName);
+            if (outputNames.contains(colName) || grouped) {
                 return;
             }
             throw new RuntimeException(SqlCompilationError.of(
@@ -820,25 +1121,25 @@ final class OrderByExecutor {
                 return;
             }
             for (final Expression arg : call.getArguments()) {
-                rejectUngroupedOrderReference(arg, table, allTables, outputNames, groupKeyNames);
+                rejectUngroupedOrderReference(arg, table, allTables, outputNames, groupKeyNames, groupedColumns);
             }
             return;
         }
         if (expr instanceof BinaryOperationExpression) {
             rejectUngroupedOrderReference(((BinaryOperationExpression) expr).getLeft(),
-                table, allTables, outputNames, groupKeyNames);
+                table, allTables, outputNames, groupKeyNames, groupedColumns);
             rejectUngroupedOrderReference(((BinaryOperationExpression) expr).getRight(),
-                table, allTables, outputNames, groupKeyNames);
+                table, allTables, outputNames, groupKeyNames, groupedColumns);
             return;
         }
         if (expr instanceof UnaryOperationExpression) {
             rejectUngroupedOrderReference(((UnaryOperationExpression) expr).getOperand(),
-                table, allTables, outputNames, groupKeyNames);
+                table, allTables, outputNames, groupKeyNames, groupedColumns);
             return;
         }
         if (expr instanceof CastExpression) {
             rejectUngroupedOrderReference(((CastExpression) expr).getExpression(),
-                table, allTables, outputNames, groupKeyNames);
+                table, allTables, outputNames, groupKeyNames, groupedColumns);
         }
     }
 
@@ -884,6 +1185,15 @@ final class OrderByExecutor {
         return table != null ? table.getName().toUpperCase() : "";
     }
 
+    /** The canonical name a key written as one identifier spells, or null for any other key text. */
+    private static String outputColumnKey(final String asWritten) {
+        if (!SqlIdentifiers.isIdentifierReference(asWritten)) {
+            return null;
+        }
+        final String[] parts = SqlIdentifiers.canonicalTextParts(asWritten);
+        return parts.length == 1 ? parts[0] : null;
+    }
+
     /**
      * ORDER BY over a set operation's combined result. Live resolves these keys against the OUTPUT
      * only — an output column name (the first branch's alias, or the produced name of an un-aliased
@@ -900,13 +1210,16 @@ final class OrderByExecutor {
         final List<Expression> keyExprs = new ArrayList<>(nKeys);
         final boolean[] ascending = new boolean[nKeys];
         final Boolean[] nullsFirst = new Boolean[nKeys];
+        // Where each expression key stands, so a refusal its evaluation raises is placed in the statement.
+        final SourcePosition[] keyOrigins = new SourcePosition[nKeys];
 
         final List<TableColumn> outputAsTableColumns = new ArrayList<>();
         final Set<String> outputNames = new HashSet<>();
         for (final ResultSetColumn column : outputColumns) {
             outputAsTableColumns.add(new TableColumn(column.getName(), column.getDataType(), true,
                 null, false, false, false));
-            outputNames.add(column.getName().toUpperCase());
+            // Exempt by its CANONICAL name, as the walk compares: folding it let x name an output column "x".
+            outputNames.add(column.getName());
         }
         final Table outputTable = new Table("unioned", outputAsTableColumns, false);
 
@@ -925,11 +1238,16 @@ final class OrderByExecutor {
                     // A set operation's ORDER BY is refused in the same words as a plain query's — the
                     // arms' shared output width is what the position is judged against.
                     throw new RuntimeException(SqlCompilationError.of(
-                        "[" + asWritten + "] is not a valid order by expression"));
+                        "[" + OrdinalLiteral.echo(asWritten) + "] is not a valid order by expression"));
                 }
             }
+            // A key written as one name matches an output column by that name's CANONICAL spelling, exactly:
+            // over an output column "x", ORDER BY x names X and is refused (live-verified). Anything else is
+            // compared as written, as before.
+            final String outputKey = outputColumnKey(asWritten);
             for (int i = 0; matched == -1 && i < outputColumns.size(); i++) {
-                if (outputColumns.get(i).getName().equalsIgnoreCase(asWritten)) {
+                final String outputName = outputColumns.get(i).getName();
+                if (outputKey != null ? outputName.equals(outputKey) : outputName.equalsIgnoreCase(asWritten)) {
                     matched = i;
                 }
             }
@@ -941,7 +1259,17 @@ final class OrderByExecutor {
             // An expression key: only the output relation is in scope — the walk turns anything
             // else (a branch qualifier, a non-output name) into live's invalid-identifier.
             executor.validateClauseScope(asWritten, outputTable,
-                Map.of(outputTable.getName().toUpperCase(), outputTable), List.of(outputTable), outputNames);
+                Map.of(outputTable.getName().toUpperCase(), outputTable), List.of(outputTable), outputNames,
+                item.expression());
+            // A subquery in the key compiles where the key stands, so what it refuses is placed in the statement.
+            // It reads none of the output's names: they are no relation of its.
+            final RuntimeException subqueryRefusal = executor.compileSubqueriesIn(List.of(item.expression()),
+                new Table("DUMMY", new ArrayList<TableColumn>(), false), null, null, null);
+            if (subqueryRefusal != null) {
+                throw subqueryRefusal;
+            }
+            keyOrigins[k] = new SourcePosition(item.expression().getStart().getLine(),
+                item.expression().getStart().getCharPositionInLine());
             if (keyEvaluator == null) {
                 keyEvaluator = new ExpressionEvaluator(outputTable,
                     executor.getFunctionRegistry(), executor.getCatalog(), executor);
@@ -949,13 +1277,27 @@ final class OrderByExecutor {
             keyExprs.add(ExpressionEvaluator.parse(asWritten));
         }
 
+        // An output column that carries a collation sorts under it; ties keep their order.
+        final CollationSpec[] keyRules = new CollationSpec[nKeys];
+        for (int k = 0; k < nKeys; k++) {
+            final String spec = colIndex[k] >= 0 ? outputColumns.get(colIndex[k]).getCollation() : null;
+            keyRules[k] = spec == null ? null : CollationSpec.parse(spec);
+        }
         final List<Object[]> keys = new ArrayList<>(rows.size());
         for (final Row row : rows) {
             final Object[] rowKeys = new Object[nKeys];
             for (int k = 0; k < nKeys; k++) {
-                rowKeys[k] = colIndex[k] >= 0
-                    ? row.getValue(colIndex[k])
-                    : keyEvaluator.evaluate(keyExprs.get(k), row);
+                if (colIndex[k] >= 0) {
+                    rowKeys[k] = CollatedKey.of(DeferredFault.read(row.getValue(colIndex[k])), keyRules[k]);
+                    continue;
+                }
+                final SourcePosition displaced = ExpressionSource.beginNested(keyOrigins[k]);
+                try {
+                    rowKeys[k] = CollatedKey.of(DeferredFault.read(keyEvaluator.evaluate(keyExprs.get(k), row)),
+                        keyRules[k]);
+                } finally {
+                    ExpressionSource.end(displaced);
+                }
             }
             keys.add(rowKeys);
         }
@@ -1121,13 +1463,18 @@ final class OrderByExecutor {
     void validateOrderKeyTypes(final FrostlakeParser.SelectStatementContext ctx, final Table table,
                                final Map<String, Table> aliasToTable, final List<Table> allTables) {
         final List<String> orderColumns = new ArrayList<>();
+        final List<SourcePosition> keyOrigins = new ArrayList<>();
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
             String colName = resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), ctx,
                 table, aliasToTable);
-            colName = resolveOrderAlias(colName, ctx);
+            colName = resolveOrderAlias(colName, ctx, table, aliasToTable);
             orderColumns.add(colName);
+            keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(item.expression()))
+                ? new SourcePosition(item.expression().getStart().getLine(),
+                    item.expression().getStart().getCharPositionInLine())
+                : null);
         }
-        rejectFileSortKeys(orderColumns, table, aliasToTable, allTables);
+        rejectFileSortKeys(orderColumns, keyOrigins, table, aliasToTable, allTables);
     }
 
     /**

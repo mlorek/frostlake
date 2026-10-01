@@ -15,13 +15,7 @@
             "value": "[1,2]"
           }
         }
-      ],
-      "skip": {
-        "backends": [
-          "http"
-        ],
-        "reason": "the HTTP transport re-serialises an ARRAY cell through its own JSON writer, which emits '[1, 2]' with a space after each comma where the engine and JDBC render the compact '[1,2]'; the FILTER result itself is identical, only its transport rendering differs"
-      }
+      ]
     },
     {
       "name": "lambda-body-with-and",
@@ -32,13 +26,7 @@
             "value": "[2,3]"
           }
         }
-      ],
-      "skip": {
-        "backends": [
-          "http"
-        ],
-        "reason": "the HTTP transport re-serialises an ARRAY cell through its own JSON writer, which emits '[1, 2]' with a space after each comma where the engine and JDBC render the compact '[1,2]'; the FILTER result itself is identical, only its transport rendering differs"
-      }
+      ]
     },
     {
       "name": "lambda-body-with-not-function",
@@ -49,13 +37,7 @@
             "value": "[1,2,3]"
           }
         }
-      ],
-      "skip": {
-        "backends": [
-          "http"
-        ],
-        "reason": "the HTTP transport re-serialises an ARRAY cell through its own JSON writer, which emits '[1, 2]' with a space after each comma where the engine and JDBC render the compact '[1,2]'; the FILTER result itself is identical, only its transport rendering differs"
-      }
+      ]
     },
     {
       "name": "case-else-is-bare-boolean-or",

@@ -18,8 +18,6 @@ package dev.frostlake.executor;
 
 import dev.frostlake.storage.ResultSet;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -32,7 +30,7 @@ import java.util.UUID;
  * on one thread — the HTTP server hands consecutive requests to whichever pool thread is free — so a
  * thread-keyed history loses the previous statement's ID between two requests of the same session,
  * and the {@code SHOW …} then {@code SELECT … FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))} pattern
- * fails with "No previous query results available" while working in-process. Callers that serve more
+ * fails with "Statement NULL not found" while working in-process. Callers that serve more
  * than one session bind the session around each statement with
  * {@link #beginSessionScope(String)} / {@link #clearSessionScope()}; anything else shares one
  * implicit session, which is what an embedded engine wants.
@@ -46,7 +44,9 @@ import java.util.UUID;
 public class QueryResultCache {
 
     private static final int DEFAULT_MAX_CACHED_RESULTS = 500;
-    private static final int MAX_ID_HISTORY = 20;
+
+    /** How many of a session's first query IDs, and of its most recent ones, LAST_QUERY_ID can name. */
+    private static final int MAX_ID_HISTORY = 1000;
 
     /** How many sessions keep a history before the least recently used one is dropped. */
     private static final int MAX_TRACKED_SESSIONS = 256;
@@ -56,7 +56,7 @@ public class QueryResultCache {
 
     private final int maxCachedResults;
     private final Map<String, CachedResult> cache;
-    private final Map<String, Deque<String>> historyBySession;
+    private final Map<String, QueryIdHistory> historyBySession;
     private final Map<String, Boolean> failedQueryIds;
     private final ThreadLocal<String> boundSession = new ThreadLocal<>();
 
@@ -75,9 +75,9 @@ public class QueryResultCache {
                 return size() > maxCachedResults;
             }
         };
-        this.historyBySession = new LinkedHashMap<String, Deque<String>>(16, 0.75f, true) {
+        this.historyBySession = new LinkedHashMap<String, QueryIdHistory>(16, 0.75f, true) {
             @Override
-            protected boolean removeEldestEntry(final Map.Entry<String, Deque<String>> eldest) {
+            protected boolean removeEldestEntry(final Map.Entry<String, QueryIdHistory> eldest) {
                 return size() > MAX_TRACKED_SESSIONS;
             }
         };
@@ -161,29 +161,18 @@ public class QueryResultCache {
     }
 
     /**
-     * Get a query ID by relative index. Snowflake semantics:
-     *   -1 = most recent (default), -2 = one before that, etc.
-     *   0 is treated as -1 (most recent) for compatibility.
+     * The query ID a LAST_QUERY_ID index names in the calling session (live-verified): -1 is the most
+     * recent statement, -2 the one before it, and a positive index counts from the session's first
+     * statement, 1 being the first. 0, and an index past either end of the session's history, name none.
+     *
+     * @param index the index
+     * @return the query ID, or null
      */
     public String getQueryId(final int index) {
-        final Deque<String> history = historyForCurrentSession(false);
-        if (history == null || history.isEmpty()) {
-            return null;
-        }
-        // -1 → offset 0 (newest), -2 → offset 1, 0 → offset 0
-        final int offset = index >= 0 ? 0 : -index - 1;
         synchronized (historyBySession) {
-            if (offset >= history.size()) {
-                return null;
-            }
-            int i = 0;
-            for (final String id : history) {
-                if (i++ == offset) {
-                    return id;
-                }
-            }
+            final QueryIdHistory history = historyForCurrentSession(false);
+            return history == null ? null : history.at(index);
         }
-        return null;
     }
 
     /**
@@ -263,27 +252,23 @@ public class QueryResultCache {
 
     private void pushQueryId(final String queryId) {
         synchronized (historyBySession) {
-            final Deque<String> history = historyForCurrentSession(true);
-            history.addFirst(queryId);
-            while (history.size() > MAX_ID_HISTORY) {
-                history.removeLast();
-            }
+            historyForCurrentSession(true).add(queryId);
         }
     }
 
     /**
      * The calling thread's session history, creating it when {@code create} is set. Callers that
-     * iterate the returned deque must hold the {@code historyBySession} monitor while they do.
+     * read or change the returned history must hold the {@code historyBySession} monitor while they do.
      */
-    private Deque<String> historyForCurrentSession(final boolean create) {
+    private QueryIdHistory historyForCurrentSession(final boolean create) {
         final String sessionId = boundSession.get();
         final String key = sessionId != null ? sessionId : IMPLICIT_SESSION;
         synchronized (historyBySession) {
-            final Deque<String> history = historyBySession.get(key);
+            final QueryIdHistory history = historyBySession.get(key);
             if (history != null || !create) {
                 return history;
             }
-            final Deque<String> created = new ArrayDeque<>();
+            final QueryIdHistory created = new QueryIdHistory(MAX_ID_HISTORY, MAX_ID_HISTORY);
             historyBySession.put(key, created);
             return created;
         }

@@ -131,7 +131,7 @@ public class IdentifierOutranksOrdinalTest extends BaseDatabaseTest {
     public void theFunctionAndRelationControlsAreUnchanged() {
         assertEquals(ORDINAL, refusal("SELECT nosuchfn(a) FROM ord ORDER BY 9"));
         assertEquals(ORDINAL, refusal("SELECT a FROM ord ORDER BY 9"));
-        assertEquals("SQL compilation error:|Object 'NOSUCHTABLE' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|Object 'NOSUCHTABLE' does not exist or not authorized."),
             refusal("SELECT a FROM nosuchtable ORDER BY 9"));
         assertEquals("SQL compilation error: error line 1 at position 7|invalid identifier 'NOSUCHCOL'",
             refusal("SELECT nosuchcol, nosuchfn(a) FROM ord ORDER BY 9"));

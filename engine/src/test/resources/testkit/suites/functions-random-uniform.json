@@ -1,6 +1,6 @@
 {
   "suite": "functions-random-uniform",
-  "description": "RANDOM([seed]) returns a signed 64-bit integer and a constant seed is deterministic; UNIFORM(min, max, gen) returns an integer INCLUSIVE of both bounds when the bounds are integers, or a double in [min, max) with a float bound, and a per-row RANDOM() varies it while a constant RANDOM(seed) repeats it across rows. Snowflake's UNIFORM is strictly three-argument, so UNIFORM(5, 10) is refused. The assertions check these invariants rather than specific draws. Converted 1:1 from functions/RandomUniformTest (now retired); its 50-row Java-built fixture becomes an INSERT ... SELECT over GENERATOR, the per-row range loops become COUNT_IF checks, the repeat-across-rows loop becomes COUNT(DISTINCT), and the instanceof Long / Double checks become TYPEOF(TO_VARIANT(...)) reading INTEGER or DOUBLE. Two tests keep the class's live exemptions.",
+  "description": "RANDOM([seed]) returns a signed 64-bit integer and a constant seed is deterministic; UNIFORM(min, max, gen) returns an integer INCLUSIVE of both bounds when the bounds are integers, a value at the bounds' own scale when they are decimals (UNIFORM(0.0, 1.0, gen) draws only 0 and 1, because 0.0 is NUMBER(1,0)), or a double in [min, max) with a FLOAT bound, and a per-row RANDOM() varies it while a constant RANDOM(seed) repeats it across rows. Snowflake's UNIFORM is strictly three-argument, so UNIFORM(5, 10) is refused. The assertions check these invariants rather than specific draws. Converted 1:1 from functions/RandomUniformTest (now retired); its 50-row Java-built fixture becomes an INSERT ... SELECT over GENERATOR, the per-row range loops become COUNT_IF checks, the repeat-across-rows loop becomes COUNT(DISTINCT), and the instanceof Long / Double checks become TYPEOF(TO_VARIANT(...)) reading INTEGER or DOUBLE. Two tests keep the class's live exemptions.",
   "tags": ["functions", "converted"],
   "tests": [
     {"name": "random-returns-a-signed-integer", "steps": [
@@ -18,11 +18,19 @@
        "expect": {"value": "0"}},
       {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "50"}}
     ]},
+    {"name": "uniform-decimal-bounds-draw-at-their-scale", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(UNIFORM(0.0, 1.0, RANDOM()))) AS r", "expect": {"value": "INTEGER"}},
+      {"sql": "SELECT COUNT_IF(r NOT IN (0, 1)) FROM (SELECT UNIFORM(0.0, 1.0, RANDOM()) AS r FROM TABLE(GENERATOR(ROWCOUNT => 50)))",
+       "expect": {"value": "0"}},
+      {"sql": "SELECT TYPEOF(TO_VARIANT(UNIFORM(1.5, 10, RANDOM()))) AS r", "expect": {"value": "DECIMAL"}},
+      {"sql": "SELECT COUNT_IF(r * 10 <> ROUND(r * 10) OR r < 1.5 OR r > 10) FROM (SELECT UNIFORM(1.5, 10, RANDOM()) AS r FROM TABLE(GENERATOR(ROWCOUNT => 50)))",
+       "expect": {"value": "0"}}
+    ]},
     {"name": "uniform-float-bounds-return-a-double-in-a-half-open-range",
-     "skip": {"backends": ["snowflake"], "reason": "asserts the runtime type of a single nondeterministic draw; over JDBC a live UNIFORM(0.0, 1.0, ...) arrives as a scaled decimal, and whether the upper bound is open is an RNG-internal detail of the account"},
+     "skip": {"backends": ["snowflake"], "reason": "whether the upper bound of a FLOAT draw is open is an RNG-internal detail of the account"},
      "steps": [
-      {"sql": "SELECT TYPEOF(TO_VARIANT(UNIFORM(0.0, 1.0, RANDOM()))) AS r", "expect": {"value": "DOUBLE"}},
-      {"sql": "SELECT r >= 0.0 AND r < 1.0 FROM (SELECT UNIFORM(0.0, 1.0, RANDOM()) AS r)",
+      {"sql": "SELECT TYPEOF(TO_VARIANT(UNIFORM(0.0::FLOAT, 1.0::FLOAT, RANDOM()))) AS r", "expect": {"value": "DOUBLE"}},
+      {"sql": "SELECT r >= 0.0 AND r < 1.0 FROM (SELECT UNIFORM(0.0::FLOAT, 1.0::FLOAT, RANDOM()) AS r)",
        "expect": {"value": "true"}}
     ]},
     {"name": "a-constant-seed-generator-repeats-across-rows",

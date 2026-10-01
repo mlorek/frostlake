@@ -19,6 +19,8 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -50,10 +52,10 @@ import java.util.Set;
  *
  * <p>The check is deliberately one-sided: a false REJECTION breaks a query the engine could run, while a
  * missed rejection only leaves Frostlake more permissive than Snowflake. So everything whose provenance
- * cannot be established from the parse tree is ACCEPTED — subqueries, window calls, lambda bodies,
- * unresolvable identifiers — and {@code GROUP BY ALL} is not validated at all (its caller never
- * reaches here). A star item IS validated: each expanded column must be grouped, and a miss is
- * rejected at live's sentinel position (line 0, position -1) since nobody wrote the reference. Any
+ * cannot be established from the parse tree is ACCEPTED — the names a subquery resolves itself, window
+ * calls, lambda bodies, unresolvable identifiers — and {@code GROUP BY ALL} is not validated at all (its
+ * caller never reaches here). A star item IS validated: each expanded column must be grouped, and a miss
+ * is rejected at live's sentinel position (line 0, position -1) since nobody wrote the reference. Any
  * unexpected failure inside the validator abandons validation for the statement rather than failing it.
  */
 final class GroupBySelectListValidator {
@@ -91,6 +93,10 @@ final class GroupBySelectListValidator {
     private final Set<String> keyTexts = new HashSet<>();
     /** Bare column names among the grouping keys ({@code GROUP BY o.city} contributes {@code CITY}). */
     private final Set<String> keyColumns = new HashSet<>();
+    /** The grouped column names exactly as they resolve, case kept, for a relation holding case variants. */
+    private final Set<String> exactKeyColumns = new HashSet<>();
+    /** The grouping keys' columns with the relations they name, which a qualified reference is held to. */
+    private GroupedKeyColumns groupedColumns;
 
     /** Aliases of the items BEFORE the one being walked — the only ones it may reference. */
     private final Set<String> earlierAliases = new HashSet<>();
@@ -159,7 +165,9 @@ final class GroupBySelectListValidator {
         if (groupKeyForms.isEmpty() && !validateWhenKeyless) {
             return;
         }
+        groupedColumns = new GroupedKeyColumns(table, aliasToTable, allTables, ctx);
         for (final String form : groupKeyForms) {
+            groupedColumns.add(form);
             keyTexts.add(squash(form));
             final String print = canonicalPrint(form);
             if (print != null) {
@@ -168,6 +176,10 @@ final class GroupBySelectListValidator {
             final String bare = bareColumnName(form);
             if (bare != null) {
                 keyColumns.add(bare);
+            }
+            final String exact = exactColumnName(form);
+            if (exact != null) {
+                exactKeyColumns.add(exact);
             }
         }
         final List<FrostlakeParser.SelectItemContext> items = ctx.selectList().selectItem();
@@ -275,9 +287,12 @@ final class GroupBySelectListValidator {
         if (node == null || rejection != null) {
             return;
         }
-        if (node instanceof FrostlakeParser.SelectStatementContext
-                || node instanceof FrostlakeParser.LambdaFunctionContext) {
-            return;   // a subquery's / lambda's names resolve in their own scope
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            checkEnclosingReferences((FrostlakeParser.SelectStatementContext) node);
+            return;
+        }
+        if (node instanceof FrostlakeParser.LambdaFunctionContext) {
+            return;   // a lambda's names resolve in its own scope
         }
         if ((node instanceof FrostlakeParser.ExpressionContext || node instanceof FrostlakeParser.BooleanExprContext)
                 && matchesGroupingKey((ParserRuleContext) node)) {
@@ -305,8 +320,44 @@ final class GroupBySelectListValidator {
         if (isAggregateOrWindowCall(node)) {
             return;   // an aggregate's argument is per-row, whatever the grouping
         }
+        if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
+            checkScalarStarArgument((FrostlakeParser.FunctionCallStarExprContext) node);
+            return;
+        }
         for (int i = 0; i < node.getChildCount(); i++) {
             checkNode(node.getChild(i));
+        }
+    }
+
+    /**
+     * A scalar function's star argument, held to the grouping column by column as if the columns it stands for
+     * had been written out: {@code CONCAT(*)} beside {@code GROUP BY x} over {@code (x, y)} is "'ST2.Y' in select
+     * clause is neither an aggregate nor in the group by clause." at live's unwritten-column sentinel (line 0,
+     * position -1), under the relation's alias when it has one, and {@code [ST2.X] is not a valid group by
+     * expression} with no GROUP BY; an EXCLUDE or ILIKE keeps what it drops out of the check (live-verified).
+     */
+    private void checkScalarStarArgument(final FrostlakeParser.FunctionCallStarExprContext starCall) {
+        final List<String> columns;
+        try {
+            columns = StarArgument.of(starCall).expand(table, aliasToTable, allTables, true);
+        } catch (final RuntimeException resolveFailure) {
+            return;   // an unresolvable star is the evaluator's problem, not the validator's
+        }
+        for (final String column : columns) {
+            final int dot = column.lastIndexOf('.');
+            final String relation = column.substring(0, dot);
+            final String name = column.substring(dot + 1);
+            if (groupedFor(relation, name.toUpperCase())) {
+                continue;
+            }
+            final String spelled = spellResolvedName(relation.toUpperCase()) + "." + spellResolvedName(name);
+            if (implicitAggregation || insideWindowCall || insideHaving) {
+                rejectImplicit(spelled);
+            } else {
+                rejection = SqlCompilationError.at(0, -1, "'" + spelled
+                    + "' in select clause is neither an aggregate nor in the group by clause.");
+            }
+            return;
         }
     }
 
@@ -318,14 +369,22 @@ final class GroupBySelectListValidator {
             // Only a name whose immediate qualifier is a relation in scope is a column reference; anything
             // else is a path INTO a column (a VARIANT field) or a qualifier this validator cannot see.
             final String qualifier = parts[parts.length - 2];
-            if (namesATable(qualifier) && namesAColumn(last) && !keyColumns.contains(last)) {
+            final boolean variants = CaseVariantColumns.present(table, allTables, last);
+            if (namesATable(qualifier) && namesAColumn(last) && (!groupedFor(qualifier, last)
+                    || variants && !exactKeyColumns.contains(parts[parts.length - 1]))) {
                 if (implicitAggregation || insideWindowCall || insideHaving) {
                     final List<String> rawParts = rawNameParts(ref);
                     rejectImplicit(spellWrittenIdentifier(rawParts.get(rawParts.size() - 2)) + "."
                         + spellWrittenIdentifier(rawParts.get(rawParts.size() - 1)));
                 } else {
-                    reject(ref, "'" + qualifier.toUpperCase() + "." + last
-                        + "' in select clause is neither an aggregate nor in the group by clause.");
+                    // The whole reference, database and schema included: live echoes
+                    // 'DB.PUBLIC.A.V' for db.PUBLIC.A.v, an omitted schema read as PUBLIC.
+                    final StringBuilder spelled = new StringBuilder();
+                    for (int i = 0; i < parts.length - 1; i++) {
+                        spelled.append(parts[i].isEmpty() ? "PUBLIC" : parts[i].toUpperCase()).append('.');
+                    }
+                    reject(ref, "'" + spelled + (variants ? SqlIdentifiers.spellCanonicalEscaped(parts[parts.length - 1])
+                        : last) + "' in select clause is neither an aggregate nor in the group by clause.");
                 }
             }
             return;
@@ -334,15 +393,17 @@ final class GroupBySelectListValidator {
             return;   // DATEADD(day, …) — a unit keyword, not this table's DAY column
         }
         if (namesAColumn(last)) {
-            // A real column outranks a same-named alias, so it must be grouped or aggregated.
-            if (!keyColumns.contains(last)) {
+            // A real column outranks a same-named alias, so it must be grouped or aggregated. Beside a column of
+            // the same name in another case, only the one spelled exactly is grouped.
+            final boolean variants = CaseVariantColumns.present(table, allTables, last);
+            if (!keyColumns.contains(last) || variants && !exactKeyColumns.contains(parts[0])) {
                 if (implicitAggregation || insideWindowCall || insideHaving) {
                     final List<String> rawParts = rawNameParts(ref);
                     rejectImplicit(owningNameSpelled(last) + "."
                         + spellWrittenIdentifier(rawParts.get(rawParts.size() - 1)));
                 } else {
-                    reject(ref, "'" + owningName(last) + "." + last
-                        + "' in select clause is neither an aggregate nor in the group by clause.");
+                    reject(ref, "'" + owningName(last) + "." + (variants ? SqlIdentifiers.spellCanonicalEscaped(parts[0])
+                        : last) + "' in select clause is neither an aggregate nor in the group by clause.");
                 }
             }
             return;
@@ -357,9 +418,47 @@ final class GroupBySelectListValidator {
         // see — is left to the evaluator.
     }
 
+    /**
+     * A subquery's references to this query's columns, held to the grouping as the query's own are:
+     * {@code GROUP BY b HAVING (SELECT COUNT(*) FROM g WHERE g.id = fz.id) > 0} is "[FZ.ID] is not a valid
+     * group by expression", and the same subquery in the select list reads "'FZ.ID' in select clause is
+     * neither an aggregate nor in the group by clause." at the reference (live-verified). A name the
+     * subquery resolves itself is not judged, nor one read inside an aggregate call over this query's names
+     * alone — that aggregate is this query's own. One read inside an aggregate that also reads the subquery's
+     * own names is judged: {@code (SELECT MAX(fz.id + g.v) FROM g)} beside {@code GROUP BY b} is 'FZ.ID' at the
+     * name. In the select list an aggregate in the subquery's WHERE or ON is the subquery's own refusal first;
+     * in HAVING the grouping speaks (both live-verified).
+     */
+    private void checkEnclosingReferences(final FrostlakeParser.SelectStatementContext subquery) {
+        final List<FrostlakeParser.QualifiedNameExprContext> references =
+            new CorrelatedSubqueryRule(executor, new HashSet<String>())
+                .enclosingReferencesWithMixedAggregates(subquery, insideHaving);
+        for (final FrostlakeParser.QualifiedNameExprContext reference : references) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(reference.qualifiedName());
+            final String column = parts[parts.length - 1].toUpperCase();
+            final boolean ownColumn = parts.length > 1
+                ? namesATable(parts[parts.length - 2]) && namesAColumn(column) : namesAColumn(column);
+            if (ownColumn) {
+                checkColumnReference(reference);
+            }
+            if (rejection != null) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * Whether a column reference qualified by {@code qualifier} is grouped: its own relation's column must be a key
+     * (see {@link GroupedKeyColumns}), not merely a column of that name in another relation.
+     */
+    private boolean groupedFor(final String qualifier, final String column) {
+        return groupedColumns == null ? keyColumns.contains(column) : groupedColumns.grouped(qualifier, column);
+    }
+
     private void reject(final ParserRuleContext at, final String detail) {
-        rejection = SqlCompilationError.at(at.getStart().getLine(),
-            at.getStart().getCharPositionInLine(), detail);
+        final SourcePosition place = ExpressionSource.place(at.getStart().getLine(),
+            at.getStart().getCharPositionInLine());
+        rejection = SqlCompilationError.at(place.getLine(), place.getCharPositionInLine(), detail);
     }
 
     /**
@@ -379,7 +478,7 @@ final class GroupBySelectListValidator {
         } catch (final RuntimeException resolveFailure) {
             return;   // an unresolvable star is the evaluator's problem, not the validator's
         }
-        final String prefix = qualified ? SelectItemAccessors.getItemQualifier(item) + "." : "";
+        final String prefix = qualified ? SelectItemAccessors.getItemQualifierSpelled(item) + "." : "";
         for (final StarColumn sc : columns) {
             final String name = sc.getSourceName().toUpperCase();
             if (!sc.getExpression().equalsIgnoreCase(prefix + sc.getSourceName())) {
@@ -388,13 +487,13 @@ final class GroupBySelectListValidator {
             if (namesAColumn(name) && !keyColumns.contains(name)) {
                 if (implicitAggregation) {
                     final String owner = qualified
-                        ? SelectItemAccessors.getItemQualifier(item).toUpperCase()
+                        ? SelectItemAccessors.getItemQualifierEchoed(item)
                         : owningNameSpelled(name);
                     rejectImplicit(owner + "." + spellResolvedName(sc.getSourceName()));
                     return;
                 }
                 final String owner = qualified
-                    ? SelectItemAccessors.getItemQualifier(item).toUpperCase() : owningName(name);
+                    ? SelectItemAccessors.getItemQualifierEchoed(item) : owningName(name);
                 rejection = SqlCompilationError.at(0, -1, "'" + owner + "." + name
                     + "' in select clause is neither an aggregate nor in the group by clause.");
                 return;
@@ -465,6 +564,12 @@ final class GroupBySelectListValidator {
     /** True when this subexpression IS one of the grouping keys, however the key was spelled. */
     private boolean matchesGroupingKey(final ParserRuleContext node) {
         final String text = ParseTreeText.getOriginalText(node);
+        // Beside a column of the same name in another case, a reference is the grouping key only when it
+        // resolves to exactly the column the key does — no spelling-tolerant match may stand in for that.
+        final String exact = exactColumnName(text);
+        if (exact != null && CaseVariantColumns.present(table, allTables, exact)) {
+            return exactKeyColumns.contains(exact);
+        }
         if (keyTexts.contains(squash(text))) {
             return true;
         }
@@ -556,12 +661,29 @@ final class GroupBySelectListValidator {
         }
         if (allTables != null) {
             for (final Table candidate : allTables) {
-                if (candidate != null && name.equalsIgnoreCase(candidate.getName())) {
+                if (candidate != null && name.equalsIgnoreCase(candidate.getName()) && !aliasedAway(candidate)) {
                     return true;
                 }
             }
         }
-        return table != null && name.equalsIgnoreCase(table.getName());
+        return table != null && name.equalsIgnoreCase(table.getName()) && !aliasedAway(table);
+    }
+
+    /**
+     * Whether an alias hides a relation's own name, which then names nothing here: over {@code FROM fz f2}
+     * the qualifier FZ reaches no relation of this query, so {@code (SELECT MAX(f2.id) - fz.id FROM fz f2)}
+     * reads the query around it rather than an ungrouped column of its own (live-verified).
+     */
+    private boolean aliasedAway(final Table relation) {
+        if (aliasToTable == null) {
+            return false;
+        }
+        for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
+            if (entry.getValue() == relation) {
+                return entry.getKey() != null && !entry.getKey().equalsIgnoreCase(relation.getName());
+            }
+        }
+        return false;
     }
 
     /** The name Snowflake prefixes an ungrouped column with: its FROM alias, or its table's name. */
@@ -592,6 +714,19 @@ final class GroupBySelectListValidator {
         } catch (final RuntimeException notAnExpression) {
             return null;
         }
+    }
+
+    /** A key that is a column reference, by the name it resolves to with its case kept; null otherwise. */
+    private static String exactColumnName(final String text) {
+        try {
+            final Expression parsed = ExpressionEvaluator.parse(text);
+            if (parsed instanceof ColumnReferenceExpression) {
+                return ((ColumnReferenceExpression) parsed).getColumnName();
+            }
+        } catch (final RuntimeException notAnExpression) {
+            return null;
+        }
+        return null;
     }
 
     private static String bareColumnName(final String text) {

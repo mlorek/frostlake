@@ -22,6 +22,8 @@ import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Binds a named parameter into a SQL body by substituting each occurrence of the parameter's bare name
@@ -71,6 +73,46 @@ public final class SqlIdentifierSubstitution {
                 result.append(body, cursor, token.getStartIndex());
                 result.append(replacement);
                 cursor = token.getStopIndex() + 1;
+            }
+        }
+        result.append(body, cursor, body.length());
+        return result.toString();
+    }
+
+    /**
+     * Returns {@code body} with every bare-identifier occurrence of any of the {@code replacements}' names (matched
+     * without regard to case) replaced by that name's replacement, in ONE pass — so a replacement is never read
+     * again for a later name — under the same rules as {@link #substitute}. Each replacement made is recorded in
+     * {@code replaced} as {@code {start, end, length}}: the replaced name's first and one-past-last character in
+     * {@code body}, and the length of the text put there, so a position in the result can be mapped back.
+     *
+     * @param body         the SQL text
+     * @param replacements each name's replacement, keyed by the name upper-cased
+     * @param replaced     receives one entry per replacement made, in source order
+     * @return the substituted text
+     */
+    public static String substituteAll(final String body, final Map<String, String> replacements,
+                                       final List<int[]> replaced) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        lexer.removeErrorListeners();
+        final CommonTokenStream tokens = new CommonTokenStream(lexer);
+        tokens.fill();
+
+        final List<Token> all = tokens.getTokens();
+        final StringBuilder result = new StringBuilder(body.length());
+        int cursor = 0;
+        for (int i = 0; i < all.size(); i++) {
+            final Token token = all.get(i);
+            if (token.getType() == Token.EOF) {
+                break;
+            }
+            final String replacement = isBareIdentifier(token)
+                ? replacements.get(token.getText().toUpperCase(Locale.ROOT)) : null;
+            if (replacement != null && !structuralNamePosition(all, i)) {
+                result.append(body, cursor, token.getStartIndex());
+                result.append(replacement);
+                cursor = token.getStopIndex() + 1;
+                replaced.add(new int[] {token.getStartIndex(), cursor, replacement.length()});
             }
         }
         result.append(body, cursor, body.length());

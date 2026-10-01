@@ -72,7 +72,7 @@
       {"sql": "SELECT \"target_completion_interval\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "30 MINUTE"}}
     ]},
     {"name": "execute-task-returns-live-status-row",
-     "skip": {"backends": ["snowflake"], "reason": "the status row is the console surface - over JDBC a real account hands back no result set at all for EXECUTE TASK"},
+     "skip": {"backends": ["jdbc", "snowflake"], "reason": "the status row is the console surface - over JDBC, a real account's driver and Frostlake's alike, EXECUTE TASK hands back no result set at all, only update count 0"},
      "steps": [
       {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
       {"sql": "CREATE TASK status_task SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},

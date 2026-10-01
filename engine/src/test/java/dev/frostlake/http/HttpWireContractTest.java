@@ -41,9 +41,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * fails is an ANSWER — HTTP 200 with success:false, the error and the session it ran in — while only a
  * request the server cannot handle is a 5xx; every result says whether it is a DML statement's count grid
  * (updateCount, -1 for anything else), so a query naming its columns like one is never taken for DML; a
- * temporal cell crosses with its whole fraction of a second; and a session can be created in a chosen
- * scope, resumed strictly and released, while a request that lands in a session the server had to start
- * says so (newSession).
+ * temporal cell crosses with its whole fraction of a second, and a time or timestamp column with its
+ * fractional-second precision as the scale; and a session can be created in a chosen
+ * scope, resumed and released, while a request naming a session the server no longer holds is refused
+ * unless it asks for a fresh one, and then says so (newSession).
  */
 public class HttpWireContractTest {
 
@@ -86,15 +87,16 @@ public class HttpWireContractTest {
             HttpResponse.BodyHandlers.ofString());
     }
 
-    private HttpResponse<String> execute(final String sql, final String sessionId, final boolean requireSession)
+    /** One request; a null requireSession leaves the field out, as a client that never sets it does. */
+    private HttpResponse<String> execute(final String sql, final String sessionId, final Boolean requireSession)
             throws Exception {
         final Map<String, Object> body = new LinkedHashMap<>();
         body.put("sql", sql);
         if (sessionId != null) {
             body.put("sessionId", sessionId);
         }
-        if (requireSession) {
-            body.put("requireSession", Boolean.TRUE);
+        if (requireSession != null) {
+            body.put("requireSession", requireSession);
         }
         return post("/api/execute", MAPPER.writeValueAsString(body));
     }
@@ -109,7 +111,7 @@ public class HttpWireContractTest {
 
     /** One statement that must succeed. */
     private JsonNode ok(final String sql, final String sessionId) throws Exception {
-        final HttpResponse<String> response = execute(sql, sessionId, false);
+        final HttpResponse<String> response = execute(sql, sessionId, null);
         assertEquals(200, response.statusCode(), sql);
         final JsonNode body = json(response);
         assertTrue(body.get("success").asBoolean(), sql + " -> " + response.body());
@@ -147,7 +149,7 @@ public class HttpWireContractTest {
     public void aFailingStatementIsAnAnswerAndKeepsItsSession() throws Exception {
         final String id = newSession();
         ok("CREATE OR REPLACE DATABASE wire_fail_db", id);
-        final HttpResponse<String> failed = execute("SELECT * FROM no_such_table_at_all", id, false);
+        final HttpResponse<String> failed = execute("SELECT * FROM no_such_table_at_all", id, null);
         assertEquals(200, failed.statusCode());
         final JsonNode body = json(failed);
         assertFalse(body.get("success").asBoolean());
@@ -155,14 +157,14 @@ public class HttpWireContractTest {
         assertEquals(id, body.get("sessionId").asText());
         assertFalse(body.get("newSession").asBoolean());
         // A syntax error is an answer too, and the session keeps the database its CREATE activated.
-        assertEquals(200, execute("SELECT FROM", id, false).statusCode());
+        assertEquals(200, execute("SELECT FROM", id, null).statusCode());
         assertEquals("WIRE_FAIL_DB", firstRow(ok("SELECT CURRENT_DATABASE()", id)).get(0).asText());
         ok("DROP DATABASE wire_fail_db", id);
     }
 
     @Test
     public void aFirstStatementThatFailsStillHandsBackItsSession() throws Exception {
-        final HttpResponse<String> failed = execute("SELECT 1/0", null, false);
+        final HttpResponse<String> failed = execute("SELECT 1/0", null, null);
         assertEquals(200, failed.statusCode());
         final JsonNode body = json(failed);
         assertFalse(body.get("success").asBoolean());
@@ -256,10 +258,36 @@ public class HttpWireContractTest {
         ok("DROP DATABASE wire_len_db", id);
     }
 
+    /**
+     * A TIME or TIMESTAMP column carries precision 0 and its fractional-second precision as the scale, the
+     * pair the account's own result metadata carries; a DATE carries 0 for both, and a NUMBER keeps its own.
+     */
+    @Test
+    public void aTimeOrTimestampColumnCarriesItsFractionalDigitsAsTheScale() throws Exception {
+        final String id = newSession();
+        ok("CREATE OR REPLACE DATABASE wire_scale_db", id);
+        final JsonNode columns = ok("SELECT '10:00:00'::TIME(3) AS t3, '2024-01-01'::TIMESTAMP_NTZ(0) AS ntz0,"
+            + " '2024-01-01'::TIMESTAMP_LTZ AS ltz, '2024-01-01 00:00:00 +01:00'::TIMESTAMP_TZ(5) AS tz5,"
+            + " CURRENT_TIMESTAMP(3) AS now3, '2024-01-01'::DATE AS d, 1.5::NUMBER(5,2) AS n", id)
+            .get("resultSets").get(0).get("columns");
+        final int[][] expected = {{0, 3}, {0, 0}, {0, 9}, {0, 5}, {0, 3}, {0, 0}, {5, 2}};
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i][0], columns.get(i).get("precision").asInt(), columns.get(i).toString());
+            assertEquals(expected[i][1], columns.get(i).get("scale").asInt(), columns.get(i).toString());
+            assertFalse(columns.get(i).has("length"), columns.get(i).toString());
+        }
+        final JsonNode createdOn = ok("SHOW SCHEMAS IN DATABASE wire_scale_db", id).get("resultSets").get(0)
+            .get("columns").get(0);
+        assertEquals("created_on", createdOn.get("name").asText());
+        assertEquals(0, createdOn.get("precision").asInt());
+        assertEquals(3, createdOn.get("scale").asInt());
+        ok("DROP DATABASE wire_scale_db", id);
+    }
+
     @Test
     public void aBlankStatementFailsAsTheAccountFailsIt() throws Exception {
         for (final String blank : new String[] {"", "   ", ";", "-- nothing to run", "/* nor here */"}) {
-            final HttpResponse<String> response = execute(blank, null, false);
+            final HttpResponse<String> response = execute(blank, null, null);
             assertEquals(200, response.statusCode(), "[" + blank + "]");
             final JsonNode body = json(response);
             assertFalse(body.get("success").asBoolean(), "[" + blank + "] " + response.body());
@@ -398,7 +426,7 @@ public class HttpWireContractTest {
         assertTrue(createdBody.get("success").asBoolean());
         assertTrue(createdBody.get("newSession").asBoolean());
         final String id = createdBody.get("sessionId").asText();
-        final JsonNode resumed = json(execute("SELECT 1", id, true));
+        final JsonNode resumed = json(execute("SELECT 1", id, Boolean.TRUE));
         assertTrue(resumed.get("success").asBoolean());
         assertFalse(resumed.get("newSession").asBoolean());
         assertEquals(id, resumed.get("sessionId").asText());
@@ -408,15 +436,22 @@ public class HttpWireContractTest {
         assertTrue(json(released).get("success").asBoolean());
         assertEquals(404, delete("/api/sessions/" + id).statusCode());
 
-        // Resuming the released id strictly is refused, and the statement never runs.
-        final HttpResponse<String> strict = execute("CREATE DATABASE wire_never_db", id, true);
-        assertEquals(404, strict.statusCode());
-        final JsonNode strictBody = json(strict);
-        assertFalse(strictBody.get("success").asBoolean());
-        assertTrue(strictBody.get("sessionId").isNull());
-        assertTrue(strictBody.get("errorMessage").asText().contains(id), strict.body());
-        // The lenient path still starts a session under the id — and says so.
-        final JsonNode lenient = ok("SHOW DATABASES LIKE 'WIRE_NEVER_DB'", id);
+        // Resuming the released id is refused, whether the request asks for that or says nothing, and the
+        // statement never runs.
+        for (final Boolean require : new Boolean[] {Boolean.TRUE, null}) {
+            final HttpResponse<String> strict = execute("CREATE DATABASE wire_never_db", id, require);
+            assertEquals(404, strict.statusCode(), "requireSession " + require);
+            final JsonNode strictBody = json(strict);
+            assertFalse(strictBody.get("success").asBoolean());
+            assertTrue(strictBody.get("sessionId").isNull());
+            assertTrue(strictBody.get("errorMessage").asText().contains(id), strict.body());
+        }
+        // Only an explicit requireSession:false starts a fresh session under the id — and says so.
+        final HttpResponse<String> lenientResponse = execute("SHOW DATABASES LIKE 'WIRE_NEVER_DB'", id,
+            Boolean.FALSE);
+        assertEquals(200, lenientResponse.statusCode());
+        final JsonNode lenient = json(lenientResponse);
+        assertTrue(lenient.get("success").asBoolean(), lenientResponse.body());
         assertTrue(lenient.get("newSession").asBoolean());
         assertEquals(id, lenient.get("sessionId").asText());
         assertEquals(0, lenient.get("resultSets").get(0).get("rowCount").asInt());

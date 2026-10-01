@@ -1,6 +1,6 @@
 {
   "suite": "expr-interval-literals",
-  "description": "Snowflake interval literal forms, live-verified: the quoted-string form (plural units and comma-separated parts INSIDE the string, a bare quoted number meaning seconds), the INTERVAL '<n>' <singular-unit> form; an unquoted amount is a syntax error and a PLURAL word after the string is a column ALIAS, not a unit (INTERVAL '10' DAYS adds ten seconds with the column named DAYS); a standalone interval - unit-less or multi-part - is refused as interval literal is not supported in this form while the unit-suffixed spelling projects as a first-class value; and the same forms drive subtraction and column DEFAULTs. Converted 1:1 from expressions/IntervalExpressionTest (now retired).",
+  "description": "Snowflake interval literal forms, live-verified: the quoted-string form (plural units and comma-separated parts INSIDE the string, a bare quoted number meaning seconds), the INTERVAL '<n>' <unit> form; an unquoted amount is a syntax error and a word after the call holding the literal is a column alias; a standalone interval - unit-less or multi-part - is refused as interval literal is not supported in this form while the unit-suffixed spelling projects as a first-class value; and the same forms drive subtraction and column DEFAULTs. Converted 1:1 from expressions/IntervalExpressionTest (now retired).",
   "tags": ["expressions", "converted"],
   "tests": [
     {"name": "quoted-string-form-applies-in-arithmetic", "steps": [
@@ -19,7 +19,7 @@
       {"sql": "SELECT ('2024-01-01'::DATE + INTERVAL '1' YEAR)::DATE", "expect": {"value": "2025-01-01"}},
       {"sql": "SELECT TO_CHAR('2024-01-01'::DATE + INTERVAL '5' HOUR, 'YYYY-MM-DD HH24:MI:SS')", "expect": {"value": "2024-01-01 05:00:00"}}
     ]},
-    {"name": "plural-word-after-the-string-is-an-alias-not-a-unit", "steps": [
+    {"name": "a-word-after-the-call-is-an-alias", "steps": [
       {"sql": "SELECT TO_CHAR('2024-01-01'::DATE + INTERVAL '10', 'YYYY-MM-DD HH24:MI:SS') DAYS",
        "expect": {"columns": ["DAYS"], "rows": [["2024-01-01 00:00:10"]]}}
     ]},
@@ -33,18 +33,78 @@
       {"sql": "SELECT INTERVAL '1 day, 2 hours'", "expect": {"error": {}}}
     ]},
     {"name": "unit-suffixed-interval-projects-as-a-value",
-     "skip": {"backends": ["snowflake"], "reason": "the Snowflake JDBC driver cannot marshal an interval result column - it fails with Feature unsupported: data type: 50006 before the value reaches the harness"},
      "steps": [
       {"sql": "SELECT INTERVAL '1' DAY", "expect": {"rowCount": 1}},
       {"sql": "SELECT INTERVAL '2' HOUR", "expect": {"rowCount": 1}},
       {"sql": "SELECT INTERVAL '1' YEAR", "expect": {"rowCount": 1}},
       {"sql": "SELECT INTERVAL '1' DAY AS d", "expect": {"rowCount": 1}}
     ]},
+    {"name": "a-day-time-interval-reaches-a-client-as-its-nanoseconds",
+     "skip": {"backends": ["engine"], "reason": "the embedded API hands back the engine's own interval object; the nanosecond count is the client form, what the jdbc and http transports and the account's driver read"},
+     "steps": [
+      {"sql": "SELECT INTERVAL '1' DAY", "expect": {"value": "86400000000000"}},
+      {"sql": "SELECT INTERVAL '2' HOUR", "expect": {"value": "7200000000000"}},
+      {"sql": "SELECT INTERVAL '-1' DAY", "expect": {"value": "-86400000000000"}},
+      {"sql": "SELECT TO_TIMESTAMP_NTZ('2020-01-02 01:00:00') - TO_TIMESTAMP_NTZ('2020-01-01')", "expect": {"value": "90000000000000"}}
+    ]},
     {"name": "subtraction-and-defaults-use-the-same-forms", "steps": [
       {"sql": "SELECT ('2024-01-01'::DATE - INTERVAL '1 day')::DATE", "expect": {"value": "2023-12-31"}},
       {"sql": "CREATE TABLE interval_default_t (id INTEGER, d DATE DEFAULT '2024-01-01'::DATE + INTERVAL '30 days')"},
       {"sql": "INSERT INTO interval_default_t (id) VALUES (1)"},
       {"sql": "SELECT d::DATE FROM interval_default_t", "expect": {"value": "2024-01-31"}}
+    ]},
+    {"name": "a-range-qualifier-reads-its-fields", "steps": [
+      {"sql": "SELECT SYSTEM$TYPEOF(INTERVAL '1 02' DAY TO HOUR)", "expect": {"value": "INTERVAL DAY(9) TO HOUR[SB16]"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1 02' DAY TO HOUR)", "expect": {"value": "+1 02"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1 02:03:04.5' DAY TO SECOND)", "expect": {"value": "+1 02:03:04.500000000"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '02:03' HOUR TO MINUTE)", "expect": {"value": "+2:03"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(INTERVAL '-1-2' YEAR TO MONTH)", "expect": {"value": "INTERVAL YEAR(9) TO MONTH[SB8]"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '-1-2' YEAR TO MONTH)", "expect": {"value": "-1-02"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1.5' SECOND)", "expect": {"value": "+1.500000000"}}
+    ]},
+    {"name": "a-plural-field-is-a-unit", "steps": [
+      {"sql": "SELECT SYSTEM$TYPEOF(INTERVAL '1' DAYS)", "expect": {"value": "INTERVAL DAY(9)[SB16]"}},
+      {"sql": "SELECT TO_VARCHAR(DATE '2024-01-01' + INTERVAL '10' DAYS)", "expect": {"value": "2024-01-11 00:00:00.000"}},
+      {"sql": "SELECT TO_VARCHAR(DATE '2024-01-01' + INTERVAL '2' MONTHS)", "expect": {"value": "2024-03-01"}}
+    ]},
+    {"name": "a-leading-precision-types-the-literal", "steps": [
+      {"sql": "SELECT SYSTEM$TYPEOF(INTERVAL '1' DAY(2))", "expect": {"value": "INTERVAL DAY(2)[SB8]"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(INTERVAL '1' YEAR(2))", "expect": {"value": "INTERVAL YEAR(2)[SB2]"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1.25' SECOND(2,3))", "expect": {"value": "+1.250"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1 02:03:04' DAY TO SECOND(0))", "expect": {"value": "+1 02:03:04"}}
+    ]},
+    {"name": "a-qualifier-naming-no-type-is-refused", "steps": [
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1 02' HOUR TO DAY)", "expect": {"error": {"messageContains": "Invalid specification for type INTERVAL: INTERVAL HOUR TO DAY"}}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1' DAY(10))", "expect": {"error": {"messageContains": "Invalid specification for type INTERVAL: INTERVAL DAY"}}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1 25' DAY TO HOUR)", "expect": {"error": {"messageContains": "required that 0 <= HOUR <= 23"}}}
+    ]},
+    {"name": "a-comma-less-text-is-a-syntax-error-inside-it", "steps": [
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1 day 2 hours')", "expect": {"error": {"messageContains": "syntax error line 1 at position 6 unexpected '2'"}}},
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1 day hours')", "expect": {"error": {"messageContains": "syntax error line 1 at position 6 unexpected 'hours'"}}},
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1 dayx')", "expect": {"error": {"messageContains": "dayx is not recognized as a date type"}}},
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1.5 days')", "expect": {"value": "2024-03-11"}}
+    ]},
+    {"name": "arithmetic-on-unit-suffixed-literals", "steps": [
+      {"sql": "SELECT TO_VARCHAR(-INTERVAL '1' DAY)", "expect": {"value": "-1"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(INTERVAL '1' DAY * 2)", "expect": {"value": "INTERVAL DAY(9)[SB16]"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1' DAY + INTERVAL '1' HOUR)", "expect": {"value": "+1 01"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1' YEAR + INTERVAL '1' MONTH)", "expect": {"value": "+1-01"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1' DAY + DATE '2024-01-01')", "expect": {"value": "2024-01-02 00:00:00.000"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1' MONTH + DATE '2024-01-31')", "expect": {"value": "2024-02-29"}},
+      {"sql": "SELECT TO_VARCHAR(INTERVAL '1' DAY % 2)", "expect": {"error": {"messageContains": "Invalid argument types for function '%': (INTERVAL DAY(9), NUMBER(1,0))"}}}
+    ]},
+    {"name": "an-in-string-text-takes-comments-and-refuses-reserved-words", "steps": [
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1 /* c */ day')", "expect": {"value": "2024-03-10"}},
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1 day // c')", "expect": {"value": "2024-03-10"}},
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1 day /* unclosed')", "expect": {"error": {"messageContains": "parse error line 1 at position 17 near '<EOF>'"}}},
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1 select')", "expect": {"error": {"messageContains": "syntax error line 1 at position 2 unexpected 'select'"}}},
+      {"sql": "SELECT TO_VARCHAR('2024-03-09'::DATE + INTERVAL '1e30 days')", "expect": {"error": {"messageContains": "Number out of representable range: type FIXED[SB4](9,0){not null}, value 1e+30"}}}
+    ]},
+    {"name": "a-block-types-a-unit-suffixed-literal-as-a-query-does", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$ BEGIN RETURN TO_VARCHAR(INTERVAL '1' DAY + INTERVAL '1' HOUR); END; $$", "expect": {"value": "+1 01"}},
+      {"sql": "EXECUTE IMMEDIATE $$ BEGIN RETURN TO_VARCHAR(INTERVAL '1.25' SECOND(2,3)); END; $$", "expect": {"value": "+1.250"}},
+      {"sql": "EXECUTE IMMEDIATE $$ BEGIN IF (INTERVAL '1' DAY / 2 = INTERVAL '0' DAY) THEN RETURN 'truncated'; END IF; RETURN 'kept'; END; $$", "expect": {"value": "truncated"}},
+      {"sql": "EXECUTE IMMEDIATE $$ BEGIN IF (FALSE) THEN RETURN TO_VARCHAR(INTERVAL '1' DAY(0)); END IF; RETURN 'ok'; END; $$", "expect": {"error": {"messageContains": "Invalid specification for type INTERVAL: INTERVAL DAY"}}}
     ]}
   ]
 }

@@ -298,7 +298,8 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
             // The SPELLING is part of the identity, not decoration: `INTERVAL '1' DAY` and
             // `INTERVAL '1 day'` shift a DATE by the same amount but to different TYPES, and this
             // print is used as an expression KEY — two aggregates keyed alike would share one value.
-            out.append(part.getValueExpression().accept(this)).append(' ').append(part.getUnit())
+            out.append(part.getValueExpression().accept(this)).append(' ')
+               .append(part.getLiteral() != null ? part.getLiteral().qualifierText() : part.getUnit().name())
                .append(part.isUnitInString() ? " in-string" : " keyword");
         }
         return out.append(')').toString();
@@ -357,5 +358,18 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
             case NOT_ILIKE: return "NOT ILIKE";
             default: return op.toString();
         }
+    }
+
+    @Override
+    public String visitRowComparison(final RowComparisonExpression expr) {
+        final StringBuilder text = new StringBuilder("(");
+        for (int i = 0; i < expr.getLeft().size(); i++) {
+            text.append(i > 0 ? ", " : "").append(expr.getLeft().get(i).accept(this));
+        }
+        text.append(") ").append(expr.getOperator()).append(" (");
+        for (int i = 0; i < expr.getRight().size(); i++) {
+            text.append(i > 0 ? ", " : "").append(expr.getRight().get(i).accept(this));
+        }
+        return text.append(")").toString();
     }
 }

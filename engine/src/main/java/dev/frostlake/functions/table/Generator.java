@@ -155,4 +155,10 @@ public class Generator extends TableFunction {
             }
         }
     }
+
+    /** GENERATOR answers no column, whatever its arguments. */
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return new ArrayList<>();
+    }
 }

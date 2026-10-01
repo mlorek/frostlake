@@ -13,7 +13,7 @@
     {"name": "expr-008", "steps": [{"sql": "SELECT -5+3", "expect": {"value": "-2"}}]},
     {"name": "expr-009", "steps": [{"sql": "SELECT 2*-3", "expect": {"value": "-6"}}]},
     {"name": "expr-010", "steps": [{"sql": "SELECT 1.5+2.5", "expect": {"value": "4.0"}}]},
-    {"name": "expr-011", "skip": {"backends": ["engine","jdbc","http"], "reason": "known gap: frostlake division scale 7 vs snowflake 6 (GAPS.md)"}, "steps": [{"sql": "SELECT 10.0/3", "expect": {"value": "3.333333"}}], "note": "known difference: frostlake returns 3.3333333"},
+    {"name": "expr-011", "steps": [{"sql": "SELECT 10.0/3", "expect": {"value": "3.333333"}}]},
     {"name": "expr-012", "steps": [{"sql": "SELECT 5/2*2", "expect": {"value": "5.000000"}}]},
     {"name": "expr-013", "steps": [{"sql": "SELECT 2+3*4", "expect": {"value": "14"}}]},
     {"name": "expr-014", "steps": [{"sql": "SELECT (2+3)*4", "expect": {"value": "20"}}]},

@@ -38,8 +38,10 @@ import org.slf4j.LoggerFactory;
 /**
  * Column-masking and row-access-policy query stage extracted from {@link QueryExecutor}. Masking
  * rewrites each projection expression that references a masked column, wrapping the reference in the
- * policy body; row-access policies filter the input rows through the policy predicate. Both bypass for
- * ACCOUNTADMIN / SYSADMIN. The catalog and (nullable) security manager are read live from the owning
+ * policy body; row-access policies filter the input rows through the policy predicate. NEITHER has a
+ * role that bypasses it: the account applies both bodies to every role, ACCOUNTADMIN included, and a
+ * body that means to exempt a role says so ITSELF through CURRENT_ROLE(). The catalog and (nullable)
+ * security manager are read live from the owning
  * executor so the existing null-checks are preserved; row filtering delegates back to the executor's
  * WHERE-filter helper.
  */
@@ -56,14 +58,11 @@ final class MaskingPolicyApplier {
     /**
      * For each projection expression that is a direct reference to a masked column,
      * wrap it with the masking policy body — substituting the policy parameter with the column name.
-     * Security check: masking is skipped for ACCOUNTADMIN / SYSADMIN roles.
+     * Every role is masked; a body that exempts one names it, as a CURRENT_ROLE() body does.
      */
     List<String> applyMaskingPolicies(final List<String> exprs, final Table table) {
         final SecurityManager securityManager = executor.getSecurityManager();
         if (securityManager == null) return exprs;
-        final String role = securityManager.getSessionContext().getCurrentRole();
-        // ACCOUNTADMIN and SYSADMIN see unmasked data
-        if ("ACCOUNTADMIN".equalsIgnoreCase(role) || "SYSADMIN".equalsIgnoreCase(role)) return exprs;
 
         // Collect the table's masked columns once; the common case (none) costs one scan.
         final List<TableColumn> maskedColumns = new ArrayList<>();
@@ -229,15 +228,12 @@ final class MaskingPolicyApplier {
 
     /**
      * Apply row access policy filtering: evaluate the policy predicate for each row,
-     * keeping only rows where the predicate returns true.
-     * ACCOUNTADMIN/SYSADMIN bypass row access policies.
+     * keeping only rows where the predicate returns true. Every role is filtered.
      */
     List<Row> applyRowAccessPolicy(final List<Row> rows, final Table table) {
         if (!table.hasRowAccessPolicy()) return rows;
         final SecurityManager securityManager = executor.getSecurityManager();
         if (securityManager == null) return rows;
-        final String role = securityManager.getSessionContext().getCurrentRole();
-        if ("ACCOUNTADMIN".equalsIgnoreCase(role) || "SYSADMIN".equalsIgnoreCase(role)) return rows;
 
         final Catalog catalog = executor.getCatalog();
         try {

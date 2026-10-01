@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 
@@ -32,7 +33,7 @@ public class Len extends TextArgumentFunction {
             // LEN of a BINARY value is its byte count, not the length of the hex rendering.
             return (long) ((BinaryValue) args.get(0)).length();
         }
-        return (long) args.get(0).toString().length();
+        return (long) CodePointText.length(args.get(0).toString());
     }
 
     @Override

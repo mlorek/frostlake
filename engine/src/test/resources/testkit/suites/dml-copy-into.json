@@ -5,6 +5,7 @@
   "tests": [
     {
       "name": "copy-into-table-from-stage-simple",
+      "skip": {"backends": ["jdbc", "snowflake"], "reason": "reads the COPY statement's own result grid; over JDBC a COPY is an update count - the rows it loaded, 0 for an unload - so the grid is not observable"},
       "steps": [
         {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DECIMAL(10,2))"},
         {"sql": "CREATE STAGE my_stage"},
@@ -21,6 +22,7 @@
     },
     {
       "name": "copy-into-table-with-pattern",
+      "skip": {"backends": ["jdbc", "snowflake"], "reason": "reads the COPY statement's own result grid; over JDBC a COPY is an update count - the rows it loaded, 0 for an unload - so the grid is not observable"},
       "steps": [
         {"sql": "CREATE TABLE logs (timestamp VARCHAR, message VARCHAR, level VARCHAR)"},
         {"sql": "CREATE STAGE log_stage"},
@@ -107,6 +109,7 @@
     },
     {
       "name": "copy-into-stage-from-table",
+      "skip": {"backends": ["jdbc", "snowflake"], "reason": "reads the COPY statement's own result grid; over JDBC a COPY is an update count - the rows it loaded, 0 for an unload - so the grid is not observable"},
       "steps": [
         {"sql": "CREATE TABLE export_data (id INTEGER, name VARCHAR, value DECIMAL(10,2))"},
         {"sql": "INSERT INTO export_data VALUES (1, 'Item1', 100.50), (2, 'Item2', 200.75)"},
@@ -116,6 +119,7 @@
     },
     {
       "name": "copy-into-stage-from-query",
+      "skip": {"backends": ["jdbc", "snowflake"], "reason": "reads the COPY statement's own result grid; over JDBC a COPY is an update count - the rows it loaded, 0 for an unload - so the grid is not observable"},
       "steps": [
         {"sql": "CREATE TABLE source_data (id INTEGER, category VARCHAR, amount INTEGER)"},
         {"sql": "INSERT INTO source_data VALUES (1, 'A', 100), (2, 'B', 200), (3, 'A', 150)"},
@@ -137,6 +141,7 @@
     },
     {
       "name": "copy-into-table-returns-results",
+      "skip": {"backends": ["jdbc", "snowflake"], "reason": "reads the COPY statement's own result grid; over JDBC a COPY is an update count - the rows it loaded, 0 for an unload - so the grid is not observable"},
       "steps": [
         {"sql": "CREATE TABLE result_test (id INTEGER, name VARCHAR)"},
         {"sql": "CREATE STAGE result_stage"},

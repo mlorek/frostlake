@@ -22,6 +22,7 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.GeoValue;
 import dev.frostlake.values.TypedVectorNode;
+import dev.frostlake.values.UuidTextNode;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
 import dev.frostlake.values.XmlVariants;
@@ -52,6 +53,7 @@ public class TypeOf extends StructuredArgumentFunction {
             // XML is structural in Snowflake: any object shaped {"$": …, "@": "tag", …} reports XML
             // (live-verified even for PARSE_JSON('{"$":1,"@":"b"}')), so test the shape first.
             if (XmlVariants.isXmlElement(root)) return "XML";
+            if (UuidTextNode.holds(root)) return "UUID";
             if (root.isObject()) return "OBJECT";
             // ★ Asked BEFORE the array test, which it would otherwise answer: a VECTOR member prints
             // as an array but reports its own kind, and live agrees it is not an ARRAY.

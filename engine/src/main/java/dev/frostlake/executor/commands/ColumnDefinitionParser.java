@@ -25,6 +25,7 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.expressions.BinaryLiteralText;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.CheckConstraint;
@@ -50,6 +51,7 @@ import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
+import dev.frostlake.values.CodePointText;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -59,6 +61,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -213,7 +216,8 @@ public class ColumnDefinitionParser implements CommandHandler {
     private DataType literalDataType(final FrostlakeParser.LiteralContext literal,
                                      final Object defaultValue) {
         if (literal.STRING_LITERAL() != null || literal.DOLLAR_QUOTED_STRING() != null) {
-            return new StringType("VARCHAR", defaultValue == null ? 0 : String.valueOf(defaultValue).length());
+            return new StringType("VARCHAR",
+                defaultValue == null ? 0 : CodePointText.length(String.valueOf(defaultValue)));
         }
         if (literal.INTEGER_LITERAL() != null) {
             return NumericLiteralTypes.forDecimal(new BigDecimal(literal.INTEGER_LITERAL().getText()));
@@ -366,6 +370,11 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
         if (dataType instanceof StringType) {
             return source instanceof StringType;
+        }
+        if (IntervalCasts.isIntervalType(dataType)) {
+            // An interval column refuses a text DEFAULT though a write reads text: DEFAULT '1' is out while
+            // DEFAULT INTERVAL '1' DAY and DEFAULT NULL are taken (live-verified).
+            return !(source instanceof StringType);
         }
         if (dataType instanceof BooleanType || dataType instanceof VariantType) {
             return !(source instanceof NumericType);
@@ -581,7 +590,10 @@ public class ColumnDefinitionParser implements CommandHandler {
         rejectUncoercibleDefault(colName, dataType, defaultExpression, defaultValue);
         rejectNonNullableFieldsInNullableStructure(colName, dataType, notNull);
 
-        final TableColumn column = new TableColumn(colName, dataType, !notNull, defaultValue,
+        // A PRIMARY KEY column is NOT NULL whether or not the definition says so, and an explicit NULL
+        // beside the key does not win. The rule belongs to the declaration: a key added later by
+        // ALTER TABLE ... ADD PRIMARY KEY leaves nullability alone.
+        final TableColumn column = new TableColumn(colName, dataType, !notNull && !primaryKey, defaultValue,
                                     primaryKey, unique, autoIncrement, identityStart, identityIncrement);
         if (projectionPolicy != null) {
             if (catalog.findProjectionPolicy(projectionPolicy) == null) {
@@ -621,6 +633,14 @@ public class ColumnDefinitionParser implements CommandHandler {
         final String comment = extractComment(colDef.columnCommentClause());
         if (comment != null) {
             column.setComment(comment);
+        }
+
+        // A tag written in the column definition is the column's own, as ALTER ... MODIFY COLUMN ... SET TAG sets
+        // it; its value has already been judged with the statement's others.
+        for (final FrostlakeParser.ColumnConstraintContext constraint : colDef.columnConstraint()) {
+            if (constraint.tagList() != null) {
+                InlineTags.apply(column, constraint.tagList(), queryExecutor);
+            }
         }
 
         // Set collation if specified
@@ -735,13 +755,15 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (!tablePrimaryKeys.isEmpty() || !tableUniqueColumns.isEmpty()) {
             final List<TableColumn> updatedColumns = new ArrayList<>();
             for (final TableColumn col : columns) {
-                final boolean isPrimaryKey = namesContain(tablePrimaryKeys, col.getName());
-                final boolean isUnique = namesContain(tableUniqueColumns, col.getName());
+                final boolean isPrimaryKey = namesContain(tablePrimaryKeys, col.getName(), columns);
+                final boolean isUnique = namesContain(tableUniqueColumns, col.getName(), columns);
 
                 final TableColumn newCol = new TableColumn(
                     col.getName(),
                     col.getDataType(),
-                    col.isNullable(),
+                    // Named out of line, the key makes each of its columns NOT NULL exactly as the
+                    // inline form does, over whatever the column definition declared.
+                    col.isNullable() && !isPrimaryKey,
                     col.getDefaultValue(),
                     isPrimaryKey || col.isPrimaryKey(),
                     isUnique || col.isUnique(),
@@ -770,10 +792,26 @@ public class ColumnDefinitionParser implements CommandHandler {
         return columns;
     }
 
-    /** Case-insensitive membership of a column name in a table-level constraint's column list. */
-    private boolean namesContain(final List<String> names, final String columnName) {
+    /**
+     * Whether a table-level constraint's column list names this column: by its exact name, and in another case
+     * only when no column carries the listed name exactly — beside a quoted {@code "x"}, {@code PRIMARY KEY ("x")}
+     * names that column alone and not {@code X} (live-verified).
+     */
+    private boolean namesContain(final List<String> names, final String columnName, final List<TableColumn> columns) {
         for (final String name : names) {
-            if (name.equalsIgnoreCase(columnName)) {
+            if (name.equals(columnName)) {
+                return true;
+            }
+            if (name.equalsIgnoreCase(columnName) && !namesAColumnExactly(columns, name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean namesAColumnExactly(final List<TableColumn> columns, final String name) {
+        for (final TableColumn column : columns) {
+            if (name.equals(column.getName())) {
                 return true;
             }
         }
@@ -1294,7 +1332,9 @@ public class ColumnDefinitionParser implements CommandHandler {
             // A DEFAULT reads its literal here rather than through the expression AST, so it needs the
             // reader's width refusal of its own.
             IntegerLiteralRange.reject(ctx.INTEGER_LITERAL().getSymbol());
-            return Long.parseLong(ctx.INTEGER_LITERAL().getText());
+            // Up to 38 digits are an exact NUMBER(38,0); one past a long's range stays exact as a BigDecimal.
+            final BigInteger digits = new BigInteger(ctx.INTEGER_LITERAL().getText());
+            return digits.bitLength() < Long.SIZE ? (Object) Long.valueOf(digits.longValue()) : new BigDecimal(digits);
         } else if (ctx.FLOAT_LITERAL() != null) {
             return Double.parseDouble(ctx.FLOAT_LITERAL().getText());
         } else if (ctx.STRING_LITERAL() != null) {

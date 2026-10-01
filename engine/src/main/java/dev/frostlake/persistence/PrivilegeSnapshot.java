@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 
 /**
  * Serializable snapshot of privilege grant
@@ -29,4 +30,11 @@ public class PrivilegeSnapshot implements Serializable {
     public String privilege;
     // Column name for a column-level grant (GRANT … ON col), or null for an object-level grant.
     public String column;
+
+    // Null on old snapshots, which restore the grant with the default grantor and no grant option.
+    public String grantor;
+    public Boolean grantOption;
+    // When the privilege was granted. Null on old snapshots and for a grant with no recorded moment, which
+    // SHOW GRANTS dates by the grantee's creation.
+    public Instant grantedOn;
 }

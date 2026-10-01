@@ -30,6 +30,9 @@ public class ResultSet {
     // cannot say so: a query may name its columns the same way ("number of rows inserted"), and a
     // RESULT_SCAN over a DML result is a query — only the statement that built the grid knows.
     private Long updateCount;
+    // What a JDBC client's getUpdateCount() reports for the statement this result answers, or null when
+    // the statement answers rows to read. Set by the statement that ran; see JdbcUpdateCounts.
+    private Long jdbcUpdateCount;
     // The statistics this result still carries of the catalog table beneath it, when it is a projection
     // of one filtered at most by a WHERE; null otherwise. See RelationStatistics.
     private RelationStatistics relationStatistics;
@@ -74,6 +77,13 @@ public class ResultSet {
     }
 
     public int getColumnIndex(final String columnName) {
+        // The column spelled exactly so first — two result columns may differ only in case — and only
+        // then the first whose name matches ignoring case.
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).getName().equals(columnName)) {
+                return i;
+            }
+        }
         for (int i = 0; i < columns.size(); i++) {
             if (columns.get(i).getName().equalsIgnoreCase(columnName)) {
                 return i;
@@ -107,6 +117,29 @@ public class ResultSet {
      */
     public ResultSet markUpdateCount(final long count) {
         this.updateCount = Long.valueOf(count);
+        return this;
+    }
+
+    /**
+     * What a JDBC client reports as the update count of the statement this result answers — the count
+     * Snowflake's driver hands back from {@code getUpdateCount()} after {@code execute()} answers false —
+     * or null when the statement answers rows, which the driver hands back as a result set instead.
+     *
+     * @return the statement's update count, or null
+     */
+    public Long getJdbcUpdateCount() {
+        return jdbcUpdateCount;
+    }
+
+    /**
+     * Record the update count a JDBC client reports for the statement this result answers.
+     *
+     * @param count the statement's update count — the affected rows of DML, 0 for every other statement
+     *              that answers no rows — or null when the statement answers rows
+     * @return this result
+     */
+    public ResultSet markJdbcUpdateCount(final Long count) {
+        this.jdbcUpdateCount = count;
         return this;
     }
 

@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.IntegerResultWidths;
+import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 
@@ -29,7 +30,7 @@ public class Ascii extends TextArgumentFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final String s = args.get(0).toString();
-        return s.isEmpty() ? 0L : (long) s.charAt(0);
+        return CodePointText.leadByte(s);
     }
 
     @Override

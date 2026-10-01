@@ -72,7 +72,7 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
 
     /** Functions allowed to THROW on a NULL argument (a required identifier/name argument). */
     private static final Set<String> THROW_WHITELIST = new HashSet<>(Arrays.asList(
-        "GET_DDL", "NEXTVAL", "CURRVAL",
+        "NEXTVAL", "CURRVAL",
         // Catalog-only entry: the call shape TRY_CAST(x, ...) is a live syntax error (only
         // TRY_CAST(expr AS type) exists, and it parses as a cast expression), so the registered
         // function exists solely for SHOW FUNCTIONS and refuses direct evaluation.
@@ -106,6 +106,9 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         // TRY_TO_UUID is the same TRY_CAST: live refuses TRY_TO_UUID(NULL) as "Function TRY_CAST cannot
         // be used with arguments of types NULL and UUID".
         "TRY_TO_UUID",
+        // So is TRY_TO_DECFLOAT: "Function TRY_CAST cannot be used with arguments of types NULL and
+        // DECFLOAT(38)".
+        "TRY_TO_DECFLOAT",
         "VECTOR_COSINE_SIMILARITY", "VECTOR_INNER_PRODUCT", "VECTOR_L1_DISTANCE",
         "VECTOR_L2_DISTANCE", "VECTOR_NORMALIZE", "VECTOR_TRUNC",
         // A projection policy's verdict takes a NAMED argument and nothing else: live refuses the
@@ -117,7 +120,18 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         "AGGREGATION_CONSTRAINT",
         // A join policy's verdict refuses a NULL argument outright rather than folding the call
         // away, in both the named and the positional spelling (measured).
-        "JOIN_CONSTRAINT"
+        "JOIN_CONSTRAINT",
+        // A database role NAME cannot be NULL: live refuses IS_DATABASE_ROLE_IN_SESSION(NULL) while the
+        // statement compiles, "invalid argument for function [IS_DATABASE_ROLE_IN_SESSION] unexpected
+        // argument [NULL] at position 0," (measured).
+        "IS_DATABASE_ROLE_IN_SESSION",
+        // A seed cannot be NULL: live refuses RANDOM(NULL) when the row reads it, "Invalid parameter value:
+        // NULL. Reason: seed must not be NULL" (measured).
+        "RANDOM",
+        // A stage function's stage cannot be NULL: live refuses it while the statement compiles, "Argument 1
+        // to function 'BUILD_STAGE_FILE_URL' cannot be null or empty." — the same for all six (measured).
+        "GET_PRESIGNED_URL", "BUILD_SCOPED_FILE_URL", "BUILD_STAGE_FILE_URL", "GET_ABSOLUTE_PATH",
+        "GET_RELATIVE_PATH", "GET_STAGE_LOCATION"
     ));
 
     /**

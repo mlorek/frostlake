@@ -64,7 +64,8 @@ final class NumericFormatAlternative {
     /**
      * The value the text spells under this alternative. Without an S or an MI a sign may lead the text,
      * and where the alternative starts with a literal sign the text is read again without one, so '-1'
-     * under '-9' is 1 (live-verified).
+     * under '-9' is 1 (live-verified). An alternative that starts exact places its sign itself, so its
+     * text is read once.
      *
      * @param text the text
      * @return the value, or null where the text does not fit
@@ -72,7 +73,7 @@ final class NumericFormatAlternative {
     BigDecimal read(final String text) {
         final boolean implicitSign = !explicitSign && !hexadecimal;
         final BigDecimal value = new NumericFormatReader(text, this).read(implicitSign);
-        if (value == null && implicitSign) {
+        if (value == null && implicitSign && !NumericFormatReader.startsExact(this)) {
             return new NumericFormatReader(text, this).read(false);
         }
         return value;

@@ -25,6 +25,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.MaskingPolicy;
@@ -83,7 +84,20 @@ public class CommentCommandHandler implements CommandHandler {
         return queryExecutor;
     }
 
+    /** The dynamic table a name reaches, or null when its schema holds none by that name. */
+    private DynamicTable dynamicTableOrNull(final String[] parts) {
+        final Schema schema;
+        try {
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        } catch (final RuntimeException noSchema) {
+            return null;
+        }
+        final String name = parts[parts.length - 1];
+        return schema.hasDynamicTable(name) ? schema.getDynamicTable(name) : null;
+    }
+
     public Object handle(final FrostlakeParser.CommentStatementContext ctx) {
+        RoutineSignatureForm.requireTypesOnly(ctx.dataTypeList());
         try {
             final boolean ifExists = ctx.if_exists() != null;
             final String comment = visitor.extractStringLiteral(ctx.STRING_LITERAL());
@@ -146,9 +160,29 @@ public class CommentCommandHandler implements CommandHandler {
                 schema.setComment(comment);
                 logger.trace("Set comment on schema: {}", schemaName);
 
+            } else if (ctx.DYNAMIC() != null) {
+                // COMMENT ON DYNAMIC TABLE sets the comment cell; the re-printed CREATE text keeps what it was
+                // written with (live-verified).
+                final DynamicTable dynamicTable = dynamicTableOrNull(qualifiedNameParts(ctx.qualifiedName()));
+                if (dynamicTable == null) {
+                    if (ifExists) {
+                        return null;
+                    }
+                    final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table",
+                        catalog.requireOwningSchema(QualifiedName.of(parts)).qualifiedName(parts[parts.length - 1])));
+                }
+                dynamicTable.setComment(comment);
+
             } else if (ctx.TABLE() != null) {
                 // COMMENT ON TABLE
                 final String tableName = visitor.getText(ctx.qualifiedName());
+                // A dynamic table is a table to COMMENT ON TABLE too (live-verified).
+                final DynamicTable dynamicTable = dynamicTableOrNull(qualifiedNameParts(ctx.qualifiedName()));
+                if (dynamicTable != null) {
+                    dynamicTable.setComment(comment);
+                    return null;
+                }
                 final Table table;
                 try {
                     table = catalog.resolveTable(QualifiedName.of(qualifiedNameParts(ctx.qualifiedName())));
@@ -215,7 +249,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Column does not exist (IF EXISTS): {}", columnName);
                         return null;
                     }
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Object", columnName));
+                    throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", columnName));
                 }
                 column.setComment(comment);
                 logger.trace("Set comment on column: {}", qualifiedColumn);
@@ -255,16 +289,16 @@ public class CommentCommandHandler implements CommandHandler {
                 try {
                     if (parts.length == 1) {
                         schema = visitor.resolveCurrentSchema();
-                        funcName = parts[0].toUpperCase();
+                        funcName = parts[0];
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
                             throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        funcName = parts[1].toUpperCase();
+                        funcName = parts[1];
                     } else if (parts.length == 3) {
                         schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        funcName = parts[2].toUpperCase();
+                        funcName = parts[2];
                     } else {
                         throw new RuntimeException("Invalid function name: " + functionName);
                     }
@@ -278,16 +312,7 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Function function;
                 try {
-                    if (ctx.dataTypeList() != null) {
-                        final List<DataType> argumentTypes = new ArrayList<>();
-                        for (final FrostlakeParser.DataTypeNameContext typeCtx : ctx.dataTypeList().dataTypeName()) {
-                            final DataType dataType = visitor.parseDataType(typeCtx, null);
-                            argumentTypes.add(dataType);
-                        }
-                        function = schema.getFunctionBySignature(funcName, argumentTypes);
-                    } else {
-                        function = schema.getFunction(funcName);
-                    }
+                    function = schema.getFunctionBySignature(funcName, writtenSignature(ctx));
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Function does not exist (IF EXISTS): {}", functionName);
@@ -296,9 +321,7 @@ public class CommentCommandHandler implements CommandHandler {
                     // A signature that matches nothing — wrong types, wrong arity, or no such name at
                     // all — is live's plain does-not-exist, FULLY QUALIFIED and WITHOUT the argument
                     // list the statement spelled.
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Function",
-                        ((parts.length == 3 ? parts[0] : catalog.getCurrentDatabase()) + "."
-                            + schema.getName() + "." + funcName).toUpperCase()));
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Function", schema.qualifiedName(funcName)));
                 }
                 function.setComment(comment);
                 logger.trace("Set comment on function: {}", functionName);
@@ -313,16 +336,16 @@ public class CommentCommandHandler implements CommandHandler {
                 try {
                     if (parts.length == 1) {
                         schema = visitor.resolveCurrentSchema();
-                        procName = parts[0].toUpperCase();
+                        procName = parts[0];
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
                             throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        procName = parts[1].toUpperCase();
+                        procName = parts[1];
                     } else if (parts.length == 3) {
                         schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        procName = parts[2].toUpperCase();
+                        procName = parts[2];
                     } else {
                         throw new RuntimeException("Invalid procedure name: " + procedureName);
                     }
@@ -336,16 +359,7 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Procedure procedure;
                 try {
-                    if (ctx.dataTypeList() != null) {
-                        final List<DataType> argumentTypes = new ArrayList<>();
-                        for (final FrostlakeParser.DataTypeNameContext typeCtx : ctx.dataTypeList().dataTypeName()) {
-                            final DataType dataType = visitor.parseDataType(typeCtx, null);
-                            argumentTypes.add(dataType);
-                        }
-                        procedure = schema.getProcedureBySignature(procName, argumentTypes);
-                    } else {
-                        procedure = schema.getProcedure(procName);
-                    }
+                    procedure = schema.getProcedureBySignature(procName, writtenSignature(ctx));
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Procedure does not exist (IF EXISTS): {}", procedureName);
@@ -353,9 +367,7 @@ public class CommentCommandHandler implements CommandHandler {
                     }
                     // Same shape as the function branch: a signature that matches nothing is a plain
                     // does-not-exist, fully qualified, without the argument list.
-                    throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure",
-                        ((parts.length == 3 ? parts[0] : catalog.getCurrentDatabase()) + "."
-                            + schema.getName() + "." + procName).toUpperCase()));
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", schema.qualifiedName(procName)));
                 }
                 procedure.setComment(comment);
                 logger.trace("Set comment on procedure: {}", procedureName);
@@ -624,6 +636,20 @@ public class CommentCommandHandler implements CommandHandler {
             return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
         }
         return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+    }
+
+    /**
+     * The argument types a COMMENT ON FUNCTION or PROCEDURE writes after the name: the signature that picks
+     * one overload, empty for the one taking no arguments.
+     */
+    private List<DataType> writtenSignature(final FrostlakeParser.CommentStatementContext ctx) {
+        final List<DataType> argumentTypes = new ArrayList<>();
+        if (ctx.dataTypeList() != null) {
+            for (final FrostlakeParser.DataTypeNameContext typeCtx : ctx.dataTypeList().dataTypeName()) {
+                argumentTypes.add(visitor.parseDataType(typeCtx, null));
+            }
+        }
+        return argumentTypes;
     }
 
     /** Simple (unqualified) object name — the parse tree's last identifier part. */

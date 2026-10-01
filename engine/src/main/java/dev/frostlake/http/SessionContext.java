@@ -17,6 +17,7 @@
 package dev.frostlake.http;
 
 import dev.frostlake.executor.StatementCount;
+import dev.frostlake.security.SessionSettings;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -45,6 +46,8 @@ public class SessionContext {
 
     // Session-specific variables (for stored procedures)
     private final Map<String, Object> sessionVariables;
+    // The parameters ALTER SESSION sets and the variables SET defines, this session's own.
+    private final SessionSettings settings = new SessionSettings();
 
     public SessionContext() {
         this(UUID.randomUUID().toString(), "SNOWFLAKE", "PUBLIC");
@@ -65,6 +68,11 @@ public class SessionContext {
         this.autoCommit = true;
         this.inTransaction = false;
         this.sessionVariables = new HashMap<>();
+    }
+
+    /** This session's parameters and variables, which the engine reads while one of its requests runs. */
+    public SessionSettings getSettings() {
+        return settings;
     }
 
     public void touch() {

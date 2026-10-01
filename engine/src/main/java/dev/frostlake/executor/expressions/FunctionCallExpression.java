@@ -48,6 +48,14 @@ public class FunctionCallExpression implements Expression {
     // The single ORDER BY expression of a trailing WITHIN GROUP (ORDER BY x), read off the parse tree at
     // build. Null when the call has no WITHIN GROUP, or when its ORDER BY holds anything but one item.
     private Expression withinGroupOrdered;
+    /** The quantifier written before the arguments, {@code DISTINCT} or {@code ALL}, or null. */
+    private String quantifier;
+    /** The keys of a WITHIN GROUP clause as written, or null when the call has none. */
+    private List<Expression> withinGroupKeys;
+    /** The operator a call was written as ({@code RLIKE}, {@code REGEXP}), or null for a written call. */
+    private String operatorSpelling;
+    /** Whether that operator was written with NOT. */
+    private boolean operatorNegated;
 
     public FunctionCallExpression(final String functionName, final List<Expression> arguments) {
         this(functionName, arguments, false, false);
@@ -84,6 +92,25 @@ public class FunctionCallExpression implements Expression {
         copy.starIlike = starIlike;
         copy.nameParts = nameParts;
         copy.withinGroupOrdered = withinGroupOrdered;
+        copy.quantifier = quantifier;
+        copy.withinGroupKeys = withinGroupKeys;
+        return copy;
+    }
+
+    /**
+     * This call with its star argument replaced by the columns the star stands for: from here on an ordinary
+     * call over those arguments, judged, typed and evaluated as if they had been written out.
+     *
+     * @param columns the star's columns, in order
+     * @return the spliced call
+     */
+    public FunctionCallExpression withStarSpliced(final List<Expression> columns) {
+        final FunctionCallExpression copy = new FunctionCallExpression(functionName, columns, distinct, false);
+        copy.position = position;
+        copy.nameParts = nameParts;
+        copy.withinGroupOrdered = withinGroupOrdered;
+        copy.quantifier = quantifier;
+        copy.withinGroupKeys = withinGroupKeys;
         return copy;
     }
 
@@ -110,6 +137,28 @@ public class FunctionCallExpression implements Expression {
     /** The expression a trailing WITHIN GROUP orders by — see {@link #describeWithinGroup}. */
     public Expression getWithinGroupOrdered() {
         return withinGroupOrdered;
+    }
+
+    /**
+     * Record how the call was written around its arguments: the quantifier before them and the keys of a WITHIN
+     * GROUP after them, which the name walk judges for the function the call names.
+     *
+     * @param written the quantifier, {@code DISTINCT} or {@code ALL}, or null
+     * @param keys    the WITHIN GROUP keys, or null when the call has no WITHIN GROUP
+     */
+    public void describeShape(final String written, final List<Expression> keys) {
+        this.quantifier = written;
+        this.withinGroupKeys = keys;
+    }
+
+    /** The quantifier written before the arguments, {@code DISTINCT} or {@code ALL}, or null. */
+    public String getQuantifier() {
+        return quantifier;
+    }
+
+    /** The keys of the call's WITHIN GROUP clause, or null when it has none. */
+    public List<Expression> getWithinGroupKeys() {
+        return withinGroupKeys;
     }
 
     public List<Expression> getArguments() {
@@ -207,6 +256,32 @@ public class FunctionCallExpression implements Expression {
 
     public SourcePosition getPosition() {
         return position;
+    }
+
+    /**
+     * The operator this call was written as, which is the name a refusal gives it: {@code o RLIKE 'x'} is
+     * planned as REGEXP_LIKE but refused as 'RLIKE', {@code o REGEXP 'x'} as 'REGEXP'.
+     *
+     * @return the operator's spelling, or null for a call written as a call
+     */
+    public String getOperatorSpelling() {
+        return operatorSpelling;
+    }
+
+    /** Whether the operator this call was written as carried NOT — see {@link #getOperatorSpelling()}. */
+    public boolean isOperatorNegated() {
+        return operatorNegated;
+    }
+
+    /**
+     * Records the operator this call was written as.
+     *
+     * @param spelling the operator, upper-cased
+     * @param negated  whether it was written with NOT
+     */
+    public void markOperator(final String spelling, final boolean negated) {
+        this.operatorSpelling = spelling;
+        this.operatorNegated = negated;
     }
 
     public void setPosition(final SourcePosition position) {

@@ -16,9 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.executor.expressions.ImpliedTextNumber;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
 
 import java.util.Arrays;
 import java.util.List;
@@ -33,7 +36,10 @@ public class Left extends TextArgumentFunction {
     public Object evaluate(final List<Object> args) {
         final Object value = args.get(0);
         if (value == null) return null;
-        final int length = ((Number) args.get(1)).intValue();
+        // A text count is read as the number it spells, and refused on the row where it spells none.
+        final Object count = args.get(1);
+        final int length = count instanceof CharSequence
+            ? ImpliedTextNumber.read((CharSequence) count).intValue() : ((Number) count).intValue();
         if (value instanceof BinaryValue) {
             final byte[] bytes = ((BinaryValue) value).bytes();
             if (length < 0) return BinaryValue.of(new byte[0]);
@@ -42,8 +48,7 @@ public class Left extends TextArgumentFunction {
         }
         final String str = value.toString();
         if (length < 0) return "";
-        if (length >= str.length()) return str;
-        return str.substring(0, length);
+        return CodePointText.slice(str, 0, length);
     }
 
     @Override
@@ -51,4 +56,13 @@ public class Left extends TextArgumentFunction {
 
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /**
+     * A BOOLEAN count is refused by the argument types, as SUBSTR (live-verified); a BOOLEAN text reads as its
+     * text.
+     */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

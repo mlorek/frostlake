@@ -24,7 +24,10 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 public class ColumnData {
     private String name;
     private String dataType;
+    // A fixed-point NUMBER's precision; 0 for every other type.
     private int precision;
+    // A fixed-point NUMBER's scale, an interval's field code, or a time or timestamp's fractional-second
+    // precision (see ResultSetData); 0 for every other type.
     private int scale;
     // Whether the column is KNOWN to accept NULL. A Boolean rather than a boolean so ABSENT stays
     // distinguishable from false: a server that predates this field sends neither, and the client

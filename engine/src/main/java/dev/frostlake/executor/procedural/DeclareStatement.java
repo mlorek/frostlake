@@ -24,6 +24,8 @@ public class DeclareStatement extends Statement {
     private final DataType declaredType;
     private int initializerLine = -1;
     private int initializerPosition = -1;
+    /** The own static type of an untyped declaration's initialiser, or null. */
+    private DataType initialiserType;
 
     public DeclareStatement(final String variableName, final Object defaultValue) {
         this(variableName, defaultValue, null);
@@ -61,5 +63,14 @@ public class DeclareStatement extends Statement {
 
     public int getInitializerPosition() {
         return initializerPosition;
+    }
+
+    /** The own static type of an untyped declaration's initialiser, which a bare RETURN of the name reports. */
+    public DataType getInitialiserType() {
+        return initialiserType;
+    }
+
+    public void setInitialiserType(final DataType initialiserType) {
+        this.initialiserType = initialiserType;
     }
 }

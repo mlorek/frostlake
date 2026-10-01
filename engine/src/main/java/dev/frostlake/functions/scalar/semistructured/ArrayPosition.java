@@ -17,8 +17,10 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.IntegerResultWidths;
+import dev.frostlake.values.UuidTextNode;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -41,7 +43,8 @@ public class ArrayPosition extends BuiltInFunction {
         for (int i = 0; i < arr.size(); i++) {
             final JsonNode el = arr.get(i);
             if (ArrayFunctionHelper.nodesEqual(el, target)) return (long) i;
-            if (value != null && el.isTextual() && el.asText().equals(value.toString())) return (long) i;
+            if (value != null && el.isTextual() && UuidTextNode.holds(el) == UuidTextNode.holds(target)
+                    && el.asText().equals(value.toString())) return (long) i;
         }
         return null;
     }
@@ -50,4 +53,10 @@ public class ArrayPosition extends BuiltInFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /** A VECTOR is no ARRAY: the account refuses it by the argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

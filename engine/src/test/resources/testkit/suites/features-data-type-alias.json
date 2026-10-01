@@ -1,105 +1,444 @@
 {
   "suite": "features-data-type-alias",
-  "description": "Snowflake's data-type vocabulary is mostly ALIASES onto a handful of real types, measured through INFORMATION_SCHEMA.COLUMNS as DATA_TYPE/precision/scale/char-length shapes (absent numbers rendered '-'): NUMBER synonyms (DECIMAL/NUMERIC/DEC) keep precision and scale, every integer spelling is NUMBER(38,0) (no narrower range for SMALLINT/TINYINT/BYTEINT), the floating family is FLOAT without precision, varying character spellings default to 16777216 and the fixed three to length 1 (X VARYING is a VARCHAR whatever the head spelling), run-together timestamp spellings are the zoned types (TIMESTAMP WITH LOCAL TIME ZONE is LTZ not TIME), VARBINARY is BINARY. The values too, not just metadata: NUMBER-synonym columns and casts keep declared scale in arithmetic renders (2.500 / 1.5000, stringified so normalization cannot mask them), integer-alias casts round half away from zero, character-synonym casts are identity, the alias spellings stay usable as column names, VARYING only follows the fixed-length spellings, and unknown type names are rejected. Converted 1:1 from features/DataTypeAliasTest (now retired).",
-  "tags": ["features", "converted"],
+  "description": "Snowflake's data-type vocabulary is mostly ALIASES onto a handful of real types, measured through INFORMATION_SCHEMA.COLUMNS as DATA_TYPE/precision/scale/char-length shapes (absent numbers rendered '-'): NUMBER synonyms (DECIMAL/NUMERIC/DEC) keep precision and scale, every integer spelling is NUMBER(38,0) (no narrower range for SMALLINT/TINYINT/BYTEINT), the floating family is FLOAT without precision, varying character spellings (VARCHAR2 among them) default to 16777216 and the fixed three to length 1 (X VARYING is a VARCHAR whatever the head spelling), run-together timestamp spellings are the zoned types (TIMESTAMP WITH LOCAL TIME ZONE is LTZ not TIME), VARBINARY is BINARY. The values too, not just metadata: NUMBER-synonym columns and casts keep declared scale in arithmetic renders (2.500 / 1.5000, stringified so normalization cannot mask them), integer-alias casts round half away from zero, character-synonym casts are identity, the alias spellings stay usable as column names, VARYING only follows the fixed-length spellings, and unknown type names are rejected. Converted 1:1 from features/DataTypeAliasTest (now retired).",
+  "tags": [
+    "features",
+    "converted"
+  ],
   "tests": [
-    {"name": "number-synonyms-keep-their-precision-and-scale", "steps": [
-      {"sql": "CREATE TABLE t_num (c_number NUMBER, c_number_ps NUMBER(7,3), c_decimal DECIMAL, c_decimal_ps DECIMAL(7,3), c_numeric NUMERIC, c_numeric_ps NUMERIC(7,3), c_dec DEC, c_dec_ps DEC(7,3))"},
-      {"sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_NUM' ORDER BY COLUMN_NAME",
-       "expect": {"rows": [
-         ["C_DEC", "NUMBER/38/0/-"], ["C_DECIMAL", "NUMBER/38/0/-"],
-         ["C_DECIMAL_PS", "NUMBER/7/3/-"], ["C_DEC_PS", "NUMBER/7/3/-"],
-         ["C_NUMBER", "NUMBER/38/0/-"], ["C_NUMBER_PS", "NUMBER/7/3/-"],
-         ["C_NUMERIC", "NUMBER/38/0/-"], ["C_NUMERIC_PS", "NUMBER/7/3/-"]], "ordered": true}}
-    ]},
-    {"name": "every-integer-alias-is-number-38-by-0", "steps": [
-      {"sql": "CREATE TABLE t_int (c_int INT, c_integer INTEGER, c_bigint BIGINT, c_smallint SMALLINT, c_tinyint TINYINT, c_byteint BYTEINT)"},
-      {"sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_INT' ORDER BY COLUMN_NAME",
-       "expect": {"rows": [
-         ["C_BIGINT", "NUMBER/38/0/-"], ["C_BYTEINT", "NUMBER/38/0/-"],
-         ["C_INT", "NUMBER/38/0/-"], ["C_INTEGER", "NUMBER/38/0/-"],
-         ["C_SMALLINT", "NUMBER/38/0/-"], ["C_TINYINT", "NUMBER/38/0/-"]], "ordered": true}}
-    ]},
-    {"name": "every-floating-alias-is-float-without-precision", "steps": [
-      {"sql": "CREATE TABLE t_flt (c_float FLOAT, c_float4 FLOAT4, c_float8 FLOAT8, c_double DOUBLE, c_double_p DOUBLE PRECISION, c_real REAL)"},
-      {"sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_FLT' ORDER BY COLUMN_NAME",
-       "expect": {"rows": [
-         ["C_DOUBLE", "FLOAT/-/-/-"], ["C_DOUBLE_P", "FLOAT/-/-/-"],
-         ["C_FLOAT", "FLOAT/-/-/-"], ["C_FLOAT4", "FLOAT/-/-/-"],
-         ["C_FLOAT8", "FLOAT/-/-/-"], ["C_REAL", "FLOAT/-/-/-"]], "ordered": true}}
-    ]},
-    {"name": "varying-character-aliases-default-to-the-full-length", "steps": [
-      {"sql": "CREATE TABLE t_var (c_varchar VARCHAR, c_varchar_n VARCHAR(10), c_string STRING, c_text TEXT, c_nvarchar NVARCHAR, c_nvarchar_n NVARCHAR(10), c_nvarchar2_n NVARCHAR2(10), c_char_v CHAR VARYING, c_char_v_n CHAR VARYING(10), c_character_v_n CHARACTER VARYING(10), c_nchar_v_n NCHAR VARYING(10))"},
-      {"sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_VAR' ORDER BY COLUMN_NAME",
-       "expect": {"rows": [
-         ["C_CHARACTER_V_N", "TEXT/-/-/10"],
-         ["C_CHAR_V", "TEXT/-/-/16777216"],
-         ["C_CHAR_V_N", "TEXT/-/-/10"],
-         ["C_NCHAR_V_N", "TEXT/-/-/10"],
-         ["C_NVARCHAR", "TEXT/-/-/16777216"],
-         ["C_NVARCHAR2_N", "TEXT/-/-/10"],
-         ["C_NVARCHAR_N", "TEXT/-/-/10"],
-         ["C_STRING", "TEXT/-/-/16777216"],
-         ["C_TEXT", "TEXT/-/-/16777216"],
-         ["C_VARCHAR", "TEXT/-/-/16777216"],
-         ["C_VARCHAR_N", "TEXT/-/-/10"]], "ordered": true}}
-    ]},
-    {"name": "fixed-character-aliases-default-to-length-one", "steps": [
-      {"sql": "CREATE TABLE t_fix (c_char CHAR, c_char_n CHAR(10), c_character CHARACTER, c_character_n CHARACTER(10), c_nchar NCHAR, c_nchar_n NCHAR(10))"},
-      {"sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_FIX' ORDER BY COLUMN_NAME",
-       "expect": {"rows": [
-         ["C_CHAR", "TEXT/-/-/1"],
-         ["C_CHARACTER", "TEXT/-/-/1"],
-         ["C_CHARACTER_N", "TEXT/-/-/10"],
-         ["C_CHAR_N", "TEXT/-/-/10"],
-         ["C_NCHAR", "TEXT/-/-/1"],
-         ["C_NCHAR_N", "TEXT/-/-/10"]], "ordered": true}}
-    ]},
-    {"name": "run-together-timestamp-spellings-are-the-zoned-types", "steps": [
-      {"sql": "CREATE TABLE t_ts (c_timestamp TIMESTAMP, c_datetime DATETIME, c_ts_ltz TIMESTAMP_LTZ, c_tsltz TIMESTAMPLTZ, c_ts_tz TIMESTAMP_TZ, c_tstz TIMESTAMPTZ, c_tsntz TIMESTAMPNTZ, c_ts_local TIMESTAMP WITH LOCAL TIME ZONE, c_varbinary VARBINARY)"},
-      {"sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_TS' ORDER BY COLUMN_NAME",
-       "expect": {"rows": [
-         ["C_DATETIME", "TIMESTAMP_NTZ/-/-/-"],
-         ["C_TIMESTAMP", "TIMESTAMP_NTZ/-/-/-"],
-         ["C_TSLTZ", "TIMESTAMP_LTZ/-/-/-"],
-         ["C_TSNTZ", "TIMESTAMP_NTZ/-/-/-"],
-         ["C_TSTZ", "TIMESTAMP_TZ/-/-/-"],
-         ["C_TS_LOCAL", "TIMESTAMP_LTZ/-/-/-"],
-         ["C_TS_LTZ", "TIMESTAMP_LTZ/-/-/-"],
-         ["C_TS_TZ", "TIMESTAMP_TZ/-/-/-"],
-         ["C_VARBINARY", "BINARY/-/-/-"]], "ordered": true}}
-    ]},
-    {"name": "number-synonym-columns-keep-the-declared-scale-in-arithmetic", "steps": [
-      {"sql": "CREATE TABLE t_scale (a NUMERIC(7,3), b NUMBER(7,3), c DECIMAL(7,3), d DEC(7,3))"},
-      {"sql": "INSERT INTO t_scale VALUES (1.5, 1.5, 1.5, 1.5)"},
-      {"sql": "SELECT '<' || (a + 1) || '>', '<' || (b + 1) || '>', '<' || (c + 1) || '>', '<' || (d + 1) || '>' FROM t_scale",
-       "expect": {"rows": [["<2.500>", "<2.500>", "<2.500>", "<2.500>"]]}}
-    ]},
-    {"name": "number-synonym-casts-keep-the-declared-scale", "steps": [
-      {"sql": "SELECT '<' || CAST(1.5 AS NUMERIC(8,4)) || '>', '<' || 1.5::NUMERIC(8,4) || '>', '<' || CAST(1.5 AS DEC(8,4)) || '>', '<' || 1.5::DEC(8,4) || '>'",
-       "expect": {"rows": [["<1.5000>", "<1.5000>", "<1.5000>", "<1.5000>"]]}}
-    ]},
-    {"name": "every-integer-alias-cast-rounds-half-away-from-zero", "steps": [
-      {"sql": "SELECT CAST(2.7 AS SMALLINT), CAST(2.5 AS TINYINT), CAST(-2.5 AS BYTEINT), CAST(2.7 AS INT), CAST(2.7 AS INTEGER), CAST(2.7 AS BIGINT)",
-       "expect": {"rows": [["3", "3", "-3", "3", "3", "3"]]}}
-    ]},
-    {"name": "character-synonym-casts-produce-the-same-value", "steps": [
-      {"sql": "SELECT CAST('ab' AS NVARCHAR2), CAST('ab' AS NVARCHAR), CAST('ab' AS CHARACTER VARYING), 'ab'::NCHAR VARYING",
-       "expect": {"rows": [["ab", "ab", "ab", "ab"]]}}
-    ]},
-    {"name": "the-alias-spellings-stay-usable-as-column-names", "steps": [
-      {"sql": "CREATE TABLE t_kw (dec INT, nvarchar2 INT, numeric INT, nchar INT)"},
-      {"sql": "INSERT INTO t_kw VALUES (1, 2, 3, 4)"},
-      {"sql": "SELECT dec, nvarchar2, numeric, nchar FROM t_kw",
-       "expect": {"rows": [["1", "2", "3", "4"]]}}
-    ]},
-    {"name": "varying-only-follows-the-fixed-length-spellings", "steps": [
-      {"sql": "CREATE TABLE t_bad_varying (a VARCHAR VARYING)", "expect": {"error": {}}},
-      {"sql": "CREATE TABLE t_bad_varying2 (a NVARCHAR VARYING)", "expect": {"error": {}}}
-    ]},
-    {"name": "an-unknown-type-name-is-rejected", "steps": [
-      {"sql": "CREATE TABLE t_bad_type (a FOOBAR)", "expect": {"error": {}}},
-      {"sql": "SELECT CAST(1 AS MEDIUMINT)", "expect": {"error": {}}}
-    ]}
+    {
+      "name": "number-synonyms-keep-their-precision-and-scale",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_num (c_number NUMBER, c_number_ps NUMBER(7,3), c_decimal DECIMAL, c_decimal_ps DECIMAL(7,3), c_numeric NUMERIC, c_numeric_ps NUMERIC(7,3), c_dec DEC, c_dec_ps DEC(7,3))"
+        },
+        {
+          "sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_NUM' ORDER BY COLUMN_NAME",
+          "expect": {
+            "rows": [
+              [
+                "C_DEC",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_DECIMAL",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_DECIMAL_PS",
+                "NUMBER/7/3/-"
+              ],
+              [
+                "C_DEC_PS",
+                "NUMBER/7/3/-"
+              ],
+              [
+                "C_NUMBER",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_NUMBER_PS",
+                "NUMBER/7/3/-"
+              ],
+              [
+                "C_NUMERIC",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_NUMERIC_PS",
+                "NUMBER/7/3/-"
+              ]
+            ],
+            "ordered": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "every-integer-alias-is-number-38-by-0",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_int (c_int INT, c_integer INTEGER, c_bigint BIGINT, c_smallint SMALLINT, c_tinyint TINYINT, c_byteint BYTEINT)"
+        },
+        {
+          "sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_INT' ORDER BY COLUMN_NAME",
+          "expect": {
+            "rows": [
+              [
+                "C_BIGINT",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_BYTEINT",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_INT",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_INTEGER",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_SMALLINT",
+                "NUMBER/38/0/-"
+              ],
+              [
+                "C_TINYINT",
+                "NUMBER/38/0/-"
+              ]
+            ],
+            "ordered": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "every-floating-alias-is-float-without-precision",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_flt (c_float FLOAT, c_float4 FLOAT4, c_float8 FLOAT8, c_double DOUBLE, c_double_p DOUBLE PRECISION, c_real REAL)"
+        },
+        {
+          "sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_FLT' ORDER BY COLUMN_NAME",
+          "expect": {
+            "rows": [
+              [
+                "C_DOUBLE",
+                "FLOAT/-/-/-"
+              ],
+              [
+                "C_DOUBLE_P",
+                "FLOAT/-/-/-"
+              ],
+              [
+                "C_FLOAT",
+                "FLOAT/-/-/-"
+              ],
+              [
+                "C_FLOAT4",
+                "FLOAT/-/-/-"
+              ],
+              [
+                "C_FLOAT8",
+                "FLOAT/-/-/-"
+              ],
+              [
+                "C_REAL",
+                "FLOAT/-/-/-"
+              ]
+            ],
+            "ordered": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "varying-character-aliases-default-to-the-full-length",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_var (c_varchar VARCHAR, c_varchar_n VARCHAR(10), c_string STRING, c_text TEXT, c_nvarchar NVARCHAR, c_nvarchar_n NVARCHAR(10), c_nvarchar2_n NVARCHAR2(10), c_varchar2 VARCHAR2, c_varchar2_n VARCHAR2(10), c_char_v CHAR VARYING, c_char_v_n CHAR VARYING(10), c_character_v_n CHARACTER VARYING(10), c_nchar_v_n NCHAR VARYING(10))"
+        },
+        {
+          "sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_VAR' ORDER BY COLUMN_NAME",
+          "expect": {
+            "rows": [
+              [
+                "C_CHARACTER_V_N",
+                "TEXT/-/-/10"
+              ],
+              [
+                "C_CHAR_V",
+                "TEXT/-/-/16777216"
+              ],
+              [
+                "C_CHAR_V_N",
+                "TEXT/-/-/10"
+              ],
+              [
+                "C_NCHAR_V_N",
+                "TEXT/-/-/10"
+              ],
+              [
+                "C_NVARCHAR",
+                "TEXT/-/-/16777216"
+              ],
+              [
+                "C_NVARCHAR2_N",
+                "TEXT/-/-/10"
+              ],
+              [
+                "C_NVARCHAR_N",
+                "TEXT/-/-/10"
+              ],
+              [
+                "C_STRING",
+                "TEXT/-/-/16777216"
+              ],
+              [
+                "C_TEXT",
+                "TEXT/-/-/16777216"
+              ],
+              [
+                "C_VARCHAR",
+                "TEXT/-/-/16777216"
+              ],
+              [
+                "C_VARCHAR2",
+                "TEXT/-/-/16777216"
+              ],
+              [
+                "C_VARCHAR2_N",
+                "TEXT/-/-/10"
+              ],
+              [
+                "C_VARCHAR_N",
+                "TEXT/-/-/10"
+              ]
+            ],
+            "ordered": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "fixed-character-aliases-default-to-length-one",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_fix (c_char CHAR, c_char_n CHAR(10), c_character CHARACTER, c_character_n CHARACTER(10), c_nchar NCHAR, c_nchar_n NCHAR(10))"
+        },
+        {
+          "sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_FIX' ORDER BY COLUMN_NAME",
+          "expect": {
+            "rows": [
+              [
+                "C_CHAR",
+                "TEXT/-/-/1"
+              ],
+              [
+                "C_CHARACTER",
+                "TEXT/-/-/1"
+              ],
+              [
+                "C_CHARACTER_N",
+                "TEXT/-/-/10"
+              ],
+              [
+                "C_CHAR_N",
+                "TEXT/-/-/10"
+              ],
+              [
+                "C_NCHAR",
+                "TEXT/-/-/1"
+              ],
+              [
+                "C_NCHAR_N",
+                "TEXT/-/-/10"
+              ]
+            ],
+            "ordered": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "run-together-timestamp-spellings-are-the-zoned-types",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_ts (c_timestamp TIMESTAMP, c_datetime DATETIME, c_ts_ltz TIMESTAMP_LTZ, c_tsltz TIMESTAMPLTZ, c_ts_tz TIMESTAMP_TZ, c_tstz TIMESTAMPTZ, c_tsntz TIMESTAMPNTZ, c_ts_local TIMESTAMP WITH LOCAL TIME ZONE, c_varbinary VARBINARY)"
+        },
+        {
+          "sql": "SELECT COLUMN_NAME, DATA_TYPE || '/' || COALESCE(TO_VARCHAR(NUMERIC_PRECISION), '-') || '/' || COALESCE(TO_VARCHAR(NUMERIC_SCALE), '-') || '/' || COALESCE(TO_VARCHAR(CHARACTER_MAXIMUM_LENGTH), '-') FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'T_TS' ORDER BY COLUMN_NAME",
+          "expect": {
+            "rows": [
+              [
+                "C_DATETIME",
+                "TIMESTAMP_NTZ/-/-/-"
+              ],
+              [
+                "C_TIMESTAMP",
+                "TIMESTAMP_NTZ/-/-/-"
+              ],
+              [
+                "C_TSLTZ",
+                "TIMESTAMP_LTZ/-/-/-"
+              ],
+              [
+                "C_TSNTZ",
+                "TIMESTAMP_NTZ/-/-/-"
+              ],
+              [
+                "C_TSTZ",
+                "TIMESTAMP_TZ/-/-/-"
+              ],
+              [
+                "C_TS_LOCAL",
+                "TIMESTAMP_LTZ/-/-/-"
+              ],
+              [
+                "C_TS_LTZ",
+                "TIMESTAMP_LTZ/-/-/-"
+              ],
+              [
+                "C_TS_TZ",
+                "TIMESTAMP_TZ/-/-/-"
+              ],
+              [
+                "C_VARBINARY",
+                "BINARY/-/-/-"
+              ]
+            ],
+            "ordered": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "number-synonym-columns-keep-the-declared-scale-in-arithmetic",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_scale (a NUMERIC(7,3), b NUMBER(7,3), c DECIMAL(7,3), d DEC(7,3))"
+        },
+        {
+          "sql": "INSERT INTO t_scale VALUES (1.5, 1.5, 1.5, 1.5)"
+        },
+        {
+          "sql": "SELECT '<' || (a + 1) || '>', '<' || (b + 1) || '>', '<' || (c + 1) || '>', '<' || (d + 1) || '>' FROM t_scale",
+          "expect": {
+            "rows": [
+              [
+                "<2.500>",
+                "<2.500>",
+                "<2.500>",
+                "<2.500>"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "number-synonym-casts-keep-the-declared-scale",
+      "steps": [
+        {
+          "sql": "SELECT '<' || CAST(1.5 AS NUMERIC(8,4)) || '>', '<' || 1.5::NUMERIC(8,4) || '>', '<' || CAST(1.5 AS DEC(8,4)) || '>', '<' || 1.5::DEC(8,4) || '>'",
+          "expect": {
+            "rows": [
+              [
+                "<1.5000>",
+                "<1.5000>",
+                "<1.5000>",
+                "<1.5000>"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "every-integer-alias-cast-rounds-half-away-from-zero",
+      "steps": [
+        {
+          "sql": "SELECT CAST(2.7 AS SMALLINT), CAST(2.5 AS TINYINT), CAST(-2.5 AS BYTEINT), CAST(2.7 AS INT), CAST(2.7 AS INTEGER), CAST(2.7 AS BIGINT)",
+          "expect": {
+            "rows": [
+              [
+                "3",
+                "3",
+                "-3",
+                "3",
+                "3",
+                "3"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "character-synonym-casts-produce-the-same-value",
+      "steps": [
+        {
+          "sql": "SELECT CAST('ab' AS VARCHAR2), CAST('ab' AS NVARCHAR2), CAST('ab' AS NVARCHAR), CAST('ab' AS CHARACTER VARYING), 'ab'::NCHAR VARYING",
+          "expect": {
+            "rows": [
+              [
+                "ab",
+                "ab",
+                "ab",
+                "ab",
+                "ab"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-alias-spellings-stay-usable-as-column-names",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_kw (dec INT, nvarchar2 INT, varchar2 INT, numeric INT, nchar INT)"
+        },
+        {
+          "sql": "INSERT INTO t_kw VALUES (1, 2, 5, 3, 4)"
+        },
+        {
+          "sql": "SELECT dec, nvarchar2, varchar2, numeric, nchar FROM t_kw",
+          "expect": {
+            "rows": [
+              [
+                "1",
+                "2",
+                "5",
+                "3",
+                "4"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "varying-only-follows-the-fixed-length-spellings",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_bad_varying (a VARCHAR VARYING)",
+          "expect": {
+            "error": {}
+          }
+        },
+        {
+          "sql": "CREATE TABLE t_bad_varying2 (a NVARCHAR VARYING)",
+          "expect": {
+            "error": {}
+          }
+        },
+        {
+          "sql": "CREATE TABLE t_bad_varying3 (a VARCHAR2 VARYING)",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-unknown-type-name-is-rejected",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t_bad_type (a FOOBAR)",
+          "expect": {
+            "error": {}
+          }
+        },
+        {
+          "sql": "SELECT CAST(1 AS MEDIUMINT)",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    }
   ]
 }

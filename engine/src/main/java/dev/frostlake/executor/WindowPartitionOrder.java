@@ -21,14 +21,13 @@ import dev.frostlake.storage.Row;
 import java.util.Map;
 
 /**
- * First-occurrence 1-based position, RANK and DENSE_RANK of every row of ONE sorted window
- * partition, built in a single pass over the partition. Keys are ROW VALUES with first-equal-wins
- * puts, which reproduces the former per-output-row linear scans exactly: duplicate rows all read
- * the FIRST duplicate's numbers.
+ * RANK and DENSE_RANK of every row of ONE sorted window partition, with each position's peer bounds,
+ * built in a single pass over the partition. The rank maps are keyed by row IDENTITY: rows equal in
+ * every column are still distinct rows. A row's own position is not kept here — it is read off the
+ * batch by index, since one row object can stand in a partition more than once.
  */
 public final class WindowPartitionOrder {
 
-    private final Map<Row, Long> positionByRow;
     private final Map<Row, Long> rankByRow;
     private final Map<Row, Long> denseRankByRow;
     // Peer-group bounds per partition INDEX: firstPeerByIndex[i]/lastPeerByIndex[i] are the first
@@ -37,19 +36,12 @@ public final class WindowPartitionOrder {
     private final int[] firstPeerByIndex;
     private final int[] lastPeerByIndex;
 
-    public WindowPartitionOrder(final Map<Row, Long> positionByRow, final Map<Row, Long> rankByRow,
-                                final Map<Row, Long> denseRankByRow,
+    public WindowPartitionOrder(final Map<Row, Long> rankByRow, final Map<Row, Long> denseRankByRow,
                                 final int[] firstPeerByIndex, final int[] lastPeerByIndex) {
-        this.positionByRow = positionByRow;
         this.rankByRow = rankByRow;
         this.denseRankByRow = denseRankByRow;
         this.firstPeerByIndex = firstPeerByIndex;
         this.lastPeerByIndex = lastPeerByIndex;
-    }
-
-    /** 1-based position of the first row equal to {@code row}, or null when no row equals it. */
-    public Long position(final Row row) {
-        return positionByRow.get(row);
     }
 
     public Long rank(final Row row) {

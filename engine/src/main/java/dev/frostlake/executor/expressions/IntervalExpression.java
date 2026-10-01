@@ -24,15 +24,39 @@ public class IntervalExpression implements Expression {
     private final IntervalUnit unit;
     // Further parts of a multi-part interval literal ('1 day, 2 hours'), applied in order after this one.
     private final IntervalExpression rest;
+    // The unit-suffixed spelling's text and qualifier; null for the quoted-string form.
+    private final IntervalLiteralSpec literal;
 
     public IntervalExpression(final Expression valueExpression, final IntervalUnit unit) {
-        this(valueExpression, unit, null);
+        this(valueExpression, unit, (IntervalExpression) null);
     }
 
     public IntervalExpression(final Expression valueExpression, final IntervalUnit unit, final IntervalExpression rest) {
         this.valueExpression = valueExpression;
         this.unit = unit;
         this.rest = rest;
+        this.literal = null;
+    }
+
+    /**
+     * A unit-suffixed literal, {@code INTERVAL '1 02' DAY TO HOUR}: a typed value whose text is read when a row
+     * reaches it. Its unit is its leading field's.
+     *
+     * @param valueExpression the text as an expression print shows it
+     * @param unit            the leading field's unit
+     * @param literal         the text and the qualifier
+     */
+    public IntervalExpression(final Expression valueExpression, final IntervalUnit unit,
+                              final IntervalLiteralSpec literal) {
+        this.valueExpression = valueExpression;
+        this.unit = unit;
+        this.rest = null;
+        this.literal = literal;
+    }
+
+    /** @return the unit-suffixed spelling's text and qualifier, or null for the quoted-string form */
+    public IntervalLiteralSpec getLiteral() {
+        return literal;
     }
 
     public Expression getValueExpression() {
@@ -60,6 +84,33 @@ public class IntervalExpression implements Expression {
         }
     }
 
+    /** The amount of a part inside the string, as written: {@code +01}, {@code 1.5}; null for any other part. */
+    private String writtenAmount;
+
+    /** The unit word of a part inside the string, as written: {@code Hour}, {@code h}; null when none. */
+    private String writtenUnit;
+
+    /**
+     * Records how a part inside the string was written, which is how the plan names the literal.
+     *
+     * @param amount the amount as written, its sign included
+     * @param unit   the unit word as written, or null when the part has none
+     */
+    public void recordWritten(final String amount, final String unit) {
+        this.writtenAmount = amount;
+        this.writtenUnit = unit;
+    }
+
+    /** @return the amount as written inside the string, or null */
+    public String getWrittenAmount() {
+        return writtenAmount;
+    }
+
+    /** @return the unit word as written inside the string, or null */
+    public String getWrittenUnit() {
+        return writtenUnit;
+    }
+
     public IntervalUnit getUnit() {
         return unit;
     }
@@ -75,6 +126,9 @@ public class IntervalExpression implements Expression {
 
     @Override
     public String toString() {
+        if (literal != null) {
+            return "INTERVAL '" + literal.getText() + "' " + literal.qualifierText();
+        }
         return "INTERVAL " + valueExpression + " " + unit + (rest == null ? "" : ", " + rest);
     }
 }

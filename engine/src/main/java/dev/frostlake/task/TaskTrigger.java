@@ -26,7 +26,10 @@ public enum TaskTrigger {
     SCHEDULE("SCHEDULE"),
 
     /** An EXECUTE TASK statement started the run, or the root of the graph it belongs to. */
-    EXECUTE_TASK("EXECUTE TASK");
+    EXECUTE_TASK("EXECUTE TASK"),
+
+    /** A run EXECUTE TASK … RETRY LAST started, re-running the failed part of the last graph run. */
+    MANUAL_RETRY("MANUAL RETRY");
 
     private final String reported;
 

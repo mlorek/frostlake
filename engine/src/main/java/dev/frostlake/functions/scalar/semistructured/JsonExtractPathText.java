@@ -21,6 +21,7 @@ import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantText;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 
@@ -72,7 +73,7 @@ public class JsonExtractPathText extends BuiltInFunction {
             // FLOAT-to-VARCHAR rule.
             return SharedFunctionHelpers.floatText(node.asDouble());
         }
-        return node.isTextual() ? node.asText() : node.toString();
+        return node.isTextual() ? node.asText() : VariantText.standard(node);
     }
 
     @Override

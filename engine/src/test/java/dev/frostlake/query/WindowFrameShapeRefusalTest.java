@@ -174,7 +174,7 @@ public class WindowFrameShapeRefusalTest extends BaseDatabaseTest {
     @Test
     void theTwoFamiliesSitOnOppositeSidesOfNameResolution() {
         // The echoing sentence is built from a resolved plan, so every name in the call speaks first.
-        assertEquals("SQL compilation error:|Object 'NOSUCHTABLE' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|Object 'NOSUCHTABLE' does not exist or not authorized."),
             outcome("SELECT MEDIAN(n) OVER (ORDER BY n RANGE BETWEEN UNBOUNDED PRECEDING AND"
                 + " UNBOUNDED FOLLOWING) FROM nosuchtable"));
         assertEquals("SQL compilation error: error line 1 at position 14|invalid identifier 'ZZ'",

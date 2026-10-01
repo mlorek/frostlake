@@ -38,8 +38,10 @@ import java.util.regex.Pattern;
  *
  * <p>The three refusals are the account's: a qualifier naming no relation in scope is "Object 'X' does
  * not exist or not authorized.", an EXCLUDE naming no column is "column 'X' does not exist", and one
- * naming a column twice is "duplicate column name 'X'". A star that expands to nothing is left to the
- * caller's arity rule, which spells "not enough arguments for function [COUNT()], expected 1, got 0".
+ * naming a column twice is "duplicate column name 'X'". With no FROM the star stands for no column,
+ * whatever it qualifies or filters, and none of the three is raised. A star that expands to nothing is
+ * left to the caller's arity rule, which spells "not enough arguments for function [COUNT()], expected 1,
+ * got 0".
  *
  * <p>The one star this does NOT expand is the bare, unqualified, unmodified {@code *} under COUNT,
  * which counts rows; every other shape — a qualifier, an EXCLUDE, an ILIKE, another aggregate — is
@@ -53,7 +55,9 @@ public final class StarArgument {
 
     /**
      * @param qualifier the relation a qualified star names, canonical upper-cased, or null
-     * @param excludes the EXCLUDE names, canonical upper-cased, in written order (duplicates kept)
+     * @param excludes the EXCLUDE names in their canonical spelling (an unquoted name upper-cased, a quoted
+     *     one as written), in written order (duplicates kept); they match a column's name EXACTLY, so
+     *     {@code EXCLUDE ("x")} leaves a column named {@code X} alone
      * @param ilike the ILIKE pattern between its quotes, or null
      */
     public StarArgument(final String qualifier, final List<String> excludes, final String ilike) {
@@ -143,6 +147,9 @@ public final class StarArgument {
         } else {
             sources.addAll(allTables);
         }
+        if (sources.size() == 1 && sources.get(0) instanceof FromlessDual) {
+            return new ArrayList<>();
+        }
         final List<Table> chosen = qualifier == null ? sources : matching(sources, aliasToTable);
         final Set<String> excluded = new HashSet<>();
         for (final String name : excludes) {
@@ -160,7 +167,7 @@ public final class StarArgument {
             final String spelledAs = spelling(source, aliasToTable);
             for (final TableColumn column : source.getColumns()) {
                 final String name = column.getName();
-                if (excluded.contains(name.toUpperCase()) || column.isHiddenFromStar()
+                if (excluded.contains(name) || column.isHiddenFromStar()
                         || (pattern != null && !pattern.matcher(name).matches())) {
                     continue;
                 }
@@ -223,7 +230,7 @@ public final class StarArgument {
     private static boolean hasColumn(final List<Table> sources, final String name) {
         for (final Table source : sources) {
             for (final TableColumn column : source.getColumns()) {
-                if (column.getName().equalsIgnoreCase(name)) {
+                if (column.getName().equals(name)) {
                     return true;
                 }
             }
@@ -247,8 +254,8 @@ public final class StarArgument {
             if (modifier.EXCLUDE() == null) {
                 continue;
             }
-            for (final FrostlakeParser.IdentifierContext id : modifier.identifier()) {
-                excludes.add(SqlIdentifiers.canonical(id).toUpperCase());
+            for (final FrostlakeParser.ExcludedColumnContext id : modifier.excludedColumn()) {
+                excludes.add(SelectItemAccessors.excludedName(id));
             }
         }
         return excludes;

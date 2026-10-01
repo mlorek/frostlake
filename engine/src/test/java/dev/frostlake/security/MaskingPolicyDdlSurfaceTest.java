@@ -65,9 +65,9 @@ public class MaskingPolicyDdlSurfaceTest extends BaseDatabaseTest {
 
     @Test
     void theModifySpellingIsTheAlterAction() {
-        assertEquals(MISSING,
+        assertEquals(hinted(MISSING),
             outcome("ALTER TABLE rt MODIFY COLUMN g SET MASKING POLICY nosuchpolicy"));
-        assertEquals(MISSING,
+        assertEquals(hinted(MISSING),
             outcome("ALTER TABLE rt ALTER COLUMN g SET MASKING POLICY nosuchpolicy"));
         assertEquals("ACCEPTED", outcome("ALTER TABLE rt MODIFY COLUMN g SET MASKING POLICY realmask"));
         assertEquals("ACCEPTED", outcome("ALTER TABLE rt MODIFY COLUMN g UNSET MASKING POLICY"));
@@ -75,15 +75,15 @@ public class MaskingPolicyDdlSurfaceTest extends BaseDatabaseTest {
 
     @Test
     void droppingAMissingPolicyRefusesWithTheQualifiedName() {
-        assertEquals(MISSING, outcome("DROP MASKING POLICY nosuchpolicy"));
+        assertEquals(hinted(MISSING), outcome("DROP MASKING POLICY nosuchpolicy"));
         assertEquals("ACCEPTED", outcome("DROP MASKING POLICY IF EXISTS nosuchpolicy"));
         assertEquals("ACCEPTED", outcome("DROP MASKING POLICY realmask"));
     }
 
     @Test
     void theRowAccessSpellingBehavesTheSame() {
-        assertEquals("SQL compilation error:|Row access policy 'TEST_DB.TEST_SCHEMA.NOSUCHRAP'"
-                + " does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|Row access policy 'TEST_DB.TEST_SCHEMA.NOSUCHRAP'"
+                + " does not exist or not authorized."),
             outcome("DROP ROW ACCESS POLICY nosuchrap"));
         assertEquals("ACCEPTED", outcome("DROP ROW ACCESS POLICY IF EXISTS nosuchrap"));
     }

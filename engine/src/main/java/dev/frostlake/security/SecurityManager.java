@@ -25,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -149,6 +150,25 @@ public class SecurityManager {
      */
     public void checkAlter(final SecurableObjectType objectType, final String objectName) {
         checkPermission(Privilege.ALTER, objectType.getCatalogName(), objectName);
+    }
+
+    /**
+     * Whether the session may act as an object's owner: whether {@code owner} is the primary role, one of the
+     * secondary roles, or a role any of those inherits, however many levels down. No administrative role
+     * stands in for it — ACCOUNTADMIN does not own what another role owns unless that role is granted to it.
+     * An owner that is no longer a role passes, as does anything while security checks are off.
+     *
+     * @param owner the object's owner role; null when none is recorded, which passes
+     */
+    public boolean actsAsOwner(final String owner) {
+        if (!sessionContext.isSecurityEnabled() || owner == null) {
+            return true;
+        }
+        final String upper = owner.toUpperCase(Locale.ROOT);
+        if (!catalog.roleExists(upper)) {
+            return true;
+        }
+        return getEffectiveRoles().contains(upper);
     }
 
     /**

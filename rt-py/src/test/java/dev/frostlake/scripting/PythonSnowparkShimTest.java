@@ -350,4 +350,28 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
         assertTrue(result.startsWith("caught:"), "expected SnowparkSQLException, got: " + result);
         assertEquals("caught:yes", result);
     }
+
+    @Test
+    public void aBareFlagConditionFiltersLocalRowsEvenWithNoValueToTypeIt() {
+        // An empty frame spills its columns as VARIANT, which is no predicate: the flag is read over the rows.
+        engine.execute("CREATE TABLE shim_flags (id INT, status VARCHAR)");
+        engine.execute("INSERT INTO shim_flags VALUES (1, 'ACTIVE'), (2, 'DEACTIVATED'), (3, NULL)");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE shim_flag_filter()
+            RETURNS STRING
+            LANGUAGE PYTHON
+            RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
+            HANDLER='main'
+            AS $$
+            from snowflake.snowpark.functions import col
+
+            def main(session):
+                df = session.table('shim_flags').with_column('active', col('status') == 'ACTIVE')
+                kept = df.where('active').count()
+                empty = df.filter(col('id') > 10).with_column('flag', col('status') == 'ACTIVE')
+                return str(kept) + ':' + str(empty.where('flag').count())
+            $$""");
+        assertEquals("1:0", callString("shim_flag_filter()"));
+    }
 }

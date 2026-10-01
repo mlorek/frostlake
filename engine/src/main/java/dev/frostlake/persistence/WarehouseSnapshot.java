@@ -18,6 +18,8 @@ package dev.frostlake.persistence;
 
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 /**
  * Serializable snapshot of warehouse metadata
@@ -40,4 +42,19 @@ public class WarehouseSnapshot implements Serializable {
     public String owner;
     public String warehouseType;
     public String resourceMonitor;
+
+    // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
+    /** True once the fields below were written; an older snapshot leaves the warehouse's defaults. */
+    public Boolean settingsWritten;
+    public boolean initiallySuspended;
+    public int maxConcurrencyLevel;
+    public int statementQueuedTimeoutSeconds;
+    public int statementTimeoutSeconds;
+    public boolean enableQueryAcceleration;
+    public int queryAccelerationMaxScaleFactor;
+    public String generation;
+    public String resourceConstraint;
+    public boolean enabled;
+    public ArrayList<String> parametersSet;
+    public HashMap<String, String> tags;
 }

@@ -27,7 +27,15 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 public class DateDiff extends BuiltInFunction {
-    public DateDiff() { super("DATEDIFF", IntegerResultWidths.POSITION); }
+    public DateDiff() { this("DATEDIFF"); }
+
+    /**
+     * The difference under one of its names — TIMEDIFF and TIMESTAMPDIFF are the same function, and a
+     * refusal names the one the call was written with.
+     *
+     * @param name the name the function is registered under
+     */
+    public DateDiff(final String name) { super(name, IntegerResultWidths.POSITION); }
 
     /** A TIME value anchors on the epoch day; toString would drop zero seconds. */
     private static LocalDateTime anchored(final Object v) {
@@ -64,7 +72,7 @@ public class DateDiff extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(1) == null || args.get(2) == null) return null;
         if (SharedFunctionHelpers.isComponentOnlyUnit(args.get(0))) {
-            throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), "DATEDIFF");
+            throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), getName());
         }
         final String unit = SharedFunctionHelpers.canonicalDateUnit(args.get(0));
         final LocalDateTime start = anchored(args.get(1));
@@ -100,7 +108,7 @@ public class DateDiff extends BuiltInFunction {
                 return ChronoUnit.MICROS.between(startAt.truncatedTo(ChronoUnit.MICROS), endAt.truncatedTo(ChronoUnit.MICROS));
             case "NANOSECOND":
                 return ChronoUnit.NANOS.between(startAt, endAt);
-            default: throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), "DATEDIFF");
+            default: throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), getName());
         }
     }
 

@@ -19,6 +19,7 @@ package dev.frostlake.persistence;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Serializable snapshot of a TASK — its definition and STARTED/SUSPENDED state, restored as-is. Note that
@@ -54,4 +55,19 @@ public class TaskSnapshot implements Serializable {
     public String targetCompletionInterval;
     public String errorIntegration;
     public int userTaskMinimumTriggerIntervalInSeconds;
+    // The graph and run properties. Null on older snapshots, which read back as a task carrying none.
+    public String config;
+    public String overlapPolicy;
+    public Map<String, String> sessionParameters;
+    public String successIntegration;
+    public String finalizedRootTask;
+    public String executeAsUser;
+    public String serverlessTaskMinStatementSize;
+
+    // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
+    // recorded, which reads back as an object carrying none.
+    public Map<String, String> tags;
+
+    // The runs TASK_HISTORY reports, oldest first. Null in a snapshot written before they were kept.
+    public ArrayList<TaskExecutionSnapshot> history;
 }

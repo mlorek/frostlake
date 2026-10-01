@@ -38,6 +38,8 @@ import dev.frostlake.executor.procedural.WhenClause;
 import dev.frostlake.executor.procedural.WhileStatement;
 import dev.frostlake.parser.FrostlakeParser;
 
+import org.antlr.v4.runtime.ParserRuleContext;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -176,8 +178,18 @@ public class ProceduralBlockBuilder {
             }
         }
 
+        if (ctx.callStatement() != null && ctx.callStatement().systemFunctionName() != null) {
+            // A CALL of a SYSTEM$ function runs as the statement it is written as.
+            return new SqlStatement(visitor.getOriginalText(ctx.callStatement()));
+        }
         if (ctx.callStatement() != null) {
-            final String procName = visitor.getText(ctx.callStatement().qualifiedName());
+            // The CALL is re-issued as SQL, so its name travels quoted, part by part: the canonical name
+            // then reads back as itself, and "procCase" is not folded to PROCCASE on the way.
+            final StringBuilder procName = new StringBuilder();
+            for (final String part : ParseTreeText.qualifiedNameParts(ctx.callStatement().qualifiedName())) {
+                procName.append(procName.length() > 0 ? "." : "").append('"').append(part.replace("\"", "\"\""))
+                    .append('"');
+            }
             final List<BaseExpression> arguments = new ArrayList<>();
             final List<String> argumentNames = new ArrayList<>();
             if (ctx.callStatement().callArguments() != null) {
@@ -196,7 +208,7 @@ public class ProceduralBlockBuilder {
                     }
                 }
             }
-            return new CallStatement(procName, arguments, argumentNames);
+            return new CallStatement(procName.toString(), arguments, argumentNames);
         }
 
         if (ctx.asyncStatement() != null) {
@@ -224,29 +236,31 @@ public class ProceduralBlockBuilder {
                 // expression so the statement runs when the block executes it.
                 final FrostlakeParser.ExecuteImmediateStatementContext ei = aCtx.executeImmediateStatement();
                 final BaseExpression eiSql = visitor.buildExpression(ei.expression());
-                final List<BaseExpression> eiBinds = new ArrayList<>();
-                if (ei.expressionList() != null) {
-                    for (final FrostlakeParser.ExpressionContext bind : ei.expressionList().expression()) {
-                        eiBinds.add(visitor.buildExpression(bind));
-                    }
-                }
-                return new SetStatement(varName, new ExecuteImmediateExpression(eiSql, eiBinds));
+                final ExecuteImmediateExpression dynamic = new ExecuteImmediateExpression(eiSql, visitor.usingBindings(ei));
+                dynamic.setStatementAt(ei.getStart().getLine(), ei.getStart().getCharPositionInLine());
+                return new SetStatement(varName, dynamic);
             }
-            if (aCtx.expression() != null) {
-                final BaseExpression expr = visitor.buildExpression(aCtx.expression());
-                return new SetStatement(varName, expr, visitor.getOriginalText(aCtx.expression()));
+            if (aCtx.resultSetStatement() != null) {
+                // rs := (<statement>) — placed in the block, so a target that refuses it names the statement there.
+                return new SetStatement(varName, visitor.statementValue(aCtx.resultSetStatement()));
+            }
+            if (aCtx.booleanExpr() != null) {
+                final BaseExpression expr = judged(visitor.buildExpression(aCtx.booleanExpr()), aCtx.booleanExpr());
+                return new SetStatement(varName, expr, visitor.getOriginalText(aCtx.booleanExpr()));
             }
         }
 
         if (ctx.letStatement() != null) {
             final FrostlakeParser.LetStatementContext lCtx = ctx.letStatement();
             final String varName = visitor.getText(lCtx.identifier());
-            if (lCtx.expression() != null) {
-                final BaseExpression expr = visitor.buildExpression(lCtx.expression());
+            if (lCtx.booleanExpr() != null) {
+                // An untyped LET's initialiser is judged while the block compiles; a typed one when it is reached.
+                final BaseExpression expr = lCtx.dataTypeName() == null ? visitor.buildExpression(lCtx.booleanExpr())
+                    : judged(visitor.buildExpression(lCtx.booleanExpr()), lCtx.booleanExpr());
                 final SetStatement let = new SetStatement(varName, expr, lCtx.dataTypeName() != null
                     ? visitor.parseDataType(lCtx.dataTypeName(), lCtx.typeParameters()) : null);
                 if (lCtx.dataTypeName() == null) {
-                    let.setSqlInitialiser(DeclarationTypes.sqlExpression(lCtx.expression()));
+                    let.setSqlInitialiser(DeclarationTypes.sqlExpression(lCtx.booleanExpr()));
                 }
                 return let;
             }
@@ -255,7 +269,7 @@ public class ProceduralBlockBuilder {
         // All other procedural statements: execute as raw SQL via the visitor
         final String rawSql = visitor.getOriginalText(ctx);
         if (rawSql != null && !rawSql.isBlank()) {
-            return new SqlStatement(rawSql);
+            return new SqlStatement(rawSql, ctx.selectIntoStatement() != null);
         }
 
         return null;
@@ -265,13 +279,13 @@ public class ProceduralBlockBuilder {
         final List<IfCondition> conditions = new ArrayList<>();
 
         // Main IF condition
-        final BaseExpression condition = visitor.buildExpression(ctx.booleanExpr(0));
+        final BaseExpression condition = judged(visitor.buildExpression(ctx.booleanExpr(0)), ctx.booleanExpr(0));
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList(0));
         conditions.add(new IfCondition(condition, block));
 
         // ELSEIF conditions
         for (int i = 1; i < ctx.booleanExpr().size(); i++) {
-            final BaseExpression elseifCondition = visitor.buildExpression(ctx.booleanExpr(i));
+            final BaseExpression elseifCondition = judged(visitor.buildExpression(ctx.booleanExpr(i)), ctx.booleanExpr(i));
             final ProceduralBlock elseifBlock = buildProceduralBlock(ctx.statementList(i));
             conditions.add(new IfCondition(elseifCondition, elseifBlock));
         }
@@ -298,7 +312,10 @@ public class ProceduralBlockBuilder {
         int exprIndex = hasSwitch ? 1 : 0;
 
         for (int i = 0; i < ctx.WHEN().size(); i++) {
-            final BaseExpression whenCondition = visitor.buildExpression(ctx.booleanExpr(exprIndex++));
+            // A searched CASE's conditions are judged when reached; a simple CASE's operand while the block compiles.
+            final FrostlakeParser.BooleanExprContext whenCtx = ctx.booleanExpr(exprIndex++);
+            final BaseExpression whenCondition = hasSwitch ? visitor.buildExpression(whenCtx)
+                : judged(visitor.buildExpression(whenCtx), whenCtx);
             final ProceduralBlock whenBlock = buildProceduralBlock(ctx.statementList(i));
             whenClauses.add(new WhenClause(whenCondition, whenBlock));
         }
@@ -319,7 +336,7 @@ public class ProceduralBlockBuilder {
     }
 
     Statement buildWhileStatement(final FrostlakeParser.WhileStatementContext ctx) {
-        final BaseExpression condition = visitor.buildExpression(ctx.booleanExpr());
+        final BaseExpression condition = judged(visitor.buildExpression(ctx.booleanExpr()), ctx.booleanExpr());
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final WhileStatement stmt = new WhileStatement(condition, block);
         applyTrailingLabel(stmt, ctx.loopLabel());
@@ -344,11 +361,19 @@ public class ProceduralBlockBuilder {
     }
 
     Statement buildRepeatStatement(final FrostlakeParser.RepeatStatementContext ctx) {
-        final BaseExpression condition = visitor.buildExpression(ctx.booleanExpr());
+        final BaseExpression condition = judged(visitor.buildExpression(ctx.booleanExpr()), ctx.booleanExpr());
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final RepeatStatement stmt = new RepeatStatement(condition, block);
         applyTrailingLabel(stmt, ctx.loopLabel());
         return stmt;
+    }
+
+    /** A block expression whose argument types are judged when it is reached (see {@link BlockExpressionTypes}). */
+    static BaseExpression judged(final BaseExpression built, final ParserRuleContext parsed) {
+        if (built != null) {
+            built.setJudgedFrom(parsed);
+        }
+        return built;
     }
 
     /** Copy a loop's TRAILING label (`END LOOP <name>`) onto its statement so BREAK/CONTINUE can target it. */
@@ -360,21 +385,19 @@ public class ProceduralBlockBuilder {
     }
 
     Statement buildReturnStatement(final FrostlakeParser.ReturnStatementContext ctx) {
-        BaseExpression expr = null;
-        if (ctx.expression() != null) {
-            expr = visitor.buildExpression(ctx.expression());
-        }
         // RETURN TABLE(expression) — table-valued return from a RESULTSET value/variable. A direct
         // query inside TABLE() is not a form live accepts, and the grammar no longer parses it.
         if (ctx.TABLE() != null) {
-            return new ReturnTableStatement(expr);
+            return new ReturnTableStatement(visitor.buildExpression(ctx.expression()));
         }
-        final ReturnStatement ret = new ReturnStatement(expr);
+        if (ctx.booleanExpr() == null) {
+            return new ReturnStatement(null);
+        }
+        // A value may be a NOT, an AND or an OR, which returns a BOOLEAN.
+        final ReturnStatement ret = new ReturnStatement(judged(visitor.buildExpression(ctx.booleanExpr()), ctx.booleanExpr()));
         // The value read as SQL too, from the same parse tree: it types the result column whenever the
         // RETURN keeps the expression's own type.
-        if (ctx.expression() != null) {
-            ret.setSqlExpression(DeclarationTypes.sqlExpression(ctx.expression()));
-        }
+        ret.setSqlExpression(DeclarationTypes.sqlExpression(ctx.booleanExpr()));
         return ret;
     }
 }

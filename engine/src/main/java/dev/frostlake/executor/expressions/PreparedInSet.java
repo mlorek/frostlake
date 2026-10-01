@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.storage.Row;
 
 import java.math.BigDecimal;
@@ -47,7 +48,7 @@ public class PreparedInSet {
     public static PreparedInSet build(final List<Row> rows) {
         final PreparedInSet set = new PreparedInSet();
         for (final Row row : rows) {
-            final Object v = row.getValue(0);
+            final Object v = DeferredFault.read(row.getValue(0));
             if (v == null) {
                 set.containsNull = true;
                 continue;

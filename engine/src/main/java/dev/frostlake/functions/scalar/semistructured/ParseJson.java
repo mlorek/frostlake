@@ -50,7 +50,13 @@ public class ParseJson extends BuiltInFunction {
         // reads '.5' as 0.5. No JSON reader accepts it on its own, so it is spelled out for one.
         final String document = input.equals(".") ? "0" : input;
         // Parse leniently (Snowflake tolerates \' and invalid backslash escapes such as a regex \d).
-        final JsonNode node = JsonTypeHelper.parseLenient(document);
+        final JsonNode parsed = JsonTypeHelper.parseLenient(document);
+        // A raw line break inside a string is refused, which the lenient reader does not do.
+        final String lineBreak = parsed != null ? JsonFaultReader.lineBreakFault(args.get(0).toString()) : null;
+        if (lineBreak != null) {
+            throw new RuntimeException("Error parsing JSON: " + lineBreak);
+        }
+        final JsonNode node = parsed;
         // A WHOLE-VALUE `undefined` is SQL NULL — live: PARSE_JSON('undefined') IS NULL is
         // TRUE and its TYPEOF is SQL NULL, while PARSE_JSON('[undefined]') keeps the array element.
         if (VariantUndefined.isUndefined(node)) {
@@ -79,4 +85,13 @@ public class ParseJson extends BuiltInFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 1; }
+
+    /**
+     * A predicate as PARSE_JSON's first argument is refused by the argument types, where a BOOLEAN
+     * value is read as text (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection predicateRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

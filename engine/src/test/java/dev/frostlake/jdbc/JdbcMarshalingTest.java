@@ -88,14 +88,14 @@ public class JdbcMarshalingTest extends BaseJdbcTest {
     @Test
     public void arrayColumnExposesJavaSqlArray() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "asserts the FROSTLAKE driver's own marshaling — Snowflake's JDBC driver reports an ARRAY "
-            + "column as Types.VARCHAR (12) and hands back its JSON text, not a java.sql.Array");
+            "asserts the FROSTLAKE driver's own marshaling — both drivers report an ARRAY column as "
+            + "Types.VARCHAR (12), but only Frostlake's also hands it back as a java.sql.Array");
         statement.execute("CREATE TABLE arr (a ARRAY)");
         statement.execute("INSERT INTO arr SELECT ARRAY_CONSTRUCT(1, 2, 3)");
         try (ResultSet rs = statement.executeQuery("SELECT a FROM arr")) {
             assertTrue(rs.next());
-            assertEquals(Types.ARRAY, rs.getMetaData().getColumnType(1));
-            final Array array = rs.getArray(1);                 // previously threw SQLFeatureNotSupportedException
+            assertEquals(Types.VARCHAR, rs.getMetaData().getColumnType(1));
+            final Array array = rs.getArray(1);
             final Object[] elements = (Object[]) array.getArray();
             assertEquals(3, elements.length);
             assertEquals(1, ((Number) elements[0]).intValue());

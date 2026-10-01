@@ -22,6 +22,8 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.IntervalDayTimeType;
+import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
@@ -38,6 +40,9 @@ import dev.frostlake.types.VariantType;
  * channel never guesses.
  */
 public final class ColumnTypeFamilies {
+
+    /** The prefix of the two interval families' names. */
+    private static final String INTERVAL_FAMILY = "INTERVAL";
 
     private ColumnTypeFamilies() {
     }
@@ -59,16 +64,51 @@ public final class ColumnTypeFamilies {
         if (targetFamily == null || sourceFamily == null) {
             return;
         }
-        if ("TIMESTAMP".equals(targetFamily) && "TIME".equals(sourceFamily)) {
+        if ("TIMESTAMP".equals(targetFamily) && "TIME".equals(sourceFamily)
+                || "STRING".equals(targetFamily) && sourceFamily.startsWith(INTERVAL_FAMILY)) {
             throw new RuntimeException(SqlCompilationError.of("incompatible types: ["
                 + spell(sourceType) + "] and [" + spell(target.getDataType()) + "]"));
         }
-        if (!accepts(targetFamily, sourceFamily)) {
+        if (!accepts(targetFamily, sourceFamily) || zonedIntoUnzoned(target.getDataType(), sourceType)) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Expression type does not match column data type, expecting "
                 + spell(target.getDataType()) + " but got " + spell(sourceType)
                 + " for column " + target.getName()));
         }
+    }
+
+    /**
+     * Whether a TIMESTAMP_TZ is written to a TIMESTAMP_LTZ or a TIMESTAMP_NTZ column, the one pair inside the
+     * timestamp family that live refuses while compiling: an NTZ or an LTZ reaches every flavour, and a TZ reaches
+     * a TZ column (live-verified, a typed NULL included).
+     */
+    private static boolean zonedIntoUnzoned(final DataType target, final DataType source) {
+        return "TIMESTAMP_TZ".equals(flavour(source)) && !"TIMESTAMP_TZ".equals(flavour(target))
+            && "TIMESTAMP".equals(family(target));
+    }
+
+    /** A timestamp type's flavour as the refusal spells it, without its precision; null for another type. */
+    private static String flavour(final DataType type) {
+        if (!(type instanceof DateTimeType) || !"TIMESTAMP".equals(family(type))) {
+            return null;
+        }
+        final String spelled = spell(type);
+        final int paren = spelled.indexOf('(');
+        return paren < 0 ? spelled : spelled.substring(0, paren);
+    }
+
+    /**
+     * A value that is a subquery of more than one column, typed as the ROW of its items, which no column
+     * takes: {@code UPDATE t SET a = (SELECT a, b FROM u)} is "Expression type does not match column data type,
+     * expecting NUMBER(38,0) but got ROW(NUMBER(38,0), NUMBER(38,0)) for column A" (live-verified).
+     *
+     * @param target  the column written
+     * @param rowType the value's ROW type, as printed
+     */
+    public static void rejectRowValue(final TableColumn target, final String rowType) {
+        throw new RuntimeException(SqlCompilationError.of(
+            "Expression type does not match column data type, expecting "
+            + spell(target.getDataType()) + " but got " + rowType + " for column " + target.getName()));
     }
 
     /**
@@ -107,6 +147,12 @@ public final class ColumnTypeFamilies {
         if (type instanceof VariantType) {
             return "VARIANT";
         }
+        if (type instanceof IntervalDayTimeType) {
+            return INTERVAL_FAMILY + " DAY TIME";
+        }
+        if (type instanceof IntervalYearMonthType) {
+            return INTERVAL_FAMILY + " YEAR MONTH";
+        }
         return null;
     }
 
@@ -114,6 +160,16 @@ public final class ColumnTypeFamilies {
     private static boolean accepts(final String target, final String source) {
         if (target.equals(source)) {
             return true;
+        }
+        if (target.startsWith(INTERVAL_FAMILY)) {
+            // An interval column takes its own family and a text read in its fields, nothing else: a number, a
+            // VARIANT, a DATE and the other interval family are refused while compiling (live-verified).
+            return "STRING".equals(source);
+        }
+        if (source.startsWith(INTERVAL_FAMILY)) {
+            // An interval reaches no other family's column: a NUMBER or a VARIANT column refuses it, and a text
+            // one in the incompatible-types sentence above (live-verified).
+            return false;
         }
         if ("VARIANT".equals(source)) {
             // A VARIANT source casts at row time into every family except BINARY.
@@ -199,7 +255,8 @@ public final class ColumnTypeFamilies {
         if (targetFamily == null || sourceFamily == null) {
             return;
         }
-        if (!accepts(targetFamily, sourceFamily) || "TIMESTAMP".equals(targetFamily) && "TIME".equals(sourceFamily)) {
+        if (!accepts(targetFamily, sourceFamily) || "TIMESTAMP".equals(targetFamily) && "TIME".equals(sourceFamily)
+                || zonedIntoUnzoned(targetType, sourceType)) {
             throw new RuntimeException(SqlCompilationError.of("incompatible types: [" + spell(sourceType)
                 + "] and [" + spell(targetType) + "]"));
         }

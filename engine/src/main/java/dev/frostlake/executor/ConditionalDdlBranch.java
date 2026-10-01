@@ -24,5 +24,7 @@ public enum ConditionalDdlBranch {
     /** CREATE … IF NOT EXISTS found the object and created nothing. */
     CREATE_SKIPPED,
     /** DROP … IF EXISTS found nothing and dropped nothing. */
-    DROP_SKIPPED
+    DROP_SKIPPED,
+    /** CREATE OR ALTER TABLE found the table and altered it where it stands. */
+    ALTERED_IN_PLACE
 }

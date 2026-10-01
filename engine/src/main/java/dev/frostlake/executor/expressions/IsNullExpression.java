@@ -25,6 +25,7 @@ package dev.frostlake.executor.expressions;
 public class IsNullExpression implements Expression {
     private final Expression operand;
     private final boolean not;
+    private SourcePosition position;
 
     public IsNullExpression(final Expression operand, final boolean not) {
         this.operand = operand;
@@ -37,6 +38,15 @@ public class IsNullExpression implements Expression {
 
     public boolean isNot() {
         return not;
+    }
+
+    /** Where the IS keyword stands, which an argument-type refusal of the test points at; null when unknown. */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     @Override

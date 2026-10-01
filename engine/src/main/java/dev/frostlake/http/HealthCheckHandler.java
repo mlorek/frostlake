@@ -47,7 +47,7 @@ final class HealthCheckHandler implements HttpHandler {
             final int activeSessions = engine.getActiveSessionCount();
             HttpResponses.send(exchange, 200, String.format(
                 "{\"status\":\"healthy\",\"activeSessions\":%d}", activeSessions));
-        } catch (final Exception e) {
+        } catch (final Exception | Error e) {
             logger.error("Error handling health check", e);
             HttpResponses.send(exchange, 500, "{\"status\":\"error\"}");
         }

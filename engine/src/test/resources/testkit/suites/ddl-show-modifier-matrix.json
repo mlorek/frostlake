@@ -132,7 +132,7 @@
       {"sql": "SHOW TERSE ROLES",
        "expect": {"columns": ["name", "is_default", "is_current", "is_inherited", "is_from_organization_user_group"]}},
       {"sql": "SHOW TERSE USERS",
-       "expect": {"columns": ["name", "created_on", "display_name", "first_name", "last_name", "email", "comment", "has_password", "has_rsa_public_key", "type", "has_mfa", "has_pat", "has_workload_identity", "is_from_organization_user"]}}
+       "expect": {"columns": ["name", "created_on", "display_name", "first_name", "last_name", "email", "comment", "has_password", "has_rsa_public_key", "type", "has_mfa", "has_pat", "has_workload_identity", "allowed_interfaces", "is_from_organization_user"]}}
     ]},
     {"name": "terse-is-inert-on-the-listings-that-do-not-trim", "steps": [
       {"sql": "CREATE TABLE m_a (id INTEGER)"},
@@ -161,11 +161,11 @@
       {"sql": "SHOW TERSE PIPES",
        "expect": {"rowCount": 0, "columns": ["created_on", "name", "database_name", "schema_name", "definition", "owner", "notification_channel", "comment", "integration", "pattern", "error_integration", "owner_role_type", "invalid_reason", "kind", "is_snowflake_managed"]}},
       {"sql": "SHOW TERSE MASKING POLICIES",
-       "expect": {"rowCount": 0, "columns": ["created_on", "name", "database_name", "schema_name", "kind", "owner", "comment"]}},
+       "expect": {"rowCount": 0, "columns": ["created_on", "name", "database_name", "schema_name", "kind", "owner", "comment", "owner_role_type", "options"]}},
       {"sql": "SHOW TERSE ROW ACCESS POLICIES",
-       "expect": {"rowCount": 0, "columns": ["created_on", "name", "database_name", "schema_name", "kind", "owner", "comment"]}},
+       "expect": {"rowCount": 0, "columns": ["created_on", "name", "database_name", "schema_name", "kind", "owner", "comment", "owner_role_type", "options"]}},
       {"sql": "SHOW TERSE MATERIALIZED VIEWS",
-       "expect": {"rowCount": 0, "columns": ["created_on", "name", "database_name", "schema_name", "owner", "comment", "text", "is_secure"]}},
+       "expect": {"rowCount": 0, "columns": ["created_on", "name", "reserved", "database_name", "schema_name", "cluster_by", "rows", "bytes", "source_database_name", "source_schema_name", "source_table_name", "refreshed_on", "compacted_on", "owner", "invalid", "invalid_reason", "behind_by", "comment", "text", "is_secure", "automatic_clustering", "owner_role_type"]}},
       {"sql": "SHOW TERSE DYNAMIC TABLES",
        "expect": {"rowCount": 0, "columns": ["created_on", "name", "database_name", "schema_name", "cluster_by", "rows", "bytes", "owner", "target_lag", "refresh_mode", "refresh_mode_reason", "warehouse", "comment", "text", "automatic_clustering", "scheduling_state", "last_suspended_on", "is_clone", "is_replica", "is_iceberg", "data_timestamp", "owner_role_type", "execute_as_user", "secondary_role_names", "insert_only_inputs", "immutable_where", "initialization_warehouse", "backfill_from", "scheduler", "frozen_where", "configured_refresh_mode"]}},
       {"sql": "SHOW TERSE PRIMARY KEYS",

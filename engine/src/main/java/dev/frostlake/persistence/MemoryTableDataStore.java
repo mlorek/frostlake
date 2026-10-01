@@ -23,6 +23,7 @@ import java.util.Map;
 public final class MemoryTableDataStore implements TableDataStore {
 
     private final Map<String, TableDataSnapshot> tables = new HashMap<>();
+    private final Map<String, TableDataSnapshot> shadowedTables = new HashMap<>();
 
     @Override
     public void save(final String database, final String schema, final String table, final TableDataSnapshot data) {
@@ -32,6 +33,17 @@ public final class MemoryTableDataStore implements TableDataStore {
     @Override
     public TableDataSnapshot load(final String database, final String schema, final String table) {
         return tables.get(key(database, schema, table));
+    }
+
+    @Override
+    public void saveShadowed(final String database, final String schema, final String table,
+                             final TableDataSnapshot data) {
+        shadowedTables.put(key(database, schema, table), data);
+    }
+
+    @Override
+    public TableDataSnapshot loadShadowed(final String database, final String schema, final String table) {
+        return shadowedTables.get(key(database, schema, table));
     }
 
     private static String key(final String database, final String schema, final String table) {

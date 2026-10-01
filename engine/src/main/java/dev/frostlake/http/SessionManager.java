@@ -36,6 +36,7 @@ public class SessionManager {
 
     private final Map<String, SessionContext> sessions;
     private final long sessionTimeoutMs;
+    private volatile ExpiredSessionListener expiredSessionListener;
     private final ScheduledExecutorService cleanupExecutor;
     private final String defaultDatabase;
     private final String defaultSchema;
@@ -147,17 +148,48 @@ public class SessionManager {
      * Clean up expired sessions
      */
     private void cleanupExpiredSessions() {
+        expireSessionsIdleFor(sessionTimeoutMs);
+    }
+
+    /**
+     * End every session idle for longer than {@code idleMs}: each is removed from the map and then handed
+     * to the {@link ExpiredSessionListener}, which rolls back its open transaction and drops the engine's
+     * state for it — what releasing a session does. Removing the map entry alone used to leave an expired
+     * session's transaction running, listed in SHOW TRANSACTIONS with its locks held, for the server's life.
+     *
+     * @param idleMs how long a session may sit idle before it is ended
+     * @return how many sessions were ended
+     */
+    public int expireSessionsIdleFor(final long idleMs) {
         int removed = 0;
         for (final Map.Entry<String, SessionContext> entry : sessions.entrySet()) {
-            if (entry.getValue().isExpired(sessionTimeoutMs)) {
-                sessions.remove(entry.getKey());
+            if (entry.getValue().isExpired(idleMs) && sessions.remove(entry.getKey(), entry.getValue())) {
                 removed++;
                 logger.debug("Cleaned up expired session: {}", entry.getKey());
+                final ExpiredSessionListener listener = expiredSessionListener;
+                if (listener != null) {
+                    try {
+                        listener.expired(entry.getValue());
+                    } catch (final RuntimeException failed) {
+                        // One session's cleanup must not stop the sweep from ending the rest.
+                        logger.warn("Ending expired session {} failed: {}", entry.getKey(), failed.getMessage());
+                    }
+                }
             }
         }
         if (removed > 0) {
             logger.info("Cleaned up {} expired sessions", removed);
         }
+        return removed;
+    }
+
+    /**
+     * Who is told about each expired session; the engine that owns the sessions registers itself here.
+     *
+     * @param listener the listener, or null for none
+     */
+    public void setExpiredSessionListener(final ExpiredSessionListener listener) {
+        this.expiredSessionListener = listener;
     }
 
     /**

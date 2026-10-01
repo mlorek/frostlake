@@ -137,8 +137,8 @@ public class AlterTableSurfaceTest extends BaseDatabaseTest {
         engine.execute("ALTER TABLE src_t RENAME TO renamed_t");
         assertEquals("7", String.valueOf(scalar("SELECT a FROM renamed_t")));
 
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist"
-                + " or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist"
+                + " or not authorized."),
             refusal("ALTER TABLE nosuch_t ADD COLUMN x INTEGER").getMessage());
         engine.execute("ALTER TABLE IF EXISTS nosuch_t ADD COLUMN x INTEGER");
     }
@@ -155,8 +155,8 @@ public class AlterTableSurfaceTest extends BaseDatabaseTest {
         assertEquals("zed", scalar("SELECT z FROM swp_a"));
         assertEquals("1", String.valueOf(scalar("SELECT a FROM swp_b")));
 
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist"
-                + " or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist"
+                + " or not authorized."),
             refusal("ALTER TABLE swp_a SWAP WITH nosuch_t").getMessage());
     }
 

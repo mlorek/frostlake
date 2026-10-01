@@ -24,6 +24,9 @@ import java.util.List;
 
 public class Function extends SqlObject {
 
+    private String serviceName;
+    private String serviceEndpoint;
+    private Long maxBatchRows;
     private final List<Parameter> parameters;
     private final DataType returnType;
     private final List<Parameter> returnColumns; // for RETURNS TABLE(col TYPE, ...)
@@ -144,5 +147,38 @@ public class Function extends SqlObject {
     @Override
     public String getObjectType() {
         return "FUNCTION";
+    }
+
+    /** The service a service function sends its calls to, or null for any other function. */
+    public String getServiceName() {
+        return serviceName;
+    }
+
+    /** The endpoint of that service, or null. */
+    public String getServiceEndpoint() {
+        return serviceEndpoint;
+    }
+
+    /** The largest batch a service function sends, or null for the default. */
+    public Long getMaxBatchRows() {
+        return maxBatchRows;
+    }
+
+    /**
+     * Makes this a service function.
+     *
+     * @param service the service's qualified name
+     * @param endpoint the endpoint's name
+     * @param batchRows the largest batch, or null
+     */
+    public void setService(final String service, final String endpoint, final Long batchRows) {
+        this.serviceName = service;
+        this.serviceEndpoint = endpoint;
+        this.maxBatchRows = batchRows;
+    }
+
+    /** Whether this is a service function. */
+    public boolean isServiceFunction() {
+        return serviceName != null;
     }
 }

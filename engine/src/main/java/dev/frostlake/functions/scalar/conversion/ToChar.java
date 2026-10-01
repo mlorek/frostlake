@@ -20,13 +20,11 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.SnowflakeDateFormat;
-import dev.frostlake.functions.scalar.SnowflakeNumberFormat;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.temporal.Temporal;
 import java.util.List;
@@ -87,11 +85,12 @@ public class ToChar extends BuiltInFunction {
         }
         if (args.size() >= 2 && args.get(1) != null) {
             final String format = args.get(1).toString();
+            // The format model is chosen by the input type: numeric vs date/time. A number is printed
+            // under any model, an empty one included, which prints nothing.
+            if (value instanceof Number) {
+                return NumericOutputFormat.format((Number) value, format);
+            }
             if (!format.isEmpty()) {
-                // The format model is chosen by the input type: numeric vs date/time.
-                if (value instanceof Number) {
-                    return SnowflakeNumberFormat.format(new BigDecimal(value.toString()), format);
-                }
                 if (value instanceof Temporal) {
                     return SnowflakeDateFormat.format(value, format);
                 }

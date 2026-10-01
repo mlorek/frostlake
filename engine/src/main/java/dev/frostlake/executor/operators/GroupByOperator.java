@@ -57,6 +57,9 @@ public class GroupByOperator implements Operator {
     // is the map SHARED with the aggregate evaluator's lateral context. See captureLateralAliases.
     private List<String> lateralAliasNames;
     private Map<String, Object> lateralAliasSink;
+    // The row of the query around this one, under a correlated or lateral execution: re-seeded into the alias
+    // sink at the start of every group, beneath the group's own aliases. See seedOuterBindings.
+    private Map<String, Object> outerBindings;
     // The collation each group key compares under, parallel to groupByExpressions (null entries where a
     // key has none). See collateKeys.
     private List<CollationSpec> keyCollations;
@@ -193,6 +196,19 @@ public class GroupByOperator implements Operator {
     }
 
     /**
+     * Offer the row of the query around this one to every group's items, the grouped counterpart of
+     * {@link ProjectOperator}'s base bindings: {@code (SELECT MAX(v) + fz.id FROM g)} reads the outer
+     * {@code FZ.ID} through the alias sink, which the aggregate evaluator reads as its lateral context, so
+     * each outer row gets its own answer. Re-seeded as each group begins; a sibling alias of the same name,
+     * published later, still wins.
+     *
+     * @param bindings the outer row's name to value bindings, or null outside a correlated execution
+     */
+    public void seedOuterBindings(final Map<String, Object> bindings) {
+        this.outerBindings = bindings;
+    }
+
+    /**
      * Aliases published as NULL at the start of every group — a super-group's dimensions that this
      * grouping set aggregates away. Their items print NULL on the subtotal row, so an item derived
      * from them ({@code LOWER(c)}, {@code COALESCE(c, 'x')}) must read NULL too, not the
@@ -210,6 +226,9 @@ public class GroupByOperator implements Operator {
     private void beginGroupAliases() {
         if (lateralAliasSink != null) {
             lateralAliasSink.clear();
+            if (outerBindings != null) {
+                lateralAliasSink.putAll(outerBindings);
+            }
             for (final String alias : nullAliasNames) {
                 lateralAliasSink.put(alias.toUpperCase(), null);
             }

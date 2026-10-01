@@ -1,46 +1,140 @@
 {
   "suite": "features-hybrid-table",
   "description": "CREATE HYBRID TABLE (Snowflake's OLTP row-store table type) parses and is created as an ordinary table - Frostlake does not model hybrid storage, so the HYBRID keyword is accepted and ignored: defaults, NOT NULL and the named PRIMARY KEY constraint are kept (ONE TABLE_CONSTRAINTS row per constraint), the form works inside EXECUTE IMMEDIATE dynamic SQL, SHOW HYBRID TABLES lists only hybrid tables (kind HYBRID TABLE), SHOW TABLES reports the kind, and 'hybrid' stays usable as a plain identifier. Converted 1:1 from features/HybridTableTest (now retired). The hybrid-creating tests skip the snowflake backend: hybrid tables are not available on every account (unsupported on trial editions).",
-  "tags": ["features", "converted"],
+  "tags": [
+    "features",
+    "converted"
+  ],
   "tests": [
-    {"name": "create-hybrid-table-behaves-as-normal-table",
-     "skip": {"backends": ["snowflake"], "reason": "hybrid tables are unavailable on trial-edition accounts"},
-     "steps": [
-      {"sql": "CREATE HYBRID TABLE IF NOT EXISTS h1 (k1 VARCHAR NOT NULL, k2 VARCHAR NOT NULL, status VARCHAR DEFAULT 'active', CONSTRAINT pk_h1 PRIMARY KEY (k1, k2))"},
-      {"sql": "INSERT INTO h1 (k1, k2) VALUES ('t', 's')"},
-      {"sql": "SELECT status FROM h1", "expect": {"value": "active"}},
-      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'H1' AND CONSTRAINT_TYPE = 'PRIMARY KEY'",
-       "expect": {"value": "1"}},
-      {"sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'H1' AND CONSTRAINT_TYPE = 'PRIMARY KEY'",
-       "expect": {"value": "PK_H1"}}
-    ]},
-    {"name": "create-hybrid-table-via-execute-immediate",
-     "skip": {"backends": ["snowflake"], "reason": "hybrid tables are unavailable on trial-edition accounts"},
-     "steps": [
-      {"sql": "EXECUTE IMMEDIATE 'CREATE HYBRID TABLE IF NOT EXISTS cfg (k1 VARCHAR NOT NULL, k2 VARCHAR NOT NULL, CONSTRAINT pk_cfg PRIMARY KEY (k1, k2))'"}
-    ]},
-    {"name": "show-hybrid-tables-lists-only-hybrid-tables",
-     "skip": {"backends": ["snowflake"], "reason": "hybrid tables are unavailable on trial-edition accounts"},
-     "steps": [
-      {"sql": "CREATE HYBRID TABLE hyb (a INT)"},
-      {"sql": "CREATE TABLE plain (a INT)"},
-      {"sql": "SHOW HYBRID TABLES", "expect": {"rowCount": 1}},
-      {"sql": "SELECT \"name\", \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
-       "expect": {"rows": [["HYB", "HYBRID TABLE"]]}}
-    ]},
-    {"name": "show-tables-reports-hybrid-kind",
-     "skip": {"backends": ["snowflake"], "reason": "hybrid tables are unavailable on trial-edition accounts"},
-     "steps": [
-      {"sql": "CREATE HYBRID TABLE hyb (a INT)"},
-      {"sql": "CREATE TABLE plain (a INT)"},
-      {"sql": "SHOW TABLES"},
-      {"sql": "SELECT MAX(IFF(\"name\" = 'HYB', \"kind\", NULL)), MAX(IFF(\"name\" = 'PLAIN', \"kind\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
-       "expect": {"rows": [["HYBRID TABLE", "TABLE"]]}}
-    ]},
-    {"name": "hybrid-still-usable-as-identifier", "steps": [
-      {"sql": "CREATE TABLE k (hybrid INT)"},
-      {"sql": "INSERT INTO k VALUES (7)"},
-      {"sql": "SELECT hybrid FROM k", "expect": {"value": "7"}}
-    ]}
+    {
+      "name": "create-hybrid-table-behaves-as-normal-table",
+      "skip": {
+        "backends": [
+          "snowflake"
+        ],
+        "reason": "hybrid tables are unavailable on trial-edition accounts"
+      },
+      "steps": [
+        {
+          "sql": "CREATE HYBRID TABLE IF NOT EXISTS h1 (k1 VARCHAR NOT NULL, k2 VARCHAR NOT NULL, status VARCHAR DEFAULT 'active', CONSTRAINT pk_h1 PRIMARY KEY (k1, k2))"
+        },
+        {
+          "sql": "INSERT INTO h1 (k1, k2) VALUES ('t', 's')"
+        },
+        {
+          "sql": "SELECT status FROM h1",
+          "expect": {
+            "value": "active"
+          }
+        },
+        {
+          "sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'H1' AND CONSTRAINT_TYPE = 'PRIMARY KEY'",
+          "expect": {
+            "value": "1"
+          }
+        },
+        {
+          "sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'H1' AND CONSTRAINT_TYPE = 'PRIMARY KEY'",
+          "expect": {
+            "value": "PK_H1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "create-hybrid-table-via-execute-immediate",
+      "skip": {
+        "backends": [
+          "snowflake"
+        ],
+        "reason": "hybrid tables are unavailable on trial-edition accounts"
+      },
+      "steps": [
+        {
+          "sql": "EXECUTE IMMEDIATE 'CREATE HYBRID TABLE IF NOT EXISTS cfg (k1 VARCHAR NOT NULL, k2 VARCHAR NOT NULL, CONSTRAINT pk_cfg PRIMARY KEY (k1, k2))'"
+        }
+      ]
+    },
+    {
+      "name": "show-hybrid-tables-lists-only-hybrid-tables",
+      "skip": {
+        "backends": [
+          "snowflake"
+        ],
+        "reason": "hybrid tables are unavailable on trial-edition accounts"
+      },
+      "steps": [
+        {
+          "sql": "CREATE HYBRID TABLE hyb (a INT)"
+        },
+        {
+          "sql": "CREATE TABLE plain (a INT)"
+        },
+        {
+          "sql": "SHOW HYBRID TABLES",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+          "expect": {
+            "rows": [
+              [
+                "HYB"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "show-tables-reports-hybrid-kind",
+      "skip": {
+        "backends": [
+          "snowflake"
+        ],
+        "reason": "hybrid tables are unavailable on trial-edition accounts"
+      },
+      "steps": [
+        {
+          "sql": "CREATE HYBRID TABLE hyb (a INT)"
+        },
+        {
+          "sql": "CREATE TABLE plain (a INT)"
+        },
+        {
+          "sql": "SHOW TABLES"
+        },
+        {
+          "sql": "SELECT MAX(IFF(\"name\" = 'HYB', \"kind\", NULL)), MAX(IFF(\"name\" = 'PLAIN', \"kind\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+          "expect": {
+            "rows": [
+              [
+                "HYBRID TABLE",
+                "TABLE"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "hybrid-still-usable-as-identifier",
+      "steps": [
+        {
+          "sql": "CREATE TABLE k (hybrid INT)"
+        },
+        {
+          "sql": "INSERT INTO k VALUES (7)"
+        },
+        {
+          "sql": "SELECT hybrid FROM k",
+          "expect": {
+            "value": "7"
+          }
+        }
+      ]
+    }
   ]
 }

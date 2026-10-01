@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.functions.HigherOrderFunctionNames;
 import dev.frostlake.functions.OperatorFunctionNames;
 import dev.frostlake.functions.SystemFunctionNames;
+import dev.frostlake.functions.UnlistedFunctionNames;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Assumptions;
@@ -215,10 +216,20 @@ public class ShowFunctionsTest extends BaseDatabaseTest {
         Assumptions.assumeFalse(isLiveSnowflake(), "compares against this engine's own registry");
         final SortedSet<String> dispatchable = engine.getFunctionRegistry().allDispatchableNames();
         final Set<String> listed = listedNames();
-        assertEquals(dispatchable.size(), listed.size(),
-            "SHOW FUNCTIONS should list one row per dispatchable name");
+        assertEquals(dispatchable.size() - UnlistedFunctionNames.names().size(), listed.size(),
+            "SHOW FUNCTIONS should list one row per dispatchable name the account lists");
         for (final String name : dispatchable) {
-            assertTrue(listed.contains(name), "dispatchable but unlisted: " + name);
+            assertEquals(!UnlistedFunctionNames.contains(name), listed.contains(name),
+                "dispatchable, listed as the account lists it: " + name);
+        }
+    }
+
+    /** The functions whose first argument names a stage are called by name, and neither side lists them. */
+    @Test
+    public void theStageFunctionsAreNotListed() {
+        for (final String name : new String[] {"GET_PRESIGNED_URL", "BUILD_SCOPED_FILE_URL", "BUILD_STAGE_FILE_URL",
+                "GET_ABSOLUTE_PATH", "GET_RELATIVE_PATH", "GET_STAGE_LOCATION"}) {
+            assertEquals(0, engine.executeQuery("SHOW FUNCTIONS LIKE '" + name + "'").getRowCount(), name);
         }
     }
 

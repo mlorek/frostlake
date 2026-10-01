@@ -64,6 +64,10 @@ public final class ShowModifierProfile {
     private static final List<String> STANDARD_TERSE =
         Arrays.asList("created_on", "name", "kind", "database_name", "schema_name");
 
+    /** SHOW TERSE STREAMLITS keeps the title and the URL id too. */
+    private static final List<String> STREAMLIT_TERSE =
+        Arrays.asList("created_on", "name", "kind", "database_name", "schema_name", "title", "url_id");
+
     /** TERSE is accepted but inert — the listing comes back whole. */
     private static final List<String> NO_TERSE = Collections.emptyList();
 
@@ -152,11 +156,25 @@ public final class ShowModifierProfile {
      * keyword they contain, or {@code SHOW MATERIALIZED VIEWS} would be answered as VIEWS.
      */
     public static ShowModifierProfile forStatement(final FrostlakeParser.ShowStatementContext ctx) {
+        if (ctx.EVENT() != null) {
+            // TERSE reports the kind as EVENT_TABLE.
+            return sorted(true, true, STANDARD_TERSE, "EVENT_TABLE", false);
+        }
+        if (ctx.INTEGRATIONS() != null || ctx.VOLUMES() != null) {
+            // Account listings with a LIKE and no other modifier, by name.
+            return sorted(false, false, NO_TERSE, null, false);
+        }
         if (ctx.COMPUTE() != null && ctx.POOLS() != null) {
             // LIKE, STARTS WITH and LIMIT all act on the listing; the family catalog
             // (SHOW COMPUTE POOL INSTANCE FAMILIES) takes the unsorted default instead,
             // keeping the account's own order.
             return sorted(true, true, NO_TERSE, null, false);
+        }
+        if (ctx.NOTEBOOKS() != null) {
+            return sorted(true, true, NO_TERSE, null, false);
+        }
+        if (ctx.STREAMLITS() != null) {
+            return sorted(true, true, STREAMLIT_TERSE, "Streamlit", false);
         }
         if (ctx.MATERIALIZED() != null && ctx.VIEWS() != null) {
             // LIMIT 1 → 1 of 2 materialized views; STARTS WITH 'ZZZ' → none. Both honoured, TERSE inert
@@ -208,6 +226,11 @@ public final class ShowModifierProfile {
             // Same six-column shape, the extra one being schedule; kind is null.
             return sorted(true, true, terseWithExtra("schedule"), null, false);
         }
+        if (ctx.ALERTS() != null) {
+            // The standard five, then schedule and state; kind is null.
+            return sorted(true, true, Arrays.asList("created_on", "name", "kind", "database_name", "schema_name",
+                "schedule", "state"), null, false);
+        }
         if (ctx.ROLES() != null) {
             // LIMIT 1 → 1 of 7, STARTS WITH 'A' → ACCOUNTADMIN alone. TERSE keeps an unrelated subset:
             // no created_on, no kind, just the five identity flags.
@@ -216,12 +239,12 @@ public final class ShowModifierProfile {
                 "is_from_organization_user_group"), null, false);
         }
         if (ctx.USERS() != null) {
-            // STARTS WITH 'ZZZ' → none. TERSE trims 31 columns to these 14 — again its own subset,
+            // STARTS WITH 'ZZZ' → none. TERSE trims 32 columns to these 15 — again its own subset,
             // leading with name rather than created_on.
             return sorted(true, true, Arrays.asList(
                 "name", "created_on", "display_name", "first_name", "last_name", "email", "comment",
                 "has_password", "has_rsa_public_key", "type", "has_mfa", "has_pat",
-                "has_workload_identity", "is_from_organization_user"), null, false);
+                "has_workload_identity", "allowed_interfaces", "is_from_organization_user"), null, false);
         }
         if (ctx.TAGS() != null) {
             // The asymmetric one: LIMIT 1 returned 1 of 2 tags, STARTS WITH 'ZZZ' returned both.

@@ -879,4 +879,89 @@ public class OperatorPipelineTest {
         assertNull(result.get(3).getValue(3));
         assertEquals(31L, result.get(4).getValue(3));
     }
+
+    /** A stage planned with its own context runs under it; one planned without runs under the pipeline's. */
+    @Test
+    public void aStageRunsUnderItsOwnContextWhereItHasOne() {
+        final OperatorContext pipelineContext = OperatorContext.builder()
+            .table(testTable).functionRegistry(functionRegistry).build();
+        final OperatorContext ownContext = OperatorContext.builder()
+            .table(testTable).functionRegistry(functionRegistry).build();
+        final List<OperatorContext> seen = new ArrayList<>();
+        final Operator spy = new Operator() {
+            @Override
+            public List<Row> execute(final List<Row> input, final OperatorContext context) {
+                seen.add(context);
+                return input;
+            }
+
+            @Override
+            public String getDescription() {
+                return "SPY";
+            }
+        };
+        final OperatorPipeline pipeline = OperatorPipeline.builder()
+            .context(pipelineContext)
+            .addOperator(spy)
+            .addStage(spy, ownContext)
+            .build();
+        assertEquals(5, pipeline.execute(testData).size());
+        assertEquals(2, pipeline.stageCount());
+        assertTrue(seen.get(0) == pipelineContext, "a stage without a context takes the pipeline's");
+        assertTrue(seen.get(1) == ownContext, "a stage with a context keeps it");
+    }
+
+    /** A source stage answers its relation whatever reaches it, so a pipeline can start from nothing. */
+    @Test
+    public void aSourceStageStartsThePipeline() {
+        final OperatorContext context = OperatorContext.builder()
+            .table(testTable).functionRegistry(functionRegistry).build();
+        final OperatorPipeline pipeline = OperatorPipeline.builder()
+            .context(context)
+            .addOperator(new SourceOperator(testData, "SOURCE[users]"))
+            .addOperator(new LimitOperator(2))
+            .build();
+        final List<Row> result = pipeline.execute(new ArrayList<Row>());
+        assertEquals(2, result.size());
+        assertEquals("Alice", result.get(0).getValue(1));
+        assertEquals("Pipeline[SOURCE[users] -> LIMIT[2]]", pipeline.getDescription());
+    }
+
+    /** A stage operator is a plain rows-in, rows-out function, named in the pipeline's description. */
+    @Test
+    public void aStageOperatorIsARowsFunction() {
+        final OperatorContext context = OperatorContext.builder()
+            .table(testTable).functionRegistry(functionRegistry).build();
+        final Operator evenIds = new StageOperator("EVEN[id]") {
+            @Override
+            protected List<Row> apply(final List<Row> input) {
+                final List<Row> kept = new ArrayList<>();
+                for (final Row row : input) {
+                    if (((Long) row.getValue(0)) % 2 == 0) {
+                        kept.add(row);
+                    }
+                }
+                return kept;
+            }
+        };
+        final OperatorPipeline pipeline = OperatorPipeline.builder()
+            .context(context)
+            .addOperator(evenIds)
+            .build();
+        final List<Row> result = pipeline.execute(testData);
+        assertEquals(2, result.size());
+        assertEquals("Bob", result.get(0).getValue(1));
+        assertEquals("David", result.get(1).getValue(1));
+        assertEquals("Pipeline[EVEN[id]]", pipeline.getDescription());
+    }
+
+    /** An offset beside the widest limit stays within the input: the window is computed without overflowing. */
+    @Test
+    public void theWidestLimitWithAnOffsetAnswersTheRest() {
+        final OperatorContext context = OperatorContext.builder()
+            .table(testTable).functionRegistry(functionRegistry).build();
+        final List<Row> result = new LimitOperator(Integer.MAX_VALUE, 1).execute(testData, context);
+        assertEquals(4, result.size());
+        assertEquals("Bob", result.get(0).getValue(1));
+    }
 }

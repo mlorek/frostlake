@@ -118,13 +118,13 @@ public class ShowColumnsRelationKindTest extends BaseDatabaseTest {
      */
     @Test
     public void theRefusalSpeaksTheNamedKindAndEchoesTheNameAsWritten() {
-        assertEquals("Table 'NOSUCH' does not exist or not authorized.",
+        assertEquals(hinted("Table 'NOSUCH' does not exist or not authorized."),
             refusalOf("SHOW COLUMNS IN nosuch"));
-        assertEquals("Table 'NOSUCH' does not exist or not authorized.",
+        assertEquals(hinted("Table 'NOSUCH' does not exist or not authorized."),
             refusalOf("SHOW COLUMNS IN TABLE nosuch"));
-        assertEquals("Table 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized.",
+        assertEquals(hinted("Table 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."),
             refusalOf("SHOW COLUMNS IN TABLE " + QUALIFIED + "nosuch"));
-        assertEquals("View 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized.",
+        assertEquals(hinted("View 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."),
             refusalOf("SHOW COLUMNS IN VIEW " + QUALIFIED + "nosuch"));
     }
 

@@ -17,6 +17,7 @@
 package dev.frostlake.formats;
 
 import dev.frostlake.executor.copy.StageFileReader;
+import dev.frostlake.executor.copy.StagedFileColumn;
 import org.apache.avro.file.DataFileReader;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
@@ -27,6 +28,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Avro staged-file reader. An Avro container file is self-describing (embedded schema); each record becomes
@@ -55,5 +57,11 @@ public class AvroStageReader implements StageFileReader {
     @Override
     public String formatType() {
         return "AVRO";
+    }
+
+    @Override
+    public List<StagedFileColumn> readColumns(final Path file, final Map<String, String> formatOptions,
+                                              final boolean iceberg) {
+        return AvroColumnTypes.read(file);
     }
 }

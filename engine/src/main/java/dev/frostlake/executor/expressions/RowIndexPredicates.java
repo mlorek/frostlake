@@ -82,6 +82,9 @@ final class RowIndexPredicates {
             }
             return unary.getOperator() == UnaryOperator.NOT && isPredicate(unary.getOperand());
         }
+        if (expr instanceof RowComparisonExpression) {
+            return true;
+        }
         if (expr instanceof IsNullExpression || expr instanceof InExpression
                 || expr instanceof TupleInExpression || expr instanceof BetweenExpression
                 || expr instanceof LikeAnyAllExpression || expr instanceof QuantifiedComparisonExpression) {

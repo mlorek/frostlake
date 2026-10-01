@@ -41,16 +41,18 @@ public final class StatementCount {
      * count as ONE statement, the way the account counts them (live-verified: an unquoted
      * {@code CREATE PROCEDURE … AS BEGIN …; END;} and a bare anonymous {@code BEGIN …; END;} both
      * pass under the default single-statement gate): a block-opening {@code BEGIN} (one not
-     * immediately followed by {@code ;}, {@code TRANSACTION}, {@code WORK} or {@code NAME} — those
-     * are transaction starts) or a top-level {@code DECLARE} opens a region; nested blocks pair
+     * immediately followed by {@code ;}, {@code )}, {@code TRANSACTION}, {@code WORK} or {@code NAME} —
+     * those are transaction starts) or a top-level {@code DECLARE} opens a region; nested blocks pair
      * their own BEGIN/END; {@code END IF}/{@code WHILE}/{@code FOR}/{@code LOOP}/{@code REPEAT}
      * close constructs the counter never opened and are skipped; a CASE inside a region pairs with
-     * its bare {@code END} or {@code END CASE}.
+     * its bare {@code END} or {@code END CASE}. A block in parentheses — the one a DECLARE section's
+     * RESULTSET is filled from — is a nested block, never the section's own BEGIN.
      */
     public static int countStatements(final String sql) {
         int count = 0;
         boolean sawContent = false;
         int depth = 0;
+        int parentheses = 0;
         boolean headerBeginPending = false;
         int i = 0;
         final int n = sql.length();
@@ -87,7 +89,7 @@ public final class StatementCount {
                 final String word = sql.substring(start, i).toUpperCase(Locale.ROOT);
                 sawContent = true;
                 if ("BEGIN".equals(word) && !isTransactionBegin(sql, i)) {
-                    if (headerBeginPending) {
+                    if (headerBeginPending && parentheses == 0) {
                         headerBeginPending = false;
                     } else {
                         depth++;
@@ -113,6 +115,11 @@ public final class StatementCount {
                 if (!Character.isWhitespace(c)) {
                     sawContent = true;
                 }
+                if (c == '(') {
+                    parentheses++;
+                } else if (c == ')' && parentheses > 0) {
+                    parentheses--;
+                }
                 i++;
             }
         }
@@ -129,7 +136,7 @@ public final class StatementCount {
         while (j < n && Character.isWhitespace(sql.charAt(j))) {
             j++;
         }
-        if (j >= n || sql.charAt(j) == ';') {
+        if (j >= n || sql.charAt(j) == ';' || sql.charAt(j) == ')') {
             return true;
         }
         final String word = nextWord(sql, after);

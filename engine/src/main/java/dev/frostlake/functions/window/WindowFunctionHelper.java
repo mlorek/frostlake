@@ -18,7 +18,6 @@ package dev.frostlake.functions.window;
 
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
-import dev.frostlake.storage.Row;
 
 import java.util.List;
 
@@ -31,62 +30,27 @@ public final class WindowFunctionHelper {
     private WindowFunctionHelper() {}
 
     /**
-     * NTILE(n) — divides the sorted partition into n equal buckets, returns bucket number (1-based).
+     * NTILE(n) — divides the sorted partition into n buckets and answers the 1-based bucket of the row at
+     * {@code position}. Buckets differ in size by at most one, the larger ones first.
+     *
+     * @param size the partition's row count
+     * @param position the row's 0-based position in the sorted partition, or -1 when unknown
+     * @param buckets the requested bucket count
+     * @return the row's bucket
      */
-    public static long ntile(final List<Row> sortedRows, final Row currentRow, final int buckets) {
-        final int n = sortedRows.size();
-        if (n == 0 || buckets <= 0) return 1L;
-        final int pos = indexOf(sortedRows, currentRow);
-        if (pos < 0) return 1L;
+    public static long ntile(final int size, final int position, final int buckets) {
+        if (size == 0 || buckets <= 0 || position < 0) return 1L;
         // Bucket size: larger buckets come first when not evenly divisible
-        final int largeSize = (int) Math.ceil((double) n / buckets);
-        int largeCount = n % buckets == 0 ? 0 : n % buckets;  // how many "large" buckets
-        if (largeCount == 0) largeCount = buckets;             // all same size
+        final int largeSize = (int) Math.ceil((double) size / buckets);
+        int largeCount = size % buckets == 0 ? 0 : size % buckets;  // how many "large" buckets
+        if (largeCount == 0) largeCount = buckets;                   // all same size
         final int splitPoint = largeCount * largeSize;
-        if (pos < splitPoint) {
-            return (long) (pos / largeSize + 1);
+        if (position < splitPoint) {
+            return (long) (position / largeSize + 1);
         } else {
-            final int smallSize = n / buckets;
-            return (long) (largeCount + (pos - splitPoint) / smallSize + 1);
+            final int smallSize = size / buckets;
+            return (long) (largeCount + (position - splitPoint) / smallSize + 1);
         }
-    }
-
-    /**
-     * PERCENT_RANK — (rank - 1) / (N - 1); ranges [0, 1].
-     */
-    public static double percentRank(final List<Row> sortedRows, final Row currentRow,
-                                      final List<Object> orderValues) {
-        final int n = sortedRows.size();
-        if (n <= 1) return 0.0;
-        final int pos = indexOf(sortedRows, currentRow);
-        if (pos < 0) return 0.0;
-        final Object curVal = pos < orderValues.size() ? orderValues.get(pos) : null;
-        // rank = 1 + number of rows with strictly smaller order value
-        long rank = 1;
-        for (int i = 0; i < pos; i++) {
-            final Object v = i < orderValues.size() ? orderValues.get(i) : null;
-            if (compareValues(v, curVal) < 0) rank++;
-        }
-        return (double)(rank - 1) / (n - 1);
-    }
-
-    /**
-     * CUME_DIST — fraction of rows with order value {@code <=} current; ranges (0, 1].
-     */
-    public static double cumeDist(final List<Row> sortedRows, final Row currentRow,
-                                   final List<Object> orderValues) {
-        final int n = sortedRows.size();
-        if (n == 0) return 1.0;
-        final int pos = indexOf(sortedRows, currentRow);
-        if (pos < 0) return 1.0;
-        final Object curVal = pos < orderValues.size() ? orderValues.get(pos) : null;
-        // count rows with value <= currentVal
-        long count = 0;
-        for (int i = 0; i < orderValues.size(); i++) {
-            final Object v = orderValues.get(i);
-            if (compareValues(v, curVal) <= 0) count++;
-        }
-        return (double) count / n;
     }
 
     /**
@@ -146,13 +110,6 @@ public final class WindowFunctionHelper {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
-
-    public static int indexOf(final List<Row> rows, final Row target) {
-        for (int i = 0; i < rows.size(); i++) {
-            if (rows.get(i).equals(target)) return i;
-        }
-        return -1;
-    }
 
     @SuppressWarnings("unchecked")
     public static int compareValues(final Object a, final Object b) {

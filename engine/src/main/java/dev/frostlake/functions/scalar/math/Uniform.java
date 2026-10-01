@@ -20,15 +20,17 @@ import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * UNIFORM(min, max [, gen]) — a uniformly random value in the range. With integer bounds the result is
- * an integer INCLUSIVE of both bounds (Snowflake); with a floating-point bound it is a double in
- * [min, max). The optional generator argument (typically RANDOM()) supplies the entropy — a per-row
- * RANDOM() varies the result per row, a constant RANDOM(seed) repeats it; without it an independent
- * value is used per call.
+ * UNIFORM(min, max, gen) — a uniformly random value in the range. With exact bounds the result is drawn
+ * at the larger of the bounds' scales, INCLUSIVE of both bounds — an integer for integer bounds, one
+ * decimal for UNIFORM(1.5, 10, g) — and with a FLOAT bound it is a double in [min, max). The evaluator
+ * hands the bounds over in the family and at the scale the call's type draws in. The generator argument
+ * (typically RANDOM()) supplies the entropy: a per-row RANDOM() varies the result per row, a constant
+ * RANDOM(seed) repeats it.
  */
 public class Uniform extends NumericArgumentFunction {
     public Uniform() { super("UNIFORM", NumericType.NUMBER); }
@@ -48,18 +50,25 @@ public class Uniform extends NumericArgumentFunction {
             final double fraction = (entropy >>> 11) * 0x1.0p-53; // top 53 bits → [0, 1)
             return lo + fraction * (hi - lo);
         }
+        if (loArg instanceof BigDecimal || hiArg instanceof BigDecimal) {
+            final BigDecimal lo = new BigDecimal(loArg.toString());
+            final BigDecimal hi = new BigDecimal(hiArg.toString());
+            final int scale = Math.max(0, Math.max(lo.scale(), hi.scale()));
+            final BigInteger loUnits = lo.setScale(scale).unscaledValue();
+            final BigInteger range = hi.setScale(scale).unscaledValue().subtract(loUnits).add(BigInteger.ONE);
+            final BigInteger units = range.signum() <= 0 ? loUnits
+                : loUnits.add(BigInteger.valueOf(entropy).mod(range));
+            return scale == 0 && units.bitLength() < 64 ? (Object) units.longValue() : new BigDecimal(units, scale);
+        }
         final long lo = ((Number) loArg).longValue();
         final long hi = ((Number) hiArg).longValue();
         final long range = hi - lo + 1;
         return range <= 0 ? lo : lo + Math.floorMod(entropy, range);
     }
 
-    /** Snowflake dispatches by bound TYPE: a Double/Float, or a BigDecimal with a fractional scale. */
+    /** Snowflake dispatches by bound TYPE: a FLOAT bound draws a double, an exact one draws at its scale. */
     private static boolean isFloatBound(final Object o) {
-        if (o instanceof Double || o instanceof Float) {
-            return true;
-        }
-        return o instanceof BigDecimal && ((BigDecimal) o).scale() > 0;
+        return o instanceof Double || o instanceof Float;
     }
 
     // Snowflake requires the generator argument: UNIFORM(5, 10) errors "not enough arguments for

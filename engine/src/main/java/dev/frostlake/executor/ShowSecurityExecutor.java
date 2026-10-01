@@ -17,6 +17,8 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.User;
@@ -26,8 +28,12 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -70,7 +76,7 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("ext_authn_uid", StringType.VARCHAR),
             new ResultSetColumn("mins_to_bypass_mfa", StringType.VARCHAR),
             new ResultSetColumn("owner", StringType.VARCHAR),
-            new ResultSetColumn("last_success_login", StringType.VARCHAR),
+            new ResultSetColumn("last_success_login", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("expires_at_time", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("locked_until_time", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("has_password", StringType.VARCHAR),
@@ -79,35 +85,46 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("has_mfa", StringType.VARCHAR),
             new ResultSetColumn("has_pat", StringType.VARCHAR),
             new ResultSetColumn("has_workload_identity", StringType.VARCHAR),
+            new ResultSetColumn("allowed_interfaces", StringType.VARCHAR),
             new ResultSetColumn("is_from_organization_user", StringType.VARCHAR)
         );
         final List<Row> rows = new ArrayList<>();
+        final Instant now = StatementClock.instant();
         for (final User user : catalog.getAllUsers()) {
+            final boolean person = !UserStatusText.hidesPersonalDetails(user.getUserType());
+            final boolean password = !UserStatusText.hidesPassword(user.getUserType());
             rows.add(new Row(Arrays.asList(
                 user.getName(),
                 ShowResultHelpers.createdOn(user.getCreatedTime()),
                 user.getLoginName(),
                 user.getDisplayName(),
-                user.getFirstName(),
-                user.getLastName(),
+                person ? user.getFirstName() : null,
+                person ? user.getLastName() : null,
                 user.getEmail(),
-                null, null,
+                UserStatusText.minutesLeft(user.getLockedUntil(), now),
+                UserStatusText.daysToExpiry(user.getExpiresAt(), now),
                 ShowResultHelpers.text(user.getComment()),
                 // SHOW USERS spells its flags as lower-case words, not the Y / N most SHOW output uses.
                 String.valueOf(!user.isEnabled()),
-                String.valueOf(user.isMustChangePassword()),
+                String.valueOf(password && user.isMustChangePassword()),
                 "false",
                 user.getDefaultWarehouse(),
                 user.getDefaultNamespace(),
                 user.getDefaultRole(),
                 user.getDefaultSecondaryRoles(),
-                "false", null, null,
+                "false", null,
+                person ? UserStatusText.minutesLeft(user.getMfaBypassUntil(), now) : null,
                 user.getOwner(),
-                null, null, null,
-                String.valueOf(user.getPassword() != null),
-                "false",
+                null,
+                ShowResultHelpers.createdOn(user.getExpiresAt()),
+                ShowResultHelpers.createdOn(user.getLockedUntil()),
+                String.valueOf(password && user.getPassword() != null),
+                String.valueOf(user.hasRsaPublicKey()),
                 user.getUserType(),
-                "false", "false", "false", "false"
+                "false", "false", "false",
+                // Every interface, spelled as the account lists it: not JSON, no quotes.
+                "[ALL]",
+                "false"
             )));
         }
         return new ResultSet(columns, rows);
@@ -132,19 +149,57 @@ final class ShowSecurityExecutor {
         final String curRole = securityManager != null ? securityManager.getSessionContext().getCurrentRole() : null;
         final List<Row> rows = new ArrayList<>();
         for (final Role role : catalog.getAllRoles()) {
+            int assignedToUsers = 0;
+            for (final User user : catalog.getAllUsers()) {
+                if (user.getGrantedRoles().contains(role.getName()) && !"PUBLIC".equals(role.getName())) {
+                    assignedToUsers++;
+                }
+            }
+            int grantedToRoles = 0;
+            for (final Role holder : catalog.getAllRoles()) {
+                if (holder.getGrantedRoles().contains(role.getName())) {
+                    grantedToRoles++;
+                }
+            }
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(role.getCreatedTime()),
                 role.getName(),
                 "N",
                 role.getName().equals(curRole) ? "Y" : "N",
                 "N",
-                0, 0, role.getGrantedRoles().size(),
+                assignedToUsers, grantedToRoles, role.getGrantedRoles().size(),
                 ShowResultHelpers.text(role.getOwner()),
                 ShowResultHelpers.text(role.getComment()),
                 "N"
             )));
         }
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * SHOW ROLES IN DATABASE: a database's own roles, in the columns live lists them with. Database roles are not
+     * modelled, so the listing is empty.
+     */
+    public ResultSet showDatabaseRoles(final Database database) {
+        return new AccessControlListings(catalog).databaseRoles(database);
+    }
+
+    /** The empty SHOW ROLES IN DATABASE listing, in its columns. */
+    public ResultSet showDatabaseRoles() {
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("is_default", StringType.VARCHAR),
+            new ResultSetColumn("is_current", StringType.VARCHAR),
+            new ResultSetColumn("is_inherited", StringType.VARCHAR),
+            new ResultSetColumn("granted_to_roles", NumericType.INTEGER),
+            new ResultSetColumn("granted_to_database_roles", NumericType.INTEGER),
+            new ResultSetColumn("granted_database_roles", NumericType.INTEGER),
+            new ResultSetColumn("owner", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR)
+        );
+        return new ResultSet(columns, new ArrayList<Row>());
     }
 
     /**
@@ -157,6 +212,9 @@ final class ShowSecurityExecutor {
      */
     public ResultSet describeUser(final String name) {
         final User user = catalog.getUser(name);
+        final Instant now = StatementClock.instant();
+        final boolean person = !UserStatusText.hidesPersonalDetails(user.getUserType());
+        final boolean password = !UserStatusText.hidesPassword(user.getUserType());
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("property", StringType.VARCHAR),
             new ResultSetColumn("value", StringType.VARCHAR),
@@ -169,17 +227,17 @@ final class ShowSecurityExecutor {
             {"DISPLAY_NAME", user.getDisplayName(), "null", "Display name of the associated object"},
             {"TYPE", user.getUserType(), "null", "Type of the account, application package, data exchange, data exchange listing, replication group, secret, network rule, user, or cortex extension."},
             {"LOGIN_NAME", user.getLoginName(), "null", "Login name of the user"},
-            {"FIRST_NAME", textOrNull(user.getFirstName()), "null", "First name of the user"},
-            {"MIDDLE_NAME", textOrNull(user.getMiddleName()), "null", "Middle name of the user"},
-            {"LAST_NAME", textOrNull(user.getLastName()), "null", "Last name of the user"},
+            {"FIRST_NAME", textOrNull(person ? user.getFirstName() : null), "null", "First name of the user"},
+            {"MIDDLE_NAME", textOrNull(person ? user.getMiddleName() : null), "null", "Middle name of the user"},
+            {"LAST_NAME", textOrNull(person ? user.getLastName() : null), "null", "Last name of the user"},
             {"EMAIL", textOrNull(user.getEmail()), "null", "Email address of the user"},
             {"PASSWORD", "null", "null", "Password of the user"},
-            {"MUST_CHANGE_PASSWORD", String.valueOf(user.isMustChangePassword()), "false", "User must change the password"},
+            {"MUST_CHANGE_PASSWORD", String.valueOf(password && user.isMustChangePassword()), "false", "User must change the password"},
             {"DISABLED", String.valueOf(!user.isEnabled()), "false", "Whether the entity is disabled"},
             {"SNOWFLAKE_LOCK", "false", "false", "Whether the user, account, or organization is locked by Snowflake"},
             {"SNOWFLAKE_SUPPORT", "false", "false", "Snowflake Support is allowed to use the user or account"},
-            {"DAYS_TO_EXPIRY", "null", "null", "User record will be treated as expired after specified number of days"},
-            {"MINS_TO_UNLOCK", "null", "null", "Temporary lock on the user will be removed after specified number of minutes"},
+            {"DAYS_TO_EXPIRY", textOrNull(UserStatusText.daysToExpiry(user.getExpiresAt(), now)), "null", "User record will be treated as expired after specified number of days"},
+            {"MINS_TO_UNLOCK", textOrNull(UserStatusText.minutesLeft(user.getLockedUntil(), now)), "null", "Temporary lock on the user will be removed after specified number of minutes"},
             {"DEFAULT_WAREHOUSE", textOrNull(user.getDefaultWarehouse()), "null", "Default warehouse"},
             {"DEFAULT_NAMESPACE", textOrNull(user.getDefaultNamespace()), "null", "Default database namespace prefix for this user"},
             {"DEFAULT_ROLE", textOrNull(user.getDefaultRole()), "null", "Primary principal of user session will be set to this role"},
@@ -190,16 +248,16 @@ final class ShowSecurityExecutor {
             {"HAS_MFA", "false", "false", "Whether the user is enrolled in multi-factor authentication"},
             {"HAS_PAT", "false", "false", "Whether the user has a programmatic access token"},
             {"HAS_WORKLOAD_IDENTITY", "false", "false", "Whether the user has workload identity defined"},
-            {"HAS_KEYPAIR", "false", "false", "Whether the user has a key pair"},
+            {"HAS_KEYPAIR", String.valueOf(user.hasRsaPublicKey()), "false", "Whether the user has a key pair"},
             {"IS_EMAIL_VERIFIED", "false", "false", "Whether the user's email address has been verified"},
-            {"MINS_TO_BYPASS_MFA", "null", "null", "Temporary bypass MFA for the user for a specified number of minutes"},
+            {"MINS_TO_BYPASS_MFA", textOrNull(person ? UserStatusText.minutesLeft(user.getMfaBypassUntil(), now) : null), "null", "Temporary bypass MFA for the user for a specified number of minutes"},
             {"MINS_TO_BYPASS_NETWORK_POLICY", "null", "null", "Temporary bypass network policy on the user for a specified number of minutes"},
-            {"RSA_PUBLIC_KEY", "null", "null", "RSA public key of the user"},
-            {"RSA_PUBLIC_KEY_FP", "null", "null", "Fingerprint of user's RSA public key."},
-            {"RSA_PUBLIC_KEY_LAST_SET_TIME", "null", "null", "The timestamp at which the RSA public key was last set for the user. Defaults to null if no RSA public key has been set yet."},
-            {"RSA_PUBLIC_KEY_2", "null", "null", "Second RSA public key of the user"},
-            {"RSA_PUBLIC_KEY_2_FP", "null", "null", "Fingerprint of user's second RSA public key."},
-            {"RSA_PUBLIC_KEY_2_LAST_SET_TIME", "null", "null", "The timestamp at which the second RSA public key was last set for the user. Defaults to null if no second RSA public key has been set yet."},
+            {"RSA_PUBLIC_KEY", textOrNull(user.getRsaPublicKey()), "null", "RSA public key of the user"},
+            {"RSA_PUBLIC_KEY_FP", textOrNull(user.getRsaPublicKeyFp()), "null", "Fingerprint of user's RSA public key."},
+            {"RSA_PUBLIC_KEY_LAST_SET_TIME", setTimeOrNull(user.getRsaPublicKeyLastSetTime()), "null", "The timestamp at which the RSA public key was last set for the user. Defaults to null if no RSA public key has been set yet."},
+            {"RSA_PUBLIC_KEY_2", textOrNull(user.getRsaPublicKey2()), "null", "Second RSA public key of the user"},
+            {"RSA_PUBLIC_KEY_2_FP", textOrNull(user.getRsaPublicKey2Fp()), "null", "Fingerprint of user's second RSA public key."},
+            {"RSA_PUBLIC_KEY_2_LAST_SET_TIME", setTimeOrNull(user.getRsaPublicKey2LastSetTime()), "null", "The timestamp at which the second RSA public key was last set for the user. Defaults to null if no second RSA public key has been set yet."},
             {"SCIM_USER_NAME", "null", "null", "User name of an user (required for SCIM provisioning)"},
             {"PASSWORD_LAST_SET_TIME", "null", "null", "The timestamp on which the last non-null password was set for the user. Default to null if no password has been set yet."},
             {"MINS_TO_BYPASS_SESSION_POLICY", "null", "null", "Temporarily bypass session policy for the given number of minutes."},
@@ -207,7 +265,7 @@ final class ShowSecurityExecutor {
             {"CUSTOM_LANDING_PAGE_URL_FLUSH_NEXT_UI_LOAD", "false", "false", "Whether or not to flush the custom landing page of the user on next UI load"},
             {"IS_FROM_ORGANIZATION_USER", "false", "false", "Whether the user is imported from an organization user."},
             {"ALLOWED_INTERFACES", "[ALL]", "null", "List of interfaces this user is allowed to access. Must be provided as a list: ('ALL'), ('SNOWFLAKE_INTELLIGENCE', 'STREAMLIT')"},
-            {"LOCK_DETAILS", "{\"isAdminLocked\":false,\"isMfaLocked\":false,\"isMfaOTPLocked\":false,\"isMfaTOTPLocked\":false,\"isPasswordLocked\":false,\"isSnowflakeLocked\":false}", "null", "Details about why the user is locked, if the user is locked."}
+            {"LOCK_DETAILS", "{\"isAdminLocked\":" + UserStatusText.running(user.getLockedUntil(), now) + ",\"isMfaLocked\":false,\"isMfaOTPLocked\":false,\"isMfaTOTPLocked\":false,\"isPasswordLocked\":false,\"isSnowflakeLocked\":false}", "null", "Details about why the user is locked, if the user is locked."}
         };
         final List<Row> rows = new ArrayList<>();
         for (final Object[] property : properties) {
@@ -221,7 +279,22 @@ final class ShowSecurityExecutor {
         return value != null ? value : "null";
     }
 
-    public ResultSet showGrantsOnObject(final String objectType, final String objectName) {
+    /** A key's last-set time as DESCRIBE USER prints it, or the text "null". */
+    private static String setTimeOrNull(final Instant instant) {
+        return instant != null ? UserStatusText.setTime(instant) : "null";
+    }
+
+    /**
+     * SHOW GRANTS ON an object: every privilege a role holds on it, and the owner's OWNERSHIP, ordered by
+     * grantee and then by privilege (live-verified). The OWNERSHIP row carries the grant option, is granted
+     * by the owner itself and dates from the object's creation; a role that was granted OWNERSHIP is the
+     * owner. Each row names the object as live does, by its own kind and its full name.
+     *
+     * @param objectType the kind the statement names
+     * @param objectName the name as written
+     * @param granted    the object found, or null when its kind records no owner here
+     */
+    public ResultSet showGrantsOnObject(final String objectType, final String objectName, final GrantedObject granted) {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("privilege", StringType.VARCHAR),
@@ -233,21 +306,74 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("granted_by", StringType.VARCHAR),
             new ResultSetColumn("granted_by_role_type", StringType.VARCHAR)
         );
-        final String reportedName = qualifiedObjectName(objectType, objectName);
+        final String grantedOn = granted != null ? granted.getKind() : objectType;
+        final String reportedName = granted != null ? granted.getName() : qualifiedObjectName(objectType, objectName);
+        // A grant is recorded under the object's own kind (a relation's, whichever keyword named it) and the
+        // name its statement wrote, so the object's kind is asked under each name the object answers to.
+        final List<String> spellings = new ArrayList<>();
+        spellings.add(objectName);
+        if (granted != null) {
+            spellings.addAll(granted.getSpellings());
+        }
         final List<Row> rows = new ArrayList<>();
-        for (final Role role : catalog.getAllRoles()) {
-            for (final Privilege priv : role.getPrivileges(objectType, objectName)) {
-                rows.add(new Row(Arrays.asList(
-                    ShowResultHelpers.createdOn(role.getCreatedTime()),
-                    priv.toString(),
-                    objectType, reportedName,
-                    "ROLE", role.getName(),
-                    "false", role.getPrivilegeGrantor(objectType, objectName, priv),
-                    ShowResultHelpers.OWNER_ROLE_TYPE
-                )));
+        boolean ownershipGranted = false;
+        final List<Role> holders = new ArrayList<>(catalog.getAllRoles());
+        for (final Database database : catalog.getAllDatabases()) {
+            holders.addAll(database.getDatabaseRoles());
+        }
+        for (final Role role : holders) {
+            final boolean databaseRole = role instanceof DatabaseRole;
+            final Set<Privilege> listed = new HashSet<>();
+            for (final String spelling : spellings) {
+                for (final Privilege priv : role.getPrivileges(grantedOn, spelling)) {
+                    if (!listed.add(priv)) {
+                        continue;
+                    }
+                    final boolean ownership = priv == Privilege.OWNERSHIP;
+                    ownershipGranted = ownershipGranted || ownership;
+                    rows.add(new Row(Arrays.asList(
+                        grantedOn(role, objectType, spelling, priv),
+                        priv.displayName(),
+                        grantedOn, reportedName,
+                        databaseRole ? AccessControlListings.DATABASE_ROLE : "ROLE",
+                        // A database role as GRANTEE is named bare, whichever listing shows it.
+                        role.getName(),
+                        ownership || role.hasGrantOption(grantedOn, spelling, priv) ? "true" : "false",
+                        ownership ? role.getName() : role.getPrivilegeGrantor(grantedOn, spelling, priv),
+                        ShowResultHelpers.OWNER_ROLE_TYPE
+                    )));
+                }
             }
         }
+        if (!ownershipGranted && granted != null && granted.getOwner() != null && !granted.getOwner().isEmpty()) {
+            rows.add(new Row(Arrays.asList(
+                ShowResultHelpers.createdOn(granted.getCreatedTime()),
+                Privilege.OWNERSHIP.toString(),
+                grantedOn, reportedName,
+                "ROLE", granted.getOwner(),
+                "true", granted.getOwner(),
+                ShowResultHelpers.OWNER_ROLE_TYPE
+            )));
+        }
+        Collections.sort(rows, new Comparator<Row>() {
+            @Override
+            public int compare(final Row left, final Row right) {
+                final int byGrantee = String.valueOf(left.getValue(5)).compareTo(String.valueOf(right.getValue(5)));
+                return byGrantee != 0 ? byGrantee
+                    : String.valueOf(left.getValue(1)).compareTo(String.valueOf(right.getValue(1)));
+            }
+        });
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * A grant row's created_on: when the privilege was granted, or the grantee's own creation for a grant with no
+     * recorded moment.
+     */
+    private static Object grantedOn(final Role role, final String objectType, final String objectName,
+                                    final Privilege privilege) {
+        final Instant granted = role.getPrivilegeGrantTime(objectType, objectName, privilege);
+        return granted != null ? ShowResultHelpers.createdOn(granted) : ShowResultHelpers.createdOn(role.getCreatedTime());
     }
 
     /**
@@ -343,8 +469,15 @@ final class ShowSecurityExecutor {
         return new ResultSet(columns, rows);
     }
 
+    /**
+     * SHOW GRANTS TO USER and TO ROLE. Every row is ordered as the account orders them, by the kind granted on, then
+     * the name, then the privilege, whether it is a role held or a privilege. SHOW GRANTS TO USER carries a
+     * {@code role} column after {@code name}: the role a ROLE row grants, NULL on every other row, among them
+     * the privileges granted to the user directly.
+     */
     public ResultSet showGrantsTo(final String targetType, final String targetName) {
-        final List<ResultSetColumn> columns = Arrays.asList(
+        final boolean toUser = "USER".equals(targetType);
+        final List<ResultSetColumn> columns = new ArrayList<>(Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("privilege", StringType.VARCHAR),
             new ResultSetColumn("granted_on", StringType.VARCHAR),
@@ -353,9 +486,12 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("grantee_name", StringType.VARCHAR),
             new ResultSetColumn("grant_option", StringType.VARCHAR),
             new ResultSetColumn("granted_by", StringType.VARCHAR)
-        );
+        ));
+        if (toUser) {
+            columns.add(4, new ResultSetColumn("role", StringType.VARCHAR));
+        }
         final List<Row> rows = new ArrayList<>();
-        if ("USER".equals(targetType)) {
+        if (toUser) {
             final User user = catalog.getUser(targetName);
             for (final String roleName : user.getGrantedRoles()) {
                 // Live Snowflake never surfaces PUBLIC membership here — re-probed on a real account
@@ -368,10 +504,32 @@ final class ShowSecurityExecutor {
                 }
                 rows.add(new Row(Arrays.asList(
                     ShowResultHelpers.createdOn(user.getCreatedTime()),
-                    "USAGE", "ROLE", roleName,
+                    "USAGE", "ROLE", roleName, roleName,
                     "USER", user.getName(),
                     "false", user.getRoleGrantor(roleName)
                 )));
+            }
+            final AccessControlListings listings = new AccessControlListings(catalog);
+            for (final Map.Entry<String, String> held : user.getDatabaseRoleGrants().entrySet()) {
+                if (!listings.databaseRoleExists(held.getKey())) {
+                    continue;
+                }
+                rows.add(new Row(Arrays.<Object>asList(
+                    ShowResultHelpers.createdOn(user.getCreatedTime()),
+                    "USAGE", AccessControlListings.DATABASE_ROLE, held.getKey(), null,
+                    "USER", user.getName(), "false", held.getValue())));
+            }
+            for (final Map.Entry<String, Set<Privilege>> entry : user.getAllPrivileges().entrySet()) {
+                final int split = entry.getKey().indexOf(':');
+                final String objectType = entry.getKey().substring(0, split);
+                final String objectName = entry.getKey().substring(split + 1);
+                for (final Privilege privilege : entry.getValue()) {
+                    rows.add(new Row(Arrays.<Object>asList(
+                        ShowResultHelpers.createdOn(user.getCreatedTime()),
+                        privilege.displayName(), objectType, objectName, null,
+                        "USER", user.getName(), "false",
+                        user.getPrivilegeGrantor(objectType, objectName, privilege))));
+                }
             }
         } else if ("ROLE".equals(targetType)) {
             final Role role = catalog.getRole(targetName);
@@ -383,21 +541,9 @@ final class ShowSecurityExecutor {
                     "false", role.getRoleGrantor(grantedRoleName)
                 )));
             }
-            for (final Map.Entry<String, Set<Privilege>> entry : role.getAllPrivileges().entrySet()) {
-                final String[] parts = entry.getKey().split(":");
-                final String objType = parts[0];
-                final String objName = parts[1];
-                for (final Privilege priv : entry.getValue()) {
-                    rows.add(new Row(Arrays.asList(
-                        ShowResultHelpers.createdOn(role.getCreatedTime()),
-                        priv.toString(), objType, objName,
-                        "ROLE", role.getName(),
-                        "false", role.getPrivilegeGrantor(objType, objName, priv)
-                    )));
-                }
-            }
+            rows.addAll(new AccessControlListings(catalog).grantsTo(role, "ROLE", role.getName()).getRows());
         }
-        return new ResultSet(columns, rows);
+        return new ResultSet(columns, AccessControlListings.sortedGrants(rows));
     }
 
     /** Build a two-column (property, value) describe result. */

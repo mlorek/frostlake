@@ -35,6 +35,8 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -43,8 +45,6 @@ import java.util.UUID;
  */
 final class ShowInfraExecutor {
 
-    /** The compute family a standard warehouse runs on, as live reports it. */
-    private static final String RESOURCE_CONSTRAINT = "STANDARD_GEN_2";
 
     private final Catalog catalog;
 
@@ -133,8 +133,9 @@ final class ShowInfraExecutor {
                 UUID.nameUUIDFromBytes(wh.getName().getBytes(StandardCharsets.UTF_8)).toString(),
                 wh.getScalingPolicy().toString(),
                 ShowResultHelpers.OWNER_ROLE_TYPE,
-                RESOURCE_CONSTRAINT,
-                wh.getGeneration(),
+                wh.getResourceConstraint(),
+                // A Snowpark-optimized warehouse has no generation.
+                "SNOWPARK-OPTIMIZED".equals(wh.getWarehouseType()) ? null : wh.getGeneration(),
                 null, null, null, null
             )));
         }
@@ -434,6 +435,73 @@ final class ShowInfraExecutor {
      * and default. The current value is the stage's declared option where one was given, else the
      * default; TYPE reflects the stage's format.
      */
+    /** See {@link ShowCommandExecutor#describeRelationStage}. */
+    /**
+     * DESCRIBE … TYPE = STAGE over a relation: the stage file format of the TYPE the table was created
+     * with, each option's written value against the format's own default, then the copy options and the
+     * (empty) stage location. A relation created with no options of its own reports the CSV tree, whose
+     * values are its defaults (live-verified).
+     *
+     * @param written the table's stage file format, as written
+     * @param copyOptions the table's stage copy options, as written
+     * @return the property rows
+     */
+    ResultSet describeTableStage(final Map<String, String> written, final Map<String, String> copyOptions) {
+        final List<Row> rows = new ArrayList<>();
+        for (final FormatProperty property : FileFormatSurfaces.tree(written.get("TYPE"))) {
+            final String value = written.get(property.name.toUpperCase());
+            // A stage's default format is CSV whichever tree is answered, so the TYPE row's default
+            // column reads CSV even under a JSON format (live-verified).
+            final String shownDefault = "TYPE".equals(property.name) ? "CSV" : property.shownDefault;
+            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
+                spelled(value, property.type, property.valueDefault), shownDefault)));
+        }
+        for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
+            rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
+                spelled(copyOptions.get(property[0]), property[1], property[2]), property[2])));
+        }
+        rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String", "", "")));
+        return new ResultSet(stagePropertyColumns(), rows);
+    }
+
+    /** A written option's value as the listing spells it: a boolean in lower case, like every default. */
+    private String spelled(final String written, final String type, final String whenUnwritten) {
+        if (written == null) {
+            return whenUnwritten;
+        }
+        return "Boolean".equals(type) ? written.toLowerCase(Locale.ROOT) : written;
+    }
+
+    /** The five columns every stage-property listing answers in. */
+    private List<ResultSetColumn> stagePropertyColumns() {
+        return Arrays.asList(
+            new ResultSetColumn("parent_property", StringType.VARCHAR),
+            new ResultSetColumn("property", StringType.VARCHAR),
+            new ResultSetColumn("property_type", StringType.VARCHAR),
+            new ResultSetColumn("property_value", StringType.VARCHAR),
+            new ResultSetColumn("property_default", StringType.VARCHAR));
+    }
+
+    ResultSet describeRelationStage(final boolean table) {
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("parent_property", StringType.VARCHAR),
+            new ResultSetColumn("property", StringType.VARCHAR),
+            new ResultSetColumn("property_type", StringType.VARCHAR),
+            new ResultSetColumn("property_value", StringType.VARCHAR),
+            new ResultSetColumn("property_default", StringType.VARCHAR));
+        final List<Row> rows = new ArrayList<>();
+        if (table) {
+            for (final String[] property : STAGE_FORMAT_PROPERTIES) {
+                rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property[0], property[1], property[2], property[2])));
+            }
+            for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
+                rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1], property[2], property[2])));
+            }
+        }
+        rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String", "", "")));
+        return new ResultSet(columns, rows);
+    }
+
     public ResultSet describeStage(final String stageName) {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("parent_property", StringType.VARCHAR),

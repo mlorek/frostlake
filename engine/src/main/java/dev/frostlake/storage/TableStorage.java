@@ -16,6 +16,7 @@
 
 package dev.frostlake.storage;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.types.DataType;
@@ -24,6 +25,7 @@ import dev.frostlake.values.ExactValues;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -49,6 +51,9 @@ public class TableStorage {
     // account refuses AT/BEFORE points before the object's creation; snapshots are in-memory
     // only, so a restored engine's history starts at restore, exactly like its snapshots.
     private final long createdMillis = System.currentTimeMillis();
+    // Where this storage's creation falls in the order snapshots are taken in: a point with a lower number
+    // came before the table.
+    private final long createdSequence = SnapshotSequence.next();
 
 /** Rolling window of snapshots, retention-bounded (default 90 s for testing). */
     private final CopyOnWriteArrayList<TableSnapshot> snapshots =
@@ -61,7 +66,13 @@ public class TableStorage {
         // A POINTER copy suffices: no write path mutates a stored row in place — UPDATE installs
         // replacement rows (replaceRow), INSERT/DELETE add/remove whole rows — so a snapshot's
         // rows are frozen by construction.
-        snapshots.add(new TableSnapshot(now, new ArrayList<>(rows)));
+        final List<Row> taken;
+        final List<Long> takenIds;
+        synchronized (rows) {
+            taken = new ArrayList<>(rows);
+            takenIds = new ArrayList<>(rowIds);
+        }
+        snapshots.add(new TableSnapshot(now, SnapshotSequence.next(), taken, takenIds));
         if (snapshots.size() > MAX_SNAPSHOTS) {
             snapshots.remove(0);
         }
@@ -72,6 +83,25 @@ public class TableStorage {
         TableSnapshot best = null;
         for (final TableSnapshot s : snapshots) {
             if (s.epochMillis <= targetMillis) {
+                best = s;
+            } else {
+                break;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * The latest snapshot at or below a sequence number — the table as it stood once the snapshot that drew the
+     * number was taken, whatever the clock read.
+     *
+     * @param sequence a number from {@link SnapshotSequence#current()}
+     * @return the snapshot, or null when none is that old
+     */
+    public TableSnapshot snapshotUpTo(final long sequence) {
+        TableSnapshot best = null;
+        for (final TableSnapshot s : snapshots) {
+            if (s.sequence <= sequence) {
                 best = s;
             } else {
                 break;
@@ -105,6 +135,11 @@ public class TableStorage {
     /** Epoch millis of this storage's creation — the earliest reachable time-travel point. */
     public long getCreatedMillis() {
         return createdMillis;
+    }
+
+    /** Where this storage's creation falls in the order snapshots are taken in; see {@link SnapshotSequence}. */
+    public long getCreatedSequence() {
+        return createdSequence;
     }
 
     public TableStorage(final StorageEngine engine, final Table metadata) {
@@ -168,7 +203,7 @@ public class TableStorage {
 
         rows.add(row);
         rowIds.add(nextRowId++);
-        engine.markDirty(this);
+        written();
     }
 
     public void update(final int rowIndex, final Row written) {
@@ -196,7 +231,7 @@ public class TableStorage {
         }
 
         rows.set(rowIndex, newRow);
-        engine.markDirty(this);
+        written();
     }
 
     public void delete(final int rowIndex) {
@@ -217,7 +252,7 @@ public class TableStorage {
         if (metadata.hasPrimaryKeyColumns()) {
             rebuildPrimaryKeyIndex();
         }
-        engine.markDirty(this);
+        written();
     }
 
     /**
@@ -246,6 +281,12 @@ public class TableStorage {
         if (metadata.hasPrimaryKeyColumns()) {
             rebuildPrimaryKeyIndex();
         }
+        written();
+    }
+
+    /** Where every row write ends: the table's last data change is stamped and its snapshot scheduled. */
+    private void written() {
+        metadata.markDataChanged(StatementClock.instant());
         engine.markDirty(this);
     }
 
@@ -257,7 +298,7 @@ public class TableStorage {
      *  which is what lets {@link #takeSnapshot()} keep pointer copies instead of deep copies. */
     public void replaceRow(final int index, final Row newRow) {
         rows.set(index, inDeclaredCarriers(newRow));
-        engine.markDirty(this);
+        written();
     }
 
     /**
@@ -289,6 +330,118 @@ public class TableStorage {
             }
         }
         return stored;
+    }
+
+    /**
+     * Removes a dropped column's slot from every stored row and from every retained time-travel
+     * snapshot. Rows are positional, so a value left behind would surface under whichever column
+     * later occupies its slot. History loses the slot too: a time-travel read answers through the
+     * table's CURRENT columns (live-verified — {@code AT(STATEMENT => …)} after a DROP COLUMN answers
+     * without the dropped column). Called once the catalog has dropped the column, so the row
+     * identities, the order and every other value stay exactly as they were.
+     *
+     * @param index the dropped column's position before the drop
+     */
+    public void dropColumnSlot(final int index) {
+        // Snapshots share row objects with the live list and with one another, so each distinct row is
+        // narrowed ONCE and every holder is handed the same replacement.
+        final Map<Row, Row> narrowed = new IdentityHashMap<>();
+        synchronized (rows) {
+            for (int i = 0; i < rows.size(); i++) {
+                rows.set(i, withoutSlot(rows.get(i), index, narrowed));
+            }
+        }
+        for (int s = 0; s < snapshots.size(); s++) {
+            final TableSnapshot snapshot = snapshots.get(s);
+            final List<Row> kept = new ArrayList<>(snapshot.rows.size());
+            for (final Row row : snapshot.rows) {
+                kept.add(withoutSlot(row, index, narrowed));
+            }
+            snapshots.set(s, new TableSnapshot(snapshot.epochMillis, snapshot.sequence, kept, snapshot.rowIds));
+        }
+        primaryKeyIndex.clear();
+        if (metadata.hasPrimaryKeyColumns()) {
+            rebuildPrimaryKeyIndex();
+        }
+    }
+
+    /**
+     * Appends a newly added column's slot to every stored row and to every retained time-travel snapshot,
+     * holding the value the column takes where a row has none of its own — its default, or NULL. History
+     * gains the slot too: a time-travel read answers through the table's CURRENT columns, and a row read
+     * from before the ADD shows the new column's default (live-verified). Called once the catalog has
+     * added the column, as its last one.
+     *
+     * @param value the value the new column takes in the rows that already exist
+     * @return the value as the column stores it, in its declared carrier
+     */
+    public Object appendColumnSlot(final Object value) {
+        final Object stored = carrierFor(value, metadata.columnCount() - 1);
+        final Map<Row, Row> widened = new IdentityHashMap<>();
+        final boolean hadRows;
+        synchronized (rows) {
+            hadRows = !rows.isEmpty();
+            for (int i = 0; i < rows.size(); i++) {
+                rows.set(i, withSlotAppended(rows.get(i), stored, widened));
+            }
+        }
+        for (int s = 0; s < snapshots.size(); s++) {
+            final TableSnapshot snapshot = snapshots.get(s);
+            final List<Row> kept = new ArrayList<>(snapshot.rows.size());
+            for (final Row row : snapshot.rows) {
+                kept.add(withSlotAppended(row, stored, widened));
+            }
+            snapshots.set(s, new TableSnapshot(snapshot.epochMillis, snapshot.sequence, kept, snapshot.rowIds));
+        }
+        if (hadRows) {
+            written();
+        }
+        return stored;
+    }
+
+    /** One value in the carrier the column at {@code index} holds, as every write path stores it. */
+    private Object carrierFor(final Object value, final int index) {
+        if (!(value instanceof Number) || index < 0 || index >= metadata.columnCount()) {
+            return value;
+        }
+        final DataType type = metadata.columnAt(index).getDataType();
+        if (!(type instanceof NumericType) || ExactValues.isCarrier(value, (NumericType) type)
+                || NumericType.isApproximate(type)) {
+            return value;
+        }
+        return ExactValues.written(value, (NumericType) type);
+    }
+
+    /** The row with {@code value} appended; only a row exactly one slot short of the table takes it. */
+    private Row withSlotAppended(final Row row, final Object value, final Map<Row, Row> widened) {
+        if (row.size() != metadata.columnCount() - 1) {
+            return row;
+        }
+        final Row done = widened.get(row);
+        if (done != null) {
+            return done;
+        }
+        final List<Object> values = new ArrayList<>(row.getValues());
+        values.add(value);
+        final Row replacement = Row.of(values);
+        widened.put(row, replacement);
+        return replacement;
+    }
+
+    /** The row without the value at {@code index}; a row too short to hold that slot is kept as it is. */
+    private static Row withoutSlot(final Row row, final int index, final Map<Row, Row> narrowed) {
+        if (index >= row.size()) {
+            return row;
+        }
+        final Row done = narrowed.get(row);
+        if (done != null) {
+            return done;
+        }
+        final List<Object> values = new ArrayList<>(row.getValues());
+        values.remove(index);
+        final Row replacement = Row.of(values);
+        narrowed.put(row, replacement);
+        return replacement;
     }
 
     /** The live row at {@code index} (used at deferred-apply time to capture pre-change values). */
@@ -324,6 +477,7 @@ public class TableStorage {
         rows.clear();
         rowIds.clear();
         primaryKeyIndex.clear();
+        metadata.markDataChanged(StatementClock.instant());
 
         // Reset to identity start value
         long startValue = 1;

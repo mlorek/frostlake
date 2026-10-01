@@ -77,6 +77,30 @@ public class HllAccumulator implements AggregateFunction.Accumulator, MultiArgum
         }
     }
 
+    /** The sketch these registers make, for the HLL STATE family to encode or estimate from. */
+    public HllSketch sketch() {
+        return new HllSketch(P, registers.clone());
+    }
+
+    /**
+     * Folds a sketch's registers in, for {@code HLL_COMBINE} over states this engine wrote or imported.
+     *
+     * @param other the sketch to fold in
+     */
+    public void accumulateSketch(final HllSketch other) {
+        final byte[] incoming = other.registers();
+        for (int i = 0; i < M && i < incoming.length; i++) {
+            if (incoming[i] > registers[i]) {
+                registers[i] = incoming[i];
+            }
+        }
+    }
+
+    /** The precision the engine counts at: {@code 1 << P} registers. */
+    public static int precision() {
+        return P;
+    }
+
     @Override
     public Object getResult() {
         double harmonic = 0.0;

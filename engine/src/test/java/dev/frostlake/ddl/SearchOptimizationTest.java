@@ -194,7 +194,7 @@ public class SearchOptimizationTest extends BaseDatabaseTest {
                 engine.executeQuery("DESCRIBE SEARCH OPTIMIZATION ON no_such_t");
             }
         });
-        assertEquals("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized."),
             ex.getMessage());
     }
 

@@ -18,6 +18,7 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.metastore.SqlObject;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,10 +28,18 @@ public class View extends SqlObject {
     private final List<String> columnNames;
     /** The CREATE statement exactly as typed (Snowflake surfaces it verbatim), or null pre-restore. */
     private String originalDdl;
+    /** The CREATE statement as VIEW_DEFINITION holds it, or null — see {@link #getDefinitionText}. */
+    private String definitionText;
+    /** The CREATE statement as SHOW VIEWS spells it, or null — see {@link #getListedText}. */
+    private String listedText;
     /** The view's column list as resolved when it was created — see {@link #getResolvedColumns()}. */
     private List<TableColumn> resolvedColumns;
     private boolean secure = false;
     private boolean temporary = false;
+    /** Whether the view was created RECURSIVE, its definition then the recursive CTE it runs as. */
+    private boolean recursive = false;
+    /** A RECURSIVE view's body as written, which its DDL shows in place of the CTE it runs as; or null. */
+    private String writtenBody;
     /** Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)), or null. */
     private String rowAccessPolicyName;
     private List<String> rowAccessPolicyColumns = new ArrayList<>();
@@ -47,6 +56,13 @@ public class View extends SqlObject {
         this.columnNames = columnNames;
     }
 
+    /** A view that carries a fixed creation time, as INFORMATION_SCHEMA's never-created views do. */
+    public View(final String name, final String definition, final Instant createdTime) {
+        super(name, createdTime);
+        this.definition = definition;
+        this.columnNames = null;
+    }
+
     public String getDefinition() {
         return definition;
     }
@@ -57,6 +73,32 @@ public class View extends SqlObject {
 
     public void setOriginalDdl(final String originalDdl) {
         this.originalDdl = originalDdl;
+    }
+
+    /**
+     * The CREATE statement as INFORMATION_SCHEMA.VIEWS' VIEW_DEFINITION holds it: as written, without the
+     * view's own COMMENT clause. Null when the statement carried none, or the view was not created from a
+     * statement here.
+     */
+    public String getDefinitionText() {
+        return definitionText;
+    }
+
+    public void setDefinitionText(final String definitionText) {
+        this.definitionText = definitionText;
+    }
+
+    /**
+     * The CREATE statement as SHOW VIEWS spells it: as written, with the view's own COMMENT clause
+     * re-printed as {@code comment = '…'}. Null when the statement carried none, or the view was not
+     * created from a statement here.
+     */
+    public String getListedText() {
+        return listedText;
+    }
+
+    public void setListedText(final String listedText) {
+        this.listedText = listedText;
     }
 
     public List<String> getColumnNames() {
@@ -115,6 +157,29 @@ public class View extends SqlObject {
      */
     public boolean isTemporary() { return temporary; }
 
+    /** Whether the view was created RECURSIVE. */
+    public boolean isRecursive() {
+        return recursive;
+    }
+
+    public void setRecursive(final boolean recursive) {
+        this.recursive = recursive;
+    }
+
+    /** A RECURSIVE view's body as written, or null for any other view. */
+    public String getWrittenBody() {
+        return writtenBody;
+    }
+
+    public void setWrittenBody(final String writtenBody) {
+        this.writtenBody = writtenBody;
+    }
+
+    /** The body the view's DDL shows: as written for a RECURSIVE view, else its definition. */
+    public String getShownBody() {
+        return recursive && writtenBody != null ? writtenBody : definition;
+    }
+
     public void setTemporary(final boolean temporary) { this.temporary = temporary; }
 
     public String getRowAccessPolicyName() { return rowAccessPolicyName; }
@@ -136,8 +201,12 @@ public class View extends SqlObject {
             : new View(name, definition);
         clone.setComment(comment);
         clone.originalDdl = originalDdl;
+        clone.definitionText = definitionText;
+        clone.listedText = listedText;
         clone.setResolvedColumns(resolvedColumns);
         clone.secure = secure;
+        clone.recursive = recursive;
+        clone.writtenBody = writtenBody;
         clone.rowAccessPolicyName = rowAccessPolicyName;
         clone.rowAccessPolicyColumns = new ArrayList<>(rowAccessPolicyColumns);
         return clone;
@@ -162,11 +231,14 @@ public class View extends SqlObject {
         if (secure) {
             sb.append("secure ");
         }
+        if (recursive) {
+            sb.append("recursive ");
+        }
         sb.append("view ").append(displayName);
         if (hasExplicitColumnNames()) {
             sb.append(" (").append(String.join(", ", columnNames)).append(")");
         }
-        return sb.append(" as ").append(SqlObject.withoutTrailingSemicolon(definition)).append(";").toString();
+        return sb.append(" as ").append(SqlObject.withoutTrailingSemicolon(getShownBody())).append(";").toString();
     }
 
     @Override

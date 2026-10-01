@@ -32,6 +32,7 @@ import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.CodePointText;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -50,8 +51,9 @@ import java.util.Map;
  * own block whose value is a literal (parenthesised or negated, an exponent typed by the value it
  * spells), a cast (typed by its target) or a typed name — a parameter, a bind, a DECLARE or a LET,
  * typed as written or by an initialiser that says: an integer makes a NUMBER(38,0), a decimal a FLOAT,
- * TRUE a BOOLEAN, and a name hands on a whole-number NUMBER. A RETURN inside an IF, a loop, a nested
- * block or a handler keeps its own type and is never judged, and neither is arithmetic or a call.
+ * TRUE, a NOT, an AND or an OR a BOOLEAN, and a name hands on a whole-number NUMBER. A RETURN inside an
+ * IF, a loop, a nested block or a handler keeps its own type and is never judged, and neither is
+ * arithmetic, a NOT, an AND, an OR or a call.
  *
  * <p>A pair is incompatible exactly when no cast carries it: the plain cast's conversion matrix for a
  * scalar target, and for an OBJECT anything but a VARIANT or an OBJECT, a text included. An ARRAY wraps
@@ -87,7 +89,7 @@ final class DeclaredReturnJudge {
 
     /** An untyped DECLARE of the block, typed by its initialiser. */
     void declared(final FrostlakeParser.UntypedDeclarationItemContext item) {
-        record(item.identifier(), initialiserType(item.expression()));
+        record(item.identifier(), initialiserType(item.booleanExpr()));
     }
 
     /** One direct statement of the block, once the name pass has walked it. */
@@ -106,18 +108,18 @@ final class DeclaredReturnJudge {
     private void let(final FrostlakeParser.LetStatementContext let) {
         if (let.dataTypeName() != null) {
             record(let.identifier(), writtenType(let.dataTypeName(), let.typeParameters(), false));
-        } else if (let.CURSOR() == null && let.RESULTSET() == null && let.expression() != null) {
-            record(let.identifier(), initialiserType(let.expression()));
+        } else if (let.CURSOR() == null && let.RESULTSET() == null && let.booleanExpr() != null) {
+            record(let.identifier(), initialiserType(let.booleanExpr()));
         } else {
             record(let.identifier(), null);
         }
     }
 
     private void judge(final FrostlakeParser.ReturnStatementContext ret) {
-        if (ret.TABLE() != null || ret.expression() == null) {
+        if (ret.TABLE() != null || !(ret.booleanExpr() instanceof FrostlakeParser.ValueExprContext)) {
             return;
         }
-        final DataType actual = returnedType(ret.expression());
+        final DataType actual = returnedType(((FrostlakeParser.ValueExprContext) ret.booleanExpr()).expression());
         if (!incompatible(actual)) {
             return;
         }
@@ -157,7 +159,12 @@ final class DeclaredReturnJudge {
         return nameType(value);
     }
 
-    /** The type an untyped declaration takes from its initialiser, or null when it says none. */
+    /** The type an untyped declaration takes from its initialiser, or null when it says none; a NOT, an AND or an OR says BOOLEAN. */
+    private DataType initialiserType(final FrostlakeParser.BooleanExprContext initialiser) {
+        return initialiser instanceof FrostlakeParser.ValueExprContext
+            ? initialiserType(((FrostlakeParser.ValueExprContext) initialiser).expression()) : BooleanType.BOOLEAN;
+    }
+
     private DataType initialiserType(final FrostlakeParser.ExpressionContext initialiser) {
         final FrostlakeParser.ExpressionContext value = bare(initialiser);
         if (value instanceof FrostlakeParser.LiteralExprContext) {
@@ -205,7 +212,7 @@ final class DeclaredReturnJudge {
             return NumericLiteralTypes.of(NumericLiteralTypes.exactValue(literal.getText()));
         }
         if (literal.STRING_LITERAL() != null) {
-            return new StringType("VARCHAR", SqlStringLiterals.decode(literal.getText()).length());
+            return new StringType("VARCHAR", CodePointText.length(SqlStringLiterals.decode(literal.getText())));
         }
         return literal.TRUE() != null || literal.FALSE() != null ? BooleanType.BOOLEAN : null;
     }

@@ -15,21 +15,51 @@
  */
 package dev.frostlake.executor;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
  * The names one SELECT inside a subquery brings into scope: its relations' qualifiers, the columns of the
  * relations the catalog can list, and its select aliases. A relation whose columns cannot be listed — a
  * derived table, a table function, a CTE, a pivot — may carry any bare name, so every bare name resolves
- * here once one is present.
+ * here once one is present. A derived table's column computed from the outer row is recorded with the outer
+ * columns it reads, so a read of it reads the outer row.
  */
 final class CorrelationScope {
 
     private final Set<String> qualifiers = new HashSet<>();
     private final Set<String> columns = new HashSet<>();
     private final Set<String> aliases = new HashSet<>();
+    /** Bare and qualified names of derived columns that read the outer row, to the outer columns each reads. */
+    private final Map<String, Set<String>> outerDerived = new HashMap<>();
     private boolean opaque;
+
+    /**
+     * Record a derived table's column computed from the outer row.
+     *
+     * @param qualifier the derived table's alias, or null when it has none
+     * @param column    the column's name
+     * @param reads     the outer columns its select item reads
+     */
+    void addOuterDerived(final String qualifier, final String column, final Set<String> reads) {
+        outerDerived.put(column, reads);
+        if (qualifier != null) {
+            outerDerived.put(qualifier + "." + column, reads);
+        }
+    }
+
+    /**
+     * The outer columns a derived column reads, or null when the name is no derived column computed from the
+     * outer row.
+     *
+     * @param qualifier the name's qualifier, or null for a bare name
+     * @param column    the column
+     */
+    Set<String> outerDerivedReads(final String qualifier, final String column) {
+        return outerDerived.get(qualifier == null ? column : qualifier + "." + column);
+    }
 
     void addQualifier(final String qualifier) {
         qualifiers.add(qualifier);

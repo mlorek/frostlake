@@ -24,6 +24,7 @@ public class QuantifiedComparisonExpression implements Expression {
     private final BinaryOperator operator;
     private final Quantifier quantifier;
     private final Expression subquery;
+    private SourcePosition position;
 
     public QuantifiedComparisonExpression(final Expression left, final BinaryOperator operator,
                                           final Quantifier quantifier, final Expression subquery) {
@@ -47,6 +48,15 @@ public class QuantifiedComparisonExpression implements Expression {
 
     public Expression getSubquery() {
         return subquery;
+    }
+
+    /** Where the comparison operator stands, which a ROW refusal points at; null when unknown. */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     @Override

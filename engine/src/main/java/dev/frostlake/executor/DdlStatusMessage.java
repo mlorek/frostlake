@@ -59,6 +59,8 @@ public final class DdlStatusMessage {
     static {
         MODIFIERS.add("OR");
         MODIFIERS.add("REPLACE");
+        // CREATE OR ALTER is a CREATE: the sentence names the object's kind, never the ALTER half.
+        MODIFIERS.add("ALTER");
         MODIFIERS.add("TEMPORARY");
         MODIFIERS.add("TEMP");
         MODIFIERS.add("TRANSIENT");
@@ -70,6 +72,9 @@ public final class DdlStatusMessage {
         MODIFIERS.add("NOT");
         MODIFIERS.add("EXISTS");
         MODIFIERS.add("RECURSIVE");
+        // An event table and an Iceberg table are created as a "Table".
+        MODIFIERS.add("EVENT");
+        MODIFIERS.add("ICEBERG");
     }
 
     private DdlStatusMessage() {
@@ -82,7 +87,22 @@ public final class DdlStatusMessage {
      * @return live's sentence for it
      */
     public static String forStatement(final FrostlakeParser.StatementContext statement) {
-        return forStatement(statement, null);
+        return forStatement(statement, null, null);
+    }
+
+    /**
+     * The IDENTIFIER() reference a statement names its object with, or null when the statement writes the name
+     * itself. The sentence then carries the reference's value, which only the executor can read — a variable's
+     * among them — so the caller resolves it: live answers {@code CREATE TABLE IDENTIFIER($tn) (a INT)} with
+     * "Table T6 successfully created." when {@code $tn} holds 't6'. The word IDENTIFIER written as the object's
+     * own name is such a node too, and resolves to that word.
+     *
+     * @param statement the parsed statement
+     * @return the reference, or null
+     */
+    public static FrostlakeParser.ObjectNameContext identifierReference(final FrostlakeParser.StatementContext statement) {
+        final FrostlakeParser.ObjectNameContext name = firstObjectName(statement);
+        return name != null && name.qualifiedName() == null ? name : null;
     }
 
     /**
@@ -104,12 +124,18 @@ public final class DdlStatusMessage {
      *
      * @param statement the parsed statement
      * @param branch the conditional branch the handler took, or null when it took neither
+     * @param referencedName the object's name read from its {@link #identifierReference}, or null when the
+     *                       statement writes the name
      * @return live's sentence for it
      */
     public static String forStatement(final FrostlakeParser.StatementContext statement,
-                                      final ConditionalDdlBranch branch) {
+                                      final ConditionalDdlBranch branch, final String referencedName) {
+        if (branch == ConditionalDdlBranch.ALTERED_IN_PLACE) {
+            // A CREATE OR ALTER that found its table altered it, and answers as an ALTER does (live-verified).
+            return EXECUTED;
+        }
         if (statement != null && branch != null) {
-            final String name = objectName(statement);
+            final String name = referencedName != null ? referencedName : objectName(statement);
             if (name != null) {
                 if (branch == ConditionalDdlBranch.CREATE_SKIPPED) {
                     return name + " already exists, statement succeeded.";
@@ -121,10 +147,13 @@ public final class DdlStatusMessage {
             return EXECUTED;
         }
         final int leading = statement.getStart().getType();
+        if (leading == FrostlakeParser.UNDROP) {
+            return undropped(statement, referencedName);
+        }
         if (leading != FrostlakeParser.CREATE && leading != FrostlakeParser.DROP) {
             return EXECUTED;
         }
-        final String name = objectName(statement);
+        final String name = referencedName != null ? referencedName : objectName(statement);
         if (name == null) {
             return EXECUTED;
         }
@@ -133,6 +162,31 @@ public final class DdlStatusMessage {
         }
         final String kind = kindPhrase(statement);
         return kind == null ? EXECUTED : kind + " " + name + " successfully created.";
+    }
+
+    /** An UNDROP's sentence: {@code <Kind> <NAME> successfully restored.}, the kind being the word after UNDROP. */
+    private static String undropped(final FrostlakeParser.StatementContext statement, final String referencedName) {
+        final String name = referencedName != null ? referencedName : objectName(statement);
+        final ParseTree kindWord = statement.getChildCount() > 0 ? undropKind(statement) : null;
+        if (name == null || kindWord == null) {
+            return EXECUTED;
+        }
+        final String word = kindWord.getText().toUpperCase(Locale.ROOT);
+        return word.charAt(0) + word.substring(1).toLowerCase(Locale.ROOT) + " " + name + " successfully restored.";
+    }
+
+    /** The token after UNDROP, found in the statement's first terminal chain. */
+    private static ParseTree undropKind(final ParseTree node) {
+        if (node instanceof FrostlakeParser.UndropStatementContext) {
+            return node.getChildCount() > 1 ? node.getChild(1) : null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final ParseTree found = undropKind(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /**
@@ -168,6 +222,19 @@ public final class DdlStatusMessage {
         return null;
     }
 
+    private static FrostlakeParser.ObjectNameContext firstObjectName(final ParseTree node) {
+        if (node instanceof FrostlakeParser.ObjectNameContext) {
+            return (FrostlakeParser.ObjectNameContext) node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final FrostlakeParser.ObjectNameContext found = firstObjectName(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
     private static FrostlakeParser.IdentifierContext firstIdentifier(final ParseTree node) {
         if (node instanceof FrostlakeParser.IdentifierContext) {
             return (FrostlakeParser.IdentifierContext) node;
@@ -189,7 +256,8 @@ public final class DdlStatusMessage {
      * @return the kind phrase, or null when the statement names no kind
      */
     private static String kindPhrase(final FrostlakeParser.StatementContext statement) {
-        final FrostlakeParser.IdentifierContext name = firstIdentifier(statement);
+        final ParseTree reference = identifierReference(statement);
+        final ParseTree name = reference != null ? reference : firstIdentifier(statement);
         final StringBuilder phrase = new StringBuilder();
         collectKindWords(statement, name, phrase);
         final String words = phrase.toString().trim();
@@ -201,6 +269,12 @@ public final class DdlStatusMessage {
         }
         if ("PROCEDURE".equals(words)) {
             return "Function";
+        }
+        if ("IMAGE REPOSITORY".equals(words)) {
+            return "Image Repository";
+        }
+        if ("ARTIFACT REPOSITORY".equals(words)) {
+            return "Artifact Repository";
         }
         return words.charAt(0) + words.substring(1).toLowerCase(Locale.ROOT);
     }

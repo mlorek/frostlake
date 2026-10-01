@@ -17,6 +17,7 @@
 package dev.frostlake.formats;
 
 import dev.frostlake.executor.copy.StageFileReader;
+import dev.frostlake.executor.copy.StagedFileColumn;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.parquet.avro.AvroParquetReader;
 import org.apache.parquet.hadoop.ParquetReader;
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Parquet staged-file reader. Reads the columnar file via a {@link LocalInputFile} (a local java.nio file,
@@ -59,5 +61,11 @@ public class ParquetStageReader implements StageFileReader {
     @Override
     public String formatType() {
         return "PARQUET";
+    }
+
+    @Override
+    public List<StagedFileColumn> readColumns(final Path file, final Map<String, String> formatOptions,
+                                              final boolean iceberg) {
+        return ParquetColumnTypes.read(file, formatOptions, iceberg);
     }
 }

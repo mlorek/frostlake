@@ -148,7 +148,7 @@ public class DataMetricReferencesTest extends BaseDatabaseTest {
                     + "REF_ENTITY_NAME => 'NO_SUCH_T', REF_ENTITY_DOMAIN => 'TABLE'))");
             }
         });
-        assertEquals("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized."),
             ex.getMessage());
     }
 

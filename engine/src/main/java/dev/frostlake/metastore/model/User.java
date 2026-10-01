@@ -16,18 +16,24 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.metastore.Taggable;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
 /**
  * Represents a Snowflake-compatible user
  */
-public class User {
+public class User implements Taggable {
     private String name;
+    /** Database roles granted to this user, by qualified name, and the role that granted each. */
+    private final Map<String, String> databaseRoleGrantors = new LinkedHashMap<>();
+    private final Map<String, String> tags = new HashMap<>();
     private String password;
     private String defaultRole;
     private final Set<String> grantedRoles;
@@ -49,6 +55,15 @@ public class User {
     private String defaultSecondaryRoles = "[\"ALL\"]";
     private boolean mustChangePassword;
     private String userType = "PERSON";
+    private Instant expiresAt;
+    private Instant lockedUntil;
+    private Instant mfaBypassUntil;
+    private String rsaPublicKey;
+    private String rsaPublicKeyFp;
+    private Instant rsaPublicKeyLastSetTime;
+    private String rsaPublicKey2;
+    private String rsaPublicKey2Fp;
+    private Instant rsaPublicKey2LastSetTime;
 
     public User(final String name) {
         this.name = name.toUpperCase();
@@ -351,6 +366,95 @@ public class User {
         this.userType = userType;
     }
 
+    /** When the user expires ({@code DAYS_TO_EXPIRY} after it was set), or null for a permanent user. */
+    public Instant getExpiresAt() {
+        return expiresAt;
+    }
+
+    public void setExpiresAt(final Instant expiresAt) {
+        this.expiresAt = expiresAt;
+    }
+
+    /** When the temporary lock set by {@code MINS_TO_UNLOCK} lifts, or null when none was set. */
+    public Instant getLockedUntil() {
+        return lockedUntil;
+    }
+
+    public void setLockedUntil(final Instant lockedUntil) {
+        this.lockedUntil = lockedUntil;
+    }
+
+    /** When the MFA bypass set by {@code MINS_TO_BYPASS_MFA} ends, or null when none was set. */
+    public Instant getMfaBypassUntil() {
+        return mfaBypassUntil;
+    }
+
+    public void setMfaBypassUntil(final Instant mfaBypassUntil) {
+        this.mfaBypassUntil = mfaBypassUntil;
+    }
+
+    /**
+     * The first public key exactly as it was written — armour and line breaks included — the empty text when it
+     * was set to {@code ''}, or null.
+     */
+    public String getRsaPublicKey() {
+        return rsaPublicKey;
+    }
+
+    /** The first public key's {@code SHA256:} fingerprint, or null when it holds no key. */
+    public String getRsaPublicKeyFp() {
+        return rsaPublicKeyFp;
+    }
+
+    /** When a key was last put in the first slot; clearing the slot keeps it. */
+    public Instant getRsaPublicKeyLastSetTime() {
+        return rsaPublicKeyLastSetTime;
+    }
+
+    /**
+     * Sets or clears the first public key.
+     *
+     * @param key the key as written, the empty text, or null
+     * @param fingerprint its fingerprint, or null when it holds no key
+     * @param setTime when a key was put in the slot, or null to keep the recorded time
+     */
+    public void setRsaPublicKey(final String key, final String fingerprint, final Instant setTime) {
+        this.rsaPublicKey = key;
+        this.rsaPublicKeyFp = fingerprint;
+        if (setTime != null) {
+            this.rsaPublicKeyLastSetTime = setTime;
+        }
+    }
+
+    /** The second public key as it was written, as {@link #getRsaPublicKey()} describes the first. */
+    public String getRsaPublicKey2() {
+        return rsaPublicKey2;
+    }
+
+    /** The second public key's fingerprint, or null. */
+    public String getRsaPublicKey2Fp() {
+        return rsaPublicKey2Fp;
+    }
+
+    /** When a key was last put in the second slot. */
+    public Instant getRsaPublicKey2LastSetTime() {
+        return rsaPublicKey2LastSetTime;
+    }
+
+    /** Sets or clears the second public key, as {@link #setRsaPublicKey} does the first. */
+    public void setRsaPublicKey2(final String key, final String fingerprint, final Instant setTime) {
+        this.rsaPublicKey2 = key;
+        this.rsaPublicKey2Fp = fingerprint;
+        if (setTime != null) {
+            this.rsaPublicKey2LastSetTime = setTime;
+        }
+    }
+
+    /** Whether either slot holds a key: SHOW USERS' has_rsa_public_key and DESCRIBE USER's HAS_KEYPAIR. */
+    public boolean hasRsaPublicKey() {
+        return rsaPublicKeyFp != null || rsaPublicKey2Fp != null;
+    }
+
     public LocalDateTime getCreatedTime() {
         return createdTime;
     }
@@ -375,5 +479,40 @@ public class User {
         // Match the constructor, which upper-cases the name; a verbatim rename would
         // otherwise leave getName() inconsistent with every freshly-created user.
         this.name = newName.toUpperCase();
+    }
+
+    /** Grants a database role, by its qualified name, to this user. */
+    public void grantDatabaseRole(final String qualifiedName, final String grantor) {
+        databaseRoleGrantors.put(qualifiedName, grantor);
+    }
+
+    /** Takes a database role back from this user. */
+    public void revokeDatabaseRole(final String qualifiedName) {
+        databaseRoleGrantors.remove(qualifiedName);
+    }
+
+    /** The database roles granted to this user, by qualified name, each with the role that granted it. */
+    public Map<String, String> getDatabaseRoleGrants() {
+        return new LinkedHashMap<>(databaseRoleGrantors);
+    }
+
+    @Override
+    public void setTag(final String tagName, final String value) {
+        tags.put(tagName, value);
+    }
+
+    @Override
+    public void unsetTag(final String tagName) {
+        tags.remove(tagName);
+    }
+
+    @Override
+    public String getTagValue(final String tagName) {
+        return tags.get(tagName);
+    }
+
+    @Override
+    public Map<String, String> getTagValues() {
+        return new HashMap<>(tags);
     }
 }

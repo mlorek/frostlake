@@ -16,9 +16,12 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.BinaryOperationExpression;
+import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionAstBuilder;
+import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -28,7 +31,11 @@ import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.UuidType;
 
+import org.antlr.v4.runtime.ParserRuleContext;
+
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -63,6 +70,18 @@ public final class DeclarationTypes {
     }
 
     /**
+     * @param initialiser  the initialiser as parsed, a NOT, AND or OR included
+     * @param typesInScope the declared types of the names in scope, keyed as the resolver folds them
+     * @param queryExecutor the executor whose functions and catalog type the expression
+     * @return the declared type, or null when the initialiser's type cannot be determined
+     */
+    public static DataType ofInitialiser(final FrostlakeParser.BooleanExprContext initialiser,
+                                         final Map<String, DataType> typesInScope,
+                                         final QueryExecutor queryExecutor) {
+        return ofExpression(sqlExpression(initialiser), typesInScope, queryExecutor);
+    }
+
+    /**
      * @param expression   the initialiser as a SQL expression, or null
      * @param typesInScope the declared types of the names in scope, keyed as the resolver folds them
      * @param queryExecutor the executor whose functions and catalog type the expression
@@ -89,26 +108,113 @@ public final class DeclarationTypes {
         if (expression == null || queryExecutor == null) {
             return null;
         }
+        return scriptTyper(typesInScope, queryExecutor).inferStaticType(expression);
+    }
+
+    /**
+     * An evaluator that types an expression over the declared names in scope: each name a column of a relation
+     * holding no row, a cursor record's field, keyed REC.FIELD, a column of a relation named for the record.
+     *
+     * @param typesInScope  the declared types of the names in scope, keyed as the resolver folds them
+     * @param queryExecutor the executor whose functions and catalog type the expression
+     * @return the evaluator
+     */
+    public static ExpressionEvaluator scriptTyper(final Map<String, DataType> typesInScope,
+                                                  final QueryExecutor queryExecutor) {
         final List<TableColumn> columns = new ArrayList<TableColumn>();
+        // A cursor record's field, keyed REC.FIELD, is a column of a relation named for the record.
+        final Map<String, List<TableColumn>> recordFields = new LinkedHashMap<String, List<TableColumn>>();
         for (final Map.Entry<String, DataType> entry : typesInScope.entrySet()) {
-            final TableColumn column = new TableColumn(entry.getKey(), entry.getValue(), true, null,
-                false, false, false);
+            final int dot = entry.getKey().indexOf('.');
+            final TableColumn column = new TableColumn(dot < 0 ? entry.getKey() : entry.getKey().substring(dot + 1),
+                entry.getValue(), true, null, false, false, false);
             // A declared type is authoritative, so the resolver trusts it.
             column.setStaticallyTyped(true);
-            columns.add(column);
+            if (dot < 0) {
+                columns.add(column);
+            } else {
+                final String record = entry.getKey().substring(0, dot);
+                if (!recordFields.containsKey(record)) {
+                    recordFields.put(record, new ArrayList<TableColumn>());
+                }
+                recordFields.get(record).add(column);
+            }
         }
-        final ExpressionEvaluator typer = new ExpressionEvaluator(new Table("$SCRIPT_VARIABLES", columns, true),
+        final Table variables = new Table("$SCRIPT_VARIABLES", columns, true);
+        final ExpressionEvaluator typer = new ExpressionEvaluator(variables,
             queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog(), queryExecutor);
-        return typer.inferStaticType(expression);
+        if (!recordFields.isEmpty()) {
+            final Map<String, Table> byName = new LinkedHashMap<String, Table>();
+            final List<Table> all = new ArrayList<Table>();
+            byName.put(variables.getName(), variables);
+            all.add(variables);
+            for (final Map.Entry<String, List<TableColumn>> record : recordFields.entrySet()) {
+                final Table fields = new Table(record.getKey(), record.getValue(), true);
+                byName.put(record.getKey(), fields);
+                all.add(fields);
+            }
+            typer.setMultiTableContext(byName, all);
+        }
+        return typer;
+    }
+
+    /**
+     * {@link #staticType} as a block's own expression is typed: a product whose one operand is the literal
+     * 1 (or 1.0) and whose other is no literal is that operand's type, a text read as a NUMBER(18,5) — {@code
+     * i * 1} over a FOR counter is NUMBER(9,0), {@code SQLROWCOUNT * 1} NUMBER(18,5) — where SQL types a column
+     * times 1 one digit wider. Only the whole expression folds: {@code i * 1 + 0} is NUMBER(11,0)
+     * (live-verified).
+     *
+     * @param expression    the expression, or null
+     * @param typesInScope  the declared types of the names in scope, keyed as the resolver folds them
+     * @param queryExecutor the executor whose functions and catalog type the expression
+     * @return the expression's static type, or null when it cannot be determined
+     */
+    public static DataType scriptStaticType(final Expression expression, final Map<String, DataType> typesInScope,
+                                            final QueryExecutor queryExecutor) {
+        Expression folded = expression;
+        while (folded instanceof BinaryOperationExpression
+                && ((BinaryOperationExpression) folded).getOperator() == BinaryOperator.MULTIPLY) {
+            final BinaryOperationExpression product = (BinaryOperationExpression) folded;
+            if (isLiteralOne(product.getRight()) && !(product.getLeft() instanceof LiteralExpression)) {
+                folded = product.getLeft();
+            } else if (isLiteralOne(product.getLeft()) && !(product.getRight() instanceof LiteralExpression)) {
+                folded = product.getRight();
+            } else {
+                break;
+            }
+        }
+        final DataType type = staticType(folded, typesInScope, queryExecutor);
+        return folded != expression && type instanceof StringType ? TEXT_IN_ARITHMETIC : type;
+    }
+
+    /** The NUMBER a text operand of a block's arithmetic is read as. */
+    private static final DataType TEXT_IN_ARITHMETIC = new NumericType("NUMBER", 18, 5);
+
+    private static boolean isLiteralOne(final Expression expression) {
+        if (!(expression instanceof LiteralExpression)
+                || !(((LiteralExpression) expression).getValue() instanceof Number)) {
+            return false;
+        }
+        return new BigDecimal(((LiteralExpression) expression).getValue().toString()).compareTo(BigDecimal.ONE) == 0;
     }
 
     /** The initialiser as a SQL expression, or null when it cannot be read as one. */
     public static Expression sqlExpression(final FrostlakeParser.ExpressionContext initialiser) {
-        if (initialiser == null) {
+        return astOf(initialiser);
+    }
+
+    /** A scripting value — a NOT, AND or OR included — as a SQL expression, or null when it cannot be read as one. */
+    public static Expression sqlExpression(final FrostlakeParser.BooleanExprContext value) {
+        return astOf(value);
+    }
+
+    private static Expression astOf(final ParserRuleContext parsed) {
+        if (parsed == null) {
             return null;
         }
         try {
-            return new ExpressionAstBuilder().visit(initialiser);
+            return new ExpressionAstBuilder().visit(parsed);
         } catch (final RuntimeException notAnExpression) {
             return null;
         }

@@ -20,6 +20,10 @@ import com.sun.net.httpserver.HttpServer;
 import dev.frostlake.ConcurrentDatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.executor.SqlScriptSplitter;
+import dev.frostlake.functions.scalar.file.BuildStageFileUrl;
+import dev.frostlake.functions.scalar.file.PresignedUrls;
+import dev.frostlake.http.rest.RestApiHandler;
+import dev.frostlake.http.rest.RestResults;
 import java.io.File;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +48,7 @@ public class DatabaseHttpServer {
     private static final String NO_DELAY_PROPERTY = "sun.net.httpserver.nodelay";
     private final int port;
     private final EngineConfig config;
+    private final RestResults restResults;
 
     public DatabaseHttpServer(final int port) throws IOException {
         this(createConfigWithPort(port));
@@ -64,10 +69,19 @@ public class DatabaseHttpServer {
         final String host = config.getHttpHost();
         this.server = HttpServer.create(new InetSocketAddress(host, port), 0);
 
-        // Set up handlers
-        server.createContext("/api/execute", new ExecuteSqlHandler(engine));
-        server.createContext("/api/health", new HealthCheckHandler(engine));
-        server.createContext("/api/sessions", new SessionInfoHandler(engine));
+        // Set up handlers. Each is wrapped, so a fault its own handling does not answer is still answered
+        // instead of leaving the client to time out.
+        server.createContext("/api/execute", new ErrorAnsweringHandler(new ExecuteSqlHandler(engine)));
+        server.createContext("/api/health", new ErrorAnsweringHandler(new HealthCheckHandler(engine)));
+        server.createContext("/api/sessions", new ErrorAnsweringHandler(new SessionInfoHandler(engine)));
+        this.restResults = new RestResults(config.getRestSyncWaitMs(), config.getRestResultRetentionMs());
+        server.createContext(RestApiHandler.CONTEXT,
+            new ErrorAnsweringHandler(new RestApiHandler(engine, restResults)));
+        server.createContext(PresignedUrls.CONTEXT, new ErrorAnsweringHandler(new PresignedFileHandler()));
+        server.createContext(BuildStageFileUrl.CONTEXT, new ErrorAnsweringHandler(new StageFileUrlHandler(engine)));
+        // The engine names this server in the presigned and file URLs it hands out.
+        engine.getEngine().getConfig().setProperty(EngineConfig.PROP_HTTP_HOST, host);
+        engine.getEngine().getConfig().setProperty(EngineConfig.PROP_HTTP_PORT, String.valueOf(port));
 
         // Use a thread pool for handling requests
         final int maxConnections = config.getMaxConnections();
@@ -88,6 +102,7 @@ public class DatabaseHttpServer {
         logger.info("  GET  /api/sessions - Session information");
         logger.info("  POST /api/sessions - Start a session");
         logger.info("  DELETE /api/sessions/{id} - Release a session");
+        logger.info("  /api/v2/... - Snowflake REST APIs for resource management");
     }
 
     /**
@@ -109,6 +124,7 @@ public class DatabaseHttpServer {
     public void stop() {
         logger.info("Stopping Frostlake HTTP server");
         server.stop(3);
+        restResults.shutdown();
         engine.shutdown();
         logger.info("Frostlake HTTP server stopped");
     }

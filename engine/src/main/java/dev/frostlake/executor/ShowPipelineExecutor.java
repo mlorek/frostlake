@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -26,19 +27,23 @@ import dev.frostlake.metastore.model.RefreshMode;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.StreamType;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.task.TaskGraphs;
 import dev.frostlake.types.ArrayType;
-import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.VariantValue;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -200,7 +205,8 @@ final class ShowPipelineExecutor {
 
     /** One task row in live's column order. DESCRIBE TASK returns exactly this shape too. */
     private Row taskRow(final Task task, final String dbName, final String scName) {
-        final boolean isChild = !task.getPredecessors().isEmpty();
+        // A child task and a finalizer task are no roots: neither carries an overlap setting of its own.
+        final boolean isChild = !task.getPredecessors().isEmpty() || task.isFinalizer();
         return new Row(Arrays.asList(
             ShowResultHelpers.createdOn(task.getCreatedAt()),
             task.getName(),
@@ -210,7 +216,8 @@ final class ShowPipelineExecutor {
             ShowResultHelpers.text(task.getComment()),
             task.getWarehouse(),
             task.getSchedule(),
-            VariantValue.of(predecessorsJson(task, dbName, scName)),
+            // The predecessors column lists them by name; task_relations keeps them as they were added.
+            VariantValue.of(predecessorsJson(task, dbName, scName, true)),
             // Live spells the task state in lower case: started / suspended.
             task.getState() != null ? task.getState().toString().toLowerCase() : null,
             task.getSqlStatement(),
@@ -221,26 +228,56 @@ final class ShowPipelineExecutor {
             null,
             null,
             ShowResultHelpers.OWNER_ROLE_TYPE,
+            task.getConfig(),
+            taskRelations(task, dbName, scName),
             null,
-            "{\"Predecessors\":" + predecessorsJson(task, dbName, scName) + "}",
-            null,
-            NOT_APPLICABLE,
+            task.getSuccessIntegration() != null ? task.getSuccessIntegration() : NOT_APPLICABLE,
             null,
             task.getTargetCompletionInterval(),
-            null,
-            isChild ? null : task.isAllowOverlappingExecution() ? "ALLOW_CHILD_OVERLAP" : "NO_OVERLAP",
+            task.getExecuteAsUser(),
+            isChild ? null : task.getOverlapPolicy(),
             task.getCreatedByUser()
         ));
     }
 
-    /** The task's predecessors as a JSON array of fully qualified names, the form live reports. */
-    private String predecessorsJson(final Task task, final String dbName, final String scName) {
-        final StringBuilder json = new StringBuilder("[");
+    /**
+     * The task's place in its graph as live reports it: its predecessors, and for a finalizer task the root it
+     * finalizes ahead of them, for a root the finalizer task after them.
+     */
+    private String taskRelations(final Task task, final String dbName, final String scName) {
+        final StringBuilder json = new StringBuilder("{");
+        if (task.isFinalizer()) {
+            json.append("\"FinalizedRootTask\":\"")
+                .append(qualifiedSourceName(dbName, scName, task.getFinalizedRootTask())).append("\",");
+        }
+        json.append("\"Predecessors\":").append(predecessorsJson(task, dbName, scName, false));
+        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+        final Task finalizer = schema == null || task.isFinalizer() ? null : TaskGraphs.finalizerOf(schema, task);
+        if (finalizer != null) {
+            json.append(",\"FinalizerTask\":\"")
+                .append(qualifiedSourceName(dbName, scName, finalizer.getName())).append('"');
+        }
+        return json.append('}').toString();
+    }
+
+    /**
+     * The task's predecessors as a JSON array of fully qualified names, the form live reports: sorted by name,
+     * or in the order they were added.
+     */
+    private String predecessorsJson(final Task task, final String dbName, final String scName, final boolean sorted) {
+        final List<String> names = new ArrayList<>();
         for (final String predecessor : task.getPredecessors()) {
+            names.add(qualifiedSourceName(dbName, scName, predecessor));
+        }
+        if (sorted) {
+            Collections.sort(names);
+        }
+        final StringBuilder json = new StringBuilder("[");
+        for (final String name : names) {
             if (json.length() > 1) {
                 json.append(',');
             }
-            json.append('"').append(qualifiedSourceName(dbName, scName, predecessor)).append('"');
+            json.append('"').append(name).append('"');
         }
         return json.append(']').toString();
     }
@@ -364,10 +401,13 @@ final class ShowPipelineExecutor {
         return dbName + "." + scName + "." + source;
     }
 
-    /** Live capitalises the source kind as a word (Table, View), not as the enum constant. */
+    /** Live capitalises the source kind as words (Table, View, Stage, Dynamic Table), not as the enum constant. */
     private String sourceTypeText(final Stream stream) {
         if (stream.getSourceType() == null) {
             return null;
+        }
+        if (stream.getSourceType() == StreamSourceType.DYNAMIC_TABLE) {
+            return "Dynamic Table";
         }
         final String name = stream.getSourceType().name();
         return name.charAt(0) + name.substring(1).toLowerCase();
@@ -552,7 +592,8 @@ final class ShowPipelineExecutor {
      * SHOW CORTEX SEARCH SERVICES — a real account's 20 columns, in its order. The three counters
      * (source_data_num_rows, scoring_profile_count, auto_suspend) and the two lifecycle states come
      * from the service as the engine keeps it rather than from a running indexer, so a service here
-     * reports itself ACTIVE and served the moment it is created.
+     * reports itself ACTIVE and served the moment it is created, and SUSPENDED for a layer an ALTER … SUSPEND
+     * stopped.
      */
     public ResultSet showCortexSearchServices(final String schemaName, final String like) {
         final List<Row> rows = new ArrayList<>();
@@ -629,8 +670,8 @@ final class ShowPipelineExecutor {
             service.getDefinition(),
             service.getComment(),
             service.getEmbeddingModel(),
-            "ACTIVE",
-            "RUNNING",
+            service.isIndexingSuspended() ? "SUSPENDED" : "ACTIVE",
+            service.isServingSuspended() ? "SUSPENDED" : "RUNNING",
             Long.valueOf(0L),
             nameArrayText(new ArrayList<String>()),
             Long.valueOf(0L),
@@ -714,26 +755,41 @@ final class ShowPipelineExecutor {
     private void appendDynamicTableRows(final String dbName, final Schema schema, final List<Row> rows) {
         final String scName = schema.getName();
         for (final DynamicTable dt : schema.getDynamicTables()) {
+            final List<String> clusterKeys = dt.getClusterKeys();
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(dt.getCreatedTime()),
                 dt.getName(), dbName, scName,
-                null, 0L, 0L,
+                clusterKeys.isEmpty() ? "" : "LINEAR(" + String.join(", ", clusterKeys) + ")", 0L, 0L,
                 dt.getOwner(),
                 dt.getTargetLag(),
                 resolvedRefreshMode(dt),
                 null,
                 dt.getWarehouse(),
                 ShowResultHelpers.text(dt.getComment()),
-                dt.getQuery(),
-                "OFF",
+                dynamicTableText(dt),
+                clusterKeys.isEmpty() || dt.isReclusterSuspended() ? "OFF" : "ON",
                 dt.getSchedulingState(),
-                null, "N", "N", "N",
-                dt.getLastRefreshedTime() != null ? dt.getLastRefreshedTime().toString() : null,
+                ShowResultHelpers.createdOn(dt.getLastSuspendedOn()), dt.isClone() ? "true" : "false", "false",
+                "false",
+                ShowResultHelpers.createdOn(dt.getLastRefreshedTime()),
                 ShowResultHelpers.OWNER_ROLE_TYPE,
-                null, null, null, null, null, null, null, null,
+                null, null, "false", null, "", null, null, null,
                 dt.getRefreshMode().name()
             )));
         }
+    }
+
+    /**
+     * A dynamic table's {@code text} as live re-prints its CREATE (live-verified): the words through the
+     * name as written, with a column list and the COMMENT it was created with, then the options from the
+     * table's current settings, lowercase and in this order, then the AS and the query exactly as written.
+     * An ALTER of the lag or the warehouse shows here; a later COMMENT ON does not.
+     */
+    private static String dynamicTableText(final DynamicTable dt) {
+        final String head = dt.getCreateText() != null ? dt.getCreateText() : "CREATE DYNAMIC TABLE " + dt.getName();
+        final String body = dt.getBodyText() != null ? dt.getBodyText() : "AS " + dt.getQuery();
+        return head + " lag = '" + dt.getTargetLag() + "' refresh_mode = '" + dt.getRefreshMode().name()
+            + "' initialize = '" + dt.getInitialize().name() + "' warehouse = " + dt.getWarehouse() + " " + body;
     }
 
     /**
@@ -766,11 +822,11 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("text", StringType.VARCHAR),
             new ResultSetColumn("automatic_clustering", StringType.VARCHAR),
             new ResultSetColumn("scheduling_state", StringType.VARCHAR),
-            new ResultSetColumn("last_suspended_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("last_suspended_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("is_clone", StringType.VARCHAR),
             new ResultSetColumn("is_replica", StringType.VARCHAR),
             new ResultSetColumn("is_iceberg", StringType.VARCHAR),
-            new ResultSetColumn("data_timestamp", StringType.VARCHAR),
+            new ResultSetColumn("data_timestamp", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
             new ResultSetColumn("execute_as_user", StringType.VARCHAR),
             new ResultSetColumn("secondary_role_names", StringType.VARCHAR),
@@ -786,36 +842,28 @@ final class ShowPipelineExecutor {
 
     /**
      * DESCRIBE DYNAMIC TABLE answers the COLUMN list, exactly as DESCRIBE TABLE does
-     * (live-verified) — never property/value rows. The dynamic table itself is resolved first, so
-     * a missing one refuses before the projection runs; the projection then supplies the columns.
+     * (live-verified) — never property/value rows — in the same thirteen columns, each type spelled
+     * canonically. The dynamic table itself is resolved first, so a missing one refuses before the
+     * projection runs; the projection then supplies the columns.
      */
     public ResultSet describeDynamicTable(final String tableName, final ResultSetProvider projection) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        catalog.getDatabase(dbName).getSchema(scName).getDynamicTable(tableName);
+        // The name may place the table in a schema, or in a database and schema; the rest comes from the session.
+        final String[] parts = QualifiedName.parse(tableName).parts();
+        final String dbName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
+        final String scName = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema();
+        catalog.getDatabase(dbName).getSchema(scName).getDynamicTable(parts[parts.length - 1]);
 
-        final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("type", StringType.VARCHAR),
-            new ResultSetColumn("kind", StringType.VARCHAR),
-            new ResultSetColumn("null?", StringType.VARCHAR),
-            new ResultSetColumn("default", StringType.VARCHAR),
-            new ResultSetColumn("primary key", StringType.VARCHAR),
-            new ResultSetColumn("unique key", StringType.VARCHAR),
-            new ResultSetColumn("check", StringType.VARCHAR),
-            new ResultSetColumn("expression", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR),
-            new ResultSetColumn("policy name", StringType.VARCHAR)
-        );
+        final List<ResultSetColumn> columns = ShowRelationalExecutor.describeColumns();
         final List<Row> rows = new ArrayList<>();
         for (final ResultSetColumn column : projection.getResultSet().getColumns()) {
+            final DataType type = column.getStaticType() != null ? column.getStaticType() : column.getDataType();
             rows.add(new Row(Arrays.asList(
                 column.getName().toUpperCase(),
-                column.getDataType().getName(),
+                SqlTypeNames.columnMetadata(type),
                 "COLUMN",
                 "Y",
                 null, "N", "N",
-                null, null, null, null
+                null, null, null, null, null, null
             )));
         }
         return new ResultSet(columns, rows);

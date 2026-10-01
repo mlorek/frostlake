@@ -18,6 +18,8 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.CollatedKey;
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.IntervalCasts;
+import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -26,6 +28,8 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.ApproximateValues;
+import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
@@ -74,7 +78,25 @@ public final class SetOperations {
      */
     public static List<Row> applyUnion(final List<Row> leftRows, final List<Row> rightRowsRaw,
                                        final boolean all, final List<ResultSetColumn> leadingColumns) {
+        return applyUnion(leftRows, rightRowsRaw, all, leadingColumns, null);
+    }
+
+    /**
+     * Apply UNION where some columns compare under a collation: rows equal under it are ONE row, and the row
+     * reports the smallest of the values that folded into it by raw text, from either branch (live-verified).
+     *
+     * @param collations the collation of each column, null entries for the columns with none; null for none
+     */
+    public static List<Row> applyUnion(final List<Row> leftRows, final List<Row> rightRowsRaw,
+                                       final boolean all, final List<ResultSetColumn> leadingColumns,
+                                       final CollationSpec[] collations) {
         final List<Row> rightRows = coerceToFirstBranchTypes(leftRows, rightRowsRaw, leadingColumns);
+        if (!all && anyCollation(collations)) {
+            final List<Row> both = new ArrayList<>(leftRows.size() + rightRows.size());
+            both.addAll(leftRows);
+            both.addAll(rightRows);
+            return foldCollated(both, columnCoercions(leftRows, rightRows), collations, null, false);
+        }
         if (all) {
             // UNION ALL: keep all rows
             final List<Row> result = new ArrayList<>(leftRows);
@@ -235,6 +257,10 @@ public final class SetOperations {
                     try {
                         return Double.valueOf(Double.parseDouble(value.toString().trim()));
                     } catch (final NumberFormatException notANumber) {
+                        final Double hex = HexDoubleText.withoutExponent(value.toString().trim(), true);
+                        if (hex != null) {
+                            return hex;
+                        }
                         throw new RuntimeException("Numeric value '" + value + "' is not recognized");
                     }
                 }
@@ -295,7 +321,7 @@ public final class SetOperations {
             return toBooleanBranchValue(text);
         }
         if (leading instanceof Number) {
-            return toNumericBranchValue(text);
+            return ApproximateValues.isApproximate(leading) ? toApproximateBranchValue(text) : toNumericBranchValue(text);
         }
         if (leading instanceof LocalDateTime) {
             return toTimestampBranchValue(text);
@@ -305,6 +331,11 @@ public final class SetOperations {
         }
         if (leading instanceof LocalTime) {
             return toTimeBranchValue(text);
+        }
+        if (IntervalCells.isInterval(leading)) {
+            // A text beside an interval is read in the interval's fields: 'x' is refused as the Day-Time Interval
+            // it cannot be (live-verified).
+            return IntervalCasts.convert(text, IntervalCasts.typeOfValue(leading), true);
         }
         return null;
     }
@@ -320,11 +351,14 @@ public final class SetOperations {
 
     /** One later-branch STRING converted to the leading branch's DECLARED type, or null to leave it. */
     private static Object coerceStringToDeclaredType(final DataType declared, final String text) {
+        if (IntervalCasts.isIntervalType(declared)) {
+            return IntervalCasts.convert(text, declared, true);
+        }
         if (declared instanceof BooleanType) {
             return toBooleanBranchValue(text);
         }
         if (declared instanceof NumericType) {
-            return toNumericBranchValue(text);
+            return NumericType.isApproximate(declared) ? toApproximateBranchValue(text) : toNumericBranchValue(text);
         }
         if (declared instanceof DateTimeType) {
             final String name = declared.getName().toUpperCase();
@@ -350,6 +384,12 @@ public final class SetOperations {
             return Boolean.FALSE;
         }
         throw new RuntimeException("Boolean value '" + text + "' is not recognized");
+    }
+
+    /** A string beside a FLOAT: a hexadecimal number as the double it spells (see HexDoubleText), else as beside a NUMBER. */
+    private static Object toApproximateBranchValue(final String text) {
+        final Double hex = HexDoubleText.withoutExponent(text.trim(), true);
+        return hex != null ? hex : toNumericBranchValue(text);
     }
 
     private static Object toNumericBranchValue(final String text) {
@@ -402,12 +442,27 @@ public final class SetOperations {
      * count map; the distinct variant uses hash-set membership — both O(n) instead of O(n^2).
      */
     public static List<Row> applyIntersect(final List<Row> leftRows, final List<Row> rightRowsRaw, final boolean all) {
+        return applyIntersect(leftRows, rightRowsRaw, all, null);
+    }
+
+    /**
+     * Apply INTERSECT where some columns compare under a collation: a left row survives when the right branch
+     * holds a row equal to it under the collation, and the rows it folds with report the smallest LEFT value by
+     * raw text (live-verified: {@code 'a' INTERSECT 'A'} answers {@code a}).
+     *
+     * @param collations the collation of each column, null entries for the columns with none; null for none
+     */
+    public static List<Row> applyIntersect(final List<Row> leftRows, final List<Row> rightRowsRaw, final boolean all,
+                                           final CollationSpec[] collations) {
         if (leftRows.isEmpty()) {
             return emptyLeftResult();
         }
         // Converted past the short-circuit, for the reason given on applyExcept.
         final List<Row> rightRows = coerceToFirstBranchTypes(leftRows, rightRowsRaw, null);
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
+        if (!all && anyCollation(collations)) {
+            return foldCollated(leftRows, coercions, collations, collatedKeySet(rightRows, coercions, collations), true);
+        }
         final List<Row> result = new ArrayList<>();
 
         if (all) {
@@ -441,6 +496,17 @@ public final class SetOperations {
      * map; the distinct variant uses hash-set membership — both O(n) instead of O(n^2).
      */
     public static List<Row> applyExcept(final List<Row> leftRows, final List<Row> rightRowsRaw, final boolean all) {
+        return applyExcept(leftRows, rightRowsRaw, all, null);
+    }
+
+    /**
+     * Apply EXCEPT where some columns compare under a collation: a left row survives when the right branch holds
+     * no row equal to it under the collation, and the left rows it folds with report the smallest by raw text.
+     *
+     * @param collations the collation of each column, null entries for the columns with none; null for none
+     */
+    public static List<Row> applyExcept(final List<Row> leftRows, final List<Row> rightRowsRaw, final boolean all,
+                                        final CollationSpec[] collations) {
         if (leftRows.isEmpty()) {
             return emptyLeftResult();
         }
@@ -450,6 +516,9 @@ public final class SetOperations {
         // refuses over a non-empty one — so the conversion belongs after this return and not before it.
         final List<Row> rightRows = coerceToFirstBranchTypes(leftRows, rightRowsRaw, null);
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
+        if (!all && anyCollation(collations)) {
+            return foldCollated(leftRows, coercions, collations, collatedKeySet(rightRows, coercions, collations), false);
+        }
         final List<Row> result = new ArrayList<>();
 
         if (all) {
@@ -529,6 +598,48 @@ public final class SetOperations {
         return distinctRows;
     }
 
+    /**
+     * Rows de-duplicated under their collations, each group reporting its smallest value per collated column by
+     * raw text, first occurrence order kept. With {@code others}, only the rows whose key is in that set
+     * ({@code keepMembers}) or not in it survive.
+     */
+    private static List<Row> foldCollated(final List<Row> rows, final SetOpColumnCoercion[] coercions,
+                                          final CollationSpec[] collations, final Set<List<Object>> others,
+                                          final boolean keepMembers) {
+        final Map<List<Object>, List<Object>> reported = new LinkedHashMap<>();
+        for (final Row row : rows) {
+            final List<Object> key = rowKey(row, coercions, collations);
+            if (others != null && others.contains(key) != keepMembers) {
+                continue;
+            }
+            final List<Object> kept = reported.get(key);
+            if (kept == null) {
+                reported.put(key, new ArrayList<>(row.getValues()));
+                continue;
+            }
+            for (int i = 0; i < kept.size() && i < collations.length; i++) {
+                if (collations[i] != null) {
+                    kept.set(i, CollatedKey.leastOf(kept.get(i), row.getValues().get(i)));
+                }
+            }
+        }
+        final List<Row> folded = new ArrayList<>(reported.size());
+        for (final Map.Entry<List<Object>, List<Object>> entry : reported.entrySet()) {
+            folded.add(new Row(entry.getValue()));
+        }
+        return folded;
+    }
+
+    /** The collated row keys of a branch, for INTERSECT and EXCEPT membership. */
+    private static Set<List<Object>> collatedKeySet(final List<Row> rows, final SetOpColumnCoercion[] coercions,
+                                                    final CollationSpec[] collations) {
+        final Set<List<Object>> keys = new HashSet<>();
+        for (final Row row : rows) {
+            keys.add(rowKey(row, coercions, collations));
+        }
+        return keys;
+    }
+
     /** Whether any column of a projection compares under a collation. */
     static boolean anyCollation(final CollationSpec[] collations) {
         if (collations == null) {
@@ -560,7 +671,8 @@ public final class SetOperations {
         for (int i = 0; i < values.size(); i++) {
             final SetOpColumnCoercion coercion = i < coercions.length ? coercions[i] : SetOpColumnCoercion.NONE;
             final CollationSpec rules = collations != null && i < collations.length ? collations[i] : null;
-            key.add(CollatedKey.of(normalizeValue(coercion, values.get(i)), rules));
+            // Deduplicating reads every cell, so a cell a relation deferred raises its fault here.
+            key.add(CollatedKey.of(normalizeValue(coercion, DeferredFault.read(values.get(i))), rules));
         }
         return key;
     }

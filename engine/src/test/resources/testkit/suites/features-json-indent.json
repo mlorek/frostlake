@@ -10,7 +10,7 @@
       {"sql": "SELECT OBJECT_CONSTRUCT('k','v')", "expect": {"value": "{\"k\":\"v\"}"}}
     ]},
     {"name": "indent-two-matches-the-live-rendering",
-     "skip": {"backends": ["snowflake", "http"], "reason": "engine-canonical indent pins; live defaults differ and the HTTP transport serializes semi-structured cells compactly regardless of JSON_INDENT"},
+     "skip": {"backends": ["snowflake"], "reason": "engine-canonical indent pins; live defaults differ"},
      "steps": [
       {"sql": "ALTER SESSION SET JSON_INDENT = 2"},
       {"sql": "SELECT ARRAY_CONSTRUCT('a','b')", "expect": {"value": "[\n  \"a\",\n  \"b\"\n]"}},
@@ -19,7 +19,7 @@
       {"sql": "ALTER SESSION UNSET JSON_INDENT"}
     ]},
     {"name": "the-width-is-whatever-the-session-sets",
-     "skip": {"backends": ["snowflake", "http"], "reason": "engine-canonical indent pins; live defaults differ and the HTTP transport serializes semi-structured cells compactly regardless of JSON_INDENT"},
+     "skip": {"backends": ["snowflake"], "reason": "engine-canonical indent pins; live defaults differ"},
      "steps": [
       {"sql": "ALTER SESSION SET JSON_INDENT = 4"},
       {"sql": "SELECT ARRAY_CONSTRUCT('a','b')", "expect": {"value": "[\n    \"a\",\n    \"b\"\n]"}},
@@ -41,7 +41,7 @@
       {"sql": "ALTER SESSION UNSET JSON_INDENT"}
     ]},
     {"name": "unsetting-restores-the-default",
-     "skip": {"backends": ["snowflake", "http"], "reason": "UNSET restores the ENGINE default (compact); live defaults differ and the HTTP transport serializes semi-structured cells compactly regardless of JSON_INDENT"},
+     "skip": {"backends": ["snowflake"], "reason": "UNSET restores the ENGINE default (compact); live defaults differ"},
      "steps": [
       {"sql": "ALTER SESSION SET JSON_INDENT = 2"},
       {"sql": "SELECT ARRAY_CONSTRUCT('a')", "expect": {"value": "[\n  \"a\"\n]"}},

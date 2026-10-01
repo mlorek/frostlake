@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.util.Map;
 
 /**
  * Serializable snapshot of column metadata
@@ -55,6 +56,10 @@ public class ColumnSnapshot implements Serializable {
     public long identityStart;
     public long identityIncrement;
     public String collation;
+
+    // The position the table gave this column: kept so a restored table reports the same gaps a
+    // dropped column left behind. 0 in a snapshot written before positions were recorded.
+    public int ordinalPosition;
     // Column-level FOREIGN KEY (REFERENCES) target + actions, or null when the column has no reference.
     public String referencedTable;
     public String referencedColumn;
@@ -66,4 +71,8 @@ public class ColumnSnapshot implements Serializable {
     // constraint), in which case the name regenerates on first use as it always did.
     public String uniqueConstraintName;
     public String foreignKeyConstraintName;
+
+    // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
+    // recorded, which reads back as an object carrying none.
+    public Map<String, String> tags;
 }

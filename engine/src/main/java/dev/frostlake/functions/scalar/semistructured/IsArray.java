@@ -19,6 +19,8 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.BooleanType;
+import dev.frostlake.values.TypedVectorNode;
+import dev.frostlake.values.VectorValue;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 
@@ -34,8 +36,10 @@ public class IsArray extends StructuredArgumentFunction {
             }
         }
         if (args.get(0) == null) return false;
+        // A VECTOR is array-shaped but no ARRAY, bare or held in a VARIANT (live-verified).
+        if (args.get(0) instanceof VectorValue) return false;
         final JsonNode node = JsonTypeHelper.parse(args.get(0));
-        return node != null && node.isArray();
+        return node != null && node.isArray() && TypedVectorNode.vectorValueOf(node) == null;
     }
 
     @Override

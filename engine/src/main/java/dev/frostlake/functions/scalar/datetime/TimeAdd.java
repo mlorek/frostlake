@@ -23,7 +23,7 @@ import java.util.List;
 
 /** TIMEADD(unit, amount, datetime) — alias of DATEADD. */
 public class TimeAdd extends BuiltInFunction {
-    private final DateAdd delegate = new DateAdd();
+    private final DateAdd delegate = new DateAdd("TIMEADD");
 
     public TimeAdd() { super("TIMEADD", DateTimeType.TIMESTAMP_NTZ); }
 

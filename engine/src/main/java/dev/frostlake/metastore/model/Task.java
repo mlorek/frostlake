@@ -16,18 +16,22 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.metastore.Taggable;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
 /**
  * Represents a Snowflake Task - Scheduled SQL execution
  */
-public class Task {
+public class Task implements Taggable {
 
     private final String name;
     private String id = UUID.randomUUID().toString();
@@ -58,6 +62,17 @@ public class Task {
     private int userTaskMinimumTriggerIntervalInSeconds = 30;
     private boolean allowOverlappingExecution = false;
     private long userTaskTimeoutMs = 3600000L; // default 1 hour
+    /** The graph configuration, the JSON object text exactly as written, or null. */
+    private String config;
+    /** The overlap policy a root task set, or null for the default NO_OVERLAP. */
+    private String overlapPolicy;
+    /** The session parameters the task sets for its runs, by upper-case name, each as SHOW PARAMETERS spells it. */
+    private final Map<String, String> sessionParameters = new LinkedHashMap<>();
+    private String successIntegration;
+    /** The root task this finalizer task is attached to, by name, or null when the task finalizes no graph. */
+    private String finalizedRootTask;
+    private String executeAsUser;
+    private String serverlessTaskMinStatementSize;
 
     public Task(final String name, final String schedule, final ScheduleType scheduleType,
                 final String sqlStatement, final String warehouse) {
@@ -274,8 +289,92 @@ public class Task {
         return allowOverlappingExecution;
     }
 
+    /**
+     * The legacy overlap switch, which sets the overlap policy too: TRUE is ALLOW_CHILD_OVERLAP and FALSE is
+     * NO_OVERLAP.
+     */
     public void setAllowOverlappingExecution(final boolean allowOverlappingExecution) {
         this.allowOverlappingExecution = allowOverlappingExecution;
+        this.overlapPolicy = allowOverlappingExecution ? "ALLOW_CHILD_OVERLAP" : null;
+    }
+
+    /** The overlap policy in force: the one set, or NO_OVERLAP. */
+    public String getOverlapPolicy() {
+        return overlapPolicy != null ? overlapPolicy : "NO_OVERLAP";
+    }
+
+    /**
+     * Set the overlap policy, or reset it with null. Only ALLOW_CHILD_OVERLAP reads as the legacy
+     * {@code allow_overlapping_execution = true}; ALLOW_ALL_OVERLAP reads as false there.
+     */
+    public void setOverlapPolicy(final String overlapPolicy) {
+        this.overlapPolicy = overlapPolicy == null || "NO_OVERLAP".equals(overlapPolicy) ? null : overlapPolicy;
+        this.allowOverlappingExecution = "ALLOW_CHILD_OVERLAP".equals(overlapPolicy);
+    }
+
+    public String getConfig() {
+        return config;
+    }
+
+    public void setConfig(final String config) {
+        this.config = config;
+    }
+
+    /** The session parameters set on the task, by upper-case name, in the order they were set. */
+    public Map<String, String> getSessionParameters() {
+        return sessionParameters;
+    }
+
+    public void setSessionParameter(final String name, final String value) {
+        sessionParameters.put(name.toUpperCase(Locale.ROOT), value);
+        markParameterSet(name);
+    }
+
+    public void unsetSessionParameter(final String name) {
+        sessionParameters.remove(name.toUpperCase(Locale.ROOT));
+        explicitParameters.remove(name.toUpperCase(Locale.ROOT));
+    }
+
+    /** Forget that a parameter was set on the task, so it reads its default again. */
+    public void clearParameterSet(final String parameterName) {
+        explicitParameters.remove(parameterName.toUpperCase(Locale.ROOT));
+    }
+
+    public String getSuccessIntegration() {
+        return successIntegration;
+    }
+
+    public void setSuccessIntegration(final String successIntegration) {
+        this.successIntegration = successIntegration;
+    }
+
+    public String getFinalizedRootTask() {
+        return finalizedRootTask;
+    }
+
+    public void setFinalizedRootTask(final String finalizedRootTask) {
+        this.finalizedRootTask = finalizedRootTask;
+    }
+
+    /** Whether the task is a finalizer task, attached to a root task's graph. */
+    public boolean isFinalizer() {
+        return finalizedRootTask != null;
+    }
+
+    public String getExecuteAsUser() {
+        return executeAsUser;
+    }
+
+    public void setExecuteAsUser(final String executeAsUser) {
+        this.executeAsUser = executeAsUser;
+    }
+
+    public String getServerlessTaskMinStatementSize() {
+        return serverlessTaskMinStatementSize;
+    }
+
+    public void setServerlessTaskMinStatementSize(final String serverlessTaskMinStatementSize) {
+        this.serverlessTaskMinStatementSize = serverlessTaskMinStatementSize;
     }
 
     public long getUserTaskTimeoutMs() {
@@ -284,5 +383,27 @@ public class Task {
 
     public void setUserTaskTimeoutMs(final long userTaskTimeoutMs) {
         this.userTaskTimeoutMs = userTaskTimeoutMs;
+    }
+    /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -&gt; value). */
+    private final Map<String, String> tags = new LinkedHashMap<>();
+
+    @Override
+    public void setTag(final String tagName, final String value) {
+        tags.put(tagName.toUpperCase(Locale.ROOT), value);
+    }
+
+    @Override
+    public void unsetTag(final String tagName) {
+        tags.remove(tagName.toUpperCase(Locale.ROOT));
+    }
+
+    @Override
+    public String getTagValue(final String tagName) {
+        return tags.get(tagName.toUpperCase(Locale.ROOT));
+    }
+
+    @Override
+    public Map<String, String> getTagValues() {
+        return new LinkedHashMap<>(tags);
     }
 }

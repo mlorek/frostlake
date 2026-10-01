@@ -16,9 +16,14 @@
 
 package dev.frostlake.functions.scalar.math;
 
+import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.VariantValue;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -43,10 +48,59 @@ public class Random extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (!args.isEmpty() && args.get(0) != null) {
-            return new java.util.Random(((Number) args.get(0)).longValue()).nextLong();
+        if (!args.isEmpty()) {
+            return new java.util.Random(seedOf(args.get(0))).nextLong();
         }
         return ThreadLocalRandom.current().nextLong();
+    }
+
+    /**
+     * The seed as a whole number, rounded half away from zero — {@code RANDOM(1.5)}, {@code RANDOM('1.5')} and
+     * {@code RANDOM(1.5::FLOAT)} are {@code RANDOM(2)} (live-verified). A text seed is read as the number it
+     * spells; a VARIANT reads through its member as a cast to FIXED does, a boolean as 1 or 0, and anything
+     * else fails that cast. A NULL seed, SQL or JSON, is refused when the row reads it.
+     */
+    private static long seedOf(final Object seed) {
+        final Object value = seed instanceof VariantValue
+            ? VariantNumbers.numberOf((VariantValue) seed, VariantNumbers.FIXED) : seed;
+        if (value == null) {
+            throw new RuntimeException("Invalid parameter value: NULL. Reason: seed must not be NULL");
+        }
+        if (value instanceof Double && !Double.isFinite(((Double) value).doubleValue())
+                || value instanceof Float && !Float.isFinite(((Float) value).floatValue())) {
+            return ((Number) value).longValue();
+        }
+        final BigDecimal number;
+        if (value instanceof BigDecimal) {
+            number = (BigDecimal) value;
+        } else if (value instanceof Number) {
+            number = new BigDecimal(value.toString());
+        } else {
+            try {
+                number = new BigDecimal(value.toString().trim());
+            } catch (final NumberFormatException notANumber) {
+                throw new RuntimeException("Numeric value '" + value + "' is not recognized");
+            }
+        }
+        return number.setScale(0, RoundingMode.HALF_UP).longValue();
+    }
+
+    /** An ARRAY or OBJECT seed is refused by the argument types while the statement compiles (live-verified). */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    /** A BOOLEAN seed is refused by the argument types while the statement compiles (live-verified). */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    /** So is a DATE, a TIME or a TIMESTAMP seed: RANDOM(CURRENT_DATE()) is 'RANDOM': (DATE) (live-verified). */
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override

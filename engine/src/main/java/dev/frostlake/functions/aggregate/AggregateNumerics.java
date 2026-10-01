@@ -20,6 +20,8 @@ import dev.frostlake.executor.AggregateRangeRefusal;
 import dev.frostlake.executor.NumericConversionException;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.ValueComparisons;
+import dev.frostlake.executor.expressions.IntervalCasts;
+import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.executor.expressions.RawOverflowKind;
 import dev.frostlake.executor.expressions.RawRangeOverflow;
 import dev.frostlake.values.VariantValue;
@@ -80,6 +82,9 @@ public final class AggregateNumerics {
      * @return the sum on the tier the inputs select, or null for an empty set
      */
     public static Object sum(final Iterable<Object> values, final boolean variantArgument) {
+        if (IntervalSums.holdsIntervals(values)) {
+            return IntervalSums.sum(values);
+        }
         return sumOfPartials(Collections.singletonList(values), variantArgument, false);
     }
 
@@ -94,6 +99,9 @@ public final class AggregateNumerics {
      * @return the sum on the tier the inputs select, or null for an empty set
      */
     public static Object runningSum(final Iterable<Object> values, final boolean variantArgument) {
+        if (IntervalSums.holdsIntervals(values)) {
+            return IntervalSums.sum(values);
+        }
         return sumOfPartials(Collections.singletonList(values), variantArgument, true);
     }
 
@@ -199,6 +207,9 @@ public final class AggregateNumerics {
      * @return the average on the tier the inputs select, or null for an empty set
      */
     public static Object avg(final Iterable<Object> values, final boolean variantArgument) {
+        if (IntervalSums.holdsIntervals(values)) {
+            return IntervalSums.average(values);
+        }
         return average(values, variantArgument, false);
     }
 
@@ -422,6 +433,21 @@ public final class AggregateNumerics {
             // fall through — treated as non-fixed-point
         }
         return null;
+    }
+
+    /**
+     * The double a non-NULL value joins a FLOAT sum as: a VARIANT's or an approximate number's own, an exact
+     * number's nearest — the same term {@link #windowSum} and {@link #windowAvg} add.
+     *
+     * @param value the value
+     * @return its double
+     */
+    public static double doubleTerm(final Object value) {
+        if (value instanceof VariantValue || isApproximateInput(value)) {
+            return NumericAggregateInput.asDouble(value);
+        }
+        final BigDecimal fixed = fixedPointValue(value);
+        return fixed != null ? fixed.doubleValue() : NumericAggregateInput.asDouble(value);
     }
 
     /**
@@ -694,6 +720,11 @@ public final class AggregateNumerics {
         } else if (v instanceof Number) {
             shown = v.toString();
             number = new BigDecimal(shown);
+        } else if (IntervalCells.isInterval(v)) {
+            // An interval converts as its cast to a number does: its span in units of its trailing field, so
+            // MEDIAN over a TIMESTAMP difference reads whole seconds (live-verified).
+            shown = v.toString();
+            number = IntervalCasts.numberOf(v);
         } else {
             shown = v.toString();
             number = numberSpelledBy(shown);

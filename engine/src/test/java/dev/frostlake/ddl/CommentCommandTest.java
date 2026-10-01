@@ -234,13 +234,13 @@ public class CommentCommandTest extends BaseDatabaseTest {
 
     @Test
     public void testCommentOnNonExistentObject() {
-        assertEquals("SQL compilation error:\nDatabase 'CMT_CMD_NODB' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nDatabase 'CMT_CMD_NODB' does not exist or not authorized."),
             messageOf("COMMENT ON DATABASE cmt_cmd_nodb IS 'Comment'"));
     }
 
     @Test
     public void testCommentOnNonExistentTable() {
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."),
             messageOf("COMMENT ON TABLE nosuch IS 'Comment'"));
     }
 
@@ -251,7 +251,7 @@ public class CommentCommandTest extends BaseDatabaseTest {
         // fully qualified Table shape.
         assertEquals("SQL compilation error:\nObject 'NONEXISTENT' does not exist or not authorized.",
             messageOf("COMMENT ON COLUMN users.nonexistent IS 'Comment'"));
-        assertEquals("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOTABLE' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOTABLE' does not exist or not authorized."),
             messageOf("COMMENT ON COLUMN notable.name IS 'Comment'"));
     }
 
@@ -308,7 +308,7 @@ public class CommentCommandTest extends BaseDatabaseTest {
             CREATE FUNCTION add_numbers(x INTEGER, y INTEGER)
             RETURNS INTEGER AS 'x + y'
             """);
-        assertEquals("SQL compilation error:\nFunction 'TEST_DB.TEST_SCHEMA.ADD_NUMBERS' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nFunction 'TEST_DB.TEST_SCHEMA.ADD_NUMBERS' does not exist or not authorized."),
             messageOf("COMMENT ON FUNCTION add_numbers(VARCHAR, VARCHAR) IS 'Wrong signature'"));
     }
 
@@ -318,7 +318,7 @@ public class CommentCommandTest extends BaseDatabaseTest {
             CREATE FUNCTION add_numbers(x INTEGER, y INTEGER)
             RETURNS INTEGER AS 'x + y'
             """);
-        assertEquals("SQL compilation error:\nFunction 'TEST_DB.TEST_SCHEMA.ADD_NUMBERS' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nFunction 'TEST_DB.TEST_SCHEMA.ADD_NUMBERS' does not exist or not authorized."),
             messageOf("COMMENT ON FUNCTION add_numbers(INTEGER) IS 'Wrong count'"));
     }
 }

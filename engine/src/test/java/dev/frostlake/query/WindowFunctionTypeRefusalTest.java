@@ -154,7 +154,7 @@ public class WindowFunctionTypeRefusalTest extends BaseDatabaseTest {
     public void aViewOverTheShapeIsRefused() {
         assertEquals(invalidType("NOSUCHFN"), answer(
             "CREATE OR REPLACE VIEW v_wt AS SELECT nosuchfn(a) OVER (ORDER BY a) c FROM wt"));
-        assertEquals("SQL compilation error:|View 'V_WT' does not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:|View 'V_WT' does not exist or not authorized."),
             answer("DESCRIBE VIEW v_wt"),
             "and nothing was left behind to describe");
         assertEquals(invalidType("ABS"), answer(

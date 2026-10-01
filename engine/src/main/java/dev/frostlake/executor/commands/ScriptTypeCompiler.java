@@ -16,14 +16,21 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.IntegerLiteralRange;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 /**
- * Every DECLARED TYPE in a scripting block, judged BEFORE the block runs — because that is when live
- * judges it.
+ * Every DECLARED TYPE in a scripting block, and every integer literal too wide to read, judged BEFORE the block
+ * runs — because that is when live judges them — in the order they are written, ahead of every other refusal
+ * the block compile makes: an unnamed bind, a name declared twice and a name that resolves to nothing all wait
+ * for this pass (live-verified).
  *
  * <pre>
  *   BEGIN LET v VARCHAR(0) := 'x'; RETURN v; END
@@ -44,6 +51,13 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * ({@code IF (FALSE) THEN LET n INT := (SELECT nosuchcol FROM t)}), so the compile pass this mirrors
  * does not resolve names inside a subquery — the two halves are not the same rule and are measured
  * apart.
+ *
+ * <p>★ A LITERAL IS READ WHERE THE LITERAL READER READS IT: a value in an expression, a LIMIT, OFFSET, FETCH or
+ * TOP count, a SAMPLE size or seed, a VECTOR's dimension and an exception's code. A type's parameters are the
+ * type's to judge, in the type's own sentence ({@code NUMBER(<39 digits>, 0)} is an invalid precision), and a
+ * property's value is the property's. An exception code written with its sign is read with it, by a reader
+ * that places nothing: {@code EXCEPTION (-<39 digits>, 'm')} is refused at line 0, position 0, echoing the
+ * sign (all live-verified).
  */
 final class ScriptTypeCompiler {
 
@@ -51,9 +65,9 @@ final class ScriptTypeCompiler {
     }
 
     /**
-     * Judge every declared type under {@code node}. A type and its parameters are SIBLINGS in the
-     * grammar ({@code dataTypeName typeParameters?}), which is why the pair is read off the parse tree
-     * rather than by re-reading the block's text.
+     * Judge every declared type and every integer literal under {@code node}, in the order written. A type and
+     * its parameters are SIBLINGS in the grammar ({@code dataTypeName typeParameters?}), which is why the pair is
+     * read off the parse tree rather than by re-reading the block's text.
      *
      * @param node the block, or any node within it
      */
@@ -61,11 +75,45 @@ final class ScriptTypeCompiler {
         if (node == null) {
             return;
         }
+        if (node instanceof TerminalNode) {
+            rejectWideLiteral((TerminalNode) node);
+            return;
+        }
         if (node instanceof FrostlakeParser.DataTypeNameContext) {
+            // A VECTOR's dimension is read as a literal before the type itself is judged.
+            for (int i = 0; i < node.getChildCount(); i++) {
+                if (node.getChild(i) instanceof TerminalNode) {
+                    rejectWideLiteral((TerminalNode) node.getChild(i));
+                }
+            }
             DataTypeParser.parse((FrostlakeParser.DataTypeNameContext) node, parametersOf(node));
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             validateDeclaredTypes(node.getChild(i));
+        }
+    }
+
+    /** Refuse an integer literal too wide to read, where the literal reader reads it (see the class comment). */
+    private static void rejectWideLiteral(final TerminalNode node) {
+        final Token token = node.getSymbol();
+        if (token.getType() != FrostlakeLexer.INTEGER_LITERAL || !IntegerLiteralRange.isOutOfRange(token.getText())) {
+            return;
+        }
+        final ParseTree holder = node.getParent();
+        if (holder instanceof FrostlakeParser.DeclarationItemContext
+                && ((FrostlakeParser.DeclarationItemContext) holder).MINUS() != null) {
+            throw new RuntimeException(SqlCompilationError.PREFIX + " Error line 0 at position 0\n"
+                + IntegerLiteralRange.sentence("-" + token.getText()));
+        }
+        if (holder instanceof FrostlakeParser.LiteralContext
+                || holder instanceof FrostlakeParser.LimitClauseContext
+                || holder instanceof FrostlakeParser.FetchClauseContext
+                || holder instanceof FrostlakeParser.TopClauseContext
+                || holder instanceof FrostlakeParser.SampleClauseContext
+                || holder instanceof FrostlakeParser.SampleSeedContext
+                || holder instanceof FrostlakeParser.DataTypeNameContext
+                || holder instanceof FrostlakeParser.DeclarationItemContext) {
+            IntegerLiteralRange.reject(token);
         }
     }
 

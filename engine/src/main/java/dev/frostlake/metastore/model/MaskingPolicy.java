@@ -18,6 +18,8 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.metastore.SqlObject;
 
+import dev.frostlake.types.DataType;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,7 +33,10 @@ public class MaskingPolicy extends SqlObject {
 
     private final List<Parameter> parameters;  // typically one param: the column value
     private final String returnType;
-    private final String body;                 // SQL CASE expression
+    private String body;                       // SQL CASE expression
+    // The RETURNS type as the statement declared it, kept so a later SET BODY is judged against the
+    // same type the CREATE was — the name alone cannot spell a width back.
+    private DataType returnDataType;
 
     public MaskingPolicy(final String name, final List<Parameter> parameters,
                          final String returnType, final String body) {
@@ -43,7 +48,14 @@ public class MaskingPolicy extends SqlObject {
 
     public List<Parameter> getParameters() { return new ArrayList<>(parameters); }
     public String getReturnType() { return returnType; }
+
+    /** The declared RETURNS type, or null for a policy created before one was recorded. */
+    public DataType getReturnDataType() { return returnDataType; }
+
+    /** Records the declared RETURNS type. */
+    public void setReturnDataType(final DataType returnDataType) { this.returnDataType = returnDataType; }
     public String getBody() { return body; }
+    public void setBody(final String body) { this.body = body; }
 
     @Override
     public String getObjectType() { return "MASKING POLICY"; }

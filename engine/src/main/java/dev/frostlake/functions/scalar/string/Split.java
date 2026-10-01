@@ -21,6 +21,7 @@ import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -54,7 +55,7 @@ public class Split extends TextArgumentFunction {
                 array.add(part);
             }
         }
-        return array.toString();
+        return VariantValue.ofNode(array);
     }
 
     /** Under a collation the text splits on every separator the collation matches. */
@@ -68,7 +69,7 @@ public class Split extends TextArgumentFunction {
                 args.get(1).toString())) {
             array.add(part);
         }
-        return array.toString();
+        return VariantValue.ofNode(array);
     }
 
     @Override

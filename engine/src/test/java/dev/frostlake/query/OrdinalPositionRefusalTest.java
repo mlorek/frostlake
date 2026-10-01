@@ -34,9 +34,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * anything COMPUTED does not: {@code ORDER BY 1 + 0} is a constant that leaves the rows alone. This
  * is the half that had to be measured rather than assumed — Frostlake read only bare digits.
  *
- * <p>★ THE REFUSAL IS THE ORDER-BY-EXPRESSION SENTENCE, echoing the literal AS WRITTEN — {@code [9.5]},
- * not the 9 it truncates to. Frostlake had invented "ORDER BY position 9 is not in select list", a
- * wording live has nowhere. GROUP BY has the same sentence with its own noun.
+ * <p>★ THE REFUSAL IS THE ORDER-BY-EXPRESSION SENTENCE, echoing what the literal FOLDS to — {@code [9.5]},
+ * not the 9 it truncates to, and {@code [10]} for {@code 1e1}, {@code [9]} for {@code (9)}, {@code [2.5]}
+ * for {@code 2.50}. Frostlake had invented "ORDER BY position 9 is not in select list", a wording live
+ * has nowhere, and then echoed the key as written. GROUP BY has the same sentence with its own noun.
+ *
+ * <p>★ A MINUS SIGN BELONGS TO THE LITERAL WHEREVER IT IS WRITTEN — {@code -(1)}, {@code - 1} and
+ * {@code -((1))} are all position -1, and {@code -(-1)} folds back to position 1 — while a PLUS sign is
+ * an operator, so {@code +2} is a constant. Frostlake read only a minus sign glued to the digits.
  *
  * <p>★ A STAR IS ITS COLUMNS, and this was the gap behind two defects at once: an ordinal past a star
  * list was never range-checked (accepted where live refuses) AND an ordinal INSIDE one never resolved,
@@ -226,6 +231,57 @@ public class OrdinalPositionRefusalTest extends BaseDatabaseTest {
         assertEquals("1/10,2/20,3/30",
             answer("SELECT a, SUM(b) FROM ord GROUP BY 1.5 ORDER BY 1"),
             "1.5 groups by the first item, exactly as 1 does");
+    }
+
+    /** ★ The echo is the FOLDED value, however the literal was written. */
+    @Test
+    public void theRefusalEchoesTheFoldedLiteral() {
+        assertEquals(outOfRangeOrderBy("9"), answer("SELECT a, b FROM ord ORDER BY (9)"),
+            "the parentheses are not part of the number");
+        assertEquals(outOfRangeOrderBy("9"), answer("SELECT a, b FROM ord ORDER BY ((9))"),
+            "however deep they go");
+        assertEquals(outOfRangeOrderBy("10"), answer("SELECT a, b FROM ord ORDER BY 1e1"),
+            "an exponent is folded, not echoed");
+        assertEquals(outOfRangeOrderBy("15"), answer("SELECT a, b FROM ord ORDER BY 1.5e1"));
+        assertEquals(outOfRangeOrderBy("0.1"), answer("SELECT a, b FROM ord ORDER BY 1e-1"));
+        assertEquals(outOfRangeOrderBy("0"), answer("SELECT a, b FROM ord ORDER BY -0"),
+            "a signed zero is a zero");
+        assertEquals(outOfRangeOrderBy("3"), answer("SELECT a, b FROM ord ORDER BY 3.0"),
+            "a trailing zero is not part of the number either");
+        assertEquals(outOfRangeGroupBy("2.5"), answer("SELECT a FROM ord GROUP BY 2.50"),
+            "but a fraction that survives the strip is kept");
+        assertEquals(outOfRangeGroupBy("9"), answer("SELECT a, SUM(b) FROM ord GROUP BY (9)"));
+        assertEquals(outOfRangeGroupBy("10"), answer("SELECT a, SUM(b) FROM ord GROUP BY 1e1"));
+        assertEquals(outOfRangeGroupBy("0"), answer("SELECT a, SUM(b) FROM ord GROUP BY -0"));
+    }
+
+    /** ★ A minus sign belongs to the literal wherever it is written, and two of them cancel. */
+    @Test
+    public void aMinusSignBelongsToTheLiteralWhereverItIsWritten() {
+        assertEquals(outOfRangeOrderBy("-1"), answer("SELECT a, b FROM ord ORDER BY -(1)"),
+            "a sign outside the parentheses is still the number's");
+        assertEquals(outOfRangeOrderBy("-1"), answer("SELECT a, b FROM ord ORDER BY - 1"),
+            "and so is one a space away");
+        assertEquals(outOfRangeOrderBy("-1"), answer("SELECT a, b FROM ord ORDER BY (-1)"),
+            "or one inside them");
+        assertEquals(outOfRangeOrderBy("-1"), answer("SELECT a, b FROM ord ORDER BY -((1))"));
+        assertEquals("1/10,2/20,3/30", answer("SELECT a, b FROM ord ORDER BY -(-1)"),
+            "two signs cancel back to the first item");
+        assertEquals("3/30,2/20,1/10", answer("SELECT a, b FROM ord ORDER BY -(-2) DESC"),
+            "and to the second");
+        assertEquals(outOfRangeGroupBy("-1"), answer("SELECT a, SUM(b) FROM ord GROUP BY -(1)"));
+        assertEquals(outOfRangeGroupBy("-1"), answer("SELECT a, SUM(b) FROM ord GROUP BY - 1"));
+        assertEquals("1/10,2/20,3/30",
+            answer("SELECT a, SUM(b) FROM ord GROUP BY -(-1) ORDER BY 1"),
+            "and a cancelled pair groups by the first item");
+    }
+
+    /** A PLUS sign is an operator, so what follows it is a constant and orders nothing. */
+    @Test
+    public void aPlusSignLeavesTheSlot() {
+        assertEquals("2/20,1/10,3/30", answer("SELECT a, b FROM ord ORDER BY +2"),
+            "insertion order, because a constant orders nothing");
+        assertEquals("2/20,1/10,3/30", answer("SELECT a, b FROM ord ORDER BY +(2)"));
     }
 
     /**

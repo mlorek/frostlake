@@ -79,6 +79,9 @@ public final class DataTypeParser {
     public static DataType parse(final FrostlakeParser.DataTypeNameContext ctx,
                                  final FrostlakeParser.TypeParametersContext typeParams,
                                  final int bareStringDefault) {
+        if (ctx.INTERVAL() != null) {
+            return IntervalTypeSpec.parse(ctx.intervalTypeFields(), typeParams);
+        }
         int precision = 9; // Default precision for timestamp types
 
         // Extract precision if typeParameters present. The narrowing SATURATES rather than failing:
@@ -103,8 +106,10 @@ public final class DataTypeParser {
         // MAP(k, v) likewise holds its key/value types in nested dataTypeName contexts, so it must be
         // recognized before the leaf-token branches those nested types would otherwise trigger.
         if (ctx.MAP() != null && ctx.dataTypeName().size() == 2) {
-            return new MapType(nested(ctx.dataTypeName(0), null, bareStringDefault),
-                nested(ctx.dataTypeName(1), null, bareStringDefault));
+            final DataType mapKey = nested(ctx.dataTypeName(0), null, bareStringDefault);
+            final DataType mapValue = nested(ctx.dataTypeName(1), null, bareStringDefault);
+            IntervalTypeSpec.refuseNested(mapValue, "MAP with value type");
+            return new MapType(mapKey, mapValue);
         }
         if (ctx.GEOGRAPHY() != null) return GeographyType.GEOGRAPHY;
         if (ctx.GEOMETRY() != null) return GeometryType.GEOMETRY;
@@ -132,7 +137,9 @@ public final class DataTypeParser {
                 }
                 return ArrayType.ARRAY;
             }
-            return new StructuredArrayType(nested(ctx.dataTypeName(0), ctx.typeParameters(), bareStringDefault));
+            final DataType element = nested(ctx.dataTypeName(0), ctx.typeParameters(), bareStringDefault);
+            IntervalTypeSpec.refuseNested(element, "Array with element type");
+            return new StructuredArrayType(element);
         }
         if (ctx.OBJECT() != null) {
             // `OBJECT` (no parentheses) is the plain semi-structured type; `OBJECT()` is the ZERO-FIELD
@@ -177,13 +184,14 @@ public final class DataTypeParser {
         if (ctx.FLOAT() != null || ctx.FLOAT4() != null || ctx.FLOAT8() != null || ctx.REAL() != null) return NumericType.FLOAT;
         if (ctx.DOUBLE() != null) return NumericType.FLOAT;   // DOUBLE and DOUBLE PRECISION are FLOAT
         // The character family collapses onto two Snowflake types, VARCHAR and CHAR, and the alias only
-        // decides the DEFAULT length — live: VARCHAR / STRING / TEXT / NVARCHAR / NVARCHAR2
+        // decides the DEFAULT length — live: VARCHAR / VARCHAR2 / STRING / TEXT / NVARCHAR / NVARCHAR2
         // and any `... VARYING` spelling default to 16,777,216, while the fixed-length CHAR / CHARACTER /
         // NCHAR default to 1 (`'abc'::CHARACTER` fails "String 'abc' is too long and would be
         // truncated"). An explicit length applies to either family. SYSTEM$TYPEOF reports the collapsed
         // name, never the alias: `'x'::NCHAR` is `VARCHAR(1)`, `'x'::CHARACTER VARYING` is `VARCHAR`.
         if (ctx.VARCHAR() != null || ctx.STRING() != null || ctx.TEXT() != null
-                || ctx.NVARCHAR() != null || ctx.NVARCHAR2() != null || ctx.VARYING() != null) {
+                || ctx.NVARCHAR() != null || ctx.NVARCHAR2() != null || ctx.VARCHAR2() != null
+                || ctx.VARYING() != null) {
             DeclaredWidthRules.checkCharacterLength(typeParams);
             return hasTypeLength(typeParams) ? new StringType("VARCHAR", precision)
                 : bareStringDefault == DDL_STRING_DEFAULT
@@ -287,9 +295,9 @@ public final class DataTypeParser {
                         "Duplicate field name '" + name + "'"));
                 }
             }
-            fields.add(new StructuredField(name,
-                nested(field.dataTypeName(), field.typeParameters(), bareStringDefault),
-                field.NOT() != null));
+            final DataType fieldType = nested(field.dataTypeName(), field.typeParameters(), bareStringDefault);
+            IntervalTypeSpec.refuseNested(fieldType, "Object with field type");
+            fields.add(new StructuredField(name, fieldType, field.NOT() != null));
         }
         return fields;
     }

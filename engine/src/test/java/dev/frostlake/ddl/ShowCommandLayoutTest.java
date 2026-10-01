@@ -436,7 +436,7 @@ public class ShowCommandLayoutTest extends BaseDatabaseTest {
             "default_secondary_roles", "ext_authn_duo", "ext_authn_uid", "mins_to_bypass_mfa",
             "owner", "last_success_login", "expires_at_time", "locked_until_time", "has_password",
             "has_rsa_public_key", "type", "has_mfa", "has_pat", "has_workload_identity",
-            "is_from_organization_user"), columnNames(rs));
+            "allowed_interfaces", "is_from_organization_user"), columnNames(rs));
         final Row probe = rowNamed(rs, "USER_PROBE");
         assertNotNull(probe);
         final List<String> names = columnNames(rs);

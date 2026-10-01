@@ -25,7 +25,6 @@ import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 
@@ -69,10 +68,7 @@ public class ToTime extends BuiltInFunction {
         }
         if (v instanceof LocalTime) return v;
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalTime();
-        final String s = v.toString().trim();
-        try { return LocalTime.parse(s); } catch (final Exception ignored) {}
-        try { return LocalTime.parse(s, DateTimeFormatter.ofPattern("HH:mm")); } catch (final Exception ignored) {}
-        throw new RuntimeException("Time '" + s + "' is not recognized");
+        return SharedFunctionHelpers.toLocalTime(v.toString());
     }
 
     /**

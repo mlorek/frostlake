@@ -27,9 +27,12 @@ import java.util.Locale;
 import java.util.zip.GZIPInputStream;
 
 /**
- * Byte access to staged files with transparent gzip: a name ending {@code .gz} reads through a
- * {@link GZIPInputStream}. PUT's default AUTO_COMPRESS lands {@code .gz} files on the stage, and
- * the loaders read them exactly as a real account does.
+ * Byte access to staged files with transparent gzip. The NAME is not the whole story: a name ending
+ * {@code .gz} reads through a {@link GZIPInputStream}, and so does any file whose first two bytes are
+ * gzip's own magic number — which is what an unload written with {@code SINGLE = TRUE} leaves behind,
+ * since the account names that file {@code data} however it was compressed. PUT's default
+ * AUTO_COMPRESS lands {@code .gz} files on the stage, and the loaders read them exactly as a real
+ * account does.
  */
 public final class StagedFileIo {
 
@@ -37,11 +40,25 @@ public final class StagedFileIo {
     }
 
     public static InputStream inputStream(final Path file) throws IOException {
-        final InputStream raw = Files.newInputStream(file);
-        if (file.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".gz")) {
-            return new GZIPInputStream(raw);
+        if (file.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".gz")
+                || isGzipped(file)) {
+            return new GZIPInputStream(Files.newInputStream(file));
         }
-        return raw;
+        return Files.newInputStream(file);
+    }
+
+    /**
+     * Whether a file begins with gzip's magic number, whatever it is called.
+     *
+     * @param file the staged file
+     * @return true when its first two bytes are 0x1f 0x8b
+     * @throws IOException when the file cannot be read
+     */
+    private static boolean isGzipped(final Path file) throws IOException {
+        try (final InputStream head = Files.newInputStream(file)) {
+            final byte[] magic = head.readNBytes(2);
+            return magic.length == 2 && (magic[0] & 0xff) == 0x1f && (magic[1] & 0xff) == 0x8b;
+        }
     }
 
     public static BufferedReader reader(final Path file) throws IOException {

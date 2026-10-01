@@ -20,6 +20,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -39,7 +40,9 @@ public class AddMonths extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
         final Object input = args.get(0);
-        final long months = ((Number) args.get(1)).longValue();
+        // Rounded to a whole count that must fit 32 bits, as DATEADD's month count does (see DateShiftAmount).
+        final long months = DateShiftAmount.within32Bits(
+            DateShiftAmount.rounded(new BigDecimal(args.get(1).toString())));
         // The result type follows the input (live-verified): a DATE input stays DATE, while a VARCHAR
         // input is implicitly cast to TIMESTAMP_NTZ — ADD_MONTHS('2016-01-31', 1) is
         // 2016-02-29 00:00:00, but ADD_MONTHS('2016-01-31'::DATE, 1) is the DATE 2016-02-29 — and a

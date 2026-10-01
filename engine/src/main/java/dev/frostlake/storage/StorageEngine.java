@@ -17,6 +17,7 @@
 package dev.frostlake.storage;
 
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Table;
 
 import java.util.ArrayList;
@@ -27,6 +28,11 @@ import java.util.concurrent.ConcurrentHashMap;
 public class StorageEngine {
 
     private final Map<String, TableStorage> tables;
+    /**
+     * The rows of each PERMANENT table a TEMPORARY table of the same name hides, under that name's key.
+     * The temporary table's rows take the key itself, so every read and write by name reaches them.
+     */
+    private final Map<String, TableStorage> shadowed;
     // Package-private, not private: read by TableStorage, which is a top-level type in this
     // package rather than a nested one.
     boolean enforcePrimaryKey = false;
@@ -34,6 +40,7 @@ public class StorageEngine {
 
     public StorageEngine() {
         this.tables = new ConcurrentHashMap<>();
+        this.shadowed = new ConcurrentHashMap<>();
     }
 
     public void setEnforcePrimaryKey(final boolean enforce) { this.enforcePrimaryKey = enforce; }
@@ -87,6 +94,48 @@ public class StorageEngine {
         return tables.containsKey(qualifiedName);
     }
 
+    /**
+     * Trade the rows a key answers with for the rows hidden under it, either of which may be absent — the
+     * storage half of {@code Schema.swapShadow}.
+     */
+    public void swapShadow(final String qualifiedName) {
+        final TableStorage visible = tables.remove(qualifiedName);
+        final TableStorage hidden = shadowed.remove(qualifiedName);
+        if (hidden != null) {
+            tables.put(qualifiedName, hidden);
+        }
+        if (visible != null) {
+            shadowed.put(qualifiedName, visible);
+        }
+    }
+
+    /** Whether rows are hidden under that key, beneath a temporary table's. */
+    public boolean hasShadowedTable(final String qualifiedName) {
+        return shadowed.containsKey(qualifiedName);
+    }
+
+    /** The rows hidden under that key, beneath a temporary table's. */
+    public TableStorage getShadowedTableStorage(final String qualifiedName) {
+        final TableStorage storage = shadowed.get(qualifiedName);
+        if (storage == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table storage", qualifiedName));
+        }
+        return storage;
+    }
+
+    /** Create empty hidden rows under that key, for a permanent table restored beneath a temporary one. */
+    public void createShadowedTable(final String qualifiedName, final Table tableMetadata) {
+        if (shadowed.containsKey(qualifiedName)) {
+            throw new RuntimeException("Table storage already exists: " + qualifiedName);
+        }
+        shadowed.put(qualifiedName, new TableStorage(this, tableMetadata));
+    }
+
+    /** Release the rows hidden under that key, if any. */
+    public void dropShadowedTable(final String qualifiedName) {
+        shadowed.remove(qualifiedName);
+    }
+
     /** ALTER TABLE a SWAP WITH b: exchange the row storage of two tables (their structure is assumed compatible). */
     public void swapTables(final String fqNameA, final String fqNameB) {
         final TableStorage a = tables.get(fqNameA);
@@ -105,6 +154,65 @@ public class StorageEngine {
         if (storage != null) {
             tables.put(newQualifiedName, storage);
         }
+    }
+
+    /**
+     * ALTER SCHEMA … RENAME TO: move every relation's rows of a renamed or moved schema to the keys its new
+     * database and name give them.
+     *
+     * @param oldDatabase the schema's database before, canonical
+     * @param oldSchema   the schema's name before, canonical
+     * @param newDatabase its database after, canonical
+     * @param newSchema   its name after, canonical
+     */
+    public void renameSchema(final String oldDatabase, final String oldSchema, final String newDatabase,
+                             final String newSchema) {
+        renameSchemaKeys(tables, oldDatabase, oldSchema, newDatabase, newSchema);
+        renameSchemaKeys(shadowed, oldDatabase, oldSchema, newDatabase, newSchema);
+    }
+
+    /**
+     * ALTER DATABASE … RENAME TO: move every relation's rows of the renamed database to the keys its new
+     * name gives them.
+     *
+     * @param oldDatabase the database's name before, canonical
+     * @param newDatabase its name after, canonical
+     */
+    public void renameDatabase(final String oldDatabase, final String newDatabase) {
+        renameDatabaseKeys(tables, oldDatabase, newDatabase);
+        renameDatabaseKeys(shadowed, oldDatabase, newDatabase);
+    }
+
+    private static void renameDatabaseKeys(final Map<String, TableStorage> stores, final String oldDatabase,
+                                           final String newDatabase) {
+        for (final String key : new ArrayList<String>(stores.keySet())) {
+            final String[] parts = QualifiedName.parse(key).parts();
+            if (parts.length == 3 && parts[0].equals(oldDatabase)) {
+                stores.put(QualifiedName.key(newDatabase, parts[1], parts[2]), stores.remove(key));
+            }
+        }
+    }
+
+    private static void renameSchemaKeys(final Map<String, TableStorage> stores, final String oldDatabase,
+                                         final String oldSchema, final String newDatabase, final String newSchema) {
+        for (final String key : new ArrayList<String>(stores.keySet())) {
+            final String[] parts = QualifiedName.parse(key).parts();
+            if (parts.length == 3 && parts[0].equals(oldDatabase) && parts[1].equals(oldSchema)) {
+                stores.put(QualifiedName.key(newDatabase, newSchema, parts[2]), stores.remove(key));
+            }
+        }
+    }
+
+    /**
+     * How many rows a table holds as SHOW TABLES, SHOW OBJECTS and INFORMATION_SCHEMA.TABLES report it:
+     * the rows stored under the key — the visible table's, or with {@code hidden} the permanent table a
+     * temporary one of the same name hides — and 0 when nothing is stored there. A transaction's own
+     * uncommitted writes wait in its write set rather than here, so they are not counted, which is what
+     * live reports inside an open transaction too (live-verified).
+     */
+    public long storedRowCount(final String qualifiedName, final boolean hidden) {
+        final TableStorage storage = hidden ? shadowed.get(qualifiedName) : tables.get(qualifiedName);
+        return storage == null ? 0L : storage.getRowCount();
     }
 
     public TableStorage getTableStorage(final String qualifiedName) {

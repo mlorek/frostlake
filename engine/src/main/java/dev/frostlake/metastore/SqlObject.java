@@ -31,6 +31,8 @@ public abstract class SqlObject implements Taggable {
     protected String comment;
     /** Owning role; defaults to SYSADMIN until stamped with the creating role at CREATE time. */
     protected String owner = "SYSADMIN";
+    /** The user whose DDL created this object, as INFORMATION_SCHEMA's LAST_DDL_BY names it; null when none did. */
+    private String lastDdlBy;
     /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -> value). */
     private final Map<String, String> tags = new HashMap<>();
 
@@ -96,6 +98,23 @@ public abstract class SqlObject implements Taggable {
      */
     public String getOwner() {
         return owner;
+    }
+
+    /**
+     * The user whose DDL created this object — a USER, never a role — or null for an object no statement
+     * created, as INFORMATION_SCHEMA's own views are.
+     * @return the user name, or null
+     */
+    public String getLastDdlBy() {
+        return lastDdlBy;
+    }
+
+    /**
+     * Record the user whose DDL created this object (stamped at CREATE time, restored from a snapshot).
+     * @param lastDdlBy the user name
+     */
+    public void setLastDdlBy(final String lastDdlBy) {
+        this.lastDdlBy = lastDdlBy;
     }
 
     /**

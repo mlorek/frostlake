@@ -16,6 +16,7 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.StatementCount;
 
 import java.sql.SQLException;
@@ -54,6 +55,21 @@ final class JdbcMultiStatement {
     static SQLException countMismatch(final int actual, final int desired) {
         return new SQLException("Actual statement count " + actual
             + " did not match the desired statement count " + desired + ".", "0A000", 8);
+    }
+
+    /**
+     * The refusal for {@code sql} holding {@code actual} statements where {@code desired} were asked for. The
+     * account compiles the text before it counts it (live-verified), so a text that will not parse earns
+     * its syntax error instead, in whichever statement the fault lies and whatever the counts; any other
+     * fault waits for its statement to run, so the count refusal wins over it.
+     */
+    static SQLException countMismatch(final String sql, final int actual, final int desired) {
+        try {
+            QueryExecutor.requireParses(sql);
+        } catch (final RuntimeException syntaxError) {
+            return new SQLException(syntaxError.getMessage(), syntaxError);
+        }
+        return countMismatch(actual, desired);
     }
 
     private static int skipLine(final String s, final int start) {

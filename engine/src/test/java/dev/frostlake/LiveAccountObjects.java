@@ -24,8 +24,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -60,8 +62,13 @@ public final class LiveAccountObjects {
         {"WAREHOUSES", "WAREHOUSE"},
     };
 
-    /** The harness's own working database — recreated per test by the bases, dropped at JVM exit. */
-    private static final String WORKING_DATABASE = "TEST_DB";
+    /**
+     * The harness's own databases, which no teardown drops whatever the baseline says: the working database,
+     * recreated per test by the bases and dropped at JVM exit, and the one holding the account claim, which
+     * outlives every run so the next run can read who holds the account.
+     */
+    private static final Set<String> HARNESS_DATABASES = new HashSet<String>(Arrays.asList(
+        "TEST_DB", LiveAccountClaim.DATABASE));
 
     /** How many names each kind had before the first test ran; a null entry means "could not read". */
     private static List<Set<String>> baseline;
@@ -101,10 +108,11 @@ public final class LiveAccountObjects {
      * Drops every account-level object that is not in the baseline, so the next test starts from the
      * account state the run started with. Best effort: a kind whose {@code SHOW} cannot be read is
      * skipped entirely rather than treated as empty (treating an unreadable listing as empty would
-     * make every existing object look new).
+     * make every existing object look new). Nothing is dropped once this run no longer holds the
+     * account's claim: the objects beyond the baseline are then the holder's.
      */
     public static synchronized void dropNewAccountObjects(final Connection connection) {
-        if (baseline == null) {
+        if (baseline == null || !LiveSnowflake.holdsAccountClaim()) {
             return;
         }
         final List<Set<String>> now = currentNames(connection);
@@ -115,15 +123,24 @@ public final class LiveAccountObjects {
                 continue;
             }
             for (final String name : after) {
-                if (before.contains(name)) {
-                    continue;
-                }
-                if (WORKING_DATABASE.equalsIgnoreCase(name) && "DATABASE".equals(KINDS[i][1])) {
+                if (before.contains(name) || isHarnessObject(KINDS[i][1], name)) {
                     continue;
                 }
                 drop(connection, KINDS[i][1], name);
             }
         }
+    }
+
+    /**
+     * Whether the teardown keeps an account-level object whatever the baseline says: the harness's own
+     * databases, named in any case.
+     *
+     * @param kind the object kind, as its DROP verb spells it
+     * @param name the object's name, as SHOW reports it
+     * @return whether the object belongs to the harness
+     */
+    static boolean isHarnessObject(final String kind, final String name) {
+        return "DATABASE".equals(kind) && HARNESS_DATABASES.contains(name.toUpperCase(Locale.ROOT));
     }
 
     private static List<Set<String>> currentNames(final Connection connection) {

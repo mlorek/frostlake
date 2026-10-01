@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore;
 
+import dev.frostlake.storage.SnapshotSequence;
+
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -34,6 +36,13 @@ public class QueryHistory {
     private final String role;
     private final LocalDateTime startTime;
     private LocalDateTime endTime;
+    // When the statement's changes became visible to other readers: its own completion under autocommit, or
+    // the COMMIT of the explicit transaction it ran in. Null until known, and for a transaction still open.
+    private volatile LocalDateTime visibleFrom;
+    /** The latest snapshot taken when the statement began, in the order of {@link SnapshotSequence}. */
+    private final long startSequence = SnapshotSequence.current();
+    /** The latest snapshot taken once the statement's changes became visible; -1 while they are not. */
+    private volatile long visibleSequence = -1L;
     private QueryStatus status;
     private long executionTimeMs;
     private long rowsProduced;
@@ -44,6 +53,8 @@ public class QueryHistory {
     private StatementKind queryType;
     private int compilationTimeMs;
     private int queuedTimeMs;
+    /** The number of the session that ran the statement — QUERY_HISTORY's SESSION_ID — or null. */
+    private Long sessionId;
 
     public QueryHistory(final String queryText, final String database, final String schema, final String warehouse,
                        final String user, final String role) {
@@ -67,6 +78,16 @@ public class QueryHistory {
         this.compilationTimeMs = 0;
         this.queuedTimeMs = 0;
         this.queryType = determineQueryType(queryText);
+    }
+
+    /** The number of the session that ran the statement, or null when none was known. */
+    public Long getSessionId() {
+        return sessionId;
+    }
+
+    /** Record the session that ran the statement. */
+    public void setSessionId(final Long sessionId) {
+        this.sessionId = sessionId;
     }
 
     /**
@@ -183,6 +204,43 @@ public class QueryHistory {
 
     public String getStartTimeFormatted() {
         return startTime.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+    }
+
+    /**
+     * When this statement's changes became visible: what time travel's {@code AT(STATEMENT => id)} reads at.
+     *
+     * @return the instant, or null while it is unknown
+     */
+    public LocalDateTime getVisibleFrom() {
+        return visibleFrom;
+    }
+
+    public void setVisibleFrom(final LocalDateTime visibleFrom) {
+        this.visibleFrom = visibleFrom;
+    }
+
+    /**
+     * The latest snapshot taken when the statement began: BEFORE(STATEMENT) reads the table as it stood there.
+     *
+     * @return the snapshot sequence number
+     */
+    public long getStartSequence() {
+        return startSequence;
+    }
+
+    /**
+     * The latest snapshot taken once the statement's changes became visible: AT(STATEMENT) reads the table as it
+     * stood there, the statement's own writes included.
+     *
+     * @return the snapshot sequence number, or -1 while the changes are not visible
+     */
+    public long getVisibleSequence() {
+        return visibleSequence;
+    }
+
+    /** Records that the statement's changes are visible as of the latest snapshot taken now. */
+    public void markVisibleSequence() {
+        this.visibleSequence = SnapshotSequence.current();
     }
 
     public LocalDateTime getEndTime() {

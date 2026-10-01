@@ -19,6 +19,7 @@ package dev.frostlake.metastore.model;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 
 public class StreamRecord {
@@ -43,6 +44,45 @@ public class StreamRecord {
         // UTC-domain statement clocks.
         this.timestamp = LocalDateTime.now(ZoneOffset.UTC);
         this.sourceTable = sourceTable;
+    }
+
+    private StreamRecord(final StreamRecord from, final List<Object> values) {
+        this.values = values;
+        this.changeType = from.changeType;
+        this.isUpdate = from.isUpdate;
+        this.rowId = from.rowId;
+        this.timestamp = from.timestamp;
+        this.sourceTable = from.sourceTable;
+    }
+
+    /**
+     * This change without the value at {@code index} — what a record captured before a DROP COLUMN reads
+     * as afterwards: a stream answers its changes through the table's CURRENT columns (live-verified).
+     * Everything else, the capture time included, is kept, so change windows do not move.
+     *
+     * @param index the dropped column's position before the drop
+     * @return the narrowed record, or this one when it is too short to hold that slot
+     */
+    /**
+     * This change with a newly added column's value appended — what a record captured before an ADD COLUMN
+     * reads as afterwards: the column's default, or NULL (live-verified). The capture time is kept.
+     *
+     * @param value the value the new column takes in rows that already exist
+     * @return the widened record
+     */
+    public StreamRecord withSlotAppended(final Object value) {
+        final List<Object> kept = values == null ? new ArrayList<>() : new ArrayList<>(values);
+        kept.add(value);
+        return new StreamRecord(this, kept);
+    }
+
+    public StreamRecord withoutSlot(final int index) {
+        if (values == null || index >= values.size()) {
+            return this;
+        }
+        final List<Object> kept = new ArrayList<>(values);
+        kept.remove(index);
+        return new StreamRecord(this, kept);
     }
 
     public List<Object> getValues() {

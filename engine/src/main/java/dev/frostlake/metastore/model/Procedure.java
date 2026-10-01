@@ -35,7 +35,11 @@ public class Procedure extends SqlObject {
     private List<String> imports = new ArrayList<>();
     // Declared RETURNS TABLE(col TYPE, ...) columns — name the result of a CALL / TABLE(proc()) source.
     private List<Parameter> returnColumns = new ArrayList<>();
+    // RETURNS TABLE, with or without columns: RETURNS TABLE () declares a table of whatever the body returns.
+    private boolean returnsTable = false;
     private boolean temporary = false;
+    private NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
+    private Volatility volatility = Volatility.VOLATILE;
 
     /**
      * A TEMPORARY (TEMP / VOLATILE) procedure lives only as long as the session that created it, the same
@@ -78,6 +82,15 @@ public class Procedure extends SqlObject {
         this.returnColumns = returnColumns != null ? new ArrayList<>(returnColumns) : new ArrayList<>();
     }
 
+    /** Whether the procedure declares RETURNS TABLE — with columns, or none at all. */
+    public boolean returnsTable() {
+        return returnsTable;
+    }
+
+    public void setReturnsTable(final boolean returnsTable) {
+        this.returnsTable = returnsTable;
+    }
+
     public List<Parameter> getParameters() {
         return new ArrayList<>(parameters);
     }
@@ -117,6 +130,27 @@ public class Procedure extends SqlObject {
 
     public String getExecuteAs() {
         return executeAs.name();
+    }
+
+    /**
+     * The declared null handling, as a function's is spelled: {@code STRICT} is RETURNS NULL ON NULL INPUT. A call
+     * with a NULL argument of a procedure that declares it runs no body (see the CALL).
+     */
+    public String getNullHandling() {
+        return nullHandling.getSqlText();
+    }
+
+    public void setNullHandling(final String nullHandling) {
+        this.nullHandling = NullHandling.fromString(nullHandling);
+    }
+
+    /** The declared volatility, {@code VOLATILE} unless IMMUTABLE is. It changes nothing a call does. */
+    public String getVolatility() {
+        return volatility.name();
+    }
+
+    public void setVolatility(final String volatility) {
+        this.volatility = Volatility.fromString(volatility);
     }
 
     public void setExecuteAs(final String executeAs) {

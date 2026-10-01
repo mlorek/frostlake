@@ -16,11 +16,9 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ObjectType;
-import dev.frostlake.values.VariantValue;
-import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 import java.util.Map;
@@ -37,10 +35,10 @@ public class ToObject extends BuiltInFunction {
         final Object v = args.get(0);
         if (v == null) return null;
         if (v instanceof Map) return v;
-        final JsonNode node = ArrayFunctionHelper.parseNode(v);
-        if (node != null && node.isNull()) return null;
-        if (node != null && node.isObject()) return VariantValue.ofNode(node);
-        throw new RuntimeException("TO_OBJECT: argument must be an OBJECT or a VARIANT containing an OBJECT, got: " + v);
+        // The conversion is the cast's: a VARIANT string spelling an object reads as it, and anything else is
+        // "Failed to cast variant value 1 to OBJECT" (live-verified). Other sources were refused while the
+        // statement compiled.
+        return ValueCaster.castValue(v, "OBJECT");
     }
 
     @Override

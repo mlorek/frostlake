@@ -17,16 +17,44 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.transaction.Transaction;
+import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-/** CURRENT_TRANSACTION() — the open transaction id (ids are not exposed; NULL, as Snowflake returns outside a transaction). */
+/**
+ * CURRENT_TRANSACTION() — the open transaction's public id as decimal text, or NULL when none is open.
+ *
+ * <p>Live-verified: inside an open transaction the call answers a string of digits, and outside one it
+ * answers NULL, so {@code CURRENT_TRANSACTION() IS NOT NULL} is the plain test for "am I in a
+ * transaction". Frostlake used to answer NULL always, which made that test read FALSE inside one.
+ */
 public class CurrentTransaction extends BuiltInFunction {
+
+    private TransactionManager transactionManager;
+
     public CurrentTransaction() { super("CURRENT_TRANSACTION", StringType.VARCHAR); }
 
+    /**
+     * Wire the manager holding the session's transaction; the engine does this once both exist.
+     *
+     * @param transactionManager the engine's transaction manager
+     */
+    public void setTransactionManager(final TransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
+    }
+
     @Override
-    public Object evaluate(final List<Object> args) { return null; }
+    public Object evaluate(final List<Object> args) {
+        if (transactionManager == null) {
+            return null;
+        }
+        final Transaction open = transactionManager.getCurrentTransaction();
+        // The transaction's PUBLIC id — the number SHOW TRANSACTIONS and SHOW LOCKS list for it, so a
+        // listing can be filtered by it — never the engine's internal counter.
+        return open == null ? null : String.valueOf(open.getPublicId());
+    }
 
     @Override
     public int getMinArgCount() { return 0; }

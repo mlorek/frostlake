@@ -47,8 +47,8 @@ public class MissingTableSentenceTest extends BaseDatabaseTest {
         }
     }
 
-    private static String missing(final String kind, final String name) {
-        return "SQL compilation error:|" + kind + " '" + name + "' does not exist or not authorized.";
+    private String missing(final String kind, final String name) {
+        return hinted("SQL compilation error:|" + kind + " '" + name + "' does not exist or not authorized.");
     }
 
     @Test

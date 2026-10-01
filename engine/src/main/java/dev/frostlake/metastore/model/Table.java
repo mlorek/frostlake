@@ -18,9 +18,11 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.storage.SnapshotSequence;
 import dev.frostlake.types.DataType;
 import dev.frostlake.values.RelationStatistics;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -48,16 +50,27 @@ public class Table extends SqlObject {
 
 
     private final List<TableColumn> columns;
+    // The highest position ever given to a column of this table; a dropped column's number stays spent.
+    private int highestOrdinal;
     private final List<String> primaryKeys;
     private final List<ForeignKeyConstraint> foreignKeys;
+    // Two indexes over one column list. A column is found by its EXACT name first — "x" and "X" are two
+    // columns, and a name that spells one of them exactly must reach that one — and only then by its
+    // upper-cased fold, which keeps this internal Java API lenient for callers that pass a name in
+    // another case; the fold keeps the FIRST column of each folded spelling.
     private final Map<String, Integer> columnIndex;
+    private final Map<String, Integer> exactColumnIndex;
     private final boolean isTemporary;
     private final boolean isTransient;
     // Declared with CREATE HYBRID TABLE. Frostlake stores hybrid tables as ordinary tables (row storage,
     // constraints not specially enforced); this flag only preserves the declaration for SHOW HYBRID TABLES
     // and the reported kind.
     private boolean hybrid;
-    private long rowCount;
+    // Declared with CREATE EVENT TABLE: the fixed OpenTelemetry column set, reported by SHOW EVENT TABLES.
+    private boolean eventTable;
+    // Declared with CREATE ICEBERG TABLE: the Iceberg metadata SHOW ICEBERG TABLES reports; null for other tables.
+    private IcebergTableMetadata icebergMetadata;
+    private Instant lastDataChange;
     private List<String> clusterKeys;
     // CHECK constraints, in declaration order — the order GET_DDL renders them in.
     private final List<CheckConstraint> checkConstraints = new ArrayList<>();
@@ -77,6 +90,12 @@ public class Table extends SqlObject {
     // Contacts attached for a purpose — ALTER TABLE … SET CONTACT support = c. Purpose (upper) to the
     // contact's fully qualified name. Ordered so the attachments read back in the order they were made.
     private final Map<String, String> contacts = new LinkedHashMap<>();
+
+    /** The table's own stage file format, as written at CREATE TABLE ({@code STAGE_FILE_FORMAT = (...)}). */
+    private final Map<String, String> stageFileFormat = new LinkedHashMap<>();
+
+    /** The table's own stage copy options, as written at CREATE TABLE ({@code STAGE_COPY_OPTIONS = (...)}). */
+    private final Map<String, String> stageCopyOptions = new LinkedHashMap<>();
     private List<String> rowAccessPolicyColumns = new ArrayList<>();  // columns passed to policy
     // Names for the constraints this table carries as column flags rather than as constraint objects: the
     // PRIMARY KEY (one constraint spanning every PK column) and the per-column UNIQUE / inline-REFERENCES
@@ -92,10 +111,14 @@ public class Table extends SqlObject {
     private final List<UniqueConstraint> uniqueConstraints = new ArrayList<>();
     // Whether this instance is the CATALOG's own object for its name — see isCatalogResident().
     private boolean catalogResident;
+    // Set only on a self-join's second instance of a table: the catalog table it was copied from.
+    private Table copiedFrom;
     private String qualifiedName;
     // CHANGE_TRACKING: off on creation; flipped by the table option, ALTER … SET, or the creation
     // of a stream over the table (which enables it implicitly). The CHANGES clause requires it.
     private boolean changeTracking;
+    /** Where change tracking was last turned on; see {@link #getChangeTrackingSince()}. */
+    private long changeTrackingSince;
     private boolean schemaEvolution;
     private boolean reclusterSuspended;
     // Set only on a USING / NATURAL join's merged relation: the join-key column names (upper-cased,
@@ -109,6 +132,8 @@ public class Table extends SqlObject {
     // Set only on a join's merged relation: the relations it joins and which of them an outer join
     // extends with NULLs. Null for every other table.
     private JoinedRelations joinedRelations;
+    // Set only on a staged-file query's relation: which positions a $n reads. Null for every other table.
+    private StagePositions stagePositions;
 
     public Table(final String name, final List<TableColumn> columns, final boolean isTemporary) {
         this(name, columns, isTemporary, false);
@@ -151,6 +176,31 @@ public class Table extends SqlObject {
         this.relationStatistics = relationStatistics;
     }
 
+    /**
+     * The catalog table whose declared types, rows and statistics this instance reads: itself when it is
+     * one, the table a self-join's second instance was copied from, or null for every other derived
+     * relation. A self-join reads the same table twice, and live types and tags both aliases' columns
+     * alike — {@code FROM t a JOIN t b} gives {@code b.n} the NUMBER(10,2)[SB2] {@code a.n} has.
+     *
+     * @return the catalog table beneath this instance, or null
+     */
+    public Table residentSource() {
+        if (catalogResident) {
+            return this;
+        }
+        return copiedFrom != null && copiedFrom.isCatalogResident() ? copiedFrom : null;
+    }
+
+    /**
+     * Mark this instance as a copy of {@code source} made for a self-join, so it reads the source's
+     * declared types and statistics while keeping its own identity in the join.
+     *
+     * @param source the table the copy was made from
+     */
+    public void markCopiedFrom(final Table source) {
+        this.copiedFrom = source;
+    }
+
     /** Called by {@code Schema.addTable} as the table enters the catalog. One-way on purpose: a
      *  dropped table is unreachable from the query path, and a rename re-registers the same instance. */
     public void markCatalogResident() {
@@ -177,24 +227,97 @@ public class Table extends SqlObject {
         this.joinedRelations = joinedRelations;
     }
 
+    /** Which positions a {@code $n} reads over a staged-file query's relation, or null for any other table. */
+    public StagePositions getStagePositions() {
+        return stagePositions;
+    }
+
+    public void setStagePositions(final StagePositions stagePositions) {
+        this.stagePositions = stagePositions;
+    }
+
     public Table(final String name, final List<TableColumn> columns, final boolean isTemporary, final boolean isTransient) {
         super(name);
         this.columns = new ArrayList<>(columns);
         this.primaryKeys = new ArrayList<>();
         this.foreignKeys = new ArrayList<>();
         this.columnIndex = new HashMap<>();
+        this.exactColumnIndex = new HashMap<>();
         this.isTemporary = isTemporary;
         this.isTransient = isTransient;
-        this.rowCount = 0;
         this.clusterKeys = new ArrayList<>();
 
-        // Build column index
+        numberColumns();
+        reindexColumns();
         for (int i = 0; i < columns.size(); i++) {
-            columnIndex.put(columns.get(i).getName().toUpperCase(), i);
             if (columns.get(i).isPrimaryKey()) {
                 primaryKeys.add(columns.get(i).getName());
             }
         }
+    }
+
+    /**
+     * Give every column that has no position yet the next one, and remember the highest position this
+     * table has ever handed out. A column that arrives carrying a position keeps it — that is how a
+     * restored snapshot and a clone bring their gaps with them.
+     */
+    private void numberColumns() {
+        for (final TableColumn column : columns) {
+            if (column.getOrdinalPosition() > 0) {
+                highestOrdinal = Math.max(highestOrdinal, column.getOrdinalPosition());
+            }
+        }
+        for (final TableColumn column : columns) {
+            if (column.getOrdinalPosition() <= 0) {
+                highestOrdinal++;
+                column.setOrdinalPosition(highestOrdinal);
+            }
+        }
+    }
+
+    /**
+     * The highest position this table has ever given a column — kept so a dropped column's number is
+     * never handed out again, and carried through the catalog snapshot.
+     */
+    public int getHighestOrdinal() {
+        return highestOrdinal;
+    }
+
+    /** Restore the high-water mark a snapshot recorded. */
+    public void setHighestOrdinal(final int highestOrdinal) {
+        this.highestOrdinal = Math.max(this.highestOrdinal, highestOrdinal);
+    }
+
+    /** Rebuild both column indexes from the column list. */
+    private void reindexColumns() {
+        columnIndex.clear();
+        exactColumnIndex.clear();
+        for (int i = 0; i < columns.size(); i++) {
+            final String name = columns.get(i).getName();
+            exactColumnIndex.put(name, i);
+            columnIndex.putIfAbsent(name.toUpperCase(), i);
+        }
+    }
+
+    /**
+     * The position of a column: the one spelled exactly as {@code name} when there is one, else the first
+     * whose name folds to the same upper-case spelling, else null.
+     */
+    private Integer indexOf(final String name) {
+        final Integer exact = exactColumnIndex.get(name);
+        return exact != null ? exact : columnIndex.get(name.toUpperCase());
+    }
+
+    /**
+     * Whether a column is spelled EXACTLY {@code name}. SQL resolution matches this way — a reference
+     * names the canonical spelling it resolves to, unquoted upper-cased and quoted verbatim — where the
+     * other accessors also accept a name in another case.
+     *
+     * @param name the canonical name
+     * @return true when a column carries exactly that name
+     */
+    public boolean hasColumnExactly(final String name) {
+        return exactColumnIndex.containsKey(name);
     }
 
     public List<TableColumn> getColumns() {
@@ -230,12 +353,12 @@ public class Table extends SqlObject {
      * exactly as {@link #getColumn} does, through the same index, so the two can never disagree.
      */
     public TableColumn findColumn(final String name) {
-        final Integer index = columnIndex.get(name.toUpperCase());
+        final Integer index = indexOf(name);
         return index == null ? null : columns.get(index);
     }
 
     public TableColumn getColumn(final String name) {
-        final Integer index = columnIndex.get(name.toUpperCase());
+        final Integer index = indexOf(name);
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(name));
         }
@@ -243,7 +366,7 @@ public class Table extends SqlObject {
     }
 
     public int getColumnIndex(final String name) {
-        final Integer index = columnIndex.get(name.toUpperCase());
+        final Integer index = indexOf(name);
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(name));
         }
@@ -251,7 +374,7 @@ public class Table extends SqlObject {
     }
 
     public boolean hasColumn(final String name) {
-        return columnIndex.containsKey(name.toUpperCase());
+        return indexOf(name) != null;
     }
 
     public List<String> getPrimaryKeys() {
@@ -416,7 +539,7 @@ public class Table extends SqlObject {
     /** True when every column a declared constraint spans still exists and is still flagged unique. */
     private boolean spansOnlyUniqueColumns(final UniqueConstraint constraint) {
         for (final String columnName : constraint.getColumnNames()) {
-            final Integer index = columnIndex.get(columnName.toUpperCase());
+            final Integer index = indexOf(columnName);
             if (index == null || !columns.get(index).isUnique()) {
                 return false;
             }
@@ -485,6 +608,26 @@ public class Table extends SqlObject {
         return isTransient;
     }
 
+    /** Whether the table is an event table. */
+    public boolean isEventTable() {
+        return eventTable;
+    }
+
+    /** Marks the table as an event table. */
+    public void setEventTable(final boolean eventTable) {
+        this.eventTable = eventTable;
+    }
+
+    /** The table's Iceberg metadata, or null when it is not an Iceberg table. */
+    public IcebergTableMetadata getIcebergMetadata() {
+        return icebergMetadata;
+    }
+
+    /** Makes the table an Iceberg table with this metadata, or an ordinary one with null. */
+    public void setIcebergMetadata(final IcebergTableMetadata icebergMetadata) {
+        this.icebergMetadata = icebergMetadata;
+    }
+
     public boolean isHybrid() {
         return hybrid;
     }
@@ -498,7 +641,20 @@ public class Table extends SqlObject {
     }
 
     public void setChangeTracking(final boolean changeTracking) {
+        if (changeTracking && !this.changeTracking) {
+            changeTrackingSince = SnapshotSequence.mark();
+        }
         this.changeTracking = changeTracking;
+    }
+
+    /**
+     * Where change tracking was last turned on, in the order table snapshots are taken in: a change to the
+     * table before it went untracked. {@link Long#MAX_VALUE} while tracking is off.
+     *
+     * @return the sequence number, or {@link Long#MAX_VALUE}
+     */
+    public long getChangeTrackingSince() {
+        return changeTracking ? changeTrackingSince : Long.MAX_VALUE;
     }
 
     /**
@@ -522,12 +678,17 @@ public class Table extends SqlObject {
         this.schemaEvolution = schemaEvolution;
     }
 
-    public long getRowCount() {
-        return rowCount;
+    /**
+     * When a statement last wrote this table's rows — an INSERT, UPDATE, DELETE, MERGE, COPY or TRUNCATE —
+     * or null when nothing has written them since the table was made.
+     */
+    public Instant getLastDataChange() {
+        return lastDataChange;
     }
 
-    public void setRowCount(final long rowCount) {
-        this.rowCount = rowCount;
+    /** Records that a statement wrote this table's rows at {@code instant}. */
+    public void markDataChanged(final Instant instant) {
+        this.lastDataChange = instant;
     }
 
     public List<String> getClusterKeys() {
@@ -539,35 +700,54 @@ public class Table extends SqlObject {
     }
 
     public void addColumn(final TableColumn column) {
-        if (columnIndex.containsKey(column.getName().toUpperCase())) {
+        if (exactColumnIndex.containsKey(column.getName())) {
             throw new RuntimeException("Column already exists: " + column.getName());
         }
-        columnIndex.put(column.getName().toUpperCase(), columns.size());
         columns.add(column);
+        numberColumns();
+        reindexColumns();
         if (column.isPrimaryKey()) {
             primaryKeys.add(column.getName());
         }
     }
 
-    public void dropColumn(final String name) {
-        final Integer index = columnIndex.get(name.toUpperCase());
+    /**
+     * Replaces one column in place, keeping its position — the shape change {@code CREATE OR ALTER TABLE}
+     * makes when a column stays but its type, nullability or comment does not.
+     *
+     * @param name    the column
+     * @param replacement the column it becomes
+     */
+    public void replaceColumn(final String name, final TableColumn replacement) {
+        final Integer index = indexOf(name);
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.columnDoesNotExist(name));
         }
+        // The column stays where it was, so it keeps the position it was given.
+        replacement.setOrdinalPosition(columns.get(index).getOrdinalPosition());
+        columns.set(index, replacement);
+        reindexColumns();
+    }
+
+    public void dropColumn(final String name) {
+        final Integer index = indexOf(name);
+        if (index == null) {
+            throw new RuntimeException(SqlCompilationError.columnDoesNotExist(name));
+        }
+        if (columns.get(index).isPrimaryKey()) {
+            // A PRIMARY KEY that spanned the dropped column goes with it, whole, and the columns it
+            // leaves behind keep the NOT NULL it gave them (live-verified).
+            dropPrimaryKey();
+        }
         final TableColumn col = columns.get(index);
         columns.remove((int) index);
-        columnIndex.remove(name.toUpperCase());
         primaryKeys.remove(col.getName());
         forgetColumnConstraintNames(col.getName());
         if (!hasPrimaryKeyColumn()) {
             primaryKeyConstraintName = null;
         }
 
-        // Rebuild index
-        columnIndex.clear();
-        for (int i = 0; i < columns.size(); i++) {
-            columnIndex.put(columns.get(i).getName().toUpperCase(), i);
-        }
+        reindexColumns();
 
         // A UNIQUE constraint that spanned the dropped column goes with it, whole.
         purgeBrokenUniqueConstraints();
@@ -578,11 +758,11 @@ public class Table extends SqlObject {
     }
 
     public void renameColumn(final String oldName, final String newName) {
-        final Integer index = columnIndex.get(oldName.toUpperCase());
+        final Integer index = indexOf(oldName);
         if (index == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Object", oldName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", oldName));
         }
-        if (columnIndex.containsKey(newName.toUpperCase())) {
+        if (exactColumnIndex.containsKey(newName)) {
             // The account treats the rename target as an OBJECT, spelled table.column.
             throw new RuntimeException(SqlCompilationError.of("Object '" + getName().toUpperCase()
                 + "." + newName.toUpperCase() + "' already exists."));
@@ -593,10 +773,11 @@ public class Table extends SqlObject {
                 oldColumn.getDefaultValue(), oldColumn.isPrimaryKey(), oldColumn.isUnique(),
                 oldColumn.isAutoIncrement());
         newColumn.setComment(oldColumn.getComment());
+        // A rename moves the column's name, not its position.
+        newColumn.setOrdinalPosition(oldColumn.getOrdinalPosition());
 
         columns.set(index, newColumn);
-        columnIndex.remove(oldName.toUpperCase());
-        columnIndex.put(newName.toUpperCase(), index);
+        reindexColumns();
 
         // Update primary keys list
         if (oldColumn.isPrimaryKey()) {
@@ -620,7 +801,7 @@ public class Table extends SqlObject {
     }
 
     public void alterColumnType(final String columnName, final DataType newDataType) {
-        final Integer index = columnIndex.get(columnName.toUpperCase());
+        final Integer index = indexOf(columnName);
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(columnName));
         }
@@ -637,7 +818,7 @@ public class Table extends SqlObject {
 
     public void addPrimaryKeyConstraint(final List<String> columnNames) {
         for (final String colName : columnNames) {
-            final Integer index = columnIndex.get(colName.toUpperCase());
+            final Integer index = indexOf(colName);
             if (index == null) {
                 throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName));
             }
@@ -683,7 +864,7 @@ public class Table extends SqlObject {
 
     public void dropUnique(final List<String> columnNames) {
         for (final String colName : columnNames) {
-            final Integer index = columnIndex.get(colName.toUpperCase());
+            final Integer index = indexOf(colName);
             if (index == null) {
                 throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName));
             }
@@ -694,7 +875,7 @@ public class Table extends SqlObject {
 
     /** Clear one column's UNIQUE flag and forget the generated name of its single-column constraint. */
     private void clearUniqueFlag(final String columnName) {
-        final Integer index = columnIndex.get(columnName.toUpperCase());
+        final Integer index = indexOf(columnName);
         if (index != null) {
             final TableColumn oldColumn = columns.get(index);
             if (oldColumn.isUnique()) {
@@ -729,7 +910,7 @@ public class Table extends SqlObject {
             }
         }
         for (final String colName : columnNames) {
-            final Integer index = columnIndex.get(colName.toUpperCase());
+            final Integer index = indexOf(colName);
             if (index != null) {
                 final TableColumn col = columns.get(index);
                 col.setReferencedTable(null);
@@ -759,7 +940,7 @@ public class Table extends SqlObject {
     /** Add an already-built UNIQUE constraint — the CREATE TABLE parse path and snapshot restore. */
     public void addUniqueConstraint(final UniqueConstraint constraint) {
         for (final String colName : constraint.getColumnNames()) {
-            final Integer index = columnIndex.get(colName.toUpperCase());
+            final Integer index = indexOf(colName);
             if (index == null) {
                 throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName));
             }
@@ -912,6 +1093,24 @@ public class Table extends SqlObject {
 
     /** The contacts attached to this table, keyed by purpose. */
     public Map<String, String> getContacts() { return new LinkedHashMap<>(contacts); }
+
+    /**
+     * The stage file format the table was created with, keyed by option name.
+     *
+     * @return the options, empty when none were written
+     */
+    public Map<String, String> getStageFileFormat() {
+        return stageFileFormat;
+    }
+
+    /**
+     * The stage copy options the table was created with, keyed by option name.
+     *
+     * @return the options, empty when none were written
+     */
+    public Map<String, String> getStageCopyOptions() {
+        return stageCopyOptions;
+    }
 
     /** Attach a contact for a purpose, replacing whatever that purpose held. */
     public void setContact(final String purpose, final String contactName) {

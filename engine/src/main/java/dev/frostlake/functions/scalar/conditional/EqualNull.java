@@ -19,6 +19,8 @@ package dev.frostlake.functions.scalar.conditional;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.BooleanType;
+import dev.frostlake.values.DayTimeInterval;
+import dev.frostlake.values.YearMonthInterval;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -46,6 +48,12 @@ public class EqualNull extends BuiltInFunction {
         if (a == null || b == null) return false;
         if (a instanceof Number && b instanceof Number) {
             return new BigDecimal(a.toString()).compareTo(new BigDecimal(b.toString())) == 0;
+        }
+        // Two intervals of one family are the same value when their SPANS are: INTERVAL '1' DAY IS DISTINCT
+        // FROM INTERVAL '24' HOUR is FALSE (live-verified), whatever each prints as.
+        if (a instanceof DayTimeInterval && b instanceof DayTimeInterval
+                || a instanceof YearMonthInterval && b instanceof YearMonthInterval) {
+            return a.equals(b);
         }
         return a.toString().equals(b.toString());
     }

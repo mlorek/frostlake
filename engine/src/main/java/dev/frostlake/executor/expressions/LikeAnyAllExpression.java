@@ -33,6 +33,7 @@ public class LikeAnyAllExpression implements Expression {
     private final boolean caseInsensitive;
     private final Expression escape;
     private SourcePosition position;
+    private PatternRowOperator patternRowOperator;
 
     public LikeAnyAllExpression(final Expression subject, final List<Expression> patterns,
                                 final boolean all, final boolean caseInsensitive, final Expression escape) {
@@ -70,6 +71,21 @@ public class LikeAnyAllExpression implements Expression {
 
     public void setPosition(final SourcePosition position) {
         this.position = position;
+    }
+
+    /**
+     * The value operator written after this predicate's list of several patterns, which that list cannot take,
+     * or null — see {@link PatternRowOperator}. A predicate carrying one is refused while its statement compiles.
+     *
+     * @return the operator, or null
+     */
+    PatternRowOperator getPatternRowOperator() {
+        return patternRowOperator;
+    }
+
+    /** Record the value operator this predicate's list of patterns cannot take — see {@link #getPatternRowOperator}. */
+    void refusePatternRow(final PatternRowOperator operator) {
+        this.patternRowOperator = operator;
     }
 
     @Override

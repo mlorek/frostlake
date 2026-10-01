@@ -1,13 +1,12 @@
 {
   "suite": "features-result-scan",
-  "description": "RESULT_SCAN and LAST_QUERY_ID(): the id is a UUID, RESULT_SCAN(LAST_QUERY_ID()) replays the previous statement's rows, a captured id replays the same result later, successive scans follow successive queries, and a scan can be filtered, joined, aggregated and re-ordered like any relation. The no-argument form scans the most recent query, an unknown id and a malformed id each carry their own wording, LAST_QUERY_ID honours its offset argument, and an offset that resolves to nothing reports no previous query results. Converted 1:1 from features/ResultScanTest (now retired). The empty-history test runs first so the offset resolves to nothing, and skips snowflake as the Java class did.",
+  "description": "RESULT_SCAN and LAST_QUERY_ID(): the id is a UUID, RESULT_SCAN(LAST_QUERY_ID()) replays the previous statement's rows, a captured id replays the same result later, successive scans follow successive queries, and a scan can be filtered, joined, aggregated and re-ordered like any relation. The no-argument form scans the most recent query, an unknown id and a malformed id each carry their own wording, LAST_QUERY_ID honours its offset argument, and an offset that resolves to nothing reports that statement NULL was not found. Converted 1:1 from features/ResultScanTest (now retired). Index 0 names no statement in any session, so the offset that resolves to nothing needs no empty history.",
   "tags": ["features", "converted"],
   "tests": [
-    {"name": "result-scan-over-an-empty-history-reports-no-previous-results",
-     "skip": {"backends": ["snowflake"], "reason": "an empty query history cannot be arranged on the shared live session"},
+    {"name": "result-scan-of-an-index-naming-no-statement-reports-statement-null",
      "steps": [
-      {"sql": "SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-99)))",
-       "expect": {"error": {"messageContains": "No previous query results available"}}}
+      {"sql": "SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(0)))",
+       "expect": {"error": {"messageContains": "Statement NULL not found"}}}
     ]},
     {"name": "last-query-id", "steps": [
       {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},

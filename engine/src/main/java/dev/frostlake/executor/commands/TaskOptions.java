@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.task.CronSchedule;
+import dev.frostlake.task.IntervalSchedule;
 
 import java.time.ZonedDateTime;
 
@@ -67,12 +68,15 @@ final class TaskOptions {
     }
 
     /**
-     * A task SCHEDULE is either {@code '<n> MINUTE[S]'} with a positive count, or
+     * A task or alert SCHEDULE is either an interval — {@code '<n> SECOND[S]'}, {@code '<n> S'},
+     * {@code '<n> MINUTE[S]'}, {@code '<n> M'}, {@code '<n> HOUR[S]'} or {@code '<n> H'}, the unit in any case
+     * (see {@link IntervalSchedule}) — or
      * {@code 'USING CRON <minute> <hour> <day-of-month> <month> <day-of-week> <time zone>'}.
-     * Anything else — a zero interval included — refuses with the account's one sentence for
-     * every malformed shape, live-verified. A CRON expression is held to the account's full field
-     * grammar (see {@link CronSchedule}), and one that is well formed but names no instant at all —
-     * February 31st — is refused with its own sentence.
+     * Anything else — a zero interval, a space before the count or a second one before the unit included —
+     * refuses with the account's one sentence for every malformed shape; an interval of one to nine seconds is
+     * refused as shorter than ten seconds, and one longer than 11,520 minutes as greater than that. A CRON
+     * expression is held to the account's full field grammar (see {@link CronSchedule}), and one that is well formed
+     * but names no instant at all — February 31st — is refused with its own sentence.
      */
     static void requireValidSchedule(final String schedule) {
         final String trimmed = schedule == null ? "" : schedule.trim();
@@ -84,8 +88,15 @@ final class TaskOptions {
             }
             return;
         }
-        if (!upper.matches("[0-9]+\\s+MINUTES?") || Long.parseLong(upper.split("\\s+")[0]) < 1L) {
+        final Long millis = IntervalSchedule.millis(schedule);
+        if (millis == null || millis <= 0L) {
             throw new RuntimeException(invalidScheduleMessage());
+        }
+        if (millis < IntervalSchedule.MINIMUM_SECONDS * 1000L) {
+            throw new RuntimeException(IntervalSchedule.TOO_SHORT_MESSAGE);
+        }
+        if (millis > IntervalSchedule.MAXIMUM_SECONDS * 1000L) {
+            throw new RuntimeException(IntervalSchedule.TOO_LONG_MESSAGE);
         }
     }
 

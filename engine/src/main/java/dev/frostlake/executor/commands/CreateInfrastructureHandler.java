@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.FileFormatReference;
 import dev.frostlake.executor.FileFormatSurfaces;
 import dev.frostlake.executor.ParseTreeText;
@@ -24,7 +25,9 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.InstanceFamilies;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
 import dev.frostlake.metastore.model.ContainerType;
@@ -32,7 +35,6 @@ import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
-import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
@@ -43,6 +45,7 @@ import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.task.TaskGraphs;
 
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -95,141 +98,78 @@ public class CreateInfrastructureHandler implements CommandHandler {
             ddl.checkCreatePrivilege(Privilege.CREATE_TASK, ContainerType.SCHEMA,
                 ddl.resolveSchemaFromQualifiedName(taskQualifiedName).getName());
             if (orReplace) {
-                try {
-                    ddl.resolveSchemaFromQualifiedName(taskQualifiedName).dropTask(taskName);
-                } catch (final RuntimeException ignored) {}
+                queryExecutor.requireOwnership("TASK", qualifiedNameParts(ctx.qualifiedName(0)), null);
             }
-            final String warehouse = ctx.warehouseClause() != null ? ddl.extractWarehouseName(ctx.warehouseClause()) : null;
-            // Live validates the reference at CREATE time, with its own phrasing for tasks.
-            WarehouseReference.requireForTask(catalog, warehouse);
+            final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQualifiedName);
+            final String sqlText = taskBodyText(ctx.taskBody());
 
-            // Schedule is now inside taskOptions
-            String schedule = null;
-            ScheduleType scheduleType = null;
-
-            final List<String> predecessors = new ArrayList<>();
-            if (ctx.afterClause() != null) {
-                for (final FrostlakeParser.QualifiedNameContext qn : ctx.afterClause().qualifiedName()) {
-                    predecessors.add(getText(qn).toUpperCase());
-                }
+            // The first step reads the statement alone — a property named twice, a name no task carries, a
+            // value of the wrong kind, a warehouse, integration or user that does not exist — and refuses even
+            // when IF NOT EXISTS finds the task already there (live-verified).
+            final List<TaskPropertySetting> settings = new ArrayList<>();
+            if (ctx.warehouseClause() != null) {
+                settings.add(TaskProperties.warehouseSetting(ctx.warehouseClause(),
+                    ddl.extractWarehouseName(ctx.warehouseClause())));
             }
-
-            final String sqlText;
-            if (ctx.taskBody().sqlStatement() != null) {
-                sqlText = ddl.getOriginalText(ctx.taskBody().sqlStatement());
-            } else if (ctx.taskBody().callStatement() != null) {
-                sqlText = ddl.getOriginalText(ctx.taskBody().callStatement());
-            } else if (ctx.taskBody().executeImmediateStatement() != null) {
-                sqlText = ddl.getOriginalText(ctx.taskBody().executeImmediateStatement());
-            } else if (ctx.taskBody().beginEndBlock() != null) {
-                // A Snowflake Scripting block body: kept as its own text and re-issued when the task
-                // runs, exactly like every other body shape.
-                sqlText = ddl.getOriginalText(ctx.taskBody().beginEndBlock());
-            } else {
-                throw new RuntimeException("Task body is required");
-            }
-
-            // Parse taskOptions first to extract schedule before constructing Task
-            boolean allowOverlapping = false;
-            long timeoutMs = 3600000L;
-            String optionComment = null;
-            int suspendAfterFailures = 10;
-            int autoRetryAttempts = 0;
-            String managedWarehouseSize = null;
-            String serverlessMaxStmtSize = null;
-            String targetInterval = null;
-            String errorIntegration = null;
-            int minTriggerInterval = 30;
-            // Which parameters the DDL names, so SHOW PARAMETERS can tell a TASK-level value from a default.
-            final List<String> setParameters = new ArrayList<>();
             if (ctx.taskOptions() != null) {
-                // A task option may be given ONCE (live-verified on SCHEDULE). The option's name is
-                // its first token, read off the parse tree rather than the statement text.
-                final List<String> taskKeys = new ArrayList<>();
-                for (final FrostlakeParser.TaskOptionContext opt : ctx.taskOptions().taskOption()) {
-                    taskKeys.add(opt.getStart().getText());
-                }
-                PropertyDuplicates.reject(taskKeys);
-                for (final FrostlakeParser.TaskOptionContext opt : ctx.taskOptions().taskOption()) {
-                    if (opt.scheduleClause() != null) {
-                        schedule = ddl.extractStringLiteral(opt.scheduleClause().STRING_LITERAL());
-                        scheduleType = schedule.toUpperCase().contains("CRON")
-                            ? ScheduleType.CRON : ScheduleType.MINUTES;
-                        TaskOptions.requireValidSchedule(schedule);
-                    } else if (opt.ALLOW_OVERLAPPING_EXECUTION() != null) {
-                        allowOverlapping = "TRUE".equalsIgnoreCase(opt.booleanValue().getText());
-                    } else if (opt.USER_TASK_TIMEOUT_MS() != null) {
-                        setParameters.add("USER_TASK_TIMEOUT_MS");
-                        timeoutMs = Long.parseLong(opt.INTEGER_LITERAL().getText());
-                    } else if (opt.SUSPEND_TASK_AFTER_NUM_FAILURES() != null) {
-                        setParameters.add("SUSPEND_TASK_AFTER_NUM_FAILURES");
-                        suspendAfterFailures = Integer.parseInt(opt.INTEGER_LITERAL().getText());
-                    } else if (opt.TASK_AUTO_RETRY_ATTEMPTS() != null) {
-                        setParameters.add("TASK_AUTO_RETRY_ATTEMPTS");
-                        autoRetryAttempts = Integer.parseInt(opt.INTEGER_LITERAL().getText());
-                    } else if (opt.USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE() != null) {
-                        setParameters.add("USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE");
-                        managedWarehouseSize = ddl.extractStringLiteral(opt.STRING_LITERAL());
-                    } else if (opt.SERVERLESS_TASK_MAX_STATEMENT_SIZE() != null) {
-                        setParameters.add("SERVERLESS_TASK_MAX_STATEMENT_SIZE");
-                        serverlessMaxStmtSize = opt.STRING_LITERAL() != null
-                            ? ddl.extractStringLiteral(opt.STRING_LITERAL())
-                            : (opt.identifier() != null ? getText(opt.identifier()) : null);
-                    } else if (opt.TARGET_COMPLETION_INTERVAL() != null) {
-                        targetInterval = ddl.extractStringLiteral(opt.STRING_LITERAL());
-                    } else if (opt.USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS() != null) {
-                        setParameters.add("USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS");
-                        minTriggerInterval = Integer.parseInt(opt.INTEGER_LITERAL().getText());
-                    } else if (opt.ERROR_INTEGRATION() != null) {
-                        errorIntegration = getText(opt.identifier());
-                    } else if (opt.COMMENT() != null) {
-                        optionComment = ddl.extractStringLiteral(opt.STRING_LITERAL());
-                    }
-                }
+                settings.addAll(TaskProperties.settings(ctx.taskOptions().taskOption()));
+            }
+            final TaskProperties properties = new TaskProperties(catalog, schema);
+            properties.compile(settings);
+            final Task task = new Task(taskName, null, null, sqlText, null);
+            task.setOwner(FutureGrants.ownerOfNew(catalog, "TASK", schema, task.getName()));
+            String runAs = null;
+            if (ctx.taskExecuteAs() != null) {
+                runAs = TaskProperties.runAsUser(ctx.taskExecuteAs(), queryExecutor);
+                properties.requireRunAsUser(task, runAs);
+            }
+            if (ifNotExists && hasTaskNamed(schema, taskName)) {
+                logger.debug("Task already exists (IF NOT EXISTS): {}", taskName);
+                return null;
             }
 
-            // Snowflake: a task is scheduled OR a DAG child, never both.
-            if (!predecessors.isEmpty() && schedule != null) {
-                throw new RuntimeException(
-                    "Task " + taskName.toUpperCase()
-                        + " cannot have both a schedule and a predecessor.");
-            }
-
-            // A task with a WAREHOUSE is not serverless, so the serverless-only options are refused.
-            TaskOptions.rejectServerlessOptionsOnWarehouseTask(warehouse, managedWarehouseSize,
-                serverlessMaxStmtSize, targetInterval,
-                ddl.resolveSchemaFromQualifiedName(taskQualifiedName), taskName);
-
-            final Task task = new Task(taskName, schedule, scheduleType, sqlText, warehouse);
+            // The second step weighs the values and the graph. A task being replaced stays until the new one
+            // has passed every check, so a refused statement leaves it as it was.
             task.setCreatedByUser(catalog.currentUserForStage());
-            for (final String setParameter : setParameters) {
-                task.markParameterSet(setParameter);
-            }
-            for (final String pred : predecessors) task.addPredecessor(pred);
-            task.setAllowOverlappingExecution(allowOverlapping);
-            task.setUserTaskTimeoutMs(timeoutMs);
-            task.setSuspendTaskAfterNumFailures(suspendAfterFailures);
-            task.setTaskAutoRetryAttempts(autoRetryAttempts);
-            if (managedWarehouseSize != null) task.setUserTaskManagedInitialWarehouseSize(managedWarehouseSize);
-            if (serverlessMaxStmtSize != null) task.setServerlessTaskMaxStatementSize(serverlessMaxStmtSize);
-            if (targetInterval != null) task.setTargetCompletionInterval(targetInterval);
-            if (errorIntegration != null) task.setErrorIntegration(errorIntegration);
-            task.setUserTaskMinimumTriggerIntervalInSeconds(minTriggerInterval);
-
+            properties.apply(task, settings);
+            task.setExecuteAsUser(runAs);
             if (ctx.WHEN() != null && ctx.booleanExpr() != null) {
                 task.setCondition(ddl.getOriginalText(ctx.booleanExpr()));
             }
-
-            // Prefer COMMENT from taskOptions; fall back to standalone commentClause
-            if (optionComment != null) {
-                task.setComment(optionComment);
-            } else {
+            // A COMMENT among the options wins over a standalone comment clause.
+            if (task.getComment() == null) {
                 final String comment = ddl.extractCommentFromList(ctx.commentClause());
-                if (comment != null) task.setComment(comment);
+                if (comment != null) {
+                    task.setComment(comment);
+                }
             }
-
-            final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQualifiedName);
-            task.setOwner(catalog.currentRoleForOwner());
+            properties.requireConsistentOverlap();
+            final List<FrostlakeParser.QualifiedNameContext> after = ctx.afterClause() != null
+                ? ctx.afterClause().qualifiedName() : new ArrayList<FrostlakeParser.QualifiedNameContext>();
+            for (final FrostlakeParser.QualifiedNameContext predecessor : after) {
+                task.addPredecessor(getText(predecessor).toUpperCase());
+            }
+            properties.requireScheduleFits(task);
+            if (properties.finalizeGiven()) {
+                properties.requireFinalizer(task);
+            }
+            if (orReplace && !after.isEmpty() && TaskGraphs.finalizerOf(schema, task) != null) {
+                throw new RuntimeException("Cannot replace task " + schema.getDatabaseName() + "." + schema.getName()
+                    + "." + task.getName() + " with a non-root task because it has a finalizer task. Please remove "
+                    + "the finalizer task first.");
+            }
+            if (!after.isEmpty()) {
+                final List<String> resolved = properties.requirePredecessors(task, after);
+                task.getPredecessors().clear();
+                for (final String predecessor : resolved) {
+                    task.addPredecessor(predecessor);
+                }
+            }
+            properties.requireRootSettings(task);
+            properties.requireServerlessSettings(task);
+            if (orReplace && hasTaskNamed(schema, taskName)) {
+                schema.dropTask(taskName);
+            }
             schema.addTask(task);
             logger.trace("Created task: {}", taskQualifiedName);
         } catch (final RuntimeException e) {
@@ -239,22 +179,62 @@ public class CreateInfrastructureHandler implements CommandHandler {
         return null;
     }
 
+    /** The SQL a task body runs, as written: a statement, a CALL, an EXECUTE IMMEDIATE or a scripting block. */
+    private String taskBodyText(final FrostlakeParser.TaskBodyContext body) {
+        if (body.sqlStatement() != null) {
+            return ddl.getOriginalText(body.sqlStatement());
+        }
+        if (body.callStatement() != null) {
+            return ddl.getOriginalText(body.callStatement());
+        }
+        if (body.executeImmediateStatement() != null) {
+            return ddl.getOriginalText(body.executeImmediateStatement());
+        }
+        if (body.beginEndBlock() != null) {
+            // A Snowflake Scripting block body: kept as its own text and re-issued when the task
+            // runs, exactly like every other body shape.
+            return ddl.getOriginalText(body.beginEndBlock());
+        }
+        throw new RuntimeException("Task body is required");
+    }
+
+    /** Whether the schema holds a task of exactly that name. */
+    private static boolean hasTaskNamed(final Schema schema, final String name) {
+        for (final Task candidate : schema.getTasks()) {
+            if (candidate.getName().equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Object handleCreatePipe(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
-        final String pipeName = getText(ctx.qualifiedName(0));
+        final String pipeQualifiedName = getText(ctx.qualifiedName(0));
+        final Schema pipeSchema = catalog.resolveOwningSchema(pipeQualifiedName);
+        final String pipeName = QualifiedName.parse(pipeQualifiedName).last();
         if (ctx.or_replace() != null) {
-            try { ddl.resolveCurrentSchema().dropPipe(pipeName); } catch (final RuntimeException ignored) {}
+            queryExecutor.requireOwnership("PIPE", qualifiedNameParts(ctx.qualifiedName(0)), null);
+            try { pipeSchema.dropPipe(pipeName); } catch (final RuntimeException ignored) {}
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, ContainerType.SCHEMA, ddl.resolveCurrentSchema().getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, ContainerType.SCHEMA, pipeSchema.getName());
             // Extract COPY statement text
             final String copyStatement = ddl.getOriginalText(ctx.copyStatement());
-            validatePipeCopyBody(ctx.copyStatement());
+            // The COPY's names resolve in the pipe's schema, as they do when the pipe loads.
+            final String[] priorScope = catalog.currentSessionScope();
+            catalog.beginSessionScope(pipeSchema.getDatabaseName(), pipeSchema.getName());
+            try {
+                validatePipeCopyBody(ctx.copyStatement());
+            } finally {
+                catalog.restoreSessionScope(priorScope);
+            }
 
             // Parse pipe options
             boolean autoIngest = false;
             String awsSnsTopicArn = null;
             String errorIntegration = null;
             String integration = null;
+            String optionComment = null;
 
             if (ctx.pipeOptions() != null) {
                 for (final FrostlakeParser.PipeOptionContext optionCtx : ctx.pipeOptions().pipeOption()) {
@@ -263,11 +243,21 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     } else if (optionCtx.AWS_SNS_TOPIC() != null) {
                         awsSnsTopicArn = ddl.extractStringLiteral(optionCtx.STRING_LITERAL());
                     } else if (optionCtx.ERROR_INTEGRATION() != null) {
-                        errorIntegration = ddl.extractStringLiteral(optionCtx.STRING_LITERAL());
+                        errorIntegration = optionCtx.STRING_LITERAL() != null
+                            ? ddl.extractStringLiteral(optionCtx.STRING_LITERAL())
+                            : getText(optionCtx.identifier());
                     } else if (optionCtx.INTEGRATION() != null) {
                         integration = ddl.extractStringLiteral(optionCtx.STRING_LITERAL());
+                    } else if (optionCtx.COMMENT() != null) {
+                        optionComment = ddl.extractStringLiteral(optionCtx.STRING_LITERAL());
                     }
                 }
+            }
+
+            // An SNS topic feeds automatic ingestion: without AUTO_INGEST = TRUE the pipe is refused.
+            if (awsSnsTopicArn != null && !autoIngest) {
+                throw new RuntimeException("Pipe Notifications bind failure \"Cannot set AWS SNS topic for pipe without"
+                    + " auto_ingest\"");
             }
 
             // Create pipe with notification channel if AWS SNS topic is provided
@@ -286,14 +276,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 pipe.setIntegration(integration);
             }
 
-            final String comment = ddl.extractCommentFromList(ctx.commentClause());
+            final String comment = optionComment != null ? optionComment
+                : ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 pipe.setComment(comment);
             }
 
-            final Schema schema = ddl.resolveCurrentSchema();
-            pipe.setOwner(catalog.currentRoleForOwner());
-            schema.addPipe(pipe);
+            pipe.setOwner(FutureGrants.ownerOfNew(catalog, "PIPE", pipeSchema, pipe.getName()));
+            pipeSchema.addPipe(pipe);
             logger.trace("Created pipe: {}", pipeName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
@@ -431,7 +421,12 @@ public class CreateInfrastructureHandler implements CommandHandler {
     public Object handleCreateSequence(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String sequenceQualifiedName = getText(ctx.qualifiedName(0));
         final String sequenceName = ddl.extractObjectName(sequenceQualifiedName);
+        // A clone continues from where its source stands: the same next value, step, ordering and comment.
+        final Sequence cloneSource = ctx.CLONE() == null ? null
+            : ddl.resolveSchemaFromQualifiedName(getText(ctx.qualifiedName(1)))
+                .getSequence(ddl.extractObjectName(getText(ctx.qualifiedName(1))));
         if (ctx.or_replace() != null) {
+            queryExecutor.requireOwnership("SEQUENCE", qualifiedNameParts(ctx.qualifiedName(0)), null);
             try { ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName).dropSequence(sequenceName); } catch (final RuntimeException ignored) {}
         }
         try {
@@ -480,11 +475,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     }
                 }
             }
-            final Sequence sequence = new Sequence(sequenceName, startValue, increment, order, comment);
+            final Sequence sequence = cloneSource != null
+                ? new Sequence(sequenceName, cloneSource.peekNextValue(), cloneSource.getIncrement(),
+                    cloneSource.isOrder(), cloneSource.getComment())
+                : new Sequence(sequenceName, startValue, increment, order, comment);
 
             final Schema schema = ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName);
             ddl.checkCreatePrivilege(Privilege.CREATE_SEQUENCE, ContainerType.SCHEMA, schema.getName());
-            sequence.setOwner(catalog.currentRoleForOwner());
+            sequence.setOwner(FutureGrants.ownerOfNew(catalog, "SEQUENCE", schema, sequence.getName()));
             schema.addSequence(sequence);
             logger.trace("Created sequence: {} with START={}, INCREMENT={}", sequenceQualifiedName, startValue, increment);
         } catch (final RuntimeException e) {
@@ -594,11 +592,34 @@ public class CreateInfrastructureHandler implements CommandHandler {
             pool.setApplication(getText(ctx.identifier(1)));
         }
         if (ctx.tagList() != null) {
-            InlineTags.apply(pool, ctx.tagList());
+            InlineTags.apply(pool, ctx.tagList(), queryExecutor);
         }
         catalog.createComputePool(pool);
         logger.trace("Created compute pool: {}", poolName);
         return null;
+    }
+
+    /**
+     * What a warehouse's type implies at creation: a Snowpark-optimized warehouse is MEDIUM unless the statement
+     * sizes it or gives it a 1X memory constraint, and an adaptive warehouse takes no INITIALLY_SUSPENDED.
+     */
+    private static void applyWarehouseTypeDefaults(final Warehouse warehouse,
+                                                   final FrostlakeParser.WarehousePropertiesContext properties) {
+        boolean sized = false;
+        for (final FrostlakeParser.WarehousePropertyContext property : properties.warehouseProperty()) {
+            if (property.WAREHOUSE_SIZE() != null) {
+                sized = true;
+            }
+            if (property.INITIALLY_SUSPENDED() != null && "ADAPTIVE".equals(warehouse.getWarehouseType())) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "invalid property 'INITIALLY_SUSPENDED' for 'WAREHOUSE'"));
+            }
+        }
+        // The 16X default constraint needs a MEDIUM warehouse; a 1X one stays X-Small.
+        if (!sized && "SNOWPARK-OPTIMIZED".equals(warehouse.getWarehouseType())
+                && !warehouse.getResourceConstraint().startsWith("MEMORY_1X")) {
+            warehouse.setSize(WarehouseSize.MEDIUM);
+        }
     }
 
     public Object handleCreateWarehouse(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
@@ -616,13 +637,22 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             final Warehouse warehouse = catalog.getWarehouse(warehouseName);
             if (ctx.warehouseProperties() != null) {
-                ddl.applyWarehouseProperties(warehouse, ctx.warehouseProperties());
+                try {
+                    ddl.applyWarehouseProperties(warehouse, ctx.warehouseProperties());
+                    applyWarehouseTypeDefaults(warehouse, ctx.warehouseProperties());
+                } catch (final RuntimeException refused) {
+                    // A refused property leaves no warehouse behind.
+                    catalog.dropWarehouse(warehouseName);
+                    throw refused;
+                }
             }
 
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 warehouse.setComment(comment);
             }
+            // A new warehouse becomes the session's current warehouse.
+            catalog.useWarehouse(warehouseName);
 
             logger.trace("Created warehouse: {}", warehouseName);
         } catch (final RuntimeException e) {
@@ -677,6 +707,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     public Object handleCreateStage(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String stageName = getText(ctx.qualifiedName(0));
         if (ctx.or_replace() != null) {
+            queryExecutor.requireOwnership("STAGE", qualifiedNameParts(ctx.qualifiedName(0)), null);
             try { catalog.dropStage(stageName); } catch (final RuntimeException ignored) {}
         }
         try {
@@ -848,8 +879,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 // OR REPLACE over a name that is not taken.
             }
         }
-        if (ifNotExists && existingCortexSearchService(serviceName)) {
-            return null;
+        if (ctx.or_replace() == null && existingCortexSearchService(serviceName)) {
+            if (ifNotExists) {
+                ConditionalDdlOutcome.createSkipped();
+                return null;
+            }
+            final String[] existingParts = qualifiedNameParts(ctx.qualifiedName(0));
+            throw new RuntimeException(SqlCompilationError.of("Object '"
+                + SqlIdentifiers.spellCanonical(existingParts[existingParts.length - 1]) + "' already exists."));
         }
 
         final String definition = ddl.getOriginalText(ctx.selectStatement());
@@ -910,6 +947,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String[] nameParts = qualifiedNameParts(ctx.qualifiedName(0));
         final String simpleName = nameParts[nameParts.length - 1];
         if (ctx.or_replace() != null) {
+            queryExecutor.requireOwnership("FILE_FORMAT", nameParts, null);
             try {
                 catalog.dropFileFormat(name);
             } catch (final RuntimeException ignored) {
@@ -920,6 +958,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             ddl.checkCreatePrivilege(Privilege.CREATE_FILE_FORMAT, ContainerType.SCHEMA,
                 ddl.resolveSchemaFromQualifiedName(name).getName());
             final FileFormat fileFormat = new FileFormat(simpleName, "CSV");
+            fileFormat.setOwner(catalog.currentRoleForOwner());
             applyFileFormatOptions(fileFormat, ctx.copyFormatOption());
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
@@ -1043,18 +1082,21 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     fileFormat.setOption(optionName.toUpperCase(), value);
                 }
             } else if (opt.identifier() != null && opt.LPAREN() != null) {
-                // A string-list option such as NULL_IF = ('\\N', '') — store the values comma-joined so the
-                // named format round-trips without a parse error (COPY applies NULL_IF from its inline form).
-                final StringBuilder joined = new StringBuilder();
+                // A string-list option such as NULL_IF = ('\\N', '') — NULL_IF keeps each value whole (see
+                // FileFormat.getNullIfValues); any other list is stored comma-joined so the named format
+                // round-trips without a parse error (COPY applies NULL_IF from its inline form).
+                final List<String> values = new ArrayList<>();
                 if (opt.stringLiteralList() != null) {
                     for (final TerminalNode node : opt.stringLiteralList().STRING_LITERAL()) {
-                        if (joined.length() > 0) {
-                            joined.append(',');
-                        }
-                        joined.append(ddl.extractStringLiteral(node));
+                        values.add(ddl.extractStringLiteral(node));
                     }
                 }
-                fileFormat.setOption(getText(opt.identifier()).toUpperCase(), joined.toString());
+                final String optionName = getText(opt.identifier()).toUpperCase();
+                if ("NULL_IF".equals(optionName)) {
+                    fileFormat.setNullIfValues(values);
+                } else {
+                    fileFormat.setOption(optionName, String.join(",", values));
+                }
             }
         }
         // Cross-type membership fires against the EFFECTIVE type, wherever TYPE sat in the list.

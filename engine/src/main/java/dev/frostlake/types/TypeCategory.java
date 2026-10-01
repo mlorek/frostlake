@@ -21,5 +21,5 @@ package dev.frostlake.types;
  */
 public enum TypeCategory {
     NUMERIC, STRING, BINARY, BOOLEAN, DATE_TIME,
-    SEMI_STRUCTURED, GEOSPATIAL, VECTOR
+    SEMI_STRUCTURED, GEOSPATIAL, VECTOR, INTERVAL
 }

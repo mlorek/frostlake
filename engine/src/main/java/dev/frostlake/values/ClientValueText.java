@@ -72,6 +72,11 @@ public final class ClientValueText {
             if (value instanceof String) {
                 return VariantJsonText.unwrappedStringText((String) value);
             }
+            if (SharedFunctionHelpers.isNativeTemporal(value)) {
+                // A temporal held in a VARIANT is a JSON string of its variant text: "2024-01-15",
+                // "20201-01-15" past 9999 and "-1-01-01" before year one (live-verified).
+                return VariantJsonText.unwrappedStringText(SharedFunctionHelpers.variantTemporalText(value));
+            }
         }
         // A container already displays its DOUBLEs the account's way; the whole-value double and the
         // one read out unwrapped are the two spelled here.

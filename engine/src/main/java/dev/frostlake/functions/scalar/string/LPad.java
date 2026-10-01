@@ -16,10 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
 
 import java.util.Arrays;
 import java.util.List;
@@ -47,19 +49,11 @@ public class LPad extends TextArgumentFunction {
 
         // Live-verified: an input longer than the target length is TRUNCATED to it (LPAD('world', 3, '*')
         // is 'wor'), not returned unchanged.
-        if (str.length() >= targetLength) return str.substring(0, Math.max(targetLength, 0));
+        // Lengths count characters, a supplementary one included: LPAD('😀', 3, 'x') is xx😀.
+        final int characters = CodePointText.length(str);
+        if (characters >= targetLength) return CodePointText.slice(str, 0, Math.max(targetLength, 0));
         if (padStr.isEmpty()) return str;
-
-        final int padLength = targetLength - str.length();
-        final StringBuilder result = new StringBuilder();
-
-        while (result.length() < padLength) {
-            result.append(padStr);
-        }
-        result.setLength(padLength);
-        result.append(str);
-
-        return result.toString();
+        return CodePointText.repeatTo(padStr, targetLength - characters) + str;
     }
 
     /** The BINARY form: pad bytes on the left, truncating to the leading bytes when already longer. */
@@ -88,4 +82,10 @@ public class LPad extends TextArgumentFunction {
 
     @Override
     public int getMaxArgCount() { return 3; }
+
+    /** A BOOLEAN length is refused by the argument types as the call compiles (live-verified). */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

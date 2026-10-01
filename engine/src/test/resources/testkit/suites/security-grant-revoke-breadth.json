@@ -28,7 +28,9 @@
       {"sql": "CREATE OR REPLACE USER breadth_user"},
       {"sql": "CREATE TABLE breadth_t (id INTEGER)"},
       {"sql": "GRANT SELECT ON FUTURE TABLES IN SCHEMA test_schema TO ROLE breadth_role"},
-      {"sql": "SHOW GRANTS TO ROLE breadth_role", "expect": {"rowCount": 1}},
+      {"sql": "SHOW GRANTS TO ROLE breadth_role", "expect": {"rowCount": 0}},
+      {"sql": "SHOW FUTURE GRANTS TO ROLE breadth_role", "expect": {"rowCount": 1}},
+      {"sql": "SHOW FUTURE GRANTS IN SCHEMA test_schema", "expect": {"rowCount": 1}},
       {"sql": "DROP USER breadth_user"},
       {"sql": "DROP ROLE breadth_role"}
     ]},

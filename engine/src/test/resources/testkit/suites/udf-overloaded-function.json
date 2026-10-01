@@ -53,7 +53,7 @@
     ]},
     {"name": "dropping-a-signature-that-does-not-exist-is-refused", "steps": [
       {"sql": "CREATE FUNCTION sample_fn(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Sample.method'\nAS $$\nclass Sample {\n  public static int method(int x) {\n    return x;\n  }\n}\n$$"},
-      {"sql": "DROP FUNCTION sample_fn(STRING)", "expect": {"error": {"messageContains": "Function SAMPLE_FN with specified parameter types does not exist"}}},
+      {"sql": "DROP FUNCTION sample_fn(STRING)", "expect": {"error": {"messageContains": "SAMPLE_FN' does not exist or not authorized."}}},
       {"sql": "SELECT sample_fn(10)", "expect": {"value": 10}}
     ]},
     {"name": "same-types-but-different-counts", "steps": [

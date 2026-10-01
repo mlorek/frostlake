@@ -112,8 +112,8 @@ public class FileFormatOptionSurfaceTest extends BaseDatabaseTest {
 
     @Test
     public void alteringAMissingFormatNamesItFullyQualified() {
-        assertEquals("SQL compilation error:\nFile format 'TEST_DB.TEST_SCHEMA.NOSUCH_FF' does"
-                + " not exist or not authorized.",
+        assertEquals(hinted("SQL compilation error:\nFile format 'TEST_DB.TEST_SCHEMA.NOSUCH_FF' does"
+                + " not exist or not authorized."),
             refusal("ALTER FILE FORMAT nosuch_ff SET COMMENT = 'x'").getMessage());
     }
 

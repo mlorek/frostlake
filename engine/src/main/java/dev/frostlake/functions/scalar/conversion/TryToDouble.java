@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.HexDoubleText;
 
 import java.util.List;
 
@@ -36,6 +37,11 @@ public class TryToDouble extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        // A sign before a hexadecimal number with no exponent reads in TO_DOUBLE, never here.
+        if (args.size() == 1 && args.get(0) instanceof String
+                && HexDoubleText.isSignedWithoutExponent(((String) args.get(0)).trim())) {
+            return null;
+        }
         try {
             return BASE.evaluate(args);
         } catch (final RuntimeException unreadable) {

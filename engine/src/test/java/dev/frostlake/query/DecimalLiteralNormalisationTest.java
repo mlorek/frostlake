@@ -38,9 +38,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * NUMBER(1,0) in its bracketed signature, and TO_VARCHAR(1.00) is '1'. A literal whose zeros are
  * MEANINGFUL — 1.05 — keeps its full (3,2) everywhere.
  *
- * <p>★ THE ONE READER OF THE SPELLING IS UNIFORM, whose draw family follows how the bound was
- * WRITTEN — {@code UNIFORM(0.0, 1.0, …)} draws scaled values live even though 0.0 types as
- * NUMBER(1,0). That exemption lives at its dispatch and is pinned by RandomUniformTest.
+ * <p>UNIFORM reads the normalised type like everything else: {@code UNIFORM(0.0, 1.0, …)} draws only 0 and
+ * 1, because 0.0 types as NUMBER(1,0) (see UniformTypeAndSeedTest).
  */
 public class DecimalLiteralNormalisationTest extends BaseDatabaseTest {
 

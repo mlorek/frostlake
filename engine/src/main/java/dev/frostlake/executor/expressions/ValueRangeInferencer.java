@@ -16,6 +16,11 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SelectItemAccessors;
+import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
@@ -25,7 +30,12 @@ import dev.frostlake.values.ValueRange;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * The interval an exact-numeric expression's values lie in, propagated the way the account's planner
@@ -74,6 +84,14 @@ final class ValueRangeInferencer {
     /** The account's bound on the rows a SUM may accumulate: ten to the twelfth, measured at the flip. */
     private static final BigDecimal ACCUMULATED_ROWS = BigDecimal.TEN.pow(12);
 
+    /** The calls a constant passes through and stays one — see {@link #foldsAsConstant}. */
+    private static final Set<String> CONSTANT_FOLDING_CALLS = new HashSet<>(Arrays.asList(
+        "CONCAT", "UPPER", "TO_VARIANT"));
+
+    /** The conversions into an exact number, whose interval {@link #convertedRange} reads. */
+    private static final Set<String> NUMERIC_CONVERSIONS = new HashSet<>(Arrays.asList(
+        "TO_NUMBER", "TO_NUMERIC", "TO_DECIMAL", "TRY_TO_NUMBER", "TRY_TO_NUMERIC", "TRY_TO_DECIMAL"));
+
     private final ExpressionEvaluatorVisitor visitor;
 
     ValueRangeInferencer(final ExpressionEvaluatorVisitor visitor) {
@@ -87,6 +105,15 @@ final class ValueRangeInferencer {
         } catch (final RuntimeException undetermined) {
             return null;
         }
+    }
+
+    /**
+     * The interval of an operand something is COMPUTED from — arithmetic, a cast, a numeric function —
+     * or null where it has none or none may be computed from it (see {@link ValueRange#isOpaqueToComputation}).
+     */
+    private ValueRange computedFrom(final Expression operand) {
+        final ValueRange range = infer(operand);
+        return range != null && range.isOpaqueToComputation() ? null : range;
     }
 
     private ValueRange inferUnchecked(final Expression expr) {
@@ -121,18 +148,37 @@ final class ValueRangeInferencer {
         }
         if (expr instanceof BindVariableExpression) {
             // A scripting variable bound into the statement is ONE value, and the tag follows it
-            // (live: a NUMBER(10,4) holding 1.7777 reads [SB2], holding 12345.6789 [SB4]).
-            final BigDecimal bound = ValueRange.exactOf(
-                visitor.boundVariableValue((BindVariableExpression) expr));
+            // (live: a NUMBER(10,4) holding 1.7777 reads [SB2], holding 12345.6789 [SB4]). Read as a
+            // parameter, in a block's own expression, it is no value the plan can bound.
+            if (visitor.bindsAsParameters()) {
+                return null;
+            }
+            final BindVariableExpression bind = (BindVariableExpression) expr;
+            if (visitor.boundVariableHoldsNull(bind)) {
+                // A NULL is no value at all, the empty interval: a NUMBER(10,2) holding NULL reads
+                // NUMBER(10,2)[SB1], :n + 1 NUMBER(11,2)[SB1] and LENGTH(:s) over a NULL text [SB1]
+                // (live-verified).
+                return ValueRange.EMPTY;
+            }
+            final BigDecimal bound = ValueRange.exactOf(visitor.boundVariableValue(bind));
             return bound != null ? ValueRange.of(bound) : null;
         }
+        if (expr instanceof SessionVarExpression) {
+            // A session variable holds ONE value, and the tag follows it as a literal's does: set to 12345 it
+            // reads NUMBER(5,0)[SB2] and set to 127 NUMBER(3,0)[SB1] (live-verified).
+            final BigDecimal held = ValueRange.exactOf(
+                visitor.sessionVariableValue(((SessionVarExpression) expr).getVarName()));
+            return held != null ? ValueRange.of(held) : null;
+        }
         if (expr instanceof ColumnReferenceExpression) {
-            return visitor.declaredColumnRange((ColumnReferenceExpression) expr);
+            final ValueRange declared = visitor.declaredColumnRange((ColumnReferenceExpression) expr);
+            return declared == null && visitor.readsSequence((ColumnReferenceExpression) expr)
+                ? SequenceRead.range() : declared;
         }
         if (expr instanceof UnaryOperationExpression) {
             final UnaryOperationExpression unary = (UnaryOperationExpression) expr;
             if (unary.getOperator() == UnaryOperator.PLUS) {
-                return infer(unary.getOperand());
+                return heldAsValue(unary.getOperand()) ? computedFrom(unary.getOperand()) : null;
             }
             if (unary.getOperator() != UnaryOperator.NEGATE) {
                 return null;
@@ -144,7 +190,9 @@ final class ValueRangeInferencer {
             return binaryRange((BinaryOperationExpression) expr);
         }
         if (expr instanceof CastExpression) {
-            return exactOperandRange(((CastExpression) expr).getExpression());
+            final Expression converted = ((CastExpression) expr).getExpression();
+            final ValueRange exact = exactOperandRange(converted);
+            return exact != null ? exact : foldedConversion(expr, Collections.singletonList(converted));
         }
         if (expr instanceof CaseExpression) {
             // The planner prunes a branch its statistics decide: over a table whose column holds only
@@ -202,6 +250,9 @@ final class ValueRangeInferencer {
             // A NULL-valued operand (a cast NULL) empties the result whatever the other side holds.
             return ValueRange.EMPTY;
         }
+        if (left != null && left.isOpaqueToComputation() || right != null && right.isOpaqueToComputation()) {
+            return null;
+        }
         if (readsWithoutInterval(binary.getLeft()) || readsWithoutInterval(binary.getRight())) {
             // A text column or a VARIANT read as a number carries no interval: the account tags t + 0
             // by its declared NUMBER(19,5) alone ([SB16]) whatever the column holds, where a text
@@ -244,8 +295,8 @@ final class ValueRangeInferencer {
             // NUMBER(10,2) and a VARCHAR is NUMBER(18,5)[SB8] on the account, the declared width's.
             return null;
         }
-        final ValueRange over = infer(dividend);
-        final ValueRange under = infer(divisor);
+        final ValueRange over = computedFrom(dividend);
+        final ValueRange under = computedFrom(divisor);
         if (over == null || under == null) {
             return over;
         }
@@ -277,8 +328,8 @@ final class ValueRangeInferencer {
      */
     private ValueRange quotientRange(final Expression dividend, final Expression divisor,
                                      final DataType resultType) {
-        final ValueRange over = infer(dividend);
-        final ValueRange under = infer(divisor);
+        final ValueRange over = computedFrom(dividend);
+        final ValueRange under = computedFrom(divisor);
         final Integer divisorScale = exactScale(visitor.inferStaticType(divisor));
         final Integer resultScale = exactScale(resultType);
         if (over == null || under == null || divisorScale == null || resultScale == null) {
@@ -304,15 +355,14 @@ final class ValueRangeInferencer {
 
     /** The operand's interval when it is an exact number; a text, a FLOAT or a VARIANT has none. */
     private ValueRange exactOperandRange(final Expression operand) {
-        if (operand instanceof LiteralExpression
-                && ((LiteralExpression) operand).getType() == LiteralType.NULL) {
+        if (UntypedNullFold.isUntypedNull(operand)) {
             return ValueRange.EMPTY;
         }
         final DataType type = visitor.inferStaticType(operand);
         if (!(type instanceof NumericType) || NumericType.isApproximate(type)) {
             return null;
         }
-        return infer(operand);
+        return computedFrom(operand);
     }
 
     /** The union of the branches' intervals, null when any is unknown; no branch at all is a NULL. */
@@ -451,6 +501,14 @@ final class ValueRangeInferencer {
             // empty interval: MOD(n10_2, NULL) is [SB1] on the account.
             return ValueRange.EMPTY;
         }
+        final Expression componentRead = IntervalFunctions.componentSource(name, args);
+        if (componentRead != null && IntervalCasts.isIntervalType(visitor.inferStaticType(componentRead))) {
+            // A component of an interval that is always NULL is NULL, the empty interval: EXTRACT(HOUR FROM
+            // NULL::INTERVAL DAY TO SECOND) is NUMBER(9,0)[SB1], where one read from a constant or a column keeps
+            // the declared width, [SB4] (live-verified).
+            final ValueRange read = infer(componentRead);
+            return read != null && read.isEmpty() ? ValueRange.EMPTY : null;
+        }
         switch (name) {
             case "IFF":
                 if (args.size() != 3) {
@@ -478,27 +536,43 @@ final class ValueRangeInferencer {
             case "GREATEST_IGNORE_NULLS":
             case "LEAST_IGNORE_NULLS":
                 return unionOf(TypeInferencer.conditionalBranches(name, args));
+            case "CEIL":
+            case "ROUND":
+                // Over a NULL they are tagged as the NULL is, [SB1] (live-verified for CEIL(NULL),
+                // ROUND(NULL, 2) and CEIL(NULL::INT)); any other argument is left to the declared width.
+                final ValueRange rounded = args.isEmpty() ? null : computedFrom(args.get(0));
+                return rounded != null && rounded.isEmpty() ? rounded : null;
             case "FLOOR":
                 // Folded for a constant — a column whose statistics hold one value — and otherwise
                 // left to the declared width: FLOOR over a NUMBER(10,2) holding 1.5 and 99999999.99 is
-                // SB8, its NUMBER(11,0)'s own, though the floors themselves would fit four bytes.
-                final ValueRange floored = firstArgument(args);
-                if (floored == null || floored.isEmpty() || floored.getMin().compareTo(floored.getMax()) != 0) {
+                // SB8, its NUMBER(11,0)'s own, though the floors themselves would fit four bytes. Over a
+                // NULL it is tagged as the NULL is, [SB1].
+                final ValueRange floored = args.isEmpty() ? null : computedFrom(args.get(0));
+                if (floored != null && floored.isEmpty()) {
+                    return floored;
+                }
+                if (floored == null || floored.getMin().compareTo(floored.getMax()) != 0) {
                     return null;
                 }
                 return ValueRange.of(floored.getMin().setScale(0, RoundingMode.FLOOR))
                     .withNullable(floored.isNullable()).withConditionOpacityOf(floored);
+            case "LENGTH":
+            case "LEN":
+                // The length of an argument that is always NULL is NULL, the empty interval:
+                // LENGTH(NULL::VARCHAR(10)) is NUMBER(18,0)[SB1] (live-verified).
+                final ValueRange measured = firstArgument(args);
+                return measured != null && measured.isEmpty() ? ValueRange.EMPTY : null;
             case "ZEROIFNULL":
-                final ValueRange zeroed = args.isEmpty() ? null : infer(args.get(0));
+                final ValueRange zeroed = args.isEmpty() ? null : computedFrom(args.get(0));
                 return zeroed != null ? zeroed.union(ValueRange.of(BigDecimal.ZERO)).withNullable(false) : null;
             case "ABS":
-                final ValueRange signed = firstArgument(args);
+                final ValueRange signed = args.isEmpty() ? null : computedFrom(args.get(0));
                 return signed != null ? signed.abs() : null;
             case "SIGN":
                 // The argument's own physical width passes through untouched — SIGN over a
                 // NUMBER(10,2) holding 99999999.99 is SB8 though it declares NUMBER(2,0) — so the
                 // interval is the argument's UNSCALED one, which the scale-0 result reads as is.
-                final ValueRange signedOf = firstArgument(args);
+                final ValueRange signedOf = args.isEmpty() ? null : computedFrom(args.get(0));
                 final Integer signedScale = args.isEmpty() ? null
                     : exactScale(visitor.inferStaticType(args.get(0)));
                 return signedOf == null || signedScale == null ? null
@@ -516,14 +590,23 @@ final class ValueRangeInferencer {
             case "TO_NUMBER":
             case "TO_NUMERIC":
             case "TO_DECIMAL":
-                return args.isEmpty() ? null : exactOperandRange(args.get(0));
+                return args.isEmpty() ? null : convertedRange(call, args);
             case "TRY_TO_NUMBER":
             case "TRY_TO_NUMERIC":
             case "TRY_TO_DECIMAL":
-                return args.isEmpty() ? null : mayBeNull(exactOperandRange(args.get(0)));
+                return args.isEmpty() ? null : mayBeNull(convertedRange(call, args));
             case "SUM":
+                final SumShift shift = visitor.rewrittenSumShift(call);
+                if (shift != null) {
+                    return rewrittenSumRange(call, shift);
+                }
+                // A SUM over a value nothing may be computed from keeps its interval as it is: live tags
+                // SUM over a derived REDUCE column by the accumulator's width, and AVG by its declared one.
+                final ValueRange summed = firstArgument(args);
+                return aggregated(summed != null && summed.isOpaqueToComputation() ? summed : accumulated(summed),
+                    false);
             case "AVG":
-                return aggregated(accumulated(firstArgument(args)), false);
+                return aggregated(accumulated(args.isEmpty() ? null : computedFrom(args.get(0))), false);
             case "MIN":
                 final ValueRange least = firstArgument(args);
                 return least == null ? null : least.isEmpty() ? least
@@ -571,9 +654,201 @@ final class ValueRangeInferencer {
                 return ValueRange.between(BigDecimal.valueOf(Short.MIN_VALUE), BigDecimal.valueOf(Short.MAX_VALUE));
             case "SEQ1":
                 return ValueRange.between(BigDecimal.valueOf(Byte.MIN_VALUE), BigDecimal.valueOf(Byte.MAX_VALUE));
+            case "REDUCE":
+                return ReduceAccumulatorRange.of(this, call);
             default:
-                return null;
+                // A SQL function's body is read as if the call were inlined — see udfCallRange.
+                return visitor.getFunctionRegistry().getFunction(name) == null ? visitor.udfCallRange(call) : null;
         }
+    }
+
+    /**
+     * The interval of a SUM the plan rewrites over a shifted column, which it computes as the column's SUM
+     * and the constant times the column's COUNT: {@code SUM(c + 200000)} over a column whose SUM reaches
+     * 9.1 x 10^18 is [SB8] where the shifted values' own sum would not fit, and {@code SUM(s + 10^14)}
+     * over a NUMBER(7,2) [SB8] too. A shift by exactly ONE is read at the rewrite's whole intermediate
+     * width instead — {@code SUM(n + 1)}, {@code SUM(1 + n)} and {@code SUM(n - 1)} are [SB16] over any
+     * column, and so is {@code COALESCE(SUM(n + 1), 0)} — while {@code SUM(n + -1)} is not (live-verified).
+     */
+    private ValueRange rewrittenSumRange(final FunctionCallExpression call, final SumShift shift) {
+        final boolean columnLeft = shift.isColumnLeft();
+        final ValueRange by = infer(shift.getConstant());
+        if (by == null || by.isEmpty()) {
+            return null;
+        }
+        if (by.getMin().compareTo(BigDecimal.ONE) == 0 && by.getMax().compareTo(BigDecimal.ONE) == 0) {
+            final NumericType rewritten = visitor.shiftedColumnSum(call, null);
+            if (rewritten == null) {
+                return null;
+            }
+            final BigDecimal bound = BigDecimal.ONE.scaleByPowerOfTen(
+                rewritten.getPrecision() - Math.max(0, rewritten.getScale()));
+            return aggregated(ValueRange.between(bound.negate(), bound), false);
+        }
+        // The column is read where it lives — beneath a merged derived relation, in the relation it reads.
+        final ValueRange summed = accumulated(shift.getColumnRange());
+        final Long rows = visitor.countableRows();
+        if (summed == null || rows == null) {
+            return null;
+        }
+        final ValueRange moved = ValueRange.between(BigDecimal.ZERO, BigDecimal.valueOf(rows)).multiply(by);
+        final ValueRange left = columnLeft ? summed : moved;
+        final ValueRange right = columnLeft ? moved : summed;
+        return aggregated(shift.getOperator() == BinaryOperator.SUBTRACT ? left.subtract(right) : left.add(right),
+            false);
+    }
+
+    /** A TO_NUMBER-family call's interval: its exact operand's, or the one value a constant folds to. */
+    private ValueRange convertedRange(final FunctionCallExpression call, final List<Expression> args) {
+        final ValueRange exact = exactOperandRange(args.get(0));
+        return exact != null ? exact : foldedConversion(call, args);
+    }
+
+    /**
+     * The one value a conversion into an exact NUMBER folds to while the statement compiles, or null
+     * where it does not fold. The account converts a text, FLOAT or VARIANT CONSTANT and tags the result
+     * by that value — {@code '5'::NUMBER} is [SB1], {@code '127.5'::NUMBER} and
+     * {@code 127.5::FLOAT::NUMBER} [SB2], {@code TRY_TO_DECIMAL('x', 10, 2)} a NULL's [SB1] — where the
+     * same conversion over a column keeps the declared width. A conversion that fails does not fold:
+     * {@code ''::NUMBER} is [SB16]. Which operands count as constants is {@link #foldsAsConstant}.
+     */
+    private ValueRange foldedConversion(final Expression conversion, final List<Expression> operands) {
+        for (final Expression operand : operands) {
+            if (!foldsAsConstant(operand)) {
+                return null;
+            }
+        }
+        if (exactScale(visitor.inferStaticType(conversion)) == null) {
+            return null;
+        }
+        final Object folded;
+        try {
+            folded = conversion.accept(visitor);
+        } catch (final RuntimeException unconverted) {
+            return null;
+        }
+        if (folded == null) {
+            return ValueRange.EMPTY;
+        }
+        final BigDecimal value = ValueRange.exactOf(folded);
+        return value != null ? ValueRange.of(value) : null;
+    }
+
+    /**
+     * Whether the plan holds an operand as a constant it converts while compiling: a literal, a cast of
+     * one to anything but text (of a NULL, to anything), and a {@code ||}, CONCAT, UPPER or TO_VARIANT
+     * over such constants. The edges are measured, not derived — {@code CAST(CAST('5' AS VARCHAR) AS
+     * NUMBER)}, {@code TRIM(' 5 ')::NUMBER}, {@code TO_CHAR(5)::NUMBER}, {@code (1.5::FLOAT + 1)::NUMBER},
+     * {@code IFF(TRUE, '5', '6')::NUMBER}, {@code COALESCE('5', '6')::NUMBER} and
+     * {@code PARSE_JSON('5')::NUMBER} all keep the declared width on the account. A scalar subquery with no
+     * FROM over one such constant is one too — {@code (SELECT '5')::NUMBER}, {@code (SELECT UPPER('5'))::NUMBER}
+     * and {@code (SELECT TO_VARIANT(5))::NUMBER} are [SB1] — where {@code (SELECT '5' FROM t LIMIT 1)} is not.
+     */
+    boolean foldsAsConstant(final Expression operand) {
+        if (operand instanceof LiteralExpression) {
+            return true;
+        }
+        if (operand instanceof SubqueryExpression) {
+            final Expression item = fromlessItem((SubqueryExpression) operand);
+            return item != null && foldsAsConstant(item);
+        }
+        if (operand instanceof CastExpression) {
+            final Expression converted = ((CastExpression) operand).getExpression();
+            return isBareNull(converted)
+                || !(visitor.inferStaticType(operand) instanceof StringType) && foldsAsConstant(converted);
+        }
+        if (operand instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) operand;
+            return binary.getOperator() == BinaryOperator.CONCAT
+                && foldsAsConstant(binary.getLeft()) && foldsAsConstant(binary.getRight());
+        }
+        if (!(operand instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) operand;
+        if (call.getNameExpression() != null || call.getArguments().isEmpty()
+                || !CONSTANT_FOLDING_CALLS.contains(call.getFunctionName().toUpperCase(Locale.ROOT))) {
+            return false;
+        }
+        for (final Expression argument : call.getArguments()) {
+            if (!foldsAsConstant(argument)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The one item of a scalar subquery that is nothing but a FROM-less select of it, or null. */
+    private Expression fromlessItem(final SubqueryExpression subquery) {
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        final FrostlakeParser.SelectStatementContext parsed = queryExecutor == null ? null
+            : queryExecutor.subqueryStatement(subquery.getSubquery());
+        if (parsed == null || parsed.withClause() != null || !parsed.setOperator().isEmpty()
+                || parsed.orderByClause() != null || parsed.limitClause() != null || parsed.fetchClause() != null) {
+            return null;
+        }
+        final FrostlakeParser.SelectClauseContext select = parsed.selectOperand(0).selectClause();
+        if (select == null || select.tableExpression() != null || select.whereClause() != null
+                || select.topClause() != null || select.connectByClause() != null || select.groupByClause() != null
+                || select.havingClause() != null || select.qualifyClause() != null
+                || select.selectList().selectItem().size() != 1) {
+            return null;
+        }
+        final FrostlakeParser.ExpressionContext value =
+            SelectItemAccessors.getItemValueExpr(select.selectList().selectItem(0));
+        return value == null ? null : ExpressionEvaluator.parse(ParseTreeText.getOriginalText(value));
+    }
+
+    /**
+     * Whether the plan holds {@code operand} as the one value it stands for, so that a unary plus over it keeps
+     * that value's interval: a literal (NULL included), its negation or unary plus, a cast of a bare NULL or
+     * arithmetic beside one, a FROM-less scalar subquery of such a value, a conversion into an exact number
+     * that folds from a text, FLOAT or VARIANT constant, and ZEROIFNULL of such a value. Anything computed —
+     * arithmetic, a cast between exact numbers, a function, a column — leaves the unary plus its declared
+     * width. Live tags {@code +1.5}, {@code +(-123.45)}, {@code +(SELECT 123.45)}, {@code +'123.45'::NUMBER(5,2)}
+     * and {@code +ZEROIFNULL(123.45)} by the value, and {@code +n}, {@code +(1.5 + 1.5)},
+     * {@code +(123.45::NUMBER(5,2))}, {@code +CAST(1 AS INT)}, {@code +ABS(123.45)} and
+     * {@code +IFF(TRUE, 123.45, 1)} by the width.
+     */
+    private boolean heldAsValue(final Expression operand) {
+        if (operand instanceof LiteralExpression) {
+            return true;
+        }
+        if (operand instanceof UnaryOperationExpression) {
+            final UnaryOperator sign = ((UnaryOperationExpression) operand).getOperator();
+            return (sign == UnaryOperator.NEGATE || sign == UnaryOperator.PLUS)
+                && heldAsValue(((UnaryOperationExpression) operand).getOperand());
+        }
+        if (operand instanceof BinaryOperationExpression) {
+            return isBareNull(((BinaryOperationExpression) operand).getLeft())
+                || isBareNull(((BinaryOperationExpression) operand).getRight());
+        }
+        if (operand instanceof SubqueryExpression) {
+            final Expression item = fromlessItem((SubqueryExpression) operand);
+            return item != null && heldAsValue(item);
+        }
+        if (operand instanceof CastExpression) {
+            final Expression converted = ((CastExpression) operand).getExpression();
+            return isBareNull(converted) || foldsFromInexactConstant(converted);
+        }
+        if (!(operand instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) operand;
+        if (call.getNameExpression() != null || call.getArguments().isEmpty()) {
+            return false;
+        }
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        if (name.equals("ZEROIFNULL")) {
+            return call.getArguments().size() == 1 && heldAsValue(call.getArguments().get(0));
+        }
+        return NUMERIC_CONVERSIONS.contains(name) && foldsFromInexactConstant(call.getArguments().get(0));
+    }
+
+    /** Whether a conversion's operand is a constant it folds while compiling, and no exact number already. */
+    private boolean foldsFromInexactConstant(final Expression converted) {
+        final DataType type = visitor.inferStaticType(converted);
+        return !(type instanceof NumericType && !NumericType.isApproximate(type)) && foldsAsConstant(converted);
     }
 
     /**
@@ -605,7 +880,7 @@ final class ValueRangeInferencer {
         if (keyType instanceof StringType || keyType instanceof VariantType) {
             return null;
         }
-        return infer(key);
+        return computedFrom(key);
     }
 
     private ValueRange windowRange(final WindowFunctionExpression window) {
@@ -734,6 +1009,17 @@ final class ValueRangeInferencer {
      * FALSE settles an AND however open the rest is; BETWEEN is the AND of its two bounds and an IN list
      * the OR of its equalities.
      */
+    /**
+     * Whether the statistics settle a condition: TRUE where it holds on every row, FALSE where it holds on
+     * none, null where they leave it open.
+     *
+     * @param predicate the condition
+     * @return the settled value, or null
+     */
+    public Boolean settledCondition(final Expression predicate) {
+        return decide(predicate);
+    }
+
     private Boolean decide(final Expression predicate) {
         if (predicate instanceof LiteralExpression) {
             // A constant condition prunes the other branch outright: IFF(FALSE, s, 1.5) over a text

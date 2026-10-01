@@ -50,6 +50,8 @@ import java.time.ZoneOffset;
 public final class StatementClock {
 
     private static final ThreadLocal<Instant> PINNED = new ThreadLocal<Instant>();
+    /** The instant the outermost statement started at, which {@link #advance} leaves alone. */
+    private static final ThreadLocal<Instant> STATEMENT = new ThreadLocal<Instant>();
     private static final ThreadLocal<Boolean> REPLAY = new ThreadLocal<Boolean>();
 
     private StatementClock() {
@@ -107,7 +109,16 @@ public final class StatementClock {
     public static Instant pin(final Instant instant) {
         final Instant previous = PINNED.get();
         PINNED.set(instant != null ? instant : Instant.now());
+        STATEMENT.set(PINNED.get());
         return previous;
+    }
+
+    /**
+     * The instant the outermost statement started at — what the write-ahead log records for it — or null
+     * outside a statement. Unlike {@link #instant}, a procedural block's inner statements do not move it.
+     */
+    public static Instant statementStart() {
+        return STATEMENT.get();
     }
 
     /** Whether a statement instant is currently pinned. */
@@ -119,8 +130,10 @@ public final class StatementClock {
     public static void restore(final Instant previous) {
         if (previous == null) {
             PINNED.remove();
+            STATEMENT.remove();
         } else {
             PINNED.set(previous);
+            STATEMENT.set(previous);
         }
     }
 }

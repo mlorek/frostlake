@@ -23,9 +23,19 @@ import java.util.List;
 /** Immutable timestamped snapshot of the table for time travel. */
 public class TableSnapshot {
     public final long epochMillis;
+    /** The snapshot's place in the order every table's snapshots were taken in; see {@link SnapshotSequence}. */
+    public final long sequence;
     public final List<Row> rows;
-    public TableSnapshot(final long epochMillis, final List<Row> rows) {
+    /**
+     * Each row's identity, index-aligned with {@link #rows}: a row an UPDATE rewrote keeps its identity, so two
+     * snapshots tell an updated row from one deleted and inserted again.
+     */
+    public final List<Long> rowIds;
+
+    public TableSnapshot(final long epochMillis, final long sequence, final List<Row> rows, final List<Long> rowIds) {
         this.epochMillis = epochMillis;
+        this.sequence = sequence;
         this.rows = Collections.unmodifiableList(new ArrayList<>(rows));
+        this.rowIds = Collections.unmodifiableList(new ArrayList<>(rowIds));
     }
 }

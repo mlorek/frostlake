@@ -16,9 +16,12 @@
 
 package dev.frostlake.functions.scalar.crypto;
 
+import java.security.SecureRandom;
+
 /**
- * Shared helpers for the raw-key {@link EncryptRaw} / {@link DecryptRaw} AES-GCM functions: hex BINARY
- * conversion (the engine represents BINARY as an uppercase hex string) and the encryption-method guard.
+ * Shared helpers for the raw-key {@link EncryptRaw} / {@link DecryptRaw} functions: hex BINARY conversion
+ * (the engine represents BINARY as an uppercase hex string), the key and IV size rules, and the IV a call
+ * draws when it gives none.
  */
 public final class RawCipherSupport {
 
@@ -33,19 +36,52 @@ public final class RawCipherSupport {
     }
 
     /**
-     * Reject anything but AES-GCM. A null method is the Snowflake default (AES-GCM); any explicit method that
-     * does not name the GCM mode is refused so that an unsupported mode fails loudly rather than being
-     * silently mis-encrypted.
+     * Refuse a key AES has no size for: {@code Key size of 8 bits not found for encryption algorithm AES}
+     * (live-verified), checked after the method and before the IV.
+     *
+     * @param key the key's bytes
      */
-    public static void requireGcm(final String function, final Object method) {
-        if (method == null) {
-            return;
+    public static void requireKeySize(final byte[] key) {
+        if (key.length != 16 && key.length != 24 && key.length != 32) {
+            throw new RuntimeException("Key size of " + key.length * Byte.SIZE
+                + " bits not found for encryption algorithm AES");
         }
-        final String upper = method.toString().trim().toUpperCase();
-        if (!upper.contains("GCM")) {
-            throw new RuntimeException(function + ": only the AES-GCM encryption method is supported (got '"
-                + method + "')");
+    }
+
+    /**
+     * Refuse an IV that is not the size its mode takes: {@code IV/Nonce of size 8 bits needs to be of size of
+     * 96 bits for encryption mode GCM}, checked after the key and before the AAD. ECB takes NO IV, and an IV
+     * given for it is refused against a size of 0 bits.
+     *
+     * @param method the method the call names
+     * @param iv     the IV's bytes
+     */
+    public static void requireIvSize(final EncryptionMethod method, final byte[] iv) {
+        if (iv.length != method.mode().ivBytes()) {
+            throw new RuntimeException("IV/Nonce of size " + iv.length * Byte.SIZE
+                + " bits needs to be of size of " + method.mode().ivBytes() * Byte.SIZE
+                + " bits for encryption mode " + method.mode().name());
         }
+    }
+
+    /**
+     * The IV a call uses: the one it gave, or one drawn at random when it gave none. A mode that takes no IV
+     * draws nothing, and its answer carries no IV at all.
+     *
+     * @param function the function's name, for an argument that is no BINARY
+     * @param method   the method the call names
+     * @param given    the IV argument, which may be null
+     * @return the IV's bytes, empty for a mode that takes none
+     */
+    public static byte[] ivOrDrawn(final String function, final EncryptionMethod method, final Object given) {
+        if (given != null) {
+            return binaryBytes(function, given);
+        }
+        final byte[] drawn = new byte[method.mode().ivBytes()];
+        if (drawn.length > 0) {
+            new SecureRandom().nextBytes(drawn);
+        }
+        return drawn;
     }
 
     /**

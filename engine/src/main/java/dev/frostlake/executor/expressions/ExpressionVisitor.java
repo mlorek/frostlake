@@ -24,6 +24,7 @@ public interface ExpressionVisitor<T> {
     T visitDefaultMarker(final DefaultMarkerExpression expr);
     T visitColumnReference(final ColumnReferenceExpression expr);
     T visitBinaryOperation(final BinaryOperationExpression expr);
+    T visitRowComparison(final RowComparisonExpression expr);
     T visitUnaryOperation(final UnaryOperationExpression expr);
     T visitFunctionCall(final FunctionCallExpression expr);
     T visitLambda(final LambdaExpression expr);

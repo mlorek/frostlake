@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -101,18 +102,18 @@ public class NonTableDdlPrivilegeEnforcementTest {
         });
     }
 
+    /** DROP is no privilege of a stream either: dropping one takes its OWNERSHIP. */
     @Test
-    public void dropGrantAllowsDropStream() {
+    public void dropIsNoPrivilegeOfAStream() {
         engine.execute("CREATE TABLE base (id INTEGER)");
         engine.execute("CREATE STREAM strm ON TABLE base");
-        engine.execute("GRANT DROP ON STREAM strm TO ROLE app_role");
-        asAppRole();
-        assertDoesNotThrow(new Executable() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.execute("DROP STREAM strm");
+                engine.execute("GRANT DROP ON STREAM strm TO ROLE app_role");
             }
         });
+        assertEquals("SQL compilation error:\nInvalid object type 'STREAM' for privilege 'DROP'.", refused.getMessage());
     }
 
     @Test

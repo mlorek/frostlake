@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
@@ -30,8 +31,10 @@ import dev.frostlake.metastore.model.ProjectionPolicy;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.SqlTypeNames;
 
@@ -86,35 +89,86 @@ public class CreateSecurityHandler implements CommandHandler {
             throw new RuntimeException(
                 SqlCompilationError.of("invalid property 'MASKING' for 'TAG'"));
         }
+        // A property written twice and a propagation mode that is none of the three are compilation errors,
+        // refused before IF NOT EXISTS could forgive anything.
+        TagPropagation.requireCompilable(ctx.tagSetProperty());
+        if (ctx.or_alter() != null && catalog.hasTag(tagName)) {
+            alterTagInPlace(ctx, catalog.getTag(tagName));
+            return null;
+        }
+        final List<String> allowedValues = new ArrayList<>();
+        if (ctx.tagProperties() != null && ctx.tagProperties().ALLOWED_VALUES() != null) {
+            for (final var stringLiteral : ctx.tagProperties().stringLiteralList().STRING_LITERAL()) {
+                allowedValues.add(ddl.extractStringLiteral(stringLiteral));
+            }
+        }
+        // The propagation and its conflict rule are judged before the catalog changes, so a refused statement
+        // leaves no tag behind and replaces none.
+        String propagate = null;
+        String onConflict = null;
+        String comment = null;
+        for (final FrostlakeParser.TagSetPropertyContext property : ctx.tagSetProperty()) {
+            if (property.tagPropagation() != null) {
+                propagate = TagPropagation.mode(property.tagPropagation());
+            } else if (property.tagConflict() != null) {
+                onConflict = TagPropagation.conflict(property.tagConflict());
+            } else {
+                comment = ddl.extractComment(property.commentClause());
+            }
+        }
+        TagPropagation.requireConsistent(allowedValues, propagate, onConflict);
         if (ctx.or_replace() != null) {
+            // Replacing a tag needs OWNERSHIP of it.
+            queryExecutor.requireOwnership("TAG", qualifiedNameParts(ctx.qualifiedName(0)), null);
             try { catalog.dropTag(tagName); } catch (final RuntimeException ignored) {}
         }
         try {
             ddl.checkCreatePrivilege(Privilege.CREATE_TAG, ContainerType.SCHEMA,
                 ddl.resolveSchemaFromQualifiedName(tagName).getName());
-            final List<String> allowedValues = new ArrayList<>();
-            String comment = null;
-
-            if (ctx.tagProperties() != null) {
-                if (ctx.tagProperties().ALLOWED_VALUES() != null) {
-                    for (final var stringLiteral : ctx.tagProperties().stringLiteralList().STRING_LITERAL()) {
-                        allowedValues.add(ddl.extractStringLiteral(stringLiteral));
-                    }
-                }
-            }
-
-            final String statementComment = ddl.extractCommentFromList(ctx.commentClause());
-            if (statementComment != null) {
-                comment = statementComment;
-            }
-
             catalog.createTag(tagName, allowedValues, comment);
+            if (propagate != null) {
+                final Tag created = catalog.getTag(tagName);
+                created.setPropagate(propagate);
+                created.setOnConflict(onConflict);
+            }
             logger.trace("Created tag: {}", tagName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
             logger.debug("Tag already exists (IF NOT EXISTS): {}", tagName);
         }
         return null;
+    }
+
+    /**
+     * CREATE OR ALTER TAG over an existing tag: the tag takes the statement's ALLOWED_VALUES, PROPAGATE, ON_CONFLICT
+     * and COMMENT, and a property the statement leaves out is unset, since the statement describes the whole tag.
+     */
+    private void alterTagInPlace(final FrostlakeParser.CreateStatementContext ctx, final Tag tag) {
+        final List<String> allowedValues = new ArrayList<>();
+        if (ctx.tagProperties() != null && ctx.tagProperties().ALLOWED_VALUES() != null) {
+            for (final var stringLiteral : ctx.tagProperties().stringLiteralList().STRING_LITERAL()) {
+                allowedValues.add(ddl.extractStringLiteral(stringLiteral));
+            }
+        }
+        // The statement describes the whole tag, its propagation included: what it leaves out is unset.
+        String propagate = null;
+        String onConflict = null;
+        String comment = null;
+        for (final FrostlakeParser.TagSetPropertyContext property : ctx.tagSetProperty()) {
+            if (property.tagPropagation() != null) {
+                propagate = TagPropagation.mode(property.tagPropagation());
+            } else if (property.tagConflict() != null) {
+                onConflict = TagPropagation.conflict(property.tagConflict());
+            } else {
+                comment = ddl.extractComment(property.commentClause());
+            }
+        }
+        TagPropagation.requireConsistent(allowedValues, propagate, onConflict);
+        tag.setAllowedValues(allowedValues);
+        tag.setComment(comment);
+        tag.setPropagate(propagate);
+        tag.setOnConflict(onConflict);
+        ConditionalDdlOutcome.alteredInPlace();
     }
 
     public Object handleCreateMaskingPolicy(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
@@ -128,6 +182,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final String policyName = parts[parts.length - 1].toUpperCase();
             ddl.checkCreatePrivilege(Privilege.CREATE_MASKING_POLICY, ContainerType.SCHEMA, schema.getName());
             if (orReplace) {
+                queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
                 if (catalog.isPolicyInUse(policyName, true)) {
                     throw new RuntimeException("Policy " + policyName.toUpperCase()
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
@@ -147,6 +202,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final String body = ctx.bodyDefinition() != null
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
+            PolicyBodyCheck.requireNumericLimits(body);
             // The policy hands back what it was given: live refuses a signature whose argument and
             // return types disagree, before anything is attached.
             if (!params.isEmpty() && ctx.dataTypeName() != null) {
@@ -157,7 +213,12 @@ public class CreateSecurityHandler implements CommandHandler {
                         + " Masking policy function argument and return type mismatch.");
                 }
             }
+            final DataType declaredReturnType = ctx.dataTypeName() != null
+                ? columnParser.parseDataType(ctx.dataTypeName(), ctx.typeParameters()) : null;
+            PolicyBodyCheck.compile(queryExecutor, catalog, policyName, declaredReturnType,
+                params, body, schema);
             final MaskingPolicy policy = new MaskingPolicy(policyName, params, returnType, body);
+            policy.setReturnDataType(declaredReturnType);
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) policy.setComment(comment);
             policy.setOwner(catalog.currentRoleForOwner());
@@ -177,7 +238,10 @@ public class CreateSecurityHandler implements CommandHandler {
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase();
             ddl.checkCreatePrivilege(Privilege.CREATE_ROW_ACCESS_POLICY, ContainerType.SCHEMA, schema.getName());
-            if (orReplace) { try { schema.dropRowAccessPolicy(policyName); } catch (final RuntimeException ignored) {} }
+            if (orReplace) {
+                queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
+                try { schema.dropRowAccessPolicy(policyName); } catch (final RuntimeException ignored) {}
+            }
             final List<Parameter> params = new ArrayList<>();
             if (ctx.parameterList() != null) {
                 for (final FrostlakeParser.ParameterDefContext p : ctx.parameterList().parameterDef()) {
@@ -187,6 +251,9 @@ public class CreateSecurityHandler implements CommandHandler {
             final String body = ctx.bodyDefinition() != null
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
+            // A row access policy's RETURNS is always BOOLEAN, spelled or not.
+            PolicyBodyCheck.compile(queryExecutor, catalog, policyName, BooleanType.BOOLEAN,
+                params, body, schema);
             final RowAccessPolicy policy = new RowAccessPolicy(policyName, params, body);
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) policy.setComment(comment);
@@ -235,6 +302,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final String body = ctx.bodyDefinition() != null
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
+            PolicyBodyCheck.requireNumericLimits(body);
             final JoinPolicy policy = new JoinPolicy(policyName, body);
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
@@ -285,6 +353,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final String body = ctx.bodyDefinition() != null
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
+            PolicyBodyCheck.requireNumericLimits(body);
             final AggregationPolicy policy = new AggregationPolicy(policyName, body);
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
@@ -336,6 +405,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final String body = ctx.bodyDefinition() != null
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
+            PolicyBodyCheck.requireNumericLimits(body);
             final ProjectionPolicy policy = new ProjectionPolicy(policyName, body);
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
@@ -406,30 +476,42 @@ public class CreateSecurityHandler implements CommandHandler {
         }
     }
 
+    /**
+     * CREATE [OR REPLACE] USER [IF NOT EXISTS]. The property list's form is checked first, as the account compiles
+     * it; then the name: IF NOT EXISTS leaves a user it finds as it is, and without OR REPLACE a user that exists is
+     * refused ({@code Object 'U1' already exists.}); last the checks against the new user's type, the ranges and
+     * the key policy, all before anything changes, so a refused statement leaves no user behind and a refused OR
+     * REPLACE leaves the old user standing.
+     */
     public Object handleCreateUser(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String userName = getText(ctx.identifier(0));
-        if (ctx.or_replace() != null) {
-            try { catalog.dropUser(userName); } catch (final RuntimeException ignored) {}
-        }
-        try {
-            if (ctx.userProperties() != null) {
-                catalog.createUser(userName, null, null);
-                UserProperties.apply(catalog.getUser(userName), ctx.userProperties().userProperty());
-            } else {
-                catalog.createUser(userName);
+        final List<FrostlakeParser.UserPropertyContext> properties = ctx.userProperties() != null
+            ? ctx.userProperties().userProperty() : new ArrayList<FrostlakeParser.UserPropertyContext>();
+        UserProperties.checkForm(properties);
+        if (ctx.or_replace() == null && catalog.hasUser(userName)) {
+            if (ifNotExists) {
+                ConditionalDdlOutcome.createSkipped();
+                logger.debug("User already exists (IF NOT EXISTS): {}", userName);
+                return null;
             }
-
-            final String comment = ddl.extractCommentFromList(ctx.commentClause());
-            if (comment != null) {
-                final User user = catalog.getUser(userName);
-                user.setComment(comment);
-            }
-
-            logger.trace("Created user: {}", userName);
-        } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
-            logger.debug("User already exists (IF NOT EXISTS): {}", userName);
+            throw new RuntimeException(SqlCompilationError.of("Object '" + userName + "' already exists."));
         }
+        UserProperties.checkNew(properties);
+        if (ctx.or_replace() != null && catalog.hasUser(userName)) {
+            catalog.dropUser(userName);
+        }
+        if (ctx.userProperties() != null) {
+            catalog.createUser(userName, null, null);
+            UserProperties.apply(catalog.getUser(userName), properties);
+        } else {
+            catalog.createUser(userName);
+        }
+        final String comment = ddl.extractCommentFromList(ctx.commentClause());
+        if (comment != null) {
+            final User user = catalog.getUser(userName);
+            user.setComment(comment);
+        }
+        logger.trace("Created user: {}", userName);
         return null;
     }
 

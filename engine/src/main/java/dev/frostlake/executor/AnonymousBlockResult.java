@@ -22,7 +22,9 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +39,13 @@ public final class AnonymousBlockResult {
 
     /** The name Snowflake gives the one column of an anonymous block's result. */
     public static final String COLUMN = "anonymous block";
+
+    /**
+     * The type a text result column declares: the unknown 128MB length, whatever the value's own width
+     * (live-verified through the driver for a returned literal, a VARCHAR(10) name, a bare FOR counter, a
+     * block with no RETURN and a CALL of a RETURNS VARCHAR(10) procedure alike).
+     */
+    public static final DataType TEXT = new StringType("VARCHAR", StringResultWidths.UNBOUNDED);
 
     private AnonymousBlockResult() {
     }
@@ -59,23 +68,24 @@ public final class AnonymousBlockResult {
     /**
      * The result of a block that ran to its end without a RETURN.
      *
-     * @return one row holding NULL, typed VARCHAR
+     * @return one row holding NULL, typed as a text
      */
     public static ResultSet withoutReturn() {
-        return of(null, StringType.VARCHAR);
+        return of(null, TEXT);
     }
 
     /**
-     * The type the result column declares for a value of {@code type}: a text at VARCHAR's full width
-     * and a binary at BINARY's, whatever width was written (live-verified: a VARCHAR(10) reads
-     * VARCHAR(16777216) and a BINARY(10) BINARY(8388608)); any other type as it is.
+     * The type the result column declares for a value of {@code type}: a text at the unknown 128MB length
+     * and a binary unsized, whatever width was written (live-verified: a VARCHAR(10) value reads
+     * VARCHAR(134217728) through the driver and in SYSTEM$TYPEOF over its RESULT_SCAN, and a table created
+     * over that scan stores VARCHAR(16777216); a BINARY(10) stores BINARY(8388608)); any other type as it is.
      *
      * @param type the value's type, or null
      * @return the column's type, or null when there is none
      */
     public static DataType columnType(final DataType type) {
-        if (type instanceof StringType) {
-            return StringType.VARCHAR;
+        if (type instanceof StringType && !(type instanceof UuidType)) {
+            return TEXT;
         }
         return type instanceof BinaryType ? BinaryType.UNSIZED : type;
     }

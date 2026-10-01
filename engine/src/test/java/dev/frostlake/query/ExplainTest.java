@@ -41,7 +41,7 @@ public class ExplainTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery(sql);
         final Set<String> ops = new HashSet<>();
         for (final Row row : rs.getRows()) {
-            ops.add(String.valueOf(row.getValue(1)));
+            ops.add(String.valueOf(row.getValue(rs.getColumnIndex("operation"))));
         }
         return ops;
     }

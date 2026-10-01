@@ -19,7 +19,9 @@ package dev.frostlake.persistence;
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Serializable snapshot of database metadata
@@ -33,4 +35,14 @@ public class DatabaseSnapshot implements Serializable {
     // READ ONLY flag. Primitive → old snapshots (predating this field) deserialize it as false (writable).
     public boolean readOnly;
     public List<SchemaSnapshot> schemas = new ArrayList<>();
+
+    // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
+    public Integer dataRetentionTimeInDays;
+    public boolean transientObject;
+    public HashMap<String, String> parameters = new HashMap<>();
+    public List<RoleSnapshot> databaseRoles = new ArrayList<>();
+
+    // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
+    // recorded, which reads back as an object carrying none.
+    public Map<String, String> tags;
 }

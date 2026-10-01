@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Represents a database SEQUENCE object
  */
 public class Sequence {
-    private final String name;
+    private String name;
     private final AtomicLong currentValue;
     private final long startValue;
     private long increment;
@@ -88,6 +88,11 @@ public class Sequence {
 
     public String getName() {
         return name;
+    }
+
+    /** The sequence's new canonical name (ALTER SEQUENCE … RENAME TO), its value and settings kept. */
+    public void setName(final String name) {
+        this.name = name;
     }
 
     public String getOwner() {

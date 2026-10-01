@@ -68,6 +68,15 @@ public class Stage extends SqlObject {
         return copyOptions;
     }
 
+    // The files the directory table has registered, by stage-relative path, as of the last REFRESH: each
+    // file's directory row (RELATIVE_PATH, SIZE, LAST_MODIFIED, MD5, ETAG, FILE_URL).
+    private final Map<String, List<Object>> directoryRegistry = new LinkedHashMap<>();
+
+    /** The directory table's registered files by stage-relative path, as of the last REFRESH. */
+    public Map<String, List<Object>> getDirectoryRegistry() {
+        return directoryRegistry;
+    }
+
     public boolean isDirectoryEnabled() {
         return directoryEnabled;
     }

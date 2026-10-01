@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
@@ -102,8 +103,7 @@ public class BindVariableSubstitutor {
                         && nameTok.getStartIndex() == t.getStopIndex() + 1) {
                     rejectDottedBindVariable(toks, i + 1, nameTok);
                     out.append(sql, cursor, t.getStartIndex());
-                    out.append(typedLiteral(nameTok.getText(), variables.get(nameTok.getText().toUpperCase()),
-                        isLiteralOnlySlot(toks, i)));
+                    out.append(typedLiteral(nameTok.getText(), variables.get(nameTok.getText().toUpperCase()), toks, i));
                     cursor = nameTok.getStopIndex() + 1;
                     i++;   // consumed the identifier too
                     continue;
@@ -221,11 +221,29 @@ public class BindVariableSubstitutor {
         return false;
     }
 
-    /** The value as a literal, cast to its declared NUMBER type when the name carries one and a cast may stand there. */
-    private String typedLiteral(final String name, final Object value, final boolean literalOnlySlot) {
+    /** Whether the bind at {@code colonIndex} is the whole argument of an IDENTIFIER() reference, which takes no cast. */
+    private static boolean isIdentifierArgument(final List<Token> toks, final int colonIndex) {
+        if (colonIndex < 2 || toks.get(colonIndex - 1).getType() != FrostlakeLexer.LPAREN) {
+            return false;
+        }
+        final int before = toks.get(colonIndex - 2).getType();
+        return before == FrostlakeParser.KW_IDENTIFIER_REF || before == FrostlakeParser.KW_IDENTIFIER_OPEN;
+    }
+
+    /**
+     * The value as a literal, cast to its declared NUMBER type when the name carries one and a cast may stand there;
+     * a NULL cast to whatever type the name is declared with.
+     */
+    private String typedLiteral(final String name, final Object value, final List<Token> toks, final int colonIndex) {
+        final boolean literalOnlySlot = isLiteralOnlySlot(toks, colonIndex);
         final String literal = toLiteral(value);
         final DataType declared = declarations == null ? null : declarations.getDeclaredVariableType(name);
-        if (value == null || literalOnlySlot || !(declared instanceof NumericType)
+        if (value == null) {
+            // A NULL keeps its declared type where live binds it so (TypedNullBind) and a cast may stand.
+            return literalOnlySlot || isIdentifierArgument(toks, colonIndex) ? literal
+                : TypedNullBind.spell(declared, NullBindSlot.at(toks, colonIndex));
+        }
+        if (literalOnlySlot || !(declared instanceof NumericType)
                 || (value instanceof Double && !Double.isFinite((Double) value))) {
             return literal;
         }

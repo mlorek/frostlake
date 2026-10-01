@@ -16,7 +16,15 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.StringType;
+import dev.frostlake.types.VariantType;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
@@ -50,6 +58,13 @@ import java.util.Map;
  *
  * <p>Every row is live-verified over overload PAIRS. A target an argument's row does not name keeps
  * the order the overloads were declared in, which is what this engine did for every pair before.
+ *
+ * <p>The argument's family is its expression's STATIC type where the engine can type it: an
+ * {@code ARRAY_CONSTRUCT(1)} is an ARRAY and a {@code PARSE_JSON('[1]')} a VARIANT, though both carry the
+ * same value. An untyped NULL literal ranks every family in one order of its own, whatever order the
+ * overloads were declared in: ARRAY, BINARY, BOOLEAN, DATE, NUMBER, OBJECT, FLOAT, VARCHAR, TIME,
+ * TIMESTAMP, VARIANT - the account's internal type names in alphabetical order (live-verified over all 55
+ * pairs of those eleven).
  */
 final class UdfOverloadPreference {
 
@@ -68,6 +83,8 @@ final class UdfOverloadPreference {
             "NUMBER", "FLOAT"));
         ORDERS.put("ARRAY", Arrays.asList("ARRAY", "VARIANT", "OBJECT", "VARCHAR"));
         ORDERS.put("OBJECT", Arrays.asList("OBJECT", "VARIANT", "ARRAY", "VARCHAR"));
+        ORDERS.put("NULL", Arrays.asList("ARRAY", "BINARY", "BOOLEAN", "DATE", "NUMBER", "OBJECT", "FLOAT",
+            "VARCHAR", "TIME", "TIMESTAMP", "VARIANT"));
     }
 
     private UdfOverloadPreference() {
@@ -94,12 +111,71 @@ final class UdfOverloadPreference {
      *         name the target at all
      */
     static int rank(final Object argument, final DataType parameterType) {
-        final List<String> order = ORDERS.get(familyOfValue(argument));
+        return rankFamily(familyOfValue(argument), parameterType);
+    }
+
+    /**
+     * Where this parameter type sits in an argument family's own order.
+     *
+     * @param family        the argument's family (see {@link #familyOf}), or null for one no order names
+     * @param parameterType the candidate overload's parameter type
+     * @return the position, lower being preferred, or {@link Integer#MAX_VALUE} when the order does not
+     *         name the target at all
+     */
+    static int rankFamily(final String family, final DataType parameterType) {
+        final List<String> order = family == null ? null : ORDERS.get(family);
         if (order == null || parameterType == null) {
             return Integer.MAX_VALUE;
         }
         final int at = order.indexOf(familyOfType(parameterType));
         return at < 0 ? Integer.MAX_VALUE : at;
+    }
+
+    /**
+     * The family an argument ranks the overloads as: NULL for an untyped NULL literal, its expression's static
+     * type where that is known, and its runtime value's otherwise.
+     *
+     * @param untypedNull whether the argument is a bare NULL literal
+     * @param staticType  the argument expression's static type, or null when it is not known
+     * @param value       the argument's value
+     * @return the family, or null for one no order names
+     */
+    static String familyOf(final boolean untypedNull, final DataType staticType, final Object value) {
+        if (untypedNull) {
+            return "NULL";
+        }
+        final String declared = familyOfStaticType(staticType);
+        return declared != null ? declared : familyOfValue(value);
+    }
+
+    /** The family a static argument type belongs to, or null for a type no order names. */
+    private static String familyOfStaticType(final DataType type) {
+        if (type instanceof VariantType) {
+            return "VARIANT";
+        }
+        if (type instanceof ArrayType) {
+            return "ARRAY";
+        }
+        if (type instanceof ObjectType) {
+            return "OBJECT";
+        }
+        if (type instanceof BooleanType) {
+            return "BOOLEAN";
+        }
+        if (type instanceof StringType) {
+            return "VARCHAR";
+        }
+        if (type instanceof NumericType) {
+            return NumericType.isApproximate(type) ? "FLOAT" : "NUMBER";
+        }
+        if (type instanceof DateTimeType) {
+            final String name = type.getName() == null ? "" : type.getName().toUpperCase();
+            if (name.startsWith("TIMESTAMP")) {
+                return "TIMESTAMP";
+            }
+            return name.startsWith("TIME") ? "TIME" : name.startsWith("DATE") ? "DATE" : null;
+        }
+        return null;
     }
 
     /** The family a runtime value belongs to, or null for one no order names. */
@@ -154,6 +230,9 @@ final class UdfOverloadPreference {
         }
         if (name.equals("STRING") || name.equals("TEXT") || name.equals("CHAR")) {
             return "VARCHAR";
+        }
+        if (type instanceof BinaryType) {
+            return "BINARY";
         }
         return name;
     }

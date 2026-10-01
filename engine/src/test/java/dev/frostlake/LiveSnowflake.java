@@ -16,14 +16,26 @@
 
 package dev.frostlake;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Properties;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.UUID;
 
 import net.snowflake.client.api.statement.SnowflakeStatement;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The live-Snowflake test switch. With {@code SF_LIVE=1} in the environment, the test base classes
@@ -39,13 +51,41 @@ import net.snowflake.client.api.statement.SnowflakeStatement;
  * Because the engine path shares one session across tests, statements that mutate session state
  * (transactions, autocommit, role, warehouse) mark it dirty and {@link #resetSharedIfDirty()}
  * restores the baseline before the next test. Secrets are never logged.
+ *
+ * <p>One run at a time: the first connection a JVM opens claims the account ({@link LiveAccountClaim}), and a
+ * run that finds the account claimed by another live run fails every live test at once, naming the holder,
+ * instead of letting the two runs drop each other's objects. The claim is refreshed every
+ * {@link LiveAccountClaim#HEARTBEAT_SECONDS} seconds on a session of its own and released at JVM exit, after the
+ * run's {@code test_db} is dropped; a run that dies without releasing it blocks the account for at most
+ * {@link LiveAccountClaim#STALE_AFTER_SECONDS} seconds. A run whose heartbeat finds its claim gone stops using the
+ * account: every live test after that fails at once, and the harness's cleanups drop nothing.
  */
 public final class LiveSnowflake {
+
+    private static final Logger logger = LoggerFactory.getLogger(LiveSnowflake.class);
 
     private static Connection shared;
     private static String initialRole;
     private static String initialWarehouse;
     private static boolean sharedDirty;
+
+    /** Guards the account claim's state; never held while waiting for the {@code LiveSnowflake} class lock. */
+    private static final Object CLAIM_LOCK = new Object();
+    /** How many times a run tries to take the claim, each on a new session, before it gives up. */
+    private static final int CLAIM_ATTEMPTS = 3;
+    /** This run's claim once taken, its dedicated session, and the timer refreshing its heartbeat. */
+    private static LiveAccountClaim accountClaim;
+    private static Connection claimConnection;
+    private static Timer heartbeat;
+    /** Whether this run holds the account's claim now. */
+    private static volatile boolean claimHeld;
+    /** Why this run may not use the account — the claim was refused or lost — or null. */
+    private static volatile String claimProblem;
+
+    /** The session parameters the harness itself sets, which a reset must leave standing. */
+    private static final Set<String> HARNESS_PARAMETERS = new HashSet<String>(Arrays.asList(
+        "CLIENT_RESULT_COLUMN_CASE_INSENSITIVE", "JSON_INDENT", "STATEMENT_TIMEOUT_IN_SECONDS",
+        "MULTI_STATEMENT_COUNT"));
 
     private LiveSnowflake() {
     }
@@ -55,8 +95,178 @@ public final class LiveSnowflake {
         return "1".equals(System.getenv("SF_LIVE"));
     }
 
-    /** A new prepared connection (caller closes) — used where each test wants its own session. */
+    /**
+     * A new prepared connection (caller closes) — used where each test wants its own session. The first one a
+     * JVM opens claims the account for the run; it fails when another live run holds the claim.
+     */
     public static Connection open() {
+        claimAccount();
+        return connect();
+    }
+
+    /**
+     * Fails unless nothing stops this run from using the account: the check every live statement path makes, so
+     * a run whose claim was refused, or lost to another run, stops at once instead of disturbing the holder.
+     *
+     * @throws IllegalStateException naming the run that holds the account
+     */
+    public static void checkAccountClaim() {
+        final String problem = claimProblem;
+        if (problem != null) {
+            throw new IllegalStateException(problem);
+        }
+    }
+
+    /**
+     * Whether this run holds the account's claim now. The cleanup paths drop nothing on an account this run no
+     * longer holds: after a lost claim, {@code test_db} and the new account objects belong to the holder.
+     *
+     * @return whether the claim is this run's
+     */
+    public static boolean holdsAccountClaim() {
+        return claimHeld;
+    }
+
+    /**
+     * Claims the account for this run, once per JVM: prepares the claim table, takes the claim, starts its
+     * heartbeat and registers the exit hook that drops {@code test_db} and then releases the claim. A refusal, or a
+     * claim that cannot be taken in {@link #CLAIM_ATTEMPTS} tries, is kept, so every later live test fails at once
+     * with the same sentence.
+     */
+    private static void claimAccount() {
+        synchronized (CLAIM_LOCK) {
+            checkAccountClaim();
+            if (claimHeld) {
+                return;
+            }
+            final String runId = UUID.randomUUID().toString();
+            final String holder = describeThisRun();
+            String refusal = null;
+            IllegalStateException failure = null;
+            for (int attempt = 0; attempt < CLAIM_ATTEMPTS; attempt++) {
+                Connection connection = null;
+                try {
+                    connection = connect();
+                    final LiveAccountClaim claim = LiveAccountClaim.onAccount(connection, runId, holder);
+                    claim.prepare();
+                    refusal = claim.acquire();
+                    if (refusal == null) {
+                        accountClaim = claim;
+                        claimConnection = connection;
+                        claimHeld = true;
+                    } else {
+                        closeQuietly(connection);
+                    }
+                    break;
+                } catch (final SQLException | IllegalStateException unreachable) {
+                    closeQuietly(connection);
+                    failure = new IllegalStateException("Cannot claim the live account in "
+                        + LiveAccountClaim.DATABASE + ": " + unreachable.getMessage(), unreachable);
+                }
+            }
+            if (!claimHeld) {
+                final IllegalStateException stop = refusal != null ? new IllegalStateException(refusal) : failure;
+                claimProblem = stop.getMessage();
+                throw stop;
+            }
+            final LiveAccountClaim claim = accountClaim;
+            logger.info("Live account claimed by this run: {} (run {})", claim.holder(), claim.runId());
+            heartbeat = new Timer("live-account-claim", true);
+            final long period = LiveAccountClaim.HEARTBEAT_SECONDS * 1000L;
+            heartbeat.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    beat();
+                }
+            }, period, period);
+            Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    closeShared();
+                    releaseAccountClaim();
+                }
+            }, "live-snowflake-cleanup"));
+        }
+    }
+
+    /**
+     * Refreshes the claim's heartbeat. A claim that is no longer this run's — another run holds it, it was
+     * released, or its table is gone — marks this run as stopped; a broken claim session is reopened for the next
+     * beat, since the claim itself lives in the row, not in the session.
+     */
+    private static void beat() {
+        synchronized (CLAIM_LOCK) {
+            if (!claimHeld) {
+                return;
+            }
+            try {
+                final String lost = accountClaim.heartbeat();
+                if (lost != null) {
+                    claimProblem = lost;
+                    claimHeld = false;
+                    heartbeat.cancel();
+                    logger.error(lost);
+                }
+            } catch (final SQLException | RuntimeException broken) {
+                logger.warn("Live account claim: heartbeat failed ({}); reconnecting for the next one",
+                    broken.getMessage());
+                closeQuietly(claimConnection);
+                try {
+                    claimConnection = connect();
+                    accountClaim = LiveAccountClaim.onAccount(claimConnection, accountClaim.runId(),
+                        accountClaim.holder());
+                } catch (final IllegalStateException unreachable) {
+                    logger.warn("Live account claim: cannot reconnect ({})", unreachable.getMessage());
+                }
+            }
+        }
+    }
+
+    /** Gives this run's claim up at JVM exit — only while it is still this run's — and closes its session. */
+    private static void releaseAccountClaim() {
+        synchronized (CLAIM_LOCK) {
+            if (heartbeat != null) {
+                heartbeat.cancel();
+            }
+            if (claimHeld) {
+                claimHeld = false;
+                try {
+                    accountClaim.release();
+                } catch (final SQLException e) {
+                    logger.warn("Live account claim: cannot release it ({}); it goes stale in {} s",
+                        e.getMessage(), LiveAccountClaim.STALE_AFTER_SECONDS);
+                }
+            }
+            closeQuietly(claimConnection);
+            claimConnection = null;
+        }
+    }
+
+    /** Who this run is, for the refusal another run reads: user, host, process and working directory. */
+    private static String describeThisRun() {
+        String host;
+        try {
+            host = InetAddress.getLocalHost().getHostName();
+        } catch (final UnknownHostException unknown) {
+            host = "an unknown host";
+        }
+        return System.getProperty("user.name") + "@" + host + " pid " + ProcessHandle.current().pid() + " in "
+            + System.getProperty("user.dir");
+    }
+
+    private static void closeQuietly(final Connection connection) {
+        if (connection == null) {
+            return;
+        }
+        try {
+            connection.close();
+        } catch (final SQLException ignored) {
+            // Best-effort close only.
+        }
+    }
+
+    /** A new prepared connection to the account, outside the claim. */
+    private static Connection connect() {
         final Properties props = new Properties();
         props.put("user", requiredEnv("SF_USER"));
         props.put("password", requiredEnv("SF_PASS"));
@@ -75,19 +285,15 @@ public final class LiveSnowflake {
     }
 
     /**
-     * The JVM-wide shared connection used by {@link LiveSnowflakeEngine}. Opened lazily; a shutdown
-     * hook drops the {@code test_db} working database and closes the session at JVM exit.
+     * The JVM-wide shared connection used by {@link LiveSnowflakeEngine}. Opened lazily; the exit hook the
+     * account claim registers drops the {@code test_db} working database and closes the session at JVM exit.
+     * Fails, like every live statement path, once this run's claim on the account is refused or lost.
      */
     public static synchronized Connection shared() {
+        checkAccountClaim();
         if (shared == null) {
             shared = open();
             captureBaseline();
-            Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    closeShared();
-                }
-            }, "live-snowflake-cleanup"));
         }
         return shared;
     }
@@ -139,6 +345,8 @@ public final class LiveSnowflake {
             // ALTER SESSION (JSON_INDENT, QUERY_TAG, …), and those changes poison every later
             // semi-structured comparison if left standing.
             applySessionParameters(statement);
+            clearSessionVariables(statement);
+            clearSessionParameters(statement);
             if (initialRole != null) {
                 statement.execute("USE ROLE " + initialRole);
             }
@@ -184,10 +392,13 @@ public final class LiveSnowflake {
         if (shared == null) {
             return;
         }
-        try (final Statement statement = shared.createStatement()) {
-            statement.execute("DROP DATABASE IF EXISTS test_db");
-        } catch (final Exception ignored) {
-            // Best-effort cleanup only.
+        if (claimHeld) {
+            // Only while the claim is this run's: after a lost claim, test_db is the holder's.
+            try (final Statement statement = shared.createStatement()) {
+                statement.execute("DROP DATABASE IF EXISTS test_db");
+            } catch (final Exception ignored) {
+                // Best-effort cleanup only.
+            }
         }
         try {
             shared.close();
@@ -214,6 +425,59 @@ public final class LiveSnowflake {
      * and the showed the cost of not restoring it — every semi-structured
      * assertion after that test received PRETTY-printed text and ~20 tests failed on rendering alone.
      */
+    /**
+     * Unset every session VARIABLE a test left behind. They are invisible to the parameter baseline —
+     * nothing in {@code ALTER SESSION} touches them — so without this a later test's SHOW VARIABLES
+     * reads the whole run's accumulation rather than its own.
+     *
+     * @param statement the session's statement
+     */
+    private static void clearSessionVariables(final Statement statement) {
+        final List<String> names = new ArrayList<String>();
+        try (final ResultSet rs = statement.executeQuery("SHOW VARIABLES")) {
+            while (rs.next()) {
+                names.add(rs.getString("name"));
+            }
+        } catch (final SQLException noVariables) {
+            return;
+        }
+        for (final String name : names) {
+            try {
+                statement.execute("UNSET " + name);
+            } catch (final SQLException alreadyGone) {
+                continue;
+            }
+        }
+    }
+
+    /**
+     * Unset every session-LEVEL parameter a test set, leaving the four the harness sets deliberately.
+     * A parameter the suite never names — TIMESTAMP_TYPE_MAPPING, say — otherwise survives the test
+     * that set it and silently retypes every later column.
+     *
+     * @param statement the session's statement
+     */
+    private static void clearSessionParameters(final Statement statement) {
+        final List<String> keys = new ArrayList<String>();
+        try (final ResultSet rs = statement.executeQuery("SHOW PARAMETERS IN SESSION")) {
+            while (rs.next()) {
+                final String key = rs.getString("key");
+                if ("SESSION".equalsIgnoreCase(rs.getString("level")) && !HARNESS_PARAMETERS.contains(key)) {
+                    keys.add(key);
+                }
+            }
+        } catch (final SQLException noParameters) {
+            return;
+        }
+        for (final String key : keys) {
+            try {
+                statement.execute("ALTER SESSION UNSET " + key);
+            } catch (final SQLException notUnsettable) {
+                continue;
+            }
+        }
+    }
+
     private static void applySessionParameters(final Statement statement) throws SQLException {
         // The result format is left at the driver's default (ARROW). It used to be forced to JSON
         // because Arrow needs the add-opens flag under Java 17 — the surefire argLine supplies it.
@@ -237,6 +501,11 @@ public final class LiveSnowflake {
         statement.execute("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 300");
         // A test's own QUERY_TAG must not outlive it either.
         statement.execute("ALTER SESSION UNSET QUERY_TAG");
+        // The engine models no secondary roles (CURRENT_SECONDARY_ROLES() is empty), while the account's
+        // users default to ALL, which lengthens every missing-object refusal's privilege hint to "Your
+        // primary role R or one of your secondary roles must have ...". NONE gives the short form the
+        // engine speaks. USE ROLE leaves the secondary roles as they were, so a reset re-applies this too.
+        statement.execute("USE SECONDARY ROLES NONE");
     }
 
     private static String requiredEnv(final String name) {

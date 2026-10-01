@@ -19,6 +19,7 @@ package dev.frostlake.functions.aggregate;
 import dev.frostlake.executor.AggregateRangeRefusal;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
 
@@ -33,6 +34,8 @@ import java.math.BigDecimal;
  */
 public class SumAccumulator implements AggregateFunction.Accumulator, ApproximateAwareAccumulator {
     private BigDecimal sum = BigDecimal.ZERO;
+    /** The running total of day-time interval inputs, or null while none has arrived. */
+    private DayTimeInterval intervals;
     private boolean hasValue = false;
     private boolean anyVariant = false;
     private boolean anyApproximate = false;
@@ -45,6 +48,13 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
 
     @Override
     public void accumulate(final Object value) {
+        if (value instanceof DayTimeInterval) {
+            // Day-time intervals add as intervals: SUM(ts - ts2) is the interval of the summed spans.
+            intervals = intervals == null ? DayTimeInterval.ofSeconds(((DayTimeInterval) value).seconds())
+                : intervals.plus((DayTimeInterval) value);
+            hasValue = true;
+            return;
+        }
         if (value != null) {
             if (value instanceof VariantValue) {
                 anyVariant = true;
@@ -83,11 +93,15 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
         if (!hasValue) {
             return null;
         }
+        if (intervals != null) {
+            return intervals;
+        }
         return anyVariant || anyApproximate ? Double.valueOf(approximate.correctedValue()) : sum;
     }
 
     @Override
     public void reset() {
+        intervals = null;
         sum = BigDecimal.ZERO;
         hasValue = false;
         anyVariant = false;
@@ -98,6 +112,9 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
         final SumAccumulator o = (SumAccumulator) other;
+        if (o.intervals != null) {
+            intervals = intervals == null ? o.intervals : intervals.plus(o.intervals);
+        }
         sum = sum.add(o.sum);
         requireSumFits(sum);
         if (o.approximate.isSeeded()) {

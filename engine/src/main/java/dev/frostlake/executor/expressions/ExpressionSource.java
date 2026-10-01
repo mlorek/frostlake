@@ -95,6 +95,21 @@ public final class ExpressionSource {
         return new SourcePosition(line, column);
     }
 
+    /**
+     * The statement-relative place of a token read from the parse tree of the text being compiled. A
+     * subquery or a view's body is compiled from its own text, with its origin in force, so its tokens count
+     * from where that text begins and compose with the origin; with no origin set the tree is the statement's
+     * own and the token's place is already the statement's.
+     *
+     * @param line   the token's line within the text it was parsed from
+     * @param column the token's column within that line
+     * @return where the token stands in the statement
+     */
+    public static SourcePosition place(final int line, final int column) {
+        final SourcePosition own = new SourcePosition(line, column);
+        return ORIGIN.get() == null ? own : resolve(own);
+    }
+
     /** Whether an origin is set — for callers that only build a message when one can be positioned. */
     public static boolean hasOrigin() {
         return ORIGIN.get() != null;

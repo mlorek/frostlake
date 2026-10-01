@@ -17,8 +17,8 @@
 package dev.frostlake.udf;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,18 +26,21 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ReturnTypeParametersTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(ReturnTypeParametersTest.class);
 
-    private static final String HANDLER_SIGNATURE =
-        "Snowflake validates a Java UDF handler's signature against the declared SQL type far more strictly "
-        + "than Frostlake: NUMBER/DECIMAL will not accept a double handler and TIMESTAMP will not accept a "
-        + "String one, so these handlers are rejected outright on a real account";
-
-    private static final String JAVA_PROCEDURE_SESSION =
-        "a Java stored procedure on Snowflake must take a com.snowflake.snowpark_java.Session as its first "
-        + "handler argument; Frostlake does not require it, so this handler will not compile on an account";
+    /** A CREATE that must be refused, with the refusal's text. */
+    private String refusalOf(final String sql) {
+        return assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.execute(sql);
+            }
+        }).getMessage();
+    }
 
     @Test
     public void testFunctionReturnsVarcharWithLength() throws SQLException {
@@ -62,12 +65,12 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         assertEquals("Hello World", rs.getString(1));
     }
 
+    /** A double handler cannot carry a DECIMAL result, so CREATE refuses it naming the storage type. */
     @Test
     public void testFunctionReturnsDecimalWithPrecisionAndScale() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), HANDLER_SIGNATURE);
         logger.info("Testing function with DECIMAL(10,2) return type");
 
-        statement.execute("""
+        final String refusal = refusalOf("""
         CREATE FUNCTION get_price()
         RETURNS DECIMAL(10,2)
         LANGUAGE JAVA
@@ -80,10 +83,8 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         }
         $$
         """);
-
-        final ResultSet rs = statement.executeQuery("SELECT get_price()");
-        rs.next();
-        assertEquals(99.99, rs.getDouble(1), 0.01);
+        assertTrue(refusal.contains("Snowflake type FIXED[SB16](10,2){nullable} is not supported for Java return "
+            + "type double in function GET_PRICE with handler PriceGetter.getPrice"), refusal);
     }
 
     @Test
@@ -109,12 +110,12 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         assertEquals(12345, rs.getInt(1));
     }
 
+    /** A String handler cannot carry a TIMESTAMP result. */
     @Test
     public void testFunctionReturnsTimestampWithPrecision() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), HANDLER_SIGNATURE);
         logger.info("Testing function with TIMESTAMP(9) return type");
 
-        statement.execute("""
+        final String refusal = refusalOf("""
         CREATE FUNCTION get_timestamp()
         RETURNS TIMESTAMP(9)
         LANGUAGE JAVA
@@ -127,18 +128,16 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         }
         $$
         """);
-
-        final ResultSet rs = statement.executeQuery("SELECT get_timestamp()");
-        rs.next();
-        assertEquals("2024-01-01 12:00:00.123456789", rs.getString(1));
+        assertTrue(refusal.contains("Snowflake type TIMESTAMP_NTZ[SB16](0,9){nullable} is not supported for Java "
+            + "return type String in function GET_TIMESTAMP with handler TimestampGetter.getTimestamp"), refusal);
     }
 
+    /** A TIMESTAMP_NTZ(6) is stored in eight bytes, which the refusal names. */
     @Test
     public void testFunctionReturnsTimestampNtzWithPrecision() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), HANDLER_SIGNATURE);
         logger.info("Testing function with TIMESTAMP_NTZ(6) return type");
 
-        statement.execute("""
+        final String refusal = refusalOf("""
         CREATE FUNCTION get_timestamp_ntz()
         RETURNS TIMESTAMP_NTZ(6)
         LANGUAGE JAVA
@@ -151,15 +150,13 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         }
         $$
         """);
-
-        final ResultSet rs = statement.executeQuery("SELECT get_timestamp_ntz()");
-        rs.next();
-        assertEquals("2024-01-01 12:00:00.123456", rs.getString(1));
+        assertTrue(refusal.contains("Snowflake type TIMESTAMP_NTZ[SB8](0,6){nullable} is not supported for Java "
+            + "return type String in function GET_TIMESTAMP_NTZ with handler TimestampNtzGetter.getTimestamp"),
+            refusal);
     }
 
     @Test
     public void testProcedureReturnsVarcharWithLength() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), JAVA_PROCEDURE_SESSION);
         logger.info("Testing procedure with VARCHAR(50) return type");
 
         statement.execute("""
@@ -182,12 +179,12 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         statement.execute("DROP PROCEDURE get_message()");
     }
 
+    /** A procedure's handler is judged the same way: a double cannot carry its DECIMAL result. */
     @Test
     public void testProcedureReturnsDecimalWithPrecisionAndScale() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), JAVA_PROCEDURE_SESSION);
         logger.info("Testing procedure with DECIMAL(15,4) return type");
 
-        statement.execute("""
+        final String refusal = refusalOf("""
         CREATE PROCEDURE calculate_total()
         RETURNS DECIMAL(15,4)
         LANGUAGE JAVA
@@ -202,9 +199,8 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         }
         $$
         """);
-
-        // Verify procedure was created successfully
-        statement.execute("DROP PROCEDURE calculate_total()");
+        assertTrue(refusal.contains("Snowflake type FIXED[SB16](15,4){nullable} is not supported for Java return "
+            + "type double in function CALCULATE_TOTAL with handler Calculator.calculateTotal"), refusal);
     }
 
     @Test

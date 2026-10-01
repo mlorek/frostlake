@@ -34,6 +34,10 @@ public class SqlResponse {
     // one sent named no live session (idle-expired, released, or from before a restart). The context a
     // client set up earlier — USE, variables, ALTER SESSION — is then gone.
     private boolean newSession;
+    // Whether this answer said anything about newSession. A client reading an answer from a server that
+    // predates the field sees it unset: such a server neither understands requireSession nor releases a
+    // session on DELETE.
+    private boolean newSessionAnswered;
 
     public SqlResponse() {
         this.resultSets = new ArrayList<>();
@@ -114,6 +118,15 @@ public class SqlResponse {
 
     public void setNewSession(final boolean newSession) {
         this.newSession = newSession;
+        this.newSessionAnswered = true;
+    }
+
+    /**
+     * Whether the answer carried newSession at all — false for one read from a server that predates the
+     * field. Not a bean property, so it never crosses the wire itself.
+     */
+    public boolean carriesNewSession() {
+        return newSessionAnswered;
     }
 
 }

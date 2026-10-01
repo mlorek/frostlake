@@ -17,14 +17,23 @@
 package dev.frostlake.types;
 
 /**
- * A VARCHAR the plan carries with no length of its own — the KEY and PATH columns of FLATTEN and the
- * VALUE column of SPLIT_TO_TABLE — which SYSTEM$TYPEOF spells as the bare word {@code VARCHAR} while a
- * table built over it declares the full-width VARCHAR(16777216) (live-verified). It IS a full-width
- * string everywhere a width is asked for; only its spelling in a type description differs.
+ * A VARCHAR the plan carries with no length of its own — the KEY and PATH columns of FLATTEN, the VALUE column
+ * of SPLIT_TO_TABLE, and the name, comment and definition columns of the INFORMATION_SCHEMA views — which
+ * SYSTEM$TYPEOF spells as the bare word {@code VARCHAR}, a driver's result metadata reads at the width nothing
+ * bounds, VARCHAR(134217728), and a table built over it declares as VARCHAR(16777216) (live-verified). Like a
+ * widthless string it stays itself when it leads a fold: {@code COALESCE(key, 'x')} is bare VARCHAR too.
  */
 public class LengthlessStringType extends StringType {
 
     public LengthlessStringType() {
-        super("VARCHAR", 16777216);
+        super("VARCHAR", StringResultWidths.UNBOUNDED);
+    }
+
+    @Override
+    public DataType getCommonType(final DataType other) {
+        if (other instanceof StringType) {
+            return this;
+        }
+        return super.getCommonType(other);
     }
 }

@@ -17,18 +17,22 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.ClientValueText;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 
 import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.net.URL;
 import java.sql.Array;
 import java.sql.Blob;
@@ -136,13 +140,41 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public String getString(final int columnIndex) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getString(interval, intervalNumberAt(columnIndex - 1));
+        }
         return ClientValueText.render(readValue(columnIndex), declaredType(columnIndex - 1));
     }
 
     @Override
     public String getString(final String columnLabel) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getString(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         return ClientValueText.render(readValue(columnLabel), declaredType(indexOf(columnLabel)));
+    }
+
+    /**
+     * The interval kind of a 0-based column (see {@link IntervalColumnReads}): the declared interval type
+     * decides, and a column the engine could not type is judged by its current cell. Null for any other
+     * column and for an index out of range.
+     */
+    private IntervalKind intervalKindAt(final int index) {
+        final List<ResultSetColumn> columns = engineResultSet.getColumns();
+        if (index < 0 || index >= columns.size()) {
+            return null;
+        }
+        return IntervalColumnReads.kindOf(columns.get(index).getDataType(), engineResultSet.getValue(index));
+    }
+
+    /** A 0-based interval column's current cell as its nanoseconds or months, null for SQL NULL. */
+    private BigInteger intervalNumberAt(final int index) {
+        final Object value = engineResultSet.getValue(index);
+        lastReadWasNull = value == null;
+        return value == null ? null : IntervalCells.number(value);
     }
 
     /** The declared type of a 0-based column, or null when the index is out of range. */
@@ -165,6 +197,10 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public int getInt(final int columnIndex) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getInt(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) {
@@ -176,6 +212,10 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public int getInt(final String columnLabel) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getInt(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) {
@@ -187,12 +227,20 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public Object getObject(final int columnIndex) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getObject(interval, intervalNumberAt(columnIndex - 1));
+        }
         return unwrapEngineValue(engineResultSet.getValue(columnIndex - 1), declaredType(columnIndex - 1));
     }
 
     @Override
     public Object getObject(final String columnLabel) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getObject(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         return unwrapEngineValue(engineResultSet.getValue(columnLabel), declaredType(indexOf(columnLabel)));
     }
 
@@ -201,15 +249,36 @@ public class DirectResultSet implements java.sql.ResultSet {
      * APPROXIMATE column's value is a Double whatever carrier the engine holds it in — the JDBC contract
      * for FLOAT and DOUBLE, and what the account's driver hands back — so an expression the engine
      * computed exactly still reaches the client as the double its declared type promises.
+     *
+     * <p>A temporal cell comes back as the {@code java.sql} class the column's metadata NAMES, not as the
+     * {@code java.time} value the engine carries: the account's driver answers {@code java.sql.Date} for a
+     * DATE, {@code java.sql.Time} for a TIME and a {@code java.sql.Timestamp} for each timestamp flavour,
+     * and a client reading {@code getColumnClassName} is entitled to cast to it.
      */
     private Object unwrapEngineValue(final Object value, final DataType declared) {
         if (value instanceof BinaryValue) {
             return ((BinaryValue) value).bytes();
         }
+        if (value != null && declared instanceof DateTimeType) {
+            final String family = declared.getName().toUpperCase();
+            if (family.equals("DATE")) {
+                return JdbcMarshaling.toDate(value);
+            }
+            if (family.equals("TIME")) {
+                return JdbcMarshaling.toTime(value);
+            }
+            if (family.startsWith("TIMESTAMP") || family.equals("DATETIME")) {
+                return JdbcMarshaling.toTimestamp(value);
+            }
+        }
         if (value instanceof VariantValue) {
             // Snowflake's JDBC driver surfaces VARIANT/OBJECT/ARRAY as their JSON text, a DOUBLE in the
             // fifteen-decimal form: the text the HTTP transport carries for the same cell.
             return VariantJsonText.clientTextOf((VariantValue) value);
+        }
+        if (value instanceof VectorValue) {
+            // The driver hands a VECTOR back as its text, the same getString reads (live-verified).
+            return ClientValueText.render(value, declared);
         }
         if (value instanceof String && VariantJsonText.isSemiStructured(declared)) {
             // A string read out of a VARIANT is its JSON text too, quotes included, as getString spells it.
@@ -291,6 +360,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public boolean getBoolean(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getBoolean(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return false;
         if (value instanceof Boolean) return (Boolean) value;
@@ -299,6 +372,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public byte getByte(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getByte(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).byteValue();
@@ -307,6 +384,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public short getShort(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getShort(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).shortValue();
@@ -315,6 +396,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public long getLong(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getLong(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).longValue();
@@ -323,6 +408,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public float getFloat(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getFloat(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).floatValue();
@@ -331,6 +420,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public double getDouble(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getDouble(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).doubleValue();
@@ -339,6 +432,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex, final int scale) throws SQLException {
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getBigDecimal(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
@@ -348,24 +445,43 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public byte[] getBytes(final int columnIndex) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getBytes(interval, intervalNumberAt(columnIndex - 1));
+        }
         return JdbcMarshaling.toBytes(engineResultSet.getValue(columnIndex - 1));
     }
 
     @Override
     public Date getDate(final int columnIndex) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            intervalNumberAt(columnIndex - 1);
+            return IntervalColumnReads.getDate(interval);
+        }
         return JdbcMarshaling.toDate(engineResultSet.getValue(columnIndex - 1));
     }
 
     @Override
     public Time getTime(final int columnIndex) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            intervalNumberAt(columnIndex - 1);
+            return IntervalColumnReads.getTime(interval);
+        }
         return JdbcMarshaling.toTime(engineResultSet.getValue(columnIndex - 1));
     }
 
     @Override
     public Timestamp getTimestamp(final int columnIndex) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            intervalNumberAt(columnIndex - 1);
+            return IntervalColumnReads.getTimestamp(interval);
+        }
         return JdbcMarshaling.toTimestamp(engineResultSet.getValue(columnIndex - 1));
     }
 
@@ -386,6 +502,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public boolean getBoolean(final String columnLabel) throws SQLException {
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getBoolean(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return false;
         if (value instanceof Boolean) return (Boolean) value;
@@ -394,6 +514,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public byte getByte(final String columnLabel) throws SQLException {
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getByte(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).byteValue();
@@ -402,6 +526,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public short getShort(final String columnLabel) throws SQLException {
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getShort(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).shortValue();
@@ -410,6 +538,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public long getLong(final String columnLabel) throws SQLException {
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getLong(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).longValue();
@@ -418,6 +550,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public float getFloat(final String columnLabel) throws SQLException {
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getFloat(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).floatValue();
@@ -426,6 +562,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public double getDouble(final String columnLabel) throws SQLException {
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getDouble(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).doubleValue();
@@ -434,6 +574,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final String columnLabel, final int scale) throws SQLException {
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getBigDecimal(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
@@ -445,24 +589,43 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public byte[] getBytes(final String columnLabel) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getBytes(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         return JdbcMarshaling.toBytes(engineResultSet.getValue(columnLabel));
     }
 
     @Override
     public Date getDate(final String columnLabel) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            intervalNumberAt(indexOf(columnLabel));
+            return IntervalColumnReads.getDate(interval);
+        }
         return JdbcMarshaling.toDate(engineResultSet.getValue(columnLabel));
     }
 
     @Override
     public Time getTime(final String columnLabel) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            intervalNumberAt(indexOf(columnLabel));
+            return IntervalColumnReads.getTime(interval);
+        }
         return JdbcMarshaling.toTime(engineResultSet.getValue(columnLabel));
     }
 
     @Override
     public Timestamp getTimestamp(final String columnLabel) throws SQLException {
         checkClosed();
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            intervalNumberAt(indexOf(columnLabel));
+            return IntervalColumnReads.getTimestamp(interval);
+        }
         return JdbcMarshaling.toTimestamp(engineResultSet.getValue(columnLabel));
     }
 
@@ -524,6 +687,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex) throws SQLException {
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getBigDecimal(interval, intervalNumberAt(columnIndex - 1));
+        }
         final Object value = readValue(columnIndex);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
@@ -532,6 +699,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final String columnLabel) throws SQLException {
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getBigDecimal(interval, intervalNumberAt(indexOf(columnLabel)));
+        }
         final Object value = readValue(columnLabel);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
@@ -1505,12 +1676,20 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public <T> T getObject(final int columnIndex, final Class<T> type) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        final IntervalKind interval = intervalKindAt(columnIndex - 1);
+        if (interval != null) {
+            return IntervalColumnReads.getObject(interval, intervalNumberAt(columnIndex - 1), type);
+        }
+        return TypedObjectReads.getObject(this, columnIndex, type);
     }
 
     @Override
     public <T> T getObject(final String columnLabel, final Class<T> type) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
+        if (interval != null) {
+            return IntervalColumnReads.getObject(interval, intervalNumberAt(indexOf(columnLabel)), type);
+        }
+        return TypedObjectReads.getObject(this, findColumn(columnLabel), type);
     }
 
     @Override

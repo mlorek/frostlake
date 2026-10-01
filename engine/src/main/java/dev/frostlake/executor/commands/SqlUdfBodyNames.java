@@ -51,13 +51,26 @@ final class SqlUdfBodyNames {
      * @param parameters the canonical names the signature declares, upper-cased
      */
     static void rejectUnknownNames(final ParseTree body, final Set<String> parameters) {
+        rejectUnknownNames(body, parameters, 1);
+    }
+
+    /**
+     * Refuse the first name in the body that the signature does not declare, for a text whose first line stands
+     * {@code firstLineShift} characters from the frame's: 1 for the body as written, 0 for a statement that already
+     * opens with the frame's own parenthesis.
+     *
+     * @param body           the parsed expression body
+     * @param parameters     the canonical names the signature declares, upper-cased
+     * @param firstLineShift how far the text's first line stands from the frame's
+     */
+    static void rejectUnknownNames(final ParseTree body, final Set<String> parameters, final int firstLineShift) {
         final FrostlakeParser.QualifiedNameContext unknown = firstUnknown(body, parameters);
         if (unknown == null) {
             return;
         }
         final Token at = unknown.getStart();
         throw new RuntimeException(SqlCompilationError.at(at.getLine(),
-            at.getCharPositionInLine() + (at.getLine() == 1 ? 1 : 0),
+            at.getCharPositionInLine() + (at.getLine() == 1 ? firstLineShift : 0),
             "invalid identifier '" + unknown.getText().toUpperCase() + "'"));
     }
 

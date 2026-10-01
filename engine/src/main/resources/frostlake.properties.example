@@ -7,6 +7,10 @@
 http.port=8080
 http.host=localhost
 http.maxConnections=100
+# The Snowflake REST APIs under /api/v2: how long a request waits for its operation before it is answered
+# 202 Accepted with a result handle, and how long a handle stays fetchable at /api/v2/results/<handle>.
+http.rest.syncWaitMs=30000
+http.rest.resultRetentionMs=3600000
 
 # Database Defaults — where every fresh session starts (the engine's bootstrap session and each
 # HTTP session alike). A non-default database is created on first boot, so this is the way to give
@@ -81,6 +85,14 @@ stage.file.urlEnabled=false
 
 # Logging Configuration
 logging.level=INFO
+
+# Internal stages (named, table and user stages) keep their files under one local directory each,
+# below this root (default: <user-home>/.frostlake_stages/internal):
+# stage.internal.localRoot=/var/frostlake_stages/internal
+# A stage's names are flat, as on a real account: a file 'dir' and a file 'dir/g' coexist. On disk the
+# file 'dir' is then kept inside the directory 'dir' as the entry '%00'; every other file keeps its plain
+# path, and a segment of dots or an empty one is percent-encoded ('..' as '%2E%2E', '//' as '%2F'). LIST,
+# GET, REMOVE, METADATA$FILENAME and the directory table report the names as written.
 
 # Stage S3 -> local filesystem resolution
 # Maps s3://bucket/key references to local files for local/CI testing — both stage file operations

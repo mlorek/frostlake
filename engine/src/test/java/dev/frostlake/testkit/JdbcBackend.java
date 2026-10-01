@@ -37,23 +37,40 @@ public final class JdbcBackend implements Backend {
     private final Set<Capability> capabilities;
     private final Connection connection;
     private final Statement statement;
-    private final String closingStatement;
+    /** The role the session opened with, and the warehouse, so a case cannot take either away. */
+    private final String openingRole;
+    private final String openingWarehouse;
 
     /**
      * @param name the backend's name
      * @param connection the connection every statement runs on, closed with the backend
      * @param capabilities what this connection's transport reports
-     * @param closingStatement run before the connection closes — a live run drops its
-     *        {@code test_db} — or null
      * @throws SQLException when no statement can be created
      */
-    public JdbcBackend(final String name, final Connection connection, final Set<Capability> capabilities,
-                       final String closingStatement) throws SQLException {
+    public JdbcBackend(final String name, final Connection connection, final Set<Capability> capabilities)
+            throws SQLException {
         this.name = name;
         this.connection = connection;
         this.capabilities = capabilities;
-        this.closingStatement = closingStatement;
         this.statement = connection.createStatement();
+        this.openingRole = sessionValue("CURRENT_ROLE()");
+        this.openingWarehouse = sessionValue("CURRENT_WAREHOUSE()");
+    }
+
+    /**
+     * One session value, or null when the backend has none. Asked once, at construction, so the reset
+     * that follows every case restores what the SESSION opened with rather than what the last case left.
+     *
+     * @param function the context function to read
+     * @return its value, or null
+     */
+    private String sessionValue(final String function) {
+        try (ResultSet rs = statement.executeQuery("SELECT " + function)) {
+            final String value = rs.next() ? rs.getString(1) : null;
+            return value == null || value.isEmpty() ? null : value;
+        } catch (final SQLException noSuchValue) {
+            return null;
+        }
     }
 
     @Override
@@ -113,6 +130,18 @@ public final class JdbcBackend implements Backend {
 
     @Override
     public void resetContext() throws SQLException {
+        // The session is ONE session for the whole corpus, so what a case leaves behind is still in
+        // force for the next one. Two things a case takes away stop every later case dead: a USE ROLE
+        // onto a role that may not CREATE DATABASE, and a warehouse — CREATE WAREHOUSE makes the new
+        // warehouse current, so a case that creates one and drops it again leaves the session with
+        // none at all. Both are restored to what the session opened with, BEFORE the reset statements
+        // that need them.
+        if (openingRole != null) {
+            statement.execute("USE ROLE " + openingRole);
+        }
+        if (openingWarehouse != null) {
+            statement.execute("USE WAREHOUSE " + openingWarehouse);
+        }
         for (final String sql : RESET_CONTEXT) {
             statement.execute(sql);
         }
@@ -121,11 +150,8 @@ public final class JdbcBackend implements Backend {
     @Override
     public void close() throws SQLException {
         try {
-            if (closingStatement != null) {
-                statement.execute(closingStatement);
-            }
-        } finally {
             statement.close();
+        } finally {
             connection.close();
         }
     }

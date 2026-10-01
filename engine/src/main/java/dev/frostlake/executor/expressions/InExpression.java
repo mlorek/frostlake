@@ -26,6 +26,7 @@ public class InExpression implements Expression {
     private final List<Expression> values;  // For value list
     private final SubqueryExpression subquery;  // For subquery
     private final boolean not;
+    private SourcePosition position;
 
     public InExpression(final Expression value, final List<Expression> values, final boolean not) {
         this.value = value;
@@ -55,6 +56,15 @@ public class InExpression implements Expression {
 
     public boolean isNot() {
         return not;
+    }
+
+    /** Where the IN keyword, or the NOT before it, stands, which a ROW refusal points at; null when unknown. */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     public boolean hasSubquery() {

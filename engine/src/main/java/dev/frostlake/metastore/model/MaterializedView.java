@@ -16,8 +16,10 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.SqlObject;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,16 +34,34 @@ public class MaterializedView extends SqlObject {
     private boolean suspended;
     private boolean secure = false;
     private LocalDateTime lastRefreshedTime;
+    /** The source table's last data change this view has materialized, or null for none — see {@link #getMaterializedAsOf}. */
+    private Instant materializedAsOf;
+    /** The database the view reads from, as the catalog names it — see {@link #setSource}. */
+    private String sourceDatabase;
+    private String sourceSchema;
+    private String sourceTable;
+    /** The CREATE statement as SHOW MATERIALIZED VIEWS spells it, or null — see {@link #getListedText}. */
+    private String listedText;
 
     public MaterializedView(final String name, final String definition) {
-        super(name);
-        this.definition = definition;
-        this.columnNames = null;
-        this.suspended = false;
+        this(name, null, definition, StatementClock.instant());
     }
 
     public MaterializedView(final String name, final List<String> columnNames, final String definition) {
-        super(name);
+        this(name, columnNames, definition, StatementClock.instant());
+    }
+
+    /**
+     * A view created at a given moment, as a restored snapshot brings it back.
+     *
+     * @param name the view's name
+     * @param columnNames the written column list, or null when the view names none
+     * @param definition the defining query's text
+     * @param createdTime when it was created
+     */
+    public MaterializedView(final String name, final List<String> columnNames, final String definition,
+                            final Instant createdTime) {
+        super(name, createdTime);
         this.definition = definition;
         this.columnNames = columnNames;
         this.suspended = false;
@@ -106,7 +126,57 @@ public class MaterializedView extends SqlObject {
         this.lastRefreshedTime = lastRefreshedTime;
     }
 
+    /**
+     * The last write of the source table that this view has caught up with: the write before it was created,
+     * or before it last resumed or refreshed. Null when the table had never been written by then. SHOW
+     * MATERIALIZED VIEWS reports it as refreshed_on and compacted_on, and measures behind_by from it.
+     */
+    public Instant getMaterializedAsOf() {
+        return materializedAsOf;
+    }
+
+    public void setMaterializedAsOf(final Instant materializedAsOf) {
+        this.materializedAsOf = materializedAsOf;
+    }
+
     public boolean isSecure() { return secure; }
+
+    /**
+     * Note the one table the view reads, which SHOW MATERIALIZED VIEWS names in its three source columns.
+     *
+     * @param database the table's database
+     * @param schema   the table's schema
+     * @param table    the table
+     */
+    public void setSource(final String database, final String schema, final String table) {
+        this.sourceDatabase = database;
+        this.sourceSchema = schema;
+        this.sourceTable = table;
+    }
+
+    public String getSourceDatabase() {
+        return sourceDatabase;
+    }
+
+    public String getSourceSchema() {
+        return sourceSchema;
+    }
+
+    public String getSourceTable() {
+        return sourceTable;
+    }
+
+    /**
+     * The CREATE statement as SHOW MATERIALIZED VIEWS spells it: as written, but with the view's own COMMENT
+     * clause re-printed as {@code comment = '…'}. Null when the view was not created from a statement here.
+     */
+    public String getListedText() {
+        return listedText;
+    }
+
+    public void setListedText(final String listedText) {
+        this.listedText = listedText;
+    }
 
     /**
      * The materialized view's full {@code CREATE OR REPLACE} statement rendered against

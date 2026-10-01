@@ -17,16 +17,17 @@
 package dev.frostlake.transaction;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.stream.StreamManager;
 import java.time.Instant;
-
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,6 +65,11 @@ public class TransactionManager {
     public Transaction beginTransaction() {
         final long txnId = transactionIdGenerator.getAndIncrement();
         final Transaction txn = new Transaction(txnId, catalog, storageEngine, streamManager);
+        // The session the statement runs in owns the transaction: its number is what SHOW TRANSACTIONS and
+        // SHOW LOCKS print, and each session's differs.
+        if (sessionContext != null) {
+            txn.setSessionNumber(sessionContext.getSessionNumber());
+        }
         activeTransactions.put(txnId, txn);
         currentTransaction.set(txn);
         return txn;
@@ -192,7 +198,7 @@ public class TransactionManager {
     /** Record the id of a transaction that is about to complete (commit or rollback). */
     private void publishCompletion(final Transaction txn) {
         if (txn != null && sessionContext != null) {
-            sessionContext.setLastTransactionId(String.valueOf(txn.getId()));
+            sessionContext.setLastTransactionId(String.valueOf(txn.getPublicId()));
         }
     }
 
@@ -214,6 +220,12 @@ public class TransactionManager {
             // Apply all changes
             txn.commit();
             txn.setState(TransactionState.COMMITTED);
+            // The statements that ran inside it became visible now, not when each one finished.
+            final LocalDateTime committedAt = LocalDateTime.now(ZoneOffset.UTC);
+            for (final QueryHistory statement : txn.getStatements()) {
+                statement.setVisibleFrom(committedAt);
+                statement.markVisibleSequence();
+            }
         } catch (final Exception e) {
             txn.setState(TransactionState.FAILED);
             throw new RuntimeException("Failed to commit transaction", e);

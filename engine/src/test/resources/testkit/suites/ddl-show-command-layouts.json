@@ -175,7 +175,7 @@
     {"name": "show-users-carries-live-column-layout", "steps": [
       {"sql": "CREATE OR REPLACE USER user_probe COMMENT = 'uc' DEFAULT_ROLE = PUBLIC"},
       {"sql": "SHOW USERS",
-       "expect": {"columns": ["name", "created_on", "login_name", "display_name", "first_name", "last_name", "email", "mins_to_unlock", "days_to_expiry", "comment", "disabled", "must_change_password", "snowflake_lock", "default_warehouse", "default_namespace", "default_role", "default_secondary_roles", "ext_authn_duo", "ext_authn_uid", "mins_to_bypass_mfa", "owner", "last_success_login", "expires_at_time", "locked_until_time", "has_password", "has_rsa_public_key", "type", "has_mfa", "has_pat", "has_workload_identity", "is_from_organization_user"]}},
+       "expect": {"columns": ["name", "created_on", "login_name", "display_name", "first_name", "last_name", "email", "mins_to_unlock", "days_to_expiry", "comment", "disabled", "must_change_password", "snowflake_lock", "default_warehouse", "default_namespace", "default_role", "default_secondary_roles", "ext_authn_duo", "ext_authn_uid", "mins_to_bypass_mfa", "owner", "last_success_login", "expires_at_time", "locked_until_time", "has_password", "has_rsa_public_key", "type", "has_mfa", "has_pat", "has_workload_identity", "allowed_interfaces", "is_from_organization_user"]}},
       {"sql": "SELECT \"disabled\", \"must_change_password\", \"type\", \"default_secondary_roles\", \"login_name\", \"display_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'USER_PROBE'",
        "expect": {"rows": [["false", "false", "PERSON", "[\"ALL\"]", "USER_PROBE", "USER_PROBE"]]}},
       {"sql": "DROP USER user_probe"}

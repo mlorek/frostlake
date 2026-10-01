@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.types.DataType;
 
 /**
@@ -31,6 +32,8 @@ public final class StarColumn {
     private final DataType dataType;
     private final boolean nullable;
     private final boolean nullabilityKnown;
+    private final boolean replaced;
+    private final SourcePosition origin;
 
     public StarColumn(final String expression, final String outputName, final String sourceName,
                       final DataType dataType) {
@@ -44,6 +47,14 @@ public final class StarColumn {
 
     public StarColumn(final String expression, final String outputName, final String sourceName,
                       final DataType dataType, final boolean nullable, final boolean nullabilityKnown) {
+        this(expression, outputName, sourceName, dataType, nullable, nullabilityKnown, null, false);
+    }
+
+    public StarColumn(final String expression, final String outputName, final String sourceName,
+                      final DataType dataType, final boolean nullable, final boolean nullabilityKnown,
+                      final SourcePosition origin, final boolean replaced) {
+        this.replaced = replaced;
+        this.origin = origin;
         this.expression = expression;
         this.outputName = outputName;
         this.sourceName = sourceName;
@@ -80,8 +91,22 @@ public final class StarColumn {
         return nullabilityKnown;
     }
 
+    /**
+     * Where a REPLACE'd column's expression was written, so a refusal inside it is positioned there
+     * ({@code SELECT * REPLACE (nosuch AS id)} is "error line 1 at position 18"); null for a column the star
+     * projects as itself, which nobody wrote.
+     */
+    public SourcePosition getOrigin() {
+        return origin;
+    }
+
     /** Whether the output name differs from the source column name (RENAME applied). */
     public boolean isRenamed() {
         return !outputName.equalsIgnoreCase(sourceName);
+    }
+
+    /** Whether the star's REPLACE substituted an expression of its own for the source column. */
+    public boolean isReplaced() {
+        return replaced;
     }
 }

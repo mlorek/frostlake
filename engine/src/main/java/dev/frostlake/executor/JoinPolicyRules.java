@@ -78,7 +78,7 @@ public final class JoinPolicyRules {
             if (type != null && (type.LEFT() != null || type.RIGHT() != null || type.FULL() != null)) {
                 return NO_JOIN;
             }
-            if (type != null && type.CROSS() != null) {
+            if (join.CROSS() != null) {
                 return UNSATISFIED;
             }
             if (join.USING() != null) {

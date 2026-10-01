@@ -20,6 +20,7 @@ import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.TypedScalarNode;
+import dev.frostlake.values.UuidTextNode;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 
@@ -77,6 +78,12 @@ public final class HashCanonicalValue {
     private static final byte TAG_VARIANT_BOOLEAN = 'b';
     /** A JSON null inside a variant, which is not SQL NULL. */
     private static final byte TAG_VARIANT_NULL = 'n';
+    /** A UUID, which hashes apart from its own text. */
+    private static final byte TAG_UUID = 'U';
+    /** A UUID inside a variant, apart from the bare UUID and from a string member. */
+    private static final byte TAG_VARIANT_UUID = 'u';
+    /** An OBJECT or ARRAY holding a UUID member, apart from the same JSON holding strings. */
+    private static final byte TAG_CONTAINER_UUID = 'W';
 
     /** Nanoseconds are a scale-9 fraction of a second, never a division — a division can be inexact. */
     private static final int NANO_SCALE = 9;
@@ -94,6 +101,11 @@ public final class HashCanonicalValue {
         }
         if (value instanceof BinaryValue) {
             return tagged(TAG_TEXT, ((BinaryValue) value).bytes());
+        }
+        if (value instanceof UuidTextNode) {
+            // A UUID argument arrives as the node that remembers its type: live's HASH(u) differs from HASH of
+            // its text, of the same UUID wrapped in a VARIANT, and of a string argument alike.
+            return tagged(TAG_UUID, ((UuidTextNode) value).asText().getBytes(StandardCharsets.UTF_8));
         }
         if (value instanceof String) {
             return tagged(TAG_TEXT, ((String) value).getBytes(StandardCharsets.UTF_8));
@@ -120,8 +132,11 @@ public final class HashCanonicalValue {
         if (node.isNull()) {
             return tagged(TAG_VARIANT_NULL, new byte[0]);
         }
+        if (node instanceof UuidTextNode) {
+            return tagged(TAG_VARIANT_UUID, node.asText().getBytes(StandardCharsets.UTF_8));
+        }
         if (node.isObject() || node.isArray()) {
-            return tagged(TAG_CONTAINER,
+            return tagged(UuidTextNode.anywhereIn(node) ? TAG_CONTAINER_UUID : TAG_CONTAINER,
                 ArrayFunctionHelper.toCanonicalJson(node).getBytes(StandardCharsets.UTF_8));
         }
         if (node.isBoolean()) {

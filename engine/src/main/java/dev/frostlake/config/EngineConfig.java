@@ -43,6 +43,10 @@ public class EngineConfig {
     public static final String PROP_HTTP_PORT = "http.port";
     public static final String PROP_HTTP_HOST = "http.host";
     public static final String PROP_HTTP_MAX_CONNECTIONS = "http.maxConnections";
+    /** How long a {@code /api/v2} request waits for its operation before it is answered 202 Accepted. */
+    public static final String PROP_HTTP_REST_SYNC_WAIT_MS = "http.rest.syncWaitMs";
+    /** How long a {@code /api/v2} result handle stays fetchable after it was issued. */
+    public static final String PROP_HTTP_REST_RESULT_RETENTION_MS = "http.rest.resultRetentionMs";
     public static final String PROP_DATABASE_DEFAULT = "database.default";
     public static final String PROP_SCHEMA_DEFAULT = "schema.default";
     public static final String PROP_ACCOUNT_ID = "account.id";
@@ -80,6 +84,8 @@ public class EngineConfig {
     private static final int DEFAULT_HTTP_PORT = 8080;
     private static final String DEFAULT_HTTP_HOST = "localhost";
     private static final int DEFAULT_MAX_CONNECTIONS = 100;
+    private static final int DEFAULT_REST_SYNC_WAIT_MS = 30000;
+    private static final int DEFAULT_REST_RESULT_RETENTION_MS = 3600000;
     private static final String DEFAULT_DATABASE = "SNOWFLAKE";
     private static final String DEFAULT_SCHEMA = "PUBLIC";
     private static final String DEFAULT_ACCOUNT_ID = "ABC12345";
@@ -161,6 +167,8 @@ public class EngineConfig {
         properties.setProperty(PROP_HTTP_PORT, String.valueOf(DEFAULT_HTTP_PORT));
         properties.setProperty(PROP_HTTP_HOST, DEFAULT_HTTP_HOST);
         properties.setProperty(PROP_HTTP_MAX_CONNECTIONS, String.valueOf(DEFAULT_MAX_CONNECTIONS));
+        properties.setProperty(PROP_HTTP_REST_SYNC_WAIT_MS, String.valueOf(DEFAULT_REST_SYNC_WAIT_MS));
+        properties.setProperty(PROP_HTTP_REST_RESULT_RETENTION_MS, String.valueOf(DEFAULT_REST_RESULT_RETENTION_MS));
         properties.setProperty(PROP_DATABASE_DEFAULT, DEFAULT_DATABASE);
         properties.setProperty(PROP_SCHEMA_DEFAULT, DEFAULT_SCHEMA);
         properties.setProperty(PROP_ACCOUNT_ID, DEFAULT_ACCOUNT_ID);
@@ -231,6 +239,16 @@ public class EngineConfig {
 
     public int getMaxConnections() {
         return getIntProperty(PROP_HTTP_MAX_CONNECTIONS, DEFAULT_MAX_CONNECTIONS);
+    }
+
+    /** How long a {@code /api/v2} request waits for its operation before it is answered 202 Accepted. */
+    public int getRestSyncWaitMs() {
+        return getIntProperty(PROP_HTTP_REST_SYNC_WAIT_MS, DEFAULT_REST_SYNC_WAIT_MS);
+    }
+
+    /** How long a {@code /api/v2} result handle stays fetchable after it was issued. */
+    public int getRestResultRetentionMs() {
+        return getIntProperty(PROP_HTTP_REST_RESULT_RETENTION_MS, DEFAULT_REST_RESULT_RETENTION_MS);
     }
 
     public String getDefaultDatabase() {

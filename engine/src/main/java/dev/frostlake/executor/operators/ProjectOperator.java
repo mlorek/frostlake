@@ -16,8 +16,10 @@
 
 package dev.frostlake.executor.operators;
 
+import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.ProjectionSlot;
+import dev.frostlake.executor.RelationBody;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.RowOrdinal;
@@ -44,6 +46,7 @@ public class ProjectOperator implements Operator {
 
     private final List<String> projectionExpressions;
     private List<SourcePosition> expressionOrigins;
+    private List<Integer> sourceSlots;
     private final List<String> columnAliases;
     private final RowExpressionEvaluator expressionEvaluator;
     private final Map<String, Object> lateralAliasSink;
@@ -121,6 +124,21 @@ public class ProjectOperator implements Operator {
         this.expressionOrigins = expressionOrigins;
     }
 
+    /**
+     * The input-row slot each item reads instead of evaluating its expression, index-aligned with the
+     * expressions and -1 where the expression is evaluated as usual. A star over a relation holding two
+     * columns of one name fills these: each expanded column names itself, and the name alone would read
+     * the first one twice, where the star projects them by position.
+     */
+    public void setSourceSlots(final List<Integer> sourceSlots) {
+        this.sourceSlots = sourceSlots;
+    }
+
+    /** The input-row slot item {@code index} reads, or -1 when it evaluates its expression. */
+    private int slotOf(final int index) {
+        return sourceSlots != null && index < sourceSlots.size() ? sourceSlots.get(index) : -1;
+    }
+
     @Override
     public List<Row> execute(final List<Row> input, final OperatorContext context) {
         if (projectionExpressions.isEmpty()) {
@@ -160,27 +178,38 @@ public class ProjectOperator implements Operator {
             for (int i = 0; i < projectionExpressions.size(); i++) {
                 final String expr = projectionExpressions.get(i).trim();
                 final Object value;
+                final int slot = slotOf(i);
+                // A star column that reads its own slot: its name is shared with a sibling, so only the
+                // position tells the two apart.
+                if (slot >= 0 && slot < row.getValues().size()) {
+                    value = row.getValue(slot);
                 // If the expression is exactly a previously-defined alias, reuse that value — but only
                 // when no FROM-source column has that name: the real column takes precedence over a
                 // same-named sibling alias (what makes a swap projection `SELECT t AS s, s AS t` read
                 // both values from the input row instead of collapsing to t, t).
-                if (rowAliasValues.containsKey(expr.toUpperCase()) && !isInputColumn(expr, context)) {
+                } else if (rowAliasValues.containsKey(expr.toUpperCase()) && !isInputColumn(expr, context)) {
                     value = rowAliasValues.get(expr.toUpperCase());
                 } else {
                     // Note where this item began in the statement, so a message about an unresolvable
                     // column inside it can carry the position live always reports. A star-expanded
                     // item has no origin — nobody wrote it — and reports none.
                     final SourcePosition displaced = ExpressionSource.beginNested(originOf(i));
+                    Object computed;
                     try {
-                        value = evaluateExpression(parsedExpressions.get(i), row);
+                        computed = evaluateExpression(parsedExpressions.get(i), row);
                     } catch (final RuntimeException failed) {
-                        // Note which item this was on the way out, so a DML wrapping this query can
-                        // name the target column the projection was feeding — see ProjectionSlot.
-                        ProjectionSlot.failedAt(i);
-                        throw failed;
+                        if (!RelationBody.isActive() || !DeferredFault.deferrable(failed)) {
+                            // Note which item this was on the way out, so a DML wrapping this query can
+                            // name the target column the projection was feeding — see ProjectionSlot.
+                            ProjectionSlot.failedAt(i);
+                            throw failed;
+                        }
+                        // A relation's item waits for its reader: the fault stays in the cell.
+                        computed = new DeferredFault(failed);
                     } finally {
                         ExpressionSource.end(displaced);
                     }
+                    value = computed;
                 }
                 projectedValues.add(value);
                 if (columnAliases != null && columnAliases.get(i) != null) {

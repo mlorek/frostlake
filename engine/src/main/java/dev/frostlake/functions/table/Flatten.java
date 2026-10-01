@@ -26,6 +26,8 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.DecimalOriginNode;
+import dev.frostlake.values.TypedScalarNode;
+import dev.frostlake.values.UuidTextNode;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
@@ -122,27 +124,13 @@ public class Flatten extends TableFunction {
         // The output columns' DECLARED types, as the account declares them — SEQ and INDEX
         // NUMBER(38,0), KEY and PATH a VARCHAR the plan spells bare, VALUE and THIS VARIANT — so
         // SYSTEM$TYPEOF, a table built over them and every type-based rule see a type (live-verified).
-        final List<ResultSetColumn> columns = new ArrayList<>();
-        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
-        columns.add(new ResultSetColumn("KEY", StringType.VARCHAR, null, new LengthlessStringType()));
-        columns.add(new ResultSetColumn("PATH", StringType.VARCHAR, null, new LengthlessStringType()));
-        columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
-        columns.add(new ResultSetColumn("VALUE", VariantType.VARIANT, null, VariantType.VARIANT));
-        columns.add(new ResultSetColumn("THIS", VariantType.VARIANT, null, VariantType.VARIANT));
+        final List<ResultSetColumn> columns = columns();
 
         final List<Row> rows = new ArrayList<>();
 
         // Parse input as JSON (a semi-structured wrapper contributes its CANONICAL text — toString
         // renders XML-shaped variants as XML text, which is not parseable JSON)
         JsonNode jsonInput = parseInput(input);
-        final String inputStr;
-        if (input == null) {
-            inputStr = null;
-        } else if (input instanceof VariantValue) {
-            inputStr = ((VariantValue) input).text();
-        } else {
-            inputStr = input.toString();
-        }
 
         // Apply path filter if specified. The path also PREFIXES every reported path — live answers
         // "a.b[0]" for PATH => 'a.b', not "[0]".
@@ -154,13 +142,18 @@ public class Flatten extends TableFunction {
 
         // Flatten the JSON structure
         final boolean expandable = jsonInput != null && (jsonInput.isObject() || jsonInput.isArray());
+        // THIS for the container walked first: the input itself when no PATH moved off it, so its own
+        // canonical text is reported rather than a re-rendering of the same tree.
+        final VariantValue rootThis = !expandable ? null
+            : pathPrefix.isEmpty() && input instanceof VariantValue ? (VariantValue) input
+            : VariantValue.ofNode(jsonInput);
         if (expandable) {
-            flattenElement(jsonInput, pathPrefix, inputStr, rows, recursive, mode, outer);
+            flattenElement(jsonInput, pathPrefix, rootThis, rows, recursive, mode, outer);
         }
 
-        // If outer is true and no rows were generated, add a single null row. It reports the input as
-        // THIS only when the input WAS a container that simply held nothing — a scalar, a NULL, and a
-        // path that matched nothing all leave THIS and PATH null too.
+        // If outer is true and no rows were generated, add a single null row. It reports the container
+        // PATH selected as THIS only when that WAS a container that simply held nothing — a scalar, a
+        // NULL, and a path that matched nothing all leave THIS and PATH null too.
         if (outer && rows.isEmpty()) {
             final List<Object> values = new ArrayList<>();
             values.add(INPUT_SEQUENCE);              // SEQ
@@ -168,7 +161,7 @@ public class Flatten extends TableFunction {
             values.add(expandable ? pathPrefix : null);   // PATH
             values.add(null);                        // INDEX
             values.add(null);                        // VALUE
-            values.add(expandable ? inputStr : null);     // THIS
+            values.add(rootThis);                    // THIS
             rows.add(new Row(values));
         }
 
@@ -241,8 +234,13 @@ public class Flatten extends TableFunction {
      * <p>Recursion follows emission: a member the mode did not emit is not descended into either, which
      * is why {@code MODE => 'ARRAY'} over an object yields nothing at all however deep the arrays
      * underneath it are. A scalar is never expanded — only a container reaches here.
+     *
+     * <p>THIS is the container being walked, as a VARIANT ({@code thisValue}): every row a container
+     * emits reports that container, so a recursive walk moves THIS down with it — {@code a.b} over {@code {"a":{"b":1}}}
+     * reports {@code {"b":1}}, not the root — and the OUTER stand-in row of an empty nested container
+     * reports that empty container (live-verified).
      */
-    private void flattenElement(final JsonNode element, final String currentPath, final String thisValue,
+    private void flattenElement(final JsonNode element, final String currentPath, final VariantValue thisValue,
                                 final List<Row> rows, final boolean recursive,
                                 final FlattenMode mode, final boolean outer) {
         if (element == null || element.isNull()) {
@@ -267,7 +265,7 @@ public class Flatten extends TableFunction {
 
                     // Recursive flattening
                     if (recursive && emitted && (value.isObject() || value.isArray())) {
-                        flattenElement(value, newPath, thisValue, rows, true, mode, outer);
+                        flattenElement(value, newPath, VariantValue.ofNode(value), rows, true, mode, outer);
                     }
                 }
             }
@@ -299,7 +297,7 @@ public class Flatten extends TableFunction {
 
                     // Recursive flattening
                     if (recursive && emitted && (value.isObject() || value.isArray())) {
-                        flattenElement(value, newPath, thisValue, rows, true, mode, outer);
+                        flattenElement(value, newPath, VariantValue.ofNode(value), rows, true, mode, outer);
                     }
                 }
             }
@@ -307,7 +305,7 @@ public class Flatten extends TableFunction {
     }
 
     private void addRow(final List<Row> rows, final String key, final String path, final Long index,
-                       final Object value, final String thisValue) {
+                       final Object value, final VariantValue thisValue) {
         final List<Object> values = new ArrayList<>();
         values.add(INPUT_SEQUENCE);
         values.add(key);
@@ -340,6 +338,16 @@ public class Flatten extends TableFunction {
         // TYPEOF(value) is 'NULL_VALUE'.
         if (node.isNull()) {
             return VariantValue.of("null");
+        }
+        // A member that kept its extended type (DATE, TIME, a TIMESTAMP, BINARY) yields that typed value, as a
+        // member read by path does: TYPEOF(value) over ARRAY_CONSTRUCT(d) is DATE (live-verified).
+        final Object typed = TypedScalarNode.typedValueOf(node);
+        if (typed != null) {
+            return typed;
+        }
+        // A UUID member stays the VARIANT that remembers its type (see UuidTextNode).
+        if (UuidTextNode.holds(node)) {
+            return VariantValue.ofNode(node);
         }
         if (node.isTextual()) {
             // Same disambiguation as path extraction: a string element whose content looks like JSON
@@ -382,5 +390,22 @@ public class Flatten extends TableFunction {
             throw new RuntimeException(SqlCompilationError.of("Bad flattening mode '"
                 + namedArgs.get("MODE") + "' (not 'BOTH', 'ARRAY', or 'OBJECT')"));
         }
+    }
+
+    /** The six columns every FLATTEN answers, whatever it flattens. */
+    public static List<ResultSetColumn> columns() {
+        final List<ResultSetColumn> columns = new ArrayList<>();
+        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
+        columns.add(new ResultSetColumn("KEY", StringType.VARCHAR, null, new LengthlessStringType()));
+        columns.add(new ResultSetColumn("PATH", StringType.VARCHAR, null, new LengthlessStringType()));
+        columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
+        columns.add(new ResultSetColumn("VALUE", VariantType.VARIANT, null, VariantType.VARIANT));
+        columns.add(new ResultSetColumn("THIS", VariantType.VARIANT, null, VariantType.VARIANT));
+        return columns;
+    }
+
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return columns();
     }
 }

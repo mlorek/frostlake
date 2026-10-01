@@ -18,6 +18,7 @@ package dev.frostlake.jdbc;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
+import dev.frostlake.executor.DynamicStatementCount;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -40,11 +41,10 @@ public class DirectStatement implements Statement {
     private final Connection connection;
     private final DatabaseEngine engine;
     private boolean closed = false;
-    private ResultSet currentResultSet = null;
-    // All result sets produced by the last (possibly multi-statement) execute, and a cursor into them so
-    // getMoreResults() can walk past the first — a batch like "SELECT …; SELECT …" exposes every result.
-    private List<ResultSet> pendingResultSets = new ArrayList<>();
-    private int resultSetIndex = 0;
+    // Every result the last (possibly multi-statement) execution produced, one per statement, and the walk
+    // over them: which answer rows and which an update count, and where getMoreResults() stands.
+    private List<ResultSet> results = new ArrayList<>();
+    private JdbcResultWalk walk = JdbcResultWalk.none();
     private final List<String> batchStatements = new ArrayList<>();
     private final List<Long> generatedKeys = new ArrayList<>();
     private String lastQueryId;
@@ -92,44 +92,80 @@ public class DirectStatement implements Statement {
     }
 
     private void gate(final String sql) throws SQLException {
-        final int desired = statementMultiCount != null
-            ? statementMultiCount.intValue()
-            : (connection instanceof DirectConnection
-                ? ((DirectConnection) connection).getMultiStatementCount() : 1);
+        final int desired = desiredCount();
         if (desired == 0) {
             return;
         }
         final int actual = JdbcMultiStatement.countStatements(sql);
         if (actual != desired) {
-            throw JdbcMultiStatement.countMismatch(actual, desired);
+            throw JdbcMultiStatement.countMismatch(sql, actual, desired);
         }
     }
 
-    public java.sql.ResultSet executeQuery(final String sql) throws SQLException {
+    /** The statement count this request asks for: the statement's own parameter, else the session's. */
+    private int desiredCount() {
+        return statementMultiCount != null
+            ? statementMultiCount.intValue()
+            : (connection instanceof DirectConnection
+                ? ((DirectConnection) connection).getMultiStatementCount() : 1);
+    }
+
+    /**
+     * Run a request through the engine, gated first, and keep its query id. The count it asked for also gates the
+     * text of an EXECUTE IMMEDIATE among its statements (see DynamicStatementCount).
+     */
+    private List<ResultSet> run(final String sql) throws SQLException {
         checkClosed();
         applyMultiStatementGate(sql);
+        final ExecutionResult result;
+        final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount());
         try {
-            final ExecutionResult result = connection instanceof DirectConnection
+            result = connection instanceof DirectConnection
                 ? ((DirectConnection) connection).executeScoped(sql)
                 : engine.execute(sql);
-            lastQueryId = result.getQueryId();
-
-            if (!result.isSuccess()) {
-                throw new SQLException(result.getErrorMessage());
-            }
-
-            final List<ResultSet> resultSets = result.getResultSets();
-            if (resultSets.isEmpty()) {
-                throw new SQLException("Query did not return a result set");
-            }
-
-            pendingResultSets = resultSets;
-            resultSetIndex = 0;
-            currentResultSet = resultSets.get(0);
-            return new DirectResultSet(this, currentResultSet);
         } catch (final RuntimeException e) {
             throw new SQLException(e.getMessage(), e);
+        } finally {
+            DynamicStatementCount.endRequest(displacedCount);
         }
+        lastQueryId = result.getQueryId();
+        if (!result.isSuccess()) {
+            throw new SQLException(result.getErrorMessage());
+        }
+        return result.getResultSets();
+    }
+
+    /**
+     * Take a request's results as the walk's: each answers rows or the update count its statement marked.
+     * With {@code firstAsRows} the first answers rows whatever it is — {@code executeQuery} hands a single
+     * statement's grid back as a result set even when it is an update count or a status line.
+     */
+    private void take(final List<ResultSet> produced, final boolean firstAsRows) {
+        results = produced;
+        final List<Long> counts = new ArrayList<>();
+        for (int i = 0; i < produced.size(); i++) {
+            counts.add(firstAsRows && i == 0 ? null : produced.get(i).getJdbcUpdateCount());
+        }
+        walk = new JdbcResultWalk(counts);
+    }
+
+    /**
+     * Snowflake's rule: a single statement answers its result as a result set — a DML statement its count
+     * grid, DDL its status line — while a request of several must begin with rows, and otherwise has run and
+     * is refused all the same.
+     */
+    public java.sql.ResultSet executeQuery(final String sql) throws SQLException {
+        final List<ResultSet> produced = run(sql);
+        if (produced.isEmpty()) {
+            take(produced, false);
+            throw new SQLException("Query did not return a result set");
+        }
+        if (produced.size() > 1 && produced.get(0).getJdbcUpdateCount() != null) {
+            take(produced, false);
+            throw JdbcResultWalk.firstResultIsACount();
+        }
+        take(produced, true);
+        return new DirectResultSet(this, produced.get(0));
     }
 
     @Override
@@ -139,69 +175,76 @@ public class DirectStatement implements Statement {
 
     @Override
     public int executeUpdate(final String sql, final int autoGeneratedKeys) throws SQLException {
-        checkClosed();
-        applyMultiStatementGate(sql);
+        return (int) update(sql, autoGeneratedKeys);
+    }
+
+    /**
+     * The first statement's update count. A statement that answers rows has run by the time it is refused
+     * (live-verified: a refused {@code CALL} has still done its work).
+     */
+    private long update(final String sql, final int autoGeneratedKeys) throws SQLException {
         generatedKeys.clear();
         returnGeneratedKeys = (autoGeneratedKeys == Statement.RETURN_GENERATED_KEYS);
-
-        try {
-            final ExecutionResult result = connection instanceof DirectConnection
-                ? ((DirectConnection) connection).executeScoped(sql)
-                : engine.execute(sql);
-            lastQueryId = result.getQueryId();
-
-            if (!result.isSuccess()) {
-                throw new SQLException(result.getErrorMessage());
-            }
-
-            // If this is an INSERT and generated keys are requested, create a synthetic key
-            if (returnGeneratedKeys && sql.trim().toUpperCase().startsWith("INSERT")) {
-                // Generate a simple sequential key (in real implementation, would get from auto-increment column)
-                generatedKeys.add(++keySequence);
-            }
-
-            // DML statements report their affected-row count as a Snowflake-style result set.
-            return (int) result.getRowsAffected();
-        } catch (final RuntimeException e) {
-            throw new SQLException(e.getMessage(), e);
+        take(run(sql), false);
+        if (walk.currentIsRows()) {
+            throw JdbcResultWalk.notAnUpdate(sql);
         }
+        // If this is an INSERT and generated keys are requested, create a synthetic key
+        if (returnGeneratedKeys && sql.trim().toUpperCase().startsWith("INSERT")) {
+            // Generate a simple sequential key (in real implementation, would get from auto-increment column)
+            generatedKeys.add(++keySequence);
+        }
+        return Math.max(walk.updateCount(), 0);
     }
 
     @Override
-    public boolean execute(final String sql) throws SQLException {
-        checkClosed();
-        applyMultiStatementGate(sql);
-        try {
-            final ExecutionResult result = connection instanceof DirectConnection
-                ? ((DirectConnection) connection).executeScoped(sql)
-                : engine.execute(sql);
-            lastQueryId = result.getQueryId();
-
-            if (!result.isSuccess()) {
-                throw new SQLException(result.getErrorMessage());
-            }
-
-            final List<ResultSet> resultSets = result.getResultSets();
-            pendingResultSets = resultSets;
-            resultSetIndex = 0;
-            if (!resultSets.isEmpty()) {
-                currentResultSet = resultSets.get(0);
-                return true;
-            }
-            currentResultSet = null;
-            return false;
-        } catch (final RuntimeException e) {
-            throw new SQLException(e.getMessage(), e);
-        }
+    public long executeLargeUpdate(final String sql) throws SQLException {
+        return update(sql, Statement.NO_GENERATED_KEYS);
     }
 
+    @Override
+    public long executeLargeUpdate(final String sql, final int autoGeneratedKeys) throws SQLException {
+        return update(sql, autoGeneratedKeys);
+    }
+
+    @Override
+    public long executeLargeUpdate(final String sql, final int[] columnIndexes) throws SQLException {
+        return update(sql, Statement.RETURN_GENERATED_KEYS);
+    }
+
+    @Override
+    public long executeLargeUpdate(final String sql, final String[] columnNames) throws SQLException {
+        return update(sql, Statement.RETURN_GENERATED_KEYS);
+    }
+
+    /** True when the first statement answers rows; false when it answers an update count. */
+    @Override
+    public boolean execute(final String sql) throws SQLException {
+        take(run(sql), false);
+        return walk.currentIsRows();
+    }
+
+    /** The current result's rows, or null when it is an update count or the walk has passed the end. */
     @Override
     public java.sql.ResultSet getResultSet() throws SQLException {
         checkClosed();
-        if (currentResultSet == null) {
+        if (!walk.currentIsRows()) {
             return null;
         }
-        return new DirectResultSet(this, currentResultSet);
+        return new DirectResultSet(this, results.get(walk.position()));
+    }
+
+    /**
+     * The grid behind the current result whichever way the driver reports it: the rows of a query, and the
+     * count grid or status line of a statement the driver reports as an update count — what
+     * {@code executeQuery} would have handed back for that statement on its own. Null past the end.
+     *
+     * @return the current result's grid, or null
+     */
+    public java.sql.ResultSet getResultGrid() throws SQLException {
+        checkClosed();
+        final ResultSet grid = currentEngineResultSet();
+        return grid == null ? null : new DirectResultSet(this, grid);
     }
 
     /**
@@ -209,13 +252,21 @@ public class DirectStatement implements Statement {
      * disturbing the JDBC cursor (e.g. the callable statement's OUT-parameter extraction).
      */
     protected ResultSet currentEngineResultSet() {
-        return currentResultSet;
+        final int position = walk.position();
+        return position < results.size() ? results.get(position) : null;
+    }
+
+    /** Leave a whole prepared batch behind as one update count, as the driver's array-bound batch does. */
+    protected void takeBatchCount(final long count) {
+        results = new ArrayList<>();
+        walk = JdbcResultWalk.ofCount(count);
     }
 
     @Override
     public void close() throws SQLException {
         closed = true;
-        currentResultSet = null;
+        results = new ArrayList<>();
+        walk = JdbcResultWalk.none();
     }
 
     @Override
@@ -286,22 +337,24 @@ public class DirectStatement implements Statement {
         throw new SQLFeatureNotSupportedException("setCursorName not supported");
     }
 
+    /** The current result's update count: -1 when it answers rows, and once the walk has passed the end. */
     @Override
     public int getUpdateCount() throws SQLException {
-        return -1;
+        checkClosed();
+        return (int) walk.updateCount();
     }
 
     @Override
+    public long getLargeUpdateCount() throws SQLException {
+        checkClosed();
+        return walk.updateCount();
+    }
+
+    /** Move to the next statement's result; see {@link JdbcResultWalk#next()} for what it answers. */
+    @Override
     public boolean getMoreResults() throws SQLException {
-        // Advance to the next result set produced by the last (multi-statement) execute, so a batch of
-        // SELECTs is fully walkable. Returns false once the results are exhausted.
-        resultSetIndex++;
-        if (resultSetIndex < pendingResultSets.size()) {
-            currentResultSet = pendingResultSets.get(resultSetIndex);
-            return true;
-        }
-        currentResultSet = null;
-        return false;
+        checkClosed();
+        return walk.next();
     }
 
     @Override
@@ -358,16 +411,19 @@ public class DirectStatement implements Statement {
      */
     public int[] executeBatch() throws SQLException {
         checkClosed();
-        final int[] results = new int[batchStatements.size()];
+        final int[] counts = new int[batchStatements.size()];
         int index = 0;
         SQLException firstFailure = null;
 
         try {
             for (final String sql : batchStatements) {
                 try {
-                    results[index] = executeUpdate(sql);
+                    // A statement that answers rows is not refused in a batch: it runs, and its entry is
+                    // SUCCESS_NO_INFO (live-verified).
+                    take(run(sql), false);
+                    counts[index] = walk.currentIsRows() ? SUCCESS_NO_INFO : (int) walk.updateCount();
                 } catch (final SQLException e) {
-                    results[index] = EXECUTE_FAILED;
+                    counts[index] = EXECUTE_FAILED;
                     if (firstFailure == null) {
                         firstFailure = e;
                     }
@@ -381,9 +437,9 @@ public class DirectStatement implements Statement {
 
         if (firstFailure != null) {
             throw new BatchUpdateException(firstFailure.getMessage(), firstFailure.getSQLState(),
-                    firstFailure.getErrorCode(), results, firstFailure);
+                    firstFailure.getErrorCode(), counts, firstFailure);
         }
-        return results;
+        return counts;
     }
 
     @Override
@@ -399,9 +455,10 @@ public class DirectStatement implements Statement {
         return lastQueryId;
     }
 
+    /** As {@link #getMoreResults()}: a result set already handed out stays readable either way. */
     @Override
     public boolean getMoreResults(final int current) throws SQLException {
-        return false;
+        return getMoreResults();
     }
 
     @Override

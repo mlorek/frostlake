@@ -21,6 +21,8 @@ import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.FloatOriginNode;
 import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.TypedVectorNode;
+import dev.frostlake.values.UuidTextNode;
+import dev.frostlake.values.VariantOrder;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
@@ -76,6 +78,26 @@ public final class ArrayFunctionHelper {
     }
 
     /**
+     * The array a value holds, for the functions that refuse anything else on the row: {@code ARRAY_CAT(1, [1])}
+     * is "Left argument of ARRAY_CAT is not an array", over a number, an OBJECT, a VARIANT scalar and a VECTOR
+     * alike (live-verified). A SQL NULL is no refusal and answers null.
+     *
+     * @param value    the argument
+     * @param sentence the refusal a non-array value raises
+     * @return the array, or null for a NULL
+     */
+    public static ArrayNode requireArray(final Object value, final String sentence) {
+        if (value == null) {
+            return null;
+        }
+        final ArrayNode array = value instanceof VectorValue ? null : parseArray(value);
+        if (array == null) {
+            throw new RuntimeException(sentence);
+        }
+        return array;
+    }
+
+    /**
      * The node a value takes as an ARRAY ELEMENT: a SQL NULL becomes the VARIANT {@code undefined} sentinel
      * — live-verified {@code ARRAY_CONSTRUCT(1, NULL, 2)} is {@code [1,undefined,2]},
      * {@code ARRAY_APPEND([1], NULL)} is {@code [1,undefined]} and {@code ARRAY_REPEAT(NULL, 3)} is
@@ -108,9 +130,8 @@ public final class ArrayFunctionHelper {
             // java.time's T-separated form — and, in a container, its own type: live reports
             // TYPEOF(OBJECT_CONSTRUCT('d', <date>):d) as DATE, not VARCHAR. TypedScalarNode carries the
             // typed value alongside that exact text, so the JSON stays byte-identical.
-            return new TypedScalarNode(value instanceof LocalDate
-                ? SharedFunctionHelpers.variantDateText((LocalDate) value) : SharedFunctionHelpers.textOf(value),
-                value);
+            return new TypedScalarNode(SharedFunctionHelpers.variantTemporalText(value instanceof LocalDate
+                ? SharedFunctionHelpers.variantDate((LocalDate) value) : value), value);
         }
         if (value instanceof VectorValue) {
             // A VECTOR embeds as an ARRAY of its elements at FULL precision — not the six-decimal
@@ -161,7 +182,20 @@ public final class ArrayFunctionHelper {
      * int node and the other a long/double node). A strict {@link JsonNode#equals} distinguishes IntNode from
      * LongNode, which makes ARRAY_CONTAINS / ARRAY_REMOVE miss numeric members built by ARRAY_CONSTRUCT.
      */
+    /**
+     * The key an array function matches elements by: the element's JSON text, except that an element
+     * holding a UUID keys by its variant comparison key, since it prints as the string of its text and
+     * never equals it (ARRAY_DISTINCT keeps both, ARRAYS_OVERLAP finds no overlap — live-verified).
+     */
+    public static String elementKey(final JsonNode element) {
+        return UuidTextNode.anywhereIn(element) ? "U:" + VariantOrder.comparisonKey(element) : element.toString();
+    }
+
     public static boolean nodesEqual(final JsonNode a, final JsonNode b) {
+        // A UUID prints as the string of its text and never equals it, which only the variant key tells.
+        if (UuidTextNode.anywhereIn(a) || UuidTextNode.anywhereIn(b)) {
+            return VariantOrder.comparisonKey(a).equals(VariantOrder.comparisonKey(b));
+        }
         if (a.equals(b)) {
             return true;
         }
@@ -218,6 +252,8 @@ public final class ArrayFunctionHelper {
         // which is what makes TYPEOF and the AS_*/IS_* family answer like live.
         final Object typed = TypedScalarNode.typedValueOf(node);
         if (typed != null) return typed;
+        // A UUID has no value of its own beyond its text, so it stays the VARIANT that remembers it.
+        if (UuidTextNode.holds(node)) return VariantValue.ofNode(node);
         if (node.isTextual()) return node.asText();
         if (node.isBoolean()) return node.asBoolean();
         if (node.isLong() || node.isInt()) return node.asLong();

@@ -21,6 +21,8 @@ import java.util.List;
 public class ExecuteImmediateExpression extends BaseExpression {
     private final BaseExpression sqlExpression;
     private final List<BaseExpression> usingBindings;
+    private int statementLine = -1;
+    private int statementPosition = -1;
 
     public ExecuteImmediateExpression(final BaseExpression sqlExpression, final List<BaseExpression> usingBindings) {
         this.sqlExpression = sqlExpression;
@@ -34,5 +36,26 @@ public class ExecuteImmediateExpression extends BaseExpression {
     /** Values for the {@code USING (...)} clause, bound positionally to {@code ?} placeholders (empty if none). */
     public List<BaseExpression> getUsingBindings() {
         return usingBindings;
+    }
+
+    /**
+     * Note where the EXECUTE IMMEDIATE begins: a failure running its text is the statement's there.
+     *
+     * @param line the first line of the EXECUTE IMMEDIATE
+     * @param position its first column
+     */
+    public void setStatementAt(final int line, final int position) {
+        this.statementLine = line;
+        this.statementPosition = position;
+    }
+
+    /** The EXECUTE IMMEDIATE's first line, or -1 when unknown. */
+    public int getStatementLine() {
+        return statementLine;
+    }
+
+    /** The EXECUTE IMMEDIATE's first column, or -1 when unknown. */
+    public int getStatementPosition() {
+        return statementPosition;
     }
 }
