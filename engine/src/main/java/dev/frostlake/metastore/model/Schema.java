@@ -843,6 +843,14 @@ public class Schema extends SqlObject {
         return new ArrayList<>(streams.values());
     }
 
+    /**
+     * Whether a stream of EXACTLY this name is here - the check a replace makes, where a name that differs
+     * only in case is a different stream.
+     */
+    public boolean hasStreamExact(final String name) {
+        return streams.containsKey(name);
+    }
+
     // Tasks
     public void addTask(final Task task) {
         final String upperName = task.getName();

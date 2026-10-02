@@ -214,10 +214,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -252,6 +255,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
@@ -5649,11 +5653,10 @@ public class QueryExecutor {
     }
 
     /**
-     * Local directory for an implicit internal stage: {@code <internalRoot>/<kind>/<name>[/subPath]}.
-     * The segment is folded, because the name reaching here is not always a parsed identifier: a stage
-     * path is a STRING ({@code @st/hello.txt}), so the writer's spelling and the reader's need not match
-     * where the object's own name would. Two stages whose names differ only in case therefore share one
-     * directory.
+     * Local directory for an implicit internal stage: {@code <internalRoot>/<kind>/<segment>[/subPath]}, the
+     * segment being {@link #stageDirectory}'s for the stage's owner — resolved to its stored name by the caller,
+     * because the name reaching here is not always a parsed identifier (a stage path is a STRING, {@code
+     * @st/hello.txt}, so the writer's spelling and the reader's need not match where the object's own name would).
      */
     private Path internalStageDir(final String kind, final String name, final String subPath) {
         final String root = engineConfig != null ? engineConfig.getStageInternalLocalRoot()
@@ -5705,10 +5708,31 @@ public class QueryExecutor {
      * The directory segment an internal stage's files live under. A named stage and a table's stage belong to an
      * object named exactly, so two whose names differ only in case own two directories (live-verified: a file
      * written to {@code @ST} is not listed through {@code @"st"}); a user's stage keeps its folded name.
+     *
+     * <p>The filesystem may fold case itself — macOS and Windows do by default — and would merge {@code ST} and
+     * {@code st} into one directory. So a name that is not all upper case carries a digest of its exact spelling:
+     * {@code DB.PUBLIC.ST} keeps the directory it always had, while {@code DB.PUBLIC.st} lives in
+     * {@code DB.PUBLIC.st~<digest>}, which no folding can confuse with it or with {@code DB.PUBLIC.St}'s.
      */
     private static String stageDirectory(final String kind, final String name) {
         final String segment = sanitizeStageSegment(name);
-        return "users".equals(kind) ? segment.toUpperCase() : segment;
+        if ("users".equals(kind)) {
+            return segment.toUpperCase();
+        }
+        if (segment.equals(segment.toUpperCase(Locale.ROOT))) {
+            return segment;
+        }
+        return segment + "~" + exactSpellingDigest(name);
+    }
+
+    /** The first eight bytes of the SHA-256 of a name's exact spelling, in lower-case hex. */
+    private static String exactSpellingDigest(final String name) {
+        try {
+            final byte[] digest = MessageDigest.getInstance("SHA-256").digest(name.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest, 0, 8);
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
     }
 
     /** Make a stage owner name (user / fully-qualified table) safe as a single path segment. */

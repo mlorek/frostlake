@@ -19,8 +19,10 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.procedural.BaseExpression;
 import dev.frostlake.executor.procedural.CallStatement;
 import dev.frostlake.executor.procedural.CaseStatement;
+import dev.frostlake.executor.procedural.EvaluateStatement;
 import dev.frostlake.executor.procedural.ExecuteImmediateExpression;
 import dev.frostlake.executor.procedural.ForStatement;
+import dev.frostlake.executor.procedural.FunctionCallExpression;
 import dev.frostlake.executor.procedural.IfCondition;
 import dev.frostlake.executor.procedural.IfStatement;
 import dev.frostlake.executor.procedural.LiteralExpression;
@@ -42,6 +44,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Builds the procedural-statement hierarchy (ProceduralBlock / IfStatement / CaseStatement /
@@ -178,6 +181,14 @@ public class ProceduralBlockBuilder {
             }
         }
 
+        if (ctx.systemCallStatement() != null) {
+            final List<BaseExpression> arguments = new ArrayList<>();
+            for (final FrostlakeParser.ExpressionContext argument : ctx.systemCallStatement().expression()) {
+                arguments.add(visitor.buildExpression(argument));
+            }
+            return new EvaluateStatement(new FunctionCallExpression(
+                ctx.systemCallStatement().SYSTEM_FUNC().getText().toUpperCase(Locale.ROOT), arguments));
+        }
         if (ctx.callStatement() != null && ctx.callStatement().systemFunctionName() != null) {
             // A CALL of a SYSTEM$ function runs as the statement it is written as.
             return new SqlStatement(visitor.getOriginalText(ctx.callStatement()));

@@ -126,7 +126,9 @@ public class CreateTableHandler implements CommandHandler {
         // cross-session temporary table for either spelling to mean.
         final boolean isTemporary = ctx.TEMPORARY() != null || ctx.TEMP() != null || ctx.VOLATILE() != null;
         // CREATE HYBRID TABLE is accepted and stored as an ordinary table; the flag is kept only so
-        // SHOW HYBRID TABLES and the reported kind reflect the declaration.
+        // SHOW HYBRID TABLES and the reported kind reflect the declaration. Its INDEX <name> (…) [INCLUDE (…)]
+        // clauses parse (the hybridIndex element of the column list) and are not kept: a secondary index
+        // changes how a hybrid table is read, never what a query over it returns.
         final boolean isHybrid = ctx.HYBRID() != null;
         final boolean orReplace = ctx.or_replace() != null;
 

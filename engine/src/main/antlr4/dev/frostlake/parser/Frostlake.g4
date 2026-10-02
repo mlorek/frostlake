@@ -68,6 +68,62 @@ import java.util.List;
 }
 
 @parser::members {
+    /** Whether a SYSTEM\$LOG / SYSTEM\$LOG_<level> call opens the statement: the one call Snowflake Scripting runs
+     *  as a statement in its own right. */
+    private boolean systemLogCallAhead() {
+        final Token next = _input.LT(1);
+        return next != null && next.getType() == SYSTEM_FUNC
+            && next.getText().toUpperCase(java.util.Locale.ROOT).startsWith("SYSTEM\$LOG");
+    }
+
+    /** Whether the next element of a CREATE HYBRID TABLE's column list is a secondary index,
+     *  INDEX <name> (<column>, …), rather than a column named INDEX. INDEX is no keyword (a column may be named
+     *  INDEX, and FLATTEN answers one), so the clause is told by what follows the second word: an index's
+     *  parentheses open on a column name, while a column's type takes numbers (INDEX NUMBER(38, 0)), nothing
+     *  (INDEX NVARCHAR()) or a type (INDEX ARRAY(INT), INDEX VECTOR(FLOAT, 3)). Only a hybrid table takes an
+     *  index; in any other statement the words stay a column definition, as they always were. */
+    private boolean hybridIndexAhead() {
+        final Token word = _input.LT(1);
+        if (word == null || word.getType() != IDENTIFIER || !"INDEX".equalsIgnoreCase(word.getText())
+            || _input.LT(3).getType() != LPAREN) {
+            return false;
+        }
+        final int first = _input.LT(4).getType();
+        if (first == INTEGER_LITERAL || first == MINUS || first == RPAREN) {
+            return false;
+        }
+        final String type = _input.LT(2).getText();
+        if ("ARRAY".equalsIgnoreCase(type) || "OBJECT".equalsIgnoreCase(type) || "MAP".equalsIgnoreCase(type)
+            || "VECTOR".equalsIgnoreCase(type)) {
+            return false;
+        }
+        return createsHybridTable();
+    }
+
+    /** Whether the statement being read is CREATE … HYBRID TABLE: HYBRID comes between the nearest CREATE behind
+     *  the parser and that CREATE's TABLE. A column list holds no CREATE of its own, so the nearest one is this
+     *  statement's. */
+    private boolean createsHybridTable() {
+        for (int back = 1; ; back++) {
+            final Token token = _input.LT(-back);
+            if (token == null) {
+                return false;
+            }
+            if (token.getType() == CREATE) {
+                for (int ahead = back - 1; ahead >= 1; ahead--) {
+                    final int type = _input.LT(-ahead).getType();
+                    if (type == HYBRID) {
+                        return true;
+                    }
+                    if (type == TABLE) {
+                        return false;
+                    }
+                }
+                return false;
+            }
+        }
+    }
+
     /** Whether a name may stand bare after SHOW GRANTS ON: any name but a lone kind word live reserves. Asked once
      *  the name is read, so the refusal lands on the token after it, where live reports it. */
     private boolean bareGrantsNameAllowed(final QualifiedNameContext name) {
@@ -2492,8 +2548,16 @@ columnList
     ;
 
 columnOrConstraint
-    : columnDef
+    : {hybridIndexAhead()}? hybridIndex
+    | columnDef
     | tableConstraint
+    ;
+
+// A hybrid table's secondary index, written among its columns as GET_DDL writes it back:
+// INDEX <name> (<column>, …) [INCLUDE (<column>, …)]. The leading word is a plain identifier the predicate
+// checks, not an INDEX keyword (see hybridIndexAhead).
+hybridIndex
+    : identifier identifier LPAREN identifierList RPAREN (INCLUDE LPAREN identifierList RPAREN)?
     ;
 
 columnDef
@@ -3602,6 +3666,7 @@ proceduralStatement
     | continueStatement
     | raiseStatement
     | callStatement
+    | systemCallStatement
     | asyncStatement
     | awaitStatement
     | executeImmediateStatement
@@ -3807,6 +3872,12 @@ raiseStatement
 callStatement
     : CALL qualifiedName LPAREN callArguments? RPAREN SEMI?
     | CALL systemFunctionName LPAREN callArguments? RPAREN SEMI?
+    ;
+
+// SYSTEM$LOG and SYSTEM$LOG_<level> standing as statements — `SYSTEM$LOG_INFO('message');` — the way Snowflake
+// Scripting logs. Any other function call written bare stays a syntax error.
+systemCallStatement
+    : {systemLogCallAhead()}? SYSTEM_FUNC LPAREN (expression (COMMA expression)*)? RPAREN SEMI?
     ;
 
 systemFunctionName
@@ -4724,6 +4795,8 @@ variantPathKey
     | INTO | INSERT | CURRENT | FOLLOWING | RLIKE | UNIQUE | UPDATE
     | LIMIT | WITH | QUALIFY | PIVOT | UNPIVOT | MERGE | SET | VALUES | SHOW
     | GRANT | REVOKE | DESCRIBE | USE | EXPLAIN | TRUNCATE | CALL | EXECUTE | RETURN
+    | ANY | CAST | CHECK | COLUMN | CONNECT | CONSTRAINT | FOR | ILIKE | INCREMENT | MINUS_KW | OF
+    | REGEXP | ROW | ROWS | SAMPLE | SOME | START | TABLE | TABLESAMPLE | TO
     ;
 
 nonJoinKeywordIdentifier

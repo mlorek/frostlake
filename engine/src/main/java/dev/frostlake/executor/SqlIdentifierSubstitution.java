@@ -121,14 +121,16 @@ public final class SqlIdentifierSubstitution {
 
     /** True when the token at index {@code i} sits in a structural-name position: nearest default-channel
      *  neighbour before or after is a {@code .} (qualified-name segment), or the one before is a {@code :}
-     *  (semi-structured path segment / bind-variable name — neither binds a parameter). */
+     *  (semi-structured path segment / bind-variable name — neither binds a parameter) other than the one
+     *  separating an object constant's key from its value. */
     private static boolean structuralNamePosition(final List<Token> all, final int i) {
         for (int p = i - 1; p >= 0; p--) {
             final Token t = all.get(p);
             if (t.getChannel() != Token.DEFAULT_CHANNEL) {
                 continue;
             }
-            if (t.getType() == FrostlakeLexer.DOT || t.getType() == FrostlakeLexer.COLON) {
+            if (t.getType() == FrostlakeLexer.DOT
+                    || t.getType() == FrostlakeLexer.COLON && !separatesObjectKey(all, p)) {
                 return true;
             }
             break;
@@ -147,6 +149,43 @@ public final class SqlIdentifierSubstitution {
             break;
         }
         return false;
+    }
+
+    // The ':' of {'key': value}: its key is a string literal opening the constant or following a comma, and
+    // the innermost bracket still open around that key is the constant's '{'.
+    private static boolean separatesObjectKey(final List<Token> all, final int colon) {
+        final int key = previousDefault(all, colon);
+        if (key < 0 || all.get(key).getType() != FrostlakeLexer.STRING_LITERAL) {
+            return false;
+        }
+        final int before = previousDefault(all, key);
+        if (before < 0 || all.get(before).getType() != FrostlakeLexer.LBRACE
+                && all.get(before).getType() != FrostlakeLexer.COMMA) {
+            return false;
+        }
+        int nesting = 0;
+        for (int p = key - 1; p >= 0; p--) {
+            final int type = all.get(p).getType();
+            if (type == FrostlakeLexer.RPAREN || type == FrostlakeLexer.RBRACKET || type == FrostlakeLexer.RBRACE) {
+                nesting++;
+            } else if (type == FrostlakeLexer.LPAREN || type == FrostlakeLexer.LBRACKET
+                    || type == FrostlakeLexer.LBRACE) {
+                if (nesting == 0) {
+                    return type == FrostlakeLexer.LBRACE;
+                }
+                nesting--;
+            }
+        }
+        return false;
+    }
+
+    private static int previousDefault(final List<Token> all, final int i) {
+        for (int p = i - 1; p >= 0; p--) {
+            if (all.get(p).getChannel() == Token.DEFAULT_CHANNEL) {
+                return p;
+            }
+        }
+        return -1;
     }
 
     private static boolean isBareIdentifier(final Token token) {

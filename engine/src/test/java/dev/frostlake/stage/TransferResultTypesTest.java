@@ -25,6 +25,11 @@ import dev.frostlake.types.StringType;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -107,7 +112,11 @@ public class TransferResultTypesTest extends BaseDatabaseTest {
 
     /** A PUT carries the same widths as a GET. */
     @Test
-    public void aPutCarriesTheSameWidths() {
+    public void aPutCarriesTheSameWidths() throws IOException {
+        // The file the PUT uploads; written here so the test does not depend on a leftover on the machine.
+        final Path source = Paths.get("/tmp/fl-put-probe/a.csv");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "1,x\n");
         assertEquals("source:VARCHAR(20480), target:VARCHAR(20480), source_size:NUMBER(10,0), "
             + "target_size:NUMBER(10,0), source_compression:VARCHAR(20480), "
             + "target_compression:VARCHAR(20480), status:VARCHAR(20480), encryption:VARCHAR(20480), "

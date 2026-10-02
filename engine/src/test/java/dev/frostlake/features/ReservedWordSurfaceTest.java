@@ -17,6 +17,7 @@
 package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -74,6 +75,26 @@ public class ReservedWordSurfaceTest extends BaseDatabaseTest {
             "SELECT PARSE_JSON('{\"update\": 1}'):update").getRows().get(0).getValue(0)));
         assertEquals("2", String.valueOf(engine.executeQuery(
             "SELECT PARSE_JSON('{\"current\": 2}'):current").getRows().get(0).getValue(0)));
+    }
+
+    @Test
+    public void everyReservedWordIsAVariantPathKey() {
+        for (final String word : new String[] {"account", "all", "alter", "and", "any", "as", "between", "by",
+                "case", "cast", "check", "column", "connect", "connection", "constraint", "create", "cross",
+                "current", "current_date", "current_time", "current_timestamp", "current_user", "database",
+                "delete", "distinct", "drop", "else", "exists", "false", "following", "for", "from", "full",
+                "grant", "group", "gscluster", "having", "ilike", "in", "increment", "inner", "insert",
+                "intersect", "into", "is", "issue", "join", "lateral", "left", "like", "localtime",
+                "localtimestamp", "minus", "natural", "not", "null", "of", "on", "or", "order", "organization",
+                "qualify", "regexp", "revoke", "right", "rlike", "row", "rows", "sample", "schema", "select",
+                "set", "some", "start", "table", "tablesample", "then", "to", "trigger", "true", "try_cast",
+                "union", "unique", "update", "using", "values", "view", "when", "whenever", "where", "with"}) {
+            final Row row = engine.executeQuery("SELECT PARSE_JSON('{\"a\": {\"" + word + "\": 1}, \"" + word
+                + "\": 2}'):a." + word + "::INT, PARSE_JSON('{\"" + word + "\": 2}'):" + word + "::INT")
+                .getRows().get(0);
+            assertEquals("1", String.valueOf(row.getValue(0)), word);
+            assertEquals("2", String.valueOf(row.getValue(1)), word);
+        }
     }
 
     @Test

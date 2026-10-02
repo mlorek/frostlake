@@ -266,7 +266,8 @@ public class DDLCommandHandler implements CommandHandler {
      */
     private Object handleCloneStream(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String streamQualifiedName = getText(ctx.qualifiedName(0));
-        final String streamName = extractObjectName(streamQualifiedName).toUpperCase();
+        // The name as the parse tree canonicalises it: unquoted folds to upper case, a quoted name keeps its own.
+        final String streamName = extractObjectName(streamQualifiedName);
         final String sourceQualifiedName = getText(ctx.qualifiedName(1));
         final Stream source = catalog.resolveStream(sourceQualifiedName);
         if (source == null) {
@@ -280,12 +281,9 @@ public class DDLCommandHandler implements CommandHandler {
             clone.setBaseTableNames(source.getBaseTableNames());
             clone.setComment(source.getComment());
             clone.inheritOffset(source);
-            if (ctx.or_replace() != null) {
-                try {
-                    schema.dropStream(streamName);
-                } catch (final RuntimeException absent) {
-                    logger.trace("No stream to replace: {}", streamName);
-                }
+            // OR REPLACE replaces the stream of EXACTLY this name: "s" and S are two streams.
+            if (ctx.or_replace() != null && schema.hasStreamExact(streamName)) {
+                schema.dropStream(streamName);
             }
             clone.setOwner(catalog.currentRoleForOwner());
             schema.addStream(clone);
@@ -302,7 +300,8 @@ public class DDLCommandHandler implements CommandHandler {
             return handleCloneStream(ctx, ifNotExists);
         }
         final String streamQualifiedName = getText(ctx.qualifiedName(0));
-        final String streamName = extractObjectName(streamQualifiedName).toUpperCase();
+        // The name as the parse tree canonicalises it: unquoted folds to upper case, a quoted name keeps its own.
+        final String streamName = extractObjectName(streamQualifiedName);
         final boolean orReplace = ctx.or_replace() != null;
         // COPY GRANTS copies from the object being replaced or cloned, so a plain create has no source
         // to copy from. A stream's refusal carries a second sentence the table's and the view's do not.
@@ -478,7 +477,10 @@ public class DDLCommandHandler implements CommandHandler {
             }
             if (orReplace) {
                 queryExecutor.requireOwnership("STREAM", qualifiedNameParts(ctx.qualifiedName(0)), null);
-                try { schema.dropStream(streamName); } catch (final RuntimeException ignored) {}
+                // OR REPLACE replaces the stream of EXACTLY this name: "s" and S are two streams.
+                if (schema.hasStreamExact(streamName)) {
+                    schema.dropStream(streamName);
+                }
             }
             stream.setOwner(FutureGrants.ownerOfNew(catalog, "STREAM", schema, stream.getName()));
             schema.addStream(stream);

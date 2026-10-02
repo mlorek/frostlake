@@ -702,15 +702,13 @@ public class AlterCommandHandler implements CommandHandler {
                         // DROP token too, hence the ALTER guard.
                         dropColumns(tableName, table, ctx.tableAction());
                     } else if (ctx.tableAction().DROP() != null && ctx.tableAction().CONSTRAINT() != null) {
-                        // DROP CONSTRAINT — a check is dropped by name like any other constraint, and a
-                        // name no constraint carries is refused rather than ignored (live-verified).
+                        // DROP CONSTRAINT — any named constraint (check, primary key, unique, foreign key)
+                        // is dropped by name, and a name no constraint carries is refused rather than
+                        // ignored (live-verified).
                         final String constraintName = visitor.getText(ctx.tableAction().identifier(0));
-                        if (!table.dropCheckConstraint(constraintName)) {
-                            if (table.constraintColumns(constraintName).isEmpty()) {
-                                throw new RuntimeException(SqlCompilationError.of("constraint '"
-                                    + constraintName.toUpperCase(Locale.ROOT) + "' does not exist"));
-                            }
-                            table.dropForeignKey(constraintName);
+                        if (!table.dropCheckConstraint(constraintName) && !table.dropNamedConstraint(constraintName)) {
+                            throw new RuntimeException(SqlCompilationError.of("constraint '"
+                                + constraintName.toUpperCase(Locale.ROOT) + "' does not exist"));
                         }
                         logger.trace("Dropped constraint {} from table {}", constraintName, tableName);
                     } else if (ctx.tableAction().DROP() != null && ctx.tableAction().CLUSTERING() != null) {
@@ -1236,7 +1234,7 @@ public class AlterCommandHandler implements CommandHandler {
             } else if (ctx.STREAM() != null) {
                 final String streamQn = visitor.getText(ctx.qualifiedName());
                 final String[] streamParts = qualifiedNameParts(ctx.qualifiedName());
-                final String streamName = streamParts[streamParts.length - 1].toUpperCase();
+                final String streamName = streamParts[streamParts.length - 1];
                 final Schema schema;
                 if (streamParts.length == 3) {
                     schema = catalog.getDatabase(streamParts[0]).getSchema(streamParts[1]);

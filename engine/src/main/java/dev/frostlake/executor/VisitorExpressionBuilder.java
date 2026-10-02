@@ -437,7 +437,9 @@ public class VisitorExpressionBuilder {
             }
             final Object nameVal = evaluateExpression(sshd.expressionList().expression(0),
                 scriptingNamesVisible);
-            final String streamName = nameVal != null ? nameVal.toString().toUpperCase().replaceAll("^'|'$", "") : "";
+            // Unquoted parts fold to upper case, a double-quoted part keeps its own — as IDENTIFIER() reads a string.
+            final String streamName = nameVal != null
+                ? SqlIdentifiers.canonicalText(nameVal.toString().replaceAll("^'|'$", "").trim()) : "";
             try {
                 final Catalog cat = queryExecutor.getCatalog();
                 final String dbN = cat.getCurrentDatabase();
@@ -728,7 +730,8 @@ public class VisitorExpressionBuilder {
             // ── Stream ─────────────────────────────────────────────────────────
             case "SYSTEM$STREAM_BACKLOG": {
                 if (!args.isEmpty()) {
-                    final String streamName = args.get(0) != null ? args.get(0).toString().replaceAll("^'|'$", "").toUpperCase() : "";
+                    final String streamName = args.get(0) != null
+                        ? SqlIdentifiers.canonicalText(args.get(0).toString().replaceAll("^'|'$", "").trim()) : "";
                     try {
                         final Catalog cat = queryExecutor.getCatalog();
                         final String dbN = cat.getCurrentDatabase();
@@ -831,6 +834,17 @@ public class VisitorExpressionBuilder {
                 }
                 return null;
             }
+            case "SYSTEM$LOG_TRACE":
+            case "SYSTEM$LOG_DEBUG":
+            case "SYSTEM$LOG_INFO":
+            case "SYSTEM$LOG_WARN":
+            case "SYSTEM$LOG_ERROR":
+            case "SYSTEM$LOG_FATAL":
+                // SYSTEM$LOG with the level in its name: SYSTEM$LOG_INFO(message)
+                if (!args.isEmpty()) {
+                    logger.info("{}: {}", rawName, args.get(0));
+                }
+                return null;
 
             // ── Wait ───────────────────────────────────────────────────────────
             case "SYSTEM$WAIT":

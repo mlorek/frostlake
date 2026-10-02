@@ -24,6 +24,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Two stages, or two tables, whose names differ only in case own two stages: a file unloaded to one is listed and
@@ -95,5 +97,25 @@ public class StageNameCaseTest extends BaseDatabaseTest {
         engine.execute("COPY INTO T FROM @%T FILE_FORMAT = (TYPE = CSV)");
         assertEquals("4", answer("SELECT a FROM \"t\""));
         assertEquals("3", answer("SELECT a FROM T"));
+    }
+
+    /**
+     * The two stages' directories stay apart even where the filesystem folds case, as macOS and Windows do by
+     * default: the upper-case stage keeps the plain directory it always had, and the other's name carries a digest
+     * of its exact spelling, so the two paths differ however their case is folded.
+     */
+    @Test
+    public void directoriesOfStagesDifferingOnlyInCaseNeverFoldTogether() {
+        engine.execute("CREATE STAGE ST");
+        engine.execute("CREATE STAGE \"st\"");
+        engine.execute("CREATE STAGE \"St\"");
+        final String upper = answer("SELECT GET_STAGE_LOCATION('@ST')");
+        final String lower = answer("SELECT GET_STAGE_LOCATION('@\"st\"')");
+        final String mixed = answer("SELECT GET_STAGE_LOCATION('@\"St\"')");
+
+        assertTrue(upper.endsWith(".ST/") && !upper.contains("~"), upper);
+        assertTrue(lower.contains(".st~") && mixed.contains(".St~"), lower + " | " + mixed);
+        assertFalse(upper.equalsIgnoreCase(lower), upper + " | " + lower);
+        assertFalse(lower.equalsIgnoreCase(mixed), lower + " | " + mixed);
     }
 }

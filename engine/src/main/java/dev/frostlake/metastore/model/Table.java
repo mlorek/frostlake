@@ -600,6 +600,55 @@ public class Table extends SqlObject {
         }
     }
 
+    /**
+     * Drop the PRIMARY KEY, UNIQUE or FOREIGN KEY constraint named {@code constraintName}
+     * ({@code ALTER TABLE … DROP CONSTRAINT name}); false when no such constraint carries that name.
+     */
+    public boolean dropNamedConstraint(final String constraintName) {
+        List<String> uniqueColumns = null;
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equalsIgnoreCase(constraintName)) {
+                uniqueColumns = unique.getColumnNames();
+                break;
+            }
+        }
+        if (uniqueColumns != null) {
+            dropUnique(uniqueColumns);
+            return true;
+        }
+        for (final ForeignKeyConstraint foreignKey : foreignKeys) {
+            if (foreignKey.getConstraintName().equalsIgnoreCase(constraintName)) {
+                dropForeignKey(constraintName);
+                return true;
+            }
+        }
+        if (constraintName.equalsIgnoreCase(primaryKeyConstraintName())) {
+            dropPrimaryKey();
+            return true;
+        }
+        final List<String> columnUniques = columnsNamed(uniqueConstraintNames, constraintName);
+        if (!columnUniques.isEmpty()) {
+            dropUnique(columnUniques);
+            return true;
+        }
+        final List<String> columnForeignKeys = columnsNamed(columnForeignKeyConstraintNames, constraintName);
+        if (!columnForeignKeys.isEmpty()) {
+            dropForeignKeyColumns(columnForeignKeys);
+            return true;
+        }
+        return false;
+    }
+
+    private static List<String> columnsNamed(final Map<String, String> names, final String constraintName) {
+        final List<String> columns = new ArrayList<>();
+        for (final Map.Entry<String, String> entry : names.entrySet()) {
+            if (entry.getValue() != null && entry.getValue().equalsIgnoreCase(constraintName)) {
+                columns.add(entry.getKey());
+            }
+        }
+        return columns;
+    }
+
     public boolean isTemporary() {
         return isTemporary;
     }
@@ -807,13 +856,7 @@ public class Table extends SqlObject {
         }
 
         final TableColumn oldColumn = columns.get(index);
-        final TableColumn newColumn = new TableColumn(oldColumn.getName(), newDataType, oldColumn.isNullable(),
-                oldColumn.getDefaultValue(), oldColumn.isPrimaryKey(), oldColumn.isUnique(),
-                oldColumn.isAutoIncrement());
-        newColumn.setComment(oldColumn.getComment());
-        newColumn.setCollation(oldColumn.getCollation());
-
-        columns.set(index, newColumn);
+        columns.set(index, copyColumn(oldColumn, newDataType, oldColumn.isPrimaryKey(), oldColumn.isUnique()));
     }
 
     public void addPrimaryKeyConstraint(final List<String> columnNames) {
@@ -831,13 +874,18 @@ public class Table extends SqlObject {
         }
     }
 
-    // Rebuild a column with different PRIMARY KEY / UNIQUE flags (both are final on TableColumn), carrying
-    // over the rest of its metadata — comment, collation, identity seed/step, foreign-key reference and
-    // masking policy — so adding or dropping one constraint never silently discards another property of
-    // the column it shares.
     private TableColumn copyColumnWithConstraintFlags(final TableColumn oldColumn,
                                                       final boolean primaryKey, final boolean unique) {
-        final TableColumn newColumn = new TableColumn(oldColumn.getName(), oldColumn.getDataType(),
+        return copyColumn(oldColumn, oldColumn.getDataType(), primaryKey, unique);
+    }
+
+    // Rebuild a column with a different type or PRIMARY KEY / UNIQUE flags (all final on TableColumn),
+    // carrying over the rest of its metadata — comment, collation, identity seed/step, foreign-key
+    // reference, masking policy and ordinal position — so changing one property never silently discards
+    // another, and the column keeps its place in INFORMATION_SCHEMA.COLUMNS.
+    private TableColumn copyColumn(final TableColumn oldColumn, final DataType dataType,
+                                   final boolean primaryKey, final boolean unique) {
+        final TableColumn newColumn = new TableColumn(oldColumn.getName(), dataType,
                 oldColumn.isNullable(), oldColumn.getDefaultValue(), primaryKey, unique,
                 oldColumn.isAutoIncrement(), oldColumn.getIdentityStart(), oldColumn.getIdentityIncrement());
         newColumn.setComment(oldColumn.getComment());
@@ -848,6 +896,7 @@ public class Table extends SqlObject {
         newColumn.setOnUpdate(oldColumn.getOnUpdate());
         newColumn.setRely(oldColumn.getRely());
         newColumn.setMaskingPolicyName(oldColumn.getMaskingPolicyName());
+        newColumn.setOrdinalPosition(oldColumn.getOrdinalPosition());
         return newColumn;
     }
 

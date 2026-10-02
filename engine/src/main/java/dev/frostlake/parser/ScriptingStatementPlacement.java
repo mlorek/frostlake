@@ -121,7 +121,8 @@ public final class ScriptingStatementPlacement {
             || statement.continueStatement() != null || statement.raiseStatement() != null
             || statement.asyncStatement() != null || statement.awaitStatement() != null
             || statement.openStatement() != null || statement.fetchStatement() != null
-            || statement.closeStatement() != null || statement.nullStatement() != null;
+            || statement.closeStatement() != null || statement.nullStatement() != null
+            || statement.systemCallStatement() != null;
     }
 
     /**

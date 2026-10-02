@@ -476,7 +476,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         final Object nameVal = expr.getStreamNameExpr().accept(this);
         if (nameVal == null) return false;
         final String argAsWritten = nameVal.toString().replaceAll("^'|'$", "");
-        final String streamName = argAsWritten.toUpperCase();
+        // The argument names the stream the way IDENTIFIER() reads a string: unquoted parts fold to upper
+        // case, a double-quoted part keeps its own ('"Mixed Case"' names the stream created as "Mixed Case").
+        final String streamName = SqlIdentifiers.canonicalText(argAsWritten.trim());
         if (queryExecutor == null) return false;
         Stream stream = null;
         try {

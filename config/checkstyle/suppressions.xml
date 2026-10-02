@@ -10,12 +10,14 @@
 -->
 <suppressions>
 
-    <!-- This test is ABOUT stdout and stderr: it installs its own PrintStreams and asserts that a Java
-         UDF's writes are captured while writes from outside a UDF still pass through to whatever the
-         embedder installed. The System.out calls are the subject under test — two of them are inside a
-         UDF source string that gets compiled — so routing them through SLF4J would delete the test. -->
+    <!-- These tests are ABOUT stdout and stderr: they install their own PrintStreams and assert that a
+         Java UDF's writes are captured while writes from outside a UDF still pass through to whatever the
+         embedder installed (UdfConsoleCaptureTest also prints from a thread playing a console log
+         appender, to pin the lock order). The System.out calls are the subject under test — two of them
+         are inside a UDF source string that gets compiled — so routing them through SLF4J would delete
+         the tests. -->
     <suppress checks="RegexpSingleline"
-              files="[\\/]executor[\\/]udf[\\/]JarHandlerTest\.java$"/>
+              files="[\\/]executor[\\/]udf[\\/](JarHandlerTest|UdfConsoleCaptureTest)\.java$"/>
 
     <!-- Files.walk RETURNS a java.util.stream.Stream and is used here as a try-with-resources handle
          for a directory listing. That is the JDK's API surface, not stream-style programming: the rule

@@ -34,6 +34,7 @@ import dev.frostlake.executor.procedural.DeclareCursorStatement;
 import dev.frostlake.executor.procedural.DeclareExceptionStatement;
 import dev.frostlake.executor.procedural.DeclareResultSetStatement;
 import dev.frostlake.executor.procedural.DeclareStatement;
+import dev.frostlake.executor.procedural.EvaluateStatement;
 import dev.frostlake.executor.procedural.ExecuteImmediateExpression;
 import dev.frostlake.executor.procedural.FetchStatement;
 import dev.frostlake.executor.procedural.ForStatement;
@@ -428,6 +429,9 @@ public class ProceduralExecutor {
                 break;
             case SET:
                 executeSet((SetStatement) stmt);
+                break;
+            case EVALUATE:
+                evaluateExpression(((EvaluateStatement) stmt).getExpression(), null);
                 break;
             case IF:
                 executeIf((IfStatement) stmt);

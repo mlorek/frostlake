@@ -102,6 +102,14 @@ public class SystemFunctionEvaluator {
                 if (args.size() >= 2) logger.info("SYSTEM$LOG [{}]: {}", args.get(0), args.get(1));
                 else if (!args.isEmpty()) logger.info("SYSTEM$LOG: {}", args.get(0));
                 return null;
+            case "SYSTEM$LOG_TRACE":
+            case "SYSTEM$LOG_DEBUG":
+            case "SYSTEM$LOG_INFO":
+            case "SYSTEM$LOG_WARN":
+            case "SYSTEM$LOG_ERROR":
+            case "SYSTEM$LOG_FATAL":
+                if (!args.isEmpty()) logger.info("{}: {}", funcName.toUpperCase(), args.get(0));
+                return null;
             case "SYSTEM$CLUSTERING_DEPTH": {
                 final String t = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 return "{\"average_depth\": 1.0, \"table_name\": \"" + t + "\"}";
