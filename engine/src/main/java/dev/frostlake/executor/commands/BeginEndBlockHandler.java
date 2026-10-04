@@ -36,6 +36,7 @@ import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.storage.ResultSet;
@@ -324,6 +325,8 @@ public class BeginEndBlockHandler implements CommandHandler {
             // A failure recorded by an EARLIER block must not label this one's — nothing between two
             // top-level blocks runs through the per-statement clear.
             proceduralExecutor.clearStatementFailure();
+            // And no statement of the script has run yet (see ProceduralExecutor#noteStatementQueryId).
+            proceduralExecutor.startStatementQueryIds();
         }
         // An outermost block whose DECLARE section holds a query writes every one of its names out as a bind.
         final boolean displacedBinding = outermostBlock
@@ -360,16 +363,7 @@ public class BeginEndBlockHandler implements CommandHandler {
                         try {
                             // Each statement in a block reads its own clock (live-verified).
                             StatementClock.advance();
-                            final Object stmtResult = visitStatement(stmtCtx);
-                            if (stmtResult instanceof ResultSet) {
-                                proceduralExecutor.recordSqlRowCount((ResultSet) stmtResult);
-                                queryExecutor.getResultCache().cacheResult(
-                                    visitor.getOriginalText(stmtCtx), (ResultSet) stmtResult);
-                            } else if (stmtCtx.proceduralStatement() == null) {
-                                // A plain SQL statement (TRUNCATE, some DDL) that surfaced no result
-                                // set still resets the DML trio and counts one status line.
-                                proceduralExecutor.recordStatementWithoutResult();
-                            }
+                            runStatement(stmtCtx, false);
                             // Snowflake: each statement of a stored procedure runs in its own autocommit
                             // transaction (unless an explicit BEGIN is open). Leaving one implicit
                             // transaction spanning the body let a later same-row DELETE consolidate away a
@@ -402,9 +396,8 @@ public class BeginEndBlockHandler implements CommandHandler {
                 // No exception handling, execute statements directly
                 for (final FrostlakeParser.StatementContext stmtCtx : ctx.statementList().statement()) {
                     StatementClock.advance();
-                    final Object stmtResult;
                     try {
-                        stmtResult = visitStatement(stmtCtx);
+                        runStatement(stmtCtx, false);
                     } catch (final RuntimeException failure) {
                         // Name the statement that failed, for the uncaught-exception message below.
                         proceduralExecutor.recordStatementFailure(stmtCtx.getStart().getLine(),
@@ -412,17 +405,6 @@ public class BeginEndBlockHandler implements CommandHandler {
                         throw failure;
                     }
                     proceduralExecutor.clearStatementFailure();
-                    // Cache result sets produced by SHOW/SELECT statements so that
-                    // RESULT_SCAN(LAST_QUERY_ID()) works inside BEGIN...END blocks
-                    if (stmtResult instanceof ResultSet) {
-                        proceduralExecutor.recordSqlRowCount((ResultSet) stmtResult);
-                        queryExecutor.getResultCache().cacheResult(
-                            visitor.getOriginalText(stmtCtx), (ResultSet) stmtResult);
-                    } else if (stmtCtx.proceduralStatement() == null) {
-                        // A plain SQL statement (TRUNCATE, some DDL) that surfaced no result set
-                        // still resets the DML trio and counts one status line.
-                        proceduralExecutor.recordStatementWithoutResult();
-                    }
                     // Per-statement autocommit, as at top level (see the handler-path loop above).
                     queryExecutor.getTransactionManager().autocommitStatementEnd();
                     // Check if a RETURN, BREAK, or CONTINUE was executed
@@ -570,7 +552,7 @@ public class BeginEndBlockHandler implements CommandHandler {
         try {
             for (final FrostlakeParser.StatementContext stmtCtx : handlerCtx.statementList().statement()) {
                 StatementClock.advance();
-                visitor.visit(stmtCtx);
+                runStatement(stmtCtx, true);
                 queryExecutor.getTransactionManager().autocommitStatementEnd();
             }
         } finally {
@@ -588,6 +570,61 @@ public class BeginEndBlockHandler implements CommandHandler {
      * rolling it back is Snowflake's statement-level rollback. An EXPLICIT (BEGIN-started) transaction
      * is left open untouched, matching the top-level engine behavior.
      */
+    /**
+     * Runs one statement of the block, or of one of its exception handlers, and completes it. A child statement (see
+     * {@link #isChildStatement}) takes its query ID, holding its result for RESULT_SCAN(LAST_QUERY_ID()), and its
+     * QUERY_HISTORY row, a FAILED one when it fails (see {@code QueryExecutor.beginChildStatement}); a block running
+     * as SQL the engine composed for itself (see {@code QueryExecutor.executeUnrecorded}) hands out none. A SQL
+     * statement of the block's own then sets the DML trio and ACTIVITY_COUNT, as a handler's statement never has, and
+     * any statement that took a query ID, itself or through what it ran, sets SQLID.
+     *
+     * @param stmtCtx   the statement
+     * @param inHandler whether it is a statement of an exception handler, which runs as written, unplaced
+     */
+    private void runStatement(final FrostlakeParser.StatementContext stmtCtx, final boolean inHandler) {
+        final String queryIdBefore = proceduralExecutor.lastQueryIdOfSession();
+        final String text = visitor.getOriginalText(stmtCtx);
+        final QueryHistory row = isChildStatement(stmtCtx) ? queryExecutor.beginChildStatement(text, stmtCtx) : null;
+        final Object stmtResult;
+        try {
+            stmtResult = inHandler ? visitor.visit(stmtCtx) : visitStatement(stmtCtx);
+        } catch (final RuntimeException failure) {
+            queryExecutor.failChildStatement(row, text, failure);
+            throw failure;
+        }
+        if (stmtResult instanceof ResultSet) {
+            if (row != null) {
+                queryExecutor.completeChildStatement(row, text, (ResultSet) stmtResult);
+            } else if (!inHandler && !queryExecutor.isUnrecorded()) {
+                // A scripting statement that answered a result set of its own still hands it out by query ID.
+                queryExecutor.getResultCache().cacheResult(text, (ResultSet) stmtResult);
+            }
+            if (!inHandler) {
+                proceduralExecutor.recordSqlRowCount((ResultSet) stmtResult);
+            }
+        } else {
+            queryExecutor.completeChildStatement(row, text, null);
+            if (!inHandler && stmtCtx.proceduralStatement() == null) {
+                // A plain SQL statement (TRUNCATE, some DDL) that surfaced no result set still resets the DML
+                // trio and counts one status line.
+                proceduralExecutor.recordStatementWithoutResult();
+            }
+        }
+        proceduralExecutor.noteStatementQueryId(queryIdBefore);
+    }
+
+    /**
+     * Whether a statement of a block is a statement of the session's in its own right, a child statement with a
+     * query ID and a QUERY_HISTORY row of its own: a SQL statement, a CALL or an EXECUTE IMMEDIATE. A scripting
+     * statement - LET, an assignment, IF, CASE, a loop, RETURN, a nested block, OPEN, FETCH, SELECT ... INTO - is
+     * not; the queries it runs and the statements of its bodies are, and record themselves.
+     */
+    public static boolean isChildStatement(final FrostlakeParser.StatementContext stmtCtx) {
+        final FrostlakeParser.ProceduralStatementContext procedural = stmtCtx.proceduralStatement();
+        return procedural == null || procedural.callStatement() != null || procedural.systemCallStatement() != null
+            || procedural.executeImmediateStatement() != null;
+    }
+
     private void rollbackFailedStatement() {
         final TransactionManager transactions = queryExecutor.getTransactionManager();
         if (transactions.hasActiveTransaction() && !transactions.isExplicitTransaction()) {

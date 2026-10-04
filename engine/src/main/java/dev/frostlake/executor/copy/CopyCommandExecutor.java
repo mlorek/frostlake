@@ -26,6 +26,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StagePathSegments;
 import dev.frostlake.executor.StagePrefix;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
@@ -174,6 +175,10 @@ public final class CopyCommandExecutor {
             if (isLoadIntoTable) {
                 // COPY INTO table FROM stage/location
                 return executeCopyIntoTable(ctx, targetName);
+            } else if (StatementClock.isReplay()) {
+                // A replayed unload wrote its files when it first ran, and they are on disk as the statements after it
+                // left them: writing them again would refuse over them, or bring back files removed since.
+                return null;
             } else {
                 // COPY INTO stage FROM table/query
                 return executeCopyIntoStage(ctx, targetName, targetDisplay);
@@ -811,6 +816,10 @@ public final class CopyCommandExecutor {
      * Snowflake rejects. The warning keeps the operator informed without changing the statement's outcome.
      */
     private void purgeLoadedFiles(final List<Path> loadedFiles) {
+        if (StatementClock.isReplay()) {
+            // The files a replayed load purged are gone already; one staged again under their name since stays.
+            return;
+        }
         final List<String> failures = new ArrayList<>();
         for (final Path file : loadedFiles) {
             try {
@@ -1027,7 +1036,17 @@ public final class CopyCommandExecutor {
         this.copyRefreshPrefix = prefix;
         this.copyRefreshModifiedAfter = modifiedAfter != null ? parseRefreshTimestamp(modifiedAfter) : null;
         try {
-            return executor.execute(copyStatement);
+            // Snowpipe loads serverlessly: the load is no statement of the caller's session. It runs in a session
+            // of its own, outside the caller's transaction, takes no query ID and commits by itself.
+            final Object[] loaded = new Object[1];
+            executor.runInOwnSession(new Runnable() {
+                @Override
+                public void run() {
+                    loaded[0] = executor.executeUnrecorded(copyStatement);
+                    executor.getTransactionManager().autocommitStatementEnd();
+                }
+            });
+            return loaded[0];
         } finally {
             this.copyRefreshPrefix = null;
             this.copyRefreshModifiedAfter = null;
@@ -2309,11 +2328,19 @@ public final class CopyCommandExecutor {
             data = executor.executeSelectFromContext(fromSelect);
         } else if (fromTable != null) {
             final Table sourceTable = executor.getCatalog().resolveTable(fromTable);
-            final List<ResultSetColumn> cols = new ArrayList<>();
-            for (final TableColumn tc : sourceTable.getColumns()) {
-                cols.add(new ResultSetColumn(tc.getName(), tc.getDataType()));
+            if (hasMaskedColumns(sourceTable) || hasProjectionPolicies(sourceTable)) {
+                // An unload reads the table as a query does, so its masking and projection policies apply: the raw
+                // scan below wrote the unmasked values to the stage, and a column no query may project. Read through
+                // the query that masks them and refuses that one, unrecorded because the read is part of this COPY,
+                // not a statement of its own.
+                data = executor.executeUnrecorded("SELECT * FROM " + spelledName(fromTable)).get(0);
+            } else {
+                final List<ResultSetColumn> cols = new ArrayList<>();
+                for (final TableColumn tc : sourceTable.getColumns()) {
+                    cols.add(new ResultSetColumn(tc.getName(), tc.getDataType()));
+                }
+                data = new ResultSet(cols, executor.getStorageEngine().getTableStorage(executor.getFullyQualifiedTableName(fromTable)).scan());
             }
-            data = new ResultSet(cols, executor.getStorageEngine().getTableStorage(executor.getFullyQualifiedTableName(fromTable)).scan());
         } else {
             throw new RuntimeException("COPY INTO " + location + " requires a FROM clause");
         }
@@ -2660,5 +2687,41 @@ public final class CopyCommandExecutor {
             return ((String) v).trim();
         }
         return MAPPER.writeValueAsString(v);
+    }
+
+    /** Whether a masking policy applies to any of the table's columns (masking needs the security manager). */
+    /**
+     * Whether a column of the table carries a projection policy: an unload projects every column, so it is read
+     * through the query that refuses one the policy restricts, never straight from storage.
+     */
+    private static boolean hasProjectionPolicies(final Table table) {
+        for (final TableColumn column : table.getColumns()) {
+            if (column.hasProjectionPolicy()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasMaskedColumns(final Table table) {
+        if (executor.getSecurityManager() == null) {
+            return false;
+        }
+        for (final TableColumn column : table.getColumns()) {
+            if (column.hasMaskingPolicy()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A canonical qualified name spelled back as SQL, each part quoted only where it has to be. */
+    private static String spelledName(final String canonicalQualifiedName) {
+        final String[] parts = QualifiedName.parse(canonicalQualifiedName).parts();
+        final StringBuilder spelled = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            spelled.append(i > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(parts[i]));
+        }
+        return spelled.toString();
     }
 }

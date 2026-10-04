@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 
 /** Serializable snapshot of a PROJECTION POLICY (its body, comment and owner). */
 public class ProjectionPolicySnapshot implements Serializable {
@@ -26,4 +27,6 @@ public class ProjectionPolicySnapshot implements Serializable {
     public String body;
     public String comment;
     public String owner;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public Instant createdAt;
 }

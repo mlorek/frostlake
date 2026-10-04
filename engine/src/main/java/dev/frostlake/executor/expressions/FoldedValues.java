@@ -16,10 +16,13 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.UuidType;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -37,7 +40,8 @@ import java.math.RoundingMode;
  * </pre>
  *
  * <p>An exact NUMBER fold sets the scale; a FLOAT fold takes the double; a BOOLEAN or temporal fold
- * casts; a string fold leaves the value alone. No fold, no change.
+ * casts; a UUID fold converts a text to the UUID it spells; a string fold leaves the value alone. No fold, no
+ * change.
  */
 public final class FoldedValues {
 
@@ -86,6 +90,12 @@ public final class FoldedValues {
             // the midnight timestamp, an NTZ beside an LTZ moves to the session zone, and a text is
             // read as the fold's type — "Date 'abc' is not recognized" when it reads as none.
             return ValueCaster.castValue(value, declared.getName());
+        }
+        if (declared instanceof UuidType) {
+            // A text beside a UUID becomes one, canonical and lower-case, and a text that spells none is the
+            // conversion's sentence: COALESCE('defgh', u) is "UUID 'defgh' is invalid, expected format is ..."
+            // (live-verified).
+            return ToUuid.canonical(SharedFunctionHelpers.textOf(value));
         }
         return value;
     }

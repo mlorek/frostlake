@@ -17,6 +17,7 @@
 package dev.frostlake.security;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.SecurableObjectType;
@@ -24,7 +25,9 @@ import dev.frostlake.metastore.model.User;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -36,6 +39,9 @@ public class SecurityManager {
 
     private final Catalog catalog;
     private final SessionContext sessionContext;
+
+    /** The view owner whose rights stand in for the session's while a view's own query is planned and run. */
+    private final ThreadLocal<String> ownerRights = new ThreadLocal<>();
 
     public SecurityManager(final Catalog catalog, final SessionContext sessionContext) {
         this.catalog = catalog;
@@ -57,8 +63,10 @@ public class SecurityManager {
             return;
         }
 
-        // Get all roles for the current user (including role hierarchy)
-        final Set<String> effectiveRoles = getEffectiveRoles();
+        // Get all roles for the current user (including role hierarchy) — or, inside a view's own query, the view
+        // owner's roles (see runWithOwnerRights).
+        final String rightsOwner = ownerRights.get();
+        final Set<String> effectiveRoles = rightsOwner != null ? rolesUnder(rightsOwner) : getEffectiveRoles();
 
         // Administrative roles have broad object authority — like the SYSTEM user but at role
         // granularity. Restriction applies to custom roles, matching Snowflake's built-in admins.
@@ -72,27 +80,31 @@ public class SecurityManager {
             return;
         }
 
+        // A privilege is recorded under the object's resolved full name (GrantNames), however the statement
+        // spelled it, so the name asked about is resolved the same way.
+        final String recordedName = GrantNames.of(catalog, objectType, objectName);
+
         // Check if any of the user's roles has the required privilege
         for (final String roleName : effectiveRoles) {
             try {
                 final Role role = catalog.getRole(roleName);
 
                 // Check for specific privilege
-                if (role.hasPrivilege(objectType, objectName, requiredPrivilege)) {
+                if (role.hasPrivilege(objectType, recordedName, requiredPrivilege)) {
                     logger.debug("Permission granted: {} on {}:{} via role {}",
                                 requiredPrivilege, objectType, objectName, roleName);
                     return;
                 }
 
                 // Check for ALL privilege
-                if (role.hasPrivilege(objectType, objectName, Privilege.ALL)) {
+                if (role.hasPrivilege(objectType, recordedName, Privilege.ALL)) {
                     logger.debug("Permission granted: ALL (includes {}) on {}:{} via role {}",
                                 requiredPrivilege, objectType, objectName, roleName);
                     return;
                 }
 
                 // Check for OWNERSHIP privilege (ownership grants all privileges)
-                if (role.hasPrivilege(objectType, objectName, Privilege.OWNERSHIP)) {
+                if (role.hasPrivilege(objectType, recordedName, Privilege.OWNERSHIP)) {
                     logger.debug("Permission granted: OWNERSHIP (includes {}) on {}:{} via role {}",
                                 requiredPrivilege, objectType, objectName, roleName);
                     return;
@@ -181,6 +193,55 @@ public class SecurityManager {
         } catch (final SecurityException e) {
             return false;
         }
+    }
+
+    /**
+     * Enters the rights a view's own query runs with: the view owner's, not the querying role's. Snowflake checks a
+     * view's underlying objects against the role that owns the view, so a role granted SELECT on the view reads it
+     * without any privilege on the tables beneath. The session itself is untouched: CURRENT_ROLE() still answers
+     * the querying role. An owner that is no role here leaves the session's rights in force.
+     *
+     * @param ownerRole the view's owner
+     * @return the rights in force before, for {@link #leaveOwnerRights}
+     */
+    public String enterOwnerRights(final String ownerRole) {
+        final String previous = ownerRights.get();
+        if (ownerRole != null && catalog.roleExists(ownerRole.toUpperCase(Locale.ROOT))) {
+            ownerRights.set(ownerRole.toUpperCase(Locale.ROOT));
+        }
+        return previous;
+    }
+
+    /**
+     * Returns to the rights in force before {@link #enterOwnerRights}.
+     *
+     * @param previous what {@link #enterOwnerRights} answered
+     */
+    public void leaveOwnerRights(final String previous) {
+        if (previous == null) {
+            ownerRights.remove();
+        } else {
+            ownerRights.set(previous);
+        }
+    }
+
+    /** A role and every role granted to it, however many levels down. */
+    private Set<String> rolesUnder(final String roleName) {
+        final Set<String> roles = new HashSet<>();
+        final List<String> pending = new ArrayList<>();
+        pending.add(roleName);
+        while (!pending.isEmpty()) {
+            final String next = pending.remove(pending.size() - 1);
+            if (!roles.add(next)) {
+                continue;
+            }
+            try {
+                pending.addAll(catalog.getRole(next).getGrantedRoles());
+            } catch (final RuntimeException unresolvable) {
+                logger.debug("Role {} not found while traversing role hierarchy", next);
+            }
+        }
+        return roles;
     }
 
     /**

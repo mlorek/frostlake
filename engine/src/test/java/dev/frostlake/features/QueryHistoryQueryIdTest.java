@@ -90,12 +90,13 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         logger.info("Query ID 1: {}", queryId1);
         logger.info("Query ID 2: {}", queryId2);
 
-        // Verify both are in history with correct IDs
+        // Verify both are in history with correct IDs. START_TIME is a TIMESTAMP_LTZ to the millisecond, and two
+        // statements this quick can share one, so each is told apart by its text rather than by when it started.
         final ResultSet history = engine.executeQuery("""
             SELECT query_id, query_text
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_text IN ('SELECT 100', 'SELECT 200')
-            ORDER BY start_time ASC
+            ORDER BY query_text ASC
             """);
 
         assertEquals(2, history.getRowCount());
@@ -128,12 +129,12 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         final ResultSet insertQueryId = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
         final String insertQid = (String) insertQueryId.getRows().get(0).getValues().get(0);
 
-        // Verify in history
+        // Verify in history, each told apart by its kind (START_TIME is to the millisecond, which two can share)
         final ResultSet history = engine.executeQuery("""
             SELECT query_id, query_type
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type IN ('CREATE', 'INSERT')
-            ORDER BY start_time ASC
+            ORDER BY query_type ASC
             """);
 
         assertEquals(2, history.getRowCount());

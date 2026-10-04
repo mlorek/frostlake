@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Privilege;
@@ -311,6 +312,8 @@ final class ShowSecurityExecutor {
         // A grant is recorded under the object's own kind (a relation's, whichever keyword named it) and the
         // name its statement wrote, so the object's kind is asked under each name the object answers to.
         final List<String> spellings = new ArrayList<>();
+        // Recorded under the resolved full name (GrantNames); the other spellings find what an older snapshot kept.
+        spellings.add(GrantNames.of(catalog, grantedOn, objectName));
         spellings.add(objectName);
         if (granted != null) {
             spellings.addAll(granted.getSpellings());

@@ -17,6 +17,7 @@
 package dev.frostlake.task;
 
 import dev.frostlake.executor.ShowResultHelpers;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Alert;
@@ -38,6 +39,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -537,15 +539,32 @@ public class TaskScheduler {
         final String[] priorScope = catalog.currentSessionScope();
         catalog.beginSessionScope(taskDatabase, taskSchema);
         try {
-            runTaskOnceInScope(qualifiedTaskName, task, visited, trigger);
+            // A run is a session of its own, whether the schedule or an EXECUTE TASK started it: it never joins
+            // the caller's transaction or history (see TaskExecutor#runInOwnSession). Each DAG child the run
+            // cascades to opens its own in turn.
+            taskExecutor.runInOwnSession(new Runnable() {
+                @Override
+                public void run() {
+                    runTaskOnceInScope(qualifiedTaskName, task, visited, trigger);
+                }
+            });
         } finally {
             catalog.restoreSessionScope(priorScope);
         }
     }
 
+    /**
+     * A run's stamp: an instant at the account's millisecond resolution, kept on the host-local wall clock the run
+     * models hold and read back by {@link ShowResultHelpers#createdOn(LocalDateTime)}.
+     */
+    private static LocalDateTime stamp(final Instant instant) {
+        return LocalDateTime.ofInstant(instant.truncatedTo(ChronoUnit.MILLIS), ZoneId.systemDefault());
+    }
+
     private void runTaskOnceInScope(final String qualifiedTaskName, final Task task, final Set<String> visited,
                                     final TaskTrigger trigger) {
-        final LocalDateTime scheduledTime = LocalDateTime.now();
+        // Read the way SQL reads the time, so what the run does next reads a later instant.
+        final LocalDateTime scheduledTime = stamp(StatementClock.observed());
         logger.info("Executing task: {}", qualifiedTaskName);
         // (Predecessor gating is implemented by the cascade itself: a child runs only via
         // runDependentTasks after its predecessor completes successfully. USER_TASK_TIMEOUT_MS is
@@ -555,7 +574,7 @@ public class TaskScheduler {
         if (task.getCondition() != null && !task.getCondition().isEmpty()) {
             try {
                 final List<ResultSet> condResult =
-                    taskExecutor.executeQuery("SELECT (" + task.getCondition() + ")");
+                    taskExecutor.evaluateCondition("SELECT (" + task.getCondition() + ")");
                 if (!condResult.isEmpty() && !condResult.get(0).getRows().isEmpty()) {
                     final Object condVal = condResult.get(0).getRows().get(0).getValue(0);
                     final boolean condMet = condVal instanceof Boolean ? (Boolean) condVal
@@ -582,11 +601,15 @@ public class TaskScheduler {
         try {
             final int maxAttempts = 1 + Math.max(0, task.getTaskAutoRetryAttempts());
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-                final LocalDateTime startTime = LocalDateTime.now();
+                // The attempt reads a time of its own. Under EXECUTE TASK the caller's statement instant moves on,
+                // so the body's CURRENT_TIMESTAMP is the start recorded here. On the scheduler's thread the body
+                // pins a later instant than this reading.
+                StatementClock.advance();
+                final LocalDateTime startTime = stamp(StatementClock.observed());
                 try {
                     final int rowsAffected = taskExecutor.execute(task.getSqlStatement());
 
-                    task.recordExecution(new TaskExecution(scheduledTime, startTime, LocalDateTime.now(),
+                    task.recordExecution(new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
                         TaskExecutionState.SUCCEEDED, null, rowsAffected, trigger));
 
                     // Calculate next run time (only for interval-scheduled tasks — a CRON task
@@ -605,7 +628,7 @@ public class TaskScheduler {
                     return;
 
                 } catch (final Exception e) {
-                    task.recordExecution(new TaskExecution(scheduledTime, startTime, LocalDateTime.now(),
+                    task.recordExecution(new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
                         TaskExecutionState.FAILED, e.getMessage(), 0, trigger));
                     logger.error("Task {} failed (attempt {}/{}): {}",
                         qualifiedTaskName, attempt, maxAttempts, e.getMessage());

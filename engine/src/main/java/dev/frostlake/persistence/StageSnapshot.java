@@ -38,6 +38,8 @@ public class StageSnapshot implements Serializable {
     public boolean encryption;
     public String comment;
     public Instant createdAt;
+    /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
+    public Instant lastDdlAt;
 
     // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
     public String encryptionType;
@@ -46,4 +48,6 @@ public class StageSnapshot implements Serializable {
     public HashMap<String, String> copyOptions;
     /** The files the directory table has registered, by stage-relative path, each with its directory row. */
     public LinkedHashMap<String, ArrayList<Object>> directoryRegistry;
+    // The owning role. Null on snapshots written before it was saved, which restore the default owner.
+    public String owner;
 }

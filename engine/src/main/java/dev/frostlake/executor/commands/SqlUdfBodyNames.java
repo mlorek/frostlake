@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.Token;
@@ -74,6 +75,15 @@ final class SqlUdfBodyNames {
             "invalid identifier '" + unknown.getText().toUpperCase() + "'"));
     }
 
+    /**
+     * Whether a single-part name is one the signature declares: an unquoted one by its upper-cased spelling, a quoted
+     * one, {@code "V"}, by the exact name it spells, as any identifier is read. A quoted spelling of a parameter was
+     * an unknown name, so a body reading its parameter as {@code "V"} was refused.
+     */
+    private static boolean declares(final Set<String> parameters, final String written) {
+        return parameters.contains(written.toUpperCase()) || parameters.contains(SqlIdentifiers.canonicalText(written));
+    }
+
     /** The first single-part name the signature does not declare, in source order, or null. */
     private static FrostlakeParser.QualifiedNameContext firstUnknown(final ParseTree node,
                                                                      final Set<String> parameters) {
@@ -85,8 +95,7 @@ final class SqlUdfBodyNames {
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
             final FrostlakeParser.QualifiedNameContext name =
                 ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName();
-            if (name != null && name.namePart().isEmpty()
-                    && !parameters.contains(name.getText().toUpperCase())) {
+            if (name != null && name.namePart().isEmpty() && !declares(parameters, name.getText())) {
                 return name;
             }
         }

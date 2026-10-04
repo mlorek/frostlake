@@ -1117,6 +1117,10 @@ public final class ExpressionArithmetic {
 
     /** A temporal as the instant it names, a naive one read in the session's zone; null if not temporal. */
     private static Instant sessionInstant(final Object v) {
+        // A raw instant, as an INFORMATION_SCHEMA time once was, is already the instant it names.
+        if (v instanceof Instant) {
+            return (Instant) v;
+        }
         if (v instanceof OffsetDateTime) {
             return ((OffsetDateTime) v).toInstant();
         }

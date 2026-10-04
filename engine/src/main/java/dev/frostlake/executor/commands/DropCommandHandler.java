@@ -23,10 +23,13 @@ import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementErrors;
+import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.RetentionChain;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TableShadows;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -61,6 +64,10 @@ import java.util.Map;
 public class DropCommandHandler implements CommandHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(DropCommandHandler.class);
+
+    /** The characters and length of the token that names where a dropped table's stage files wait. */
+    private static final String STAGE_TOKEN_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+    private static final int STAGE_TOKEN_LENGTH = 20;
 
     private final DDLCommandHandler ddl;
     private final Catalog catalog;
@@ -103,6 +110,20 @@ public class DropCommandHandler implements CommandHandler {
      */
     private static boolean forgiven(final boolean ifExists, final RuntimeException failure) {
         return ifExists && !String.valueOf(failure.getMessage()).startsWith(SqlAccessControlError.PREFIX);
+    }
+
+    /**
+     * The retention a schema's objects keep when they declare none ({@link RetentionChain}), for a dropped object that
+     * is not a table. The schema was just resolved for the drop; should it not resolve by these names, the account's
+     * default applies.
+     */
+    private int schemaRetention(final String databaseName, final String schemaName) {
+        try {
+            final Database database = catalog.getDatabase(databaseName);
+            return RetentionChain.effectiveDays(database, database.getSchema(schemaName), null);
+        } catch (final RuntimeException unresolved) {
+            return RetentionChain.ACCOUNT_DEFAULT_DAYS;
+        }
     }
 
     /**
@@ -283,10 +304,13 @@ public class DropCommandHandler implements CommandHandler {
         try {
             if (ctx.DATABASE() != null) {
                 final String dbName = dropNameText(ctx);
+                // Refused before IF EXISTS could forgive it: the SNOWFLAKE database is always there.
+                SystemDatabase.refuseChange(dbName);
                 try {
                     checkDrop(SecurableObjectType.DATABASE, dbName);
                     queryExecutor.requireOwnership("DATABASE", dropNameParts(ctx), null);
                     final Database droppedDb = catalog.databaseExact(dbName);
+                    DroppedObject dropped = null;
                     if (droppedDb != null) {
                         // Snapshot every table's rows and RELEASE its storage (as DROP TABLE does), so the
                         // database name can be created again without colliding with — or inheriting — the
@@ -296,10 +320,16 @@ public class DropCommandHandler implements CommandHandler {
                         for (final Schema droppedSchema : droppedDb.getAllSchemas()) {
                             snapshotAndReleaseStorage(dbName, droppedSchema, tableRows, hiddenTableRows);
                         }
-                        catalog.recordDropped("DATABASE:" + dbName,
-                            new DroppedObject(droppedDb, tableRows, hiddenTableRows));
+                        // Its tables' and stages' files wait for an UNDROP under a token of the version's own.
+                        dropped = new DroppedObject(droppedDb, tableRows, hiddenTableRows,
+                            RetentionChain.effectiveDays(droppedDb, null, null),
+                            StatementTokens.draw(STAGE_TOKEN_ALPHABET, STAGE_TOKEN_LENGTH));
+                        catalog.recordDropped("DATABASE:" + dbName, dropped);
                     }
                     catalog.dropDatabase(dbName, false);
+                    if (dropped != null) {
+                        queryExecutor.setAsideStages("DATABASE:" + dbName, dropped);
+                    }
                     if (streamManager != null) {
                         streamManager.onDatabaseDropped(dbName);
                     }
@@ -313,6 +343,12 @@ public class DropCommandHandler implements CommandHandler {
                 final String schemaName = dropNameText(ctx);
                 // Refused before IF EXISTS forgives anything: a schema name has at most two parts.
                 final String[] parts = catalog.withoutAccount(dropNameParts(ctx), 2);
+                final String inDatabase = parts.length == 1 ? catalog.getCurrentDatabase() : parts[0];
+                if (SystemDatabase.is(inDatabase)
+                        && catalog.databaseExact(inDatabase).hasSchemaExact(parts[parts.length - 1])) {
+                    // The SNOWFLAKE database's schemas are its own (SystemDatabase).
+                    SystemDatabase.refuseChange(inDatabase);
+                }
 
                 try {
                     checkDrop(SecurableObjectType.SCHEMA, schemaName);
@@ -322,12 +358,17 @@ public class DropCommandHandler implements CommandHandler {
                     final String snapSchemaName = parts.length == 1 ? parts[0] : parts[1];
                     final Database snapDb = catalog.databaseExact(snapDbName);
                     final Schema snapSchema = snapDb.schemaExact(snapSchemaName);
+                    final String droppedKey = "SCHEMA:" + QualifiedName.key(snapDbName, snapSchemaName);
+                    DroppedObject dropped = null;
                     if (snapSchema != null) {
                         final Map<String, List<Row>> tableRows = new LinkedHashMap<>();
                         final Map<String, List<Row>> hiddenTableRows = new LinkedHashMap<>();
                         snapshotAndReleaseStorage(snapDbName, snapSchema, tableRows, hiddenTableRows);
-                        catalog.recordDropped("SCHEMA:" + QualifiedName.key(snapDbName, snapSchemaName),
-                            new DroppedObject(snapSchema, tableRows, hiddenTableRows));
+                        // Its tables' and stages' files wait for an UNDROP under a token of the version's own.
+                        dropped = new DroppedObject(snapSchema, tableRows, hiddenTableRows,
+                            RetentionChain.effectiveDays(snapDb, snapSchema, null),
+                            StatementTokens.draw(STAGE_TOKEN_ALPHABET, STAGE_TOKEN_LENGTH));
+                        catalog.recordDropped(droppedKey, dropped);
                     }
                     // DROP SCHEMA … CASCADE also drops the objects the schema still contains; without it
                     // (RESTRICT, the default) a non-empty schema is refused.
@@ -342,6 +383,9 @@ public class DropCommandHandler implements CommandHandler {
                         if (streamManager != null) {
                             streamManager.onSchemaDropped(parts[0], parts[1]);
                         }
+                    }
+                    if (dropped != null) {
+                        queryExecutor.setAsideStages(droppedKey, dropped);
                     }
                     logger.trace("Dropped schema: {}", schemaName);
                 } catch (final RuntimeException e) {
@@ -363,7 +407,8 @@ public class DropCommandHandler implements CommandHandler {
                     // Kept for UNDROP DYNAMIC TABLE, as a dropped table is.
                     final String databaseName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
                     catalog.recordDropped("DYNAMIC TABLE:" + QualifiedName.key(databaseName, schema.getName(),
-                        droppedTable.getName()), new DroppedObject(droppedTable, (List<Row>) null));
+                        droppedTable.getName()), new DroppedObject(droppedTable, (List<Row>) null,
+                        droppedTable.getDataRetentionDays()));
                     logger.trace("Dropped dynamic table: {}", qn);
                 } catch (final RuntimeException e) {
                     // IF EXISTS forgives absence, never a name another kind holds.
@@ -424,12 +469,20 @@ public class DropCommandHandler implements CommandHandler {
                     // Snapshot table metadata + rows for UNDROP before removing the storage.
                     final List<Row> snapshotRows =
                         new ArrayList<>(queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).scan());
-                    catalog.recordDropped("TABLE:" + fullyQualifiedName, new DroppedObject(table, snapshotRows));
+                    // Its stage's files wait for an UNDROP under a token of the dropped version's own, drawn the same
+                    // way when the log replays the DROP (StatementTokens).
+                    final DroppedObject dropped = new DroppedObject(table, snapshotRows,
+                        RetentionChain.effectiveDays(catalog.getDatabase(databaseName), schema, table),
+                        StatementTokens.draw(STAGE_TOKEN_ALPHABET, STAGE_TOKEN_LENGTH));
+                    catalog.recordDropped("TABLE:" + fullyQualifiedName, dropped);
 
                     schema.dropTable(table.getName());
                     queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
                     if (schema.shadowedTable(table.getName()) == null) {
                         queryExecutor.resetCopyLoadHistory(fullyQualifiedName);
+                        // Its stage waits for an UNDROP. A temporary table that hid a permanent one of its name shared
+                        // that one's stage, which stays where it is.
+                        queryExecutor.setAsideStages("TABLE:" + fullyQualifiedName, dropped);
                     }
                     // Drop any buffered writes for this table so an uncommitted INSERT/UPDATE/DELETE earlier
                     // in the same transaction (e.g. a proc that seeds then drops a temp table) isn't flushed
@@ -765,9 +818,9 @@ public class DropCommandHandler implements CommandHandler {
                     final String tagDb = tagParts.length == 3 ? tagParts[0] : catalog.getCurrentDatabase();
                     final String tagSchema = tagParts.length == 3 ? tagParts[1]
                         : tagParts.length == 2 ? tagParts[0] : catalog.getCurrentSchema();
-                    catalog.recordDropped(
-                        "TAG:" + (tagDb + "." + tagSchema + "." + tagParts[tagParts.length - 1]).toUpperCase(),
-                        new DroppedObject(droppedTag, (List<Row>) null));
+                    // Kept under its exact canonical name, as UNDROP TAG looks it up.
+                    catalog.recordDropped("TAG:" + QualifiedName.key(tagDb, tagSchema, droppedTag.getName()),
+                        new DroppedObject(droppedTag, (List<Row>) null, schemaRetention(tagDb, tagSchema)));
                     logger.trace("Dropped tag: {}", tagName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;

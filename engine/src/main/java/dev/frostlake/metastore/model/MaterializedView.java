@@ -26,7 +26,8 @@ import java.util.List;
 
 public class MaterializedView extends SqlObject {
 
-    private final String definition;
+    // Not final: a clone of the view's schema or database re-points the query at the clone's copy of its base table.
+    private String definition;
     private final List<String> columnNames;
     /** The view's column list as resolved when it was created — see {@link #getResolvedColumns()}. */
     private List<TableColumn> resolvedColumns;
@@ -67,8 +68,43 @@ public class MaterializedView extends SqlObject {
         this.suspended = false;
     }
 
+    /**
+     * A copy of this view's definition and state for a clone of its schema: the query, the written columns and
+     * the resolved ones, the warehouse, suspension, SECURE, the source it materializes and the moment it was
+     * materialized as of, and the texts it is listed and described with.
+     *
+     * @return the copy
+     */
+    public MaterializedView copy() {
+        final MaterializedView copy = new MaterializedView(getName(),
+            columnNames != null ? new ArrayList<>(columnNames) : null, definition);
+        copy.resolvedColumns = resolvedColumns != null ? new ArrayList<>(resolvedColumns) : null;
+        copy.warehouse = warehouse;
+        copy.suspended = suspended;
+        copy.secure = secure;
+        copy.lastRefreshedTime = lastRefreshedTime;
+        copy.materializedAsOf = materializedAsOf;
+        copy.sourceDatabase = sourceDatabase;
+        copy.sourceSchema = sourceSchema;
+        copy.sourceTable = sourceTable;
+        copy.listedText = listedText;
+        copy.originalDdl = originalDdl;
+        copy.setComment(getComment());
+        return copy;
+    }
+
     public String getDefinition() {
         return definition;
+    }
+
+    /**
+     * Replace the query the view is read through, for a clone that refers to the clone's copy of its base table
+     * (see {@code CloneReferences}). The texts it is listed and described with stay as written.
+     *
+     * @param definition the query
+     */
+    public void setDefinition(final String definition) {
+        this.definition = definition;
     }
 
     public List<String> getColumnNames() {

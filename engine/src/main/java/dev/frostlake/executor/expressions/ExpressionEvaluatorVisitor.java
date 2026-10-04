@@ -96,6 +96,7 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredLeafWidths;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
@@ -1005,9 +1006,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         final DataType declared = inferStaticType(typed);
         final DataType planned = planReportedType(typed, declared);
         // A binary's width is spelled by BinaryWidthSpelling: an unsized one is bare BINARY here.
-        // A string with no width of its own is spelled bare here, and only here.
+        // A string with no width of its own is spelled bare here, and only here; so is a structured
+        // type's leaf a cast wrote with none (StructuredLeafWidths).
         final String typeText = planned instanceof BinaryType ? ((BinaryType) planned).typeofText()
             : planned instanceof WidthlessStringType ? "VARCHAR"
+            : StructuredTypes.isStructured(planned) ? StructuredLeafWidths.typeOfText(planned)
             : planned == declared ? strictArgTypeText(typed) : SqlTypeNames.canonical(planned);
         return SystemTypeOfDescription.of(planned, typeText, inferStaticRange(typed),
             RowIndexPredicates.isPredicate(typed));
@@ -2082,6 +2085,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      *   COALESCE(s, d)         Date 'abc' is not recognized — and 'Time', 'Timestamp' for those folds
      * </pre>
      *
+     * <p>A UUID fold presents a chosen text as the UUID it spells: {@code COALESCE('defgh', u)} is "UUID 'defgh' is
+     * invalid, expected format is ..." (live-verified), where the text was handed back under the UUID type.
+     *
      * <p>A text fold converts nothing: a number or a boolean beside a leading string is rendered as
      * text by the display, which is what live shows too.
      */
@@ -2090,7 +2096,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return value;
         }
         final DataType folded = inferStaticType(conditional);
-        if (folded instanceof BooleanType || folded instanceof DateTimeType) {
+        if (folded instanceof BooleanType || folded instanceof DateTimeType || folded instanceof UuidType) {
             return FoldedValues.presented(value, folded);
         }
         if (value instanceof Double || value instanceof Float) {
@@ -3338,7 +3344,34 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     private Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues,
                                                final FunctionCallExpression call) {
-        return udfInvoker.resolveOverloadedFunction(schema, funcName, argValues, argumentFamilies(call, argValues));
+        return udfInvoker.resolveOverloadedFunction(schema, funcName, argValues, argumentFamilies(call, argValues),
+            argumentStaticTypes(call, argValues));
+    }
+
+    /**
+     * Each positional argument's static type, null where it is not known, for the structured binding rule
+     * overload resolution applies (see {@link StructuredTypes#bindsAsArgument}). Null as a whole when the
+     * arguments do not line up one to one with the values, or are named.
+     */
+    private List<DataType> argumentStaticTypes(final FunctionCallExpression call, final List<Object> argValues) {
+        final List<Expression> arguments = call.getArguments();
+        if (arguments.size() != argValues.size() || call.getArgumentNames() != null) {
+            return null;
+        }
+        final List<DataType> types = new ArrayList<>(arguments.size());
+        for (final Expression argument : arguments) {
+            if (argument instanceof SpreadExpression) {
+                return null;
+            }
+            DataType type = null;
+            try {
+                type = typeInferencer.infer(argument);
+            } catch (final RuntimeException untyped) {
+                type = null;
+            }
+            types.add(type);
+        }
+        return types;
     }
 
     /**
@@ -3399,20 +3432,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             final DataType paramType = params.get(i).getDataType();
             final DataType argType = typeInferencer.infer(args.get(i));
-            if (argType == null) {
-                continue;   // undetermined (or an untyped NULL): the value decides
-            }
-            final boolean structuredParam = StructuredTypes.isStructured(paramType);
-            final boolean structuredArg = StructuredTypes.isStructured(argType);
-            if (!structuredParam && !structuredArg) {
+            // An undetermined argument (or an untyped NULL) is left to its value; see bindsAsArgument for the rest.
+            if (StructuredTypes.bindsAsArgument(argType, paramType)) {
                 continue;
-            }
-            if (structuredParam && StructuredTypes.sameBindingShape(argType, paramType)) {
-                continue;
-            }
-            if (!structuredParam && !(paramType instanceof ObjectType) && !(paramType instanceof ArrayType)
-                    && !(paramType instanceof VariantType)) {
-                continue;   // only the semi-structured parameter families reject a structured argument
             }
             throw new RuntimeException("Invalid argument types for function '" + funcName + "': ("
                 + strictArgTypeList(args) + ")");
@@ -4042,6 +4064,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // the type it could not fit, and this is the only frame that still holds the source expression.
         final Object converted = ValueCaster.castValue(value, expr.getTargetType(),
             isNullableArgument(expr.getExpression()));
+        // A cast to a width-declared BINARY holds the bytes to it as the string cast holds its text:
+        // TO_BINARY('ABCDEF', 'HEX')::BINARY(2) is "Binary value 'ABCDEF' is too long and would be truncated", where
+        // TO_BINARY('ABCD', 'HEX')::BINARY(2) passes (live-verified). The width was never read.
+        if (converted instanceof BinaryValue) {
+            final int declaredBytes = declaredBinaryWidth(expr.getTargetType());
+            if (declaredBytes >= 0 && ((BinaryValue) converted).length() > declaredBytes) {
+                throw ColumnLengthException.forBinary(declaredBytes, ((BinaryValue) converted).toHex());
+            }
+        }
         // A number, a boolean, a temporal, a BINARY and a VARIANT are held to the width as well, on the
         // text they convert to: 123::VARCHAR(2) is "String '123' is too long and would be truncated", and
         // so are TRUE::VARCHAR(2), a DATE cast to VARCHAR(5) and a BINARY column's hex (live-verified).
@@ -4473,6 +4504,24 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (!"VARCHAR".equals(base) && !"CHAR".equals(base) && !"CHARACTER".equals(base)
                 && !"STRING".equals(base) && !"TEXT".equals(base) && !"NVARCHAR".equals(base)
                 && !"NCHAR".equals(base)) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(upper.substring(open + 1, upper.length() - 1).trim());
+        } catch (final NumberFormatException notANumber) {
+            return -1;
+        }
+    }
+
+    /** The width a BINARY or VARBINARY cast target spells, or -1 when it spells none. */
+    private static int declaredBinaryWidth(final String targetType) {
+        final String upper = targetType.toUpperCase(Locale.ROOT).trim();
+        final int open = upper.indexOf('(');
+        if (open < 0 || !upper.endsWith(")")) {
+            return -1;
+        }
+        final String base = upper.substring(0, open).trim();
+        if (!"BINARY".equals(base) && !"VARBINARY".equals(base)) {
             return -1;
         }
         try {
@@ -5709,6 +5758,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         rejectArgumentTypes(funcName, args, BINARY_STRICT_ARGS,
             new Class<?>[] {StringType.class, NumericType.class, BooleanType.class, DateTimeType.class});
         rejectNonMapArgumentInStrictFunction(funcName, args);
+        rejectObjectInArrayPosition(funcName, args, call);
         rejectUntypedNullMapArgument(funcName, args);
         rejectNullArgumentInMapConstruct(funcName, args);
         rejectFormatOverStringInToChar(funcName, args, call);
@@ -9647,6 +9697,65 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
+     * An OBJECT-shaped value where an ARRAY function reads an ARRAY is refused by the argument types at COMPILE
+     * time, positioned at the call (all live-verified):
+     *
+     * <pre>
+     *   ARRAY_CONTAINS(1, {'a': 1}::OBJECT)                   (NUMBER(1,0), OBJECT)
+     *   ARRAY_CONTAINS(1::VARIANT, {'a': 1}::OBJECT(a NUMBER)) (VARIANT, OBJECT(a NUMBER(38,0)))
+     *   ARRAY_SIZE({'a': 1}::OBJECT(a NUMBER))                (OBJECT(a NUMBER(38,0)))
+     *   ARRAY_CAT({'a': 1}::OBJECT(a NUMBER), [1])             (OBJECT(a NUMBER(38,0)), ARRAY)
+     *   ARRAY_COMPACT({'a': 1}::OBJECT(a NUMBER))              (OBJECT(a NUMBER(38,0)))
+     * </pre>
+     *
+     * <p>The positions a function types as an ARRAY are the ones it refuses a VECTOR at by the argument types (each
+     * live-verified for the VECTOR). There a plain OBJECT, a structured one and a MAP are all refused: live,
+     * ARRAY_POSITION, ARRAY_APPEND, ARRAY_PREPEND, ARRAY_INSERT, ARRAY_SLICE, ARRAYS_OVERLAP, ARRAY_DISTINCT,
+     * ARRAY_FLATTEN, ARRAY_MAX, ARRAY_MIN, ARRAY_REMOVE, ARRAY_REMOVE_AT, ARRAY_SORT, ARRAY_INTERSECTION,
+     * ARRAY_EXCEPT, ARRAYS_TO_OBJECT, ARRAYS_ZIP, ARRAY_REVERSE and ARRAY_CONTAINS each refuse {@code {'a': 1}::OBJECT}.
+     *
+     * <p>ARRAY_SIZE, ARRAY_CAT and ARRAY_COMPACT read a VARIANT instead, and refuse only a STRUCTURED OBJECT or a MAP,
+     * which is no ARRAY and is not converted to the VARIANT implicitly. A plain OBJECT is accepted there: ARRAY_SIZE
+     * answers NULL and the other two refuse it only when the row is read, "Left argument of ARRAY_CAT is not an array"
+     * and "First argument of ARRAY_COMPACT is not an array" (live-verified). ARRAY_TO_STRING, the fourth, declares its
+     * structured refusal itself. A VARIANT, whatever it holds, is accepted everywhere: ARRAY_SIZE of
+     * {@code PARSE_JSON('{"a":1}')} or of a MAP cast to VARIANT is NULL (live-verified).
+     */
+    private void rejectObjectInArrayPosition(final String funcName, final List<Expression> args,
+                                             final Expression call) {
+        if (!funcName.startsWith("ARRAY")) {
+            return;
+        }
+        final BuiltInFunction function = registeredFunction(funcName);
+        if (function == null) {
+            return;
+        }
+        for (int position = 0; position < args.size(); position++) {
+            final boolean typedArray = function.vectorRejection(position) != SemiStructuredRejection.NONE;
+            if (!typedArray && !readsArrayAsVariant(funcName, position)) {
+                continue;
+            }
+            final DataType inferred = typeInferencer.infer(args.get(position));
+            final boolean refused = inferred instanceof MapType
+                || inferred instanceof ObjectType && (typedArray || StructuredTypes.isStructured(inferred));
+            if (refused) {
+                throw new RuntimeException(positionedArgumentTypes(call, "Invalid argument types for function '"
+                    + funcName + "': (" + strictArgTypeList(args) + ")"));
+            }
+        }
+    }
+
+    /**
+     * Whether an ARRAY function reads argument {@code position} as a VARIANT that should hold an array — ARRAY_SIZE's
+     * argument, both of ARRAY_CAT's and ARRAY_COMPACT's — so a plain OBJECT is taken there and judged when the row is
+     * read. ARRAY_CAT's right-hand argument is held to the rule its left one was measured with.
+     */
+    private static boolean readsArrayAsVariant(final String funcName, final int position) {
+        return position == 0 && ("ARRAY_SIZE".equals(funcName) || "ARRAY_COMPACT".equals(funcName))
+            || "ARRAY_CAT".equals(funcName) && position <= 1;
+    }
+
+    /**
      * {@code MAP_CONSTRUCT} refuses an argument whose static type is NULL, in the KEY half and the VALUE
      * half alike: live, {@code MAP_CONSTRUCT(NULL, 1)} and {@code MAP_CONSTRUCT('a', NULL)}
      * are both "SQL compilation error:\nFunction MAP_CONSTRUCT does not support NULL argument type"
@@ -12145,6 +12254,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     private String unreadablePathBaseType(final Expression base) {
         final DataType inferred = typeInferencer.infer(base);
+        if (inferred instanceof UuidType) {
+            return "UUID";
+        }
         if (inferred instanceof StringType) {
             final int maxLength = ((StringType) inferred).getMaxLength();
             return "VARCHAR(" + (maxLength > 0 ? maxLength : 16777216) + ")";

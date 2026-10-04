@@ -280,6 +280,10 @@ final class MergeExecutor {
             // INSERT's is: WHEN MATCHED THEN UPDATE SET n = (1 = 1) is refused even when nothing matches.
             rejectMistypedBranchValues(targetTable, targetAlias, sourceTable, sourceAlias, matchedClauses,
                 notMatchedClauses);
+            // ... and judged by a projection policy as a projection is: UPDATE SET x = s.p and INSERT VALUES (s.p) write
+            // the value into the target. The ON condition only uses the column.
+            rejectRestrictedBranchValues(targetTable, targetAlias, sourceTable, sourceAlias, matchedClauses,
+                notMatchedClauses);
             if (subqueryRefusal != null) {
                 throw subqueryRefusal;
             }
@@ -556,6 +560,8 @@ final class MergeExecutor {
             executor.recordPlan(plan);
             plan.execute();
             logger.info("Executed MERGE on table: {}", targetTableName);
+            // LAST_ALTERED moves for the statement, whether or not a branch fired.
+            targetTable.markDmlRan(StatementClock.commitInstant());
             return mergeCountResult(ctx, counts[0], counts[1], counts[2]);
         } catch (final Exception e) {
             // The frame that used to be appended to the message is diagnosis, not part of what Snowflake
@@ -784,6 +790,40 @@ final class MergeExecutor {
                 }
             }
         }
+    }
+
+    /**
+     * Refuses a branch that writes values a projection policy restricts (see
+     * {@code QueryExecutor#rejectRestrictedAssignments}), with the target and the source in scope.
+     */
+    private void rejectRestrictedBranchValues(final Table targetTable, final String targetAlias,
+                                              final Table sourceTable, final String sourceAlias,
+                                              final List<FrostlakeParser.MergeClauseContext> matchedClauses,
+                                              final List<FrostlakeParser.MergeClauseContext> notMatchedClauses) {
+        final Map<String, Table> aliasToTable = new HashMap<>();
+        final List<Table> allTables = new ArrayList<>();
+        aliasToTable.put((targetAlias != null ? targetAlias : targetTable.getName()).toUpperCase(), targetTable);
+        allTables.add(targetTable);
+        if (sourceTable != null) {
+            aliasToTable.put((sourceAlias != null ? sourceAlias : sourceTable.getName()).toUpperCase(), sourceTable);
+            if (sourceTable != targetTable) {
+                allTables.add(sourceTable);
+            }
+        }
+        final List<ParserRuleContext> values = new ArrayList<>();
+        for (final FrostlakeParser.MergeClauseContext clause : matchedClauses) {
+            if (clause.assignmentList() != null) {
+                for (final FrostlakeParser.AssignmentContext assign : clause.assignmentList().assignment()) {
+                    values.add(assign.expression());
+                }
+            }
+        }
+        for (final FrostlakeParser.MergeClauseContext clause : notMatchedClauses) {
+            if (clause.valueTuple() != null && clause.valueTuple().valueList() != null) {
+                values.addAll(clause.valueTuple().valueList().booleanExpr());
+            }
+        }
+        executor.rejectRestrictedAssignments(values, targetTable, aliasToTable, allTables);
     }
 
     /** One branch value against its column; see {@link #rejectMistypedBranchValues}. */

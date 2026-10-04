@@ -24,6 +24,7 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.VariantValue;
 
@@ -59,6 +60,10 @@ import java.util.Map;
  * <p>Every row is live-verified over overload PAIRS. A target an argument's row does not name keeps
  * the order the overloads were declared in, which is what this engine did for every pair before.
  *
+ * <p>A UUID argument is the exception, and its row is not live-verified: it takes the overload declaring UUID
+ * first, and after that ranks as the VARCHAR it reads as. Ranked as a VARCHAR from the start, it reached a
+ * VARCHAR overload over the UUID one that names its type exactly.
+ *
  * <p>The argument's family is its expression's STATIC type where the engine can type it: an
  * {@code ARRAY_CONSTRUCT(1)} is an ARRAY and a {@code PARSE_JSON('[1]')} a VARIANT, though both carry the
  * same value. An untyped NULL literal ranks every family in one order of its own, whatever order the
@@ -75,6 +80,7 @@ final class UdfOverloadPreference {
         ORDERS.put("NUMBER", Arrays.asList("NUMBER", "FLOAT", "BOOLEAN", "VARIANT", "VARCHAR", "TIMESTAMP"));
         ORDERS.put("FLOAT", Arrays.asList("FLOAT", "BOOLEAN", "VARIANT", "VARCHAR", "NUMBER"));
         ORDERS.put("VARCHAR", Arrays.asList("VARCHAR", "FLOAT", "NUMBER", "BOOLEAN", "VARIANT"));
+        ORDERS.put("UUID", Arrays.asList("UUID", "VARCHAR", "FLOAT", "NUMBER", "BOOLEAN", "VARIANT"));
         ORDERS.put("BOOLEAN", Arrays.asList("BOOLEAN", "VARCHAR", "VARIANT", "FLOAT", "NUMBER"));
         ORDERS.put("DATE", Arrays.asList("DATE", "TIMESTAMP", "VARCHAR"));
         ORDERS.put("TIME", Arrays.asList("TIME", "VARCHAR"));
@@ -161,6 +167,9 @@ final class UdfOverloadPreference {
         }
         if (type instanceof BooleanType) {
             return "BOOLEAN";
+        }
+        if (type instanceof UuidType) {
+            return "UUID";
         }
         if (type instanceof StringType) {
             return "VARCHAR";

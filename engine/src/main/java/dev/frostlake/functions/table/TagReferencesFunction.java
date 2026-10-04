@@ -49,7 +49,9 @@ import java.util.TreeMap;
  * case and a double-quoted one is kept as written ({@code '"MyWh"'}); a name with fewer parts resolves against
  * the session's current database and schema. A real account takes TABLE for every table-like object — passing
  * VIEW is refused with "Please use object type TABLE for all kinds of table-like objects" — and takes COLUMN
- * with a name whose last part is the column.
+ * with a name whose last part is the column. A name that finds nothing is refused without the privilege sentence
+ * other refusals carry: {@code Table 'DB.PUBLIC.NO_SUCH_TABLE' does not exist or not authorized.} (live-verified for a
+ * table; every other domain is refused the same way).
  *
  * <p>The rows follow tag inheritance through the securable object hierarchy: an object reports the tags set on
  * it ({@code APPLY_METHOD} {@code MANUAL}) and those it inherits from its table, schema and database
@@ -145,7 +147,7 @@ public class TagReferencesFunction extends TableFunction {
         final Schema schema = resolveSchema(name[0], name[1], "Table", objectName);
         final Taggable table = tableLike(schema, name[2]);
         if (table == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Table", objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Table", objectName));
         }
         addLineage(rows, new Taggable[] {table, schema, catalog.getDatabase(name[0])},
             new String[] {"TABLE", "SCHEMA", "DATABASE"}, name[0], name[1], name[2], "TABLE", null);
@@ -164,7 +166,7 @@ public class TagReferencesFunction extends TableFunction {
         final String simpleName = written[written.length - 1];
         final Database database = catalog.getDatabase(simpleName);
         if (written.length != 1 || database == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Database", objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Database", objectName));
         }
         addLineage(rows, new Taggable[] {database}, new String[] {"DATABASE"}, null, null, simpleName, "DATABASE",
             null);
@@ -173,12 +175,12 @@ public class TagReferencesFunction extends TableFunction {
     /** Tags on one column, and those it inherits from its table, schema and database. */
     private void addColumnTags(final String[] written, final String objectName, final List<Row> rows) {
         if (written.length < 2) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Column", objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column", objectName));
         }
         final String[] name = qualify(written, 4, "Table", objectName);
         final Schema schema = resolveSchema(name[0], name[1], "Table", objectName);
         if (!schema.hasTable(name[2])) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Table", objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Table", objectName));
         }
         final Table table = schema.getTable(name[2]);
         for (final TableColumn column : table.getColumns()) {
@@ -189,7 +191,7 @@ public class TagReferencesFunction extends TableFunction {
                 return;
             }
         }
-        throw new RuntimeException(SqlCompilationError.doesNotExist("Column", name[3]));
+        throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column", name[3]));
     }
 
     /** Tags on an object that lives in a schema, and those it inherits from its schema and database. */
@@ -200,7 +202,7 @@ public class TagReferencesFunction extends TableFunction {
         final Schema schema = resolveSchema(name[0], name[1], kind, objectName);
         final Object found = schemaObject(schema, domain, name[2]);
         if (found == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist(kind, objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
         }
         final Taggable object = found instanceof Taggable ? (Taggable) found : null;
         addLineage(rows, new Taggable[] {object, schema, catalog.getDatabase(name[0])},
@@ -233,7 +235,7 @@ public class TagReferencesFunction extends TableFunction {
             }
         }
         if (found == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist(kind, objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
         }
         final Taggable object = found instanceof Taggable ? (Taggable) found : null;
         addLineage(rows, new Taggable[] {object}, new String[] {domain}, null, null, simpleName, domain, null);
@@ -245,7 +247,7 @@ public class TagReferencesFunction extends TableFunction {
         final Database database = catalog.getDatabase(name[0]);
         final DatabaseRole role = database == null ? null : database.getDatabaseRole(name[1]);
         if (role == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Database role", objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Database role", objectName));
         }
         // The DOMAIN cell spells it with an underscore, where the ARGUMENT that asked for it is the
         // two-word form: TAG_REFERENCES('db.role', 'DATABASE ROLE') answers DATABASE_ROLE.
@@ -391,7 +393,7 @@ public class TagReferencesFunction extends TableFunction {
             filled.add(catalog.getCurrentDatabase());
         }
         if (missing > 2 || filled.contains(null)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist(kind, objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
         }
         filled.addAll(Arrays.asList(written));
         return filled.toArray(new String[0]);
@@ -401,7 +403,7 @@ public class TagReferencesFunction extends TableFunction {
                                  final String objectName) {
         final Database database = databaseName == null ? null : catalog.getDatabase(databaseName);
         if (database == null || schemaName == null || !database.hasSchema(schemaName)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist(kind, objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
         }
         return database.getSchema(schemaName);
     }

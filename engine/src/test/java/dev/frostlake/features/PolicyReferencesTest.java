@@ -181,8 +181,8 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
                     + "REF_ENTITY_NAME => 'NO_SUCH_T', REF_ENTITY_DOMAIN => 'TABLE'))");
             }
         });
-        assertEquals(hinted("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized."),
-            ex.getMessage());
+        // No privilege sentence after it, unlike a missing policy (live-verified for a missing table).
+        assertEquals("SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized.", ex.getMessage());
     }
 
     @Test
@@ -194,8 +194,9 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
                     + "POLICY_NAME => 'NO_SUCH_P'))");
             }
         });
-        assertEquals(hinted("SQL compilation error:\nPolicy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
-            + " does not exist or not authorized."), ex.getMessage());
+        // Named in full, and with no privilege sentence after it (live-verified).
+        assertEquals("SQL compilation error:\nPolicy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P'"
+            + " does not exist or not authorized.", ex.getMessage());
     }
 
     @Test
@@ -207,7 +208,8 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
                     + "REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'NONSENSE'))");
             }
         });
-        assertEquals("Unknown domain: NONSENSE.", ex.getMessage());
+        assertEquals("SQL compilation error:\nInvalid value 'NONSENSE' for argument 'ref_entity_domain' for function"
+            + " 'information_schema.policy_references'", ex.getMessage());
     }
 
     /** A positional call is read as (policy_name, policy_kind), and the kind is what it rejects. */

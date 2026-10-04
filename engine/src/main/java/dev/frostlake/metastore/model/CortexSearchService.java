@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -49,7 +51,7 @@ public class CortexSearchService {
     private final String embeddingModel;
     private final String definition;
     private String comment;
-    private final LocalDateTime createdOn;
+    private LocalDateTime createdOn;
     private String owner;
     private boolean indexingSuspended;
     private boolean servingSuspended;
@@ -69,7 +71,8 @@ public class CortexSearchService {
         this.embeddingModel = embeddingModel == null ? DEFAULT_EMBEDDING_MODEL : embeddingModel;
         this.definition = definition;
         this.comment = comment;
-        this.createdOn = LocalDateTime.now();
+        // The creating statement's instant, which a replayed statement reproduces (see SqlObject).
+        this.createdOn = StatementClock.hostLocal();
     }
 
     public String getName() {
@@ -132,6 +135,18 @@ public class CortexSearchService {
 
     public LocalDateTime getCreatedOn() {
         return createdOn;
+    }
+
+    /**
+     * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
+     * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
+     *
+     * @param created the recorded creation time, or null
+     */
+    public void restoreCreatedTime(final LocalDateTime created) {
+        if (created != null) {
+            this.createdOn = created;
+        }
     }
 
     public String getOwner() {

@@ -16,6 +16,9 @@
 
 package dev.frostlake.persistence;
 
+import java.time.Instant;
+import dev.frostlake.types.DataType;
+
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +31,8 @@ public class ProcedureSnapshot implements Serializable {
     public String name;
     public List<ParameterSnapshot> parameters = new ArrayList<>();
     public String returnType;
+    /** The return type itself (see {@link ParameterSnapshot#type}); null on older snapshots. */
+    public DataType returnDataType;
     public String body;
     public String language;
     public String handler;
@@ -47,4 +52,8 @@ public class ProcedureSnapshot implements Serializable {
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.
     public Map<String, String> tags;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public Instant createdAt;
+    /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
+    public Instant lastDdlAt;
 }

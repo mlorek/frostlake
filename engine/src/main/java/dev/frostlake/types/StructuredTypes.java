@@ -56,6 +56,11 @@ public final class StructuredTypes {
      * {@code OBJECT(x VARCHAR)}: an {@code OBJECT(x VARCHAR(10))} argument binds, an
      * {@code OBJECT(x INT)} argument fails "Invalid argument types", and so do a plain {@code OBJECT},
      * a {@code VARIANT}, an {@code OBJECT(y VARCHAR)} and a wider {@code OBJECT(x VARCHAR, y INT)}.
+     *
+     * <p>A leaf's family is {@link SqlTypeNames#sameFamily}'s: the exact and the approximate numerics are two,
+     * and so are DATE, TIME and each timestamp flavour, text and UUID. Comparing the leaves' Java classes
+     * lumped each of those pairs together, so an {@code OBJECT(x TIME)} bound an {@code OBJECT(x DATE)}
+     * parameter and an {@code OBJECT(x FLOAT)} an {@code OBJECT(x INT)} one.
      */
     public static boolean sameBindingShape(final DataType source, final DataType target) {
         if (source == null || target == null) {
@@ -87,7 +92,29 @@ public final class StructuredTypes {
             return false;   // one side structured, the other not (or a different structured family)
         }
         // Leaf types bind by FAMILY: VARCHAR(10) and VARCHAR(134217728) are the same parameter type.
-        return source.getClass() == target.getClass();
+        return SqlTypeNames.sameFamily(source, target);
+    }
+
+    /**
+     * Whether an argument of type {@code argument} binds to a user-defined function parameter of type
+     * {@code parameter} as far as structured types decide it: a structured parameter takes only an argument
+     * of its own binding shape ({@link #sameBindingShape}), and a plainly semi-structured parameter (OBJECT,
+     * ARRAY, VARIANT) refuses a structured argument. Every other pairing is left to the conversion rules, as
+     * is an argument whose type is not known.
+     *
+     * @param argument  the argument's static type, or null when it is not known
+     * @param parameter the parameter's declared type
+     * @return false when the structured rule refuses the pairing
+     */
+    public static boolean bindsAsArgument(final DataType argument, final DataType parameter) {
+        if (argument == null || parameter == null) {
+            return true;
+        }
+        if (isStructured(parameter)) {
+            return sameBindingShape(argument, parameter);
+        }
+        return !isStructured(argument) || !(parameter instanceof ObjectType || parameter instanceof ArrayType
+            || parameter instanceof VariantType);
     }
 
     /** A type as Snowflake spells it in an argument-type / cast error message. */
@@ -117,6 +144,10 @@ public final class StructuredTypes {
         if (type instanceof StructuredArrayType) {
             return "ARRAY(" + describe(((ArrayType) type).getElementType()) + ")";
         }
+        if (type instanceof UuidType) {
+            // A UUID is a type of its own and takes no length (UuidType).
+            return "UUID";
+        }
         if (type instanceof StringType) {
             final int maxLength = ((StringType) type).getMaxLength();
             return "VARCHAR(" + (maxLength > 0 ? maxLength : DEFAULT_VARCHAR_LENGTH) + ")";
@@ -131,17 +162,27 @@ public final class StructuredTypes {
                 + Math.max(numeric.getScale(), 0) + ")";
         }
         if (type instanceof BinaryType) {
-            return "BINARY(8388608)";
+            // A binary leaf at its own width, and an unsized one at the 64MB maximum: live, ARRAY_CONTAINS(1, ...)
+            // names {'a': 'ab'}::OBJECT(a BINARY) as OBJECT(a BINARY(67108864)) and ::OBJECT(a BINARY(4)) as
+            // OBJECT(a BINARY(4)). Every leaf used to read BINARY(8388608).
+            return ((BinaryType) type).refusalText();
         }
         if (type instanceof DateTimeType) {
+            // A temporal leaf keeps its flavour and its declared precision: SYSTEM$TYPEOF names a cast to
+            // OBJECT(k TIMESTAMP_NTZ(3)) as OBJECT(k TIMESTAMP_NTZ(3)) (live-verified), where every TIME read
+            // TIME(9) here and every timestamp TIMESTAMP_NTZ(9).
             final String name = type.getName().toUpperCase();
             if (name.equals("DATE")) {
                 return "DATE";
             }
+            final int precision = ((DateTimeType) type).getPrecision() < 0 ? 9 : ((DateTimeType) type).getPrecision();
             if (name.equals("TIME")) {
-                return "TIME(9)";
+                return "TIME(" + precision + ")";
             }
-            return "TIMESTAMP_NTZ(9)";
+            if (name.equals("TIMESTAMP_LTZ") || name.equals("TIMESTAMP_TZ")) {
+                return name + "(" + precision + ")";
+            }
+            return "TIMESTAMP_NTZ(" + precision + ")";
         }
         if (type instanceof ArrayType) {
             return "ARRAY";

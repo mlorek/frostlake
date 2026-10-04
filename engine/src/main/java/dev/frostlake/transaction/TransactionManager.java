@@ -277,6 +277,52 @@ public class TransactionManager {
         return currentTransaction.get();
     }
 
+    /**
+     * Sets this thread's transaction aside for work that runs as a session of its own: a task's run, an alert's
+     * evaluation, a pipe's load. Such work never joins the caller's transaction, so the caller's ROLLBACK cannot
+     * undo it. It starts with no transaction, with autocommit on whatever the caller's session chose, and outside
+     * any atomic section, so each of its statements commits at its end. Hand the answer back to
+     * {@link #resumeTransaction}.
+     *
+     * @return what was set aside
+     */
+    public SetAsideTransaction setAsideTransaction() {
+        final SetAsideTransaction aside = new SetAsideTransaction(currentTransaction.get(), sessionAutoCommit.get(),
+            atomicSectionDepth.get());
+        currentTransaction.remove();
+        sessionAutoCommit.set(Boolean.TRUE);
+        atomicSectionDepth.set(0);
+        return aside;
+    }
+
+    /**
+     * Puts back what {@link #setAsideTransaction} set aside. A transaction the work left open, because a statement
+     * failed before its end or the work opened one and never committed it, is rolled back first, as the end of a
+     * session rolls back what it left open.
+     *
+     * @param aside what was set aside
+     */
+    public void resumeTransaction(final SetAsideTransaction aside) {
+        if (currentTransaction.get() != null) {
+            try {
+                rollback();
+            } catch (final RuntimeException leftOpen) {
+                logger.warn("Could not roll back a transaction left open by a task, alert or pipe: {}",
+                    leftOpen.getMessage());
+                currentTransaction.remove();
+            }
+        }
+        if (aside.transaction() != null) {
+            currentTransaction.set(aside.transaction());
+        }
+        if (aside.sessionAutoCommit() != null) {
+            sessionAutoCommit.set(aside.sessionAutoCommit());
+        } else {
+            sessionAutoCommit.remove();
+        }
+        atomicSectionDepth.set(aside.atomicSectionDepth());
+    }
+
     public boolean hasActiveTransaction() {
         return currentTransaction.get() != null;
     }

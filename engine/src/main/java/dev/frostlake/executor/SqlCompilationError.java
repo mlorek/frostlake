@@ -294,8 +294,13 @@ public final class SqlCompilationError {
         // when the whole path is named, where an ordinary upper-case name stays bare. A quote the
         // name holds is doubled for a table alone: Table '"n""o"' beside View, Sequence, Schema,
         // Database and Object '"n"o"'.
-        return doesNotExistAsSpelled(kind, "Table".equals(kind) ? SqlIdentifiers.spellAlreadyCanonicalPathEscaped(name)
-            : SqlIdentifiers.spellAlreadyCanonicalPath(name));
+        return doesNotExistAsSpelled(kind, spelledForRefusal(kind, name));
+    }
+
+    /** A refused name as {@link #doesNotExist} spells it: part by part, a quote it holds doubled for a table alone. */
+    private static String spelledForRefusal(final String kind, final String name) {
+        return "Table".equals(kind) ? SqlIdentifiers.spellAlreadyCanonicalPathEscaped(name)
+            : SqlIdentifiers.spellAlreadyCanonicalPath(name);
     }
 
     /**
@@ -316,14 +321,15 @@ public final class SqlCompilationError {
      * the column of a RENAME COLUMN or a COMMENT ON COLUMN, the constraint of an ALTER CONSTRAINT, a search
      * analyzer, a table stage named with four parts, a data metric function that is not a system one. An UNDROP
      * ACCOUNT of a missing account uses it too: live refuses that in other words altogether, and a hint would only
-     * add a sentence live never gives.
+     * add a sentence live never gives. So does a POLICY_REFERENCES REF_ENTITY_NAME that names no table, although a
+     * table is a securable object (live-verified).
      *
      * @param kind the kind noun, as the sentence opens with it
      * @param name the canonical name
      * @return the message as the driver hands it to a client
      */
     public static String doesNotExistWithoutHint(final String kind, final String name) {
-        return of(kind + " '" + SqlIdentifiers.spellAlreadyCanonicalPath(name) + "' does not exist or not authorized.");
+        return of(kind + " '" + spelledForRefusal(kind, name) + "' does not exist or not authorized.");
     }
 
     /**

@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
+
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -29,7 +31,10 @@ public class Sequence {
     private long increment;
     private final boolean order;
     private String comment;
-    private final Instant createdTime = Instant.now();
+    // The creating statement's instant, which a replayed statement reproduces (see SqlObject).
+    private Instant createdTime = StatementClock.instant();
+    /** When the last DDL after the CREATE ran, or null while the CREATE is the last; see {@link #getLastDdlTime}. */
+    private Instant lastDdlTime;
 
     public Sequence(final String name, final long startValue, final long increment, final boolean order, final String comment) {
         this.name = name;
@@ -119,6 +124,45 @@ public class Sequence {
     /** When this sequence was created, as SHOW SEQUENCES reports it. */
     public Instant getCreatedTime() {
         return createdTime;
+    }
+
+    /**
+     * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
+     * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
+     *
+     * @param created the recorded creation time, or null
+     */
+    public void restoreCreatedTime(final Instant created) {
+        if (created != null) {
+            this.createdTime = created;
+        }
+    }
+
+    /**
+     * When the last DDL statement ran on this sequence, which is INFORMATION_SCHEMA.SEQUENCES' LAST_ALTERED: its CREATE
+     * until an ALTER or a COMMENT ON moves it. Drawing a value is not DDL, and nothing documents NEXTVAL moving it.
+     *
+     * @return the instant
+     */
+    public Instant getLastDdlTime() {
+        return lastDdlTime != null ? lastDdlTime : createdTime;
+    }
+
+    /** A DDL statement changed this sequence: its LAST_ALTERED moves to the statement's instant. */
+    public void markDdl() {
+        lastDdlTime = StatementClock.instant();
+    }
+
+    /**
+     * Put back when the last DDL ran on this sequence, as a snapshot recorded it; a null, from a snapshot that never
+     * recorded it, leaves LAST_ALTERED at the creation.
+     *
+     * @param lastDdl the recorded last DDL, or null
+     */
+    public void restoreLastDdlTime(final Instant lastDdl) {
+        if (lastDdl != null) {
+            this.lastDdlTime = lastDdl;
+        }
     }
 
     public boolean isOrder() {

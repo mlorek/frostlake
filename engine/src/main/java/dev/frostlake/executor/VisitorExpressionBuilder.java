@@ -630,9 +630,13 @@ public class VisitorExpressionBuilder {
     /** The columns {@code SELECT } puts ahead of the expression {@link #firstCellOfSelect} evaluates. */
     private static final int SELECT_LEAD = "SELECT ".length();
 
-    /** The first cell of {@code SELECT <exprText>}, or null when the query yields no row. */
+    /**
+     * The first cell of {@code SELECT <exprText>}, or null when the query yields no row. The SELECT evaluates a value
+     * of the statement that wrote it (a SET's value, a CALL's argument), so it takes no query ID and no history row:
+     * {@code SET v = UPPER('a')} is one statement.
+     */
     private Object firstCellOfSelect(final String exprText) {
-        final List<ResultSet> results = queryExecutor.execute("SELECT " + exprText);
+        final List<ResultSet> results = queryExecutor.executeUnrecorded("SELECT " + exprText);
         return !results.isEmpty() && results.get(0).getRowCount() > 0
             ? results.get(0).getRows().get(0).getValue(0) : null;
     }
@@ -748,7 +752,8 @@ public class VisitorExpressionBuilder {
             }
 
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP": {
-                return StatementClock.now();
+                return ChangeTimes.streamTableTimestamp(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
+                    args.isEmpty() ? null : args.get(0));
             }
 
             // ── Session / transaction ──────────────────────────────────────────
@@ -798,7 +803,7 @@ public class VisitorExpressionBuilder {
                 return "[]";
 
             case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
-                return System.currentTimeMillis();
+                return ChangeTimes.lastChangeCommitTime(queryExecutor.getCatalog(), args.isEmpty() ? null : args.get(0));
 
             case "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN":
                 return "{\"token\": \"" + UUID.randomUUID() + "\", \"expires_at\": null}";

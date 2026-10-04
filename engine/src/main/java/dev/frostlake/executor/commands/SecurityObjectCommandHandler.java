@@ -23,8 +23,10 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObject;
 import dev.frostlake.metastore.model.SecurityObjectKind;
@@ -150,6 +152,9 @@ public final class SecurityObjectCommandHandler {
             throw new RuntimeException(SqlCompilationError.of("options IF NOT EXISTS and OR REPLACE are incompatible."));
         }
         final Schema schema = kind.isSchemaObject() ? owningSchema(ctx.qualifiedName(0)) : null;
+        if (schema != null) {
+            schema.requireCreatable(Privilege.valueOf("CREATE_" + kind.name()));
+        }
         final String name = kind.isSchemaObject() ? lastPart(ctx.qualifiedName(0))
             : SqlIdentifiers.canonical(ctx.identifier(0));
         final Map<String, Object> properties = read(kind, ctx.securityProperty());
@@ -647,21 +652,26 @@ public final class SecurityObjectCommandHandler {
             if (store.get(kind, renamed) != null) {
                 throw new RuntimeException(SqlCompilationError.of("Object '" + renamed + "' already exists."));
             }
+            final String grantedBefore = target.getName();
             store.remove(kind, target.getName());
             target.rename(renamed);
             store.add(target);
             forgetAttachments(kind, before, renamed);
+            GrantNames.renamed(catalog, kind.name(), grantedBefore, renamed);
             return;
         }
         final Schema into = owningSchema(ctx.qualifiedName(1));
+        into.requireCreatable(Privilege.valueOf("CREATE_" + kind.name()));
         final String renamed = lastPart(ctx.qualifiedName(1));
         if (into.getSecurityObjects().get(kind, renamed) != null) {
             throw new RuntimeException(SqlCompilationError.of("Object '" + renamed + "' already exists."));
         }
+        final String grantedBefore = schema.qualifiedName(target.getName());
         store.remove(kind, target.getName());
         target.rename(renamed);
         into.getSecurityObjects().add(target);
         forgetAttachments(kind, before, into.qualifiedName(renamed));
+        GrantNames.renamed(catalog, kind.name(), grantedBefore, into.qualifiedName(renamed));
     }
 
     /** ALTER NETWORK POLICY … ADD | REMOVE {ALLOWED | BLOCKED}_NETWORK_RULE_LIST = 'rule'. */

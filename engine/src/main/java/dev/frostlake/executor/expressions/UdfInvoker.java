@@ -43,6 +43,7 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
@@ -230,6 +231,19 @@ final class UdfInvoker {
      */
     Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues,
                                        final List<String> argumentFamilies) {
+        return resolveOverloadedFunction(schema, funcName, argValues, argumentFamilies, null);
+    }
+
+    /**
+     * {@link #resolveOverloadedFunction(Schema, String, List, List)} told each argument's static type, so that
+     * an overload the structured binding rule refuses is never chosen: a structured argument goes to the
+     * overload declaring its shape and a plain OBJECT or ARRAY to the plain one, where both rank alike by
+     * family and the first declared used to win, only to be refused once called.
+     *
+     * @param argumentStaticTypes each argument's static type (null where unknown), or null for none
+     */
+    Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues,
+                                       final List<String> argumentFamilies, final List<DataType> argumentStaticTypes) {
         final List<Function> overloads = schema.getFunctionOverloads(funcName);
         if (overloads.isEmpty()) {
             return null;
@@ -273,7 +287,9 @@ final class UdfInvoker {
             for (int i = 0; i < params.size(); i++) {
                 final Parameter param = params.get(i);
                 final Object argValue = argValues.get(i);
-                if (!isCompatibleArgument(argValue, param.getDataType())) {
+                if (!isCompatibleArgument(argValue, param.getDataType())
+                        || argumentStaticTypes != null && i < argumentStaticTypes.size()
+                            && !StructuredTypes.bindsAsArgument(argumentStaticTypes.get(i), param.getDataType())) {
                     typesMatch = false;
                     break;
                 }
@@ -462,7 +478,9 @@ final class UdfInvoker {
             // Substitute parameter placeholders
             final String sql = substituteParams(trimmedBody, params, args);
             try {
-                final List<ResultSet> results = queryExecutor.execute(sql);
+                // The body is part of the calling query, not a statement of its own: Snowflake inlines it, so
+                // it takes no query ID and adds nothing to QUERY_HISTORY, however many rows call it.
+                final List<ResultSet> results = queryExecutor.executeUnrecorded(sql);
                 if (!results.isEmpty() && results.get(0).getRowCount() > 0) {
                     return results.get(0).getRows().get(0).getValue(0);
                 }
@@ -649,7 +667,7 @@ final class UdfInvoker {
             } else {
                 argStr = SqlStringLiterals.encode(argVal.toString());
             }
-            sql = SqlIdentifierSubstitution.substitute(sql, param.getName(), argStr);
+            sql = SqlIdentifierSubstitution.substituteParameter(sql, param.getName(), argStr);
         }
         return sql;
     }

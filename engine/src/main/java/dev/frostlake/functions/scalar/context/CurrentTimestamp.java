@@ -37,7 +37,7 @@ public class CurrentTimestamp extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         // Live types this TIMESTAMP_LTZ, which is an OffsetDateTime here.
-        return StatementClock.instant().atZone(SessionZone.current()).toOffsetDateTime();
+        return StatementClock.observed().atZone(SessionZone.current()).toOffsetDateTime();
     }
 
     @Override

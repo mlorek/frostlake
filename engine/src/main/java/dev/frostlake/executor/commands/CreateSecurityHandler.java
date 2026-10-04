@@ -22,7 +22,6 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.Contact;
-import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.Parameter;
@@ -123,8 +122,8 @@ public class CreateSecurityHandler implements CommandHandler {
             try { catalog.dropTag(tagName); } catch (final RuntimeException ignored) {}
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_TAG, ContainerType.SCHEMA,
-                ddl.resolveSchemaFromQualifiedName(tagName).getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_TAG,
+                ddl.resolveSchemaFromQualifiedName(tagName));
             catalog.createTag(tagName, allowedValues, comment);
             if (propagate != null) {
                 final Tag created = catalog.getTag(tagName);
@@ -180,7 +179,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase();
-            ddl.checkCreatePrivilege(Privilege.CREATE_MASKING_POLICY, ContainerType.SCHEMA, schema.getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_MASKING_POLICY, schema);
             if (orReplace) {
                 queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
                 if (catalog.isPolicyInUse(policyName, true)) {
@@ -237,7 +236,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase();
-            ddl.checkCreatePrivilege(Privilege.CREATE_ROW_ACCESS_POLICY, ContainerType.SCHEMA, schema.getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_ROW_ACCESS_POLICY, schema);
             if (orReplace) {
                 queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
                 try { schema.dropRowAccessPolicy(policyName); } catch (final RuntimeException ignored) {}
@@ -289,6 +288,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            schema.requireCreatable(Privilege.CREATE_JOIN_POLICY);
             if (orReplace) {
                 if (catalog.isJoinPolicyInUse(policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -340,6 +340,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            schema.requireCreatable(Privilege.CREATE_AGGREGATION_POLICY);
             if (orReplace) {
                 if (catalog.isAggregationPolicyInUse(policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -392,6 +393,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            schema.requireCreatable(Privilege.CREATE_PROJECTION_POLICY);
             if (orReplace) {
                 if (catalog.isProjectionPolicyInUse(policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -432,6 +434,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String contactName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            schema.requireCreatable(Privilege.CREATE_CONTACT);
             if (!orReplace && schema.hasContact(contactName)) {
                 throw new RuntimeException(SqlCompilationError.of(
                     "Object '" + contactName + "' already exists."));

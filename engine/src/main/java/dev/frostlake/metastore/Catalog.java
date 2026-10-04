@@ -19,6 +19,7 @@ package dev.frostlake.metastore;
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.Contact;
@@ -46,6 +47,7 @@ import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.security.SessionContext;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -54,6 +56,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Catalog {
@@ -82,8 +85,11 @@ public class Catalog {
     private S3PathResolver s3PathResolver;
     // Session context used to stamp the creating role as owner on new objects; set by the engine.
     private SessionContext sessionContext;
-    // Dropped-object retention for UNDROP (Time Travel restore): "KIND:fqName" → the dropped object snapshot.
-    private final Map<String, DroppedObject> droppedObjects = new ConcurrentHashMap<>();
+    // Dropped-object retention for UNDROP (Time Travel restore): "KIND:fqName" → every dropped version of that name,
+    // oldest first. UNDROP restores the newest, and the next UNDROP of the name the one dropped before it.
+    private final Map<String, List<DroppedObject>> droppedObjects = new ConcurrentHashMap<>();
+    /** Told of every dropped version {@link #purgeExpiredDropped} forgets for good; null for none. */
+    private volatile DroppedVersionPurge droppedVersionPurge;
 
     public Catalog() {
         this.databases = new ConcurrentHashMap<>();
@@ -119,6 +125,8 @@ public class Catalog {
         final Database db = new Database(name);
         db.setOwner(currentRoleForOwner());
         databases.put(name, db);
+        // A dropped database's privileges are not the new one's (GrantNames).
+        GrantNames.created(this, "DATABASE", name);
     }
 
     public void cloneDatabase(final String sourceName, final String targetName) {
@@ -128,7 +136,18 @@ public class Catalog {
 
         final Database sourceDb = databaseExact(sourceName);
         final Database targetDb = sourceDb.clone(targetName);
+        // The cloning role owns the clone, as it would a database it created; the clone's children keep their owners,
+        // except that the role that clones a pipe owns the clone (documented).
+        targetDb.setOwner(currentRoleForOwner());
+        for (final Schema schema : targetDb.getAllSchemas()) {
+            for (final Pipe pipe : schema.getPipes()) {
+                pipe.setOwner(currentRoleForOwner());
+            }
+        }
         databases.put(targetName, targetDb);
+        // The clone's members are granted what the source's are; the clone itself nothing (GrantNames).
+        GrantNames.created(this, "DATABASE", targetName);
+        GrantNames.containerCloned(this, new String[] {sourceDb.getName()}, new String[] {targetName});
     }
 
     /**
@@ -193,6 +212,16 @@ public class Catalog {
     }
 
     /**
+     * {@link #getDatabase} for a name that may name nothing, matched the same way.
+     *
+     * @param name the database name
+     * @return the database, or null when there is none of that name
+     */
+    public Database findDatabase(final String name) {
+        return name == null ? null : databases.get(NameKeys.keyFor(databases, name));
+    }
+
+    /**
      * The database a SQL reference names, matched EXACTLY.
      *
      * <p>A reference resolves to a name first — bare folds to upper, quoted keeps its case — and that name
@@ -227,9 +256,42 @@ public class Catalog {
             throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(target.getName())
                 + "." + SqlIdentifiers.spellCanonical(newName) + "' already exists."));
         }
+        final String[] from = {source.getName(), schema.getName()};
+        StreamSources.bindAll(this);
         source.detachSchema(schema.getName());
         schema.rename(newName);
         target.attachSchema(schema);
+        StreamSources.respellAll(this);
+        GrantNames.containerRenamed(this, from, new String[] {target.getName(), schema.getName()});
+        // The policies it holds go with it, and so do the attachments that name them, wherever those are.
+        PolicyReferences.repoint(allSchemas(), null, from, new String[] {target.getName(), schema.getName()});
+    }
+
+    /** Every schema of every database: the places an attachment to a policy anywhere can be. */
+    private List<Schema> allSchemas() {
+        final List<Schema> schemas = new ArrayList<>();
+        for (final Database database : getAllDatabases()) {
+            schemas.addAll(database.getAllSchemas());
+        }
+        return schemas;
+    }
+
+    /**
+     * A renamed or moved policy keeps its attachments: each name that pointed at it points where it is now.
+     *
+     * @param kind    the policy's kind
+     * @param from    the schema it was in
+     * @param oldName its name there
+     * @param to      the schema it is in now
+     * @param newName its name now
+     */
+    private void repointPolicy(final PolicyKind kind, final Schema from, final String oldName, final Schema to,
+                               final String newName) {
+        PolicyReferences.repoint(allSchemas(), kind,
+            new String[] {from.getDatabaseName(), from.getName(), oldName},
+            new String[] {to.getDatabaseName(), to.getName(), newName});
+        // The privileges granted on it go with it too (GrantNames).
+        GrantNames.renamed(this, kind.name() + "_POLICY", from.qualifiedName(oldName), to.qualifiedName(newName));
     }
 
     /** True when a masking policy ({@code masking}) or row access policy is attached to any column,
@@ -922,29 +984,133 @@ public class Catalog {
         }
     }
 
-    /** Record a dropped object's snapshot under "KIND:fqName" so a subsequent UNDROP can restore it. */
+    /**
+     * Record a dropped object's snapshot under "KIND:fqName" so a subsequent UNDROP can restore it. Earlier dropped
+     * versions of the name stay behind it: each can be undropped in turn, newest first (documented).
+     *
+     * <p>The name is the object's exact canonical one ({@link QualifiedName#key}), matched exactly as a live object's
+     * is: a schema created as {@code "s1"} and one created as {@code S1} are two schemas (live-verified), and a table
+     * dropped from one is no table of the other's to UNDROP. The key was upper-cased, which let
+     * {@code UNDROP TABLE S1.t} restore the table dropped from {@code "s1"} into {@code S1}.
+     */
     public void recordDropped(final String key, final DroppedObject dropped) {
-        droppedObjects.put(key.toUpperCase(), dropped);
+        synchronized (droppedObjects) {
+            // The versions whose retention ran out go first, so a long run of drops holds no rows nothing can restore.
+            purgeExpiredDropped();
+            List<DroppedObject> versions = droppedObjects.get(key);
+            if (versions == null) {
+                versions = new ArrayList<>();
+                droppedObjects.put(key, versions);
+            }
+            versions.add(dropped);
+        }
     }
 
     /**
      * The dropped-object snapshots an UNDROP can still restore, of one kind (the key prefix before the colon,
-     * e.g. {@code DATABASE} or {@code SCHEMA}): the most recent drop of each name.
+     * e.g. {@code DATABASE} or {@code SCHEMA}): every dropped version of each name, the newest first.
      */
     public List<DroppedObject> droppedOfKind(final String kind) {
         final String prefix = kind.toUpperCase() + ":";
         final List<DroppedObject> out = new ArrayList<>();
-        for (final Map.Entry<String, DroppedObject> entry : droppedObjects.entrySet()) {
-            if (entry.getKey().startsWith(prefix)) {
-                out.add(entry.getValue());
+        synchronized (droppedObjects) {
+            purgeExpiredDropped();
+            for (final Map.Entry<String, List<DroppedObject>> entry : droppedObjects.entrySet()) {
+                if (entry.getKey().startsWith(prefix)) {
+                    for (int i = entry.getValue().size() - 1; i >= 0; i--) {
+                        out.add(entry.getValue().get(i));
+                    }
+                }
             }
         }
         return out;
     }
 
-    /** Remove and return the most recent dropped-object snapshot for "KIND:fqName", or null if none. */
+    /**
+     * Every dropped version UNDROP can still restore, by "KIND:fqName", each name's versions the oldest first: what
+     * a snapshot keeps, and gives back through {@link #recordDropped} in the same order.
+     *
+     * @return a copy of the versions
+     */
+    public Map<String, List<DroppedObject>> droppedVersions() {
+        final Map<String, List<DroppedObject>> out = new TreeMap<>();
+        synchronized (droppedObjects) {
+            purgeExpiredDropped();
+            for (final Map.Entry<String, List<DroppedObject>> entry : droppedObjects.entrySet()) {
+                out.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Who is told when a dropped version is forgotten for good: the engine, which deletes the stage files the version
+     * set aside.
+     *
+     * @param purge the listener, or null for none
+     */
+    public void setDroppedVersionPurge(final DroppedVersionPurge purge) {
+        this.droppedVersionPurge = purge;
+    }
+
+    /**
+     * Forget the dropped versions whose retention has run out by the current statement's instant: UNDROP refuses them
+     * as purged and SHOW ... HISTORY no longer lists them, and the {@link DroppedVersionPurge} is told of each. The
+     * caller holds the store's lock.
+     */
+    private void purgeExpiredDropped() {
+        final Instant now = StatementClock.instant();
+        final List<String> emptied = new ArrayList<>();
+        final DroppedVersionPurge purge = droppedVersionPurge;
+        for (final Map.Entry<String, List<DroppedObject>> entry : droppedObjects.entrySet()) {
+            final List<DroppedObject> kept = new ArrayList<>();
+            for (final DroppedObject version : entry.getValue()) {
+                if (!version.isPurgedAt(now)) {
+                    kept.add(version);
+                } else if (purge != null) {
+                    purge.purged(entry.getKey(), version);
+                }
+            }
+            if (kept.size() != entry.getValue().size()) {
+                entry.getValue().clear();
+                entry.getValue().addAll(kept);
+            }
+            if (kept.isEmpty()) {
+                emptied.add(entry.getKey());
+            }
+        }
+        for (final String key : emptied) {
+            droppedObjects.remove(key);
+        }
+    }
+
+    /**
+     * Remove and return the most recent dropped-object snapshot for "KIND:fqName" whose retention has not run out, or
+     * null if none.
+     */
     public DroppedObject takeDropped(final String key) {
-        return droppedObjects.remove(key.toUpperCase());
+        synchronized (droppedObjects) {
+            purgeExpiredDropped();
+            final List<DroppedObject> versions = droppedObjects.get(key);
+            if (versions == null || versions.isEmpty()) {
+                return null;
+            }
+            final DroppedObject newest = versions.remove(versions.size() - 1);
+            if (versions.isEmpty()) {
+                droppedObjects.remove(key);
+            }
+            return newest;
+        }
+    }
+
+    /**
+     * Whether a database of EXACTLY this name exists, as {@link #databaseExact} would find it.
+     *
+     * @param name the canonical database name
+     * @return whether it exists
+     */
+    public boolean hasDatabaseExact(final String name) {
+        return name != null && databases.containsKey(name);
     }
 
     /** Re-insert a previously-dropped database object (UNDROP DATABASE). */
@@ -1036,9 +1202,11 @@ public class Catalog {
         if (schema.hasStageExact(objectName(newName))) {
             throw new RuntimeException(SqlCompilationError.of("Object '" + objectName(newName) + "' already exists."));
         }
+        final String grantedBefore = schema.qualifiedName(stage.getName());
         schema.dropStage(objectName(name));
         stage.setName(newName);
         schema.addStage(stage);
+        GrantNames.renamed(this, "STAGE", grantedBefore, schema.qualifiedName(stage.getName()));
     }
 
     public Stage getStage(final String name) {
@@ -1140,22 +1308,32 @@ public class Catalog {
     public void renameTag(final String oldName, final String newName) {
         final Schema source = resolveSchemaForObject(oldName);
         final Schema target = QualifiedName.parse(newName).size() == 1 ? source : resolveSchemaForObject(newName);
+        target.requireCreatable(Privilege.CREATE_TAG);
+        final Tag renamed = source.getTag(objectName(oldName));
+        final String grantedBefore = renamed != null ? source.qualifiedName(renamed.getName()) : null;
         if (target == source) {
             source.renameTag(objectName(oldName), objectName(newName));
-            return;
+        } else {
+            final Tag tag = source.getTag(objectName(oldName));
+            if (target.hasTag(objectName(newName))) {
+                throw new RuntimeException(SqlCompilationError.of("Object '" + objectName(newName)
+                    + "' already exists."));
+            }
+            source.dropTag(objectName(oldName));
+            tag.setName(objectName(newName));
+            target.addTag(tag);
         }
-        final Tag tag = source.getTag(objectName(oldName));
-        if (target.hasTag(objectName(newName))) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + objectName(newName) + "' already exists."));
+        if (grantedBefore != null) {
+            GrantNames.renamed(this, "TAG", grantedBefore, target.qualifiedName(renamed.getName()));
         }
-        source.dropTag(objectName(oldName));
-        tag.setName(objectName(newName));
-        target.addTag(tag);
     }
 
     public void renameMaskingPolicy(final String oldName, final String newName) {
         final Schema from = resolveSchemaForObject(oldName);
         final Schema to = resolveSchemaForObject(newName);
+        to.requireCreatable(Privilege.CREATE_MASKING_POLICY);
+        final MaskingPolicy policy = from.getMaskingPolicy(objectName(oldName));
+        final String was = policy != null ? policy.getName() : null;
         from.renameMaskingPolicy(objectName(oldName), objectName(newName));
         if (from != to) {
             // A qualified target naming ANOTHER schema moves the policy there (live-verified).
@@ -1163,11 +1341,15 @@ public class Catalog {
             from.dropMaskingPolicy(objectName(newName));
             to.addMaskingPolicy(moved);
         }
+        repointPolicy(PolicyKind.MASKING, from, was, to, policy.getName());
     }
 
     public void renameJoinPolicy(final String oldName, final String newName) {
         final Schema from = resolveSchemaForObject(oldName);
         final Schema to = resolveSchemaForObject(newName);
+        to.requireCreatable(Privilege.CREATE_JOIN_POLICY);
+        final JoinPolicy policy = from.getJoinPolicy(objectName(oldName));
+        final String was = policy != null ? policy.getName() : null;
         from.renameJoinPolicy(objectName(oldName), objectName(newName));
         if (from != to) {
             // A qualified target naming ANOTHER schema moves the policy there (live-verified).
@@ -1175,11 +1357,15 @@ public class Catalog {
             from.dropJoinPolicy(objectName(newName));
             to.addJoinPolicy(moved);
         }
+        repointPolicy(PolicyKind.JOIN, from, was, to, policy.getName());
     }
 
     public void renameAggregationPolicy(final String oldName, final String newName) {
         final Schema from = resolveSchemaForObject(oldName);
         final Schema to = resolveSchemaForObject(newName);
+        to.requireCreatable(Privilege.CREATE_AGGREGATION_POLICY);
+        final AggregationPolicy policy = from.getAggregationPolicy(objectName(oldName));
+        final String was = policy != null ? policy.getName() : null;
         from.renameAggregationPolicy(objectName(oldName), objectName(newName));
         if (from != to) {
             // A qualified target naming ANOTHER schema moves the policy there (live-verified).
@@ -1187,11 +1373,15 @@ public class Catalog {
             from.dropAggregationPolicy(objectName(newName));
             to.addAggregationPolicy(moved);
         }
+        repointPolicy(PolicyKind.AGGREGATION, from, was, to, policy.getName());
     }
 
     public void renameProjectionPolicy(final String oldName, final String newName) {
         final Schema from = resolveSchemaForObject(oldName);
         final Schema to = resolveSchemaForObject(newName);
+        to.requireCreatable(Privilege.CREATE_PROJECTION_POLICY);
+        final ProjectionPolicy policy = from.getProjectionPolicy(objectName(oldName));
+        final String was = policy != null ? policy.getName() : null;
         from.renameProjectionPolicy(objectName(oldName), objectName(newName));
         if (from != to) {
             // A qualified target naming ANOTHER schema moves the policy there (live-verified).
@@ -1199,11 +1389,15 @@ public class Catalog {
             from.dropProjectionPolicy(objectName(newName));
             to.addProjectionPolicy(moved);
         }
+        repointPolicy(PolicyKind.PROJECTION, from, was, to, policy.getName());
     }
 
     public void renameRowAccessPolicy(final String oldName, final String newName) {
         final Schema from = resolveSchemaForObject(oldName);
         final Schema to = resolveSchemaForObject(newName);
+        to.requireCreatable(Privilege.CREATE_ROW_ACCESS_POLICY);
+        final RowAccessPolicy policy = from.getRowAccessPolicy(objectName(oldName));
+        final String was = policy != null ? policy.getName() : null;
         from.renameRowAccessPolicy(objectName(oldName), objectName(newName));
         if (from != to) {
             // A qualified target naming ANOTHER schema moves the policy there (live-verified).
@@ -1211,6 +1405,7 @@ public class Catalog {
             from.dropRowAccessPolicy(objectName(newName));
             to.addRowAccessPolicy(moved);
         }
+        repointPolicy(PolicyKind.ROW_ACCESS, from, was, to, policy.getName());
     }
 
     /**
@@ -1656,9 +1851,15 @@ public class Catalog {
         if (databases.containsKey(newName)) {
             throw new RuntimeException(alreadyExists(newName));
         }
+        final String[] from = {db.getName()};
+        StreamSources.bindAll(this);
         databases.remove(db.getName());
         db.rename(newName);
         databases.put(newName, db);
+        StreamSources.respellAll(this);
+        GrantNames.containerRenamed(this, from, new String[] {newName});
+        // Its policies' attachments, in this database or any other, name them under the new name.
+        PolicyReferences.repoint(allSchemas(), null, from, new String[] {newName});
         if (oldName.equals(getCurrentDatabase())) {
             setCurrentDatabaseName(null);
             setCurrentSchemaName(null);
@@ -1675,9 +1876,15 @@ public class Catalog {
             throw new RuntimeException(SqlCompilationError.of(
                 "Object '" + newName.toUpperCase() + "' already exists."));
         }
+        // Its streams stay on it (StreamSources): bound while their recorded names still find it, re-spelled after.
+        StreamSources.bindAll(this);
+        final String was = schema.qualifiedName(table.getName());
         schema.dropTable(table.getName());
         table.rename(newName);
         schema.addTable(table);
+        StreamSources.respellAll(this);
+        // Its privileges go with it (GrantNames).
+        GrantNames.renamed(this, "TABLE", was, schema.qualifiedName(table.getName()));
     }
 
     /**
@@ -1696,12 +1903,18 @@ public class Catalog {
         final Schema schemaB = resolveSchemaForTable(nameB);
         final String bareA = a.getName();
         final String bareB = b.getName();
+        StreamSources.bindAll(this);
+        final String fullA = schemaA.qualifiedName(bareA);
+        final String fullB = schemaB.qualifiedName(bareB);
         schemaA.dropTable(bareA);
         schemaB.dropTable(bareB);
         a.rename(bareB);
         b.rename(bareA);
         schemaB.addTable(a);
         schemaA.addTable(b);
+        // Each table's streams and privileges follow the table, not the name it gave up.
+        StreamSources.respellAll(this);
+        GrantNames.swapped(this, "TABLE", fullA, fullB);
     }
 
     /**
@@ -1716,13 +1929,18 @@ public class Catalog {
         final Table table = resolveTable(sourceQualifiedName);
         final Schema source = resolveSchemaForTable(sourceQualifiedName);
         final Schema target = getDatabase(targetDatabase).getSchema(targetSchema);
+        target.requireCreatable(Privilege.CREATE_TABLE);
         if (target.relationKindOf(newName) != null) {
             // The account's own object-exists sentence, naming the new name as written (live-verified).
             throw new RuntimeException(SqlCompilationError.of("Object '" + newName.toUpperCase() + "' already exists."));
         }
+        StreamSources.bindAll(this);
+        final String was = source.qualifiedName(table.getName());
         source.dropTable(table.getName());
         table.rename(newName);
         target.addTable(table);
+        StreamSources.respellAll(this);
+        GrantNames.renamed(this, "TABLE", was, target.qualifiedName(table.getName()));
     }
 
     /**
@@ -1746,6 +1964,7 @@ public class Catalog {
         final View view = resolveView(sourceQualifiedName);
         final Schema source = resolveSchemaForTable(sourceQualifiedName);
         final Schema target = databaseExact(targetDatabase).schemaExact(targetSchema);
+        target.requireCreatable(Privilege.CREATE_VIEW);
         final String newName = written[written.length - 1];
         if (target.relationKindOf(newName) != null) {
             final StringBuilder spelled = new StringBuilder();
@@ -1754,9 +1973,12 @@ public class Catalog {
             }
             throw new RuntimeException(SqlCompilationError.of("Object '" + spelled + "' already exists."));
         }
+        final String was = source.qualifiedName(view.getName());
         source.dropView(view.getName());
         view.rename(newName);
         target.addView(view);
+        // Its privileges go with it (GrantNames).
+        GrantNames.renamed(this, "VIEW", was, target.qualifiedName(view.getName()));
     }
 
     public void renameUser(final String oldName, final String newName) {
@@ -1784,9 +2006,11 @@ public class Catalog {
         if (warehouses.containsKey(newName.toUpperCase())) {
             throw new RuntimeException("Warehouse already exists: " + newName);
         }
+        final String grantedBefore = warehouse.getName();
         warehouses.remove(oldName.toUpperCase());
         warehouse.rename(newName);
         warehouses.put(newName.toUpperCase(), warehouse);
+        GrantNames.renamed(this, "WAREHOUSE", grantedBefore, warehouse.getName());
     }
 
     private Schema resolveSchemaForTable(final String qualifiedName) {

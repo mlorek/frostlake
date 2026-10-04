@@ -16,7 +16,10 @@
 
 package dev.frostlake.persistence;
 
+import dev.frostlake.types.DataType;
+
 import java.io.Serializable;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,6 +43,12 @@ public class ColumnSnapshot implements Serializable {
      * Null on snapshots written before it was persisted, where the NAME still held the spelling.
      */
     public Boolean binaryFixed;
+    /**
+     * The column's type itself, which the name and the parameters above do not fully carry: they miss a
+     * TIMESTAMP's or a TIME's fractional precision, and they restored a VECTOR or a GEOGRAPHY column as
+     * text. Null on snapshots written before it was persisted, which restore from those fields.
+     */
+    public DataType type;
     public boolean nullable;
     public boolean primaryKey;
     public String defaultValue;
@@ -49,6 +58,8 @@ public class ColumnSnapshot implements Serializable {
     public String comment;
     // Qualified name of an attached masking policy, or null. Old snapshots predate this field (null on load).
     public String maskingPolicyName;
+    // A conditional masking policy's USING columns, the masked column first; null on snapshots that predate it.
+    public List<String> maskingPolicyArguments;
     public String projectionPolicyName;
     // Constraint/identity metadata. Primitives default to false/0 on old snapshots; objects to null.
     public boolean unique;

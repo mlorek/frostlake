@@ -18,12 +18,14 @@ package dev.frostlake.stream;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -145,51 +147,43 @@ public class StreamManager {
     }
 
     /**
-     * Every stream in the database that captures changes to {@code db.schema.table}, searched across ALL of
-     * the database's schemas — a stream commonly lives in a different schema from the table it reads (e.g. a
-     * {@code BASE_TRANSFORM} stream ON a {@code INGEST} table), and looking only in the mutated table's own
-     * schema meant such a stream never saw a committed change at all. A TABLE stream is matched on the FULL
-     * name (its source resolved against the STREAM's own database/schema for any part it omits) so two
-     * same-named tables in different schemas cannot cross-capture; a VIEW stream keeps the bare-name match on
-     * its recorded base tables, which a view may draw from any schema.
+     * Every stream that captures changes to {@code db.schema.table}, searched across every schema of every
+     * database: a stream commonly lives in another schema from the table it reads (e.g. a {@code BASE_TRANSFORM}
+     * stream ON an {@code INGEST} table), or in another database altogether, and looking only near the table meant
+     * such a stream never saw a committed change. A stream is matched on the table ITSELF (StreamSources) — a table
+     * stream on its table, a view stream on the tables its view reads — so two same-named tables in different
+     * schemas cannot cross-capture, a renamed or swapped table keeps feeding its streams, and a new table under a
+     * dropped one's name feeds none of them.
      */
     private List<Stream> streamsCapturing(final String dbName, final String schemaName, final String tableName) {
         final List<Stream> out = new ArrayList<>();
-        final Database database = catalog.getDatabase(dbName);
+        final Database database = catalog.findDatabase(dbName);
         if (database == null) {
             return out;
         }
-        for (final Schema schema : database.getAllSchemas()) {
-            for (final Stream stream : schema.getStreams()) {
-                if (stream.getSourceType() == StreamSourceType.STAGE
-                        || stream.getSourceType() == StreamSourceType.DYNAMIC_TABLE) {
-                    continue; // their changes come from a directory refresh or a table refresh, not DML
-                }
-                if (stream.getSourceType() == StreamSourceType.VIEW || !stream.getBaseTableNames().isEmpty()) {
-                    if (capturesTable(stream, tableName)) {
+        final Schema changedSchema = database.hasSchema(schemaName) ? database.getSchema(schemaName) : null;
+        final Table changed = changedSchema != null && changedSchema.hasTable(tableName)
+            ? changedSchema.getTable(tableName) : null;
+        if (changed == null) {
+            return out;
+        }
+        for (final Database holder : catalog.getAllDatabases()) {
+            for (final Schema schema : holder.getAllSchemas()) {
+                for (final Stream stream : schema.getStreams()) {
+                    if (stream.getSourceType() == StreamSourceType.STAGE
+                            || stream.getSourceType() == StreamSourceType.DYNAMIC_TABLE) {
+                        continue; // their changes come from a directory refresh or a table refresh, not DML
+                    }
+                    final boolean captures = stream.getSourceType() == StreamSourceType.VIEW
+                        ? StreamSources.capturesThroughView(catalog, stream, changed)
+                        : StreamSources.captures(catalog, schema, stream, changed);
+                    if (captures) {
                         out.add(stream);
                     }
-                } else if (matchesSourceTable(stream, dbName, schema.getName(), schemaName, tableName)) {
-                    out.add(stream);
                 }
             }
         }
         return out;
-    }
-
-    /**
-     * Whether a TABLE stream's source names exactly the mutated table. The source may be written unqualified
-     * or schema-qualified, so the missing parts are filled from the schema the STREAM itself lives in.
-     */
-    private boolean matchesSourceTable(final Stream stream, final String dbName, final String streamSchemaName,
-                                       final String mutatedSchemaName, final String mutatedTableName) {
-        final String[] parts = QualifiedName.parse(stream.getSourceTableName()).parts();
-        final String sourceTable = parts[parts.length - 1];
-        final String sourceSchema = parts.length >= 2 ? parts[parts.length - 2] : streamSchemaName;
-        final String sourceDb = parts.length >= 3 ? parts[parts.length - 3] : dbName;
-        return sourceTable.equalsIgnoreCase(mutatedTableName)
-            && sourceSchema.equalsIgnoreCase(mutatedSchemaName)
-            && sourceDb.equalsIgnoreCase(dbName);
     }
 
     /**
@@ -265,29 +259,6 @@ public class StreamManager {
         } catch (final Exception e) {
             logger.warn("Failed to track DELETE for streams: {}", e.getMessage());
         }
-    }
-
-    /**
-     * True when a change to {@code tableName} (the bare table name of the mutated table) feeds this
-     * stream: its source table, or — for a stream defined ON VIEW — the view's resolved base table.
-     * A qualified source name is reduced to its last segment before comparing.
-     */
-    private boolean capturesTable(final Stream stream, final String tableName) {
-        // A view stream tracks one base table per branch (UNION ALL); a table stream tracks its source.
-        final List<String> captureNames = stream.getBaseTableNames().isEmpty()
-            ? Collections.singletonList(stream.getSourceTableName())
-            : stream.getBaseTableNames();
-        for (final String captureName : captureNames) {
-            String name = captureName;
-            final int dot = name.lastIndexOf('.');
-            if (dot >= 0) {
-                name = name.substring(dot + 1);
-            }
-            if (name.equalsIgnoreCase(tableName)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -472,6 +443,11 @@ public class StreamManager {
     }
 
     private long getNextRowId(final String qualifiedTableName) {
+        // A table's row ids are the table's own, so a rename continues them (Table#nextStreamRowId).
+        final Table table = StreamSources.tableNamed(catalog, qualifiedTableName);
+        if (table != null) {
+            return table.nextStreamRowId();
+        }
         // putIfAbsent rather than get/put: two threads racing here must end up sharing ONE counter,
         // or the same row id would be handed out twice.
         final String key = qualifiedTableName.toUpperCase();

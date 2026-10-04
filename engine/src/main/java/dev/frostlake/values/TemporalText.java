@@ -16,6 +16,7 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.TypeCategory;
@@ -209,7 +210,8 @@ public final class TemporalText {
             return ((OffsetDateTime) value).toLocalDateTime();
         }
         if (value instanceof Instant) {
-            return LocalDateTime.ofInstant((Instant) value, ZoneId.systemDefault());
+            // An instant shows its wall clock in the session's zone, as a TIMESTAMP_LTZ does, never the host's.
+            return LocalDateTime.ofInstant((Instant) value, SessionZone.current());
         }
         if (value instanceof java.sql.Timestamp) {
             return ((java.sql.Timestamp) value).toLocalDateTime();
@@ -226,7 +228,7 @@ public final class TemporalText {
             return ((OffsetDateTime) value).toZonedDateTime();
         }
         if (value instanceof Instant) {
-            return ((Instant) value).atZone(ZoneId.systemDefault());
+            return ((Instant) value).atZone(SessionZone.current());
         }
         if (value instanceof LocalDateTime) {
             return ((LocalDateTime) value).atZone(ZoneId.systemDefault());
@@ -297,7 +299,7 @@ public final class TemporalText {
             return formatter.format(((OffsetDateTime) value).toLocalDateTime());
         }
         if (value instanceof Instant) {
-            return formatter.format(((Instant) value).atZone(ZoneId.systemDefault()));
+            return formatter.format(((Instant) value).atZone(SessionZone.current()));
         }
         if (value instanceof java.sql.Timestamp) {
             return formatter.format(((java.sql.Timestamp) value).toLocalDateTime());

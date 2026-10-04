@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore;
 
+import dev.frostlake.executor.StatementClock;
+
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -27,12 +29,14 @@ import java.util.Map;
 public abstract class SqlObject implements Taggable {
 
     protected String name;
-    protected final Instant createdTime;
+    protected Instant createdTime;
     protected String comment;
     /** Owning role; defaults to SYSADMIN until stamped with the creating role at CREATE time. */
     protected String owner = "SYSADMIN";
     /** The user whose DDL created this object, as INFORMATION_SCHEMA's LAST_DDL_BY names it; null when none did. */
     private String lastDdlBy;
+    /** When the last DDL after the CREATE ran, or null while the CREATE is the last; see {@link #getLastDdlTime}. */
+    private Instant lastDdlTime;
     /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -> value). */
     private final Map<String, String> tags = new HashMap<>();
 
@@ -42,7 +46,10 @@ public abstract class SqlObject implements Taggable {
      */
     protected SqlObject(final String name) {
         this.name = name;
-        this.createdTime = Instant.now();
+        // The creating statement's instant, as its CURRENT_TIMESTAMP reads it: an object is never created after a
+        // later statement's CURRENT_TIMESTAMP, and a replayed statement, given back the instant it first ran at,
+        // stamps the object it creates exactly as the original run did.
+        this.createdTime = StatementClock.instant();
     }
 
     /**
@@ -74,6 +81,18 @@ public abstract class SqlObject implements Taggable {
      */
     public Instant getCreatedTime() {
         return createdTime;
+    }
+
+    /**
+     * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
+     * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
+     *
+     * @param created the recorded creation time, or null
+     */
+    public void restoreCreatedTime(final Instant created) {
+        if (created != null) {
+            this.createdTime = created;
+        }
     }
 
     /**
@@ -115,6 +134,41 @@ public abstract class SqlObject implements Taggable {
      */
     public void setLastDdlBy(final String lastDdlBy) {
         this.lastDdlBy = lastDdlBy;
+    }
+
+    /**
+     * When the last DDL statement ran on this object, which is INFORMATION_SCHEMA's LAST_DDL. That is its CREATE
+     * until an ALTER or a COMMENT ON moves it; a new object's LAST_DDL is its CREATED (documented).
+     *
+     * @return the instant
+     */
+    public Instant getLastDdlTime() {
+        return lastDdlTime != null ? lastDdlTime : createdTime;
+    }
+
+    /**
+     * A DDL statement changed this object: LAST_DDL moves to the statement's instant and LAST_DDL_BY to its user. The
+     * documentation has every ALTER do so, a comment, a parameter or a column included.
+     *
+     * @param user the user running the statement, or null to leave LAST_DDL_BY as it is
+     */
+    public void markDdl(final String user) {
+        lastDdlTime = StatementClock.instant();
+        if (user != null) {
+            lastDdlBy = user;
+        }
+    }
+
+    /**
+     * Put back when the last DDL ran on this object, as a snapshot recorded it, so an engine clone or a restore
+     * reports the original LAST_DDL. A null, from a snapshot that never recorded it, leaves LAST_DDL at CREATED.
+     *
+     * @param lastDdl the recorded last DDL, or null
+     */
+    public void restoreLastDdlTime(final Instant lastDdl) {
+        if (lastDdl != null) {
+            this.lastDdlTime = lastDdl;
+        }
     }
 
     /**

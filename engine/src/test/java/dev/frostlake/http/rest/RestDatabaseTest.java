@@ -116,9 +116,12 @@ public class RestDatabaseTest extends BaseRestTest {
         final JsonNode copy = ok(get("/api/v2/databases/rdb_copy"));
         assertEquals("copied", copy.path("comment").asString());
         assertEquals(4, copy.path("suspend_task_after_num_failures").asInt());
-        ok(post("/api/v2/databases/rdb_src:clone?createMode=orReplace", "{\"name\":\"rdb_copy\","
+        // The point reaches the clone, which time-travels to it: a minute ago, and in 2020, the database did not
+        // exist yet, so both are refused, and the copy an OR REPLACE would have replaced stays.
+        error(404, post("/api/v2/databases/rdb_src:clone?createMode=orReplace", "{\"name\":\"rdb_copy\","
             + "\"point_of_time\":{\"point_of_time_type\":\"offset\",\"reference\":\"at\",\"offset\":\"-60\"}}"));
-        ok(post("/api/v2/databases/rdb_src:clone", "{\"name\":\"rdb_copy_ts\",\"point_of_time\":"
+        assertEquals("copied", ok(get("/api/v2/databases/rdb_copy")).path("comment").asString());
+        error(404, post("/api/v2/databases/rdb_src:clone", "{\"name\":\"rdb_copy_ts\",\"point_of_time\":"
             + "{\"point_of_time_type\":\"timestamp\",\"reference\":\"before\",\"timestamp\":\"2020-01-01T00:00:00Z\"}}"));
         error(400, post("/api/v2/databases/rdb_src:clone", "{\"name\":\"rdb_copy_bad\",\"point_of_time\":"
             + "{\"point_of_time_type\":\"offset\",\"offset\":\"1; DROP DATABASE rdb_src\"}}"));

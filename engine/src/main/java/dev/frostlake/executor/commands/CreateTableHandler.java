@@ -27,12 +27,13 @@ import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.TransientRetentionLimit;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CloneReferences;
 import dev.frostlake.metastore.FutureGrants;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.TableShadows;
 import dev.frostlake.metastore.model.CheckConstraint;
-import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.RowAccessPolicy;
@@ -44,6 +45,8 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.TableStorage;
+import dev.frostlake.storage.TableVersion;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BinaryWidthSpelling;
 import dev.frostlake.types.BooleanType;
@@ -52,6 +55,7 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredLeafWidths;
 import dev.frostlake.values.VariantValue;
 
 import org.antlr.v4.runtime.CharStream;
@@ -131,12 +135,18 @@ public class CreateTableHandler implements CommandHandler {
         // changes how a hybrid table is read, never what a query over it returns.
         final boolean isHybrid = ctx.HYBRID() != null;
         final boolean orReplace = ctx.or_replace() != null;
+        boolean copyGrants = false;
+        for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
+            copyGrants = copyGrants || tail.copyGrants() != null;
+        }
 
         // Where the table goes, once resolved: however the create ends, the temporary and permanent tables
         // of its name are settled there again (TableShadows).
         Schema createdIn = null;
         String createdInDatabase = null;
         String createdName = null;
+        // The replaced table's privileges COPY GRANTS keeps, set aside under this name while the new table is made.
+        String grantsSetAside = null;
         try {
             final Schema schema;
             final String tableName;
@@ -161,7 +171,11 @@ public class CreateTableHandler implements CommandHandler {
                 throw new RuntimeException("Invalid table name: " + qualifiedName);
             }
 
-            ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, ContainerType.SCHEMA, schema.getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, schema);
+            // Every table in a transient schema or database is transient (documented), TRANSIENT written or not
+            // (a schema in a transient database is itself transient). A temporary table stays temporary and a
+            // hybrid table hybrid.
+            final boolean transientTable = isTransient || (!isTemporary && !isHybrid && schema.isTransientObject());
             // Replacing a table needs OWNERSHIP of it; a temporary table takes a permanent one's name
             // without replacing it.
             if (orReplace && !isTemporary) {
@@ -207,8 +221,15 @@ public class CreateTableHandler implements CommandHandler {
                 ? getText(ctx.qualifiedName(0)) : null;
             final Table copySource = copySourceName == null ? null
                 : catalog.resolveTableAsWritten(copySourceName, "Object", ctx.CLONE() != null ? "CLONE" : "DUPLICATE");
-            final List<Row> cloneRows = ctx.CLONE() == null ? null : new ArrayList<Row>(queryExecutor.getStorageEngine()
-                .getTableStorage(ddl.resolveFullyQualifiedName(copySourceName)).scan());
+            // AT | BEFORE reads the source as of the point, refused as a SELECT at that point is: its shape then and
+            // its rows in that shape.
+            final TableStorage copySourceStorage = ctx.CLONE() == null ? null
+                : queryExecutor.getStorageEngine().getTableStorage(ddl.resolveFullyQualifiedName(copySourceName));
+            final TableVersion cloneVersion = ctx.CLONE() == null || ctx.timeTravelClause() == null ? null
+                : queryExecutor.versionAtClonePoint(copySource, copySourceStorage,
+                    queryExecutor.clonePoint(ctx.timeTravelClause()));
+            final List<Row> cloneRows = ctx.CLONE() == null ? null : cloneVersion != null
+                ? cloneVersion.getRows() : new ArrayList<Row>(copySourceStorage.scan());
 
             // CREATE OR ALTER over a table that is already there brings it to the written shape and keeps
             // its rows, where CREATE OR REPLACE would drop it; a name nothing holds is created as usual.
@@ -248,6 +269,11 @@ public class CreateTableHandler implements CommandHandler {
                 try {
                     final Table existingTable = schema.getTable(tableName);
                     if (existingTable != null) {
+                        if (copyGrants) {
+                            // OR REPLACE ... COPY GRANTS: every privilege but OWNERSHIP passes to the new table.
+                            grantsSetAside = schema.qualifiedName(existingTable.getName());
+                            GrantNames.setAside(catalog, "TABLE", grantsSetAside);
+                        }
                         schema.dropTable(tableName);
                         final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                         queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
@@ -278,37 +304,28 @@ public class CreateTableHandler implements CommandHandler {
                 // A transient table cannot become a permanent one by cloning (live-verified). The
                 // other three combinations are all legal: transient→transient, permanent→transient
                 // and permanent→permanent.
-                if (sourceTable.isTransient() && !isTransient && !isTemporary) {
+                if (sourceTable.isTransient() && !transientTable && !isTemporary) {
                     throw new RuntimeException(SqlCompilationError.of(
                         "Transient object cannot be cloned to a permanent object."));
                 }
 
-                final List<TableColumn> clonedColumns = new ArrayList<>();
-                for (final TableColumn col : sourceTable.getColumns()) {
-                    final TableColumn clonedCol = new TableColumn(
-                        col.getName(),
-                        col.getDataType(),
-                        col.isNullable(),
-                        col.getDefaultValue(),
-                        col.isPrimaryKey(),
-                        col.isUnique(),
-                        col.isAutoIncrement()
-                    );
-                    clonedCol.setComment(col.getComment());
-                    clonedCol.setCollation(col.getCollation());
-                    // A clone keeps each column's POSITION, gaps and all: cloning a table whose
-                    // second column was dropped answers 1, 3, 5, not 1, 2, 3 (live-verified).
-                    clonedCol.setOrdinalPosition(col.getOrdinalPosition());
-                    clonedColumns.add(clonedCol);
-                }
-
                 // If TEMPORARY/TRANSIENT is explicitly specified, use that; otherwise inherit from source
                 final boolean tableIsTemporary = isTemporary ? isTemporary : sourceTable.isTemporary();
-                final boolean tableIsTransient = isTransient ? isTransient : sourceTable.isTransient();
-                table = new Table(tableName, clonedColumns, tableIsTemporary, tableIsTransient);
-                // …and the source's high-water mark, so the next column added to the clone does not
-                // reuse a number the source had already spent.
-                table.setHighestOrdinal(sourceTable.getHighestOrdinal());
+                final boolean tableIsTransient = transientTable || sourceTable.isTransient();
+                // The whole definition: policies, tags, constraints and their names, IDENTITY where its sequence
+                // stands, search optimization and the table's settings. A clone keeps each column's POSITION,
+                // gaps and all: cloning a table whose second column was dropped answers 1, 3, 5, not 1, 2, 3
+                // (live-verified), and the high-water mark, so the next column added does not reuse a number.
+                table = sourceTable.copyAs(tableName, tableIsTemporary, tableIsTransient);
+                // As of a point, the columns are the ones the source had then (documented).
+                if (cloneVersion != null && cloneVersion.reshapes(sourceTable)) {
+                    table.restructureAsOf(cloneVersion.getStructure());
+                }
+                // Nothing is cloned with it, so its foreign keys and sequence defaults keep naming the source's
+                // objects from wherever the clone lands (CloneReferences).
+                final String[] sourcePath = QualifiedName.parse(ddl.resolveFullyQualifiedName(sourceTableName)).parts();
+                CloneReferences.keepForTableClone(table, new String[] {sourcePath[0], sourcePath[1]},
+                    new String[] {schema.getDatabaseName(), schema.getName()});
 
                 // Extract comment from either position (after table name or at end)
                 // If specified, override the cloned comment
@@ -322,11 +339,12 @@ public class CreateTableHandler implements CommandHandler {
                 }
                 if (comment != null) {
                     table.setComment(comment);
-                } else {
-                    table.setComment(sourceTable.getComment());
                 }
 
-                table.setClusterKeys(sourceTable.getClusterKeys());
+                // The clone keeps the clustering key with automatic clustering suspended (documented).
+                if (!table.getClusterKeys().isEmpty()) {
+                    table.setReclusterSuspended(true);
+                }
                 table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
@@ -356,25 +374,11 @@ public class CreateTableHandler implements CommandHandler {
                 final String sourceTableName = copySourceName;
                 final Table sourceTable = copySource;
 
-                final List<TableColumn> likeColumns = new ArrayList<>();
-                for (final TableColumn col : sourceTable.getColumns()) {
-                    final TableColumn likeCol = new TableColumn(
-                        col.getName(),
-                        col.getDataType(),
-                        col.isNullable(),
-                        col.getDefaultValue(),
-                        col.isPrimaryKey(),
-                        col.isUnique(),
-                        col.isAutoIncrement()
-                    );
-                    likeCol.setComment(col.getComment());
-                    likeCol.setCollation(col.getCollation());
-                    likeColumns.add(likeCol);
-                }
-
                 final boolean tableIsTemporary = isTemporary ? isTemporary : sourceTable.isTemporary();
-                final boolean tableIsTransient = isTransient ? isTransient : sourceTable.isTransient();
-                table = new Table(tableName, likeColumns, tableIsTemporary, tableIsTransient);
+                final boolean tableIsTransient = transientTable || sourceTable.isTransient();
+                // Column names, types, defaults (IDENTITY's definition included) and constraints, the clustering
+                // keys and the tags; no policy is set on the new table (Table.likeCopy).
+                table = sourceTable.likeCopy(tableName, tableIsTemporary, tableIsTransient);
 
                 String comment = null;
                 final List<FrostlakeParser.CommentClauseContext> comments = tailComments(ctx);
@@ -388,7 +392,6 @@ public class CreateTableHandler implements CommandHandler {
                     table.setComment(comment);
                 }
 
-                table.setClusterKeys(sourceTable.getClusterKeys());
                 table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
@@ -447,7 +450,7 @@ public class CreateTableHandler implements CommandHandler {
 
                 // Determine if table should be temporary/transient
                 final boolean tableIsTemporary = isTemporary || isTransient;
-                table = new Table(tableName, columns, isTemporary, isTransient);
+                table = new Table(tableName, columns, isTemporary, transientTable);
                 applyTableConstraints(ctx.columnList(), table);
 
                 // Extract comment from either position
@@ -518,7 +521,7 @@ public class CreateTableHandler implements CommandHandler {
                     ? columnParser.parseColumnList(ctx.columnList()) : new ArrayList<>();
                 final List<ForeignKeyConstraint> foreignKeys = ctx.columnList() != null
                     ? columnParser.parseForeignKeys(ctx.columnList()) : new ArrayList<>();
-                table = new Table(tableName, columns, isTemporary, isTransient);
+                table = new Table(tableName, columns, isTemporary, transientTable);
                 applyTableConstraints(ctx.columnList(), table);
 
                 // Add foreign key constraints (final metadata only, final not enforced)
@@ -566,9 +569,17 @@ public class CreateTableHandler implements CommandHandler {
 
                 logger.trace("Created table: {}", qualifiedName);
             }
+            if (copyGrants && copySourceName != null) {
+                // CLONE or LIKE ... COPY GRANTS: the source's privileges but OWNERSHIP are the new table's too.
+                GrantNames.copied(catalog, "TABLE", GrantNames.of(catalog, "TABLE", copySourceName),
+                    schema.qualifiedName(tableName));
+            }
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, qualifiedName);
         } finally {
+            if (grantsSetAside != null) {
+                GrantNames.takeBack(catalog, "TABLE", grantsSetAside, true);
+            }
             if (createdIn != null) {
                 TableShadows.settle(createdIn, queryExecutor.getStorageEngine(), createdInDatabase, createdName);
             }
@@ -806,7 +817,8 @@ public class CreateTableHandler implements CommandHandler {
                 ? new BinaryType(binary.getMaxLength(), binary.isFixed()) : binary.atColumnWidth();
         }
         if (!(declared instanceof StringType)) {
-            return declared;
+            // A structured value's leaves a cast wrote with no width are sized as a column holds them.
+            return StructuredLeafWidths.stored(declared);
         }
         // A ZERO width is a query's way of saying nothing was named — a bare NULL select item, or a
         // conditional every branch of which is one. No stored column may hold it (live refuses
@@ -930,6 +942,8 @@ public class CreateTableHandler implements CommandHandler {
             if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(key)
                     && valueText.matches("[0-9]+")) {
                 TransientRetentionLimit.requireWithinAccountLimit(valueText);
+                // A transient table keeps a day at most, as its transient containers do.
+                TransientRetentionLimit.requireWithinTransientLimit(table.isTransient(), valueText);
                 table.setDataRetentionTimeInDays(Integer.valueOf(valueText));
             }
             if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equalsIgnoreCase(key)
@@ -1004,7 +1018,8 @@ public class CreateTableHandler implements CommandHandler {
                 policyCols.add(colName);
             }
             RowAccessPolicyAttachment.check(policy, table, table.getName(), written, policyCols);
-            table.setRowAccessPolicyName(written.toUpperCase());
+            // Recorded in full, as every policy attachment is (see PolicyReferences).
+            table.setRowAccessPolicyName(catalog.qualifiedObjectName(written));
             table.setRowAccessPolicyColumns(policyCols);
         }
     }
@@ -1072,7 +1087,9 @@ public class CreateTableHandler implements CommandHandler {
         if (!callsTableFunction(query)) {
             throw new RuntimeException("Unsupported feature 'Table function must be used in the TEMPLATE sub-query'.");
         }
-        final List<ResultSet> results = queryExecutor.execute(
+        // The template query and the CREATE written from it are this statement's own work: neither takes a query ID
+        // or a history row of its own.
+        final List<ResultSet> results = queryExecutor.executeUnrecorded(
             input.getText(Interval.of(query.start.getStartIndex(), query.stop.getStopIndex())));
         final ResultSet template = results.isEmpty() ? null : results.get(results.size() - 1);
         final Object cell = template == null || template.getRows().isEmpty() || template.getColumns().isEmpty()
@@ -1113,7 +1130,7 @@ public class CreateTableHandler implements CommandHandler {
         final String head = input.getText(Interval.of(ctx.start.getStartIndex(), usingStart - 1)).trim();
         final String tail = ctx.stop.getStopIndex() > queryStop
             ? input.getText(Interval.of(queryStop + 1, ctx.stop.getStopIndex())) : "";
-        queryExecutor.execute(head + " (" + String.join(", ", columns) + ")" + tail);
+        queryExecutor.executeUnrecorded(head + " (" + String.join(", ", columns) + ")" + tail);
         return null;
     }
 

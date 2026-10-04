@@ -20,6 +20,7 @@ import dev.frostlake.executor.SessionTimestampMapping;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.datetime.DateDifferenceWidths;
 import dev.frostlake.functions.scalar.datetime.PlannedDateAdd;
 import dev.frostlake.metastore.model.TableColumn;
@@ -44,6 +45,7 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorElementType;
@@ -988,6 +990,13 @@ final class TypeInferencer {
                 common = branchType;
             } else if (!common.getClass().equals(branchType.getClass())) {
                 return null;
+            } else if (StructuredTypes.isStructured(common)) {
+                // Two structured shapes meet only where one coerces to the other; ARRAY(INT) beside
+                // ARRAY(VARCHAR) is no single type, not the first branch's.
+                common = DeclaredTypeFold.combine(common, branchType);
+                if (common == null) {
+                    return null;
+                }
             }
         }
         return common;
@@ -1677,6 +1686,11 @@ final class TypeInferencer {
             return "TIME".equalsIgnoreCase(expected.getName())
                 == "TIME".equalsIgnoreCase(offered.getName());
         }
+        if (StructuredTypes.isStructured(expected) && expected.getClass().equals(offered.getClass())) {
+            // Two structured shapes meet only where one coerces to the other (DeclaredTypeFold.combine):
+            // OBJECT(a INT) beside OBJECT(b VARCHAR) has no type the two convert into.
+            return DeclaredTypeFold.combine(expected, offered) != null;
+        }
         if (expected.getClass().equals(offered.getClass())) {
             return true;                       // one family always meets itself
         }
@@ -1728,19 +1742,40 @@ final class TypeInferencer {
      * SAME container and is used to decide whether a value really has that type. This one spans the
      * three of them and picks by POSITION, which is a fold and not an agreement.
      *
+     * <p>STRUCTURED branches are not such containers. Snowflake coerces one shape to another only where
+     * the two coerce (see {@link DeclaredTypeFold#combine}), so branches that are all shapes fold as
+     * shapes: ARRAY(NUMBER(2,1)) beside ARRAY(INT) is ARRAY(NUMBER(38,1)). Shapes that do not coerce
+     * are refused before this, as a plain container beside a shape is. Taking the first branch made
+     * {@code IFF(c, OBJECT(a INT), OBJECT(b VARCHAR))} an OBJECT(a INT) that could hand back
+     * {@code {"b":"x"}}.
+     *
      * @param branches the conditional's branches
-     * @return the first branch's type when every branch is semi-structured, else null
+     * @return the first branch's type when every branch is semi-structured, the folded shape when every
+     *         branch is structured, else null
      */
     private DataType semiStructuredBranchFold(final List<Expression> branches) {
         if (branches.isEmpty()) {
             return null;
         }
+        boolean allStructured = true;
         for (final Expression branch : branches) {
             final DataType branchType = infer(branch);
             if (!(branchType instanceof ObjectType) && !(branchType instanceof ArrayType)
                     && !(branchType instanceof VariantType)) {
                 return null;
             }
+            allStructured = allStructured && StructuredTypes.isStructured(branchType);
+        }
+        if (allStructured) {
+            DataType folded = null;
+            for (final Expression branch : branches) {
+                final DataType branchType = infer(branch);
+                folded = folded == null ? branchType : DeclaredTypeFold.combine(folded, branchType);
+                if (folded == null) {
+                    return null;
+                }
+            }
+            return folded;
         }
         return infer(branches.get(0));
     }
@@ -2295,21 +2330,24 @@ final class TypeInferencer {
     /**
      * The width DATE_PART and EXTRACT declare, which follows the PART they are asked for rather than
      * being fixed: 'year' is four digits and 'month' or 'second' are two, exactly as YEAR and MONTH
-     * declare when called by name (live-verified). Only the parts measured through their own functions
-     * are mapped; any other part keeps the ordinary width, because a part like 'epoch_second' has a
-     * range nothing here has measured.
+     * declare when called by name, and 'epoch_second' is NUMBER(18,0) over a DATE and every TIMESTAMP
+     * flavour (all live-verified). Only the measured parts are mapped; any other part keeps the ordinary
+     * width, which for 'epoch_millisecond', 'epoch_microsecond' and 'epoch_nanosecond' is also what the
+     * account declares (live-verified: NUMBER(38,0)).
      *
      * @return the declared type, or null when the part is not a literal or is not one of the measured
      */
     private DataType datePartWidth(final List<Expression> args) {
-        if (args.isEmpty() || !(args.get(0) instanceof LiteralExpression)) {
+        if (args.isEmpty()) {
             return null;
         }
-        final Object part = ((LiteralExpression) args.get(0)).getValue();
+        // The part is read as a name whether it is quoted or not, as the evaluator reads the unit slot:
+        // DATE_PART(year, ts) is DATE_PART('year', ts), and declares the same width.
+        final String part = DateTimeUnitSlot.unitTextOf(args.get(0));
         if (part == null) {
             return null;
         }
-        final String word = part.toString().toUpperCase(Locale.ROOT);
+        final String word = part.toUpperCase(Locale.ROOT);
         if (word.equals("YEAR") || word.equals("Y") || word.equals("YY") || word.equals("YYYY")
                 || word.equals("DAYOFYEAR") || word.equals("YEAROFWEEK")) {
             return IntegerResultWidths.YEAR_PART;
@@ -2319,6 +2357,12 @@ final class TypeInferencer {
                 || word.equals("QUARTER") || word.equals("HOUR") || word.equals("MINUTE")
                 || word.equals("SECOND")) {
             return IntegerResultWidths.DATE_PART_SMALL;
+        }
+        // EPOCH is the same part as EPOCH_SECOND, and EPOCH_SECONDS reads as its singular, as the evaluator
+        // reads them (SharedFunctionHelpers.canonicalDateUnit).
+        final String unit = SharedFunctionHelpers.canonicalDateUnit(word);
+        if (unit.equals("EPOCH_SECOND") || unit.equals("EPOCH")) {
+            return IntegerResultWidths.EPOCH_SECOND;
         }
         return null;
     }
@@ -2504,7 +2548,8 @@ final class TypeInferencer {
                 return null;
             }
             final NumericType orderedNumeric = (NumericType) orderedType;
-            if (!continuous || orderedNumeric.getName().equalsIgnoreCase("FLOAT")) {
+            // Approximate by family: a DOUBLE-named value (a ::DOUBLE cast, SQRT, TO_DOUBLE) is a FLOAT.
+            if (!continuous || NumericType.isApproximate(orderedNumeric)) {
                 return orderedNumeric;
             }
             return interpolatedWidth(orderedNumeric.getPrecision(), orderedNumeric.getScale());
@@ -2561,7 +2606,9 @@ final class TypeInferencer {
             return null;
         }
         final NumericType numeric = (NumericType) argument;
-        if (numeric.getName().equalsIgnoreCase("FLOAT")) {
+        // Approximate by family, not by name: SQRT, TO_DOUBLE and a ::DOUBLE cast type their result through
+        // the DOUBLE name, and SUM/AVG over any FLOAT is a FLOAT.
+        if (NumericType.isApproximate(numeric)) {
             return numeric;
         }
         final int precision = numeric.getPrecision();
@@ -2682,7 +2729,7 @@ final class TypeInferencer {
                 return null;
             }
             final NumericType numeric = (NumericType) argument;
-            if (numeric.getName().equalsIgnoreCase("FLOAT")) {
+            if (NumericType.isApproximate(numeric)) {
                 return numeric;
             }
             // The whole-partition window has the same uncapped three-decimal intermediate the
@@ -3051,7 +3098,11 @@ final class TypeInferencer {
             // distinction. Consumers that reason in coarser families still see a NumericType.
             case "FLOAT": case "FLOAT4": case "FLOAT8": case "REAL":
                 return NumericType.FLOAT;
-            case "DOUBLE": case "DOUBLEPRECISION": case "DECFLOAT":
+            // DOUBLE and DOUBLE PRECISION are FLOAT, as a declared column's type is (DataTypeParser); DECFLOAT is
+            // approximated by DOUBLE there too.
+            case "DOUBLE": case "DOUBLEPRECISION":
+                return NumericType.FLOAT;
+            case "DECFLOAT":
                 return NumericType.DOUBLE;
             case "BOOLEAN":
                 return BooleanType.BOOLEAN;

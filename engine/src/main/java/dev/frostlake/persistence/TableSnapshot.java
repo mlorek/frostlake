@@ -34,11 +34,32 @@ public class TableSnapshot implements Serializable {
     /** The user whose DDL created the relation (LAST_DDL_BY); null in a snapshot taken before it was kept. */
     public String lastDdlBy;
     public Instant createdAt;
+    /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
+    public Instant lastDdlAt;
+    /**
+     * When a statement last wrote the rows, and how many writes there had been: restoring the rows writes them
+     * again, which would otherwise move LAST_ALTERED and SYSTEM$LAST_CHANGE_COMMIT_TIME to the restore. Both null
+     * on snapshots written before they were saved; {@code lastDataChange} is null too while nothing has written.
+     */
+    public Instant lastDataChange;
+    public Long dataChanges;
+    /** When a DML statement last ran against the table, even one that changed no row; null when none had. */
+    public Instant lastDml;
+    /**
+     * When each constraint an ALTER TABLE added was created, and when an ALTER last changed one, by upper-cased
+     * name, as TABLE_CONSTRAINTS and REFERENTIAL_CONSTRAINTS report them. Null when there are none, and on snapshots
+     * written before they were saved, which date every constraint from the table.
+     */
+    public HashMap<String, Instant> constraintCreated;
+    public HashMap<String, Instant> constraintAltered;
     public List<ColumnSnapshot> columns = new ArrayList<>();
 
     // The highest position ever given to a column of this table, so a restored table does not hand a
     // dropped LAST column's number to the next one added.
     public int highestOrdinal;
+    // The value the table's IDENTITY column hands out next. Null when the table has no such column, and on a
+    // snapshot written before the sequence was recorded; the reader then moves it past the rows it restores.
+    public Long nextIdentityValue;
     // TEMPORARY / TRANSIENT table flags. Primitives default to false on old snapshots (a permanent table).
     public boolean temporary;
     public boolean isTransient;
@@ -82,4 +103,6 @@ public class TableSnapshot implements Serializable {
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.
     public Map<String, String> tags;
+    // The owning role. Null on snapshots written before it was saved, which restore the default owner.
+    public String owner;
 }

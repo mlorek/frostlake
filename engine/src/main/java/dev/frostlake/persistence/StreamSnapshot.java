@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -50,4 +51,6 @@ public class StreamSnapshot implements Serializable {
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.
     public Map<String, String> tags;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public LocalDateTime createdAt;
 }

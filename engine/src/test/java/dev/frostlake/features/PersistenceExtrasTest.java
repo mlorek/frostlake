@@ -244,7 +244,7 @@ public class PersistenceExtrasTest {
         final DatabaseEngine engine2 = new DatabaseEngine(config);
         assertEquals("DEPT_POLICY", engine2.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC")
             .getRowAccessPolicy("DEPT_POLICY").getName(), "policy definition must be persisted");
-        assertEquals("DEPT_POLICY", engine2.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC")
+        assertEquals("TEST_DB.PUBLIC.DEPT_POLICY", engine2.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC")
             .getTable("EMPLOYEES").getRowAccessPolicyName().toUpperCase(),
             "policy-to-table binding must be persisted");
         engine2.shutdown();

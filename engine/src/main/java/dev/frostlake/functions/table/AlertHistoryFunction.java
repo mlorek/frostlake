@@ -39,6 +39,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -111,7 +112,8 @@ public class AlertHistoryFunction extends TableFunction {
         });
         final List<Row> rows = new ArrayList<>();
         for (final Object[] entry : entries) {
-            final Instant scheduled = (Instant) entry[0];
+            // Bounded at the millisecond the row shows, so a bound read back from SCHEDULED_TIME meets its own row.
+            final Instant scheduled = ((Instant) entry[0]).truncatedTo(ChronoUnit.MILLIS);
             if (start != null && scheduled.isBefore(start) || end != null && scheduled.isAfter(end)) {
                 continue;
             }

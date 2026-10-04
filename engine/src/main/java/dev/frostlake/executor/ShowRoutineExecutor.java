@@ -45,6 +45,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -495,7 +496,11 @@ final class ShowRoutineExecutor {
         final StringBuilder sb = new StringBuilder("(");
         for (int i = 0; i < params.size(); i++) {
             if (i > 0) sb.append(", ");
-            sb.append(params.get(i).getName()).append(" ").append(params.get(i).getDataType().getName());
+            // A structured parameter is spelled with its shape: f(x OBJECT) and f(x OBJECT(a INT)) are two
+            // overloads, and the bare name listed them alike.
+            final DataType type = params.get(i).getDataType();
+            sb.append(params.get(i).getName()).append(" ")
+                .append(StructuredTypes.isStructured(type) ? StructuredTypes.describe(type) : type.getName());
         }
         return sb.append(")").toString();
     }

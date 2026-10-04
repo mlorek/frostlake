@@ -118,6 +118,15 @@ final class UpdateDeleteExecutor {
             }
             compileNames(ctx, table, ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null,
                 ctx.assignmentList().assignment(), ctx.whereClause(), ctx.tableReference(), ctx.joinClause());
+            // What the SET list writes is judged by a projection policy as a projection is (an UPDATE ... FROM once
+            // its sources are known); the WHERE only uses the column.
+            final List<FrostlakeParser.ExpressionContext> assignedValues = new ArrayList<>();
+            for (final FrostlakeParser.AssignmentContext assign : ctx.assignmentList().assignment()) {
+                assignedValues.add(assign.expression());
+            }
+            if (ctx.tableReference() == null || ctx.tableReference().isEmpty()) {
+                executor.rejectRestrictedAssignments(assignedValues, table, null, null);
+            }
             // Get all rows - use fully qualified name
             final String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
             // The PARTITIONS lock registers per STATEMENT KIND, not per matched row — a rewrite
@@ -141,7 +150,7 @@ final class UpdateDeleteExecutor {
                 rowsUpdated = executeUpdateFromSources(plan, table, fullyQualifiedName,
                     ctx.identifier() != null ? ctx.identifier().getText() : null, assignments, assignmentOrigins,
                     whereExpr, ctx.tableReference(), ctx.joinClause(), outerJoin, cteResults, tableName,
-                    multiJoined);
+                    multiJoined, assignedValues);
                 logger.trace("Updated {} rows (UPDATE…FROM) in table: {}", rowsUpdated, tableName);
             } else {
                 final String updateTargetAlias = ctx.identifier() != null
@@ -154,6 +163,8 @@ final class UpdateDeleteExecutor {
                         whereExpr, cteResults, assignmentOrigins, whereOrigin, tableName);
                 logger.trace("Updated {} rows in table: {}", rowsUpdated, tableName);
             }
+            // LAST_ALTERED moves for the statement, whether or not it matched a row.
+            table.markDmlRan(StatementClock.commitInstant());
             return executor.updateCountResult(rowsUpdated, multiJoined[0]);
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
@@ -216,6 +227,8 @@ final class UpdateDeleteExecutor {
                     : executeDeleteImmediate(plan, table, fullyQualifiedName, deleteTargetAlias, whereExpr, cteResults);
                 logger.trace("Deleted {} rows from table: {}", rowsDeleted, tableName);
             }
+            // LAST_ALTERED moves for the statement, whether or not it matched a row.
+            table.markDmlRan(StatementClock.commitInstant());
             return executor.dmlCountResult("number of rows deleted", rowsDeleted);
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
@@ -556,6 +569,11 @@ final class UpdateDeleteExecutor {
         return positions;
     }
 
+    /** The table's name in full as its resolution recorded it, or its bare name before any resolution did. */
+    private static String homeName(final Table table) {
+        return table.getQualifiedName() != null ? table.getQualifiedName() : table.getName();
+    }
+
     /** Build a copy of {@code source} with the UPDATE assignments applied (never mutates the base row). */
     private Row buildUpdatedRow(final Row source, final Table table, final Map<String, String> assignments,
                                 final Map<String, SourcePosition> origins,
@@ -570,10 +588,11 @@ final class UpdateDeleteExecutor {
                 ExpressionSource.beginNested(origins == null ? null : origins.get(entry.getKey()));
             final Object newValue;
             try {
-                // The bare DML DEFAULT, as in the other assignment path — see there for the rule.
+                // The bare DML DEFAULT, as in the other assignment path — see there for the rule. It is
+                // evaluated where the table lives, so the table's name goes in full.
                 newValue = ExpressionEvaluator.parse(entry.getValue())
                         instanceof DefaultMarkerExpression
-                    ? executor.declaredDefaultFor(table, colIndex, table.getName())
+                    ? executor.declaredDefaultFor(table, colIndex, homeName(table))
                     : executor.evaluateUpdateValue(entry.getValue(), newRow, table, alias);
             } catch (final RuntimeException failed) {
                 throw DmlWriteTarget.isRowTimeFailure(failed)
@@ -600,7 +619,8 @@ final class UpdateDeleteExecutor {
             final String whereExpr,
             final List<FrostlakeParser.TableReferenceContext> sourceRefs,
             final List<FrostlakeParser.JoinClauseContext> joinClauses, final boolean outerJoin,
-            final Map<String, ResultSet> cteResults, final String writtenName, final long[] multiJoinedOut) {
+            final Map<String, ResultSet> cteResults, final String writtenName, final long[] multiJoinedOut,
+            final List<FrostlakeParser.ExpressionContext> assignedValues) {
         final List<Table> allTables = new ArrayList<>();
         allTables.add(target);
         final Map<String, Table> aliasToTable = new HashMap<>();
@@ -615,6 +635,8 @@ final class UpdateDeleteExecutor {
         for (int i = 1; i < allTables.size(); i++) {
             combined = executor.mergeTableMetadata(combined, allTables.get(i));
         }
+        // A SET value read from a source hands that value to the target: UPDATE t SET x = s.p FROM s.
+        executor.rejectRestrictedAssignments(assignedValues, combined, aliasToTable, allTables);
         final int sourceWidth = combined.getColumns().size() - target.getColumns().size();
         final ExpressionEvaluator ev = new ExpressionEvaluator(combined, executor.getFunctionRegistry(), executor.getCatalog(), executor);
         ev.setMultiTableContext(aliasToTable, allTables);
@@ -1001,7 +1023,7 @@ final class UpdateDeleteExecutor {
         for (final Map.Entry<Integer, Expression> s : setByColumn.entrySet()) {
             // The bare DML DEFAULT writes the column's declared default, as the single-table path does.
             newRow.setValue(s.getKey(), s.getValue() instanceof DefaultMarkerExpression
-                ? executor.declaredDefaultFor(target, s.getKey().intValue(), target.getName())
+                ? executor.declaredDefaultFor(target, s.getKey().intValue(), homeName(target))
                 : ev.evaluate(s.getValue(), combinedRow));
         }
         // UPDATE … FROM: a SET value that cannot be computed stays bare (live); the WRITE is enveloped.

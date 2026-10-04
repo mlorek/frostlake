@@ -67,6 +67,7 @@ public class EngineConfig {
     public static final String PROP_DURABILITY_WAL_ENABLED = "durability.walEnabled";
     public static final String PROP_DURABILITY_WAL_FILE = "durability.walFile";
     public static final String PROP_DURABILITY_CHECKPOINT_INTERVAL = "durability.checkpointInterval";
+    public static final String PROP_DURABILITY_WAL_REPLAY_STRICT = "durability.walReplayStrict";
     public static final String PROP_PERSISTENCE_AUTO_SAVE = "persistence.autoSave";
     public static final String PROP_PERSISTENCE_SAVE_INTERVAL_SECONDS = "persistence.saveIntervalSeconds";
     public static final String PROP_LOGGING_LEVEL = "logging.level";
@@ -188,6 +189,7 @@ public class EngineConfig {
         properties.setProperty(PROP_DURABILITY_WAL_ENABLED, "false");
         properties.setProperty(PROP_DURABILITY_WAL_FILE, DEFAULT_WAL_FILE);
         properties.setProperty(PROP_DURABILITY_CHECKPOINT_INTERVAL, "0");
+        properties.setProperty(PROP_DURABILITY_WAL_REPLAY_STRICT, "false");
         properties.setProperty(PROP_PERSISTENCE_AUTO_SAVE, "true");
         properties.setProperty(PROP_PERSISTENCE_SAVE_INTERVAL_SECONDS, "60");
         properties.setProperty(PROP_TASKS_AUTOSTART, "false");
@@ -390,6 +392,16 @@ public class EngineConfig {
 
     public String getWalFile() {
         return getProperty(PROP_DURABILITY_WAL_FILE, DEFAULT_WAL_FILE);
+    }
+
+    /**
+     * When true, an engine whose write-ahead-log recovery could not re-apply every logged transaction refuses to
+     * start, and leaves the log as it was for a look at what failed. Off by default: recovery rolls back each
+     * transaction it cannot replay, goes on with the rest, and reports what it left out through
+     * {@code DatabaseEngine.getWalReplayFailures()}.
+     */
+    public boolean isWalReplayStrict() {
+        return getBooleanProperty(PROP_DURABILITY_WAL_REPLAY_STRICT, false);
     }
 
     /**

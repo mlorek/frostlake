@@ -41,7 +41,10 @@ import dev.frostlake.types.DataType;
  * a different sentence entirely ("invalid type [ARRAY] for parameter 'AS_INTEGER(variantValue...)'"),
  * which is why the {@code AS_*} family is split down the middle here. And the ACCESSORS are untouched:
  * {@code GET}, {@code GET_PATH}, {@code OBJECT_KEYS}, {@code OBJECT_INSERT}, {@code ARRAY_SIZE},
- * {@code ARRAY_APPEND}, {@code MAP_KEYS} and {@code FLATTEN} all read a structured value live.
+ * {@code ARRAY_APPEND}, {@code MAP_KEYS} and {@code FLATTEN} all read a structured value of their own kind
+ * live. An ARRAY accessor reads a structured ARRAY and refuses a structured OBJECT or a MAP by its argument
+ * types ({@code ARRAY_SIZE({'a': 1}::OBJECT(a NUMBER))}, live-verified), which is the ARRAY-position rule's
+ * ({@code ExpressionEvaluatorVisitor.rejectObjectInArrayPosition}), not this one's.
  */
 public abstract class StructuredArgumentFunction extends BuiltInFunction {
 

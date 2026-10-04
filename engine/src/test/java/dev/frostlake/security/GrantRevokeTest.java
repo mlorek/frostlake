@@ -342,9 +342,9 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         // Test the main use case: GRANT SELECT ON TABLE t1 TO USER u1
         engine.execute("GRANT SELECT ON TABLE t1 TO USER u1");
 
-        // Verify the privilege was granted
+        // Verify the privilege was granted, recorded under the table's full name
         final var user = engine.getCatalog().getUser("u1");
-        assertTrue(user.hasPrivilege("TABLE", "T1",
+        assertTrue(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.T1",
             Privilege.SELECT),
             "User should have SELECT privilege on table");
     }
@@ -359,7 +359,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("REVOKE SELECT ON TABLE t2 FROM USER u2");
 
         final var user = engine.getCatalog().getUser("u2");
-        assertFalse(user.hasPrivilege("TABLE", "T2",
+        assertFalse(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.T2",
             Privilege.SELECT),
             "User should not have SELECT privilege after revoke");
     }
@@ -373,11 +373,11 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT SELECT, INSERT, UPDATE ON TABLE t3 TO USER u3");
 
         final var user = engine.getCatalog().getUser("u3");
-        assertTrue(user.hasPrivilege("TABLE", "T3",
+        assertTrue(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.T3",
             Privilege.SELECT));
-        assertTrue(user.hasPrivilege("TABLE", "T3",
+        assertTrue(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.T3",
             Privilege.INSERT));
-        assertTrue(user.hasPrivilege("TABLE", "T3",
+        assertTrue(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.T3",
             Privilege.UPDATE));
     }
 
@@ -391,9 +391,9 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
         // GRANT ALL stores the expansion, not an ALL marker: the individual privileges are held.
         final var user = engine.getCatalog().getUser("u4");
-        assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.SELECT));
-        assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.DELETE));
-        assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.TRUNCATE));
+        assertTrue(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.T4", Privilege.SELECT));
+        assertTrue(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.T4", Privilege.DELETE));
+        assertTrue(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.T4", Privilege.TRUNCATE));
     }
 
     @Test
@@ -457,9 +457,9 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         final var user = engine.getCatalog().getUser("mixed_user");
         final var role = engine.getCatalog().getRole("mixed_role");
 
-        assertTrue(user.hasPrivilege("TABLE", "MIXED_TABLE",
+        assertTrue(user.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.MIXED_TABLE",
             Privilege.SELECT));
-        assertTrue(role.hasPrivilege("TABLE", "MIXED_TABLE",
+        assertTrue(role.hasPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.MIXED_TABLE",
             Privilege.INSERT));
     }
 }

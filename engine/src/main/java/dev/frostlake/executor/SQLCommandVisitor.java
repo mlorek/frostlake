@@ -61,6 +61,7 @@ import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
@@ -1561,7 +1562,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final Token call = ctx.CALL().getSymbol();
         final String afterCall = call.getInputStream().getText(
             Interval.of(call.getStopIndex() + 1, ctx.RPAREN().getSymbol().getStopIndex()));
-        final List<ResultSet> answered = queryExecutor.executeFrom("SELECT" + afterCall,
+        // The SELECT is the CALL's own work, so it takes no query ID and no history row of its own.
+        final List<ResultSet> answered = queryExecutor.executeFromUnrecorded("SELECT" + afterCall,
             new SourcePosition(1, "SELECT".length() - call.getText().length()));
         final ResultSet answer = answered.isEmpty() ? null : answered.get(0);
         final Object value = answer == null || answer.getRowCount() == 0 ? null : answer.getRows().get(0).getValue(0);
@@ -1805,7 +1807,20 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 try {
                 for (final FrostlakeParser.StatementContext stmtCtx : flattenedStatements(tree)) {
                     StatementClock.advance();
-                    final Object visited = visit(stmtCtx);
+                    // A statement of a body written without a block is a child statement of the session's, as a
+                    // block's statement is (see BeginEndBlockHandler#isChildStatement).
+                    final String statementText = getOriginalText(stmtCtx);
+                    final QueryHistory child = BeginEndBlockHandler.isChildStatement(stmtCtx)
+                        ? queryExecutor.beginChildStatement(statementText, stmtCtx) : null;
+                    final Object visited;
+                    try {
+                        visited = visit(stmtCtx);
+                    } catch (final RuntimeException failed) {
+                        queryExecutor.failChildStatement(child, statementText, failed);
+                        throw failed;
+                    }
+                    queryExecutor.completeChildStatement(child, statementText,
+                        visited instanceof ResultSet ? (ResultSet) visited : null);
                     // A statement's own result is never the call's — `$$ SELECT 1; $$` and
                     // `$$ EXECUTE IMMEDIATE 'SELECT 1'; $$` are created and CALL answers NULL
                     // (live-verified) — unless the statement is a BLOCK that RETURNED: that result is
@@ -2025,6 +2040,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     // the way a multi-statement request names it.
                     final SourcePosition displaced = severalStatements ? LeadingCommentOffset.begin(new SourcePosition(
                         stmtCtx.getStart().getLine(), stmtCtx.getStart().getCharPositionInLine())) : null;
+                    // A statement of the text is a child statement of the session's, with a query ID and a QUERY_HISTORY
+                    // row of its own (see QueryExecutor#beginChildStatement). A block's answer is not a statement of
+                    // its own: it is this EXECUTE IMMEDIATE's answer, which the statement records once, as a block run
+                    // directly records it; the block's statements record themselves.
+                    final String statementText = getOriginalText(stmtCtx);
+                    final QueryHistory child = AnonymousBlockResult.isBlock(stmtCtx) ? null
+                        : queryExecutor.beginChildStatement(statementText, stmtCtx);
                     try {
                         if (severalStatements) {
                             // A statement of several compiles when it runs, after the ones before it have run, and
@@ -2038,6 +2060,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                         IntoClausePlacement.rejectInStatement(stmtCtx, false);
                         lastResult = visit(stmtCtx);
                     } catch (final RuntimeException failed) {
+                        queryExecutor.failChildStatement(child, statementText, failed);
                         throw severalStatements ? MultiStatementFailure.wrapping(sqlScriptCtx, stmtCtx, failed, true)
                             : failed;
                     } finally {
@@ -2052,10 +2075,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                         statementAnswers.add(answer.markJdbcUpdateCount(JdbcUpdateCounts.of(stmtCtx, answer)));
                     }
                     lastStatement = stmtCtx;
-                    // Cache result sets so RESULT_SCAN(LAST_QUERY_ID()) works after SHOW / SELECT statements
-                    if (lastResult instanceof ResultSet) {
-                        queryExecutor.getResultCache().cacheResult(sqlString, (ResultSet) lastResult);
-                    }
+                    // Its query ID holds its result, so RESULT_SCAN(LAST_QUERY_ID()) works after SHOW / SELECT
+                    // statements. Unrecorded SQL hands out no query IDs (child is null then).
+                    queryExecutor.completeChildStatement(child, statementText,
+                        lastResult instanceof ResultSet ? (ResultSet) lastResult : null);
                 }
                 // An EXECUTE IMMEDIATE of an anonymous block answers what the block answers run
                 // directly: one row, NULL when the block finished without a RETURN. Asked INSIDE the

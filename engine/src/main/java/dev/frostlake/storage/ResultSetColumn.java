@@ -59,6 +59,10 @@ public class ResultSetColumn {
     // Whether the projection is a double live's compiler folds, or a column carrying one out of a derived
     // relation — which TO_VARIANT wraps keeping its FLOAT origin. Read only by that wrap.
     private final boolean foldedDouble;
+    // The projection policy whose column this column's values come from, or null: a projection of the column, of
+    // an expression over it, or of a derived relation's column that carries one. A derived relation, a CTE and a
+    // view built from this result set carry it, so the query that finally projects the values is judged by it.
+    private final String projectionPolicyName;
 
     public ResultSetColumn(final String name, final DataType dataType) {
         this(name, dataType, null);
@@ -97,14 +101,15 @@ public class ResultSetColumn {
                            final boolean nullabilityKnown, final ValueRange valueRange,
                            final DataType spelledNumber) {
         this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, null,
-            false, false);
+            false, false, null);
     }
 
     private ResultSetColumn(final String name, final DataType dataType, final String tableName,
                             final DataType staticType, final boolean nullable,
                             final boolean nullabilityKnown, final ValueRange valueRange,
                             final DataType spelledNumber, final String collation,
-                            final boolean uncheckedConstant, final boolean foldedDouble) {
+                            final boolean uncheckedConstant, final boolean foldedDouble,
+                            final String projectionPolicyName) {
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
@@ -116,6 +121,7 @@ public class ResultSetColumn {
         this.collation = collation;
         this.uncheckedConstant = uncheckedConstant;
         this.foldedDouble = foldedDouble;
+        this.projectionPolicyName = projectionPolicyName;
     }
 
     /**
@@ -127,7 +133,7 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withCollation(final String spec) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble);
+            valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble, projectionPolicyName);
     }
 
     /**
@@ -138,7 +144,7 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withUncheckedConstant() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, true, foldedDouble);
+            valueRange, spelledNumber, collation, true, foldedDouble, projectionPolicyName);
     }
 
     /**
@@ -149,7 +155,28 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withFoldedDouble() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, uncheckedConstant, true);
+            valueRange, spelledNumber, collation, uncheckedConstant, true, projectionPolicyName);
+    }
+
+    /**
+     * This column carrying the projection policy its values come under (see {@link #getProjectionPolicyName}).
+     *
+     * @param policyName the policy, fully qualified
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withProjectionPolicy(final String policyName) {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, policyName);
+    }
+
+    /**
+     * The projection policy whose column this column's values come from: a projection of that column, of an
+     * expression over it, or of a derived relation's column carrying one. Null for a column no policy restricts.
+     *
+     * @return the policy, fully qualified, or null
+     */
+    public String getProjectionPolicyName() {
+        return projectionPolicyName;
     }
 
     /**

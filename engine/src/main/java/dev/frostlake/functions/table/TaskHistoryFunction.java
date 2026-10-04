@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.table;
 
+import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
@@ -70,10 +71,12 @@ public class TaskHistoryFunction extends TableFunction {
             new ResultSetColumn("STATE", StringType.VARCHAR),
             new ResultSetColumn("ERROR_CODE", StringType.VARCHAR),
             new ResultSetColumn("ERROR_MESSAGE", StringType.VARCHAR),
-            new ResultSetColumn("SCHEDULED_TIME", StringType.VARCHAR),
-            new ResultSetColumn("QUERY_START_TIME", StringType.VARCHAR),
-            new ResultSetColumn("NEXT_SCHEDULED_TIME", StringType.VARCHAR),
-            new ResultSetColumn("COMPLETED_TIME", StringType.VARCHAR),
+            // TIMESTAMP_LTZ at the true instant, as the documentation types them: a host-local text in these cells
+            // read hours off on a host outside UTC and compared as a string.
+            new ResultSetColumn("SCHEDULED_TIME", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("QUERY_START_TIME", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("NEXT_SCHEDULED_TIME", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("COMPLETED_TIME", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("ROOT_TASK_ID", StringType.VARCHAR),
             new ResultSetColumn("GRAPH_VERSION", NumericType.BIGINT),
             new ResultSetColumn("RUN_ID", NumericType.BIGINT),
@@ -116,7 +119,7 @@ public class TaskHistoryFunction extends TableFunction {
                                 "SCHEDULED",
                                 null,
                                 null,
-                                task.getNextRunTime().toString(),
+                                ShowResultHelpers.createdOn(task.getNextRunTime()),
                                 null,
                                 null,
                                 null,
@@ -135,10 +138,10 @@ public class TaskHistoryFunction extends TableFunction {
                                 exec.getState(),
                                 null,
                                 exec.getErrorMessage(),
-                                exec.getScheduledTime() != null ? exec.getScheduledTime().toString() : null,
-                                exec.getStartTime() != null ? exec.getStartTime().toString() : null,
+                                ShowResultHelpers.createdOn(exec.getScheduledTime()),
+                                ShowResultHelpers.createdOn(exec.getStartTime()),
                                 null,
-                                exec.getEndTime() != null ? exec.getEndTime().toString() : null,
+                                ShowResultHelpers.createdOn(exec.getEndTime()),
                                 null, 1L, 1L, null, exec.getScheduledFrom()
                             )));
                         }

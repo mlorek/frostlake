@@ -910,6 +910,8 @@ final class RestCatalogSnapshots {
         saved.materializedAsOf = view.getMaterializedAsOf();
         saved.tags = new HashMap<>(view.getTagValues());
         saved.createdOn = view.getCreatedTime();
+        saved.lastDdlAt = view.getLastDdlTime();
+        saved.lastDdlBy = view.getLastDdlBy();
         return saved;
     }
 
@@ -930,6 +932,10 @@ final class RestCatalogSnapshots {
         view.setOriginalDdl(saved.originalDdl);
         view.setMaterializedAsOf(saved.materializedAsOf);
         restoreOwnership(view, saved.owner, saved.comment, saved.tags);
+        view.restoreLastDdlTime(saved.lastDdlAt);
+        if (saved.lastDdlBy != null) {
+            view.setLastDdlBy(saved.lastDdlBy);
+        }
         return view;
     }
 

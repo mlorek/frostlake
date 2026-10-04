@@ -16,8 +16,10 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.ColumnLengthException;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
@@ -32,6 +34,10 @@ import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
+import dev.frostlake.types.VariantType;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
+import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.JsonNode;
@@ -72,7 +78,7 @@ import java.util.List;
  *       {@code [{"y":"a","z":null}]}.</li>
  * </ul>
  */
-final class StructuredCast {
+public final class StructuredCast {
 
     /** Snowflake's runtime message when a value does not fit the declared structured shape. */
     /** The row-time refusal of a value whose shape does not fit the declared structure. */
@@ -228,6 +234,20 @@ final class StructuredCast {
     }
 
     /**
+     * A value written to a column of a structured type, converted as the cast to that type converts it: the
+     * field values to their declared types and the key set held to the declared fields, a value that does not
+     * fit refused with the cast's "Typed object schema mismatch in conversion". The write's compile-time check
+     * has already required a structured value of the column's family (ColumnTypeFamilies).
+     *
+     * @param value            the value written, or null
+     * @param structuredTarget the column's structured type
+     * @return the value in the column's type
+     */
+    public static Object forColumn(final Object value, final DataType structuredTarget) {
+        return apply(value, structuredTarget, CastFieldsModifier.NONE, null);
+    }
+
+    /**
      * Reshape {@code value} to the declared structured type. SQL NULL stays SQL NULL — live,
      * {@code CAST(NULL::OBJECT(x VARCHAR) AS OBJECT(y VARCHAR) RENAME FIELDS)} is NULL, not an empty
      * object.
@@ -321,11 +341,12 @@ final class StructuredCast {
         }
         // A MAP has no declared field names, so the modifiers have nothing to rename or add at this
         // level (live: CAST(<MAP(VARCHAR,VARCHAR)> AS MAP(VARCHAR,VARCHAR) RENAME FIELDS) is the
-        // unchanged map); only the value type is applied.
+        // unchanged map); only the value type is applied, and a text key is held to its declared width.
         final ObjectNode out = ArrayFunctionHelper.MAPPER.createObjectNode();
         final Iterator<String> keys = value.propertyNames().iterator();
         while (keys.hasNext()) {
             final String key = keys.next();
+            requireWithinWidth(key, target.getKeyType());
             out.set(key, convert(value.get(key), target.getValueType(), modifier, null));
         }
         return out;
@@ -340,7 +361,18 @@ final class StructuredCast {
             ? ((ArrayType) sourceType).getElementType() : null;
         final ArrayNode out = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (final JsonNode element : value) {
-            out.add(convert(element, target.getElementType(), modifier, sourceElement));
+            // A SQL NULL element stays one, printed undefined: ARRAY_CONSTRUCT(NULL, 1)::ARRAY(NUMBER) is
+            // [undefined, 1] and [NULL]::ARRAY(VARCHAR) is [undefined]. A JSON null element becomes one too, being no
+            // value of a typed element: PARSE_JSON('[null, 1]')::ARRAY(NUMBER) is [undefined, 1], its [0] IS NULL and
+            // its TYPEOF is NULL (all live-verified). Only an ARRAY of VARIANTs can hold a JSON null, so it keeps one.
+            // An OBJECT field or a MAP value keeps its JSON null: {"k": null} stays itself (live-verified).
+            if (VariantUndefined.isUndefined(element)) {
+                out.add(element);
+            } else if (element.isNull() && !(target.getElementType() instanceof VariantType)) {
+                out.add(VariantUndefined.node());
+            } else {
+                out.add(convert(element, target.getElementType(), modifier, sourceElement));
+            }
         }
         return out;
     }
@@ -349,8 +381,15 @@ final class StructuredCast {
      * A leaf field value converted to its declared type — reusing the engine's ordinary CAST semantics,
      * so {@code OBJECT(x INT)} over the text {@code "5"} yields the number 5 exactly as {@code '5'::INT}
      * does. A value that will not convert is the structured runtime error rather than the scalar one.
+     *
+     * <p>A text is held to its field's declared width as a scalar cast holds it: {@code {'a': 'abcdef'}::OBJECT(a
+     * VARCHAR(3))} is "String 'abcdef' is too long and would be truncated", where the field kept the whole text
+     * (live-verified). A DATE, TIME, timestamp or BINARY leaf is converted too ({@link #convertTypedLeaf}).
      */
     private static JsonNode convertLeaf(final JsonNode value, final DataType target) {
+        if (target instanceof DateTimeType || target instanceof BinaryType) {
+            return convertTypedLeaf(value, target);
+        }
         if (!(target instanceof StringType) && !(target instanceof NumericType)
                 && !(target instanceof BooleanType)) {
             return value;   // VARIANT / plain OBJECT / plain ARRAY fields keep the value as it stands
@@ -364,18 +403,92 @@ final class StructuredCast {
         } catch (final RuntimeException e) {
             throw new RuntimeException(SCHEMA_MISMATCH);
         }
+        if (converted instanceof String) {
+            requireWithinWidth((String) converted, target);
+        }
         return ArrayFunctionHelper.canonicalize(
             ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, converted));
     }
 
     /**
+     * A DATE, TIME, timestamp or BINARY leaf converted as the scalar cast to its declared type converts it, at the
+     * declared precision, and embedded as a constructor embeds such a value: rendered in the session's output
+     * format and keeping its own type. Live-verified on qa-develop, under the default output formats:
+     *
+     * <pre>
+     *   {'k': '2024-01-01 10:00:00.123456'}::OBJECT(k TIMESTAMP_NTZ(3))    {"k": "2024-01-01 10:00:00.123"}
+     *   {'t': '2024-01-01 10:00:00'}::OBJECT(t TIMESTAMP_NTZ)             {"t": "2024-01-01 10:00:00.000"}
+     *   {'k': '10:00:00.123456'}::OBJECT(k TIME(3))                       {"k": "10:00:00"}
+     *   {'k': '2024-01-01 10:00:00.123456 +02:00'}::OBJECT(k TIMESTAMP_TZ(3))
+     *                                                                    {"k": "2024-01-01 10:00:00.123 +0200"}
+     *   {'k': 'ab'}::MAP(VARCHAR, BINARY)                                 {"k": "AB"}
+     *   {'k': 'zz'}::MAP(VARCHAR, BINARY)                                 Typed object schema mismatch in conversion
+     *   {'x': '10:00:00'::TIME}::OBJECT(x TIME)::OBJECT(x DATE)           Typed object schema mismatch in conversion
+     * </pre>
+     *
+     * <p>A BINARY is held to its declared width, which the refusal spells byte by byte:
+     * {@code {'k': 'ABCDEF'}::OBJECT(k BINARY(2))} is "String '0xAB0xCD0xEF' is too long and would be truncated"
+     * (live-verified). Each leaf was handed back as the text it was given, unchecked.
+     */
+    private static JsonNode convertTypedLeaf(final JsonNode value, final DataType target) {
+        if (value.isObject() || value.isArray()) {
+            throw new RuntimeException(SCHEMA_MISMATCH);
+        }
+        final Object converted;
+        try {
+            converted = ValueCaster.castValue(ArrayFunctionHelper.fromNode(value),
+                target instanceof BinaryType ? "BINARY" : SqlTypeNames.canonical(target));
+        } catch (final RuntimeException e) {
+            throw new RuntimeException(SCHEMA_MISMATCH);
+        }
+        if (converted instanceof BinaryValue) {
+            requireWithinBytes((BinaryValue) converted, (BinaryType) target);
+            return ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, converted);
+        }
+        return ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER,
+            SharedFunctionHelpers.atDeclaredPrecision(converted, ((DateTimeType) target).getPrecision()));
+    }
+
+    /** Refuse a binary leaf longer than its declared width, the bytes spelled {@code 0xAB0xCD} as live spells them. */
+    private static void requireWithinBytes(final BinaryValue bytes, final BinaryType target) {
+        final int width = target.getMaxLength();
+        if (width <= 0 || bytes.length() <= width) {
+            return;
+        }
+        final String hex = bytes.toHex();
+        final StringBuilder spelled = new StringBuilder();
+        for (int i = 0; i + 1 < hex.length(); i += 2) {
+            spelled.append("0x").append(hex, i, i + 2);
+        }
+        throw new ColumnLengthException(width, spelled.toString());
+    }
+
+    /**
+     * Refuse a text longer than the declared text type it is written as, with the scalar cast's sentence. A UUID
+     * and a type with no width (or any other type) take no part.
+     */
+    private static void requireWithinWidth(final String text, final DataType target) {
+        if (!(target instanceof StringType) || target instanceof UuidType) {
+            return;
+        }
+        final int width = ((StringType) target).getMaxLength();
+        if (width > 0 && CodePointText.length(text) > width) {
+            throw new ColumnLengthException(width, text);
+        }
+    }
+
+    /**
      * The declared type as {@link ValueCaster} spells cast targets. Mapped by FAMILY rather than by
-     * name so the less common spellings (CHAR, SMALLINT, UUID, ...) convert like their family instead
-     * of falling through unconverted.
+     * name so the less common spellings (CHAR, SMALLINT, ...) convert like their family instead
+     * of falling through unconverted. A UUID is a family of its own.
      */
     private static String castTypeName(final DataType target) {
         if (target instanceof BooleanType) {
             return "BOOLEAN";
+        }
+        if (target instanceof UuidType) {
+            // A UUID field takes only a UUID's text, canonical and lower-case, as the scalar cast does.
+            return "UUID";
         }
         if (target instanceof NumericType) {
             final NumericType numeric = (NumericType) target;

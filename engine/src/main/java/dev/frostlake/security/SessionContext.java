@@ -178,6 +178,16 @@ public class SessionContext {
         boundSettings.remove();
     }
 
+    /**
+     * The settings bound to this thread, so work that runs as a session of its own can bind its own and put these
+     * back afterwards.
+     *
+     * @return the bound settings, or null when the thread uses the context's own
+     */
+    public SessionSettings getBoundSettings() {
+        return boundSettings.get();
+    }
+
     /** The settings this thread's statements read and write. */
     private SessionSettings settings() {
         final SessionSettings bound = boundSettings.get();

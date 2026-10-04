@@ -19,6 +19,7 @@ package dev.frostlake.metastore;
 import dev.frostlake.storage.SnapshotSequence;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -207,6 +208,15 @@ public class QueryHistory {
     }
 
     /**
+     * When the statement started, as the instant it is: the start is stamped as a UTC wall clock.
+     *
+     * @return the instant
+     */
+    public Instant getStartInstant() {
+        return startTime.toInstant(ZoneOffset.UTC);
+    }
+
+    /**
      * When this statement's changes became visible: what time travel's {@code AT(STATEMENT => id)} reads at.
      *
      * @return the instant, or null while it is unknown
@@ -249,6 +259,15 @@ public class QueryHistory {
 
     public String getEndTimeFormatted() {
         return endTime != null ? endTime.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) : null;
+    }
+
+    /**
+     * When the statement ended, as the instant it is, or null while it runs: the end is stamped as a UTC wall clock.
+     *
+     * @return the instant, or null
+     */
+    public Instant getEndInstant() {
+        return endTime != null ? endTime.toInstant(ZoneOffset.UTC) : null;
     }
 
     public String getStatus() {

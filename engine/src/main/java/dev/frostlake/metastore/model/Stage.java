@@ -89,6 +89,32 @@ public class Stage extends SqlObject {
         this(name, type, url, "CSV", false, null, null);
     }
 
+    /**
+     * The stage as a cloned schema holds it: the same URL, file format and its options, copy options, encryption and
+     * directory setting, its owner and tags. The constructor places the copy's local directory from the URL, as it
+     * placed this one's. An external stage's copy reads the same files, so it keeps the directory table's registered
+     * files too; an internal stage's copy starts with none of this stage's files and registers none.
+     *
+     * @return the copy
+     */
+    public Stage copy() {
+        final Stage copy = new Stage(getName(), type, url, fileFormat, encryption, getComment(), s3Resolver);
+        copy.encryptionType = encryptionType;
+        copy.fileFormatOptions.putAll(fileFormatOptions);
+        copy.copyOptions.putAll(copyOptions);
+        copy.directoryEnabled = directoryEnabled;
+        if (url != null) {
+            for (final Map.Entry<String, List<Object>> file : directoryRegistry.entrySet()) {
+                copy.directoryRegistry.put(file.getKey(), new ArrayList<>(file.getValue()));
+            }
+        }
+        copy.setOwner(getOwner());
+        for (final Map.Entry<String, String> tag : getTagValues().entrySet()) {
+            copy.setTag(tag.getKey(), tag.getValue());
+        }
+        return copy;
+    }
+
     public Stage(final String name, final StageType type, final String url, final String fileFormat,
                  final boolean encryption, final String comment) {
         this(name, type, url, fileFormat, encryption, comment, null);

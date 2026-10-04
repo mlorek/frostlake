@@ -40,6 +40,7 @@ import dev.frostlake.persistence.MemoryTableDataStore;
 import dev.frostlake.persistence.PersistenceManager;
 import dev.frostlake.persistence.WalRecord;
 import dev.frostlake.persistence.WalRecordType;
+import dev.frostlake.persistence.WalReplayFailure;
 import dev.frostlake.persistence.WalStatementKinds;
 import dev.frostlake.persistence.WriteAheadLog;
 import dev.frostlake.security.SecurityManager;
@@ -65,6 +66,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Main Database SQL Engine
@@ -89,6 +91,8 @@ public class DatabaseEngine {
     private final PersistenceManager persistenceManager;
     private WriteAheadLog wal;            // durability.walEnabled: append committed transactions, replay on startup
     private boolean replaying = false;    // true while replaying the WAL on startup (suppresses re-logging)
+    /** The logged transactions recovery could not re-apply at startup; see {@link #getWalReplayFailures()}. */
+    private final List<WalReplayFailure> walReplayFailures = new ArrayList<>();
     private int txnsSinceCheckpoint = 0;  // committed transactions appended since the last WAL checkpoint
     private long checkpointSeq = 0;       // monotonic sequence for naming checkpoint snapshot directories
 
@@ -157,6 +161,20 @@ public class DatabaseEngine {
                     return results;
                 }
             }
+
+            @Override
+            public List<ResultSet> evaluateCondition(final String sql) {
+                synchronized (DatabaseEngine.this) {
+                    final List<ResultSet> results = queryExecutor.executeUnrecorded(sql);
+                    transactionManager.autocommitStatementEnd();
+                    return results;
+                }
+            }
+
+            @Override
+            public void runInOwnSession(final Runnable run) {
+                queryExecutor.runInOwnSession(run);
+            }
         };
 
         this.taskScheduler = new TaskScheduler(catalog, taskExecutor);
@@ -179,6 +197,15 @@ public class DatabaseEngine {
             wireWalSink();
             checkpointSeq = scanMaxCheckpointSeq();
             replayWal();
+            if (!walReplayFailures.isEmpty() && config.isWalReplayStrict()) {
+                // Nothing has started yet but the log, which recovery only read: closing it leaves the log
+                // exactly as it was, so a later start (strict or not) finds the same records.
+                wal.close();
+                throw new IllegalStateException("Write-ahead log recovery could not re-apply "
+                    + walReplayFailures.size() + " logged transaction(s) and "
+                    + EngineConfig.PROP_DURABILITY_WAL_REPLAY_STRICT + " is true; the first: "
+                    + walReplayFailures.get(0));
+            }
         }
 
         // After every restore path, so an existing database survives untouched and the
@@ -234,6 +261,9 @@ public class DatabaseEngine {
      */
     private void replayWal() {
         final boolean securityWasEnabled = sessionContext.isSecurityEnabled();
+        // A replayed USE ROLE or USE SECONDARY ROLES changes the context itself, not the replay's own settings.
+        final String roleBefore = sessionContext.getCurrentRole();
+        final Set<String> activeRolesBefore = sessionContext.getActiveRoles();
         try {
             final List<WalRecord> records = wal.readAll();
             if (records.isEmpty()) {
@@ -259,27 +289,55 @@ public class DatabaseEngine {
                 start = lastCheckpoint + 1;
             }
 
-            int replayed = 0;
-            for (int i = start; i < records.size(); i++) {
-                final WalRecord rec = records.get(i);
-                if (rec.getType() != WalRecordType.TRANSACTION) {
-                    continue;
+            // The log replays as a session of its own, the whole log in one so a SET or an ALTER SESSION a record
+            // made is still in force for the records after it. The session ends with the replay: the statements a
+            // former engine ran are not the new one's, so the session it starts with holds none of their query
+            // IDs, history rows, variables or parameters.
+            final int from = start;
+            final int[] replayed = {0};
+            final long[] replaySession = {-1L};
+            try {
+                queryExecutor.runInOwnSession(new Runnable() {
+                    @Override
+                    public void run() {
+                        replaySession[0] = sessionContext.getSessionNumber();
+                        for (int i = from; i < records.size(); i++) {
+                            final WalRecord rec = records.get(i);
+                            if (rec.getType() != WalRecordType.TRANSACTION) {
+                                continue;
+                            }
+                            replayTransaction(rec.getStatements(), rec, i);
+                            replayed[0]++;
+                        }
+                    }
+                });
+            } finally {
+                if (replaySession[0] >= 0) {
+                    queryExecutor.getQueryHistoryTracker().forgetSession(replaySession[0]);
                 }
-                replayTransaction(rec.getStatements(), rec);
-                replayed++;
+            }
+            if (!walReplayFailures.isEmpty()) {
+                logger.error("Write-ahead log recovery rolled back {} of {} transaction(s) it could not re-apply;"
+                    + " DatabaseEngine.getWalReplayFailures() lists them", walReplayFailures.size(), replayed[0]);
             }
 
             if (fromCheckpoint != null) {
                 logger.info("Recovered from WAL checkpoint {} plus {} subsequent transaction(s)",
-                    fromCheckpoint, replayed);
+                    fromCheckpoint, replayed[0]);
             } else {
-                logger.info("Recovered {} transaction(s) from the write-ahead log", replayed);
+                logger.info("Recovered {} transaction(s) from the write-ahead log", replayed[0]);
             }
         } catch (final Exception e) {
             logger.error("Write-ahead log replay failed", e);
+            walReplayFailures.add(new WalReplayFailure(-1, null, String.valueOf(e.getMessage())));
         } finally {
             if (replaying) {
                 sessionContext.setSecurityEnabled(securityWasEnabled);
+                sessionContext.setCurrentRole(roleBefore);
+                sessionContext.clearActiveRoles();
+                for (final String role : activeRolesBefore) {
+                    sessionContext.addActiveRole(role);
+                }
             }
             replaying = false;
         }
@@ -293,24 +351,30 @@ public class DatabaseEngine {
      * to the recovery time. A record from a pre-v3 log carries no instant and replays at the wall clock,
      * which is what it did before.
      */
-    private void replayTransaction(final List<String> statements, final WalRecord record) {
+    private void replayTransaction(final List<String> statements, final WalRecord record, final int index) {
         // While replaying, a procedural block's inner statements must NOT advance the clock —
         // the log recorded one instant per outer statement, and replay keeps it.
         StatementClock.setReplay(true);
+        String running = null;
         try {
             if (statements.size() == 1) {
                 queryExecutor.setNextStatementInstant(record.getStatementInstant(0));
-                execute(statements.get(0));
+                running = statements.get(0);
+                execute(running);
                 return;
             }
-            execute("BEGIN");
+            running = "BEGIN";
+            execute(running);
             for (int i = 0; i < statements.size(); i++) {
                 queryExecutor.setNextStatementInstant(record.getStatementInstant(i));
-                execute(statements.get(i));
+                running = statements.get(i);
+                execute(running);
             }
-            execute("COMMIT");
+            running = "COMMIT";
+            execute(running);
         } catch (final Exception e) {
             logger.error("WAL replay failed for a transaction; rolling it back", e);
+            walReplayFailures.add(new WalReplayFailure(index, running, String.valueOf(e.getMessage())));
             if (transactionManager.hasActiveTransaction()) {
                 try {
                     execute("ROLLBACK");
@@ -340,10 +404,14 @@ public class DatabaseEngine {
      * immediately as a one-statement record. Reads and transaction-control statements are not logged.
      */
     private void recordStatementForWal(final String sql) {
+        // A statement that ran a task, an alert or a pipe's load (EXECUTE TASK, EXECUTE ALERT, ALTER PIPE …
+        // REFRESH) committed that work in a session of its own, so it is logged at once rather than inside the
+        // caller's transaction: a ROLLBACK there leaves the work in place, and must leave its record too.
+        final boolean ranOwnSession = queryExecutor.takeRanInOwnSession();
         if (wal == null || replaying || !isLoggableStatement(sql)) {
             return;
         }
-        if (transactionManager.hasActiveTransaction()) {
+        if (transactionManager.hasActiveTransaction() && !ranOwnSession) {
             transactionManager.getCurrentTransaction()
                 .logStatementForWal(sql, queryExecutor.currentStatementInstant());
         } else {
@@ -574,6 +642,7 @@ public class DatabaseEngine {
             @Override
             public void begin() {
                 statementByStatement[0] = true;
+                queryExecutor.takeRanInOwnSession();
                 statementSavepoint[0] = config.isDeferredApply() && transactionManager.isExplicitTransaction()
                     ? transactionManager.getCurrentTransaction().getWriteSet().beginStatementSavepoint() : null;
             }
@@ -599,6 +668,8 @@ public class DatabaseEngine {
             // Parse and execute the SQL. Dirty-mark BEFORE executing: an attempt is enough (see
             // noteStatementExecuted), and marking after a success would miss failure side effects.
             persistenceManager.noteStatementExecuted();
+            // What an earlier statement on this thread ran in a session of its own is no concern of this one's.
+            queryExecutor.takeRanInOwnSession();
             final List<ResultSet> results = queryExecutor.execute(sql);
 
             // Record this statement for the WAL before the autocommit commit, so the commit logs it as part
@@ -974,6 +1045,18 @@ public class DatabaseEngine {
     /**
      * Shutdown the engine and release resources
      */
+    /**
+     * The transactions write-ahead-log recovery could not re-apply when this engine started, in log order. Each was
+     * rolled back and recovery went on with the rest, so the engine holds everything committed except these.
+     * Empty when recovery re-applied everything, or when the log is off. With
+     * {@code durability.walReplayStrict} an engine refuses to start instead of starting without them.
+     *
+     * @return the failures, unmodifiable
+     */
+    public List<WalReplayFailure> getWalReplayFailures() {
+        return Collections.unmodifiableList(new ArrayList<>(walReplayFailures));
+    }
+
     public void shutdown() {
         logger.info("Shutting down Frostlake SQL Engine");
 
@@ -1007,6 +1090,9 @@ public class DatabaseEngine {
                 logger.error("Failed to save catalog during shutdown", e);
             }
         }
+
+        // An engine whose dropped versions end with it deletes the stages it set aside for them.
+        queryExecutor.releaseSetAsideStages();
 
         logger.info("Frostlake SQL Engine shut down");
     }

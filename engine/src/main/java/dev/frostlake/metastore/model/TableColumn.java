@@ -20,7 +20,9 @@ import dev.frostlake.metastore.Taggable;
 import dev.frostlake.types.DataType;
 import dev.frostlake.values.ValueRange;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class TableColumn implements Taggable {
@@ -51,6 +53,9 @@ public class TableColumn implements Taggable {
 
     // Security policy references
     private String maskingPolicyName;  // qualified name of attached masking policy, or null
+    // A conditional masking policy's USING columns, the masked column first, by canonical name; empty for a policy
+    // attached without USING.
+    private List<String> maskingPolicyArguments = new ArrayList<>();
     private String projectionPolicyName;  // qualified name of attached projection policy, or null
 
     // Object tags applied via ALTER TABLE ... ALTER COLUMN ... SET TAG (canonical upper-cased name -> value)
@@ -194,6 +199,66 @@ public class TableColumn implements Taggable {
         this.foldedDouble = foldedDouble;
     }
 
+    /**
+     * A copy of this column with another type, nullability and key flags — the fields its constructor fixes —
+     * carrying everything else the column holds: comment, collation, position, foreign-key reference, RELY, its
+     * masking and projection policies, its tags and its typing flags. Every rebuild of a declared column goes
+     * through here, so re-flagging one for a PRIMARY KEY or UNIQUE clause, or retyping it, never drops a policy
+     * or a tag: the constraint clauses of CREATE TABLE used to strip both.
+     *
+     * @param newType       the type the copy takes
+     * @param newNullable   whether it accepts NULL
+     * @param newPrimaryKey whether it is part of the primary key
+     * @param newUnique     whether it is unique
+     * @return the copy
+     */
+    public TableColumn rebuiltCopy(final DataType newType, final boolean newNullable, final boolean newPrimaryKey,
+                                   final boolean newUnique) {
+        return carriedInto(new TableColumn(name, newType, newNullable, defaultValue, newPrimaryKey,
+            newUnique, autoIncrement, identityStart, identityIncrement));
+    }
+
+    /**
+     * A copy of this column under another name, carrying everything else it holds: type, nullability, default, key
+     * flags, IDENTITY, comment, collation, position, foreign-key reference, its masking and projection policies and
+     * its tags. A rename moves the name and nothing else, so it is no way around a policy.
+     *
+     * @param newName the name the copy takes
+     * @return the copy
+     */
+    public TableColumn renamedCopy(final String newName) {
+        return carriedInto(new TableColumn(newName, dataType, nullable, defaultValue, primaryKey,
+            unique, autoIncrement, identityStart, identityIncrement));
+    }
+
+    /** {@code copy} given every attribute of this column its constructor does not take; answers the copy. */
+    private TableColumn carriedInto(final TableColumn copy) {
+        copy.comment = comment;
+        copy.collation = collation;
+        copy.ordinalPosition = ordinalPosition;
+        copy.referencedTable = referencedTable;
+        copy.referencedColumn = referencedColumn;
+        copy.onDelete = onDelete;
+        copy.onUpdate = onUpdate;
+        copy.rely = rely;
+        copy.maskingPolicyName = maskingPolicyName;
+        copy.maskingPolicyArguments = new ArrayList<>(maskingPolicyArguments);
+        copy.projectionPolicyName = projectionPolicyName;
+        copy.tags.putAll(tags);
+        copy.hiddenFromStar = hiddenFromStar;
+        copy.staticallyTyped = staticallyTyped;
+        copy.valueRange = valueRange;
+        copy.spelledNumber = spelledNumber;
+        copy.uncheckedConstant = uncheckedConstant;
+        copy.foldedDouble = foldedDouble;
+        return copy;
+    }
+
+    /** A copy of this column with every attribute it has, as a clone of its table carries it. */
+    public TableColumn copy() {
+        return rebuiltCopy(dataType, nullable, primaryKey, unique);
+    }
+
     /** A copy of this column marked hidden from {@code SELECT *} — used for the right-side duplicate
      *  of a USING / NATURAL join column in a merged join view (the shared catalog instance stays
      *  untouched). */
@@ -208,6 +273,7 @@ public class TableColumn implements Taggable {
         copy.onUpdate = onUpdate;
         copy.rely = rely;
         copy.maskingPolicyName = maskingPolicyName;
+        copy.projectionPolicyName = projectionPolicyName;
         copy.tags.putAll(tags);
         copy.hiddenFromStar = true;
         copy.staticallyTyped = staticallyTyped;
@@ -227,24 +293,7 @@ public class TableColumn implements Taggable {
      * @return the copy
      */
     public TableColumn retypedCopy(final DataType newType, final boolean newNullable) {
-        final TableColumn copy = new TableColumn(name, newType, newNullable, defaultValue, primaryKey,
-            unique, autoIncrement, identityStart, identityIncrement);
-        copy.comment = comment;
-        copy.collation = collation;
-        copy.referencedTable = referencedTable;
-        copy.referencedColumn = referencedColumn;
-        copy.onDelete = onDelete;
-        copy.onUpdate = onUpdate;
-        copy.rely = rely;
-        copy.maskingPolicyName = maskingPolicyName;
-        copy.tags.putAll(tags);
-        copy.hiddenFromStar = hiddenFromStar;
-        copy.staticallyTyped = staticallyTyped;
-        copy.valueRange = valueRange;
-        copy.spelledNumber = spelledNumber;
-        copy.uncheckedConstant = uncheckedConstant;
-        copy.foldedDouble = foldedDouble;
-        return copy;
+        return rebuiltCopy(newType, newNullable, primaryKey, unique);
     }
 
     /** A copy of this column that accepts NULL — the null-extended side of an outer join, where the
@@ -260,6 +309,7 @@ public class TableColumn implements Taggable {
         copy.onUpdate = onUpdate;
         copy.rely = rely;
         copy.maskingPolicyName = maskingPolicyName;
+        copy.projectionPolicyName = projectionPolicyName;
         copy.tags.putAll(tags);
         copy.hiddenFromStar = hiddenFromStar;
         copy.staticallyTyped = staticallyTyped;
@@ -399,5 +449,19 @@ public class TableColumn implements Taggable {
 
     public String getMaskingPolicyName() { return maskingPolicyName; }
     public void setMaskingPolicyName(final String name) { this.maskingPolicyName = name; }
+
+    /**
+     * The columns a conditional masking policy reads, as its USING clause names them: the masked column first, then
+     * one per further argument of the policy's signature. Empty when the policy was attached without USING.
+     *
+     * @return the canonical column names, in order
+     */
+    public List<String> getMaskingPolicyArguments() {
+        return new ArrayList<>(maskingPolicyArguments);
+    }
+
+    public void setMaskingPolicyArguments(final List<String> columns) {
+        this.maskingPolicyArguments = columns != null ? new ArrayList<>(columns) : new ArrayList<String>();
+    }
     public boolean hasMaskingPolicy() { return maskingPolicyName != null && !maskingPolicyName.isEmpty(); }
 }

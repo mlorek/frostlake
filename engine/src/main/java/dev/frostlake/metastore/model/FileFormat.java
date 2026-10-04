@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -38,7 +40,10 @@ public class FileFormat {
     private String type;
     private final Map<String, String> options;
     private String comment;
-    private final Instant createdTime = Instant.now();
+    // The creating statement's instant, which a replayed statement reproduces (see SqlObject).
+    private Instant createdTime = StatementClock.instant();
+    /** When the last DDL after the CREATE ran, or null while the CREATE is the last; see {@link #getLastDdlTime}. */
+    private Instant lastDdlTime;
     private String owner = "SYSADMIN";
 
     public FileFormat(final String name, final String type) {
@@ -132,6 +137,46 @@ public class FileFormat {
     /** When this file format was created, as SHOW FILE FORMATS reports it. */
     public Instant getCreatedTime() {
         return createdTime;
+    }
+
+    /**
+     * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
+     * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
+     *
+     * @param created the recorded creation time, or null
+     */
+    public void restoreCreatedTime(final Instant created) {
+        if (created != null) {
+            this.createdTime = created;
+        }
+    }
+
+    /**
+     * When the last DDL statement ran on this file format, which is INFORMATION_SCHEMA.FILE_FORMATS' LAST_ALTERED: its
+     * CREATE until an ALTER or a COMMENT ON moves it, as {@link dev.frostlake.metastore.SqlObject#getLastDdlTime} is for
+     * the objects that extend it.
+     *
+     * @return the instant
+     */
+    public Instant getLastDdlTime() {
+        return lastDdlTime != null ? lastDdlTime : createdTime;
+    }
+
+    /** A DDL statement changed this file format: its LAST_ALTERED moves to the statement's instant. */
+    public void markDdl() {
+        lastDdlTime = StatementClock.instant();
+    }
+
+    /**
+     * Put back when the last DDL ran on this file format, as a snapshot recorded it; a null, from a snapshot that never
+     * recorded it, leaves LAST_ALTERED at the creation.
+     *
+     * @param lastDdl the recorded last DDL, or null
+     */
+    public void restoreLastDdlTime(final Instant lastDdl) {
+        if (lastDdl != null) {
+            this.lastDdlTime = lastDdl;
+        }
     }
 
     /** The role that owns this file format. */

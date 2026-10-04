@@ -223,8 +223,6 @@ public class MissingObjectPrivilegeHintTest extends BaseDatabaseTest {
             {"DROP PROJECTION POLICY nosuch_pjp", "Projection policy", "TEST_DB.TEST_SCHEMA.NOSUCH_PJP", "POLICY"},
             {"DROP PASSWORD POLICY nosuch_pwp", "Password policy", "TEST_DB.TEST_SCHEMA.NOSUCH_PWP", "POLICY"},
             {"DROP JOIN POLICY nosuch_jp", "Join policy", "TEST_DB.TEST_SCHEMA.NOSUCH_JP", "POLICY"},
-            {"SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(POLICY_NAME => 'nosuch_pol'))", "Policy",
-                "TEST_DB.TEST_SCHEMA.NOSUCH_POL", "POLICY"},
             {"DROP DATABASE ROLE nosuch_dbr", "Database role", "TEST_DB.NOSUCH_DBR", "ROLE"},
             {"DROP IMAGE REPOSITORY nosuch_ir", "Image repository", "TEST_DB.TEST_SCHEMA.NOSUCH_IR", "STAGE"},
             {"DROP ARTIFACT REPOSITORY nosuch_arp", "Artifact Repository", "TEST_DB.TEST_SCHEMA.NOSUCH_ARP", "STAGE"},
@@ -255,6 +253,21 @@ public class MissingObjectPrivilegeHintTest extends BaseDatabaseTest {
                 + "METRIC_NAME => 'NULL_COUNT'))"));
         assertEquals("SQL compilation error: Object type or Class 'FILE_FORMAT' does not exist or not authorized.",
             refusal("GRANT SELECT ON FILE_FORMAT ff TO ROLE PUBLIC"));
+    }
+
+    /**
+     * POLICY_REFERENCES and TAG_REFERENCES name a missing object, a policy included, with no hint after it
+     * (live-verified for a missing policy, a table under POLICY_REFERENCES and a table under TAG_REFERENCES).
+     */
+    @Test
+    public void theReferenceFunctionsNameAMissingObjectWithoutAHint() {
+        assertEquals(ERROR + "Policy 'TEST_DB.TEST_SCHEMA.NOSUCH_POL' does not exist or not authorized.",
+            refusal("SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(POLICY_NAME => 'nosuch_pol'))"));
+        assertEquals(ERROR + "Table 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist or not authorized.",
+            refusal("SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES("
+                + "REF_ENTITY_NAME => 'test_db.test_schema.nosuch_t', REF_ENTITY_DOMAIN => 'table'))"));
+        assertEquals(ERROR + "Table 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist or not authorized.",
+            refusal("SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('test_db.test_schema.nosuch_t', 'table'))"));
     }
 
     /** Inside an owner's-rights procedure the hint is worded for the owner, whatever the kind. */

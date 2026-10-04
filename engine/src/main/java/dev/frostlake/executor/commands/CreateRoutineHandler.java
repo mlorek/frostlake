@@ -26,7 +26,6 @@ import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
-import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.NullHandling;
 import dev.frostlake.metastore.model.Parameter;
@@ -145,7 +144,7 @@ public class CreateRoutineHandler implements CommandHandler {
         // before it does nothing (live-verified).
         final Schema schema = routineSchema(parts, qualifiedName, "function");
         final String functionName = parts[parts.length - 1];
-        ddl.checkCreatePrivilege(Privilege.CREATE_FUNCTION, ContainerType.SCHEMA, schema.getName());
+        ddl.checkCreatePrivilege(Privilege.CREATE_FUNCTION, schema);
         final List<Parameter> parameters = parseParameters(ctx);
         // OR REPLACE needs OWNERSHIP of the overload it replaces; the overload itself is dropped only once the
         // new definition has passed every check, so a refused replacement leaves it in place (live-verified).
@@ -297,7 +296,8 @@ public class CreateRoutineHandler implements CommandHandler {
                     logger.trace("No existing function with matching signature to replace: {}", qualifiedName);
                 }
             }
-            function.setOwner(FutureGrants.ownerOfNew(catalog, "FUNCTION", schema, function.getName()));
+            function.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "FUNCTION", schema, function.getName(),
+                function.getParameters()));
             schema.addFunction(function);
             logger.trace("Created function: {}", qualifiedName);
         } catch (final RuntimeException e) {
@@ -335,7 +335,7 @@ public class CreateRoutineHandler implements CommandHandler {
         }
         final Schema schema = routineSchema(parts, qualifiedName, "procedure");
         final String procedureName = parts[parts.length - 1];
-        ddl.checkCreatePrivilege(Privilege.CREATE_PROCEDURE, ContainerType.SCHEMA, schema.getName());
+        ddl.checkCreatePrivilege(Privilege.CREATE_PROCEDURE, schema);
         final List<Parameter> parameters = parseParameters(ctx);
         // OR REPLACE needs OWNERSHIP of the overload it replaces; the overload itself is dropped only once the
         // new definition has passed every check, so a refused replacement leaves it in place.
@@ -448,7 +448,8 @@ public class CreateRoutineHandler implements CommandHandler {
                     logger.trace("No existing procedure with matching signature to replace: {}", qualifiedName);
                 }
             }
-            procedure.setOwner(FutureGrants.ownerOfNew(catalog, "PROCEDURE", schema, procedure.getName()));
+            procedure.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "PROCEDURE", schema, procedure.getName(),
+                procedure.getParameters()));
             schema.addProcedure(procedure);
             logger.trace("Created procedure: {}", qualifiedName);
         } catch (final RuntimeException e) {

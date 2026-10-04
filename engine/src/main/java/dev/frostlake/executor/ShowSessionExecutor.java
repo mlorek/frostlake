@@ -110,13 +110,25 @@ final class ShowSessionExecutor {
     }
 
     public ResultSet showParameters(final String likePattern) {
+        return showParameters(likePattern, false);
+    }
+
+    /**
+     * SHOW PARAMETERS, IN SESSION or IN ACCOUNT. The session listing reports what the session runs with: its own
+     * setting at level SESSION, else the account's at level ACCOUNT ({@link AccountParameters}), else the default
+     * with an empty level. The account listing leaves the session's settings out.
+     *
+     * @param likePattern the LIKE pattern, or null for every row
+     * @param inAccount   whether the statement said IN ACCOUNT
+     */
+    public ResultSet showParameters(final String likePattern, final boolean inAccount) {
         final SecurityManager securityManager = facade.getSecurityManager();
         final List<ResultSetColumn> columns = parameterColumns();
         // Every parameter a real account lists, with its default, description and type word —
         // transcribed rather than invented (see SessionParameterCatalog). Frostlake used to carry a
         // dozen hand-written rows, so SHOW PARAMETERS LIKE 'WEEK_START' returned NOTHING on a
         // parameter live describes perfectly well.
-        final Map<String, Object> sessionParams = securityManager != null
+        final Map<String, Object> sessionParams = securityManager != null && !inAccount
             ? securityManager.getSessionContext().getAllSessionParameters()
             : new LinkedHashMap<>();
 
@@ -129,21 +141,24 @@ final class ShowSessionExecutor {
                 continue;
             }
             final boolean setBySession = sessionParams.containsKey(key);
+            final String setByAccount = AccountParameters.value(key);
             // JSON_INDENT is the one row whose unset value the ENGINE decides rather than the table:
             // it is a real setting here, and SHOW must report what the renderer is actually using.
             final String inForce;
             if (setBySession) {
                 inForce = String.valueOf(sessionParams.get(key));
+            } else if (setByAccount != null) {
+                inForce = setByAccount;
             } else if ("JSON_INDENT".equals(key)) {
                 inForce = String.valueOf(VariantJsonFormat.indent());
             } else {
                 inForce = parameter.getDefaultValue();
             }
             // The LEVEL is where the value in force came from: a parameter this session has SET reads
-            // SESSION, and one still on its default reads EMPTY — live shows an unset parameter with a
-            // blank level, never ACCOUNT.
+            // SESSION, one the account sets reads ACCOUNT, and one still on its default reads EMPTY.
             rows.add(new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
-                setBySession ? "SESSION" : "", parameter.getDescription(), parameter.getType())));
+                levelOf(setBySession ? "SESSION" : null, setByAccount), parameter.getDescription(),
+                parameter.getType())));
         }
         // A session parameter the catalog has never heard of still appears once it is set — with no
         // default and no description, because there is nothing to report for either.
@@ -186,12 +201,29 @@ final class ShowSessionExecutor {
                 row = new Row(Arrays.asList(key, policy == null ? "" : policy, parameter.getDefaultValue(),
                     policy == null ? "" : "USER", parameter.getDescription(), parameter.getType()));
             } else {
-                row = new Row(Arrays.asList(key, parameter.getDefaultValue(), parameter.getDefaultValue(), "",
-                    parameter.getDescription(), parameter.getType()));
+                // A user sets none of its parameters here, so each is the account's, else the default.
+                final String setByAccount = AccountParameters.value(key);
+                row = new Row(Arrays.asList(key, setByAccount != null ? setByAccount : parameter.getDefaultValue(),
+                    parameter.getDefaultValue(), levelOf(null, setByAccount), parameter.getDescription(),
+                    parameter.getType()));
             }
             addIfLike(rows, row, likePattern);
         }
         return new ResultSet(parameterColumns(), rows);
+    }
+
+    /**
+     * Where a parameter's value in force came from: the level that set it, else ACCOUNT when the account sets it,
+     * else empty, the default.
+     *
+     * @param ownLevel     the level the listed object set it at, or null when it did not
+     * @param setByAccount the account's value, or null when the account leaves it at its default
+     */
+    private static String levelOf(final String ownLevel, final String setByAccount) {
+        if (ownLevel != null) {
+            return ownLevel;
+        }
+        return setByAccount != null ? "ACCOUNT" : "";
     }
 
     private static void addIfLike(final List<Row> rows, final Row row, final String likePattern) {
@@ -270,8 +302,10 @@ final class ShowSessionExecutor {
                 continue;
             }
             final String set = task.getSessionParameters().get(key);
-            rows.add(new Row(Arrays.asList(key, set != null ? set : row.getDefaultValue(), row.getDefaultValue(),
-                set != null ? "TASK" : "", row.getDescription(), row.getType())));
+            final String setByAccount = AccountParameters.value(key);
+            final String inherited = setByAccount != null ? setByAccount : row.getDefaultValue();
+            rows.add(new Row(Arrays.asList(key, set != null ? set : inherited, row.getDefaultValue(),
+                levelOf(set != null ? "TASK" : null, setByAccount), row.getDescription(), row.getType())));
         }
         return new ResultSet(parameterColumns(), rows);
     }

@@ -32,6 +32,8 @@ public class DatabaseSnapshot implements Serializable {
     public String name;
     public String comment;
     public Instant createdAt;
+    /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
+    public Instant lastDdlAt;
     // READ ONLY flag. Primitive → old snapshots (predating this field) deserialize it as false (writable).
     public boolean readOnly;
     public List<SchemaSnapshot> schemas = new ArrayList<>();
@@ -45,4 +47,6 @@ public class DatabaseSnapshot implements Serializable {
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.
     public Map<String, String> tags;
+    // The owning role. Null on snapshots written before it was saved, which restore the default owner.
+    public String owner;
 }

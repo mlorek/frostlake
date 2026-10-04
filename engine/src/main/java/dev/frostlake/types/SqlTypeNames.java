@@ -42,6 +42,23 @@ public final class SqlTypeNames {
      * @return the name Snowflake reports for it, parameters included
      */
     /**
+     * The canonical name a RESULT's column prints in DESCRIBE RESULT: the type the result declares, at its own width.
+     * Unlike {@link #columnMetadata} it does not stop a string at a column's width, because the result is not
+     * stored: an expression reads as it is selected (live: {@code CAST(i AS VARCHAR)} is VARCHAR(134217728), and so
+     * are a stream's METADATA$ACTION and METADATA$ROW_ID), and a plan's lengthless VARCHAR reads at the width
+     * nothing bounds.
+     *
+     * @param type the result column's declared type
+     * @return the canonical name
+     */
+    public static String resultMetadata(final DataType type) {
+        if (type instanceof LengthlessStringType) {
+            return canonical(new StringType(type.getName(), ((StringType) type).getMaxLength()));
+        }
+        return canonical(type);
+    }
+
+    /**
      * The canonical name a COLUMN's metadata prints, which stops a string at the width a column can
      * declare. An EXPRESSION may be wider — live reports {@code t || t} over two 16MB columns as
      * VARCHAR(33554432) and {@code CAST(i AS VARCHAR)} as VARCHAR(134217728) when selected, through a

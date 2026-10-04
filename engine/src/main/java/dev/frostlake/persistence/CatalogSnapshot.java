@@ -48,4 +48,6 @@ public class CatalogSnapshot implements Serializable {
     public List<ComputePoolSnapshot> computePools = new ArrayList<>();
     /** The dropped external volumes UNDROP can still restore, each name's drops the earliest first. */
     public List<ExternalVolumeSnapshot> droppedExternalVolumes = new ArrayList<>();
+    /** The dropped tables, dynamic tables, tags, schemas and databases UNDROP can still restore, alike. */
+    public List<DroppedObjectSnapshot> droppedObjects = new ArrayList<>();
 }

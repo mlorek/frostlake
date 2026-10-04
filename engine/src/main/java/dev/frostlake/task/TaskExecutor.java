@@ -38,4 +38,26 @@ public interface TaskExecutor {
     default List<ResultSet> executeQuery(final String sql) {
         throw new UnsupportedOperationException("TaskExecutor.executeQuery must be implemented");
     }
+
+    /**
+     * Evaluate a task's WHEN condition. The scheduler composes the query for itself and it is no statement of the
+     * task's, so an implementation runs it without a query ID or a history row. This default runs it through
+     * {@link #executeQuery}.
+     *
+     * @param sql the composed condition query
+     * @return its result sets
+     */
+    default List<ResultSet> evaluateCondition(final String sql) {
+        return executeQuery(sql);
+    }
+
+    /**
+     * Run one task run or alert evaluation as a session of its own, apart from whatever session started it: its
+     * own transaction, statement history and session settings. This default just runs it.
+     *
+     * @param run the run
+     */
+    default void runInOwnSession(final Runnable run) {
+        run.run();
+    }
 }

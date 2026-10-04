@@ -126,8 +126,17 @@ public class ShowCommandExecutor {
         return relationalExecutor.showTables(schemaName);
     }
 
+    /** SHOW TABLES [HISTORY]; HISTORY adds the dropped tables UNDROP can still restore and their dropped_on. */
+    public ResultSet showTables(final String schemaName, final boolean history) {
+        return relationalExecutor.showTables(schemaName, history);
+    }
+
     public ResultSet showTablesInAccount() {
         return relationalExecutor.showTablesInAccount();
+    }
+
+    public ResultSet showTablesInAccount(final boolean history) {
+        return relationalExecutor.showTablesInAccount(history);
     }
 
     public ResultSet showSchemasInAccount() {
@@ -144,6 +153,10 @@ public class ShowCommandExecutor {
 
     public ResultSet showTablesInDatabase(final String databaseName) {
         return relationalExecutor.showTablesInDatabase(databaseName);
+    }
+
+    public ResultSet showTablesInDatabase(final String databaseName, final boolean history) {
+        return relationalExecutor.showTablesInDatabase(databaseName, history);
     }
 
     public ResultSet showHybridTables(final String schemaName) {
@@ -665,6 +678,11 @@ public class ShowCommandExecutor {
 
     public ResultSet showParameters(final String likePattern) {
         return sessionExecutor.showParameters(likePattern);
+    }
+
+    /** SHOW PARAMETERS IN SESSION, or IN ACCOUNT, which leaves the session's own settings out. */
+    public ResultSet showParameters(final String likePattern, final boolean inAccount) {
+        return sessionExecutor.showParameters(likePattern, inAccount);
     }
 
     public ResultSet showParametersInTask(final String taskName, final String likePattern) {

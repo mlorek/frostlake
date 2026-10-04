@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Taggable;
 
 import java.time.LocalDateTime;
@@ -44,7 +45,7 @@ public class Task implements Taggable {
     private String sqlStatement;
     private String warehouse;
     private final List<String> predecessors; // Tasks that must complete before this one
-    private final LocalDateTime createdAt;
+    private LocalDateTime createdAt;
     private TaskState state;
     private LocalDateTime lastRunTime;
     private LocalDateTime nextRunTime;
@@ -82,7 +83,8 @@ public class Task implements Taggable {
         this.sqlStatement = sqlStatement;
         this.warehouse = warehouse;
         this.predecessors = new ArrayList<>();
-        this.createdAt = LocalDateTime.now();
+        // The creating statement's instant, which a replayed statement reproduces (see SqlObject).
+        this.createdAt = StatementClock.hostLocal();
         this.state = TaskState.SUSPENDED; // Tasks start suspended by default
         this.executionHistory = new ArrayList<>();
         this.successCount = 0;
@@ -190,6 +192,18 @@ public class Task implements Taggable {
 
     public LocalDateTime getCreatedAt() {
         return createdAt;
+    }
+
+    /**
+     * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
+     * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
+     *
+     * @param created the recorded creation time, or null
+     */
+    public void restoreCreatedTime(final LocalDateTime created) {
+        if (created != null) {
+            this.createdAt = created;
+        }
     }
 
     public TaskState getState() {
@@ -386,6 +400,41 @@ public class Task implements Taggable {
     }
     /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -&gt; value). */
     private final Map<String, String> tags = new LinkedHashMap<>();
+
+    /**
+     * This task's whole definition, for a clone of its schema: the schedule, statement, warehouse, predecessors,
+     * WHEN condition, configuration, finalizer link, session parameters, settings, comment, owner and tags.
+     * The clone is SUSPENDED (documented) and starts with no run history and an identity of its own.
+     *
+     * @return the copy
+     */
+    public Task cloneDefinition() {
+        final Task copy = new Task(name, schedule, scheduleType, sqlStatement, warehouse);
+        copy.explicitParameters.addAll(explicitParameters);
+        copy.predecessors.addAll(predecessors);
+        copy.comment = comment;
+        copy.condition = condition;
+        copy.suspendTaskAfterNumFailures = suspendTaskAfterNumFailures;
+        copy.taskAutoRetryAttempts = taskAutoRetryAttempts;
+        copy.userTaskManagedInitialWarehouseSize = userTaskManagedInitialWarehouseSize;
+        copy.serverlessTaskMaxStatementSize = serverlessTaskMaxStatementSize;
+        copy.targetCompletionInterval = targetCompletionInterval;
+        copy.errorIntegration = errorIntegration;
+        copy.userTaskMinimumTriggerIntervalInSeconds = userTaskMinimumTriggerIntervalInSeconds;
+        copy.allowOverlappingExecution = allowOverlappingExecution;
+        copy.userTaskTimeoutMs = userTaskTimeoutMs;
+        copy.config = config;
+        copy.overlapPolicy = overlapPolicy;
+        copy.sessionParameters.putAll(sessionParameters);
+        copy.successIntegration = successIntegration;
+        copy.finalizedRootTask = finalizedRootTask;
+        copy.executeAsUser = executeAsUser;
+        copy.serverlessTaskMinStatementSize = serverlessTaskMinStatementSize;
+        copy.owner = owner;
+        copy.tags.putAll(tags);
+        copy.state = TaskState.SUSPENDED;
+        return copy;
+    }
 
     @Override
     public void setTag(final String tagName, final String value) {

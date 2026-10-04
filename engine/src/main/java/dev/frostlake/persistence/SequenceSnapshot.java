@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 
 /**
  * Serializable snapshot of a SEQUENCE — its definition plus the current value, so NEXTVAL continues
@@ -32,4 +33,11 @@ public class SequenceSnapshot implements Serializable {
     public long currentValue;
     public String comment;
     public String owner;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public Instant createdAt;
+    /**
+     * INFORMATION_SCHEMA's LAST_ALTERED, the last DDL. Null on snapshots written before it was saved, which report
+     * the CREATE.
+     */
+    public Instant lastDdlAt;
 }

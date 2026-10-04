@@ -175,6 +175,13 @@ final class InsertExecutor {
                         ColumnTypeFamilies.rejectMismatch(target, foldedTypes.get(position));
                     }
                 }
+                // A value a subquery hands out of a projection-restricted column is judged as that projection is:
+                // INSERT INTO t VALUES ((SELECT p FROM pt LIMIT 1)) writes it into t.
+                final List<FrostlakeParser.BooleanExprContext> inserted = new ArrayList<>();
+                for (final FrostlakeParser.ValueTupleContext tuple : tuples) {
+                    inserted.addAll(tuple.valueList().booleanExpr());
+                }
+                executor.rejectRestrictedAssignments(inserted, null, null, null);
                 for (int row = 0; row < tuples.size(); row++) {
                     final List<Object> values = new ArrayList<>();
                     int position = 0;
@@ -210,8 +217,8 @@ final class InsertExecutor {
                 ProjectionSlot.reset();
                 final ResultSet selectResult;
                 try {
-                    selectResult = executor.executeSelectFromContextWithCTEs(
-                        ctx.selectStatement(), null, cteResults);
+                    // Its values leave the query into the table, so a projection policy judges it as a result's.
+                    selectResult = executor.executeExportedSelect(ctx.selectStatement(), cteResults);
                     // Writing reads every cell, so a fault a relation deferred raises here.
                     DeferredFault.requireNone(selectResult.getRows());
                 } catch (final RuntimeException failed) {
@@ -265,6 +272,8 @@ final class InsertExecutor {
             }
 
             logger.trace("Inserted {} row(s) into table: {}", rowsInserted, tableName);
+            // LAST_ALTERED moves for the statement, whether or not a row reached the table.
+            table.markDmlRan(StatementClock.commitInstant());
             return executor.dmlCountResult("number of rows inserted", rowsInserted);
 
         } catch (final SecurityException e) {
@@ -751,6 +760,15 @@ final class InsertExecutor {
             final Table sourceTable = executor.resultSetToTable(source, "multi_insert_source");
             requireResolvableRoutingExpressions(ctx, sourceTable);
             rejectMistypedRoutedValues(ctx, source, sourceTable);
+            // Each INTO's values are judged by a projection policy as a projection is; the source query itself was,
+            // as a statement's own select.
+            final List<FrostlakeParser.ExpressionContext> routed = new ArrayList<>();
+            for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
+                if (into.expressionList() != null) {
+                    routed.addAll(into.expressionList().expression());
+                }
+            }
+            executor.rejectRestrictedAssignments(routed, sourceTable, null, null);
             final boolean overwrite = ctx.OVERWRITE() != null;
             final boolean first = ctx.FIRST() != null;
             final boolean conditional = !ctx.multiInsertWhen().isEmpty();
@@ -834,6 +852,10 @@ final class InsertExecutor {
                 }
             }
             logger.trace("Multi-table INSERT routed {} row insertion(s)", rowsInserted);
+            // LAST_ALTERED moves on every table the statement names, whether or not a row reached it.
+            for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
+                targetOf(into).markDmlRan(StatementClock.commitInstant());
+            }
             return multiTableInsertCounts(insertedInto, targetNames);
         } catch (final SecurityException e) {
             throw e;

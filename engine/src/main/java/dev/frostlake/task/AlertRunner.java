@@ -15,6 +15,7 @@
  */
 package dev.frostlake.task;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AlertExecution;
@@ -25,6 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 /**
@@ -59,15 +61,24 @@ public final class AlertRunner {
      */
     public AlertExecution run(final String database, final String schema, final Alert alert,
                               final String scheduledFrom) {
-        final Instant scheduled = Instant.now();
+        // Read the way SQL reads the time, at its millisecond resolution, so the condition and the action read a
+        // later instant and ALERT_HISTORY's SCHEDULED_TIME_RANGE_* bounds meet the time the row shows.
+        final Instant scheduled = StatementClock.observed();
         final String[] prior = catalog.currentSessionScope();
         catalog.beginSessionScope(database, schema);
-        final AlertExecution execution;
+        final AlertExecution[] evaluated = new AlertExecution[1];
         try {
-            execution = evaluate(alert, scheduled, scheduledFrom);
+            // The evaluation is a session of its own, apart from whatever session ran EXECUTE ALERT.
+            executor.runInOwnSession(new Runnable() {
+                @Override
+                public void run() {
+                    evaluated[0] = evaluate(alert, scheduled, scheduledFrom);
+                }
+            });
         } finally {
             catalog.restoreSessionScope(prior);
         }
+        final AlertExecution execution = evaluated[0];
         alert.recordExecution(execution);
         final Integer limit = alert.getSuspendAfterNumFailures();
         if (execution.failed() && limit != null && limit.intValue() > 0
@@ -84,19 +95,28 @@ public final class AlertRunner {
     private AlertExecution evaluate(final Alert alert, final Instant scheduled, final String scheduledFrom) {
         final List<ResultSet> answer;
         try {
+            // The condition and the action each read a time of their own, after the scheduled one: under
+            // EXECUTE ALERT the caller's statement instant moves on, as it does between a block's statements.
+            StatementClock.advance();
             answer = executor.executeQuery(alert.getCondition());
         } catch (final RuntimeException failure) {
-            return new AlertExecution(scheduled, Instant.now(), "CONDITION_FAILED", message(failure), scheduledFrom);
+            return new AlertExecution(scheduled, completed(), "CONDITION_FAILED", message(failure), scheduledFrom);
         }
         if (!returnsRows(answer)) {
-            return new AlertExecution(scheduled, Instant.now(), "CONDITION_FALSE", null, scheduledFrom);
+            return new AlertExecution(scheduled, completed(), "CONDITION_FALSE", null, scheduledFrom);
         }
         try {
+            StatementClock.advance();
             executor.execute(alert.getAction());
         } catch (final RuntimeException failure) {
-            return new AlertExecution(scheduled, Instant.now(), "ACTION_FAILED", message(failure), scheduledFrom);
+            return new AlertExecution(scheduled, completed(), "ACTION_FAILED", message(failure), scheduledFrom);
         }
-        return new AlertExecution(scheduled, Instant.now(), "TRIGGERED", null, scheduledFrom);
+        return new AlertExecution(scheduled, completed(), "TRIGGERED", null, scheduledFrom);
+    }
+
+    /** When an evaluation completed, at the millisecond resolution its other times have. */
+    private static Instant completed() {
+        return Instant.now().truncatedTo(ChronoUnit.MILLIS);
     }
 
     /** The interval of an alert's schedule in seconds (see {@link IntervalSchedule}); an hour when it is none. */

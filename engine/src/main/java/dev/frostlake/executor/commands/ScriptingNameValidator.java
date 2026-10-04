@@ -102,6 +102,7 @@ final class ScriptingNameValidator {
         SCRIPT_SUPPLIED.add("SQLFOUND");
         SCRIPT_SUPPLIED.add("SQLNOTFOUND");
         SCRIPT_SUPPLIED.add("ACTIVITY_COUNT");
+        SCRIPT_SUPPLIED.add("SQLID");
     }
 
     /**

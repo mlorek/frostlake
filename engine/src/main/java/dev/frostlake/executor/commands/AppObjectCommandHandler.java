@@ -23,10 +23,12 @@ import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AppObject;
 import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.AppObjectStore;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
@@ -293,6 +295,7 @@ public class AppObjectCommandHandler {
                                   final boolean orReplace, final boolean ifNotExists) {
         final String name = nameOf(nameCtx);
         final Schema schema = schemaOf(nameCtx);
+        schema.requireCreatable(Privilege.valueOf("CREATE_" + kind.name()));
         final AppObjectStore store = schema.getAppObjects();
         if (store.get(kind, name) != null) {
             if (ifNotExists) {
@@ -377,15 +380,18 @@ public class AppObjectCommandHandler {
                         final FrostlakeParser.QualifiedNameContext toCtx) {
         final Schema from = schemaOf(fromCtx);
         final Schema to = schemaOf(toCtx);
+        to.requireCreatable(Privilege.valueOf("CREATE_" + object.getKind().name()));
         final String newName = nameOf(toCtx);
         if (to.getAppObjects().get(object.getKind(), newName) != null) {
             throw alreadyExists(newName);
         }
+        final String grantedBefore = from.qualifiedName(object.getName());
         from.getAppObjects().remove(object.getKind(), object.getName());
         object.setName(newName);
         object.setDatabaseName(to.getDatabaseName());
         object.setSchemaName(to.getName());
         to.getAppObjects().put(object);
+        GrantNames.renamed(catalog, object.getKind().name(), grantedBefore, to.qualifiedName(newName));
     }
 
     private Schema schemaOf(final FrostlakeParser.QualifiedNameContext nameCtx) {

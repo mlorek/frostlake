@@ -18,6 +18,7 @@ package dev.frostlake.metastore;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
@@ -150,6 +151,22 @@ public class QueryHistoryTracker {
      */
     public void clear() {
         queryHistory.clear();
+    }
+
+    /**
+     * Forget every query one session ran: a session that is over and that no listing may show, as the replay of
+     * the write-ahead log at startup is.
+     *
+     * @param sessionId the session's number
+     */
+    public void forgetSession(final long sessionId) {
+        final Iterator<QueryHistory> queries = queryHistory.iterator();
+        while (queries.hasNext()) {
+            final Long ran = queries.next().getSessionId();
+            if (ran != null && ran.longValue() == sessionId) {
+                queries.remove();
+            }
+        }
     }
 
     /**

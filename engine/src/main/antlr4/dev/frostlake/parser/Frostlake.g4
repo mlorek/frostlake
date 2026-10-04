@@ -2684,9 +2684,11 @@ dataTypeName
     // and `MAP(VARCHAR, FILE)` all fail "Unsupported data type 'FILE'."); `dataTypeName typeParameters?`
     // and the nested-type positions are shared by every type, so DataTypeParser rejects both there.
     | FILE
-    | MAP LPAREN dataTypeName COMMA dataTypeName RPAREN   // MAP(keyType, valueType); backed by OBJECT.
-                                                          // The bare `MAP` spelling is a syntax error in
-                                                          // Snowflake (live-verified: `NULL::MAP`).
+    // MAP(keyType, valueType); backed by OBJECT. Either type takes its parameters, as an ARRAY element and an
+    // OBJECT field do (live-verified: `MAP(VARCHAR, NUMBER(10,2))` and `MAP(VARCHAR(5), NUMBER)` are types of
+    // their own). The bare `MAP` spelling is a syntax error in Snowflake (live-verified: `NULL::MAP`).
+    | MAP LPAREN mapKey=dataTypeName mapKeyParameters=typeParameters?
+        COMMA mapValue=dataTypeName mapValueParameters=typeParameters? RPAREN
     | INTERVAL intervalTypeFields                         // INTERVAL DAY(3) TO SECOND(3), YEAR TO MONTH …
     ;
 
@@ -3473,7 +3475,7 @@ showStatement
     | SHOW TERSE? AGGREGATION POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
     | SHOW TERSE? JOIN POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
     | SHOW TERSE? ROW ACCESS POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW PARAMETERS (LIKE STRING_LITERAL)? (IN (SESSION | ACCOUNT | (DATABASE | TABLE | WAREHOUSE | USER | ROLE | TASK) identifier | SCHEMA qualifiedName))? SEMI?
+    | SHOW PARAMETERS (LIKE STRING_LITERAL)? (IN (SESSION | ACCOUNT | USER identifier? | (DATABASE | TABLE | WAREHOUSE | ROLE | TASK) identifier | SCHEMA qualifiedName))? SEMI?
     | SHOW TERSE? OBJECTS (LIKE STRING_LITERAL)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
     | SHOW ORGANIZATION ACCOUNTS showTail SEMI?
     | SHOW ACCOUNTS HISTORY? (LIKE STRING_LITERAL)? showTail SEMI?

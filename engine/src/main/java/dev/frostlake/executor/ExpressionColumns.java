@@ -27,7 +27,7 @@ import java.util.List;
 /**
  * Whether a projection expression NAMES a given column — read from the expression's own tokens, the
  * way {@link MaskingPolicyApplier} rewrites references, so a name inside a string literal and a
- * same-named function call are both left out of it.
+ * same-named function call are both left out of it — and the expression with such a reference renamed.
  */
 public final class ExpressionColumns {
 
@@ -67,6 +67,71 @@ public final class ExpressionColumns {
         return false;
     }
 
+    /**
+     * The expression with every reference to a column renamed, read from its tokens as {@link #references} reads them:
+     * a string literal, a function's name, a qualifier, a semi-structured path element after {@code :} and a type
+     * after {@code ::} are left alone. Each reference is re-spelled as the new name and the rest of the text is kept
+     * exactly as it was, so a clustering key, a CHECK or a search optimization target follows ALTER TABLE ... RENAME
+     * COLUMN.
+     *
+     * @param expression the expression as stored
+     * @param oldName    the column's canonical name before the rename
+     * @param newName    its canonical name after it
+     * @return the expression naming the column by its new name; the same text when it does not name it
+     */
+    public static String renamed(final String expression, final String oldName, final String newName) {
+        if (expression == null || oldName == null || newName == null) {
+            return expression;
+        }
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        final List<Token> tokens = stream.getTokens();
+        final StringBuilder out = new StringBuilder(expression.length());
+        int cursor = 0;
+        for (int i = 0; i < tokens.size(); i++) {
+            final Token token = tokens.get(i);
+            if (!namesColumn(tokens, i) || !oldName.equals(SqlIdentifiers.canonicalTextParts(token.getText())[0])) {
+                continue;
+            }
+            out.append(expression, cursor, token.getStartIndex());
+            out.append(SqlIdentifiers.spellCanonicalEscaped(newName));
+            cursor = token.getStopIndex() + 1;
+        }
+        if (cursor == 0) {
+            return expression;
+        }
+        out.append(expression, cursor, expression.length());
+        return out.toString();
+    }
+
+    /** Whether the token at {@code i} is a column reference: a name that is not a function, qualifier, path or type. */
+    private static boolean namesColumn(final List<Token> tokens, final int i) {
+        final Token token = tokens.get(i);
+        if (token.getType() == Token.EOF
+                || !(SqlTokens.isWord(token) || token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER)) {
+            return false;
+        }
+        final Token next = i + 1 < tokens.size() ? tokens.get(i + 1) : null;
+        if (next != null && (next.getType() == FrostlakeLexer.LPAREN || next.getType() == FrostlakeLexer.DOT)) {
+            return false;
+        }
+        // The start of the dotted chain this name ends: t.a names the column a, and so does a alone.
+        int start = i;
+        while (start >= 2 && tokens.get(start - 1).getType() == FrostlakeLexer.DOT) {
+            start -= 2;
+        }
+        final Token before = start > 0 ? tokens.get(start - 1) : null;
+        return before == null
+            || (before.getType() != FrostlakeLexer.COLON && before.getType() != FrostlakeLexer.DOUBLE_COLON);
+    }
+
+    /**
+     * Whether a token names the column, read as any identifier is: an unquoted one by its upper-cased spelling, a
+     * quoted one by exactly the name it spells. {@code "p"} is not the column {@code P}, which matching without
+     * regard to case took it for.
+     */
     private static boolean isName(final String tokenText, final String columnName) {
         if (tokenText == null || tokenText.isEmpty()) {
             return false;
@@ -75,8 +140,6 @@ public final class ExpressionColumns {
         if (first == '\'' || first == '$') {
             return false;
         }
-        final String bare = first == '"' && tokenText.length() > 1 && tokenText.endsWith("\"")
-            ? tokenText.substring(1, tokenText.length() - 1) : tokenText;
-        return bare.equalsIgnoreCase(columnName);
+        return columnName.equals(SqlIdentifiers.canonicalTextParts(tokenText)[0]);
     }
 }

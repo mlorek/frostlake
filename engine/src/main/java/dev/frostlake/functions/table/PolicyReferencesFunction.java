@@ -17,8 +17,10 @@
 package dev.frostlake.functions.table;
 
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
@@ -44,7 +46,11 @@ import java.util.TreeMap;
  *
  * <p>It takes either {@code POLICY_NAME => 'p'} or the pair {@code REF_ENTITY_NAME => 'o',
  * REF_ENTITY_DOMAIN => 'TABLE'|'VIEW'} — one of the two, never a mixture and never neither
- * (live-verified, including the sentence that says so).
+ * (live-verified, including the sentence that says so). Either name is read as an identifier is: an unquoted part
+ * folds to upper case, a double-quoted one is kept as written, and a name with fewer than three parts is completed
+ * from the session's database and schema, so {@code 'mydb.myschema.mytable'} finds the table wherever the session
+ * is (live-verified, in either case). A name that finds nothing is refused without the privilege sentence other
+ * refusals carry, a missing policy as a missing table (live-verified).
  */
 public class PolicyReferencesFunction extends TableFunction {
 
@@ -107,30 +113,40 @@ public class PolicyReferencesFunction extends TableFunction {
     private void appendByEntity(final String entityName, final String entityDomain,
                                 final List<Row> rows) {
         final String domain = entityDomain.toUpperCase(Locale.ROOT);
-        final Schema schema = currentSchema();
-        if ("TABLE".equals(domain)) {
-            // Live names the entity as the ARGUMENT spelled it, bare — not the qualified form the
-            // catalog's own miss would report — so the lookup is guarded rather than left to throw.
-            if (!schema.hasTable(entityName)) {
-                throw new RuntimeException(SqlCompilationError.doesNotExist("Table", entityName));
-            }
-            appendTableRows(schema, schema.getTable(entityName), rows);
-        } else if ("VIEW".equals(domain)) {
-            if (!schema.hasView(entityName)) {
-                throw new RuntimeException(SqlCompilationError.doesNotExist("View", entityName));
-            }
-            appendViewRows(schema, schema.getView(entityName), rows);
-        } else {
-            throw new RuntimeException("Unknown domain: " + domain + ".");
+        if (!"TABLE".equals(domain) && !"VIEW".equals(domain)) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid value '" + domain
+                + "' for argument 'ref_entity_domain' for function 'information_schema.policy_references'"));
+        }
+        final String[] written = SqlIdentifiers.canonicalTextParts(entityName);
+        final Schema schema = owningSchema(written);
+        final String name = written[written.length - 1];
+        final Table table = schema == null ? null : schema.tableExact(name);
+        final View view = schema == null || table != null ? null : viewExact(schema, name);
+        if (table == null && view == null) {
+            // Refused in the domain's word, whichever kind of object the name was meant for.
+            throw missingEntity("TABLE".equals(domain) ? "Table" : "View", written);
+        }
+        // Either domain takes a table or a view, and lists the attachments of its own kind only: a view named under
+        // 'table', or a table under 'view', answers no rows (live-verified).
+        if (table != null && "TABLE".equals(domain)) {
+            appendTableRows(schema, table, rows);
+        } else if (view != null && "VIEW".equals(domain)) {
+            appendViewRows(schema, view, rows);
         }
     }
 
+    /**
+     * The attachments of one policy. The policy is the one its name places — a bare name in the session's schema —
+     * and only attachments to that very policy are listed, not those to a namesake in another schema.
+     */
     private void appendByPolicy(final String policyName, final List<Row> rows) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
-        final Schema schema = currentSchema();
-        if (!policyExists(schema, bare)) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Policy",
-                schema.qualifiedName(bare)));
+        final String[] written = SqlIdentifiers.canonicalTextParts(policyName);
+        final Schema schema = owningSchema(written);
+        final String name = written[written.length - 1];
+        if (schema == null || !policyExists(schema, name)) {
+            // Live names the policy in full however it was written, with no privilege sentence (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Policy",
+                QualifiedName.join(completed(written))));
         }
         for (final Database database : catalog.getAllDatabases()) {
             for (final Schema each : database.getAllSchemas()) {
@@ -144,7 +160,8 @@ public class PolicyReferencesFunction extends TableFunction {
         }
         final List<Row> matching = new ArrayList<>();
         for (final Row row : rows) {
-            if (bare.equals(String.valueOf(row.getValue(2)))) {
+            if (schema.getDatabaseName().equals(row.getValue(0)) && schema.getName().equals(row.getValue(1))
+                && name.equals(row.getValue(2))) {
                 matching.add(row);
             }
         }
@@ -158,36 +175,103 @@ public class PolicyReferencesFunction extends TableFunction {
             || schema.getJoinPolicy(name) != null;
     }
 
-    /** One row per attachment on a table, ordered by policy name as live orders them. */
+    /**
+     * The schema a name places its object in, read as a FROM reference reads one: a bare name in the session's
+     * schema, a two-part one in a schema of the session's database, a three-part one where it says, each part
+     * matched exactly. Null when that database or schema is not there, or the session cannot place the name.
+     *
+     * @param written the name's canonical parts ({@link SqlIdentifiers#canonicalTextParts})
+     */
+    private Schema owningSchema(final String[] written) {
+        final String[] full = completed(written);
+        if (full.length != 3 || full[0] == null || full[1] == null) {
+            return null;
+        }
+        final Database database = catalog.findDatabase(full[0]);
+        if (database == null || !database.getName().equals(full[0]) || !database.hasSchemaExact(full[1])) {
+            return null;
+        }
+        return database.schemaExact(full[1]);
+    }
+
+    /** A name's parts completed to three from the session's database and schema, as far as the session has them. */
+    private String[] completed(final String[] written) {
+        if (written.length == 1) {
+            return new String[] {catalog.getCurrentDatabase(), catalog.getCurrentSchema(), written[0]};
+        }
+        if (written.length == 2) {
+            return new String[] {catalog.getCurrentDatabase(), written[0], written[1]};
+        }
+        return written;
+    }
+
+    /**
+     * The refusal for a REF_ENTITY_NAME that names nothing, worded as live words it, with no privilege sentence:
+     * {@code Table 'DB.PUBLIC.NO_SUCH_TABLE' does not exist or not authorized.}, or {@code View '...'} under 'view'
+     * (live-verified). The name is the one a FROM reference reports: as written when it is bare, in full once any
+     * qualifier is written.
+     */
+    private RuntimeException missingEntity(final String kind, final String[] written) {
+        final String[] full = completed(written);
+        final String reported = written.length > 1 && full.length == 3 && full[0] != null
+            ? QualifiedName.join(full) : QualifiedName.join(written);
+        return new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, reported));
+    }
+
+    /** The view of exactly that name, or null: a reference matches a name exactly, as for a table. */
+    private static View viewExact(final Schema schema, final String name) {
+        if (!schema.hasView(name)) {
+            return null;
+        }
+        final View view = schema.getView(name);
+        return view.getName().equals(name) ? view : null;
+    }
+
+    /**
+     * One row per attachment on a table, ordered by policy name as live orders them, and a policy attached to
+     * several columns once for each.
+     */
     private void appendTableRows(final Schema schema, final Table table, final List<Row> rows) {
-        final Map<String, Row> byPolicy = new TreeMap<>();
+        final Map<String, List<Row>> byPolicy = new TreeMap<>();
         for (final TableColumn column : table.getColumns()) {
             if (column.hasMaskingPolicy()) {
-                byPolicy.put(bare(column.getMaskingPolicyName()), attachment(schema,
-                    column.getMaskingPolicyName(), "MASKING_POLICY", table.getName(), "TABLE",
-                    column.getName(), null));
+                listed(byPolicy, attachment(schema, column.getMaskingPolicyName(), "MASKING_POLICY",
+                    table.getName(), "TABLE", column.getName(), null));
             }
             if (column.hasProjectionPolicy()) {
-                byPolicy.put(bare(column.getProjectionPolicyName()), attachment(schema,
-                    column.getProjectionPolicyName(), "PROJECTION_POLICY", table.getName(), "TABLE",
-                    column.getName(), null));
+                listed(byPolicy, attachment(schema, column.getProjectionPolicyName(), "PROJECTION_POLICY",
+                    table.getName(), "TABLE", column.getName(), null));
             }
         }
         if (table.hasRowAccessPolicy()) {
-            byPolicy.put(bare(table.getRowAccessPolicyName()), attachment(schema,
-                table.getRowAccessPolicyName(), "ROW_ACCESS_POLICY", table.getName(), "TABLE",
-                null, table.getRowAccessPolicyColumns()));
+            listed(byPolicy, attachment(schema, table.getRowAccessPolicyName(), "ROW_ACCESS_POLICY",
+                table.getName(), "TABLE", null, table.getRowAccessPolicyColumns()));
         }
         if (table.hasAggregationPolicy()) {
-            byPolicy.put(bare(table.getAggregationPolicyName()), attachment(schema,
-                table.getAggregationPolicyName(), "AGGREGATION_POLICY", table.getName(), "TABLE",
-                null, table.getAggregationEntityKey()));
+            listed(byPolicy, attachment(schema, table.getAggregationPolicyName(), "AGGREGATION_POLICY",
+                table.getName(), "TABLE", null, table.getAggregationEntityKey()));
         }
         if (table.hasJoinPolicy()) {
-            byPolicy.put(bare(table.getJoinPolicyName()), attachment(schema,
-                table.getJoinPolicyName(), "JOIN_POLICY", table.getName(), "TABLE", null, null));
+            listed(byPolicy, attachment(schema, table.getJoinPolicyName(), "JOIN_POLICY", table.getName(), "TABLE",
+                null, null));
         }
-        rows.addAll(byPolicy.values());
+        for (final List<Row> attachments : byPolicy.values()) {
+            rows.addAll(attachments);
+        }
+    }
+
+    /**
+     * File an attachment row under its policy: by name first, as live orders them, then by the policy's database
+     * and schema, so two policies of one name in different schemas stay apart.
+     */
+    private static void listed(final Map<String, List<Row>> byPolicy, final Row row) {
+        final String key = row.getValue(2) + "\u0000" + row.getValue(0) + "\u0000" + row.getValue(1);
+        List<Row> attachments = byPolicy.get(key);
+        if (attachments == null) {
+            attachments = new ArrayList<>();
+            byPolicy.put(key, attachments);
+        }
+        attachments.add(row);
     }
 
     private void appendViewRows(final Schema schema, final View view, final List<Row> rows) {
@@ -197,11 +281,19 @@ public class PolicyReferencesFunction extends TableFunction {
         }
     }
 
+    /**
+     * One attachment's row. POLICY_DB and POLICY_SCHEMA are where the policy lives, which the attachment records in
+     * full, and REF_DATABASE_NAME and REF_SCHEMA_NAME where the object holding it does; a shorter recorded name is
+     * read in the object's schema.
+     */
     private Row attachment(final Schema schema, final String policyName, final String kind,
                            final String entityName, final String domain, final String columnName,
                            final List<String> argumentColumns) {
+        final String[] policy = QualifiedName.parse(policyName).parts();
+        final String policyDatabase = policy.length >= 3 ? policy[policy.length - 3] : schema.getDatabaseName();
+        final String policySchema = policy.length >= 2 ? policy[policy.length - 2] : schema.getName();
         return new Row(Arrays.asList(
-            schema.getDatabaseName(), schema.getName(), bare(policyName), kind,
+            policyDatabase, policySchema, policy[policy.length - 1], kind,
             schema.getDatabaseName(), schema.getName(), entityName, domain,
             columnName, renderArgumentColumns(argumentColumns),
             null, null, null, ACTIVE));
@@ -218,15 +310,6 @@ public class PolicyReferencesFunction extends TableFunction {
                .append(columns.get(i).toUpperCase(Locale.ROOT)).append('"');
         }
         return out.append(" ]").toString();
-    }
-
-    private String bare(final String qualifiedName) {
-        final int dot = qualifiedName.lastIndexOf('.');
-        return (dot < 0 ? qualifiedName : qualifiedName.substring(dot + 1)).toUpperCase(Locale.ROOT);
-    }
-
-    private Schema currentSchema() {
-        return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
     }
 
     private String argument(final Map<String, Object> namedArgs, final String name) {

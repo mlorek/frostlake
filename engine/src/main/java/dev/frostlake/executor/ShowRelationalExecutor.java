@@ -20,6 +20,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.RetentionChain;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -33,7 +34,6 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.types.ColumnTypeJson;
-import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
@@ -55,9 +55,6 @@ import java.util.TreeMap;
  * cross-kind {@code SHOW OBJECTS} listing. Extracted from {@link ShowCommandExecutor}, which delegates here.
  */
 final class ShowRelationalExecutor {
-
-    /** Live reports the data-retention window as text, and the engine keeps every table at one day. */
-    private static final String DEFAULT_RETENTION_TIME = "1";
 
     /**
      * DESCRIBE's default cell: an identity column spells its whole generator here —
@@ -130,24 +127,10 @@ final class ShowRelationalExecutor {
             hybrid ? "Y" : "N", dynamic ? "Y" : "N", "N", "N"));
     }
 
-    /**
-     * The retention SHOW reports, resolved through the chain: the object's own declared value, else
-     * its container's, else the account default of 1 — INHERITANCE IS LIVE (live-verified: a schema
-     * with no value of its own follows its database's CURRENT value, ALTER included, and UNSET
-     * restores exactly that fallback).
-     */
+    /** The retention SHOW reports, resolved through the chain ({@link RetentionChain}). */
     private String effectiveRetention(final Database database, final Schema schema,
                                       final Table table) {
-        if (table != null && table.getDataRetentionTimeInDays() != null) {
-            return String.valueOf(table.getDataRetentionTimeInDays());
-        }
-        if (schema != null && schema.getDataRetentionTimeInDays() != null) {
-            return String.valueOf(schema.getDataRetentionTimeInDays());
-        }
-        if (database != null && database.getDataRetentionTimeInDays() != null) {
-            return String.valueOf(database.getDataRetentionTimeInDays());
-        }
-        return DEFAULT_RETENTION_TIME;
+        return String.valueOf(RetentionChain.effectiveDays(database, schema, table));
     }
 
     private Database databaseOrNull(final String name) {
@@ -160,6 +143,9 @@ final class ShowRelationalExecutor {
 
     /** Where SHOW DATABASES | SCHEMAS HISTORY places dropped_on: right after retention_time. */
     private static final int DROPPED_ON_AT = 9;
+
+    /** Where SHOW TABLES HISTORY places dropped_on: right after retention_time, too (live-verified). */
+    private static final int TABLE_DROPPED_ON_AT = 11;
 
     private final Catalog catalog;
 
@@ -226,7 +212,8 @@ final class ShowRelationalExecutor {
         ));
         if (history) {
             // Right after retention_time, where the account lists it.
-            columns.add(DROPPED_ON_AT, new ResultSetColumn("dropped_on", DateTimeType.TIMESTAMP_LTZ));
+            // TIMESTAMP_LTZ(3), as created_on is (live-verified).
+            columns.add(DROPPED_ON_AT, new ResultSetColumn("dropped_on", ShowResultHelpers.CREATED_ON));
         }
         final String cur = catalog.getCurrentDatabase();
         final List<Row> rows = new ArrayList<>();
@@ -307,7 +294,8 @@ final class ShowRelationalExecutor {
         ));
         if (history) {
             // Right after retention_time, where the account lists it.
-            columns.add(DROPPED_ON_AT, new ResultSetColumn("dropped_on", DateTimeType.TIMESTAMP_LTZ));
+            // TIMESTAMP_LTZ(3), as created_on is (live-verified).
+            columns.add(DROPPED_ON_AT, new ResultSetColumn("dropped_on", ShowResultHelpers.CREATED_ON));
         }
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database selected");
@@ -379,18 +367,31 @@ final class ShowRelationalExecutor {
     }
 
     public ResultSet showTables(final String schemaName) {
-        return showTablesScoped(schemaName, null, false);
+        return showTables(schemaName, false);
+    }
+
+    /**
+     * SHOW TABLES [HISTORY]; with {@code history}, also the dropped tables UNDROP can still restore, and a
+     * {@code dropped_on} column.
+     */
+    public ResultSet showTables(final String schemaName, final boolean history) {
+        return showTablesScoped(schemaName, null, false, history);
     }
 
     /** SHOW TABLES IN ACCOUNT: every table of every database, ordered database/schema/name. */
     public ResultSet showTablesInAccount() {
+        return showTablesInAccount(false);
+    }
+
+    /** SHOW TABLES [HISTORY] IN ACCOUNT: every table of every database, ordered database/schema/name. */
+    public ResultSet showTablesInAccount(final boolean history) {
         final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
             @Override
             public ResultSet listIn(final String databaseName) {
-                return showTablesInDatabase(databaseName);
+                return showTablesInDatabase(databaseName, history);
             }
         });
-        return across != null ? across : showTables(null);
+        return across != null ? across : showTables(null, history);
     }
 
     /** SHOW SCHEMAS IN ACCOUNT: every schema of every database, ordered database/name. */
@@ -433,16 +434,21 @@ final class ShowRelationalExecutor {
 
     /** SHOW TABLES IN DATABASE &lt;db&gt;: every table across all schemas of the database. */
     public ResultSet showTablesInDatabase(final String databaseName) {
-        return showTablesScoped(null, databaseName, false);
+        return showTablesInDatabase(databaseName, false);
+    }
+
+    /** SHOW TABLES [HISTORY] IN DATABASE &lt;db&gt;: every table across all schemas of the database. */
+    public ResultSet showTablesInDatabase(final String databaseName, final boolean history) {
+        return showTablesScoped(null, databaseName, false, history);
     }
 
     /** SHOW HYBRID TABLES: only tables declared with CREATE HYBRID TABLE. */
     public ResultSet showHybridTables(final String schemaName) {
-        return hybridLayout(showTablesScoped(schemaName, null, true));
+        return hybridLayout(showTablesScoped(schemaName, null, true, false));
     }
 
     public ResultSet showHybridTablesInDatabase(final String databaseName) {
-        return hybridLayout(showTablesScoped(null, databaseName, true));
+        return hybridLayout(showTablesScoped(null, databaseName, true, false));
     }
 
     /**
@@ -488,7 +494,7 @@ final class ShowRelationalExecutor {
     }
 
     private ResultSet showTablesScoped(final String schemaName, final String databaseName,
-                                       final boolean hybridOnly) {
+                                       final boolean hybridOnly, final boolean history) {
         // Live's full SHOW TABLES layout, measured column for column on a real account — the tail
         // (search_optimization*, is_hybrid, is_iceberg, …) is read back through
         // TABLE(RESULT_SCAN(LAST_QUERY_ID())) by real migration scripts, so the names must exist
@@ -522,6 +528,11 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("row_timestamp", StringType.VARCHAR),
             new ResultSetColumn("error_logging", StringType.VARCHAR)
         );
+        final List<ResultSetColumn> listed = new ArrayList<>(columns);
+        if (history) {
+            // TIMESTAMP_LTZ(3), as created_on is, and NULL on a live table's row (live-verified).
+            listed.add(TABLE_DROPPED_ON_AT, new ResultSetColumn("dropped_on", ShowResultHelpers.CREATED_ON));
+        }
         final String dbName = databaseName != null ? databaseName : ShowResultHelpers.scopeDatabase(catalog, schemaName);
         // A DYNAMIC table is listed here too, in NAME order among the rest — it is a table that keeps
         // itself up to date, so SHOW TABLES carries it with is_dynamic Y and the kind its transience
@@ -531,7 +542,7 @@ final class ShowRelationalExecutor {
             final String scName = schema.getName();
             if (!hybridOnly) {
                 for (final DynamicTable dt : schema.getDynamicTables()) {
-                    byName.put(scName + "." + dt.getName(), new Row(Arrays.asList(
+                    byName.put(scName + "." + dt.getName(), withDroppedOn(history, null, Arrays.asList(
                         ShowResultHelpers.createdOn(dt.getCreatedTime()),
                         dt.getName(),
                         dbName, scName, dt.isTransient() ? "TRANSIENT" : "TABLE",
@@ -554,19 +565,59 @@ final class ShowRelationalExecutor {
                 if (hybridOnly && !table.isHybrid()) {
                     continue;
                 }
-                final String kind = table.isHybrid() ? "HYBRID TABLE"
-                    : table.isTemporary() ? "TEMPORARY"
-                    : table.isTransient() ? "TRANSIENT" : "TABLE";
-                byName.put(scName + "." + table.getName(), new Row(Arrays.asList(
+                byName.put(history ? versionKey(scName, table.getName(), table.getCreatedTime(), null, 0)
+                    : scName + "." + table.getName(), tableRow(table, dbName, scName,
+                    storedRows(dbName, schema, table), effectiveRetention(databaseOrNull(dbName), schema, table),
+                    history, null));
+            }
+            if (history && !hybridOnly) {
+                // The dropped versions of the schema's tables, among the live ones in the order versionKey gives.
+                final List<DroppedObject> dropped = droppedTablesOf(
+                    schema.getDatabaseName() != null ? schema.getDatabaseName() : dbName, scName);
+                for (int i = 0; i < dropped.size(); i++) {
+                    final DroppedObject version = dropped.get(i);
+                    final Table table = (Table) version.getObject();
+                    byName.put(versionKey(scName, table.getName(), table.getCreatedTime(), version.getDroppedOn(), i),
+                        tableRow(table, dbName, scName, version.getRows() == null ? 0L : version.getRows().size(),
+                        String.valueOf(version.getRetentionDays()), true, version.getDroppedOn()));
+                }
+            }
+        }
+        return new ResultSet(listed, new ArrayList<>(byName.values()));
+    }
+
+    /**
+     * Where one version of a table goes in SHOW TABLES HISTORY: by name, as SHOW TABLES orders names, then by when it
+     * was created, so a name's dropped versions come oldest first and the live table, the newest, last
+     * (live-verified). The drop time, none for the live table, and the version's place break a tie within one
+     * millisecond.
+     */
+    private static String versionKey(final String scName, final String name, final Instant created,
+                                     final Instant droppedOn, final int place) {
+        return scName + "." + name + "\u0001" + String.format("%020d", created.toEpochMilli()) + "\u0001"
+            + (droppedOn == null ? "~" : String.format("%020d", droppedOn.toEpochMilli())) + "\u0001"
+            + String.format("%06d", place);
+    }
+
+    /**
+     * One SHOW TABLES row for a table, live or dropped; with {@code history}, its {@code dropped_on} (null for a live
+     * table) right after retention_time.
+     */
+    private Row tableRow(final Table table, final String dbName, final String scName, final long rowCount,
+                         final String retention, final boolean history, final Instant droppedOn) {
+        final String kind = table.isHybrid() ? "HYBRID TABLE"
+            : table.isTemporary() ? "TEMPORARY"
+            : table.isTransient() ? "TRANSIENT" : "TABLE";
+        return withDroppedOn(history, droppedOn, Arrays.asList(
                     ShowResultHelpers.createdOn(table.getCreatedTime()),
                     table.getName(),
                     dbName, scName, kind,
                     ShowResultHelpers.text(table.getComment()),
                     clusterByText(table.getClusterKeys()),
-                    storedRows(dbName, schema, table),
+                    rowCount,
                     0L,
                     ShowResultHelpers.text(table.getOwner()),
-                    effectiveRetention(databaseOrNull(dbName), schema, table),
+                    retention,
                     // Live turns automatic clustering on for any table that carries a clustering key.
                     // Change tracking is the table's own flag — the option, ALTER … SET, or a stream's
                     // creation flips it on, and it survives the stream.
@@ -580,10 +631,38 @@ final class ShowRelationalExecutor {
                     "N", table.isSchemaEvolution() ? "Y" : "N", "ROLE", table.isEventTable() ? "Y" : "N",
                     table.isHybrid() ? "Y" : "N",
                     table.getIcebergMetadata() != null ? "Y" : "N", "N", "N", "N", "OFF", "OFF"
-                )));
+                ));
+    }
+
+    /** A SHOW TABLES row from its cells; with {@code history}, its {@code dropped_on} goes in after retention_time. */
+    private static Row withDroppedOn(final boolean history, final Instant droppedOn, final List<Object> cells) {
+        if (!history) {
+            return new Row(cells);
+        }
+        final List<Object> withDropped = new ArrayList<>(cells);
+        withDropped.add(TABLE_DROPPED_ON_AT, droppedOn == null ? null : ShowResultHelpers.createdOn(droppedOn));
+        return new Row(withDropped);
+    }
+
+    /**
+     * The dropped tables of one schema UNDROP can still restore, by name and each name's versions the newest first.
+     * The catalog keys a dropped table by its exact full name, as UNDROP looks it up, so a schema lists only its own.
+     */
+    private List<DroppedObject> droppedTablesOf(final String dbName, final String scName) {
+        final String prefix = "TABLE:" + QualifiedName.key(dbName, scName, "");
+        final List<DroppedObject> out = new ArrayList<>();
+        for (final Map.Entry<String, List<DroppedObject>> entry : catalog.droppedVersions().entrySet()) {
+            final String key = entry.getKey();
+            if (!key.startsWith(prefix) || QualifiedName.parse(key.substring("TABLE:".length())).size() != 3) {
+                continue;
+            }
+            for (int i = entry.getValue().size() - 1; i >= 0; i--) {
+                if (entry.getValue().get(i).getObject() instanceof Table) {
+                    out.add(entry.getValue().get(i));
+                }
             }
         }
-        return new ResultSet(columns, new ArrayList<>(byName.values()));
+        return out;
     }
 
     /**

@@ -103,6 +103,16 @@ public class QueryResultCache {
         boundSession.remove();
     }
 
+    /**
+     * The session bound to this thread, so work that runs as a session of its own can bind another and put this
+     * one back afterwards.
+     *
+     * @return the bound session's id, or null when none is bound and the implicit session applies
+     */
+    public String boundSessionScope() {
+        return boundSession.get();
+    }
+
     /** Forget a session's query-ID history, once that session is gone. */
     public void forgetSession(final String sessionId) {
         if (sessionId == null) {

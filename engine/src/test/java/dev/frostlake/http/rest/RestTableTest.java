@@ -161,9 +161,11 @@ public class RestTableTest extends BaseRestTest {
     public void cloneLikeUndropAndSwap() throws Exception {
         ok(post(TABLES, "{\"name\":\"t_src\",\"columns\":[{\"name\":\"a\",\"datatype\":\"INT\"}]}"));
         sql("INSERT INTO rest_db.s1.t_src VALUES (1), (2)");
-        ok(post(TABLES + "/t_src:clone?targetSchema=s2", """
-            {"name": "t_cloned", "point_of_time": {"point_of_time_type": "offset", "reference": "at", "offset": "-1"}}
-            """));
+        // The point reaches the clone, which time-travels: a second ago the table did not exist yet.
+        assertTrue(error(400, post(TABLES + "/t_src:clone?targetSchema=s2", """
+            {"name": "t_early", "point_of_time": {"point_of_time_type": "offset", "reference": "at", "offset": "-1"}}
+            """)).contains("time travel data is not available for table t_src"));
+        ok(post(TABLES + "/t_src:clone?targetSchema=s2", "{\"name\": \"t_cloned\"}"));
         ok(get("/api/v2/databases/rest_db/schemas/s2/tables/t_cloned"));
         assertEquals(2L, count("rest_db.s2.t_cloned"));
         error(400, post(TABLES + "/t_src:clone", "{\"name\":\"t_bad\",\"point_of_time\":{\"point_of_time_type\":\"era\"}}"));

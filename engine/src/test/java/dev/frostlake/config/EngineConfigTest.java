@@ -206,6 +206,7 @@ public class EngineConfigTest {
         assertEquals("durability.walEnabled", EngineConfig.PROP_DURABILITY_WAL_ENABLED);
         assertEquals("durability.walFile", EngineConfig.PROP_DURABILITY_WAL_FILE);
         assertEquals("durability.checkpointInterval", EngineConfig.PROP_DURABILITY_CHECKPOINT_INTERVAL);
+        assertEquals("durability.walReplayStrict", EngineConfig.PROP_DURABILITY_WAL_REPLAY_STRICT);
         assertEquals("persistence.autoSave", EngineConfig.PROP_PERSISTENCE_AUTO_SAVE);
         assertEquals("persistence.saveIntervalSeconds", EngineConfig.PROP_PERSISTENCE_SAVE_INTERVAL_SECONDS);
         assertEquals("logging.level", EngineConfig.PROP_LOGGING_LEVEL);

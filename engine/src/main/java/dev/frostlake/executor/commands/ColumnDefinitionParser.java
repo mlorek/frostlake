@@ -497,6 +497,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         Boolean rely = null;
         String collation = null;
         String maskingPolicy = null;
+        final List<String> maskingArguments = new ArrayList<>();
         String projectionPolicy = null;
 
         rejectRepeatedColumnConstraints(colName, colDef.columnConstraint());
@@ -553,10 +554,14 @@ public class ColumnDefinitionParser implements CommandHandler {
                 projectionPolicy = getText(constraint.qualifiedName());
             } else if (constraint.MASKING() != null) {
                 // A masking policy attached in the column definition itself, on CREATE TABLE and on
-                // ALTER TABLE ADD COLUMN alike (live-verified). Its USING argument list is a
-                // conditional-policy detail the ALTER path already models; the attachment is what the
-                // definition records.
+                // ALTER TABLE ADD COLUMN alike (live-verified), with the columns a conditional policy's USING
+                // gives its arguments.
                 maskingPolicy = getText(constraint.qualifiedName());
+                if (constraint.identifierList() != null) {
+                    for (final FrostlakeParser.IdentifierContext id : constraint.identifierList().identifier()) {
+                        maskingArguments.add(getText(id));
+                    }
+                }
             } else if (constraint.collateClause() != null) {
                 // A COLLATE that FOLLOWS the DEFAULT retypes the column under a default already
                 // typed without it, and Snowflake refuses the pair (live-verified). The other
@@ -613,6 +618,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             }
             MaskingPolicyAttachment.requireTypeMatch(catalog.findMaskingPolicy(maskingPolicy), column);
             column.setMaskingPolicyName(catalog.qualifiedObjectName(maskingPolicy));
+            column.setMaskingPolicyArguments(maskingArguments);
         }
 
         // Set foreign key info if present. A referential action other than NO ACTION silently
@@ -758,30 +764,11 @@ public class ColumnDefinitionParser implements CommandHandler {
                 final boolean isPrimaryKey = namesContain(tablePrimaryKeys, col.getName(), columns);
                 final boolean isUnique = namesContain(tableUniqueColumns, col.getName(), columns);
 
-                final TableColumn newCol = new TableColumn(
-                    col.getName(),
-                    col.getDataType(),
-                    // Named out of line, the key makes each of its columns NOT NULL exactly as the
-                    // inline form does, over whatever the column definition declared.
-                    col.isNullable() && !isPrimaryKey,
-                    col.getDefaultValue(),
-                    isPrimaryKey || col.isPrimaryKey(),
-                    isUnique || col.isUnique(),
-                    col.isAutoIncrement(),
-                    col.getIdentityStart(),      // 9-arg ctor: the 7-arg one resets identity to (1,1)
-                    col.getIdentityIncrement()
-                );
-                newCol.setComment(col.getComment());
-                newCol.setCollation(col.getCollation());
-                newCol.setRely(col.getRely());
-
-                // Copy foreign key info
-                if (col.hasForeignKey()) {
-                    newCol.setReferencedTable(col.getReferencedTable());
-                    newCol.setReferencedColumn(col.getReferencedColumn());
-                    newCol.setOnDelete(col.getOnDelete());
-                    newCol.setOnUpdate(col.getOnUpdate());
-                }
+                // Named out of line, the key makes each of its columns NOT NULL exactly as the inline form
+                // does, over whatever the column definition declared; everything else the column carries —
+                // policies and tags included — goes with it.
+                final TableColumn newCol = col.rebuiltCopy(col.getDataType(), col.isNullable() && !isPrimaryKey,
+                    isPrimaryKey || col.isPrimaryKey(), isUnique || col.isUnique());
 
                 updatedColumns.add(newCol);
             }

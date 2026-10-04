@@ -23,8 +23,10 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -61,20 +63,25 @@ public class DdlOptionBreadthTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void cloneAcceptsTimeTravelAndClonesCurrentState() {
+    public void cloneTimeTravelsAndRefusesAPointBeforeTheSource() {
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "Frostlake keeps no time-travel history — it PARSES the AT/BEFORE clause and clones the "
-            + "current state. A real account really does time-travel and fails "
-            + "\"Time travel data is not available for table TT_SRC\" for any offset before the table's "
-            + "own creation (live-verified 2026-08-02, even OFFSET => -1 on a just-created table)");
+            "the refusal below is live-verified; the AT (TIMESTAMP => CURRENT_TIMESTAMP()) clones are not");
+        // A real account time-travels a CLONE and fails "Time travel data is not available for table TT_SRC" for
+        // any offset before the table's own creation (live-verified 2026-08-02, even OFFSET => -1 on a
+        // just-created table). The engine used to parse the clause and clone the current state.
         engine.execute("CREATE TABLE tt_src (id INTEGER)");
         engine.execute("INSERT INTO tt_src VALUES (1), (2)");
-        engine.execute("CREATE TABLE tt_at CLONE tt_src AT (OFFSET => -3600)");
-        assertEquals(2, count("SELECT COUNT(*) FROM tt_at"));
-        engine.execute("CREATE TABLE tt_before CLONE tt_src BEFORE (STATEMENT => '8e5d0ca9-005e-44e6-b858-a8f5b37c5726')");
-        assertEquals(2, count("SELECT COUNT(*) FROM tt_before"));
+        final RuntimeException early = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE tt_at CLONE tt_src AT (OFFSET => -3600)");
+            }
+        });
+        assertEquals("Time travel data is not available for table TT_SRC. The requested time is either beyond the"
+            + " allowed time travel period or before the object creation time.", early.getMessage());
+        engine.execute("CREATE TABLE tt_now CLONE tt_src AT (TIMESTAMP => CURRENT_TIMESTAMP())");
+        assertEquals(2, count("SELECT COUNT(*) FROM tt_now"));
         engine.execute("CREATE SCHEMA tt_schema_clone CLONE test_schema AT (TIMESTAMP => CURRENT_TIMESTAMP())");
-        engine.execute("CREATE DATABASE tt_db_clone CLONE test_db AT (OFFSET => -60)");
     }
 
     @Test
@@ -110,13 +117,14 @@ public class DdlOptionBreadthTest extends BaseDatabaseTest {
         final Table table =
             engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA").getTable("REGIONS");
         assertTrue(table.hasRowAccessPolicy(), "CREATE TABLE ... ROW ACCESS POLICY must attach");
-        assertEquals("EU_ONLY", table.getRowAccessPolicyName());
+        // Recorded in full, as every policy attachment is, so it resolves the same from any schema.
+        assertEquals("TEST_DB.TEST_SCHEMA.EU_ONLY", table.getRowAccessPolicyName());
         assertEquals(1, table.getRowAccessPolicyColumns().size());
 
         final View view =
             engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA").getView("EU_VIEW");
         assertTrue(view.hasRowAccessPolicy(), "CREATE VIEW ... WITH ROW ACCESS POLICY must attach");
-        assertEquals("EU_ONLY", view.getRowAccessPolicyName());
+        assertEquals("TEST_DB.TEST_SCHEMA.EU_ONLY", view.getRowAccessPolicyName());
     }
 
     @Test

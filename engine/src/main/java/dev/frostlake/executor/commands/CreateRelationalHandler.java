@@ -31,9 +31,9 @@ import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
-import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.Initialize;
 import dev.frostlake.metastore.model.MaterializedView;
@@ -235,6 +235,9 @@ public class CreateRelationalHandler implements CommandHandler {
         BindsInDefinition.reject(ctx.selectStatement());
         rejectSourcelessCopyGrants(ctx);
 
+        // The replaced view's privileges, set aside while its replacement is made: OR ALTER keeps them all, COPY
+        // GRANTS all but OWNERSHIP, a plain OR REPLACE none; a replacement that fails leaves them where they were.
+        String grantsSetAside = null;
         try {
             final Schema schema;
             final String viewName;
@@ -255,7 +258,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 throw new RuntimeException("Invalid view name: " + qualifiedName);
             }
 
-            ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, ContainerType.SCHEMA, schema.getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, schema);
             // A name another relation kind holds is refused BEFORE existence is answered, so even
             // IF NOT EXISTS over a table's name refuses rather than skipping (live-verified).
             schema.rejectNameHeldByOtherKind(viewName, RelationKind.VIEW,
@@ -303,7 +306,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 // and live makes the same checks here (the policy must resolve above all).
                 final String written = getText(ctx.rowAccessPolicyClause().qualifiedName());
                 RowAccessPolicyAttachment.require(catalog, written);
-                view.setRowAccessPolicyName(written.toUpperCase());
+                view.setRowAccessPolicyName(catalog.qualifiedObjectName(written));
                 final List<String> policyCols = new ArrayList<>();
                 for (final FrostlakeParser.IdentifierContext id : ctx.rowAccessPolicyClause().identifierList().identifier()) {
                     policyCols.add(getText(id));
@@ -350,6 +353,10 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
 
+            if (orReplace && schema.hasView(viewName)) {
+                grantsSetAside = schema.qualifiedName(schema.getView(viewName).getName());
+                GrantNames.setAside(catalog, "VIEW", grantsSetAside);
+            }
             view.setOwner(FutureGrants.ownerOfNew(catalog, "VIEW", schema, viewName));
             view.setLastDdlBy(catalog.currentUserForDdl());
             if (ctx.tagList() != null) {
@@ -396,10 +403,22 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
             schema.addView(view);
+            if (grantsSetAside != null) {
+                if (ctx.or_alter() != null || !ctx.copyGrants().isEmpty()) {
+                    GrantNames.takeBack(catalog, "VIEW", grantsSetAside, ctx.or_alter() == null);
+                } else {
+                    GrantNames.discard(catalog, "VIEW", grantsSetAside);
+                }
+                grantsSetAside = null;
+            }
             logger.trace("Created view: {}", qualifiedName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
             logger.debug("View already exists (IF NOT EXISTS): {}", qualifiedName);
+        } finally {
+            if (grantsSetAside != null) {
+                GrantNames.takeBack(catalog, "VIEW", grantsSetAside, false);
+            }
         }
         return null;
     }
@@ -585,7 +604,8 @@ public class CreateRelationalHandler implements CommandHandler {
 
             // No dedicated CREATE MATERIALIZED VIEW privilege exists in the grammar/enum; a
             // materialized view is a view variant, so CREATE VIEW on the schema authorizes it.
-            ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, ContainerType.SCHEMA, schema.getName());
+            schema.requireCreatable(Privilege.CREATE_MATERIALIZED_VIEW);
+            ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, schema);
 
             // A materialized view must select FROM a real table. Live rejects a FROM-less definition —
             // Snowflake plans it as a VALUES table — with this exact sentence
@@ -715,21 +735,23 @@ public class CreateRelationalHandler implements CommandHandler {
         try {
             final Schema schema;
             final String dtName;
+            // The name is kept as the reference resolved it, quoted case and all, as a table's is.
             if (parts.length == 1) {
                 schema = ddl.resolveCurrentSchema();
-                dtName = parts[0].toUpperCase();
+                dtName = parts[0];
             }
             else if (parts.length == 2) {
                 schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                dtName = parts[1].toUpperCase();
+                dtName = parts[1];
             } else {
                 schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                dtName = parts[2].toUpperCase();
+                dtName = parts[2];
             }
 
             // No dedicated CREATE DYNAMIC TABLE privilege exists in the grammar/enum; a dynamic
             // table is a table variant, so CREATE TABLE on the schema authorizes it.
-            ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, ContainerType.SCHEMA, schema.getName());
+            schema.requireCreatable(Privilege.CREATE_DYNAMIC_TABLE);
+            ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, schema);
 
             // Parse options
             String targetLag = "1 minute";
@@ -775,7 +797,8 @@ public class CreateRelationalHandler implements CommandHandler {
             dt.setInitialize(initialize);
             dt.setDataRetentionDays(retentionDays);
             dt.setClusterKeys(clusterKeys);
-            dt.setTransient(ctx.TRANSIENT() != null);
+            // A dynamic table in a transient schema is transient, as a table there is.
+            dt.setTransient(ctx.TRANSIENT() != null || schema.isTransientObject());
 
             if (comment != null) dt.setComment(comment);
             recordCreateText(ctx, dt);
@@ -836,7 +859,7 @@ public class CreateRelationalHandler implements CommandHandler {
         final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(0)), 3);
         final String[] sourceParts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(1)), 3);
         final Schema sourceSchema = dynamicTableSchema(sourceParts);
-        final String sourceName = sourceParts[sourceParts.length - 1].toUpperCase();
+        final String sourceName = sourceParts[sourceParts.length - 1];
         if (!sourceSchema.hasDynamicTable(sourceName)) {
             // A missing source is named as an object, by its full path.
             throw new RuntimeException(SqlCompilationError.doesNotExist("Object", QualifiedName.join(
@@ -845,8 +868,9 @@ public class CreateRelationalHandler implements CommandHandler {
         }
         final DynamicTable source = sourceSchema.getDynamicTable(sourceName);
         final Schema schema = dynamicTableSchema(parts);
-        final String dtName = parts[parts.length - 1].toUpperCase();
-        ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, ContainerType.SCHEMA, schema.getName());
+        final String dtName = parts[parts.length - 1];
+        schema.requireCreatable(Privilege.CREATE_DYNAMIC_TABLE);
+        ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, schema);
         if (schema.hasDynamicTable(dtName) && ctx.or_replace() == null) {
             if (ifNotExists) {
                 ConditionalDdlOutcome.createSkipped();
@@ -866,7 +890,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 clone.setWarehouse(warehouse);
             }
         }
-        clone.setTransient(source.isTransient() || ctx.TRANSIENT() != null);
+        clone.setTransient(source.isTransient() || ctx.TRANSIENT() != null || schema.isTransientObject());
         clone.setClone(true);
         clone.setState(State.SUSPENDED);
         clone.setSchedulingState("SUSPENDED");

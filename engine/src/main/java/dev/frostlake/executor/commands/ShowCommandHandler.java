@@ -412,13 +412,15 @@ public class ShowCommandHandler implements CommandHandler {
             return new ExternalVolumeCommandHandler(catalog).show();
         } else if (ctx.TABLES() != null) {
             final ShowListingScope scope = listingScope(ctx, ShowListing.TABLES, forced);
+            // HISTORY adds the dropped tables UNDROP can still restore, and their dropped_on.
+            final boolean history = ctx.HISTORY() != null;
             if (scope.isAccount()) {
-                return showExecutor.showTablesInAccount();
+                return showExecutor.showTablesInAccount(history);
             }
             if (scope.isDatabase()) {
-                return showExecutor.showTablesInDatabase(scope.name());
+                return showExecutor.showTablesInDatabase(scope.name(), history);
             }
-            return showExecutor.showTables(scope.name());
+            return showExecutor.showTables(scope.name(), history);
         } else if (ctx.COLUMNS() != null) {
             final String name = ctx.objectName() != null ? scopeName(ctx) : null;
             if (ctx.TABLE() != null || ctx.VIEW() != null || ctx.IN() != null && ctx.ACCOUNT() == null
@@ -699,6 +701,11 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.USER() != null && ctx.identifier() != null) {
                 return showExecutor.showParametersInUser(SqlIdentifiers.canonical(ctx.identifier()), like);
             }
+            if (ctx.USER() != null) {
+                // IN USER with no name lists the session's own user, the one CURRENT_USER() names (live-verified).
+                final String user = catalog.currentUserForDdl();
+                return showExecutor.showParametersInUser(user != null ? user : "", like);
+            }
             if (ctx.WAREHOUSE() != null && ctx.identifier() != null) {
                 return showExecutor.showParametersInWarehouse(getText(ctx.identifier()), like);
             }
@@ -713,7 +720,7 @@ public class ShowCommandHandler implements CommandHandler {
                 }
                 return showExecutor.showParametersInSchema(database, parts[parts.length - 1], like);
             }
-            return showExecutor.showParameters(like);
+            return showExecutor.showParameters(like, ctx.ACCOUNT() != null);
         } else if (ctx.OBJECTS() != null) {
             final ShowListingScope scope = listingScope(ctx, ShowListing.OBJECTS, forced);
             if (scope.isAccount()) {
@@ -787,12 +794,17 @@ public class ShowCommandHandler implements CommandHandler {
             : QualifiedName.join(queryExecutor.resolveObjectNameParts(name));
     }
 
-    /** DESCRIBE DYNAMIC TABLE's columns, which come from projecting the dynamic table itself, zero rows needed. */
+    /**
+     * DESCRIBE DYNAMIC TABLE's columns, which come from projecting the dynamic table itself, zero rows needed. The
+     * projection is the DESCRIBE's own work, so it takes no query ID and no history row.
+     */
     private ResultSet describeDynamicTable(final ShowCommandExecutor showExecutor, final String dtName) {
         return showExecutor.describeDynamicTable(dtName, new ResultSetProvider() {
             @Override
             public ResultSet getResultSet() {
-                final List<ResultSet> results = queryExecutor.execute("SELECT * FROM " + dtName + " LIMIT 0");
+                final List<ResultSet> results =
+                    queryExecutor.executeUnrecorded("SELECT * FROM "
+                        + SqlIdentifiers.spellAlreadyCanonicalPathEscaped(dtName) + " LIMIT 0");
                 return results.get(results.size() - 1);
             }
         });
@@ -936,11 +948,14 @@ public class ShowCommandHandler implements CommandHandler {
 
         if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
             final String dtName = describedName(ctx.objectName());
-            // The column list comes from projecting the dynamic table itself, zero rows needed.
+            // The column list comes from projecting the dynamic table itself, zero rows needed, as the DESCRIBE's own
+            // work: no query ID and no history row.
             return showExecutor.describeDynamicTable(dtName, new ResultSetProvider() {
                 @Override
                 public ResultSet getResultSet() {
-                    final List<ResultSet> results = queryExecutor.execute("SELECT * FROM " + dtName + " LIMIT 0");
+                    final List<ResultSet> results =
+                        queryExecutor.executeUnrecorded("SELECT * FROM "
+                            + SqlIdentifiers.spellAlreadyCanonicalPathEscaped(dtName) + " LIMIT 0");
                     return results.get(results.size() - 1);
                 }
             });
@@ -1195,8 +1210,18 @@ public class ShowCommandHandler implements CommandHandler {
             queryExecutor.requireSecurable(objectType, parts);
             final Integer arity = target.LPAREN() == null ? null
                 : Integer.valueOf(target.dataTypeList() == null ? 0 : target.dataTypeList().dataTypeName().size());
+            // A routine is shown one overload at a time: the one the written argument types name.
+            final List<String> writtenTypes = target.LPAREN() == null ? null : new ArrayList<String>();
+            if (writtenTypes != null && target.dataTypeList() != null) {
+                for (final FrostlakeParser.DataTypeNameContext type : target.dataTypeList().dataTypeName()) {
+                    writtenTypes.add(type.getStart().getText());
+                }
+            }
+            if (writtenTypes != null && ("FUNCTION".equals(objectType) || "PROCEDURE".equals(objectType))) {
+                queryExecutor.routineGrantNames(objectType, parts, writtenTypes);
+            }
             return showExecutor.showGrantsOnObject(objectType, getText(target.qualifiedName()),
-                queryExecutor.grantedObject(objectType, parts, arity));
+                queryExecutor.grantedObject(objectType, parts, arity, writtenTypes));
         } else if (ctx.TO() != null) {
             // SHOW GRANTS TO USER/ROLE identifier
             final String targetType = ctx.USER() != null ? "USER" : "ROLE";

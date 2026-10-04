@@ -96,8 +96,11 @@ public class RestSchemaTest extends BaseRestTest {
         sql("CREATE TABLE rsc_db.rsc_modes.t (id INT)");
         ok(post(SCHEMAS + "/rsc_modes:clone", "{\"name\":\"rsc_copy\"}"));
         assertEquals("third", ok(get(SCHEMAS + "/rsc_copy")).path("comment").asString());
-        ok(post(SCHEMAS + "/rsc_modes:clone?targetDatabase=rsc_target", "{\"name\":\"rsc_moved\",\"point_of_time\":"
-            + "{\"point_of_time_type\":\"statement\",\"reference\":\"before\",\"statement\":\"01b2c3d4\"}}"));
+        // The point reaches the clone, which time-travels to it: a statement nobody ran is refused.
+        assertTrue(error(400, post(SCHEMAS + "/rsc_modes:clone?targetDatabase=rsc_target", "{\"name\":\"rsc_moved\","
+            + "\"point_of_time\":{\"point_of_time_type\":\"statement\",\"reference\":\"before\","
+            + "\"statement\":\"01b2c3d4\"}}")).contains("statement 01b2c3d4 not found"));
+        ok(post(SCHEMAS + "/rsc_modes:clone?targetDatabase=rsc_target", "{\"name\":\"rsc_moved\"}"));
         ok(get("/api/v2/databases/rsc_target/schemas/rsc_moved"));
         error(404, post(SCHEMAS + "/rsc_no_source:clone", "{\"name\":\"rsc_copy_none\"}"));
     }

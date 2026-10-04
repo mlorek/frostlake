@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.storage.SnapshotSequence;
 
@@ -36,12 +37,26 @@ import java.util.Objects;
 public class Stream implements Taggable {
 
     private final String name;
-    private final String sourceTableName;
+    private String sourceTableName;
+    /**
+     * The table a table stream reads, once bound: the table ITSELF, not whatever its name later names. A rename,
+     * a move or a swap keeps the stream on it, and a table created afterwards under the old name is another
+     * table. Snowflake documents both: "Renaming a source object does not break a stream", and when "a source
+     * object is dropped and a new object is created with the same name", the stream "is not linked to the new
+     * object". Null until bound; a stream restored from a snapshot or copied by a clone binds on first use, by
+     * its recorded name read where the stream lives (see {@code StreamSources}).
+     */
+    private Table sourceTable;
+    /**
+     * The tables a VIEW stream's view reads, bound like {@link #sourceTable}, in the order of
+     * {@link #getBaseTableNames}: null until bound.
+     */
+    private List<Table> baseTables;
     private final StreamSourceType sourceType;
     private final StreamType streamType;
     private final boolean showInitialRows;
     private final List<StreamRecord> records;
-    private final LocalDateTime createdAt;
+    private LocalDateTime createdAt;
     private long currentOffset;
     private boolean stale;
     private String comment;
@@ -71,7 +86,8 @@ public class Stream implements Taggable {
         this.streamType = streamType;
         this.showInitialRows = showInitialRows;
         this.records = new ArrayList<>();
-        this.createdAt = LocalDateTime.now();
+        // The creating statement's instant, which a replayed statement reproduces (see SqlObject).
+        this.createdAt = StatementClock.hostLocal();
         this.currentOffset = 0;
         this.stale = false;
     }
@@ -446,6 +462,36 @@ public class Stream implements Taggable {
         return sourceTableName;
     }
 
+    /**
+     * Re-spells the recorded source after its table was renamed or moved, so a snapshot or a clone binds the
+     * stream to the same table again.
+     *
+     * @param sourceTableName the table's name now, read from where the stream lives
+     */
+    public void setSourceTableName(final String sourceTableName) {
+        this.sourceTableName = sourceTableName;
+    }
+
+    /** The table this table stream is bound to, or null while it is not bound yet. */
+    public Table getSourceTable() {
+        return sourceTable;
+    }
+
+    /** Binds this table stream to its table. */
+    public void bindSourceTable(final Table table) {
+        this.sourceTable = table;
+    }
+
+    /** The tables this view stream is bound to, or null while it is not bound yet. */
+    public List<Table> getBaseTables() {
+        return baseTables;
+    }
+
+    /** Binds this view stream to the tables its view reads, in the order its view's query names them. */
+    public void bindBaseTables(final List<Table> tables) {
+        this.baseTables = tables == null ? null : new ArrayList<>(tables);
+    }
+
     public StreamSourceType getSourceType() {
         return sourceType;
     }
@@ -464,6 +510,18 @@ public class Stream implements Taggable {
 
     public LocalDateTime getCreatedAt() {
         return createdAt;
+    }
+
+    /**
+     * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
+     * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
+     *
+     * @param created the recorded creation time, or null
+     */
+    public void restoreCreatedTime(final LocalDateTime created) {
+        if (created != null) {
+            this.createdAt = created;
+        }
     }
 
     public long getCurrentOffset() {

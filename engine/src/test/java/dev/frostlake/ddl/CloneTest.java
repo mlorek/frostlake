@@ -21,6 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import java.math.BigDecimal;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -509,5 +510,32 @@ public class CloneTest extends BaseDatabaseTest {
             cell(stages, soleRowWhere(stages, "name", "jar_stage"), "url"));
         final ResultSet formats = engine.executeQuery("SHOW FILE FORMATS LIKE 'csv_fmt'");
         assertEquals("CSV", cell(formats, soleRowWhere(formats, "name", "csv_fmt"), "type"));
+    }
+
+    /**
+     * PUBLIC is cloned whole, like any other schema. A cloned database copied PUBLIC's tables and views alone,
+     * so the functions, procedures and sequences of PUBLIC were missing from the clone, where another schema's
+     * came along.
+     */
+    @Test
+    public void aClonedDatabaseCarriesPublicsRoutinesAndSequences() {
+        engine.execute("CREATE DATABASE src_pub");
+        engine.execute("USE SCHEMA src_pub.PUBLIC");
+        engine.execute("CREATE FUNCTION twice(x NUMBER(8,4)) RETURNS NUMBER(9,4) AS $$ x * 2 $$");
+        engine.execute("CREATE PROCEDURE hello() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'hello'; END $$");
+        engine.execute("CREATE SEQUENCE seq START = 10");
+        engine.execute("CREATE TABLE t (id INT)");
+        engine.execute("INSERT INTO t VALUES (1)");
+
+        engine.execute("CREATE DATABASE dst_pub CLONE src_pub");
+
+        assertEquals(0, new BigDecimal("7.5").compareTo(new BigDecimal(
+            String.valueOf(engine.executeQuery("SELECT dst_pub.PUBLIC.twice('3.75')").getRows().get(0).getValue(0)))));
+        assertEquals("hello",
+            String.valueOf(engine.executeQuery("CALL dst_pub.PUBLIC.hello()").getRows().get(0).getValue(0)));
+        assertEquals("10",
+            String.valueOf(engine.executeQuery("SELECT dst_pub.PUBLIC.seq.NEXTVAL").getRows().get(0).getValue(0)));
+        assertEquals("1",
+            String.valueOf(engine.executeQuery("SELECT COUNT(*) FROM dst_pub.PUBLIC.t").getRows().get(0).getValue(0)));
     }
 }

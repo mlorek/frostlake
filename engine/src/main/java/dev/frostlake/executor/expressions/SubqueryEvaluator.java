@@ -20,6 +20,7 @@ import dev.frostlake.executor.CorrelatedSubqueryRule;
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.DerivedColumnLineage;
 import dev.frostlake.executor.OuterNameConstancy;
+import dev.frostlake.executor.ProjectionLineage;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RelationBody;
 import dev.frostlake.executor.RelationShapeOnly;
@@ -279,7 +280,10 @@ final class SubqueryEvaluator {
         final ExpressionEvaluatorVisitor enclosingScope = SubqueryCompilation.beginScope(visitor);
         final boolean enclosingRanking = SubqueryTypeRanking.begin(false);
         try {
-            visitor.getQueryExecutor().executeWithLateralContext(expr.getSubquery(), outerNames);
+            // The compiled shape says whether the subquery's select list hands out values a projection policy
+            // restricts, which the select list holding it then hands out too (ProjectionLineage).
+            ProjectionLineage.recordSubquery(expr.getSubquery(),
+                visitor.getQueryExecutor().executeWithLateralContext(expr.getSubquery(), outerNames));
             return null;
         } catch (final UnsupportedSubqueryException judgedPerRow) {
             return null;

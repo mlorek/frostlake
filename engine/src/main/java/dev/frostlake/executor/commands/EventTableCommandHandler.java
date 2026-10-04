@@ -23,6 +23,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -113,6 +114,7 @@ final class EventTableCommandHandler {
             schema = catalog.getDatabase(databaseName).getSchema(parts[1]);
             tableName = parts[2];
         }
+        schema.requireCreatable(Privilege.CREATE_EVENT_TABLE);
         final String key = QualifiedName.key(databaseName, schema.getName(), tableName);
         if (schema.hasTable(tableName)) {
             if (ifNotExists) {

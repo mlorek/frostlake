@@ -79,7 +79,9 @@ public class ShowParametersCatalogTest extends BaseDatabaseTest {
         assertRow("AUTOCOMMIT", "true", "true", "", "BOOLEAN");
         assertRow("BINARY_OUTPUT_FORMAT", "HEX", "HEX", "", "STRING");
         assertRow("LOCK_TIMEOUT", "43200", "43200", "", "NUMBER");
-        assertRow("TIMEZONE", "America/Los_Angeles", "America/Los_Angeles", "", "STRING");
+        // The account sets TIMEZONE, as qa-develop does: UTC at level ACCOUNT, the documented default beside it
+        // (live-verified).
+        assertRow("TIMEZONE", "UTC", "America/Los_Angeles", "ACCOUNT", "STRING");
         // An empty default is empty, not null — QUERY_TAG starts unset.
         assertRow("QUERY_TAG", "", "", "", "STRING");
     }

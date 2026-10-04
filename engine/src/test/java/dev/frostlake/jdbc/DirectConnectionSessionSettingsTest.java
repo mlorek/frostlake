@@ -74,10 +74,13 @@ public class DirectConnectionSessionSettingsTest {
         }
     }
 
-    /** Whether the session's parameter reads its default. */
-    private boolean atDefault(final int session, final String name) throws SQLException {
+    /**
+     * Whether the session has left the parameter as it found it: not set at level SESSION, so it reads the account's
+     * value (TIMEZONE's UTC, level ACCOUNT) or else its default.
+     */
+    private boolean unsetInSession(final int session, final String name) throws SQLException {
         final String show = "SHOW PARAMETERS LIKE '" + name + "' IN SESSION";
-        return cell(session, show, "value").equals(cell(session, show, "default"));
+        return !"SESSION".equals(cell(session, show, "level"));
     }
 
     private String refusal(final int session, final String sql) {
@@ -94,14 +97,14 @@ public class DirectConnectionSessionSettingsTest {
     public void aParameterIsTheConnectionsOwn() throws SQLException {
         run(0, "ALTER SESSION SET TIMEZONE = 'America/New_York'");
         assertEquals("America/New_York", cell(0, "SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION", "value"));
-        assertTrue(atDefault(1, "TIMEZONE"));
+        assertTrue(unsetInSession(1, "TIMEZONE"));
         run(0, "ALTER SESSION SET QUERY_TAG = 'from_a'");
         assertEquals("from_a", cell(0, "SHOW PARAMETERS LIKE 'QUERY_TAG' IN SESSION", "value"));
-        assertTrue(atDefault(1, "QUERY_TAG"));
+        assertTrue(unsetInSession(1, "QUERY_TAG"));
         run(0, "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ'");
         assertEquals("TIMESTAMP_LTZ(9)[SB16]", cell(0, "SELECT SYSTEM$TYPEOF('2026-08-13 01:02:03'::TIMESTAMP) AS t", "t"));
         assertEquals("TIMESTAMP_NTZ(9)[SB16]", cell(1, "SELECT SYSTEM$TYPEOF('2026-08-13 01:02:03'::TIMESTAMP) AS t", "t"));
-        assertTrue(atDefault(2, "TIMEZONE"));
+        assertTrue(unsetInSession(2, "TIMEZONE"));
     }
 
     @Test
@@ -110,7 +113,7 @@ public class DirectConnectionSessionSettingsTest {
         run(1, "ALTER SESSION SET TIMEZONE = 'Europe/London'");
         run(1, "ALTER SESSION UNSET TIMEZONE");
         assertEquals("America/New_York", cell(0, "SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION", "value"));
-        assertTrue(atDefault(1, "TIMEZONE"));
+        assertTrue(unsetInSession(1, "TIMEZONE"));
     }
 
     @Test

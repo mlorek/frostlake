@@ -26,7 +26,9 @@ import java.time.Instant;
  * The tokens a statement hands out to what it creates — a notebook's URL id, a generated job service name, an
  * Iceberg table's location suffix — drawn so that the statement, replayed from the write-ahead log, hands out the
  * same ones: each token is derived from the instant the outermost statement started at, which the log records,
- * and from how many tokens the statement drew before it. Outside a statement a token is random.
+ * and from how many tokens the statement drew before it. Every statement's start is its own, whichever session runs
+ * it (see {@link StatementClock#observedStatementStart}), so no two statements hand out the same token. Outside a
+ * statement a token is random.
  */
 public final class StatementTokens {
 
@@ -39,6 +41,17 @@ public final class StatementTokens {
     }
 
     /**
+     * Starts an outermost statement's draws afresh. A token follows from the statement's start and from how many
+     * tokens the statement drew before it, and only the write-ahead log's replay runs a start a second time: on the
+     * same thread when an engine recovers inside the process that wrote its log, where the count would otherwise go
+     * on from the first run's draws and hand out other tokens.
+     */
+    public static void restart() {
+        DRAWN_FOR.remove();
+        DRAWN.remove();
+    }
+
+    /**
      * A token of the given length over the given characters.
      *
      * @param alphabet the characters a token is made of
@@ -47,7 +60,7 @@ public final class StatementTokens {
      */
     public static String draw(final String alphabet, final int length) {
         final StringBuilder out = new StringBuilder(length);
-        final Instant statement = StatementClock.statementStart();
+        final Instant statement = StatementClock.observedStatementStart();
         if (statement == null) {
             for (int i = 0; i < length; i++) {
                 out.append(alphabet.charAt(RANDOM.nextInt(alphabet.length())));

@@ -16,6 +16,8 @@
 
 package dev.frostlake.storage;
 
+import dev.frostlake.metastore.model.TableStructure;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -31,11 +33,32 @@ public class TableSnapshot {
      * snapshots tell an updated row from one deleted and inserted again.
      */
     public final List<Long> rowIds;
+    /**
+     * The table's shape when the snapshot was taken, or null when the table keeps no structure history. {@link #rows}
+     * follow the table's CURRENT columns, which a column DDL rewrites them to; {@link #asTakenRows} keep this shape.
+     */
+    public final TableStructure layout;
+    /**
+     * The rows as the snapshot took them, laid out in {@link #layout}: a column dropped since still has its values
+     * here. The same list as {@link #rows} until a column DDL rewrites those.
+     */
+    public final List<Row> asTakenRows;
 
     public TableSnapshot(final long epochMillis, final long sequence, final List<Row> rows, final List<Long> rowIds) {
+        this(epochMillis, sequence, rows, rowIds, null, null);
+    }
+
+    /**
+     * @param layout      the table's shape when the snapshot was taken, or null
+     * @param asTakenRows the rows in that shape, or null when {@code rows} are
+     */
+    public TableSnapshot(final long epochMillis, final long sequence, final List<Row> rows, final List<Long> rowIds,
+                         final TableStructure layout, final List<Row> asTakenRows) {
         this.epochMillis = epochMillis;
         this.sequence = sequence;
         this.rows = Collections.unmodifiableList(new ArrayList<>(rows));
         this.rowIds = Collections.unmodifiableList(new ArrayList<>(rowIds));
+        this.layout = layout;
+        this.asTakenRows = asTakenRows != null ? asTakenRows : this.rows;
     }
 }

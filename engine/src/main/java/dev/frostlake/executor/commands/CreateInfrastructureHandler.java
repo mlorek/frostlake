@@ -27,10 +27,10 @@ import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.InstanceFamilies;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
-import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Pipe;
@@ -95,8 +95,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final boolean orReplace = ctx.or_replace() != null;
 
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_TASK, ContainerType.SCHEMA,
-                ddl.resolveSchemaFromQualifiedName(taskQualifiedName).getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_TASK,
+                ddl.resolveSchemaFromQualifiedName(taskQualifiedName));
             if (orReplace) {
                 queryExecutor.requireOwnership("TASK", qualifiedNameParts(ctx.qualifiedName(0)), null);
             }
@@ -217,7 +217,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             try { pipeSchema.dropPipe(pipeName); } catch (final RuntimeException ignored) {}
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, ContainerType.SCHEMA, pipeSchema.getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, pipeSchema);
             // Extract COPY statement text
             final String copyStatement = ddl.getOriginalText(ctx.copyStatement());
             // The COPY's names resolve in the pipe's schema, as they do when the pipe loads.
@@ -481,7 +481,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 : new Sequence(sequenceName, startValue, increment, order, comment);
 
             final Schema schema = ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName);
-            ddl.checkCreatePrivilege(Privilege.CREATE_SEQUENCE, ContainerType.SCHEMA, schema.getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_SEQUENCE, schema);
             sequence.setOwner(FutureGrants.ownerOfNew(catalog, "SEQUENCE", schema, sequence.getName()));
             schema.addSequence(sequence);
             logger.trace("Created sequence: {} with START={}, INCREMENT={}", sequenceQualifiedName, startValue, increment);
@@ -711,8 +711,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             try { catalog.dropStage(stageName); } catch (final RuntimeException ignored) {}
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_STAGE, ContainerType.SCHEMA,
-                ddl.resolveSchemaFromQualifiedName(stageName).getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_STAGE,
+                ddl.resolveSchemaFromQualifiedName(stageName));
             // A URL-less CREATE STAGE makes an internal named stage (Snowflake's default when URL is omitted);
             // a URL (except file://) denotes an external stage.
             final boolean hasProps = ctx.stageProperties() != null;
@@ -870,6 +870,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("Missing option(s): [TARGET_LAG]"));
         }
         WarehouseReference.require(catalog, warehouse);
+        ddl.resolveSchemaFromQualifiedName(serviceName).requireCreatable(Privilege.CREATE_CORTEX_SEARCH_SERVICE);
 
         if (ctx.or_replace() != null) {
             try {
@@ -955,8 +956,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_FILE_FORMAT, ContainerType.SCHEMA,
-                ddl.resolveSchemaFromQualifiedName(name).getName());
+            ddl.checkCreatePrivilege(Privilege.CREATE_FILE_FORMAT,
+                ddl.resolveSchemaFromQualifiedName(name));
             final FileFormat fileFormat = new FileFormat(simpleName, "CSV");
             fileFormat.setOwner(catalog.currentRoleForOwner());
             applyFileFormatOptions(fileFormat, ctx.copyFormatOption());
@@ -994,16 +995,22 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final String newName = getText(action.qualifiedName());
             final String[] newParts = qualifiedNameParts(action.qualifiedName());
             final String newSimple = newParts[newParts.length - 1];
+            catalog.resolveOwningSchema(newName).requireCreatable(Privilege.CREATE_FILE_FORMAT);
             // The new name is taken: refused before the old one is given up.
             if (catalog.hasFileFormat(newName)) {
                 throw new RuntimeException(SqlCompilationError.of("Object '" + catalog.getFileFormat(newName).getName() + "' already exists."));
             }
+            final String grantedBefore = catalog.resolveOwningSchema(name).qualifiedName(fileFormat.getName());
             catalog.dropFileFormat(name);
             fileFormat.setName(newSimple);
             catalog.addFileFormat(newName, fileFormat);
+            GrantNames.renamed(catalog, "FILE_FORMAT", grantedBefore,
+                catalog.resolveOwningSchema(newName).qualifiedName(newSimple));
         } else {
             applyFileFormatOptions(fileFormat, action.copyFormatOption(), false);
         }
+        // Every ALTER is DDL on the file format, a rename included: its LAST_ALTERED moves.
+        fileFormat.markDdl();
         return null;
     }
 

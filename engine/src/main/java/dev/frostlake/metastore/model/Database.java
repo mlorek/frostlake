@@ -18,7 +18,9 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.metastore.CloneReferences;
 import dev.frostlake.metastore.NameKeys;
+import dev.frostlake.metastore.PolicyReferences;
 import dev.frostlake.metastore.SqlObject;
 
 import java.util.ArrayList;
@@ -211,6 +213,22 @@ public class Database extends SqlObject {
         clonedDb.setComment(this.getComment());
         clonedDb.getParameters().copyFrom(parameters);
         clonedDb.setDataRetentionTimeInDays(dataRetentionTimeInDays);
+        clonedDb.setTransientObject(transientObject);
+        for (final Map.Entry<String, String> tag : getTagValues().entrySet()) {
+            clonedDb.setTag(tag.getKey(), tag.getValue());
+        }
+        if (!hasSchemaExact("PUBLIC")) {
+            // PUBLIC is droppable (live-verified), and a database without one clones without one: the empty PUBLIC
+            // a new database starts with goes, rather than standing in for a schema the source does not have.
+            clonedDb.schemas.remove("PUBLIC");
+        }
+        // Database roles are cloned with their database (documented), each holding on the clone's objects what its
+        // source holds on the source's.
+        for (final DatabaseRole role : getDatabaseRoles()) {
+            final DatabaseRole clonedRole = new DatabaseRole(newName, role.getName());
+            clonedRole.copyGrantsFrom(role, getName(), newName);
+            clonedDb.putDatabaseRole(clonedRole);
+        }
 
         // Clone all schemas
         for (final Schema schema : schemas.values()) {
@@ -218,44 +236,20 @@ public class Database extends SqlObject {
             if ("INFORMATION_SCHEMA".equals(schemaName)) {
                 // Skip INFORMATION_SCHEMA (it's a system schema with views that are auto-created)
                 continue;
-            } else if ("PUBLIC".equals(schemaName)) {
-                // Clone PUBLIC schema content into the existing PUBLIC schema
-                final Schema sourcePublic = schema;
-                final Schema targetPublic = clonedDb.getSchema("PUBLIC");
-
-                // Clone tables from source PUBLIC to target PUBLIC
-                for (final Table table : sourcePublic.getNonTemporaryTables()) {
-                    final List<TableColumn> clonedColumns = new ArrayList<>();
-                    for (final TableColumn col : table.getColumns()) {
-                        final TableColumn clonedCol = new TableColumn(
-                            col.getName(),
-                            col.getDataType(),
-                            col.isNullable(),
-                            col.getDefaultValue(),
-                            col.isPrimaryKey(),
-                            col.isUnique(),
-                            col.isAutoIncrement()
-                        );
-                        clonedCol.setComment(col.getComment());
-                        clonedCol.setCollation(col.getCollation());
-                        clonedColumns.add(clonedCol);
-                    }
-                    final Table clonedTable = new Table(table.getName(), clonedColumns, table.isTemporary(), table.isTransient());
-                    clonedTable.setComment(table.getComment());
-                    clonedTable.setClusterKeys(table.getClusterKeys());
-                    targetPublic.addTable(clonedTable);
-                }
-
-                // Clone views from source PUBLIC to target PUBLIC
-                for (final View view : sourcePublic.getViews()) {
-                    targetPublic.addView(view.copy());
-                }
             } else {
-                // Clone user-created schemas
+                // Every other schema is cloned whole, PUBLIC too: its clone takes the place of the empty
+                // PUBLIC the new database starts with. Copying PUBLIC's tables and views alone left the
+                // cloned database without PUBLIC's functions, procedures, sequences, streams, tasks,
+                // stages, file formats and policies, and its tables without their policies.
                 final Schema clonedSchema = schema.clone();
                 clonedDb.registerSchema(schemaName, clonedSchema);
             }
         }
+        // An attachment to a policy of this database names the clone's copy of it; one to a policy in another
+        // database keeps naming that one.
+        PolicyReferences.repoint(clonedDb.getAllSchemas(), null, new String[] {getName()}, new String[] {newName});
+        // So do its foreign keys, sequence defaults and materialized views (CloneReferences).
+        CloneReferences.repoint(clonedDb.getAllSchemas(), new String[] {getName()}, new String[] {newName});
 
         return clonedDb;
     }
@@ -268,6 +262,7 @@ public class Database extends SqlObject {
         final Schema clonedSchema = sourceSchema.clone();
         clonedSchema.rename(targetName);
         addSchema(clonedSchema);
+        repointClonedAttachments(sourceSchema, clonedSchema);
         return clonedSchema;
     }
 
@@ -279,7 +274,21 @@ public class Database extends SqlObject {
         final Schema clonedSchema = sourceSchema.clone();
         clonedSchema.rename(targetName);
         targetDb.addSchema(clonedSchema);
+        repointClonedAttachments(sourceSchema, clonedSchema);
         return clonedSchema;
+    }
+
+    /**
+     * A cloned schema's attachments to the policies of the schema it was cloned from name the clone's copies;
+     * an attachment to a policy in any other schema keeps naming that one.
+     */
+    private static void repointClonedAttachments(final Schema source, final Schema clone) {
+        final List<Schema> scope = new ArrayList<>();
+        scope.add(clone);
+        PolicyReferences.repoint(scope, null, new String[] {source.getDatabaseName(), source.getName()},
+            new String[] {clone.getDatabaseName(), clone.getName()});
+        CloneReferences.repoint(scope, new String[] {source.getDatabaseName(), source.getName()},
+            new String[] {clone.getDatabaseName(), clone.getName()});
     }
 
     public boolean isReadOnly() {

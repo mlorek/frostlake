@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.CollatedKey;
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.FoldedValues;
 import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
@@ -28,6 +29,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.VariantValue;
@@ -235,9 +237,13 @@ public final class SetOperations {
         return target instanceof DateTimeType && "TIMESTAMP_NTZ".equalsIgnoreCase(target.getName());
     }
 
-    /** Whether {@code target} is a unified type string-branch values convert INTO. */
+    /**
+     * Whether {@code target} is a unified type string-branch values convert INTO. A UUID is one, whichever arm
+     * leads: {@code <uuid> UNION ALL 'AAAAAAAA-...'} reads both rows as UUIDs, the text lower-cased, and a text
+     * arm that spells no UUID is "UUID 'abc' is invalid, ..." (live-verified).
+     */
     private static boolean isStringCoercionTarget(final DataType target) {
-        if (target instanceof NumericType) {
+        if (target instanceof NumericType || target instanceof UuidType) {
             return true;
         }
         return target instanceof DateTimeType
@@ -249,6 +255,9 @@ public final class SetOperations {
     private static Object toUnifiedColumnValue(final Object value, final DataType target) {
         if (value == null) {
             return null;
+        }
+        if (target instanceof UuidType) {
+            return value instanceof CharSequence ? FoldedValues.presented(value, target) : value;
         }
         if (target instanceof NumericType) {
             final NumericType numeric = (NumericType) target;

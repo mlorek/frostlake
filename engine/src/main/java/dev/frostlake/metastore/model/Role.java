@@ -385,6 +385,73 @@ public class Role implements Taggable {
         return new HashMap<>(tags);
     }
 
+    /**
+     * Gives this role what another holds, with the names under one database recorded under another's: how a database
+     * clone's database roles start (documented: a database role is cloned with its database). The privileges keep
+     * their grantors, grant times and grant options; a database role granted to the source from its own database is
+     * granted to this one from the clone. The comment, owner and tags come along. Future grants are not copied.
+     *
+     * @param source       the role to copy
+     * @param fromDatabase the source's database, canonical
+     * @param toDatabase   the clone's database, canonical
+     */
+    public void copyGrantsFrom(final Role source, final String fromDatabase, final String toDatabase) {
+        final Set<String> kinds = new HashSet<>();
+        for (final Map.Entry<String, Set<Privilege>> held : source.objectPrivileges.entrySet()) {
+            objectPrivileges.put(held.getKey(), new HashSet<>(held.getValue()));
+            kinds.add(held.getKey().substring(0, held.getKey().indexOf(':')));
+        }
+        for (final Map.Entry<String, Map<String, Set<Privilege>>> held : source.columnPrivileges.entrySet()) {
+            final Map<String, Set<Privilege>> columns = new HashMap<>();
+            for (final Map.Entry<String, Set<Privilege>> column : held.getValue().entrySet()) {
+                columns.put(column.getKey(), new HashSet<>(column.getValue()));
+            }
+            columnPrivileges.put(held.getKey(), columns);
+            kinds.add(held.getKey().substring(0, held.getKey().indexOf(':')));
+        }
+        privilegeGrantors.putAll(source.privilegeGrantors);
+        privilegeGrantTimes.putAll(source.privilegeGrantTimes);
+        grantOptions.addAll(source.grantOptions);
+        grantedRoles.addAll(source.grantedRoles);
+        roleGrantors.putAll(source.roleGrantors);
+        remapGrants(new GrantRemap(kinds, new String[] {fromDatabase}, new String[] {toDatabase}, false, false,
+            GrantRemap.ALL));
+        final String prefix = fromDatabase + ".";
+        for (final Map.Entry<String, String> granted : source.databaseRoleGrantors.entrySet()) {
+            final String name = granted.getKey().startsWith(prefix)
+                ? toDatabase + "." + granted.getKey().substring(prefix.length()) : granted.getKey();
+            databaseRoleGrantors.put(name, granted.getValue());
+            final Instant when = source.databaseRoleGrantTimes.get(granted.getKey());
+            if (when != null) {
+                databaseRoleGrantTimes.put(name, when);
+            }
+        }
+        comment = source.comment;
+        owner = source.owner;
+        tags.putAll(source.tags);
+    }
+
+    /**
+     * Applies a change of recorded names to the privileges this role holds on objects.
+     *
+     * @param remap the change
+     */
+    public void remapGrants(final GrantRemap remap) {
+        GrantKeys.remap(objectPrivileges, columnPrivileges, privilegeGrantors, privilegeGrantTimes, grantOptions, remap);
+    }
+
+    /**
+     * Takes back the privileges this role holds on one object.
+     *
+     * @param objectType    the kind the privileges are recorded under
+     * @param objectName    the name they are recorded under
+     * @param ownershipOnly true to take back only OWNERSHIP
+     */
+    public void purgeGrants(final String objectType, final String objectName, final boolean ownershipOnly) {
+        GrantKeys.purge(objectPrivileges, columnPrivileges, privilegeGrantors, privilegeGrantTimes, grantOptions,
+            objectType.toUpperCase() + ":" + objectName.toUpperCase(), ownershipOnly);
+    }
+
     public void rename(final String newName) {
         // Match the constructor, which upper-cases the name; a verbatim rename would
         // otherwise leave getName() inconsistent with every freshly-created role.

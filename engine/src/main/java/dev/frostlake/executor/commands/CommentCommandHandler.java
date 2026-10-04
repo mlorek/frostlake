@@ -18,21 +18,25 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.MaskingPolicy;
+import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
@@ -122,7 +126,10 @@ public class CommentCommandHandler implements CommandHandler {
                     }
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Database", dbName));
                 }
+                SystemDatabase.refuseChange(db.getName());
                 db.setComment(comment);
+                // A comment is DDL like any ALTER: LAST_ALTERED and LAST_DDL move with it.
+                db.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on database: {}", dbName);
 
             } else if (ctx.SCHEMA() != null && ctx.COLUMN() == null) {
@@ -157,7 +164,14 @@ public class CommentCommandHandler implements CommandHandler {
                     }
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", schemaName));
                 }
+                if ("INFORMATION_SCHEMA".equals(schema.getName())) {
+                    // A comment is an ALTER, and INFORMATION_SCHEMA takes none.
+                    throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("schema",
+                        "INFORMATION_SCHEMA"));
+                }
+                SystemDatabase.refuseChange(schema.getDatabaseName());
                 schema.setComment(comment);
+                schema.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on schema: {}", schemaName);
 
             } else if (ctx.DYNAMIC() != null) {
@@ -173,6 +187,7 @@ public class CommentCommandHandler implements CommandHandler {
                         catalog.requireOwningSchema(QualifiedName.of(parts)).qualifiedName(parts[parts.length - 1])));
                 }
                 dynamicTable.setComment(comment);
+                dynamicTable.markDdl(catalog.currentUserForDdl());
 
             } else if (ctx.TABLE() != null) {
                 // COMMENT ON TABLE
@@ -181,6 +196,7 @@ public class CommentCommandHandler implements CommandHandler {
                 final DynamicTable dynamicTable = dynamicTableOrNull(qualifiedNameParts(ctx.qualifiedName()));
                 if (dynamicTable != null) {
                     dynamicTable.setComment(comment);
+                    dynamicTable.markDdl(catalog.currentUserForDdl());
                     return null;
                 }
                 final Table table;
@@ -203,6 +219,7 @@ public class CommentCommandHandler implements CommandHandler {
                         queryExecutor.getFullyQualifiedTableName(tableName)));
                 }
                 table.setComment(comment);
+                table.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on table: {}", tableName);
 
             } else if (ctx.COLUMN() != null) {
@@ -252,6 +269,7 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", columnName));
                 }
                 column.setComment(comment);
+                table.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on column: {}", qualifiedColumn);
 
             } else if (ctx.VIEW() != null) {
@@ -276,7 +294,12 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("View",
                         queryExecutor.getFullyQualifiedTableName(viewName)));
                 }
+                if ("INFORMATION_SCHEMA".equals(catalog.resolveOwningSchema(viewName).getName())) {
+                    // Nor do INFORMATION_SCHEMA's views (see ALTER VIEW).
+                    throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("view", view.getName()));
+                }
                 view.setComment(comment);
+                view.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on view: {}", viewName);
 
             } else if (ctx.FUNCTION() != null) {
@@ -324,6 +347,7 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Function", schema.qualifiedName(funcName)));
                 }
                 function.setComment(comment);
+                function.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on function: {}", functionName);
 
             } else if (ctx.PROCEDURE() != null) {
@@ -370,6 +394,7 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", schema.qualifiedName(procName)));
                 }
                 procedure.setComment(comment);
+                procedure.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on procedure: {}", procedureName);
 
             } else if (ctx.STREAM() != null) {
@@ -507,6 +532,7 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", stageName));
                 }
                 stage.setComment(comment);
+                stage.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on stage: {}", stageName);
 
             } else if (ctx.USER() != null) {
@@ -580,14 +606,19 @@ public class CommentCommandHandler implements CommandHandler {
             } else if (ctx.SEQUENCE() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
                 try {
-                    commentTargetSchema(ctx.qualifiedName()).getSequence(commentSimpleName(ctx.qualifiedName())).setComment(comment);
+                    final Sequence sequence =
+                        commentTargetSchema(ctx.qualifiedName()).getSequence(commentSimpleName(ctx.qualifiedName()));
+                    sequence.setComment(comment);
+                    sequence.markDdl();
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
                 }
             } else if (ctx.PIPE() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
                 try {
-                    catalog.getPipe(n).setComment(comment);
+                    final Pipe pipe = catalog.getPipe(n);
+                    pipe.setComment(comment);
+                    pipe.markDdl(catalog.currentUserForDdl());
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
                 }
@@ -612,6 +643,7 @@ public class CommentCommandHandler implements CommandHandler {
                 final FileFormat ff = catalog.getFileFormat(n);
                 if (ff != null) {
                     ff.setComment(comment);
+                    ff.markDdl();
                 } else if (!ifExists) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("File format", n));
                 }

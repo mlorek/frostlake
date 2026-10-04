@@ -37,11 +37,14 @@ import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.ColumnRenames;
 import dev.frostlake.metastore.DataMetricFunctions;
 import dev.frostlake.metastore.InstanceFamilies;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TableShadows;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -69,6 +72,7 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
+import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
@@ -78,15 +82,21 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.TransactionManager;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -174,6 +184,9 @@ public class AlterCommandHandler implements CommandHandler {
         // Set by the branches that gate IF EXISTS themselves (ALTER TABLE, ALTER COMPUTE POOL)
         // instead of leaning on the blanket catch below.
         boolean branchHandlesIfExists = false;
+        // The object altered, when INFORMATION_SCHEMA reports a LAST_DDL for it: stamped once the action has
+        // succeeded, so a refused ALTER moves nothing (see SqlObject.markDdl).
+        SqlObject altered = null;
         try {
             if (ctx.ALERT() != null) {
                 final AlertCommandHandler alerts = new AlertCommandHandler(queryExecutor);
@@ -191,6 +204,8 @@ public class AlterCommandHandler implements CommandHandler {
                 final String dbName = visitor.getText(ctx.identifier());
                 final Database database = catalog.databaseExact(dbName);
                 checkAlter(SecurableObjectType.DATABASE, dbName);
+                SystemDatabase.refuseChange(database.getName());
+                altered = database;
 
                 if (ctx.databaseAction().RENAME() != null) {
                     // Renaming an object needs OWNERSHIP of it, as replacing or dropping it does.
@@ -255,6 +270,14 @@ public class AlterCommandHandler implements CommandHandler {
                 final Schema schema = catalog.resolveSchema(
                     QualifiedName.of(catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName()), 2)));
                 checkAlter(SecurableObjectType.SCHEMA, schemaName);
+                if ("INFORMATION_SCHEMA".equals(schema.getName())) {
+                    // INFORMATION_SCHEMA is read-only: no ALTER changes it - not its name, its comment, its
+                    // parameters, its tags or its managed access.
+                    throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("schema",
+                        "INFORMATION_SCHEMA"));
+                }
+                SystemDatabase.refuseChange(schema.getDatabaseName());
+                altered = schema;
                 if (ctx.schemaAction() != null && ctx.schemaAction().SET() != null
                         && ctx.schemaAction().optionKey() != null) {
                     // Schema parameters are accepted and inert — except a value the account
@@ -298,10 +321,6 @@ public class AlterCommandHandler implements CommandHandler {
                 }
 
                 if (ctx.schemaAction().RENAME() != null) {
-                    if ("INFORMATION_SCHEMA".equals(schema.getName())) {
-                        throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("schema",
-                            "INFORMATION_SCHEMA"));
-                    }
                     queryExecutor.requireOwnership("SCHEMA",
                         catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName()), 2), null);
                     // A two-part new name places the schema in that database; a bare one in the session's
@@ -314,6 +333,8 @@ public class AlterCommandHandler implements CommandHandler {
                     final String oldName = schema.getName();
                     final String targetDatabase = target.length == 2 ? target[0]
                         : catalog.getCurrentDatabase() != null ? catalog.getCurrentDatabase() : oldDatabase;
+                    // Nor is a schema moved into the SNOWFLAKE database.
+                    SystemDatabase.refuseChange(targetDatabase);
                     catalog.moveSchema(schema, targetDatabase, target[target.length - 1]);
                     queryExecutor.renameSchemaStorage(oldDatabase, oldName, schema.getDatabaseName(), schema.getName());
                     logger.trace("Renamed schema {} to {}.{}", schemaName, schema.getDatabaseName(), schema.getName());
@@ -588,6 +609,7 @@ public class AlterCommandHandler implements CommandHandler {
                 } else {
                     final Table table = catalog.resolveTable(QualifiedName.of(tableParts));
                     checkAlter(SecurableObjectType.TABLE, tableName);
+                    altered = table;
 
                     if (ctx.tableAction().SWAP() != null) {
                         // ALTER TABLE a SWAP WITH b — exchange the two tables' row storage, which needs
@@ -597,6 +619,8 @@ public class AlterCommandHandler implements CommandHandler {
                             null);
                         final String other = visitor.getText(ctx.tableAction().qualifiedName());
                         queryExecutor.swapTables(tableName, other);
+                        // A swap is DDL on both tables; the other now answers to this table's name.
+                        catalog.resolveTable(QualifiedName.of(tableParts)).markDdl(catalog.currentUserForDdl());
                         logger.trace("Swapped table {} with {}", tableName, other);
                     } else if (ctx.tableAction().RENAME() != null && ctx.tableAction().COLUMN() == null
                             && ctx.tableAction().CONSTRAINT() == null) {
@@ -802,17 +826,24 @@ public class AlterCommandHandler implements CommandHandler {
                         final String oldName = visitor.getText(ctx.tableAction().identifier(0));
                         final String newName = visitor.getText(ctx.tableAction().identifier(1));
                         requireConstraintRenamed(table, oldName, newName);
+                        table.markConstraintRenamed(oldName, newName);
                         logger.trace("Renamed constraint {} to {} on table {}", oldName, newName, tableName);
                     } else if (ctx.tableAction().CONSTRAINT() != null
                             && !ctx.tableAction().constraintProperty().isEmpty()) {
                         // {ALTER | MODIFY} CONSTRAINT name RELY | NORELY | [NOT] ENFORCED, several at once.
                         applyConstraintProperties(table, visitor.getText(ctx.tableAction().identifier(0)),
                             ctx.tableAction().constraintProperty());
+                        table.markConstraintAltered(visitor.getText(ctx.tableAction().identifier(0)));
                     } else if (ctx.tableAction().RENAME() != null && ctx.tableAction().COLUMN() != null) {
-                        // RENAME COLUMN
+                        // RENAME COLUMN: the column keeps every policy, tag and constraint it has, and the foreign
+                        // keys naming it in other tables follow it.
                         final String oldName = visitor.getText(ctx.tableAction().identifier(0));
                         final String newName = visitor.getText(ctx.tableAction().identifier(1));
-                        table.renameColumn(oldName, newName);
+                        final String was = table.renameColumn(oldName, newName);
+                        final Schema home = StreamSources.holderOf(catalog, table);
+                        if (home != null) {
+                            ColumnRenames.followInForeignKeys(catalog, home, table, was, newName);
+                        }
                         logger.trace("Renamed column {} to {} in table {}", oldName, newName, tableName);
                     } else if (ctx.tableAction().joinPolicyClause() != null) {
                         // SET JOIN POLICY p [FORCE] — one per table, guarded by the same 3549 sentence.
@@ -915,6 +946,7 @@ public class AlterCommandHandler implements CommandHandler {
                             // Detaching what is not attached is a no-op, not an error (live-verified) —
                             // the opposite of the row access policy's DROP.
                             col.setMaskingPolicyName(null);
+                            col.setMaskingPolicyArguments(null);
                         } else {
                             // Recorded in full, the way live reports an attachment however little of
                             // the name the statement wrote — and so that re-attaching the SAME policy
@@ -951,6 +983,16 @@ public class AlterCommandHandler implements CommandHandler {
                             MaskingPolicyAttachment.requireTypeMatch(
                                 catalog.findMaskingPolicy(policyName), col);
                             col.setMaskingPolicyName(policyName);
+                            // A conditional policy reads its further arguments from the columns USING names, in
+                            // order; a policy attached without USING reads only the column.
+                            final List<String> arguments = new ArrayList<>();
+                            if (ctx.tableAction().identifierList() != null) {
+                                for (final FrostlakeParser.IdentifierContext argCtx
+                                        : ctx.tableAction().identifierList().identifier()) {
+                                    arguments.add(visitor.getText(argCtx));
+                                }
+                            }
+                            col.setMaskingPolicyArguments(arguments);
                         }
                         logger.trace("Set/unset masking policy on column {}.{}", tableName, colName);
                     } else if (!ctx.tableAction().alterColumnItem().isEmpty()) {
@@ -1011,6 +1053,8 @@ public class AlterCommandHandler implements CommandHandler {
                             table.addPrimaryKeyConstraint(columns);
                             // An explicit CONSTRAINT <name> names the key; without one it auto-names itself.
                             table.setPrimaryKeyConstraintName(constraintName);
+                            // Created now, where a key the CREATE TABLE declared dates from the table.
+                            table.markConstraintCreated(table.primaryKeyConstraintName());
                             logger.trace("Added PRIMARY KEY constraint to table {}: {}", tableName, columns);
                         } else if (constraintCtx.UNIQUE() != null) {
                             // UNIQUE constraint — one constraint over every listed column, not one each.
@@ -1019,7 +1063,9 @@ public class AlterCommandHandler implements CommandHandler {
                                 requireColumn(table, visitor.getText(idCtx), idCtx);
                                 columns.add(visitor.getText(idCtx));
                             }
-                            table.addUniqueConstraint(constraintName, columns);
+                            final UniqueConstraint unique = new UniqueConstraint(constraintName, columns);
+                            table.addUniqueConstraint(unique);
+                            table.markConstraintCreated(unique.getConstraintName());
                             logger.trace("Added UNIQUE constraint to table {}: {}", tableName, columns);
                         } else if (constraintCtx.FOREIGN() != null) {
                             // FOREIGN KEY constraint
@@ -1062,6 +1108,7 @@ public class AlterCommandHandler implements CommandHandler {
                                     onUpdate
                                 );
                                 table.addForeignKey(fk);
+                                table.markConstraintCreated(fk.getConstraintName());
                                 logger.trace("Added FOREIGN KEY constraint to table {}: {} -> {}", tableName, columns, referencedTable);
                             }
                         }
@@ -1070,7 +1117,9 @@ public class AlterCommandHandler implements CommandHandler {
                         final String policyName = visitor.getText(ctx.tableAction().qualifiedName());
                         final List<String> cols = rowAccessPolicyColumns(ctx.tableAction().identifierList(),
                             table, table.getName(), policyName, table.hasRowAccessPolicy());
-                        table.setRowAccessPolicyName(policyName.toUpperCase());
+                        // Recorded in full, as every policy attachment is, so a query from another schema
+                        // still finds it (see PolicyReferences).
+                        table.setRowAccessPolicyName(catalog.qualifiedObjectName(policyName));
                         table.setRowAccessPolicyColumns(cols);
                         logger.trace("Added row access policy {} to table {}", policyName, tableName);
                     } else if (ctx.tableAction().ROW() != null && ctx.tableAction().DROP() != null) {
@@ -1132,6 +1181,8 @@ public class AlterCommandHandler implements CommandHandler {
                             final String rawKey = property.optionKey().getText();
                             requireLegalRetention(rawKey, property.copyOptionValue());
                             requireAccountRetention(rawKey, property.copyOptionValue());
+                            // A transient table keeps a day at most, as its transient containers do.
+                            requireTransientRetention(rawKey, table.isTransient(), property.copyOptionValue());
                             requireLegalExtensionTime(rawKey, property.copyOptionValue());
                             requireLegalErrorLogging(rawKey, property.copyOptionValue());
                             if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(rawKey)
@@ -1187,6 +1238,11 @@ public class AlterCommandHandler implements CommandHandler {
                 final String viewName = queryExecutor.alterTargetName(ctx);
                 final View view = catalog.resolveView(QualifiedName.of(queryExecutor.alterTargetNameParts(ctx)));
                 checkAlter(SecurableObjectType.VIEW, viewName);
+                if ("INFORMATION_SCHEMA".equals(catalog.resolveOwningSchema(viewName).getName())) {
+                    // An INFORMATION_SCHEMA view is read-only: no ALTER changes it, as no RENAME or DROP does.
+                    throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("view", view.getName()));
+                }
+                altered = view;
 
                 if (ctx.viewAction().RENAME() != null) {
                     // IF EXISTS forgave the view's absence above; a taken new name still refuses (live-verified).
@@ -1214,7 +1270,7 @@ public class AlterCommandHandler implements CommandHandler {
                     final String policyName = visitor.getText(ctx.viewAction().qualifiedName());
                     final List<String> cols = rowAccessPolicyColumns(ctx.viewAction().identifierList(),
                         null, view.getName(), policyName, view.hasRowAccessPolicy());
-                    view.setRowAccessPolicyName(policyName.toUpperCase());
+                    view.setRowAccessPolicyName(catalog.qualifiedObjectName(policyName));
                     view.setRowAccessPolicyColumns(cols);
                     logger.trace("Added row access policy {} to view {}", policyName, viewName);
                 } else if (ctx.viewAction().ROW() != null && ctx.viewAction().DROP() != null) {
@@ -1358,6 +1414,10 @@ public class AlterCommandHandler implements CommandHandler {
                 final Pipe pipe = schema.getPipe(QualifiedName.parse(pipeName).last());
                 checkAlter(SecurableObjectType.PIPE, pipeName);
                 final FrostlakeParser.PipeActionContext action = ctx.pipeAction();
+                // Every ALTER is DDL on the pipe but a REFRESH, which queues files rather than changing the pipe.
+                if (action.REFRESH() == null) {
+                    altered = pipe;
+                }
 
                 if (action.tagSet() != null) {
                     applyTagSet(pipe, action.tagSet());
@@ -1469,6 +1529,10 @@ public class AlterCommandHandler implements CommandHandler {
                 final Stage stage = catalog.getStage(stageName);
                 checkAlter(SecurableObjectType.STAGE, stageName);
                 final FrostlakeParser.StageActionContext stageAction = ctx.stageAction();
+                // Every ALTER is DDL on the stage but a REFRESH, which re-reads its directory rather than changing it.
+                if (stageAction.REFRESH() == null) {
+                    altered = stage;
+                }
                 if (stageAction.REFRESH() != null) {
                     refreshStageDirectory(stage, stageName, stageAction);
                 } else if (stageAction.UNSET() != null) {
@@ -1698,6 +1762,9 @@ public class AlterCommandHandler implements CommandHandler {
                 }
             }
 
+            if (altered != null) {
+                altered.markDdl(catalog.currentUserForDdl());
+            }
             return null;
 
         } catch (final Exception e) {
@@ -1908,6 +1975,49 @@ public class AlterCommandHandler implements CommandHandler {
             if (!newDefaultIsSequence || !replacingASequenceDefault) {
                 throw new RuntimeException("Unsupported feature 'Alter Column Set Default'.");
             }
+        } else if (action.NULL() != null && action.DROP() == null) {
+            requireNotNullHolds(table, tableName, colName, column);
+        }
+    }
+
+    /**
+     * SET NOT NULL over the rows already stored. Snowflake documents two refusals: "if the column contains
+     * NULL values, an error is returned and no changes are applied to the column", and a semi-structured
+     * column (ARRAY, OBJECT, VARIANT) "cannot be set to NOT NULL, except when the table is empty". It gives
+     * no wording for either, so these sentences are Frostlake's own and not live-verified. The flag used to
+     * flip over any data, leaving a NOT NULL column that held NULLs.
+     */
+    private void requireNotNullHolds(final Table table, final String tableName, final String colName,
+            final TableColumn column) {
+        final TableStorage storage = queryExecutor.getStorageEngine()
+            .getTableStorage(queryExecutor.getFullyQualifiedTableName(tableName));
+        if (storage == null) {
+            return;
+        }
+        int slot = -1;
+        final List<TableColumn> columns = table.getColumns();
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).getName().equalsIgnoreCase(colName)) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0) {
+            return;
+        }
+        final List<Row> rows = storage.scan();
+        final DataType type = column.getDataType();
+        if (!rows.isEmpty()
+                && (type instanceof VariantType || type instanceof ObjectType || type instanceof ArrayType)) {
+            throw new RuntimeException(SqlCompilationError.trailing("cannot change column "
+                + colName.toUpperCase() + " of type " + typeText(type)
+                + " to NOT NULL because the table is not empty."));
+        }
+        for (final Row row : rows) {
+            if (row.getValue(slot) == null) {
+                throw new RuntimeException(SqlCompilationError.trailing("cannot change column "
+                    + colName.toUpperCase() + " to NOT NULL because it contains NULL values."));
+            }
         }
     }
 
@@ -1977,6 +2087,11 @@ public class AlterCommandHandler implements CommandHandler {
             return oldType.equals(newType) ? null : "";
         }
         if (oldType instanceof NumericType) {
+            // A FLOAT meets only a FLOAT. FLOAT to NUMBER and back are cross-family changes, which the
+            // scale test below let through whenever the NUMBER's scale happened to be FLOAT's placeholder 9.
+            if (NumericType.isApproximate(oldType) != NumericType.isApproximate(newType)) {
+                return "";
+            }
             if (((NumericType) newType).getScale() == ((NumericType) oldType).getScale()) {
                 return null;
             }
@@ -1992,6 +2107,17 @@ public class AlterCommandHandler implements CommandHandler {
         }
         if (oldType instanceof DateTimeType) {
             return datetimeSubtype(oldType.getName()).equals(datetimeSubtype(newType.getName())) ? null : "";
+        }
+        if (oldType instanceof BinaryType) {
+            // A binary may widen and not narrow: a stored value longer than the new width would stay in a
+            // column whose own INSERT refuses it. The documentation lists the binary shrink without a
+            // reason clause, so the plain sentence is used; its exact wording is not live-verified.
+            return ((BinaryType) newType).getMaxLength() < ((BinaryType) oldType).getMaxLength() ? "" : null;
+        }
+        if (oldType instanceof VectorType || StructuredTypes.isStructured(oldType)) {
+            // A VECTOR's element type and dimension, and a structured type's shape, have no conversion for
+            // the values already stored: any change is refused, and the same type again is no change.
+            return DeclaredTypeFold.sameDeclaredType(oldType, newType) ? null : "";
         }
         return null;
     }
@@ -2027,6 +2153,15 @@ public class AlterCommandHandler implements CommandHandler {
      * mapping of its own.
      */
     private static String typeText(final DataType type) {
+        if (StructuredTypes.isStructured(type)) {
+            // A structured type is named with its shape, as every other refusal names one; its bare name
+            // made a shape change read "from type OBJECT to OBJECT".
+            return SqlTypeNames.canonical(type);
+        }
+        if (type instanceof UuidType) {
+            // A UUID takes no length: UUID(36) is a syntax error (UuidType).
+            return "UUID";
+        }
         if (type instanceof StringType) {
             return type.getName() + "(" + ((StringType) type).getMaxLength() + ")";
         }

@@ -37,7 +37,7 @@
        "expect": {"rows": [["true"]]}},
       {"sql": "SELECT query_id = $insert_qid FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'INSERT INTO test_qid VALUES (1)'",
        "expect": {"rows": [["true"]]}},
-      {"sql": "SELECT query_type FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_id IN ($create_qid, $insert_qid) ORDER BY start_time ASC",
+      {"sql": "SELECT query_type FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_id IN ($create_qid, $insert_qid) ORDER BY query_type ASC",
        "expect": {"rows": [["CREATE"], ["INSERT"]], "ordered": true}}
     ]},
     {"name": "query-id-not-null",

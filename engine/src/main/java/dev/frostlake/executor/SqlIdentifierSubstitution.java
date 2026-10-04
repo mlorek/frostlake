@@ -21,6 +21,7 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -77,6 +78,75 @@ public final class SqlIdentifierSubstitution {
         }
         result.append(body, cursor, body.length());
         return result.toString();
+    }
+
+    /**
+     * {@link #substitute} for a policy's parameter, which a body may also write quoted: {@code "V"} names the parameter
+     * declared {@code v} as {@code v} and {@code V} do, the parameter's name being {@code V}. A quoted spelling in another
+     * case, {@code "v"}, is another name and stays as it is. Binding only the bare spellings left a quoted reference to
+     * the parameter unbound, so a masking or row access body read the column of that name, if the table had one,
+     * instead of the value the policy was given.
+     *
+     * @param body          the policy body
+     * @param parameterName the parameter's canonical name, as the policy declares it
+     * @param replacement   what the parameter is bound to
+     * @return the body with every reference to the parameter bound
+     */
+    public static String substituteParameter(final String body, final String parameterName, final String replacement) {
+        final List<String> names = new ArrayList<>();
+        final List<String> replacements = new ArrayList<>();
+        names.add(parameterName);
+        replacements.add(replacement);
+        return substituteParameters(body, names, replacements);
+    }
+
+    /**
+     * {@link #substituteParameter} for every parameter of a signature in ONE pass, so the text bound to one parameter
+     * is never read again for the next: a masked column {@code S} bound to the first parameter stays {@code S} when the
+     * second is named {@code s}.
+     *
+     * @param body         the policy body
+     * @param names        the parameters' canonical names, in signature order
+     * @param replacements what each is bound to, index-aligned
+     * @return the body with every reference to a parameter bound
+     */
+    public static String substituteParameters(final String body, final List<String> names,
+                                              final List<String> replacements) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        lexer.removeErrorListeners();
+        final CommonTokenStream tokens = new CommonTokenStream(lexer);
+        tokens.fill();
+
+        final List<Token> all = tokens.getTokens();
+        final StringBuilder result = new StringBuilder(body.length());
+        int cursor = 0;
+        for (int i = 0; i < all.size(); i++) {
+            final Token token = all.get(i);
+            if (token.getType() == Token.EOF) {
+                break;
+            }
+            final int named = parameterNamed(token, names);
+            if (named >= 0 && !structuralNamePosition(all, i)) {
+                result.append(body, cursor, token.getStartIndex());
+                result.append(replacements.get(named));
+                cursor = token.getStopIndex() + 1;
+            }
+        }
+        result.append(body, cursor, body.length());
+        return result.toString();
+    }
+
+    /** Which parameter a token names: a bare one ignoring case, a quoted one by its exact name; -1 for none. */
+    private static int parameterNamed(final Token token, final List<String> names) {
+        for (int n = 0; n < names.size(); n++) {
+            final String name = names.get(n);
+            if (isBareIdentifier(token) ? token.getText().equalsIgnoreCase(name)
+                    : token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER
+                        && name.equals(SqlIdentifiers.canonicalTextParts(token.getText())[0])) {
+                return n;
+            }
+        }
+        return -1;
     }
 
     /**

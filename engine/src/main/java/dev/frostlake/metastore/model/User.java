@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Taggable;
 
 import java.time.Instant;
@@ -77,7 +78,7 @@ public class User implements Taggable {
         this.grantedRoles = new HashSet<>();
         this.objectPrivileges = new HashMap<>();
         this.columnPrivileges = new HashMap<>();
-        this.createdTime = LocalDateTime.now();
+        this.createdTime = StatementClock.hostLocal();
         this.enabled = true;
     }
 
@@ -199,6 +200,27 @@ public class User implements Taggable {
 
     public Map<String, Set<Privilege>> getAllPrivileges() {
         return new HashMap<>(objectPrivileges);
+    }
+
+    /**
+     * Applies a change of recorded names to the privileges this user holds on objects.
+     *
+     * @param remap the change
+     */
+    public void remapGrants(final GrantRemap remap) {
+        GrantKeys.remap(objectPrivileges, columnPrivileges, privilegeGrantors, null, null, remap);
+    }
+
+    /**
+     * Takes back the privileges this user holds on one object.
+     *
+     * @param objectType    the kind the privileges are recorded under
+     * @param objectName    the name they are recorded under
+     * @param ownershipOnly true to take back only OWNERSHIP
+     */
+    public void purgeGrants(final String objectType, final String objectName, final boolean ownershipOnly) {
+        GrantKeys.purge(objectPrivileges, columnPrivileges, privilegeGrantors, null, null,
+            objectType.toUpperCase() + ":" + objectName.toUpperCase(), ownershipOnly);
     }
 
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {

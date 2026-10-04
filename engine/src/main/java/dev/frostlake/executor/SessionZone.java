@@ -40,7 +40,7 @@ public final class SessionZone {
     private SessionZone() {
     }
 
-    /** The session's zone, or UTC when nothing is pinned. */
+    /** The session's zone, or UTC, the zone the account sets ({@link AccountParameters}), when nothing is pinned. */
     public static ZoneId current() {
         final ZoneId pinned = PINNED.get();
         return pinned != null ? pinned : ZoneOffset.UTC;

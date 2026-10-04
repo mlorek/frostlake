@@ -28,6 +28,7 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AlertState;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
@@ -72,6 +73,7 @@ public final class AlertCommandHandler {
     public Object create(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName(0));
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        schema.requireCreatable(Privilege.CREATE_ALERT);
         final String name = parts[parts.length - 1];
         final FrostlakeParser.AlertDefinitionContext definition = ctx.alertDefinition();
         if (ctx.or_alter() != null && definition.CLONE() != null) {

@@ -24,6 +24,7 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -117,10 +118,13 @@ final class SqlTableFunctionReturnTypes {
         return false;
     }
 
-    /** A declared column's type as the refusal spells it: a CHAR, TEXT or STRING column is a VARCHAR. */
+    /**
+     * A declared column's type as the refusal spells it: a CHAR, TEXT or STRING column is a VARCHAR. A UUID
+     * column is a UUID, a type of its own.
+     */
     private static String spellDeclared(final DataType declared) {
         final String spelled = RoutineReturnTypeChecker.spell(declared);
-        if (declared instanceof StringType) {
+        if (declared instanceof StringType && !(declared instanceof UuidType)) {
             return "VARCHAR" + spelled.substring(spelled.indexOf('('));
         }
         return spelled;

@@ -25,11 +25,14 @@ import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
+import dev.frostlake.executor.expressions.BindVariableExpression;
+import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.FoldedValues;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.expressions.IntervalLiteralSyntax;
@@ -40,9 +43,11 @@ import dev.frostlake.executor.expressions.NamedCallRewrite;
 import dev.frostlake.executor.expressions.PlannedCorrelations;
 import dev.frostlake.executor.expressions.QualifyWithoutWindow;
 import dev.frostlake.executor.expressions.RelationScopes;
+import dev.frostlake.executor.expressions.SessionVarExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
+import dev.frostlake.executor.expressions.StructuredCast;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryTypeRanking;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
@@ -109,11 +114,17 @@ import dev.frostlake.functions.window.WholePartitionAggregates;
 import dev.frostlake.functions.window.WindowFunctionArity;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.DroppedObject;
+import dev.frostlake.metastore.DroppedVersionPurge;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.metastore.PolicyReferences;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
+import dev.frostlake.metastore.RetentionChain;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.StatementKind;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ChangeType;
@@ -146,6 +157,7 @@ import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.TableStructure;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.UdfLanguage;
@@ -170,16 +182,20 @@ import dev.frostlake.parser.SyntaxErrorListener;
 import dev.frostlake.parser.ValueFunctionSyntax;
 import dev.frostlake.persistence.WalStatementKinds;
 import dev.frostlake.security.SecurityManager;
+import dev.frostlake.security.SessionContext;
+import dev.frostlake.security.SessionSettings;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableSnapshot;
 import dev.frostlake.storage.TableStorage;
+import dev.frostlake.storage.TableVersion;
 import dev.frostlake.stream.StreamManager;
 import dev.frostlake.system.SystemViews;
 import dev.frostlake.system.UnmodeledSystemViews;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.transaction.SetAsideTransaction;
 import dev.frostlake.transaction.StreamReadScope;
 import dev.frostlake.transaction.Transaction;
 import dev.frostlake.transaction.TransactionManager;
@@ -199,9 +215,12 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StatementResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredLeafWidths;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
+import dev.frostlake.types.WidthlessStringType;
 import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
@@ -215,6 +234,7 @@ import java.io.File;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -314,6 +334,12 @@ public class QueryExecutor {
     private Instant pendingStatementInstant;
     /** What the last outermost statement called "now"; see {@link #currentStatementInstant}. */
     private Instant lastStatementInstant;
+    /** Guards {@link #ownSetAsideRoot} and {@link #setAsideCleanup}; see {@link #setAsideRoot}. */
+    private final Object setAsideLock = new Object();
+    /** The engine's own directory its dropped objects' stages wait in, or null before one is set aside. */
+    private Path ownSetAsideRoot;
+    /** The shutdown hook that deletes {@link #ownSetAsideRoot} when the JVM exits before the engine shuts down. */
+    private Thread setAsideCleanup;
     private final QueryResultCache resultCache;
     private final QueryHistoryTracker queryHistoryTracker;
     private final ShowCommandExecutor showExecutor;
@@ -430,11 +456,12 @@ public class QueryExecutor {
         // Register RESULT_SCAN table function with access to result cache
         functionRegistry.registerTableFunction(new ResultScan(resultCache));
 
-        // Register TO_QUERY with a callback that runs its SQL text through this executor
+        // Register TO_QUERY with a callback that runs its SQL text through this executor. The text is part of
+        // the query that calls TO_QUERY, not a statement of the session's, so it takes no query ID of its own.
         functionRegistry.registerTableFunction(new ToQuery(new QueryRunner() {
             @Override
             public ResultSet runQuery(final String sql) {
-                final List<ResultSet> results = execute(sql);
+                final List<ResultSet> results = executeUnrecorded(sql);
                 return results.isEmpty() ? null : results.get(results.size() - 1);
             }
         }));
@@ -451,11 +478,11 @@ public class QueryExecutor {
 
         // The general runner an optional function pack reaches through the registry — the same callback,
         // published rather than captured, so a pack's function can run SQL without the executor knowing
-        // that pack exists.
+        // that pack exists. What it runs is the function's own work, outside the session's statement history.
         functionRegistry.setQueryRunner(new QueryRunner() {
             @Override
             public ResultSet runQuery(final String sql) {
-                final List<ResultSet> results = execute(sql);
+                final List<ResultSet> results = executeUnrecorded(sql);
                 return results.isEmpty() ? null : results.get(results.size() - 1);
             }
         });
@@ -484,6 +511,14 @@ public class QueryExecutor {
         functionRegistry.register(new GetRelativePath(stageFileResolver, engineConfig));
         // INFER_SCHEMA reads the files of a stage the way COPY finds them; SHOW FUNCTIONS does not list it.
         functionRegistry.registerUnlistedTableFunction(new InferSchema(new InferSchemaStages(this)));
+
+        // A dropped version the catalog forgets for good takes the stages it set aside with it.
+        catalog.setDroppedVersionPurge(new DroppedVersionPurge() {
+            @Override
+            public void purged(final String key, final DroppedObject version) {
+                discardSetAsideStages(key, version);
+            }
+        });
     }
 
     public void setStreamManager(final StreamManager streamManager) {
@@ -512,7 +547,8 @@ public class QueryExecutor {
     void checkNotReadOnly() {
         final String dbName = catalog.getCurrentDatabase();
         if (dbName != null && !"SNOWFLAKE".equalsIgnoreCase(dbName)) {
-            // Only enforce read-only for user-created databases, not the system SNOWFLAKE db
+            // Not in the SNOWFLAKE database: read-only as a database, its PUBLIC schema is the engine's default working
+            // schema, where a session that names no database writes its rows (SystemDatabase).
             try {
                 final Database db = catalog.getDatabase(dbName);
                 if (db != null && db.isReadOnly()) {
@@ -642,11 +678,19 @@ public class QueryExecutor {
         // exceptions/cursors/variable types of a procedure that is mid-flight.
         final boolean outermost = executeReentryDepth == 0
             && !visitor.getProceduralExecutor().isExecutingBlock();
+        if (outermost) {
+            // The subqueries an earlier statement compiled say nothing about this one's.
+            ProjectionLineage.forgetSubqueries();
+        }
         executeReentryDepth++;
         // Read the clock ONCE for this statement, and only for the outermost one: Snowflake's
         // CURRENT_TIMESTAMP is statement-stable, so every row and every nested call inside a procedural
         // block sees the same instant. See StatementClock.
         final Instant displacedInstant = outermost ? StatementClock.pin(pendingStatementInstant) : null;
+        if (outermost) {
+            // Its tokens are drawn from its start alone, the first draw first (see StatementTokens.restart).
+            StatementTokens.restart();
+        }
         // The session's zone is pinned on the same boundary and for the same reason: a TIMESTAMP_LTZ is
         // an instant, and reading or rendering one needs the zone it should be shown in. Both live deep
         // in static helpers with no session to ask, and one engine serves many sessions.
@@ -664,8 +708,9 @@ public class QueryExecutor {
         if (outermost) {
             // Remember it as well as pinning it: the write-ahead log records the statement at COMMIT, by
             // which point the pin has been released, and reading the clock again there would log the
-            // commit time instead of the statement's.
-            lastStatementInstant = StatementClock.instant();
+            // commit time instead of the statement's. What is logged is the statement's START, which carries
+            // its place in its millisecond, so the replay derives the same tokens (see StatementClock).
+            lastStatementInstant = StatementClock.statementStart();
         }
         pendingStatementInstant = null;
         try {
@@ -677,6 +722,8 @@ public class QueryExecutor {
         } finally {
             executeReentryDepth--;
             if (outermost) {
+                // Read again before the pin goes: a statement that read the time may have moved past a commit.
+                lastStatementInstant = StatementClock.statementStart();
                 StatementClock.restore(displacedInstant);
                 SessionZone.restore(displacedZone);
                 SessionTimestampMapping.restore(displacedMapping);
@@ -1355,6 +1402,253 @@ public class QueryExecutor {
         return lateralExecutionDepth > 0;
     }
 
+    /**
+     * Depth of SQL the engine composes for itself and runs outside the session's statement history (see
+     * {@link #executeUnrecorded}), per thread: one engine serves several sessions at once, and a scheduled task
+     * runs beside them, so a body one of them evaluates must not hide another's statement from the history.
+     */
+    private final ThreadLocal<int[]> unrecordedDepth = new ThreadLocal<int[]>() {
+        @Override
+        protected int[] initialValue() {
+            return new int[1];
+        }
+    };
+
+    /**
+     * Runs SQL the engine composes for itself, outside the session's statement history: what it runs takes no
+     * query ID for LAST_QUERY_ID or RESULT_SCAN to name and adds nothing to QUERY_HISTORY. A scripting expression
+     * is evaluated by running a rebuilt {@code SELECT f(args)}, but it is not a statement the session ran: after
+     * {@code CALL p(); a := ARRAY_APPEND(a, 'x');} RESULT_SCAN(LAST_QUERY_ID()) still reads the CALL's table,
+     * which tds-asgard-data's export-queue tests rely on Snowflake to do.
+     *
+     * @param sql the composed statement
+     * @return its results
+     */
+    public List<ResultSet> executeUnrecorded(final String sql) {
+        unrecordedDepth.get()[0]++;
+        try {
+            return execute(sql);
+        } finally {
+            unrecordedDepth.get()[0]--;
+        }
+    }
+
+    /**
+     * {@link #executeFrom} for SQL the engine composes for itself, outside the session's statement history as
+     * {@link #executeUnrecorded} runs it: a CALL of a SYSTEM$ function runs as the SELECT of the same call, and
+     * that SELECT is the CALL's own work, not a statement of the session's.
+     *
+     * @param sql    the text
+     * @param origin where the text's first line is counted from
+     * @return the statement's results
+     */
+    public List<ResultSet> executeFromUnrecorded(final String sql, final SourcePosition origin) {
+        unrecordedDepth.get()[0]++;
+        try {
+            return executeFrom(sql, origin);
+        } finally {
+            unrecordedDepth.get()[0]--;
+        }
+    }
+
+    /**
+     * Runs {@code work} as {@link #executeUnrecorded} runs its SQL: whatever it executes on this thread takes no
+     * query ID and adds nothing to the history.
+     *
+     * @param work what runs
+     */
+    public void runUnrecorded(final Runnable work) {
+        unrecordedDepth.get()[0]++;
+        try {
+            work.run();
+        } finally {
+            unrecordedDepth.get()[0]--;
+        }
+    }
+
+    /**
+     * Whether this thread is running SQL the engine composed for itself (see {@link #executeUnrecorded}). What a
+     * block or a dynamic statement runs then hands out no query ID either.
+     *
+     * @return whether the SQL running now is unrecorded
+     */
+    public boolean isUnrecorded() {
+        return unrecordedDepth.get()[0] > 0;
+    }
+
+    /**
+     * Set while a statement the engine wrote in place of part of another one starts (see
+     * {@link #executeAsPartOfStatement}), and taken by that statement as it starts, so the statements it runs are
+     * recorded as usual.
+     */
+    private final ThreadLocal<Boolean> partOfStatement = new ThreadLocal<Boolean>();
+
+    /**
+     * Runs a statement the engine writes in place of part of the statement the session sent: {@code TABLE(proc())} in
+     * a FROM clause runs as the CALL of the same procedure. The CALL is that statement's own work, not a statement of
+     * the session's, so it takes no query ID and adds no QUERY_HISTORY row; the statements the procedure runs are its
+     * child statements and are recorded as any procedure's are.
+     *
+     * @param sql the written statement
+     * @return its results
+     */
+    public List<ResultSet> executeAsPartOfStatement(final String sql) {
+        partOfStatement.set(Boolean.TRUE);
+        try {
+            return execute(sql);
+        } finally {
+            partOfStatement.remove();
+        }
+    }
+
+    /**
+     * Begins the QUERY_HISTORY row of a statement a script runs itself: a statement of a block, of an exception
+     * handler, of a procedure's body or of an EXECUTE IMMEDIATE's text. Each is a child statement of the session's -
+     * the docs say LAST_QUERY_ID "considers all statements that were run within the current session, including child
+     * statements" - so it takes a query ID and a row of its own, as the statements a block's IF or loop runs through
+     * {@link #execute} always have. Begun as the statement starts, so it is dated from then.
+     *
+     * @param text      the statement as written
+     * @param statement the parsed statement, which says its kind
+     * @return the row, or null while unrecorded SQL runs (see {@link #executeUnrecorded}), which records nothing
+     */
+    public QueryHistory beginChildStatement(final String text, final FrostlakeParser.StatementContext statement) {
+        if (isUnrecorded()) {
+            return null;
+        }
+        final QueryHistory row = new QueryHistory(
+            text,
+            catalog.getCurrentDatabase(),
+            catalog.getCurrentSchema(),
+            catalog.getCurrentWarehouse(),
+            securityManager != null ? securityManager.getSessionContext().getDisplayUser() : "SYSTEM",
+            securityManager != null ? securityManager.getSessionContext().getCurrentRole() : "SYSADMIN"
+        );
+        if (securityManager != null) {
+            row.setSessionId(securityManager.getSessionContext().getSessionNumber());
+        }
+        if (statement != null) {
+            row.setQueryType(statementKindOf(statement));
+        }
+        return row;
+    }
+
+    /**
+     * Records a child statement that completed (see {@link #beginChildStatement}): it takes its query ID - holding its
+     * result for RESULT_SCAN when it answered one - and its row joins QUERY_HISTORY, dated like a statement sent on
+     * its own: visible once it completes, or once the transaction it ran in commits.
+     *
+     * @param row    the row begun for it, or null when it is not recorded
+     * @param text   the statement as written
+     * @param result what it answered, or null for a statement that answered its status line alone
+     * @return its query ID, or null when it is not recorded
+     */
+    public String completeChildStatement(final QueryHistory row, final String text, final ResultSet result) {
+        if (row == null) {
+            return null;
+        }
+        final String queryId = result != null ? resultCache.cacheResult(text, result) : resultCache.generateQueryId(text);
+        row.setQueryId(queryId);
+        // A statement that answered no rows answered its one status line, as it does sent on its own.
+        row.markSuccess(LocalDateTime.now(ZoneOffset.UTC), result != null ? result.getRowCount() : 1L);
+        final Transaction runningIn = transactionManager.getCurrentTransaction();
+        if (runningIn != null) {
+            runningIn.addStatement(row);
+        } else {
+            row.setVisibleFrom(row.getEndTime());
+            row.markVisibleSequence();
+        }
+        queryHistoryTracker.addQuery(row);
+        return queryId;
+    }
+
+    /**
+     * Records a child statement that failed (see {@link #beginChildStatement}): like a statement sent on its own, it
+     * takes a query ID that LAST_QUERY_ID names and RESULT_SCAN refuses, and a FAILED row.
+     *
+     * @param row     the row begun for it, or null when it is not recorded
+     * @param text    the statement as written
+     * @param failure why it failed
+     */
+    public void failChildStatement(final QueryHistory row, final String text, final Exception failure) {
+        if (row == null) {
+            return;
+        }
+        row.setQueryId(resultCache.generateFailedQueryId(text));
+        row.markFailed(LocalDateTime.now(ZoneOffset.UTC), failure.getMessage());
+        queryHistoryTracker.addQuery(row);
+    }
+
+    /** Whether this thread ran work in a session of its own since {@link #takeRanInOwnSession} last asked. */
+    private final ThreadLocal<Boolean> ranInOwnSession = new ThreadLocal<Boolean>();
+
+    /**
+     * Runs {@code work} as a session of its own. Snowflake runs a task's run, an alert's evaluation and a pipe's
+     * load that way, in a system session rather than the caller's, even when EXECUTE TASK or EXECUTE ALERT
+     * started it:
+     * <ul>
+     *   <li>it starts outside the caller's transaction and commits statement by statement, so a ROLLBACK by the
+     *       caller leaves its writes in place;</li>
+     *   <li>its statements are recorded under its own session number and query-ID history, so the caller's
+     *       LAST_QUERY_ID and QUERY_HISTORY_BY_SESSION never see them. The account-wide QUERY_HISTORY still
+     *       lists them;</li>
+     *   <li>it reads and writes its own session settings, so CURRENT_SESSION(), session variables and
+     *       ALTER SESSION are its own.</li>
+     * </ul>
+     * A transaction the work leaves open is rolled back when it ends. The caller's transaction, settings and
+     * query-ID history are put back however the work ends.
+     *
+     * @param work what runs in the session
+     */
+    public void runInOwnSession(final Runnable work) {
+        final SessionContext context = securityManager != null ? securityManager.getSessionContext() : null;
+        final SessionSettings callerSettings = context != null ? context.getBoundSettings() : null;
+        final String callerResults = resultCache.boundSessionScope();
+        final SessionSettings own = new SessionSettings();
+        final String ownResults = String.valueOf(own.getSessionNumber());
+        ranInOwnSession.set(Boolean.TRUE);
+        final SetAsideTransaction aside = transactionManager.setAsideTransaction();
+        if (context != null) {
+            context.bindSettings(own);
+        }
+        resultCache.beginSessionScope(ownResults);
+        try {
+            work.run();
+        } finally {
+            try {
+                transactionManager.resumeTransaction(aside);
+            } finally {
+                // The session is over: its query-ID history goes with it rather than crowding out a live one's.
+                resultCache.forgetSession(ownResults);
+                if (callerResults != null) {
+                    resultCache.beginSessionScope(callerResults);
+                } else {
+                    resultCache.clearSessionScope();
+                }
+                if (context != null) {
+                    if (callerSettings != null) {
+                        context.bindSettings(callerSettings);
+                    } else {
+                        context.unbindSettings();
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether this thread ran work in a session of its own (see {@link #runInOwnSession}) since the last call, and
+     * forget it. A statement that ran a task, an alert or a pipe's load committed that work by itself, so the
+     * write-ahead log records it at once instead of inside the caller's transaction, which may yet roll back.
+     *
+     * @return whether such work ran
+     */
+    public boolean takeRanInOwnSession() {
+        final boolean ran = Boolean.TRUE.equals(ranInOwnSession.get());
+        ranInOwnSession.remove();
+        return ran;
+    }
+
     public List<ResultSet> executeWithLateralContext(final String sql, final Map<String, Object> lateralContext) {
         if (lateralContext == null) {
             return executeWithLateralContextInner(sql, null);
@@ -1377,9 +1671,17 @@ public class QueryExecutor {
         final List<ResultSet> results = new ArrayList<>();
         boolean hasResultSet = false;
 
-        // Track query history (only for top-level queries, not lateral subqueries)
+        // A statement written as part of another one (see executeAsPartOfStatement) records no row or query ID of
+        // its own. The flag is taken here, so the statements it runs record as usual.
+        final boolean partOfAnother = lateralContext == null && Boolean.TRUE.equals(partOfStatement.get());
+        if (partOfAnother) {
+            partOfStatement.remove();
+        }
+        final boolean recordsItself = lateralContext == null && !isUnrecorded() && !partOfAnother;
+
+        // Track query history (only for top-level queries, not lateral subqueries or unrecorded SQL)
         QueryHistory queryHistory = null;
-        if (lateralContext == null) {
+        if (recordsItself) {
             queryHistory = new QueryHistory(
                 sql,
                 catalog.getCurrentDatabase(),
@@ -1510,8 +1812,8 @@ public class QueryExecutor {
                     && executedStatement.proceduralStatement().executeImmediateStatement() != null;
                 if (answer instanceof ResultSet) {
                     final ResultSet resultSet = (ResultSet) answer;
-                    // Cache the result for RESULT_SCAN (only for non-correlated queries)
-                    if (lateralContext == null) {
+                    // Cache the result for RESULT_SCAN (only for non-correlated, recorded queries)
+                    if (recordsItself) {
                         final String queryId = resultCache.cacheResult(sql, resultSet);
                         if (queryHistory != null) {
                             queryHistory.setQueryId(queryId);
@@ -1545,7 +1847,7 @@ public class QueryExecutor {
             // Generate a query ID for non-result-producing queries (only for non-correlated queries).
             // Skip purely procedural control-flow statements (LET, FOR, DECLARE, OPEN, FETCH, CLOSE)
             // so they don't displace SHOW/SELECT results from LAST_QUERY_ID().
-            if (!hasResultSet && lateralContext == null && !isProceduralControlFlow(tree)) {
+            if (!hasResultSet && recordsItself && !isProceduralControlFlow(tree)) {
                 final String queryId = resultCache.generateQueryId(sql);
                 if (queryHistory != null) {
                     queryHistory.setQueryId(queryId);
@@ -1694,7 +1996,7 @@ public class QueryExecutor {
             value = storageEngine.getTableStorage(fullyQualifiedName).getNextAutoIncrementValue();
         }
         if (value == null && col.getDefaultValue() != null) {
-            value = evaluateDefaultValue(col.getDefaultValue());
+            value = evaluateDefaultValue(col.getDefaultValue(), fullyQualifiedName);
         }
         return value;
     }
@@ -1799,6 +2101,26 @@ public class QueryExecutor {
                                                        final Map<String, Object> lateralContext,
                                                        final Map<String, ResultSet> cteResults) {
         return planSelectFromContext(ctx, lateralContext, cteResults).run();
+    }
+
+    /**
+     * {@link #executeSelectFromContextWithCTEs} for a SELECT whose values leave the statement, an INSERT's source: a
+     * projection policy judges it as it judges a statement's own select, since the values it writes are as readable
+     * from the table as from a result.
+     *
+     * @param ctx        the source query
+     * @param cteResults CTEs the statement around it computed, or null
+     * @return the source's rows
+     */
+    ResultSet executeExportedSelect(final FrostlakeParser.SelectStatementContext ctx,
+                                    final Map<String, ResultSet> cteResults) {
+        final FrostlakeParser.SelectStatementContext outerSelect = outermostSelect;
+        outermostSelect = ctx;
+        try {
+            return executeSelectFromContextWithCTEs(ctx, null, cteResults);
+        } finally {
+            outermostSelect = outerSelect;
+        }
     }
 
     /**
@@ -2117,8 +2439,17 @@ public class QueryExecutor {
                     declared = declared == null ? null : DeclaredTypeFold.recursiveColumn(declared, termType);
                 }
             }
+            // The values come out of the anchor and of every recursive term, so a projection policy on either's
+            // column is the CTE column's.
+            String policy = anchor.getProjectionPolicyName();
+            for (final List<ResultSetColumn> term : termColumns) {
+                if (policy == null && i < term.size()) {
+                    policy = term.get(i).getProjectionPolicyName();
+                }
+            }
             if (reported == anchor.getDataType() && declared == anchor.getStaticType()) {
-                columns.add(anchor);
+                columns.add(policy != null && anchor.getProjectionPolicyName() == null
+                    ? anchor.withProjectionPolicy(policy) : anchor);
                 continue;
             }
             ResultSetColumn widened = new ResultSetColumn(anchor.getName(), reported, anchor.getTableName(),
@@ -2130,7 +2461,10 @@ public class QueryExecutor {
             if (anchor.isUncheckedConstant()) {
                 widened = widened.withUncheckedConstant();
             }
-            columns.add(anchor.isFoldedDouble() ? widened.withFoldedDouble() : widened);
+            if (anchor.isFoldedDouble()) {
+                widened = widened.withFoldedDouble();
+            }
+            columns.add(policy != null ? widened.withProjectionPolicy(policy) : widened);
         }
         return columns;
     }
@@ -2153,7 +2487,10 @@ public class QueryExecutor {
             final ResultSetColumn renamed = new ResultSetColumn(newNames.get(i), old.getDataType(), old.getTableName(),
                 old.getStaticType());
             final ResultSetColumn checked = old.isUncheckedConstant() ? renamed.withUncheckedConstant() : renamed;
-            newCols.add(old.isFoldedDouble() ? checked.withFoldedDouble() : checked);
+            final ResultSetColumn folded = old.isFoldedDouble() ? checked.withFoldedDouble() : checked;
+            // A column the list renames keeps the projection policy its values come under.
+            newCols.add(old.getProjectionPolicyName() != null
+                ? folded.withProjectionPolicy(old.getProjectionPolicyName()) : folded);
         }
         return new ResultSet(newCols, original.getRows());
     }
@@ -2327,6 +2664,15 @@ public class QueryExecutor {
         }
         accColumns = new ArrayList<>(reconcileBranchTypes(accColumns, branchColumns, literalMeasurements, nullArms));
         stampCollations(accColumns, setCollations);
+        // A column takes the projection policy of any branch's column it combines: the values come out of every arm.
+        for (int i = 0; i < accColumns.size(); i++) {
+            for (final List<ResultSetColumn> branch : branchColumns) {
+                if (i < branch.size() && branch.get(i).getProjectionPolicyName() != null
+                        && accColumns.get(i).getProjectionPolicyName() == null) {
+                    accColumns.set(i, accColumns.get(i).withProjectionPolicy(branch.get(i).getProjectionPolicyName()));
+                }
+            }
+        }
         if (wrapsNeedRows) {
             final List<List<Row>> branchRows = new ArrayList<>();
             for (final RowsProvider arm : armRows) {
@@ -2750,7 +3096,11 @@ public class QueryExecutor {
             if (securityManager != null && firstTableRef != null
                     && firstTableRef.tableSource().tableQualifiedName() != null) {
                 final String qualifiedTableName = ParseTreeText.getQualifiedName(firstTableRef.tableSource().tableQualifiedName());
-                securityManager.checkPermission(Privilege.SELECT, SecurableObjectType.TABLE, qualifiedTableName);
+                // A grant on a view is recorded under VIEW, whichever keyword the GRANT wrote, so reading a view asks
+                // for SELECT under VIEW.
+                securityManager.checkPermission(Privilege.SELECT,
+                    relationGrantKind(ParseTreeText.qualifiedNameParts(firstTableRef.tableSource().tableQualifiedName())),
+                    qualifiedTableName);
             }
 
             // Track table aliases and tables for WHERE clause evaluation
@@ -3582,6 +3932,7 @@ public class QueryExecutor {
             if (isSimpleStar(ctx)) {
                 rejectRestrictedStar(ctx, table, aliasToTable);
             }
+            // A masked column arrives masked (maskedRows), so a bare star over one passes its rows through.
             final boolean needsProjection = (!isSimpleStar(ctx) || ctx.connectByClause() != null
                     || hasHiddenStarColumns(table))
                 && !hasWindowFunctions && !hasGroupBy && !hasAggregates;
@@ -3681,6 +4032,9 @@ public class QueryExecutor {
             // Each column's select item as written, which tells a derived relation's COUNT whether the
             // column passes a stored column through (see DerivedStatistics).
             final List<String> columnSources = new ArrayList<>();
+            // Each column's expression as its projection reads it, which tells the column which projection
+            // policies its values come under (stampProjectionPolicies): an object star's is the OBJECT it builds.
+            final List<String> lineageSources = new ArrayList<>();
             // The static type of each projected column, so a derived table / CTE / view built from this
             // result set carries REAL declared types into the enclosing query rather than the VARCHAR
             // placeholder below — that placeholder is why every type-based rule could be bypassed by
@@ -3702,6 +4056,7 @@ public class QueryExecutor {
                             sc.getExpression(), projectionTypes, sc.isNullable(),
                             sc.isNullabilityKnown()));
                         columnSources.add(sc.getExpression());
+                        lineageSources.add(sc.getExpression());
                     }
                 } else if (SelectItemAccessors.isQualifiedStarItem(item)) {
                     // Expand t.* to all columns of the referenced table/alias
@@ -3725,6 +4080,7 @@ public class QueryExecutor {
                                     sc.getExpression(), projectionTypes, sc.isNullable(),
                                     sc.isNullabilityKnown()));
                                 columnSources.add(sc.getExpression());
+                                lineageSources.add(sc.getExpression());
                             }
                             break;
                         }
@@ -3734,6 +4090,7 @@ public class QueryExecutor {
                     columns.add(new ResultSetColumn(SelectItemAccessors.objectStarLabel(item),
                         ObjectType.OBJECT, null));
                     columnSources.add(null);
+                    lineageSources.add(objectStarExpression(item, table, aliasToTable));
                 } else {
                     // Handle expression select item — the output name/type come from the parse tree.
                     final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
@@ -3805,6 +4162,7 @@ public class QueryExecutor {
                         colNullable, colNullabilityKnown, typeSource);
                     columns.add(itemColumn);
                     columnSources.add(typeSource != null ? getOriginalText(typeSource) : null);
+                    lineageSources.add(typeSource != null ? getOriginalText(typeSource) : null);
                     if (hasAlias && itemColumn.getStaticType() != null) {
                         earlierAliasTypes.put(colName.toUpperCase(Locale.ROOT), itemColumn.getStaticType());
                     }
@@ -3822,6 +4180,13 @@ public class QueryExecutor {
             // relation, a view or a CTAS over this result compares it under that collation.
             final CollationSpec[] projected = projectionCollations(columnSources, table, aliasToTable, allTables);
             stampCollations(columns, projected);
+            // ... and the projection policy its values come under, which travels as far as the values do.
+            stampProjectionPolicies(columns, lineageSources, table, aliasToTable);
+            // A grouped, aggregating or windowed select projects its items without the projection stage that judges
+            // them, so they are judged here: MAX(p) hands out a value of p as surely as p does.
+            if (hasWindowFunctions || hasGroupBy || hasAggregates) {
+                rejectRestrictedProjections(ctx, lineageSources, table, aliasToTable);
+            }
             if (ctx.DISTINCT() != null) {
                 plan.add(distinctStage(table, projected, preProjectionRows));
             }
@@ -4322,6 +4687,15 @@ public class QueryExecutor {
                     return projected;
                 }
             });
+            // An item holding a subquery hands out the values the subquery's select list projects: a projection policy
+            // restricting them refuses the statement's own select, and marks the column for whoever reads this one.
+            final List<String> itemSources = new ArrayList<>();
+            for (final FrostlakeParser.SelectItemContext item : selectList.selectItem()) {
+                final ParserRuleContext expression = SelectItemAccessors.getItemExpression(item);
+                itemSources.add(expression != null ? getOriginalText(expression) : null);
+            }
+            rejectRestrictedProjections(ctx, itemSources, null, null);
+            stampProjectionPolicies(columns, itemSources, null, null);
             // Apply WHERE clause if present. The item list is a scope: a FROM-less predicate reads the
             // names this select publishes exactly as a query over a relation reads its columns, so the
             // predicate is evaluated over a one-row relation MADE of those items (live-verified). Its
@@ -4779,11 +5153,29 @@ public class QueryExecutor {
             final Object verdict = evaluator.evaluate(check.getExpression(), row);
             if (verdict != null && !SqlTruth.isTrue(verdict)) {
                 throw new RuntimeException("Operation on table "
-                    + getFullyQualifiedTableName(table.getName()) + " failed because CHECK constraint "
+                    + homeNameOf(table) + " failed because CHECK constraint "
                     + check.getReportedName() + ", which requires that " + check.getExpression()
                     + ", was violated");
             }
         }
+    }
+
+    /**
+     * A catalog table's full name, from the schema that holds it rather than the session's: a row written into
+     * {@code P.PUBLIC.T} from another database's schema is refused naming P.PUBLIC.T. A relation no schema holds
+     * keeps the reading against the session.
+     */
+    private String homeNameOf(final Table table) {
+        for (final Database database : catalog.getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                for (final Table held : schema.getTables()) {
+                    if (held == table) {
+                        return QualifiedName.key(database.getName(), schema.getName(), table.getName());
+                    }
+                }
+            }
+        }
+        return getFullyQualifiedTableName(table.getName());
     }
 
     /** Coerce each value in {@code row} to its column's declared type, in place (constraints.enforce.types). */
@@ -4885,6 +5277,13 @@ public class QueryExecutor {
             // length or with the wrong element kind raises Snowflake's own conversion error).
             return VectorValue.cast(value, (VectorType) type);
         }
+        if (StructuredTypes.isStructured(type)) {
+            // A structured column holds its own type: the value is converted as the cast to the column's type
+            // converts it, its fields to their declared types and its key set to the declared one, and a value
+            // that does not fit is refused in the cast's words. Passing it through stored values the column's
+            // own type refuses ({"zzz":"x"} in an OBJECT(a INT), ["y"] in an ARRAY(INT)).
+            return StructuredCast.forColumn(value, type);
+        }
         if (value instanceof VariantValue && !(type instanceof ArrayType
                 || type instanceof ObjectType || type instanceof VariantType)) {
             // A semi-structured value written into a non-semi-structured column coerces via its
@@ -4978,11 +5377,11 @@ public class QueryExecutor {
             if (value instanceof BinaryValue) {
                 return value;
             }
-            if (value instanceof byte[]) {
-                return BinaryValue.of((byte[]) value);
-            }
-            // Snowflake's implicit VARCHAR-to-BINARY conversion interprets the text as hex.
-            return BinaryValue.fromHex(value.toString());
+            // Snowflake's implicit VARCHAR-to-BINARY conversion interprets the text as hex, and the bytes it spells
+            // are then held to the column's width as a written BINARY is (above). A text skipped that check and
+            // left a BINARY(2) column holding three bytes; that a text is refused alike is not measured live.
+            return coerceWriteValue(value instanceof byte[] ? BinaryValue.of((byte[]) value)
+                : BinaryValue.fromHex(value.toString()), type);
         }
         if (type instanceof ArrayType) {
             // Writing into an ARRAY column follows TO_ARRAY semantics: an existing array passes through
@@ -5154,6 +5553,11 @@ public class QueryExecutor {
      * sentence (OVERWRITE=TRUE forces the upload).
      */
     public ResultSet executePutFromContext(final FrostlakeParser.PutStatementContext ctx) {
+        if (StatementClock.isReplay()) {
+            // A replayed PUT staged its files when it first ran, and they are on disk as the statements after it
+            // left them; the local source may be long gone.
+            return null;
+        }
         final String putLocation = stageRefToLocation(ctx.stageRef());
         final Path stageDir = resolveCopyBaseDir(putLocation);
         if (stageDir == null) {
@@ -5240,6 +5644,10 @@ public class QueryExecutor {
     }
 
     public ResultSet executeGetFromContext(final FrostlakeParser.GetStatementContext ctx) {
+        if (StatementClock.isReplay()) {
+            // A download changes nothing the log restores, and its files may be gone from the stage since.
+            return null;
+        }
         final StagePrefix staged = resolveStagePrefix(stageRefToLocation(ctx.stageRef()));
         final Path stageDir = staged.getRoot();
         final String localDir = stripFileScheme(stripTargetUrl(ctx));
@@ -5332,6 +5740,11 @@ public class QueryExecutor {
 
     /** REMOVE/RM @stage [PATTERN = '…'] — delete staged files (optionally matching a regex pattern). */
     public ResultSet executeRemoveFromContext(final FrostlakeParser.RemoveStatementContext ctx) {
+        if (StatementClock.isReplay()) {
+            // The files a replayed REMOVE removed are gone already, and a file staged again under one of their
+            // names since is not its to remove.
+            return null;
+        }
         final EngineConfig cfg = getEngineConfig();
         if (cfg == null || !cfg.isRemoveCommandEnabled()) {
             throw new RuntimeException(
@@ -5625,23 +6038,18 @@ public class QueryExecutor {
     }
 
     private void resetInternalStageDir(final String kind, final String objectName) {
+        if (StatementClock.isReplay()) {
+            // A replayed CREATE finds the stage as the statements after it left it: emptying it now would delete
+            // what was staged there since.
+            return;
+        }
         final Stage stage = "stages".equals(kind) ? catalog.getStage(objectName) : null;
         final Path dir = internalStageDir(kind, stage != null ? stageOwner(objectName, stage)
             : "tables".equals(kind) ? tableStageOwner(objectName) : getFullyQualifiedTableName(objectName), "");
-        if (Files.isDirectory(dir)) {
-            try (final java.util.stream.Stream<Path> walk = Files.walk(dir)) {
-                final List<Path> paths = new ArrayList<>();
-                final Iterator<Path> iterator = walk.iterator();
-                while (iterator.hasNext()) {
-                    paths.add(iterator.next());
-                }
-                Collections.sort(paths, Collections.reverseOrder());
-                for (final Path path : paths) {
-                    Files.deleteIfExists(path);
-                }
-            } catch (final IOException e) {
-                logger.warn("Could not reset internal stage directory {}", dir, e);
-            }
+        try {
+            deleteStageTree(dir);
+        } catch (final IOException e) {
+            logger.warn("Could not reset internal stage directory {}", dir, e);
         }
         // The empty root is materialized right away, so a fresh stage behaves like one — LIST
         // answers no rows and COPY reaches its normal dispatch — before the first PUT.
@@ -5652,6 +6060,322 @@ public class QueryExecutor {
         }
     }
 
+    /** Deletes a stage directory with everything under it; a directory that is not there is left alone. */
+    private static void deleteStageTree(final Path dir) throws IOException {
+        if (!Files.isDirectory(dir)) {
+            return;
+        }
+        try (final java.util.stream.Stream<Path> walk = Files.walk(dir)) {
+            final List<Path> paths = new ArrayList<>();
+            final Iterator<Path> iterator = walk.iterator();
+            while (iterator.hasNext()) {
+                paths.add(iterator.next());
+            }
+            Collections.sort(paths, Collections.reverseOrder());
+            for (final Path path : paths) {
+                Files.deleteIfExists(path);
+            }
+        }
+    }
+
+    /**
+     * Moves an internal stage's files with the object that owns them when the object's full name changes: a table
+     * renamed or moved to another schema or database, or the schema or database holding a table or a named stage
+     * renamed. A stage belongs to its object, not to the name, so its files go where the object goes and the old name
+     * keeps no directory: an object that takes the name later starts with an empty stage, where its CREATE used to
+     * delete the renamed object's files. Whatever the new name's directory still held goes first, as a CREATE of that
+     * name would have cleared it: it belongs to no object, since a dropped object's files wait elsewhere
+     * ({@link #setAsideStages}).
+     *
+     * <p>A replayed statement moves nothing (see {@link StatementClock#isReplay}): the directories are already where
+     * it left them, so a RENAME would carry a directory that has already gone and a SWAP would swap them back.
+     *
+     * @param kind     {@code tables} or {@code stages}
+     * @param oldOwner the owner's full name before, under its stored names
+     * @param newOwner the owner's full name after
+     */
+    private void moveInternalStageDir(final String kind, final String oldOwner, final String newOwner) {
+        final Path from = internalStageDir(kind, oldOwner, "");
+        final Path to = internalStageDir(kind, newOwner, "");
+        if (StatementClock.isReplay() || from.equals(to)) {
+            return;
+        }
+        try {
+            deleteStageTree(to);
+            if (Files.isDirectory(from)) {
+                Files.createDirectories(to.getParent());
+                Files.move(from, to);
+            }
+        } catch (final IOException e) {
+            logger.warn("Could not move internal stage directory {} to {}", from, to, e);
+        }
+    }
+
+    /**
+     * DROP TABLE, DROP SCHEMA and DROP DATABASE: the stage files of what the dropped version holds wait for its UNDROP
+     * in directories named by the token the DROP drew, where an object that takes a name later does not reach them.
+     * That covers a dropped table's own stage, and the stage of every table and internal named stage in a dropped
+     * schema or database. An object that takes the name starts with an empty stage, and its CREATE deletes nothing an
+     * UNDROP needs. An empty stage leaves nothing to bring back and is not set aside.
+     *
+     * @param key     the version's {@code KIND:qualified name}, as the catalog records it
+     * @param version the dropped version; one without a token ({@link DroppedObject#getStageToken}) leaves the files
+     *                where they are
+     */
+    public void setAsideStages(final String key, final DroppedObject version) {
+        if (StatementClock.isReplay() || version.getStageToken() == null) {
+            return;
+        }
+        for (final String[] stage : stagesOf(key, version)) {
+            final Path live = internalStageDir(stage[0], stage[1], "");
+            if (!Files.isDirectory(live)) {
+                continue;
+            }
+            try {
+                if (!holdsFiles(live)) {
+                    deleteStageTree(live);
+                    continue;
+                }
+                final Path parked = setAsideDir(setAsideRoot(true), stage[0], live, version.getStageToken());
+                Files.createDirectories(parked.getParent());
+                Files.move(live, parked);
+            } catch (final IOException e) {
+                logger.warn("Could not set aside the stage directory {} of a dropped object", live, e);
+            }
+        }
+    }
+
+    /** Whether a stage directory holds anything at all. */
+    private static boolean holdsFiles(final Path dir) throws IOException {
+        try (final DirectoryStream<Path> entries = Files.newDirectoryStream(dir)) {
+            return entries.iterator().hasNext();
+        }
+    }
+
+    /**
+     * UNDROP TABLE, SCHEMA or DATABASE: what {@link #setAsideStages} set aside comes back with the version. A stage
+     * that was empty, or one dropped before stage files were set aside, has nothing waiting. It starts empty,
+     * materialized as a created object's is, over whatever its name's directory holds.
+     *
+     * @param key     the restored version's {@code KIND:qualified name}
+     * @param version the restored version
+     */
+    public void bringBackStages(final String key, final DroppedObject version) {
+        if (StatementClock.isReplay() || version.getStageToken() == null) {
+            return;
+        }
+        final Path root = setAsideRoot(false);
+        for (final String[] stage : stagesOf(key, version)) {
+            final Path live = internalStageDir(stage[0], stage[1], "");
+            final Path parked = root == null ? null : setAsideDir(root, stage[0], live, version.getStageToken());
+            try {
+                if (parked == null || !Files.isDirectory(parked)) {
+                    Files.createDirectories(live);
+                    continue;
+                }
+                deleteStageTree(live);
+                Files.move(parked, live);
+            } catch (final IOException e) {
+                logger.warn("Could not restore the stage directory {} of an undropped object", live, e);
+            }
+        }
+    }
+
+    /**
+     * A dropped version the catalog forgets for good, its retention run out: the stage files it set aside go with it.
+     * A replayed statement deletes nothing, as it moves nothing ({@link #moveInternalStageDir}).
+     */
+    private void discardSetAsideStages(final String key, final DroppedObject version) {
+        if (StatementClock.isReplay() || version.getStageToken() == null) {
+            return;
+        }
+        final Path root = setAsideRoot(false);
+        if (root == null) {
+            return;
+        }
+        for (final String[] stage : stagesOf(key, version)) {
+            final Path parked = setAsideDir(root, stage[0], internalStageDir(stage[0], stage[1], ""),
+                version.getStageToken());
+            try {
+                deleteStageTree(parked);
+            } catch (final IOException e) {
+                logger.warn("Could not delete the set-aside stage directory {} of a purged version", parked, e);
+            }
+        }
+    }
+
+    /**
+     * The stages a dropped version sets aside, each as its kind ({@code tables} or {@code stages}) and its owner's full
+     * name where it was dropped. A dropped table has its own stage. A dropped schema or database has those of its
+     * tables (a temporary table and the permanent one it hides share one) and of its internal named stages. The
+     * container's names come from the version's key, the objects' from what the version holds.
+     */
+    private static List<String[]> stagesOf(final String key, final DroppedObject version) {
+        final List<String[]> stages = new ArrayList<>();
+        final int colon = key.indexOf(':');
+        if (colon < 0) {
+            return stages;
+        }
+        final String kind = key.substring(0, colon);
+        final String[] parts = QualifiedName.parse(key.substring(colon + 1)).parts();
+        final Object object = version.getObject();
+        if ("TABLE".equals(kind) && object instanceof Table && parts.length == 3) {
+            stages.add(new String[] {"tables", QualifiedName.key(parts[0], parts[1], ((Table) object).getName())});
+        } else if ("SCHEMA".equals(kind) && object instanceof Schema && parts.length == 2) {
+            addSchemaStages(stages, parts[0], (Schema) object);
+        } else if ("DATABASE".equals(kind) && object instanceof Database && parts.length == 1) {
+            for (final Schema schema : ((Database) object).getAllSchemas()) {
+                addSchemaStages(stages, parts[0], schema);
+            }
+        }
+        return stages;
+    }
+
+    private static void addSchemaStages(final List<String[]> stages, final String database, final Schema schema) {
+        final Set<String> tableOwners = new HashSet<>();
+        final List<Table> tables = new ArrayList<>(schema.getTables());
+        tables.addAll(schema.getShadowedTables());
+        for (final Table table : tables) {
+            final String owner = QualifiedName.key(database, schema.getName(), table.getName());
+            if (tableOwners.add(owner)) {
+                stages.add(new String[] {"tables", owner});
+            }
+        }
+        for (final Stage stage : schema.getStages()) {
+            if (stage.getType() == StageType.INTERNAL) {
+                stages.add(new String[] {"stages", QualifiedName.key(database, schema.getName(), stage.getName())});
+            }
+        }
+    }
+
+    /**
+     * Whether this engine's dropped versions outlive it: a write-ahead log or snapshot persistence gives them back to
+     * the engine that starts on its data next, which then needs the stages they set aside.
+     */
+    private boolean droppedVersionsOutliveEngine() {
+        return engineConfig != null && (engineConfig.isWalEnabled() || engineConfig.isPersistenceEnabled());
+    }
+
+    /**
+     * Where this engine sets stages aside. An engine whose dropped versions outlive it uses the shared
+     * {@code <internalRoot>/dropped}, where the engine restarted on its data finds them for UNDROP, and where they stay
+     * until their versions' retention runs out. Any other engine uses a directory of its own below that, made the
+     * first time it sets a stage aside and deleted when it shuts down ({@link #releaseSetAsideStages}) or, failing
+     * that, when the JVM exits. Its dropped versions end with it, and nothing of another engine's is ever in there.
+     *
+     * @param make whether to make the engine's own directory when there is none yet
+     * @return the directory, or null for an engine of its own that has set nothing aside
+     */
+    private Path setAsideRoot(final boolean make) {
+        if (droppedVersionsOutliveEngine()) {
+            return internalStageRoot().resolve("dropped");
+        }
+        synchronized (setAsideLock) {
+            if (ownSetAsideRoot == null && make) {
+                ownSetAsideRoot = internalStageRoot().resolve("dropped").resolve("engine-" + UUID.randomUUID());
+                final Path own = ownSetAsideRoot;
+                final Thread cleanup = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        deleteSetAsideRoot(own);
+                    }
+                }, "frostlake-set-aside-stages");
+                try {
+                    Runtime.getRuntime().addShutdownHook(cleanup);
+                    setAsideCleanup = cleanup;
+                } catch (final IllegalStateException exiting) {
+                    // The JVM is already on its way out; shutdown() still deletes the directory.
+                }
+            }
+            return ownSetAsideRoot;
+        }
+    }
+
+    /**
+     * Engine shutdown: an engine whose dropped versions end with it deletes the stages it set aside for them. One whose
+     * versions outlive it keeps them for the engine that restarts on its data.
+     */
+    public void releaseSetAsideStages() {
+        final Path own;
+        final Thread cleanup;
+        synchronized (setAsideLock) {
+            own = ownSetAsideRoot;
+            cleanup = setAsideCleanup;
+            ownSetAsideRoot = null;
+            setAsideCleanup = null;
+        }
+        if (own == null) {
+            return;
+        }
+        deleteSetAsideRoot(own);
+        if (cleanup != null) {
+            try {
+                Runtime.getRuntime().removeShutdownHook(cleanup);
+            } catch (final IllegalStateException exiting) {
+                // The hook is running or about to: it deletes the same directory.
+            }
+        }
+    }
+
+    private static void deleteSetAsideRoot(final Path own) {
+        try {
+            deleteStageTree(own);
+        } catch (final IOException e) {
+            logger.warn("Could not delete the set-aside stages in {}", own, e);
+        }
+    }
+
+    /** Where a stage waits: {@code <set-aside root>/<kind>/<its directory>@<token>}. */
+    private static Path setAsideDir(final Path root, final String kind, final Path live, final String token) {
+        return root.resolve(kind).resolve(live.getFileName() + "@" + token);
+    }
+
+    /** The local root of every internal stage: the user stages, the table stages and the named internal ones. */
+    private Path internalStageRoot() {
+        return Paths.get(engineConfig != null ? engineConfig.getStageInternalLocalRoot()
+            : System.getProperty("user.home") + "/.frostlake_stages/internal");
+    }
+
+    /** ALTER TABLE ... SWAP WITH: the two tables trade their stages' files as they trade their rows. */
+    private void swapInternalStageDirs(final String kind, final String ownerA, final String ownerB) {
+        final Path a = internalStageDir(kind, ownerA, "");
+        final Path b = internalStageDir(kind, ownerB, "");
+        if (StatementClock.isReplay() || a.equals(b)) {
+            return;
+        }
+        final Path parked = a.resolveSibling(a.getFileName() + "~swap-" + UUID.randomUUID());
+        try {
+            if (Files.isDirectory(a)) {
+                Files.move(a, parked);
+            }
+            if (Files.isDirectory(b)) {
+                Files.move(b, a);
+            }
+            if (Files.isDirectory(parked)) {
+                Files.move(parked, b);
+            }
+        } catch (final IOException e) {
+            logger.warn("Could not swap internal stage directories {} and {}", a, b, e);
+        }
+    }
+
+    /**
+     * The stages of every table and named stage in a schema follow the schema's rename or move ({@link
+     * #moveInternalStageDir}).
+     */
+    private void moveSchemaStageDirs(final Schema schema, final String oldDatabase, final String oldSchema) {
+        final List<Table> tables = new ArrayList<>(schema.getTables());
+        tables.addAll(schema.getShadowedTables());
+        for (final Table table : tables) {
+            moveInternalStageDir("tables", QualifiedName.key(oldDatabase, oldSchema, table.getName()),
+                QualifiedName.key(schema.getDatabaseName(), schema.getName(), table.getName()));
+        }
+        for (final Stage stage : schema.getStages()) {
+            moveInternalStageDir("stages", QualifiedName.key(oldDatabase, oldSchema, stage.getName()),
+                QualifiedName.key(schema.getDatabaseName(), schema.getName(), stage.getName()));
+        }
+    }
+
     /**
      * Local directory for an implicit internal stage: {@code <internalRoot>/<kind>/<segment>[/subPath]}, the
      * segment being {@link #stageDirectory}'s for the stage's owner — resolved to its stored name by the caller,
@@ -5659,9 +6383,7 @@ public class QueryExecutor {
      * @st/hello.txt}, so the writer's spelling and the reader's need not match where the object's own name would).
      */
     private Path internalStageDir(final String kind, final String name, final String subPath) {
-        final String root = engineConfig != null ? engineConfig.getStageInternalLocalRoot()
-            : System.getProperty("user.home") + "/.frostlake_stages/internal";
-        final Path base = Paths.get(root, kind, stageDirectory(kind, name));
+        final Path base = internalStageRoot().resolve(kind).resolve(stageDirectory(kind, name));
         final String sub = subPath.startsWith("/") ? subPath.substring(1) : subPath;
         if (sub.isEmpty()) {
             return base;
@@ -5887,6 +6609,7 @@ public class QueryExecutor {
         // does-not-exist shape); then the row stores trade under the same keys, completing the swap.
         catalog.swapTables(tableA, tableB);
         storageEngine.swapTables(getFullyQualifiedTableName(tableA), getFullyQualifiedTableName(tableB));
+        swapInternalStageDirs("tables", getFullyQualifiedTableName(tableA), getFullyQualifiedTableName(tableB));
     }
 
     /**
@@ -6097,17 +6820,25 @@ public class QueryExecutor {
         final String[] parts = QualifiedName.parse(oldQualified).parts();
         parts[parts.length - 1] = newShortName;
         storageEngine.renameTable(oldQualified, QualifiedName.key(parts));
+        // Its stage goes with it, to the directory of its stored names.
+        moveInternalStageDir("tables", oldQualified, tableStageOwner(QualifiedName.key(parts)));
     }
 
     /** Re-key a renamed database's row storage to its new name (ALTER DATABASE RENAME TO). */
     public void renameDatabaseStorage(final String oldDatabase, final String newDatabase) {
         storageEngine.renameDatabase(oldDatabase, newDatabase);
+        // So are its tables' and stages' files.
+        for (final Schema schema : catalog.databaseExact(newDatabase).getAllSchemas()) {
+            moveSchemaStageDirs(schema, oldDatabase, schema.getName());
+        }
     }
 
     /** Re-key a renamed or moved schema's row storage to its new database and name (ALTER SCHEMA RENAME TO). */
     public void renameSchemaStorage(final String oldDatabase, final String oldSchema, final String newDatabase,
                                     final String newSchema) {
         storageEngine.renameSchema(oldDatabase, oldSchema, newDatabase, newSchema);
+        // So are its tables' and stages' files.
+        moveSchemaStageDirs(catalog.databaseExact(newDatabase).schemaExact(newSchema), oldDatabase, oldSchema);
     }
 
     /** Re-key a moved table's row storage to a new database/schema/name (cross-schema RENAME TO). */
@@ -6115,6 +6846,8 @@ public class QueryExecutor {
                                  final String targetSchema, final String newShortName) {
         final String oldQualified = getFullyQualifiedTableName(oldName);
         storageEngine.renameTable(oldQualified, QualifiedName.key(targetDatabase, targetSchema, newShortName));
+        moveInternalStageDir("tables", oldQualified,
+            tableStageOwner(QualifiedName.key(targetDatabase, targetSchema, newShortName)));
     }
 
     /**
@@ -6162,7 +6895,7 @@ public class QueryExecutor {
      * @param newColumn          the added column
      */
     public void backfillColumn(final String fullyQualifiedName, final Table table, final TableColumn newColumn) {
-        final Object value = evaluateDefaultValue(newColumn.getDefaultValue());
+        final Object value = evaluateDefaultValue(newColumn.getDefaultValue(), fullyQualifiedName);
         final TableStorage storage = storageEngine.getTableStorage(fullyQualifiedName);
         final Object stored = storage != null ? storage.appendColumnSlot(value) : value;
         final int width = table.columnCount();
@@ -6383,7 +7116,14 @@ public class QueryExecutor {
         }
     }
 
-    private Object evaluateDefaultValue(final Object defaultValue) {
+    /**
+     * The value a column DEFAULT writes.
+     *
+     * @param defaultValue       the column's recorded default
+     * @param fullyQualifiedName the table's DB.SCHEMA.NAME, where an expression default is evaluated
+     * @return the value
+     */
+    private Object evaluateDefaultValue(final Object defaultValue, final String fullyQualifiedName) {
         if (defaultValue == null) {
             return null;
         }
@@ -6392,7 +7132,8 @@ public class QueryExecutor {
         // evaluated per row here rather than inserted as its literal text. An invalid expression (e.g. a
         // reference to a non-existent column) surfaces as an error at INSERT, which is the correct outcome.
         if (defaultValue instanceof DefaultValueExpression) {
-            return evaluateDefaultExpressionText(((DefaultValueExpression) defaultValue).getExpressionText());
+            return evaluateDefaultExpressionText(((DefaultValueExpression) defaultValue).getExpressionText(),
+                fullyQualifiedName);
         }
 
         // If it's a string, check if it's a function name or special value
@@ -6427,12 +7168,32 @@ public class QueryExecutor {
         return defaultValue;
     }
 
-    /** Evaluate a column DEFAULT expression's text against an empty row (defaults cannot see other columns). */
-    private Object evaluateDefaultExpressionText(final String expressionText) {
+    /**
+     * Evaluate a column DEFAULT expression's text against an empty row (defaults cannot see other columns), where
+     * the TABLE lives: a name the expression leaves unqualified, a sequence's {@code seq.NEXTVAL} above all,
+     * resolves in the table's database and schema, as a view's body does, whatever the writing session's context.
+     * The session's context is put back however the expression ends.
+     *
+     * @param expressionText     the default as written
+     * @param fullyQualifiedName the table's DB.SCHEMA.NAME, or null to evaluate in the session's context
+     * @return the value
+     */
+    private Object evaluateDefaultExpressionText(final String expressionText, final String fullyQualifiedName) {
         final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
         final Row dummyRow = new Row(new ArrayList<>());
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(dummyTable, functionRegistry, catalog, this);
-        return evaluator.evaluate(expressionText, dummyRow);
+        final String[] home = fullyQualifiedName == null ? null : QualifiedName.parse(fullyQualifiedName).parts();
+        if (home == null || home.length != 3) {
+            return evaluator.evaluate(expressionText, dummyRow);
+        }
+        final String savedDatabase = catalog.getCurrentDatabase();
+        final String savedSchema = catalog.getCurrentSchema();
+        catalog.restoreContext(home[0], home[1]);
+        try {
+            return evaluator.evaluate(expressionText, dummyRow);
+        } finally {
+            catalog.restoreContext(savedDatabase, savedSchema);
+        }
     }
 
     /**
@@ -6464,15 +7225,20 @@ public class QueryExecutor {
      * @param body     the body to plan
      * @return the planned body
      */
-    private PlannedQuery planInViewScope(final String viewName, final String body) {
+    private PlannedQuery planInViewScope(final String viewName, final String body, final String owner) {
         final String[] scope = viewScope(viewName);
         final String savedDatabase = catalog.getCurrentDatabase();
         final String savedSchema = catalog.getCurrentSchema();
         catalog.restoreContext(scope[0], scope[1]);
+        // The body reads the view's underlying objects with its owner's rights, as Snowflake's views do.
+        final String savedRights = securityManager != null ? securityManager.enterOwnerRights(owner) : null;
         final PlannedQuery planned;
         try {
             planned = planRelationBody(body);
         } finally {
+            if (securityManager != null) {
+                securityManager.leaveOwnerRights(savedRights);
+            }
             catalog.restoreContext(savedDatabase, savedSchema);
         }
         return new PlannedQuery(planned.shape, planned.description) {
@@ -6481,9 +7247,13 @@ public class QueryExecutor {
                 final String database = catalog.getCurrentDatabase();
                 final String schema = catalog.getCurrentSchema();
                 catalog.restoreContext(scope[0], scope[1]);
+                final String rights = securityManager != null ? securityManager.enterOwnerRights(owner) : null;
                 try {
                     return planned.run();
                 } finally {
+                    if (securityManager != null) {
+                        securityManager.leaveOwnerRights(rights);
+                    }
                     catalog.restoreContext(database, schema);
                 }
             }
@@ -6624,7 +7394,8 @@ public class QueryExecutor {
         compilingViewBody = true;
         final boolean previous = RelationShapeOnly.begin();
         try {
-            final List<ResultSet> results = execute(body);
+            // Compiling the routine's body is the CREATE's own work: it takes no query ID and no history row.
+            final List<ResultSet> results = executeUnrecorded(body);
             if (results.isEmpty() || results.get(0) == null) {
                 return null;
             }
@@ -6689,7 +7460,10 @@ public class QueryExecutor {
             ? null : schema.getMaterializedView(parts[parts.length - 1]);
     }
 
-    /** Resolve a DYNAMIC TABLE by (optionally qualified) name; the schema getter is case-insensitive. */
+    /**
+     * Resolve a DYNAMIC TABLE by (optionally qualified) name. Its own name is matched exactly, as a table's is
+     * ({@link Schema#getDynamicTable}); the schema and database as the other relations' are.
+     */
     private DynamicTable resolveDynamicTable(final String name) {
         final String[] parts = QualifiedName.parse(name).parts();
         final Schema schema = parts.length == 1
@@ -6892,6 +7666,34 @@ public class QueryExecutor {
      * @param arity      the number of argument types written after a routine's name, or null for none
      */
     public GrantedObject grantedObject(final String objectType, final String[] parts, final Integer arity) {
+        return grantedObject(objectType, parts, arity, null);
+    }
+
+    /**
+     * The kind privileges on the relation a FROM names are recorded under: VIEW for a view, TABLE for anything else,
+     * a name that is no catalog relation (a CTE's) included.
+     */
+    private String relationGrantKind(final String[] parts) {
+        try {
+            final GrantedObject granted = grantedObject("TABLE", parts, null);
+            return granted != null ? granted.getKind() : "TABLE";
+        } catch (final RuntimeException notARelation) {
+            return "TABLE";
+        }
+    }
+
+    /**
+     * {@link #grantedObject(String, String[], Integer)} for a routine named with its argument types: the overload
+     * those types name, matched by type family as a DROP matches them, rather than the first one taking as many
+     * arguments.
+     *
+     * @param objectType   the kind the statement names, upper-case
+     * @param parts        the object's name, part by part
+     * @param arity        the number of argument types written after a routine's name, or null for none
+     * @param writtenTypes the argument types written after a routine's name, or null to go by {@code arity}
+     */
+    public GrantedObject grantedObject(final String objectType, final String[] parts, final Integer arity,
+                                       final List<String> writtenTypes) {
         switch (objectType) {
             case "TABLE":
             case "VIEW": {
@@ -6932,7 +7734,7 @@ public class QueryExecutor {
             case "FUNCTION": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                 for (final Function overload : schema.getFunctionOverloads(parts[parts.length - 1])) {
-                    if (arity == null || overload.getParameters().size() == arity.intValue()) {
+                    if (takes(overload.getParameters(), arity, writtenTypes)) {
                         return functionGrant(schema, overload);
                     }
                 }
@@ -6941,7 +7743,7 @@ public class QueryExecutor {
             case "PROCEDURE": {
                 final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
                 for (final Procedure overload : schema.getProcedureOverloads(parts[parts.length - 1])) {
-                    if (arity == null || overload.getParameters().size() == arity.intValue()) {
+                    if (takes(overload.getParameters(), arity, writtenTypes)) {
                         return procedureGrant(schema, overload);
                     }
                 }
@@ -7199,20 +8001,82 @@ public class QueryExecutor {
             securityManager.getSessionContext().getCurrentRole(), granted.getName()));
     }
 
-    /** A function overload as its grants name it: in full, with its argument types. */
+    /**
+     * A function overload as its grants name it: in full, with its argument types. Its privileges are its own,
+     * recorded under its signature (GrantNames.routine); its first spelling is its bare name, as refusals name it.
+     */
     private static GrantedObject functionGrant(final Schema schema, final Function overload) {
         return new GrantedObject("FUNCTION",
             SqlIdentifiers.spellAlreadyCanonicalPath(schema.qualifiedName(overload.getName()))
                 + argumentTypes(overload.getParameters()),
-            overload.getOwner(), overload.getCreatedTime(), memberSpellings(schema, overload.getName()));
+            overload.getOwner(), overload.getCreatedTime(),
+            spellings(overload.getName(), GrantNames.routine(schema, overload.getName(), overload.getParameters())));
     }
 
-    /** A procedure overload as its grants name it: in full, with its argument types. */
+    /** A procedure overload as its grants name it, its privileges found under its signature. */
     private static GrantedObject procedureGrant(final Schema schema, final Procedure overload) {
         return new GrantedObject("PROCEDURE",
             SqlIdentifiers.spellAlreadyCanonicalPath(schema.qualifiedName(overload.getName()))
                 + argumentTypes(overload.getParameters()),
-            overload.getOwner(), overload.getCreatedTime(), memberSpellings(schema, overload.getName()));
+            overload.getOwner(), overload.getCreatedTime(),
+            spellings(overload.getName(), GrantNames.routine(schema, overload.getName(), overload.getParameters())));
+    }
+
+    /**
+     * The names privileges on the routine overloads a GRANT or REVOKE names are recorded under (GrantNames.routine):
+     * the overload whose argument types are the written ones, matched by type family as a DROP matches them, or every
+     * overload of the name when the statement writes no argument list.
+     *
+     * @param objectType   FUNCTION or PROCEDURE
+     * @param parts        the routine's name, part by part
+     * @param writtenTypes the written argument types, or null when no argument list is written
+     * @return the names, one per overload named
+     */
+    public List<String> routineGrantNames(final String objectType, final String[] parts,
+                                          final List<String> writtenTypes) {
+        final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        final String name = parts[parts.length - 1];
+        final boolean function = "FUNCTION".equals(objectType);
+        final List<String> names = new ArrayList<>();
+        if (function) {
+            for (final Function overload : schema.getFunctionOverloads(name)) {
+                if (takes(overload.getParameters(), null, writtenTypes)) {
+                    names.add(GrantNames.routine(schema, overload.getName(), overload.getParameters()));
+                }
+            }
+        } else {
+            for (final Procedure overload : schema.getProcedureOverloads(name)) {
+                if (takes(overload.getParameters(), null, writtenTypes)) {
+                    names.add(GrantNames.routine(schema, overload.getName(), overload.getParameters()));
+                }
+            }
+        }
+        if (names.isEmpty()) {
+            // No overload takes the types written: the routine named so does not exist.
+            throw new RuntimeException(SqlCompilationError.doesNotExist(function ? "Function" : "Procedure",
+                schema.qualifiedName(name)));
+        }
+        return names;
+    }
+
+    /**
+     * Whether an overload's parameters are the ones a statement names: by the written types' families when it writes
+     * them, else by count, else any.
+     */
+    private static boolean takes(final List<Parameter> parameters, final Integer arity, final List<String> writtenTypes) {
+        if (writtenTypes != null) {
+            if (parameters.size() != writtenTypes.size()) {
+                return false;
+            }
+            for (int i = 0; i < parameters.size(); i++) {
+                if (!Schema.signatureFamily(parameters.get(i).getDataType().getName())
+                        .equals(Schema.signatureFamily(writtenTypes.get(i)))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return arity == null || parameters.size() == arity.intValue();
     }
 
     /** A routine's argument types as its grants name it: {@code (NUMBER, VARCHAR)}. */
@@ -7610,12 +8474,31 @@ public class QueryExecutor {
     }
 
     /**
-     * For each projection expression that is a direct reference to a masked column,
-     * wrap it with the masking policy body — substituting the policy parameter with the column name.
-     * Security check: masking is skipped for ACCOUNTADMIN / SYSADMIN roles.
+     * A catalog table's rows as a query reads them, each masked column holding its policy's answer for the reading
+     * role ({@link MaskingPolicyApplier#maskRows}). Every source that reads a table's stored rows into a query reads
+     * them through here: a plain scan, a scan inside a transaction, AT | BEFORE, CHANGES, a stream, TABLE('name') and
+     * IDENTIFIER(...).
+     *
+     * @param relation the relation the rows are laid out in
+     * @param owner    the table whose columns are masked
+     * @param raw      the rows as stored
+     * @return the read, masking the rows as it produces them; {@code raw} itself when no column is masked
      */
-    private List<String> applyMaskingPolicies(final List<String> exprs, final Table table) {
-        return maskingApplier.applyMaskingPolicies(exprs, table);
+    private RowsProvider maskedRows(final Table relation, final Table owner, final RowsProvider raw) {
+        if (!maskingApplier.masks(relation)) {
+            return raw;
+        }
+        return new RowsProvider() {
+            @Override
+            public List<Row> rows() {
+                return maskingApplier.maskRows(raw.rows(), relation, owner);
+            }
+
+            @Override
+            public String describe() {
+                return raw.describe();
+            }
+        };
     }
 
     /**
@@ -7630,20 +8513,81 @@ public class QueryExecutor {
     private void rejectRestrictedProjections(final FrostlakeParser.SelectClauseContext ctx,
                                              final List<String> projectionExpressions, final Table table,
                                              final Map<String, Table> aliasToTable) {
+        rejectRestrictedProjections(ctx, projectionExpressions, projectionExpressions, table, aliasToTable);
+    }
+
+    /**
+     * {@link #rejectRestrictedProjections} for items read one way and reported another: a bare star's columns are
+     * read as identifiers spelled for their exact names and reported by name.
+     *
+     * @param checked the items as the check reads them
+     * @param shown   the same items as the refusal lists them, index-aligned
+     */
+    private void rejectRestrictedProjections(final FrostlakeParser.SelectClauseContext ctx,
+                                             final List<String> checked, final List<String> shown,
+                                             final Table table, final Map<String, Table> aliasToTable) {
         if (outermostSelect == null || !isOutermostSelectClause(ctx)) {
             return;
         }
         final StringBuilder restricted = new StringBuilder();
-        for (final String expression : projectionExpressions) {
-            if (projectionDenied(expression, table, aliasToTable)) {
+        for (int i = 0; i < checked.size(); i++) {
+            if (projectionDenied(checked.get(i), table, aliasToTable)) {
                 // Each offending item on its own line, upper-cased however it was written.
-                restricted.append("\n ").append(expression.toUpperCase(Locale.ROOT));
+                restricted.append("\n ").append(shown.get(i).toUpperCase(Locale.ROOT));
             }
         }
         if (restricted.length() > 0) {
-            throw new RuntimeException(SqlCompilationError.PREFIX + " The following columns are"
-                + " restricted by a Projection Policy. Please remove them from the list of projected"
-                + " columns:\n" + restricted);
+            throw projectionRefusal(restricted);
+        }
+    }
+
+    /** The projection policy's refusal, listing the offending items, each on a line of its own. */
+    private static RuntimeException projectionRefusal(final CharSequence restricted) {
+        return new RuntimeException(SqlCompilationError.PREFIX + " The following columns are"
+            + " restricted by a Projection Policy. Please remove them from the list of projected"
+            + " columns:\n" + restricted);
+    }
+
+    /**
+     * Refuses a DML statement whose assignments or VALUES hand out values a projection policy restricts. What an
+     * UPDATE SET, a MERGE branch or a VALUES list writes is as readable from the table as a result's column, so each
+     * value is judged as a projected item is, by the same rule ({@link ProjectionLineage}: a counting aggregate over
+     * the column hands out no value of it), and refused in the same sentence. The statement's WHERE and ON are not
+     * judged: the column is used there, not handed out. Not measured live.
+     *
+     * @param values       the assigned and inserted expressions, as written
+     * @param scope        the relation they are written over, or null for none
+     * @param aliasToTable the names the statement gives its relations, or null
+     * @param allTables    the statement's relations, or null
+     */
+    public void rejectRestrictedAssignments(final List<? extends ParserRuleContext> values, final Table scope,
+                                            final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        if (values.isEmpty()) {
+            return;
+        }
+        try {
+            // A value's subqueries compile first, so each is judged by the shape it compiles to.
+            compileSubqueriesIn(values, scope != null ? scope : FromlessDual.unread(), aliasToTable, allTables, null);
+        } catch (final RuntimeException uncompilable) {
+            // A subquery this scope cannot compile is refused, if at all, where it runs.
+        }
+        final List<Table> sources = projectionSources(scope, aliasToTable);
+        if (allTables != null) {
+            for (final Table relation : allTables) {
+                if (!sources.contains(relation)) {
+                    sources.add(relation);
+                }
+            }
+        }
+        final StringBuilder restricted = new StringBuilder();
+        for (final ParserRuleContext value : values) {
+            final String text = getOriginalText(value);
+            if (deniedProjectionPolicy(text, sources) != null) {
+                restricted.append("\n ").append(text.toUpperCase(Locale.ROOT));
+            }
+        }
+        if (restricted.length() > 0) {
+            throw projectionRefusal(restricted);
         }
     }
 
@@ -7665,12 +8609,9 @@ public class QueryExecutor {
         }
     }
 
-    /** Whether a table's join policy answers JOIN_REQUIRED =&gt; TRUE. */
+    /** Whether a table's join policy answers JOIN_REQUIRED =&gt; TRUE. A join policy that is gone refuses the query. */
     private boolean joinRequired(final Table table) {
-        final JoinPolicy policy = catalog.findJoinPolicy(table.getJoinPolicyName());
-        if (policy == null) {
-            return false;
-        }
+        final JoinPolicy policy = PolicyReferences.joinPolicy(catalog, table.getJoinPolicyName(), table);
         final Object verdict = new ExpressionEvaluator(null, getFunctionRegistry(), catalog, this)
             .evaluate(policy.getBody(), new Row(new ArrayList<>()));
         return Boolean.TRUE.equals(verdict) || "true".equalsIgnoreCase(String.valueOf(verdict));
@@ -7708,10 +8649,9 @@ public class QueryExecutor {
         if (table == null || !table.hasAggregationPolicy()) {
             return 0;
         }
-        final AggregationPolicy policy = catalog.findAggregationPolicy(table.getAggregationPolicyName());
-        if (policy == null) {
-            return 0;
-        }
+        // An aggregation policy that is gone refuses the query rather than lifting the minimum.
+        final AggregationPolicy policy = PolicyReferences.aggregationPolicy(catalog,
+            table.getAggregationPolicyName(), table);
         PolicyBodyScope.enter();
         try {
             final Object verdict = new ExpressionEvaluator(null, getFunctionRegistry(), catalog, this)
@@ -7806,11 +8746,15 @@ public class QueryExecutor {
         if (table == null) {
             return;
         }
+        // Each column is read by its exact name, which an identifier spelled for it names: a bare name read as text
+        // would take a lower-case "p" for the column P, and miss a "Mixed" one.
+        final List<String> spelled = new ArrayList<>();
         final List<String> projected = new ArrayList<>();
         for (final TableColumn column : table.getColumns()) {
+            spelled.add(SqlIdentifiers.spellCanonicalEscaped(column.getName()));
             projected.add(column.getName());
         }
-        rejectRestrictedProjections(ctx, projected, table, aliasToTable);
+        rejectRestrictedProjections(ctx, spelled, projected, table, aliasToTable);
     }
 
     /** Whether this select clause belongs to the statement the user submitted. */
@@ -7826,9 +8770,40 @@ public class QueryExecutor {
         return false;
     }
 
-    /** Whether a projected expression names a column whose projection policy answers ALLOW =&gt; FALSE. */
+    /**
+     * Whether a projected expression hands out values a projection policy answering ALLOW =&gt; FALSE restricts: it
+     * names such a column, of a table or carried by a derived relation, hands every column to a function, or holds a
+     * subquery whose own select list hands one out (see {@link ProjectionLineage}).
+     */
     private boolean projectionDenied(final String expression, final Table table,
                                      final Map<String, Table> aliasToTable) {
+        return deniedProjectionPolicy(expression, projectionSources(table, aliasToTable)) != null;
+    }
+
+    /**
+     * A relation like {@code relation} whose every column comes under a projection policy, as a lateral item computed
+     * from a restricted column's values does. Its own columns are left untouched: the copy carries the marks.
+     *
+     * @param relation the relation
+     * @param policy   the policy, fully qualified
+     * @return the copy
+     */
+    private static Table withProjectionPolicy(final Table relation, final String policy) {
+        final List<TableColumn> columns = new ArrayList<>();
+        for (final TableColumn column : relation.columnsView()) {
+            final TableColumn marked = column.copy();
+            if (!marked.hasProjectionPolicy()) {
+                marked.setProjectionPolicyName(policy);
+            }
+            columns.add(marked);
+        }
+        final Table copy = new Table(relation.getName(), columns, relation.isTemporary());
+        copy.setRelationStatistics(relation.getRelationStatistics());
+        return copy;
+    }
+
+    /** The relations a select item reads: the FROM clause's relation and every relation its aliases name. */
+    private static List<Table> projectionSources(final Table table, final Map<String, Table> aliasToTable) {
         final List<Table> sources = new ArrayList<>();
         if (table != null) {
             sources.add(table);
@@ -7840,24 +8815,86 @@ public class QueryExecutor {
                 }
             }
         }
-        for (final Table source : sources) {
-            for (final TableColumn column : source.getColumns()) {
-                if (column.hasProjectionPolicy()
-                        && ExpressionColumns.references(expression, column.getName())
-                        && !projectionAllowed(column.getProjectionPolicyName())) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return sources;
     }
 
-    /** Evaluate a projection policy's body: it answers a PROJECTION_CONSTRAINT carrying the verdict. */
-    private boolean projectionAllowed(final String policyName) {
-        final ProjectionPolicy policy = catalog.findProjectionPolicy(policyName);
-        if (policy == null) {
-            return true;
+    /**
+     * The first projection policy that refuses the reading role the values an expression hands out, or null when
+     * none does.
+     *
+     * @param expression the expression as written, or null
+     * @param sources    the relations it is written over
+     * @return the policy, fully qualified, or null
+     */
+    private String deniedProjectionPolicy(final String expression, final List<Table> sources) {
+        final List<String> policies = ProjectionLineage.policiesOf(expression, sources, subqueryTexts(expression));
+        for (final String policy : policies) {
+            if (!projectionAllowed(policy, sources.isEmpty() ? null : sources.get(0))) {
+                return policy;
+            }
         }
+        return null;
+    }
+
+    /**
+     * The texts of the subqueries an expression holds at its own level, as their compile recorded them; empty when no
+     * subquery handed out a restricted value on this thread, which spares the parse.
+     */
+    private static List<String> subqueryTexts(final String expression) {
+        final List<String> texts = new ArrayList<>();
+        if (expression == null || !ProjectionLineage.hasRecordedSubqueries()
+                || !expression.toUpperCase(Locale.ROOT).contains("SELECT")) {
+            return texts;
+        }
+        try {
+            collectSubqueryTexts(AntlrExpressionParser.parseTree(expression), texts);
+        } catch (final RuntimeException unparseable) {
+            // An item this grammar cannot read as an expression holds no subquery it could judge.
+        }
+        return texts;
+    }
+
+    private static void collectSubqueryTexts(final ParseTree node, final List<String> into) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            into.add(ParseTreeText.getOriginalText((FrostlakeParser.SelectStatementContext) node));
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectSubqueryTexts(node.getChild(i), into);
+        }
+    }
+
+    /**
+     * Marks each output column of a select with the projection policy its values come under, so a derived table, a
+     * CTE, a view or a set operation built from this result carries the restriction to the query that finally
+     * projects the values, which is refused (FL-085). A column no policy restricts for the reading role is left as
+     * it is.
+     *
+     * @param columns the select's output columns, marked in place
+     * @param sources each column's expression as written, index-aligned, or null for none
+     * @param table   the FROM clause's relation, or null
+     * @param aliasToTable the FROM clause's aliases, or null
+     */
+    private void stampProjectionPolicies(final List<ResultSetColumn> columns, final List<String> sources,
+                                         final Table table, final Map<String, Table> aliasToTable) {
+        final List<Table> relations = projectionSources(table, aliasToTable);
+        for (int i = 0; i < columns.size() && i < sources.size(); i++) {
+            if (columns.get(i).getProjectionPolicyName() != null) {
+                continue;
+            }
+            final String policy = deniedProjectionPolicy(sources.get(i), relations);
+            if (policy != null) {
+                columns.set(i, columns.get(i).withProjectionPolicy(policy));
+            }
+        }
+    }
+
+    /**
+     * Evaluate a projection policy's body: it answers a PROJECTION_CONSTRAINT carrying the verdict. A projection
+     * policy that is gone refuses the query.
+     */
+    private boolean projectionAllowed(final String policyName, final Table owner) {
+        final ProjectionPolicy policy = PolicyReferences.projectionPolicy(catalog, policyName, owner);
         final Object verdict = new ExpressionEvaluator(null, getFunctionRegistry(), catalog, this)
             .evaluate(policy.getBody(), new Row(new ArrayList<>()));
         return verdict == null || !String.valueOf(verdict).contains("\"allow\":false");
@@ -10470,7 +11507,7 @@ public class QueryExecutor {
                                       final List<Table> allTables,
                                       final Map<String, Object> lateralContext) {
         // Extract projection expressions from SELECT list
-        List<String> projectionExpressions = new ArrayList<>();
+        final List<String> projectionExpressions = new ArrayList<>();
         final List<String> columnAliases = new ArrayList<>();
         // Index-aligned with the expressions: where each item began in the statement, or null for the
         // ones star-expansion synthesises (nobody wrote those, so they report no position).
@@ -10559,16 +11596,7 @@ public class QueryExecutor {
         }
 
         rejectRestrictedProjections(ctx, projectionExpressions, table, aliasToTable);
-
-        // Apply masking policy substitution — wrap masked column expressions with policy body
-        final List<String> beforeMasking = projectionExpressions;
-        projectionExpressions = applyMaskingPolicies(projectionExpressions, table);
-        // A masked column is no longer its own slot: the policy body has to run.
-        for (int i = 0; i < projectionSlots.size() && i < projectionExpressions.size(); i++) {
-            if (!projectionExpressions.get(i).equals(beforeMasking.get(i))) {
-                projectionSlots.set(i, -1);
-            }
-        }
+        // Masked columns arrive masked: a table's rows are masked as they enter the query (maskedRows).
 
         // Lateral column aliases: a map shared between the projection evaluator (as its lateral context) and
         // the PROJECT operator, which fills it left-to-right as each aliased item is computed so a later item
@@ -11647,7 +12675,7 @@ public class QueryExecutor {
                 : value instanceof String ? "'" + value.toString().replace("'", "''") + "'"
                 : value.toString();
             // Replace :name or just bare param name used as identifier
-            sql = SqlIdentifierSubstitution.substitute(sql, paramName, literal);
+            sql = SqlIdentifierSubstitution.substituteParameter(sql, paramName, literal);
         }
         return sql;
     }
@@ -12287,7 +13315,15 @@ public class QueryExecutor {
 
     // ==================== SHOW STATEMENTS ====================
 
-    /** DESCRIBE RESULT '&lt;queryId&gt;' | LAST_QUERY_ID() — the column metadata of a prior query's cached result. */
+    /**
+     * DESCRIBE RESULT '&lt;queryId&gt;' | LAST_QUERY_ID() — the column metadata of a prior query's cached result, in
+     * DESCRIBE TABLE's thirteen columns: {@code VARCHAR(5)}, {@code NUMBER(10,2)}, {@code TIMESTAMP_NTZ(3)},
+     * {@code BINARY(4)}, a DOUBLE as {@code FLOAT}, each at the width the result declares
+     * ({@link SqlTypeNames#resultMetadata}), and a collated column with its collation in the type cell, as DESCRIBE
+     * TABLE puts it: {@code VARCHAR(1) COLLATE 'en-ci'} (all live-verified). A result's column is nullable, has no
+     * default and is no key whatever it was read from: a NOT NULL table column with an IDENTITY or a DEFAULT still
+     * reads {@code Y} and NULL here (live-verified).
+     */
     public ResultSet describeResult(final FrostlakeParser.DescribeStatementContext ctx) {
         final String queryId = ctx.STRING_LITERAL() != null
             ? extractStringLiteral(ctx.STRING_LITERAL()) : resultCache.getLastQueryId();
@@ -12295,15 +13331,15 @@ public class QueryExecutor {
         if (cached == null) {
             throw new RuntimeException("No cached result for query id: " + queryId);
         }
-        final List<ResultSetColumn> cols = Arrays.asList(
-            new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("type", StringType.VARCHAR),
-            new ResultSetColumn("null?", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
         for (final ResultSetColumn c : cached.getColumns()) {
-            rows.add(new Row(Arrays.asList(c.getName(), String.valueOf(c.getDataType()), "Y")));
+            final String type = SqlTypeNames.resultMetadata(c.getDataType());
+            final String typeText = type != null && c.getCollation() != null && !c.getCollation().isEmpty()
+                ? type + " COLLATE '" + c.getCollation() + "'" : type;
+            rows.add(new Row(Arrays.asList(c.getName(), typeText, "COLUMN", "Y",
+                null, "N", "N", null, null, null, null, null, null)));
         }
-        return new ResultSet(cols, rows);
+        return new ResultSet(ShowRelationalExecutor.describeColumns(), rows);
     }
 
     public ResultSet showQueryHistory(final Integer limit) {
@@ -12470,6 +13506,26 @@ public class QueryExecutor {
         if (referenceAliases != null) {
             resolved = resolved.withTable(applyColumnAliases(resolved.table, referenceAliases));
         }
+        // A table function fed a subquery hands out what the subquery's select list projects, TABLE(SPLIT_TO_TABLE(
+        // (SELECT MAX(p) FROM pt), ',')): every column it produces comes under the subquery's projection policy. Judged
+        // where the source is planned, never per row.
+        final FrostlakeParser.TableSourceContext tableSource = ctx.tableSource();
+        if (tableSource != null && tableSource.TABLE() != null && tableSource.expression() != null
+                && (lateralContext == null || RelationShapeOnly.isActive()) && holdsSubquery(tableSource.expression())) {
+            try {
+                // Compiled with the names of whatever query it stands in, so an argument reading an outer row
+                // compiles as it does where it runs.
+                compileSubqueriesIn(List.of(tableSource.expression()), FromlessDual.unread(), null, null,
+                    lateralContext != null ? lateralContext : SubqueryCompilation.outerNames());
+            } catch (final RuntimeException uncompilable) {
+                // A subquery this scope cannot compile is refused, if at all, where it runs; it marks nothing here.
+            }
+            final String policy = deniedProjectionPolicy(getOriginalText(tableSource.expression()),
+                new ArrayList<Table>());
+            if (policy != null) {
+                resolved = resolved.withTable(withProjectionPolicy(resolved.table, policy));
+            }
+        }
         if (RelationShapeOnly.isActive()) {
             // The source's columns without its rows — see RelationShapeOnly.
             resolved = resolved.withoutRows();
@@ -12587,6 +13643,12 @@ public class QueryExecutor {
      *
      * <p>Only the declared columns are renamed, positionally; a body that produces a different number
      * is left alone rather than truncated.
+     *
+     * <p>The declared types are the columns' types too, statically as well, as a procedure's RETURNS TABLE
+     * types its result (ReturnedTable). Snowflake's documentation: they "determine the names and types of the
+     * columns in the tabular results". A DATE column therefore stays a DATE in a UNION or under DATEADD, and a
+     * CTAS or a view over the call declares the RETURNS TABLE types rather than what the body's literals
+     * measured. The rows are kept as the body produced them.
      */
     private ResultSet nameByDeclaredReturnColumns(final Function udtf, final ResultSet result) {
         final List<Parameter> declared = udtf.getReturnColumns();
@@ -12597,8 +13659,10 @@ public class QueryExecutor {
         final List<ResultSetColumn> renamed = new ArrayList<>();
         for (int i = 0; i < declared.size(); i++) {
             final ResultSetColumn produced = result.getColumns().get(i);
+            final DataType declaredType = declared.get(i).getDataType();
             renamed.add(new ResultSetColumn(SqlIdentifiers.canonicalText(declared.get(i).getName()),
-                produced.getDataType()));
+                declaredType != null ? declaredType : produced.getDataType(), null,
+                declaredType != null ? declaredType : produced.getStaticType()));
         }
         return new ResultSet(renamed, result.getRows());
     }
@@ -12836,7 +13900,8 @@ public class QueryExecutor {
             // Overlay-aware read: a loader fills IDENTIFIER(:tmp) and joins it ONE statement later
             // inside the same explicit transaction — a raw scan() was blind to the buffered rows, so
             // the join silently saw an empty table.
-            return new TableData(dynamicTable, transactionScan(getFullyQualifiedTableName(dynamicTableName)),
+            return new TableData(dynamicTable, maskedRows(dynamicTable, dynamicTable,
+                    transactionScan(getFullyQualifiedTableName(dynamicTableName))),
                 alias != null ? alias : dynamicTableName, "SCAN[" + dynamicTable.getName() + "]");
         }
 
@@ -13078,6 +14143,9 @@ public class QueryExecutor {
                     typed.setStaticallyTyped(true);
                     typed.setValueRange(columnRanges.get(i).withNullable(columnNulls.get(i)));
                     columns.set(i, typed);
+                    if (folded instanceof UuidType) {
+                        presentAsUuids(rows, i);
+                    }
                 }
             }
 
@@ -13212,17 +14280,20 @@ public class QueryExecutor {
                 }
                 // A change set carries the change-tracking metadata columns beside the table's own,
                 // exactly as a stream read does.
-                return new TableData(changeTrackingTable(table), new RowsProvider() {
+                final Table changes = changeTrackingTable(table);
+                return new TableData(changes, maskedRows(changes, table, new RowsProvider() {
                     @Override
                     public List<Row> rows() {
-                        return executeChangesClause(ttCtx.changesClause(), tableStorage, table);
+                        final List<Row> rows = executeChangesClause(ttCtx.changesClause(), tableStorage, table);
+                        boundByRows(changes, rows);
+                        return rows;
                     }
 
                     @Override
                     public String describe() {
                         return null;
                     }
-                }, alias, "CHANGES[" + table.getName() + "]");
+                }), alias, "CHANGES[" + table.getName() + "]");
             }
 
             // AT / BEFORE
@@ -13239,14 +14310,18 @@ public class QueryExecutor {
                     "Future data is not yet available for table " + table.getName() + ".");
             }
             // A point before the table came into being is refused with the retention wording,
-            // live-verified; the engine keeps full history from creation, so creation IS the bound.
-            if (targetMillis < tableStorage.getCreatedMillis()) {
+            // live-verified. So is one whose history the engine no longer keeps (it holds a bounded window of
+            // snapshots), which would otherwise read as an empty table, and one older than the table's retention.
+            if (targetMillis < tableStorage.getCreatedMillis()
+                    || (targetSequence >= 0 ? tableStorage.historyEvictedUpTo(targetSequence)
+                        : tableStorage.historyEvictedAt(targetMillis, isBefore))
+                    || beyondRetention(table, targetMillis, isBefore)) {
                 throw new RuntimeException("Time travel data is not available for table "
                     + table.getName() + ". The requested time is either beyond the allowed time"
                     + " travel period or before the object creation time.");
             }
 
-            return new TableData(table, new RowsProvider() {
+            return new TableData(table, maskedRows(table, table, new RowsProvider() {
                 @Override
                 public List<Row> rows() {
                     final TableSnapshot snap = targetSequence >= 0 ? tableStorage.snapshotUpTo(targetSequence)
@@ -13259,13 +14334,13 @@ public class QueryExecutor {
                 public String describe() {
                     return null;
                 }
-            }, alias, "SCAN[" + table.getName() + " " + getOriginalText(ttCtx) + "]");
+            }), alias, "SCAN[" + table.getName() + " " + getOriginalText(ttCtx) + "]");
         }
 
         if (deferredApply && transactionManager.hasActiveTransaction()) {
             // Overlay this transaction's buffered writes on the committed base (READ COMMITTED for self).
             final TransactionWriteSet writeSet = transactionManager.getCurrentTransaction().getWriteSet();
-            return new TableData(table, new RowsProvider() {
+            return new TableData(table, maskedRows(table, table, new RowsProvider() {
                 @Override
                 public List<Row> rows() {
                     return writeSet.overlayRows(fullyQualifiedName, tableStorage);
@@ -13275,9 +14350,9 @@ public class QueryExecutor {
                 public String describe() {
                     return null;
                 }
-            }, alias, "SCAN[" + table.getName() + "]");
+            }), alias, "SCAN[" + table.getName() + "]");
         }
-        return new TableData(table, new RowsProvider() {
+        return new TableData(table, maskedRows(table, table, new RowsProvider() {
             @Override
             public List<Row> rows() {
                 return tableStorage.scan();
@@ -13287,7 +14362,7 @@ public class QueryExecutor {
             public String describe() {
                 return null;
             }
-        }, alias, "SCAN[" + table.getName() + "]");
+        }), alias, "SCAN[" + table.getName() + "]");
     }
 
     /** A table's rows as this transaction sees them, read when the source stage runs. */
@@ -13532,7 +14607,7 @@ public class QueryExecutor {
         final SourcePosition displacedOrigin = bodyOrigin == null
             ? null : ExpressionSource.begin(bodyOrigin);
         try {
-            planned = planInViewScope(tableName, body);
+            planned = planInViewScope(tableName, body, view.getOwner());
         } finally {
             if (bodyOrigin != null) {
                 ExpressionSource.end(displacedOrigin);
@@ -13607,7 +14682,7 @@ public class QueryExecutor {
     /** A materialized view as a source: no backing storage is maintained, so its defining query is the plan. */
     private TableData plannedMaterializedView(final MaterializedView view, final String tableName,
                                               final String alias) {
-        final PlannedQuery planned = planInViewScope(tableName, view.getDefinition());
+        final PlannedQuery planned = planInViewScope(tableName, view.getDefinition(), view.getOwner());
         return plannedBodySource(planned, alias != null ? alias : tableName,
             view.hasExplicitColumnNames() ? view.getColumnNames() : null, alias,
             "MATERIALIZED VIEW[" + tableName + "]");
@@ -13678,18 +14753,21 @@ public class QueryExecutor {
         } else if (stream.getSourceType() == StreamSourceType.DYNAMIC_TABLE) {
             final DynamicTable dynamicTable = resolveDynamicTable(stream.getSourceTableName());
             if (dynamicTable.getLastRefreshedTime() == null) {
-                throw new RuntimeException("Dynamic Table '" + stream.getSourceTableName().toUpperCase()
+                throw new RuntimeException("Dynamic Table '" + stream.getSourceTableName()
                     + "' is not initialized. Please run a manual refresh or wait for a scheduled refresh before "
                     + "querying.");
             }
             columns = new ArrayList<>(resultSetToTable(planDetachedBody(dynamicTable.getQuery()).shape,
                 stream.getName()).getColumns());
         } else {
-            columns = new ArrayList<>(catalog.resolveTable(stream.getSourceTableName()).getColumns());
+            columns = typedCopies(streamSourceTable(stream).getColumns());
         }
         appendStreamMetadataColumns(columns);
         final Table virtual = new Table(alias != null ? alias : stream.getName(), columns, false);
-        return new TableData(virtual, new RowsProvider() {
+        // A table stream's columns are its table's own, policies and all, so its rows are masked as the table's are.
+        final Table owner = stageStream || stream.getSourceType() == StreamSourceType.DYNAMIC_TABLE ? virtual
+            : streamSourceTable(stream);
+        return new TableData(virtual, maskedRows(virtual, owner, new RowsProvider() {
             @Override
             public List<Row> rows() {
                 final List<Row> rows = new ArrayList<>();
@@ -13703,6 +14781,7 @@ public class QueryExecutor {
                     rows.add(new Row(values));
                 }
                 registerStreamRead(stream, consuming);
+                boundByRows(virtual, rows);
                 return rows;
             }
 
@@ -13710,7 +14789,7 @@ public class QueryExecutor {
             public String describe() {
                 return null;
             }
-        }, alias, "STREAM SCAN[" + stream.getName() + "]");
+        }), alias, "STREAM SCAN[" + stream.getName() + "]");
     }
 
     /**
@@ -13763,17 +14842,51 @@ public class QueryExecutor {
             return new ArrayList<>();
         }
         final Set<String> captureBareNames = streamCaptureBareNames(stream);
+        // A table stream takes only its own table's changes, not a same-named table's in another schema, and a
+        // view stream only the changes of the tables its view reads.
+        final Table ownTable = stream.getSourceType() == StreamSourceType.TABLE
+            ? StreamSources.sourceOf(catalog, StreamSources.homeOf(catalog, stream), stream) : null;
+        final boolean viewStream = stream.getSourceType() == StreamSourceType.VIEW;
         final TransactionWriteSet writeSet = transactionManager.getCurrentTransaction().getWriteSet();
         final List<StreamRecord> buffered = new ArrayList<>();
         for (final String changedFqn : writeSet.changedTables()) {
             final String bare = QualifiedName.parse(changedFqn).last().toUpperCase();
-            if (!captureBareNames.contains(bare) || !storageEngine.hasTable(changedFqn)) {
+            if (!captureBareNames.contains(bare) || !storageEngine.hasTable(changedFqn)
+                    || (ownTable != null && StreamSources.tableNamed(catalog, changedFqn) != ownTable)
+                    || (viewStream && !StreamSources.capturesThroughView(catalog, stream,
+                        StreamSources.tableNamed(catalog, changedFqn)))) {
                 continue;
             }
             buffered.addAll(writeSet.bufferedChangeRecords(changedFqn,
                 storageEngine.getTableStorage(changedFqn), bare));
         }
         return buffered;
+    }
+
+    /** A table a view stream's view names, read where the view lives, as the view's own query reads it. */
+    private Table viewStreamTable(final Stream stream, final String written) {
+        final List<Table> tables = StreamSources.viewBases(catalog,
+            StreamSources.viewHomeOf(catalog, StreamSources.homeOf(catalog, stream), stream),
+            Collections.singletonList(written));
+        return tables != null ? tables.get(0) : catalog.resolveTable(written);
+    }
+
+    /**
+     * A table stream's table, refused when it is gone. A table dropped, or replaced by CREATE OR REPLACE, leaves
+     * its streams stale, and a new table under the old name is not theirs. The refusal follows the account's
+     * wording as it is commonly reported; it was not verified against an account here.
+     *
+     * @param stream the stream
+     * @return the table it reads
+     */
+    private Table streamSourceTable(final Stream stream) {
+        final Schema home = StreamSources.homeOf(catalog, stream);
+        final Table source = StreamSources.sourceOf(catalog, home, stream);
+        if (source == null) {
+            throw new RuntimeException(SqlCompilationError.of("Base table '" + StreamSources.fullName(home, stream)
+                + "' dropped, cannot read from stream '" + stream.getName() + "'."));
+        }
+        return source;
     }
 
     /** The bare (last-segment, upper-case) names of the base table(s) a stream captures: its source table
@@ -13797,7 +14910,15 @@ public class QueryExecutor {
      * the view surfaces only its DELETE half, and vice versa).
      */
     private TableData buildViewStreamTableData(final Stream stream, final String alias) {
-        final View view = resolveView(stream.getSourceTableName());
+        // Dropping or recreating any table the view reads leaves the stream stale (Snowflake's documentation); the
+        // refusal is the one a table stream gives for its table.
+        final String missing = StreamSources.missingBaseOf(catalog, stream);
+        if (missing != null) {
+            throw new RuntimeException(SqlCompilationError.of("Base table '" + missing
+                + "' dropped, cannot read from stream '" + stream.getName() + "'."));
+        }
+        // The view as the stream recorded it, read from where the STREAM lives, never from the session's schema.
+        final View view = resolveView(StreamSources.fullName(StreamSources.homeOf(catalog, stream), stream));
         if (view == null) {
             throw new RuntimeException("Source view not found for stream "
                 + stream.getName() + ": " + stream.getSourceTableName());
@@ -13810,12 +14931,14 @@ public class QueryExecutor {
         // Column shape follows the FIRST branch (a UNION ALL takes its output names/types from the
         // first query), then explicit view column names override when the counts match.
         final FrostlakeParser.SelectClauseContext firstBranch = branches.get(0);
-        final Table firstBase = catalog.resolveTable(branchBaseTable(firstBranch));
+        final Table firstBase = viewStreamTable(stream, branchBaseTable(firstBranch));
         final List<TableColumn> columns = viewStreamColumns(firstBranch, firstBase, view);
         if (view.hasExplicitColumnNames() && view.getColumnNames().size() == columns.size()) {
             for (int i = 0; i < columns.size(); i++) {
-                columns.set(i, new TableColumn(view.getColumnNames().get(i).toUpperCase(),
-                    columns.get(i).getDataType(), true, null, false, false, false));
+                final TableColumn renamed = new TableColumn(view.getColumnNames().get(i).toUpperCase(),
+                    columns.get(i).getDataType(), true, null, false, false, false);
+                renamed.setStaticallyTyped(columns.get(i).isStaticallyTyped());
+                columns.set(i, renamed);
             }
         }
         appendStreamMetadataColumns(columns);
@@ -13831,7 +14954,7 @@ public class QueryExecutor {
             // catalog.resolveTable (cross-schema views), but trackInsert tags records with the bare mutated
             // table name, so the branch match must compare last segments.
             final String branchTableBare = QualifiedName.parse(branchTable).last().toUpperCase();
-            final Table baseTable = catalog.resolveTable(branchTable);
+            final Table baseTable = viewStreamTable(stream, branchTable);
             final String whereText = branch.whereClause() == null
                 ? null : getOriginalText(branch.whereClause().booleanExpr());
             final List<FrostlakeParser.SelectItemContext> items = branch.selectList().selectItem();
@@ -13869,6 +14992,7 @@ public class QueryExecutor {
                 rows.add(new Row(values));
             }
         }
+        boundByRows(virtual, rows);
         return new TableData(virtual, rows, alias);
     }
 
@@ -13886,7 +15010,7 @@ public class QueryExecutor {
         final boolean identity = items.size() == 1 && SelectItemAccessors.isStarItem(items.get(0));
         final List<TableColumn> columns = new ArrayList<>();
         if (identity) {
-            columns.addAll(baseTable.getColumns());
+            columns.addAll(typedCopies(baseTable.getColumns()));
         } else {
             final List<TableColumn> resolved = view.hasResolvedColumns()
                 && view.getResolvedColumns().size() == items.size() ? view.getResolvedColumns() : null;
@@ -13903,7 +15027,11 @@ public class QueryExecutor {
                 } else {
                     columnType = VariantType.VARIANT;
                 }
-                columns.add(new TableColumn(columnName.toUpperCase(), columnType, true, null, false, false, false));
+                final TableColumn column = new TableColumn(columnName.toUpperCase(), columnType, true, null, false,
+                    false, false);
+                // The VARIANT stand-in for a view with no resolved columns is no type any rule may read.
+                column.setStaticallyTyped(baseTable.hasColumn(exprText.trim()) || resolved != null);
+                columns.add(column);
             }
         }
         return columns;
@@ -13922,8 +15050,9 @@ public class QueryExecutor {
                                                    final FrostlakeParser.SelectClauseContext branch,
                                                    final String alias) {
         // Current view result — through the normal read path, so a transaction's own buffered DML
-        // is visible exactly as it is to any other read.
-        final List<ResultSet> curResults = execute(view.getDefinition());
+        // is visible exactly as it is to any other read. These reads are the stream read's own work, so they
+        // take no query ID and no history row.
+        final List<ResultSet> curResults = executeUnrecorded(view.getDefinition());
         final ResultSet curResult = curResults.isEmpty() ? null : curResults.get(0);
         if (curResult == null) {
             throw new RuntimeException("Source view not found for stream "
@@ -13935,14 +15064,18 @@ public class QueryExecutor {
                     && view.getColumnNames().size() == curResult.getColumns().size()
                 ? view.getColumnNames().get(i).toUpperCase()
                 : curResult.getColumns().get(i).getName();
-            columns.add(new TableColumn(name, curResult.getColumns().get(i).getDataType(),
-                true, null, false, false, false));
+            final TableColumn column = new TableColumn(name, curResult.getColumns().get(i).getDataType(),
+                true, null, false, false, false);
+            // Typed where the view's result knows the type, as a derived relation's column is.
+            column.setStaticallyTyped(curResult.getColumns().get(i).getStaticType() != null);
+            columns.add(column);
         }
         appendStreamMetadataColumns(columns);
         final Table virtual = new Table(alias != null ? alias : stream.getName(), columns, false);
 
         final List<StreamRecord> netRecords = unconsumedNetRecords(stream);
         if (netRecords.isEmpty()) {
+            boundByRows(virtual, new ArrayList<Row>());
             return new TableData(virtual, new ArrayList<>(), alias);
         }
 
@@ -13959,7 +15092,7 @@ public class QueryExecutor {
                     tableRecords.add(record);
                 }
             }
-            final List<ResultSet> tableResults = execute("SELECT * FROM " + baseName);
+            final List<ResultSet> tableResults = executeUnrecorded("SELECT * FROM " + baseName);
             final ResultSet curTable = tableResults.isEmpty() ? null : tableResults.get(0);
             if (curTable == null) {
                 throw new RuntimeException("Source view not found for stream "
@@ -14037,6 +15170,7 @@ public class QueryExecutor {
                 rows.add(streamOutputRow(fresh, ChangeType.INSERT, false, syntheticRowId++));
             }
         }
+        boundByRows(virtual, rows);
         return new TableData(virtual, rows, alias);
     }
 
@@ -14116,7 +15250,8 @@ public class QueryExecutor {
     }
 
     /**
-     * The table as it stood at an instant, refused when the instant is in the future or before the table was.
+     * The table as it stood at an instant, refused when the instant is in the future, before the table was, before
+     * the oldest snapshot the engine still keeps of it, or older than the table's retention period.
      *
      * @param table          the table
      * @param storage        its rows
@@ -14130,11 +15265,94 @@ public class QueryExecutor {
         if (targetMillis > System.currentTimeMillis()) {
             throw new RuntimeException("Future data is not yet available for table " + table.getName() + ".");
         }
-        if (targetMillis < storage.getCreatedMillis()) {
+        if (targetMillis < storage.getCreatedMillis()
+                || (targetSequence >= 0 ? storage.historyEvictedUpTo(targetSequence)
+                    : storage.historyEvictedAt(targetMillis, isBefore))
+                || beyondRetention(table, targetMillis, isBefore)) {
             throw timeTravelUnavailable(table.getName());
         }
         return targetSequence >= 0 ? storage.snapshotUpTo(targetSequence)
             : isBefore ? storage.snapshotBefore(targetMillis) : storage.snapshotAt(targetMillis);
+    }
+
+    /**
+     * The point a CLONE's AT | BEFORE clause names, resolved as a SELECT resolves its own: a TIMESTAMP, an
+     * OFFSET or a STATEMENT. A CHANGES clause has no place on a CLONE and is refused as the syntax error it is.
+     *
+     * @param clause the clause
+     * @return the point
+     */
+    public ClonePoint clonePoint(final FrostlakeParser.TimeTravelClauseContext clause) {
+        if (clause.changesClause() != null) {
+            final Token changes = clause.changesClause().getStart();
+            throw new RuntimeException(SqlCompilationError.of("syntax error line " + changes.getLine()
+                + " at position " + changes.getCharPositionInLine() + " unexpected '" + changes.getText() + "'."));
+        }
+        final boolean isBefore = clause.BEFORE() != null;
+        final FrostlakeParser.TimeTravelPointContext ptCtx = clause.timeTravelPoint();
+        final long targetMillis = ptCtx.STATEMENT() != null
+            ? resolveStatementPoint(ptCtx, isBefore)
+            : resolveTimeTravelPoint(ptCtx);
+        final long targetSequence = ptCtx.STATEMENT() != null ? statementSequence(ptCtx, isBefore) : -1L;
+        return new ClonePoint(targetMillis, targetSequence, isBefore);
+    }
+
+    /**
+     * A table as of a clone's point, refused exactly as a SELECT at that point is: a point in the future, one before
+     * the table came into being, or one past its retention. A clone inherits "the name and structure of the source
+     * object current at the time the statement runs, or at a specified time/point in the past" (documented), so this
+     * is the shape the table had then, a column dropped since included, with the rows in that shape; a time-travel
+     * SELECT reads the same point through the CURRENT columns.
+     *
+     * @param table   the table
+     * @param storage its rows
+     * @param point   the point
+     * @return the shape and the rows the table had then
+     */
+    public TableVersion versionAtClonePoint(final Table table, final TableStorage storage, final ClonePoint point) {
+        final TableSnapshot snap = tableSnapshotAt(table, storage, point.millis(), point.sequence(), point.isBefore());
+        final TableStructure shape = point.sequence() >= 0 ? table.structureUpTo(point.sequence())
+            : table.structureAt(point.millis(), point.isBefore());
+        return new TableVersion(shape, snap != null ? TableStorage.rowsIn(snap, shape) : new ArrayList<Row>());
+    }
+
+    /** A day, in milliseconds: DATA_RETENTION_TIME_IN_DAYS counts whole days. */
+    private static final long MILLIS_PER_DAY = 86_400_000L;
+
+    /**
+     * Whether a time-travel point lies further back than the table's retention period: DATA_RETENTION_TIME_IN_DAYS
+     * before now, as its schema, its database or the account give it when it sets none ({@link RetentionChain}). With
+     * 0 there is no history at all, only the table as it is. A stream's own offset is not read through here, since an
+     * account extends a table's retention for a stream that has not consumed it yet (MAX_DATA_EXTENSION_TIME_IN_DAYS,
+     * documented).
+     *
+     * @param table        the table
+     * @param targetMillis the point
+     * @param isBefore     whether the read is just before the point
+     * @return whether the point is beyond the retention period
+     */
+    private boolean beyondRetention(final Table table, final long targetMillis, final boolean isBefore) {
+        final Schema holder = StreamSources.holderOf(catalog, table);
+        final Database database = holder != null ? catalog.findDatabase(holder.getDatabaseName()) : null;
+        final long oldest = StatementClock.instant().toEpochMilli()
+            - RetentionChain.effectiveDays(database, holder, table) * MILLIS_PER_DAY;
+        return isBefore ? targetMillis <= oldest : targetMillis < oldest;
+    }
+
+    /**
+     * Whether a table came into being after a clone's point, so that a clone of its schema or database made as
+     * of that point leaves it out (documented: child objects that did not exist at the point are not cloned).
+     *
+     * @param storage the table's rows
+     * @param point   the point
+     * @return whether the table did not yet exist then
+     */
+    public static boolean createdAfter(final TableStorage storage, final ClonePoint point) {
+        if (point.sequence() >= 0) {
+            return storage.getCreatedSequence() > point.sequence();
+        }
+        return point.isBefore() ? storage.getCreatedMillis() >= point.millis()
+            : storage.getCreatedMillis() > point.millis();
     }
 
     /**
@@ -14245,9 +15463,60 @@ public class QueryExecutor {
     }
 
     private void appendStreamMetadataColumns(final List<TableColumn> columns) {
-        columns.add(new TableColumn("METADATA$ACTION", new StringType("VARCHAR", 16777216), true, null, false, false, false));
-        columns.add(new TableColumn("METADATA$ISUPDATE", new BooleanType(), true, null, false, false, false));
-        columns.add(new TableColumn("METADATA$ROW_ID", new StringType("VARCHAR", 16777216), true, null, false, false, false));
+        columns.add(typedMetadataColumn("METADATA$ACTION", WidthlessStringType.WIDTHLESS));
+        columns.add(typedMetadataColumn("METADATA$ISUPDATE", new BooleanType()));
+        columns.add(typedMetadataColumn("METADATA$ROW_ID", WidthlessStringType.WIDTHLESS));
+    }
+
+    /**
+     * One METADATA$ column of a stream or a CHANGES clause, typed so a reference to it is typed as a table column's
+     * is: SYSTEM$TYPEOF used to read NULL[LOB] for it. METADATA$ACTION and METADATA$ROW_ID are VARCHARs with no width
+     * of their own, which DESCRIBE RESULT reads as VARCHAR(134217728) (live-verified) and a CTAS stores at the
+     * 16MB column default; METADATA$ISUPDATE is BOOLEAN (live-verified).
+     */
+    private static TableColumn typedMetadataColumn(final String name, final DataType type) {
+        final TableColumn column = new TableColumn(name, type, true, null, false, false, false);
+        column.setStaticallyTyped(true);
+        return column;
+    }
+
+    /**
+     * A table's columns as a stream or a CHANGES clause over it reads them: a copy of each, statically typed, so a
+     * reference is typed as it is over the table itself. The copies are the relation's own, so the rows they read
+     * can bound them ({@link #boundByRows}) without touching the table's.
+     */
+    private static List<TableColumn> typedCopies(final List<TableColumn> columns) {
+        final List<TableColumn> copies = new ArrayList<>(columns.size());
+        for (final TableColumn column : columns) {
+            final TableColumn copy = column.copy();
+            copy.setStaticallyTyped(true);
+            copies.add(copy);
+        }
+        return copies;
+    }
+
+    /**
+     * Bounds each statically typed exact numeric column of a stream's or a CHANGES clause's relation by the change
+     * rows it holds, as a table's column is bounded by its own rows ({@link #columnValueRange}): SYSTEM$TYPEOF of
+     * a NUMBER(38,0) holding 1 reads [SB1] over the stream as it does over the table.
+     */
+    private static void boundByRows(final Table relation, final List<Row> rows) {
+        final List<TableColumn> columns = relation.getColumns();
+        for (int index = 0; index < columns.size(); index++) {
+            final TableColumn column = columns.get(index);
+            if (!column.isStaticallyTyped() || !(column.getDataType() instanceof NumericType)
+                    || NumericType.isApproximate(column.getDataType())) {
+                continue;
+            }
+            ValueRange range = ValueRange.EMPTY;
+            boolean holdsNull = false;
+            for (final Row row : rows) {
+                final Object value = index < row.size() ? row.getValue(index) : null;
+                holdsNull |= value == null;
+                range = range.including(ValueRange.exactOf(value));
+            }
+            column.setValueRange(range.withNullable(holdsNull));
+        }
     }
 
     private void appendStreamMetadataValues(final List<Object> values, final StreamRecord record) {
@@ -14544,9 +15813,13 @@ public class QueryExecutor {
     }
 
     /**
-     * A CHANGES clause's AT/BEFORE point must be a CONSTANT — a literal, optionally negated — where
-     * a plain time-travel AT accepts any expression. Live-verified refusal sentence; the found
-     * clause echoes the source text where the account renders its internal resolved spelling.
+     * A CHANGES clause's AT/BEFORE point must be a CONSTANT, where a plain time-travel AT accepts any expression.
+     * A literal is one, signed or not, and so is a session variable or a scripting variable: Snowflake's own CHANGES
+     * examples set {@code $ts1} and read {@code AT(TIMESTAMP => $ts1)} and {@code END(TIMESTAMP => $ts2)}. A cast of
+     * a constant is one too, as the documented "the value must be explicitly cast to a TIMESTAMP" requires. A
+     * function call is not (live-verified for {@code DATEADD(minute, -30, CURRENT_TIMESTAMP())}). Live-verified
+     * refusal sentence; the found clause echoes the source text where the account renders its internal resolved
+     * spelling.
      */
     private void requireConstantChangesPoint(final FrostlakeParser.TimeTravelPointContext ctx,
                                              final String clauseKeyword) {
@@ -14554,20 +15827,27 @@ public class QueryExecutor {
             return;
         }
         final String text = getOriginalText(ctx.expression());
-        final Expression parsed = AntlrExpressionParser.parse(text);
-        boolean constant = parsed instanceof LiteralExpression;
-        if (parsed instanceof UnaryOperationExpression) {
-            final UnaryOperationExpression unary = (UnaryOperationExpression) parsed;
-            constant = (unary.getOperator() == UnaryOperator.NEGATE
-                || unary.getOperator() == UnaryOperator.PLUS)
-                && unary.getOperand() instanceof LiteralExpression;
-        }
+        final boolean constant = isConstantChangesPoint(AntlrExpressionParser.parse(text));
         if (!constant) {
             final String argument = ctx.TIMESTAMP() != null ? "TIMESTAMP"
                 : ctx.OFFSET() != null ? "OFFSET" : "STATEMENT";
             throw new RuntimeException(SqlCompilationError.of("argument " + argument
                 + " to function " + clauseKeyword + " needs to be constant, found '" + text + "'"));
         }
+    }
+
+    /** Whether a CHANGES point is a constant (see {@link #requireConstantChangesPoint}). */
+    private static boolean isConstantChangesPoint(final Expression parsed) {
+        if (parsed instanceof LiteralExpression || parsed instanceof SessionVarExpression
+                || parsed instanceof BindVariableExpression) {
+            return true;
+        }
+        if (parsed instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) parsed;
+            return (unary.getOperator() == UnaryOperator.NEGATE || unary.getOperator() == UnaryOperator.PLUS)
+                && isConstantChangesPoint(unary.getOperand());
+        }
+        return parsed instanceof CastExpression && isConstantChangesPoint(((CastExpression) parsed).getExpression());
     }
 
     /** Resolve a timeTravelPoint context to epoch millis. */
@@ -14595,13 +15875,18 @@ public class QueryExecutor {
                 return ((ZonedDateTime) value).toInstant().toEpochMilli();
             }
             if (value instanceof Number) {
-                // A bare number is read by magnitude — seconds, then milli/micro/nanoseconds —
-                // exactly as TO_TIMESTAMP reads one (live-verified: 253402300799 is a 1978
-                // MILLISECOND instant, not the year-9999 second). Seconds keep the +999ms so all
-                // sub-second snapshots inside that second stay visible.
+                // A bare number is read by magnitude — seconds, then milli/micro/nanoseconds — as a
+                // string of digits is (live-verified: 253402300799 is a 1978 MILLISECOND instant, not
+                // the year-9999 second). A number of seconds names its instant exactly, the fraction
+                // kept, as TO_TIMESTAMP reads it: AT(TIMESTAMP => $s) and AT(TIMESTAMP => TO_TIMESTAMP($s))
+                // are one point. Reading the second's last millisecond instead put the point up to 999 ms
+                // late, after writes the second's start had not seen.
                 final long raw = ((Number) value).longValue();
                 if (raw < 31536000000L) {
-                    return raw * 1000L + 999L;
+                    final BigDecimal seconds = value instanceof BigDecimal ? (BigDecimal) value
+                        : new BigDecimal(value.toString());
+                    return SharedFunctionHelpers.epochDecimalToLocalDateTime(seconds)
+                        .toInstant(ZoneOffset.UTC).toEpochMilli();
                 }
                 if (raw < 31536000000000L) {
                     return raw;
@@ -14638,7 +15923,8 @@ public class QueryExecutor {
                 throw new RuntimeException(SqlCompilationError.of("Invalid data type ["
                     + offsetSeconds + "] in " + keyword + "(OFFSET => " + valueExpr.trim() + ")"));
             }
-            return System.currentTimeMillis() + offsetSeconds * 1000L;
+            // Counted back from the statement's own instant, which a replay restores, not from the wall clock.
+            return StatementClock.instant().toEpochMilli() + offsetSeconds * 1000L;
         } else if (ctx.STATEMENT() != null) {
             // STATEMENT => '<query_id>' — use snapshot closest to when that query ran
             final String queryId = value.toString();
@@ -14772,7 +16058,7 @@ public class QueryExecutor {
 
     /** {@code table} widened with METADATA$ACTION / METADATA$ISUPDATE / METADATA$ROW_ID. */
     private Table changeTrackingTable(final Table table) {
-        final List<TableColumn> columns = new ArrayList<>(table.getColumns());
+        final List<TableColumn> columns = typedCopies(table.getColumns());
         appendStreamMetadataColumns(columns);
         return new Table(table.getName(), columns, false);
     }
@@ -14816,7 +16102,8 @@ public class QueryExecutor {
         }
         // The same lower bound a plain AT/BEFORE enforces: a point before the table came into
         // being answers the retention wording (live-verified for CHANGES too).
-        if (startMillis > 0 && startMillis < storage.getCreatedMillis()) {
+        if (startMillis > 0 && (startMillis < storage.getCreatedMillis() || storage.historyEvictedAt(startMillis, false)
+                || beyondRetention(table, startMillis, false))) {
             throw new RuntimeException("Time travel data is not available for table "
                 + table.getName() + ". The requested time is either beyond the allowed time"
                 + " travel period or before the object creation time.");
@@ -14832,48 +16119,86 @@ public class QueryExecutor {
 
         final TableSnapshot startSnap = storage.snapshotAt(startMillis);
         final TableSnapshot endSnap   = storage.snapshotAt(endMillis);
+        return changesBetween(storage, startSnap, endSnap, changesAppendOnly(ctx));
+    }
 
-        final Set<String> startKeys = new HashSet<>();
-        final Map<String, Row> startMap = new LinkedHashMap<>();
-        if (startSnap != null) {
-            for (final Row r : startSnap.rows) {
-                final String key = r.getValues().toString();
-                startKeys.add(key);
-                startMap.put(key, r);
+    /**
+     * The changes between two snapshots of a table, each row carrying METADATA$ACTION, METADATA$ISUPDATE and
+     * METADATA$ROW_ID after the table's own columns, as a stream's rows do (documented: CHANGES returns the
+     * stream metadata columns). A row is followed by its identity ({@link TableSnapshot#rowIds}), which an UPDATE
+     * keeps, and its METADATA$ROW_ID is that identity.
+     *
+     * <p>DEFAULT is the net delta: a row added, a row removed, and a row whose values changed as a DELETE of the old
+     * values and an INSERT of the new, both with METADATA$ISUPDATE TRUE; a row added and removed again in between is
+     * no change. APPEND_ONLY is every row inserted after the start, as it was inserted, whatever became of it later,
+     * and no update or delete (documented for append-only change tracking: "if 10 rows are inserted into a table and
+     * then 5 of those rows are deleted ... the stream records 10 rows").
+     *
+     * @param storage    the table's rows
+     * @param start      the snapshot at the start point, or null when the table held no row yet
+     * @param end        the snapshot at the end point, or null when the table held no row yet
+     * @param appendOnly whether only the inserts are asked for
+     * @return the change rows
+     */
+    private static List<Row> changesBetween(final TableStorage storage, final TableSnapshot start,
+                                            final TableSnapshot end, final boolean appendOnly) {
+        final List<Row> changes = new ArrayList<>();
+        if (end == null) {
+            return changes;
+        }
+        final Map<Long, Row> before = new HashMap<>();
+        if (start != null) {
+            for (int i = 0; i < start.rows.size(); i++) {
+                before.put(start.rowIds.get(i), start.rows.get(i));
             }
         }
-
-        final List<Row> changes = new ArrayList<>();
-        final Set<String> endKeys = new HashSet<>();
-        if (endSnap != null) {
-            for (final Row r : endSnap.rows) {
-                final String key = r.getValues().toString();
-                endKeys.add(key);
-                if (!startKeys.contains(key)) {
-                    // Inserted row — add METADATA$ACTION = INSERT
-                    changes.add(withChangeMetadata(r, "INSERT", "False"));
+        if (appendOnly) {
+            final Set<Long> seen = new HashSet<>(before.keySet());
+            final long after = start != null ? start.sequence : Long.MIN_VALUE;
+            for (final TableSnapshot version : storage.getSnapshots()) {
+                if (version.sequence <= after || version.sequence > end.sequence) {
+                    continue;
+                }
+                for (int i = 0; i < version.rows.size(); i++) {
+                    if (seen.add(version.rowIds.get(i))) {
+                        changes.add(withChangeMetadata(version.rows.get(i), "INSERT", false, version.rowIds.get(i)));
+                    }
                 }
             }
+            return changes;
         }
-        if (startSnap != null) {
-            for (final Row r : startSnap.rows) {
-                final String key = r.getValues().toString();
-                if (!endKeys.contains(key)) {
-                    // Deleted row — add METADATA$ACTION = DELETE
-                    changes.add(withChangeMetadata(r, "DELETE", "True"));
+        final Set<Long> remaining = new HashSet<>();
+        for (int i = 0; i < end.rows.size(); i++) {
+            final Long id = end.rowIds.get(i);
+            final Row now = end.rows.get(i);
+            final Row was = before.get(id);
+            remaining.add(id);
+            if (was == null) {
+                changes.add(withChangeMetadata(now, "INSERT", false, id));
+            } else if (was != now && !was.getValues().equals(now.getValues())) {
+                changes.add(withChangeMetadata(was, "DELETE", true, id));
+                changes.add(withChangeMetadata(now, "INSERT", true, id));
+            }
+        }
+        if (start != null) {
+            for (int i = 0; i < start.rows.size(); i++) {
+                if (!remaining.contains(start.rowIds.get(i))) {
+                    changes.add(withChangeMetadata(start.rows.get(i), "DELETE", false, start.rowIds.get(i)));
                 }
             }
         }
         return changes;
     }
 
-    private Row withChangeMetadata(final Row base, final String action, final String isUpdate) {
+    /** A change row: the table's values, then METADATA$ACTION, METADATA$ISUPDATE and METADATA$ROW_ID. */
+    private static Row withChangeMetadata(final Row base, final String action, final boolean isUpdate,
+                                          final long rowId) {
         final List<Object> vals = new ArrayList<>(base.getValues());
         vals.add(action);
         vals.add(isUpdate);
+        vals.add(String.valueOf(rowId));
         return new Row(vals);
     }
-
     /**
      * Execute a simple CROSS JOIN
      */
@@ -14915,9 +16240,10 @@ public class QueryExecutor {
         // The procedure runs as PART of the enclosing statement (Snowflake: same transaction), so its
         // per-statement autocommit must not commit the enclosing INSERT/MERGE's implicit transaction.
         final List<ResultSet> results;
+        // And it is the enclosing statement's own work, which records no CALL (see executeAsPartOfStatement).
         transactionManager.beginAtomicSection();
         try {
-            results = execute(call.toString());
+            results = executeAsPartOfStatement(call.toString());
         } finally {
             transactionManager.endAtomicSection();
         }
@@ -15394,7 +16720,8 @@ public class QueryExecutor {
                         // A body that closes its own frame before a semicolon runs what the frame holds.
                         final String sql = substituteSqlParams(SqlUdfBodyFrame.executableBody(udtf.getBody()),
                             udtf.getParameters(), callArgs);
-                        final List<ResultSet> results = execute(sql);
+                        // Inlined into the calling query, as a SQL UDF's body is: no query ID, no history row.
+                        final List<ResultSet> results = executeUnrecorded(sql);
                         return results.isEmpty() ? new ResultSet(new ArrayList<>(), new ArrayList<>())
                             : nameByDeclaredReturnColumns(udtf, results.get(0));
                     }
@@ -15485,7 +16812,7 @@ public class QueryExecutor {
             return dynamic;
         }
         final Table resolved = catalog.resolveTableAsWritten(name, "Object");
-        return new TableData(resolved, transactionScan(getFullyQualifiedTableName(name)),
+        return new TableData(resolved, maskedRows(resolved, resolved, transactionScan(getFullyQualifiedTableName(name))),
             alias != null ? alias : name, "SCAN[" + resolved.getName() + "]");
     }
 
@@ -15606,6 +16933,14 @@ public class QueryExecutor {
         } finally {
             SubqueryCompilation.endScope(enclosingScope);
             RelationShapeOnly.end(previous);
+        }
+        // A lateral item computed from the relations to its left hands out their values: every column it produces comes
+        // under the projection policy of a column it reads (FLATTEN(input => t.p), SPLIT_TO_TABLE(t.p, ',')), so the
+        // query that projects one is refused as a projection of the column itself would be.
+        final String readPolicy = deniedProjectionPolicy(getOriginalText(rightTableRef),
+            projectionSources(leftTable, scope));
+        if (readPolicy != null) {
+            rightTable = withProjectionPolicy(rightTable, readPolicy);
         }
         // Only a LEFT join written WITH an ON clause null-extends a left row the lateral side leaves unpaired:
         // live answers LEFT JOIN LATERAL without ON, and FULL or RIGHT JOIN LATERAL, as the inner join
@@ -15948,7 +17283,9 @@ public class QueryExecutor {
     public List<TableColumn> resolveRelationColumns(final String definition,
                                                     final List<String> explicitColumnNames) {
         try {
-            final List<ResultSet> results = execute(definition);
+            // Resolving the shape is the defining statement's own work (CREATE VIEW, EXPLAIN, a routine's
+            // check): it takes no query ID and no history row, a failure included.
+            final List<ResultSet> results = executeUnrecorded(definition);
             if (results.isEmpty() || results.get(0) == null) {
                 return null;
             }
@@ -15976,6 +17313,11 @@ public class QueryExecutor {
                     // over the view reads the full width.
                     settled.add(settledCollation(new TableColumn(column.getName(),
                         ((BinaryType) column.getDataType()).atColumnWidth(),
+                        column.isNullable(), null, false, false, false), column));
+                } else if (StructuredLeafWidths.stored(column.getDataType()) != column.getDataType()) {
+                    // A structured value's leaves a cast wrote with no width are sized as a CTAS sizes them.
+                    settled.add(settledCollation(new TableColumn(column.getName(),
+                        StructuredLeafWidths.stored(column.getDataType()),
                         column.isNullable(), null, false, false, false), column));
                 } else {
                     settled.add(column);
@@ -16024,6 +17366,7 @@ public class QueryExecutor {
                 col.isNullable(), null, false, false, false);
             column.setStaticallyTyped(column.getDataType() != null);
             column.setCollation(col.getCollation());
+            column.setProjectionPolicyName(col.getProjectionPolicyName());
             columns.add(column);
         }
         final Table derived = new Table(tableName, columns, false);
@@ -16314,15 +17657,12 @@ public class QueryExecutor {
     private DataType stringBranchContribution(final DataType nonString,
                                               final NumericType literalMeasurement) {
         if (nonString instanceof NumericType) {
-            final String name = nonString.getName();
-            if ("NUMBER".equalsIgnoreCase(name)) {
-                return literalMeasurement != null ? literalMeasurement
-                    : new NumericType("NUMBER", 18, 5);
-            }
-            if ("FLOAT".equalsIgnoreCase(name) || "DOUBLE".equalsIgnoreCase(name)) {
+            // By family, as DeclaredTypeFold folds the arms: an exact numeric of any name (an INTEGER-named
+            // registry type is NUMBER(38,0)) meets the string as a NUMBER, an approximate one as itself.
+            if (NumericType.isApproximate(nonString)) {
                 return nonString;
             }
-            return null;
+            return literalMeasurement != null ? literalMeasurement : new NumericType("NUMBER", 18, 5);
         }
         if (nonString instanceof DateTimeType && "DATE".equalsIgnoreCase(nonString.getName())) {
             return nonString;
@@ -16462,9 +17802,8 @@ public class QueryExecutor {
 
     /**
      * Two branches' declared types folded into the one the combined column declares, or null when they
-     * cannot be. Differently-parameterized NUMBERs fold to Snowflake's supertype; any other difference
-     * is undetermined — a FLOAT-vs-NUMBER or INTEGER-vs-NUMBER union is left to the value scan rather
-     * than guessed.
+     * cannot be. Exact numerics of any spelling fold to Snowflake's supertype and an approximate one takes
+     * the pair; the full rule is DeclaredTypeFold.combine's.
      */
     private DataType combineDeclaredTypes(final DataType left, final DataType right) {
         // The rule itself lives in DeclaredTypeFold, because a CONDITIONAL folds its branches exactly
@@ -16493,6 +17832,8 @@ public class QueryExecutor {
         // A collation rides along too: the outer query compares, sorts and groups the derived column
         // under the collation the projection settled on, as it would a catalog column's.
         column.setCollation(source.getCollation());
+        // So does a projection policy: the query that finally projects the column is the one it refuses.
+        column.setProjectionPolicyName(source.getProjectionPolicyName());
         return column;
     }
 
@@ -16677,6 +18018,24 @@ public class QueryExecutor {
         return reportedType;
     }
 
+    /**
+     * A VALUES column that folds to UUID holds UUIDs: each row's text is converted, which checks it and
+     * lower-cases it, so ('abc') beside a UUID is "UUID 'abc' is invalid, expected format is ..." (live-verified)
+     * where it was handed back unchanged under the UUID type.
+     *
+     * @param rows   the VALUES rows, replaced in place
+     * @param column the column's position
+     */
+    private static void presentAsUuids(final List<Row> rows, final int column) {
+        for (int r = 0; r < rows.size(); r++) {
+            final List<Object> values = new ArrayList<>(rows.get(r).getValues());
+            if (column < values.size() && values.get(column) != null) {
+                values.set(column, FoldedValues.presented(values.get(column), UuidType.UUID));
+                rows.set(r, new Row(values));
+            }
+        }
+    }
+
     /** The static type of one VALUES cell's expression, or null when the channel cannot type it. */
     private static DataType valuesItemStaticType(final String exprText, final ExpressionEvaluator evaluator) {
         try {
@@ -16778,6 +18137,9 @@ public class QueryExecutor {
             newCol.setSpelledNumber(originalCol.getSpelledNumber());
             newCol.setUncheckedConstant(originalCol.isUncheckedConstant());
             newCol.setFoldedDouble(originalCol.isFoldedDouble());
+            // A column renamed by an alias list is the column still: FROM pt AS x (i, q) reads q as pt's p, policy
+            // and all.
+            newCol.setProjectionPolicyName(originalCol.getProjectionPolicyName());
             newColumns.add(newCol);
         }
 

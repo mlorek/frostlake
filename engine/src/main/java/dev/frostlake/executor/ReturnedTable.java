@@ -24,6 +24,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -86,8 +87,13 @@ final class ReturnedTable {
         if (declared instanceof NumericType && actual instanceof NumericType) {
             return NumericType.isApproximate(declared) == NumericType.isApproximate(actual);
         }
-        if (declared instanceof StringType || declared instanceof BinaryType) {
-            return declared.getClass() == actual.getClass();
+        if (declared instanceof StringType && !(declared instanceof UuidType)) {
+            // Any text, the unsized cast's included: CAST(x AS VARCHAR) and ''::VARCHAR are a text of no
+            // declared width, which an exact class match refused.
+            return actual instanceof StringType && !(actual instanceof UuidType);
+        }
+        if (declared instanceof BinaryType) {
+            return actual instanceof BinaryType;
         }
         if (declared instanceof DateTimeType && actual instanceof DateTimeType) {
             return declared.getName().equals(actual.getName())

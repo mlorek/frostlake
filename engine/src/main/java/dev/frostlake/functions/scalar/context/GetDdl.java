@@ -616,6 +616,15 @@ public class GetDdl extends BuiltInFunction {
         // before COMMENT — and refuses that order reversed, so the position is the measured one.
         if (col.getMaskingPolicyName() != null && !col.getMaskingPolicyName().isEmpty()) {
             c.append(" WITH MASKING POLICY ").append(col.getMaskingPolicyName());
+            // A conditional policy's USING columns, as the attachment named them.
+            final List<String> using = col.getMaskingPolicyArguments();
+            if (!using.isEmpty()) {
+                c.append(" USING (");
+                for (int u = 0; u < using.size(); u++) {
+                    c.append(u > 0 ? ", " : "").append(SqlIdentifiers.spellCanonicalEscaped(using.get(u)));
+                }
+                c.append(')');
+            }
         }
         if (!col.getTagValues().isEmpty()) {
             c.append(" WITH TAG (").append(tagAssignments(col.getTagValues(), schema)).append(")");

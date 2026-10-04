@@ -114,6 +114,9 @@ final class CreateOrAlterTable {
                 existing.replaceColumn(before.getName(), retyped);
             }
         }
+        // The new shape takes effect with this statement, as an ALTER TABLE's does: a clone as of a point before it
+        // takes the shape it replaced.
+        existing.recordStructure();
     }
 
     /** The kept columns must stay in their order, and a new one may only follow them all. */

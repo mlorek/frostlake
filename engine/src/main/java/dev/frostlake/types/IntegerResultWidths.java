@@ -58,6 +58,12 @@ public final class IntegerResultWidths {
     /** A length, a count, a row number — the widest of the ordinary counters. */
     public static final NumericType COUNTER = new NumericType("NUMBER", 18, 0);
 
+    /**
+     * The epoch in seconds, as DATE_PART and EXTRACT declare it over a DATE and every TIMESTAMP flavour alike
+     * (live-verified). Its finer siblings, the epoch in milli-, micro- and nanoseconds, are the widest NUMBER.
+     */
+    public static final NumericType EPOCH_SECOND = new NumericType("NUMBER", 18, 0);
+
     /** A bit length or a hash, which need the extra digit a signed 64-bit value can reach. */
     public static final NumericType WIDE_COUNTER = new NumericType("NUMBER", 19, 0);
     /** A factorial, which stops one digit short of the widest NUMBER. */

@@ -95,7 +95,7 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$WHITELIST":
                 return "[]";
             case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
-                return System.currentTimeMillis();
+                return ChangeTimes.lastChangeCommitTime(catalog, args.isEmpty() ? null : args.get(0));
             case "SYSTEM$WAIT":
                 return SystemWait.waitFor(args);
             case "SYSTEM$LOG":
@@ -143,7 +143,7 @@ public class SystemFunctionEvaluator {
                 return 0L;
             }
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP":
-                return StatementClock.now();
+                return ChangeTimes.streamTableTimestamp(catalog, storageEngine, args.isEmpty() ? null : args.get(0));
             case "SYSTEM$CURRENT_USER_TASK_NAME": {
                 final Task current = TaskScheduler.currentTask();
                 return current != null ? current.getName() : null;

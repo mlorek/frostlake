@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.ClonePoint;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -26,13 +27,16 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.MaterializedView;
+import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.ScalingPolicy;
@@ -53,9 +57,12 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.storage.TableStorage;
+import dev.frostlake.storage.TableVersion;
 import dev.frostlake.stream.StreamManager;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.types.DataType;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -261,6 +268,21 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     /**
+     * {@link #checkCreatePrivilege(Privilege, ContainerType, String)} for an object created in {@code schema}. The
+     * privilege is asked of that schema by its full name: a bare schema name would be read in the session's database,
+     * so a CREATE into another database asked about the wrong schema.
+     *
+     * @param createPrivilege the CREATE privilege the object needs
+     * @param schema          the schema the object is created in
+     */
+    void checkCreatePrivilege(final Privilege createPrivilege, final Schema schema) {
+        // Nothing is created in INFORMATION_SCHEMA, whoever asks.
+        schema.requireCreatable(createPrivilege);
+        checkCreatePrivilege(createPrivilege, ContainerType.SCHEMA,
+            QualifiedName.join(schema.getDatabaseName(), schema.getName()));
+    }
+
+    /**
      * CREATE STREAM … CLONE: a new stream with the source stream's definition — its source object, its mode
      * and its comment — that inherits the source's current offset, so it holds the same pending changes.
      */
@@ -275,9 +297,17 @@ public class DDLCommandHandler implements CommandHandler {
         }
         try {
             final Schema schema = resolveSchemaFromQualifiedName(streamQualifiedName);
-            checkCreatePrivilege(Privilege.CREATE_STREAM, ContainerType.SCHEMA, schema.getName());
+            checkCreatePrivilege(Privilege.CREATE_STREAM, schema);
             final Stream clone = new Stream(streamName, source.getSourceTableName(), source.getSourceType(),
                 source.getStreamType(), source.isShowInitialRows());
+            // The clone reads the same table as its source, recorded as read from where the clone lives.
+            final Schema sourceHome = StreamSources.homeOf(catalog, source);
+            final Table sourceTable = StreamSources.sourceOf(catalog, sourceHome, source);
+            if (sourceTable != null) {
+                clone.setSourceTableName(StreamSources.spelled(schema, StreamSources.holderOf(catalog, sourceTable),
+                    sourceTable.getName()));
+                clone.bindSourceTable(sourceTable);
+            }
             clone.setBaseTableNames(source.getBaseTableNames());
             clone.setComment(source.getComment());
             clone.inheritOffset(source);
@@ -457,7 +487,17 @@ public class DDLCommandHandler implements CommandHandler {
             }
 
             final Schema schema = resolveSchemaFromQualifiedName(streamQualifiedName);
-            checkCreatePrivilege(Privilege.CREATE_STREAM, ContainerType.SCHEMA, schema.getName());
+            checkCreatePrivilege(Privilege.CREATE_STREAM, schema);
+            // A table or view source is recorded as read from where the STREAM lives, so it names the same object
+            // whatever the reading session's context; a table stream is bound to its table itself (StreamSources).
+            if (sourceTable != null) {
+                stream.setSourceTableName(StreamSources.spelled(schema, sourceSchema, sourceTable.getName()));
+                stream.bindSourceTable(sourceTable);
+            } else if (sourceView != null) {
+                stream.setSourceTableName(StreamSources.spelled(schema, sourceSchema, sourceView.getName()));
+                // The tables the view reads, read where the view lives, are the stream's (StreamSources).
+                stream.bindBaseTables(StreamSources.viewBases(catalog, sourceSchema, viewBaseTables));
+            }
             // The starting point is resolved before anything changes: a point live refuses creates nothing.
             final StreamStart start = new StreamStart(queryExecutor, catalog);
             if (sourceTable != null) {
@@ -469,9 +509,17 @@ public class DDLCommandHandler implements CommandHandler {
             } else if (sourceDynamicTable != null) {
                 start.forDynamicTable(stream, sourceDynamicTable, ctx.streamPoint(), showInitialRows);
             } else if (sourceView != null) {
-                // A stream on a view turns change tracking on for the tables it reads (live-verified).
-                for (final String baseTable : viewBaseTables) {
-                    catalog.resolveTable(baseTable).setChangeTracking(true);
+                // A stream on a view turns change tracking on for the tables it reads (live-verified), each read
+                // where the view lives.
+                final List<Table> viewTables = StreamSources.viewBases(catalog, sourceSchema, viewBaseTables);
+                if (viewTables != null) {
+                    for (final Table baseTable : viewTables) {
+                        baseTable.setChangeTracking(true);
+                    }
+                } else {
+                    for (final String baseTable : viewBaseTables) {
+                        catalog.resolveTable(baseTable).setChangeTracking(true);
+                    }
                 }
                 start.forView(stream, viewBaseTables, ctx.streamPoint(), showInitialRows);
             }
@@ -544,6 +592,7 @@ public class DDLCommandHandler implements CommandHandler {
             final String[] newParts = qualifiedNameParts(action.qualifiedName(0));
             final String newSimple = newParts[newParts.length - 1];
             final Schema destination = renameDestination(schema, newParts, isFunction);
+            destination.requireCreatable(isFunction ? Privilege.CREATE_FUNCTION : Privilege.CREATE_PROCEDURE);
             // A routine of that name already carrying this signature holds it, the routine itself
             // included: live refuses ALTER FUNCTION f() RENAME TO f (live-verified).
             if (isFunction
@@ -551,6 +600,9 @@ public class DDLCommandHandler implements CommandHandler {
                 : destination.hasProcedureSignature(newSimple, ((Procedure) routine).getParameters())) {
                 throw new RuntimeException(Schema.alreadyExists(newSimple));
             }
+            final List<Parameter> parameters = isFunction
+                ? ((Function) routine).getParameters() : ((Procedure) routine).getParameters();
+            final String grantedBefore = GrantNames.routine(schema, routine.getName(), parameters);
             if (isFunction) {
                 schema.removeFunction((Function) routine);
                 routine.setName(newSimple);
@@ -560,6 +612,9 @@ public class DDLCommandHandler implements CommandHandler {
                 routine.setName(newSimple);
                 destination.addProcedure((Procedure) routine);
             }
+            // The overload's privileges go with it, its signature unchanged (GrantNames).
+            GrantNames.renamed(catalog, isFunction ? "FUNCTION" : "PROCEDURE", grantedBefore,
+                GrantNames.routine(destination, newSimple, parameters));
         } else if (action.SECURE() != null) {
             requireFunctionSecure(ctx, isFunction);
             ((Function) routine).setSecure(action.SET() != null);
@@ -577,6 +632,8 @@ public class DDLCommandHandler implements CommandHandler {
                 unsetRoutineProperty(routine, property, isFunction);
             }
         }
+        // Every ALTER is DDL on the routine, a rename and a tag included: its LAST_ALTERED moves.
+        routine.markDdl(catalog.currentUserForDdl());
         return null;
     }
 
@@ -723,9 +780,11 @@ public class DDLCommandHandler implements CommandHandler {
             final String newName = getText(action.identifier());
             // Re-key the schema map (drop old, add under new name) — otherwise the MV stays
             // findable only by its old name. Mirrors Catalog.renameTable's drop/rename/add.
+            final String grantedBefore = schema.qualifiedName(mv.getName());
             schema.dropMaterializedView(mvName);
             mv.rename(newName);
             schema.addMaterializedView(mv);
+            GrantNames.renamed(catalog, "MATERIALIZED_VIEW", grantedBefore, schema.qualifiedName(mv.getName()));
             logger.trace("Renamed materialized view {} to {}", qualifiedName, newName);
         } else if (action.SET() != null && action.COMMENT() != null) {
             final String comment = extractStringLiteral(action.STRING_LITERAL());
@@ -753,7 +812,7 @@ public class DDLCommandHandler implements CommandHandler {
      */
     public DynamicTable resolveDynamicTable(final FrostlakeParser.QualifiedNameContext name) {
         final String[] parts = qualifiedNameParts(name);
-        return dynamicTableSchema(parts).getDynamicTable(parts[parts.length - 1].toUpperCase());
+        return dynamicTableSchema(parts).getDynamicTable(parts[parts.length - 1]);
     }
 
     private Object handleAlterDynamicTable(final FrostlakeParser.AlterStatementContext ctx) {
@@ -761,7 +820,7 @@ public class DDLCommandHandler implements CommandHandler {
         DynamicTableProperties.rejectUntakeable(ctx.dynamicTableAction());
         final String[] parts = qualifiedNameParts(ctx.qualifiedName());
         final Schema schema = dynamicTableSchema(parts);
-        final String dtName = parts[parts.length - 1].toUpperCase();
+        final String dtName = parts[parts.length - 1];
         final DynamicTable dt = schema.getDynamicTable(dtName);
         final FrostlakeParser.DynamicTableActionContext action = ctx.dynamicTableAction();
 
@@ -816,7 +875,7 @@ public class DDLCommandHandler implements CommandHandler {
                                    final FrostlakeParser.QualifiedNameContext otherName) {
         final String[] otherParts = qualifiedNameParts(otherName);
         final Schema otherSchema = dynamicTableSchema(otherParts);
-        final DynamicTable other = otherSchema.getDynamicTable(otherParts[otherParts.length - 1].toUpperCase());
+        final DynamicTable other = otherSchema.getDynamicTable(otherParts[otherParts.length - 1]);
         if (other == dt) {
             return;
         }
@@ -915,6 +974,8 @@ public class DDLCommandHandler implements CommandHandler {
             sequence.setIncrement(newIncrement);
             logger.trace("Set increment of sequence {} to {}", qualifiedName, newIncrement);
         }
+        // Every ALTER is DDL on the sequence, a rename included: its LAST_ALTERED moves.
+        sequence.markDdl();
 
         return null;
     }
@@ -949,6 +1010,7 @@ public class DDLCommandHandler implements CommandHandler {
         final String database = target.length == 3 ? target[0] : catalog.getCurrentDatabase();
         final String schemaName = target.length >= 2 ? target[target.length - 2] : catalog.getCurrentSchema();
         final Schema destination = catalog.databaseExact(database).schemaExact(schemaName);
+        destination.requireCreatable(Privilege.CREATE_SEQUENCE);
         final String newName = target[target.length - 1];
         if (destination.hasSequenceExact(newName)) {
             final StringBuilder written = new StringBuilder();
@@ -961,6 +1023,7 @@ public class DDLCommandHandler implements CommandHandler {
         source.dropSequence(oldName);
         sequence.setName(newName);
         destination.addSequence(sequence);
+        GrantNames.renamed(catalog, "SEQUENCE", source.qualifiedName(oldName), destination.qualifiedName(newName));
         logger.trace("Renamed sequence {} to {}", oldName, String.join(".", target));
     }
 
@@ -1020,81 +1083,107 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     private Object undrop(final FrostlakeParser.UndropStatementContext ctx) {
+        // Every name is matched EXACTLY, as SQL matches a live object: a schema created as "s1" and one created as S1
+        // are two (live-verified), and an object dropped from one comes back into that one or nowhere. The container is
+        // resolved before the dropped version is taken, and a version the UNDROP cannot put back stays for a later one.
         if (ctx.DYNAMIC() != null) {
             final String name = getText(ctx.qualifiedName());
             final String[] parts = qualifiedNameParts(ctx.qualifiedName());
             final String databaseName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
-            final Schema schema = dynamicTableSchema(parts);
-            final String tableName = parts[parts.length - 1].toUpperCase();
+            final Schema schema = undropSchema(parts);
+            final String tableName = parts[parts.length - 1];
             if (schema.hasDynamicTable(tableName)) {
-                throw new RuntimeException(SqlCompilationError.of("Object '" + tableName + "' already exists."));
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Object '" + SqlIdentifiers.spellCanonical(tableName) + "' already exists."));
             }
-            final DroppedObject dropped = catalog.takeDropped(
-                "DYNAMIC TABLE:" + QualifiedName.key(databaseName, schema.getName(), tableName));
+            final String key = "DYNAMIC TABLE:" + QualifiedName.key(databaseName, schema.getName(), tableName);
+            final DroppedObject dropped = catalog.takeDropped(key);
             if (dropped == null || dropped.getObject() == null) {
                 throw new RuntimeException("Dynamic_table " + tableName + " did not exist or was purged.");
             }
-            schema.addDynamicTable((DynamicTable) dropped.getObject());
+            try {
+                schema.addDynamicTable((DynamicTable) dropped.getObject());
+            } catch (final RuntimeException taken) {
+                // Another kind holds the name: the dropped version stays for a later UNDROP.
+                catalog.recordDropped(key, dropped);
+                throw taken;
+            }
+            // UNDROP is a DDL: LAST_DDL and LAST_DDL_BY move to it.
+            ((DynamicTable) dropped.getObject()).markDdl(catalog.currentUserForDdl());
             logger.trace("Undropped dynamic table: {}", name);
         } else if (ctx.TABLE() != null) {
             final String name = getText(ctx.qualifiedName());
             final String[] parts = qualifiedNameParts(ctx.qualifiedName());
-            final String databaseName;
-            final Schema schema;
-            final String tableName;
-            if (parts.length == 1) {
-                databaseName = catalog.getCurrentDatabase();
-                schema = resolveCurrentSchema();
-                tableName = parts[0];
-            } else if (parts.length == 2) {
-                databaseName = catalog.getCurrentDatabase();
-                schema = catalog.getDatabase(databaseName).getSchema(parts[0]);
-                tableName = parts[1];
-            } else {
-                databaseName = parts[0];
-                schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                tableName = parts[2];
-            }
+            final String databaseName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
+            final Schema schema = undropSchema(parts);
+            final String tableName = parts[parts.length - 1];
             final String fqName = QualifiedName.key(databaseName, schema.getName(), tableName);
             final DroppedObject dropped = catalog.takeDropped("TABLE:" + fqName);
             if (dropped == null || dropped.getObject() == null) {
                 throw new RuntimeException("Table " + tableName + " did not exist or was purged.");
             }
             final Table table = (Table) dropped.getObject();
-            schema.addTable(table);
-            queryExecutor.getStorageEngine().createTable(fqName, table);
-            if (dropped.getRows() != null) {
-                for (final Row row : dropped.getRows()) {
-                    queryExecutor.getStorageEngine().getTableStorage(fqName).insert(row);
-                }
+            try {
+                schema.addTable(table);
+            } catch (final RuntimeException taken) {
+                // A table of the name exists: the dropped version stays for a later UNDROP.
+                catalog.recordDropped("TABLE:" + fqName, dropped);
+                throw taken;
             }
+            queryExecutor.getStorageEngine().createTable(fqName, table);
+            refill(queryExecutor.getStorageEngine().getTableStorage(fqName), table, dropped.getRows());
+            // So do its stage's files, which waited where a table that took the name meanwhile did not reach them.
+            queryExecutor.bringBackStages("TABLE:" + fqName, dropped);
+            // UNDROP is a DDL: LAST_DDL and LAST_DDL_BY move to it, and LAST_ALTERED with them.
+            table.markDdl(catalog.currentUserForDdl());
             logger.trace("Undropped table: {}", name);
         } else if (ctx.SCHEMA() != null) {
             final String name = getText(ctx.qualifiedName());
             final String[] parts = qualifiedNameParts(ctx.qualifiedName());
             final String databaseName = parts.length == 1 ? catalog.getCurrentDatabase() : parts[0];
             final String schemaName = parts.length == 1 ? parts[0] : parts[1];
-            final DroppedObject dropped =
-                catalog.takeDropped("SCHEMA:" + QualifiedName.key(databaseName, schemaName));
+            if (databaseName == null) {
+                throw NoCurrentDatabaseRefusal.forStatement();
+            }
+            final Database database = catalog.databaseExact(databaseName);
+            final String key = "SCHEMA:" + QualifiedName.key(databaseName, schemaName);
+            final DroppedObject dropped = catalog.takeDropped(key);
             if (dropped == null || dropped.getObject() == null) {
                 throw new RuntimeException("Schema " + schemaName + " did not exist or was purged.");
             }
             final Schema restoredSchema = (Schema) dropped.getObject();
-            catalog.getDatabase(databaseName).addSchema(restoredSchema);
+            try {
+                database.addSchema(restoredSchema);
+            } catch (final RuntimeException taken) {
+                // A schema of the name exists: the dropped version stays for a later UNDROP.
+                catalog.recordDropped(key, dropped);
+                throw taken;
+            }
             restoreTableStorage(databaseName, Collections.singletonList(restoredSchema), dropped);
+            // So do its tables' and stages' files, which waited where objects that took their names did not reach them.
+            queryExecutor.bringBackStages(key, dropped);
+            restoredSchema.markDdl(catalog.currentUserForDdl());
             logger.trace("Undropped schema: {}", name);
         } else if (ctx.TAG() != null) {
             final String name = getText(ctx.qualifiedName());
             final String[] parts = qualifiedNameParts(ctx.qualifiedName());
             final String dbName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
-            final String schemaName = parts.length == 3 ? parts[1]
-                : parts.length == 2 ? parts[0] : catalog.getCurrentSchema();
-            final DroppedObject dropped = catalog.takeDropped(
-                "TAG:" + (dbName + "." + schemaName + "." + parts[parts.length - 1]).toUpperCase());
+            final Schema schema = undropSchema(parts);
+            final String tagName = parts[parts.length - 1];
+            final String key = "TAG:" + QualifiedName.key(dbName, schema.getName(), tagName);
+            final DroppedObject dropped = catalog.takeDropped(key);
             if (dropped == null || dropped.getObject() == null) {
-                throw new RuntimeException("Tag " + parts[parts.length - 1] + " did not exist or was purged.");
+                throw new RuntimeException("Tag " + tagName + " did not exist or was purged.");
             }
-            catalog.getDatabase(dbName).getSchema(schemaName).addTag((Tag) dropped.getObject());
+            if (hasTagExact(schema, tagName)) {
+                // A tag of the name exists, and the restored one would replace it: refused, and the dropped version
+                // stays for a later UNDROP.
+                catalog.recordDropped(key, dropped);
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Object '" + SqlIdentifiers.spellCanonical(tagName) + "' already exists."));
+            }
+            schema.addTag((Tag) dropped.getObject());
+            ((Tag) dropped.getObject()).markDdl(catalog.currentUserForDdl());
             logger.trace("Undropped tag: {}", name);
         } else if (ctx.DATABASE() != null) {
             final String name = getText(ctx.identifier());
@@ -1102,12 +1191,46 @@ public class DDLCommandHandler implements CommandHandler {
             if (dropped == null || dropped.getObject() == null) {
                 throw new RuntimeException("Database " + name + " did not exist or was purged.");
             }
+            if (catalog.hasDatabaseExact(name)) {
+                // A database of the name exists, and the restored one would replace it, its tables and all:
+                // refused, and the dropped version stays for a later UNDROP.
+                catalog.recordDropped("DATABASE:" + name, dropped);
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Object '" + SqlIdentifiers.spellCanonical(name) + "' already exists."));
+            }
             final Database restoredDb = (Database) dropped.getObject();
             catalog.restoreDatabase(restoredDb);
             restoreTableStorage(name, restoredDb.getAllSchemas(), dropped);
+            queryExecutor.bringBackStages("DATABASE:" + name, dropped);
+            restoredDb.markDdl(catalog.currentUserForDdl());
             logger.trace("Undropped database: {}", name);
         }
         return null;
+    }
+
+    /**
+     * The schema an UNDROP names its object in, matched EXACTLY: the current one for a bare name, else the one the
+     * name spells, in its own database or the current one.
+     */
+    private Schema undropSchema(final String[] parts) {
+        if (parts.length == 1) {
+            return resolveCurrentSchema();
+        }
+        final String databaseName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
+        if (databaseName == null) {
+            throw NoCurrentDatabaseRefusal.forStatement();
+        }
+        return catalog.databaseExact(databaseName).schemaExact(parts[parts.length - 2]);
+    }
+
+    /** Whether the schema holds a tag of EXACTLY this name. */
+    private static boolean hasTagExact(final Schema schema, final String name) {
+        for (final Tag tag : schema.getTags()) {
+            if (tag.getName().equals(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1129,12 +1252,7 @@ public class DDLCommandHandler implements CommandHandler {
                     continue;
                 }
                 storage.createTable(fqn, table);
-                final List<Row> rows = tableRows.get(fqn);
-                if (rows != null) {
-                    for (final Row row : rows) {
-                        storage.getTableStorage(fqn).insert(row);
-                    }
-                }
+                refill(storage.getTableStorage(fqn), table, tableRows.get(fqn));
             }
             // A permanent table a temporary one hid comes back hidden beneath it.
             for (final Table hidden : schema.getShadowedTables()) {
@@ -1143,14 +1261,26 @@ public class DDLCommandHandler implements CommandHandler {
                     continue;
                 }
                 storage.createShadowedTable(fqn, hidden);
-                final List<Row> rows = dropped.getHiddenTableRows() == null ? null : dropped.getHiddenTableRows().get(fqn);
-                if (rows != null) {
-                    for (final Row row : rows) {
-                        storage.getShadowedTableStorage(fqn).insert(row);
-                    }
-                }
+                refill(storage.getShadowedTableStorage(fqn), hidden,
+                    dropped.getHiddenTableRows() == null ? null : dropped.getHiddenTableRows().get(fqn));
             }
         }
+    }
+
+    /**
+     * Put a restored table's rows back into its new storage. That writes them, yet no statement wrote the table: its
+     * last write (LAST_ALTERED, SYSTEM$LAST_CHANGE_COMMIT_TIME) stays the one it had when it was dropped.
+     */
+    private static void refill(final TableStorage storage, final Table table, final List<Row> rows) {
+        if (rows == null) {
+            return;
+        }
+        final Instant lastWrite = table.getLastDataChange();
+        final long writes = table.getDataChangeCount();
+        for (final Row row : rows) {
+            storage.insert(row);
+        }
+        table.restoreDataChange(lastWrite, writes);
     }
 
     /**
@@ -1266,8 +1396,15 @@ public class DDLCommandHandler implements CommandHandler {
         return SqlStringLiterals.decode(node.getText());
     }
 
+    /**
+     * Copies a schema's rows into its clone: the rows now, or, with a point, the rows each table held then, in the
+     * columns it had then (documented). A table that did not exist yet at the point is left out of the clone
+     * (documented).
+     *
+     * @param point the clone's AT | BEFORE point, or null for now
+     */
     void cloneSchemaData(final String sourceDb, final String sourceSchema,
-                                  final String targetDb, final String targetSchema) {
+                                  final String targetDb, final String targetSchema, final ClonePoint point) {
         final Schema src = catalog.databaseExact(sourceDb).schemaExact(sourceSchema);
         final Schema tgt = catalog.databaseExact(targetDb).schemaExact(targetSchema);
         final StorageEngine storage = queryExecutor.getStorageEngine();
@@ -1275,26 +1412,61 @@ public class DDLCommandHandler implements CommandHandler {
         for (final Table table : tgt.getTables()) {
             final String srcKey = QualifiedName.key(sourceDb, sourceSchema, table.getName());
             final String tgtKey = QualifiedName.key(targetDb, targetSchema, table.getName());
+            // The clone copies the permanent table a temporary one hides, not the temporary table.
+            final Table hidden = src.shadowedTable(table.getName());
+            final boolean readsHidden = hidden != null && storage.hasShadowedTable(srcKey);
+            final TableStorage source = readsHidden ? storage.getShadowedTableStorage(srcKey)
+                : storage.hasTable(srcKey) ? storage.getTableStorage(srcKey) : null;
+            if (point != null && source != null && QueryExecutor.createdAfter(source, point)) {
+                tgt.dropTable(table.getName());
+                continue;
+            }
+            final Table sourceTable = point == null || source == null ? null
+                : readsHidden ? hidden : src.getTable(table.getName());
+            final TableVersion version = sourceTable == null ? null
+                : queryExecutor.versionAtClonePoint(sourceTable, source, point);
+            if (version != null && version.reshapes(sourceTable)) {
+                table.restructureAsOf(version.getStructure());
+                // A storage made before the clone took its shape starts its history with that shape too.
+                table.recordStructure();
+            }
             if (!storage.hasTable(tgtKey)) {
                 storage.createTable(tgtKey, table);
             }
-            if (src.shadowedTable(table.getName()) != null && storage.hasShadowedTable(srcKey)) {
-                // The clone copies the permanent table a temporary one hides, not the temporary table.
-                for (final Row row : storage.getShadowedTableStorage(srcKey).scan()) {
-                    storage.getTableStorage(tgtKey).insert(new Row(new ArrayList<>(row.getValues())));
-                }
-            } else if (storage.hasTable(srcKey)) {
-                storage.cloneTableData(srcKey, tgtKey);
+            if (source == null) {
+                continue;
+            }
+            final List<Row> rows = version == null ? source.scan() : version.getRows();
+            for (final Row row : rows) {
+                storage.getTableStorage(tgtKey).insert(new Row(new ArrayList<>(row.getValues())));
             }
         }
     }
 
-    void cloneDatabaseData(final String sourceDb, final String targetDb) {
+    /**
+     * Copies a database's rows into its clone, schema by schema; with a point, a schema created after it is left
+     * out of the clone, as a table is.
+     *
+     * @param point the clone's AT | BEFORE point, or null for now
+     */
+    void cloneDatabaseData(final String sourceDb, final String targetDb, final ClonePoint point) {
+        final Database source = catalog.databaseExact(sourceDb);
         final Database tgt = catalog.databaseExact(targetDb);
         for (final Schema schema : tgt.getAllSchemas()) {
             if ("INFORMATION_SCHEMA".equals(schema.getName())) continue;
-            cloneSchemaData(sourceDb, schema.getName(), targetDb, schema.getName());
+            if (point != null && source.hasSchemaExact(schema.getName())
+                    && createdAfter(source.schemaExact(schema.getName()), point)) {
+                tgt.dropSchema(schema.getName(), true);
+                continue;
+            }
+            cloneSchemaData(sourceDb, schema.getName(), targetDb, schema.getName(), point);
         }
+    }
+
+    /** Whether an object came into being after a clone's point, so that it did not exist then. */
+    static boolean createdAfter(final SqlObject object, final ClonePoint point) {
+        final long created = object.getCreatedTime().toEpochMilli();
+        return point.isBefore() ? created >= point.millis() : created > point.millis();
     }
 
     String extractBodyDefinition(final FrostlakeParser.BodyDefinitionContext ctx) {

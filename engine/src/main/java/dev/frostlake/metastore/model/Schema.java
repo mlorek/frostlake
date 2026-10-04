@@ -19,13 +19,18 @@ package dev.frostlake.metastore.model;
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.NameKeys;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.Taggable;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredObjectType;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -168,12 +173,34 @@ public class Schema extends SqlObject {
         this.fileFormats = new ConcurrentHashMap<>();
     }
 
+    /**
+     * Refuses a new object in this schema when nothing may be created in it: a database's INFORMATION_SCHEMA is
+     * read-only, so a CREATE there, and a RENAME that would move an object there, refuses as CREATE TABLE always
+     * has, before anything changes.
+     *
+     * @param kinds the kind of object, plural and in lower case, as the sentence names it ({@code "views"})
+     */
+    public void requireCreatable(final String kinds) {
+        if ("INFORMATION_SCHEMA".equals(getName())) {
+            throw new RuntimeException("Cannot create " + kinds + " in INFORMATION_SCHEMA");
+        }
+    }
+
+    /**
+     * {@link #requireCreatable(String)} for the objects a CREATE privilege creates: CREATE_ROW_ACCESS_POLICY creates
+     * "row access policies".
+     *
+     * @param createPrivilege the CREATE privilege the new object needs
+     */
+    public void requireCreatable(final Privilege createPrivilege) {
+        final String kind = createPrivilege.name().substring("CREATE_".length()).replace('_', ' ')
+            .toLowerCase(Locale.ROOT);
+        requireCreatable(kind.endsWith("y") ? kind.substring(0, kind.length() - 1) + "ies" : kind + "s");
+    }
+
     // Tables
     public void addTable(final Table table) {
-        // Protect INFORMATION_SCHEMA from modifications
-        if ("INFORMATION_SCHEMA".equals(this.getName())) {
-            throw new RuntimeException("Cannot create tables in INFORMATION_SCHEMA");
-        }
+        requireCreatable("tables");
         rejectNameHeldByOtherKind(table.getName(), RelationKind.TABLE, table.isTemporary());
         final String upperName = table.getName();
         if (tables.containsKey(upperName)) {
@@ -378,22 +405,26 @@ public class Schema extends SqlObject {
         dynamicTables.put(upperName, dt);
     }
 
+    /*
+     * A dynamic table is found by its canonical name EXACTLY, as a SQL reference finds a table (tableExact): one
+     * created as "dt" and one created as DT are two dynamic tables. Its name was upper-cased at CREATE and matched
+     * ignoring case, so "dt" was stored as DT and the two were one object.
+     */
     public void dropDynamicTable(final String name) {
-        final String upperName = keyFor(dynamicTables, name);
-        if (!dynamicTables.containsKey(upperName)) {
+        if (!hasDynamicTable(name)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", qualified(name)));
         }
-        dynamicTables.remove(upperName);
+        dynamicTables.remove(name);
     }
 
     public DynamicTable getDynamicTable(final String name) {
-        final DynamicTable dt = dynamicTables.get(keyFor(dynamicTables, name));
+        final DynamicTable dt = name == null ? null : dynamicTables.get(name);
         if (dt == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", qualified(name)));
         return dt;
     }
 
     public boolean hasDynamicTable(final String name) {
-        return dynamicTables.containsKey(keyFor(dynamicTables, name));
+        return name != null && dynamicTables.containsKey(name);
     }
 
     public List<DynamicTable> getDynamicTables() {
@@ -778,7 +809,36 @@ public class Schema extends SqlObject {
      * that spelling too rather than encoding the quirk.
      */
     private static String signatureFamily(final DataType type) {
-        final String name = type.getName().toUpperCase();
+        // A structured OBJECT or ARRAY is another signature than the plain type of its name, as CREATE already
+        // counts it (f(x OBJECT) and f(x OBJECT(a INT)) are two overloads), so DROP, DESCRIBE, GET_DDL and
+        // OR REPLACE must not take one for the other. A MAP has a name of its own.
+        if (type instanceof StructuredObjectType) {
+            return "STRUCTURED OBJECT";
+        }
+        if (type instanceof StructuredArrayType) {
+            return "STRUCTURED ARRAY";
+        }
+        return signatureFamily(type.getName());
+    }
+
+    /**
+     * {@link #signatureFamily(DataType)} for a type written by name, as a GRANT on a routine writes its argument
+     * types. A bare TIMESTAMP names the default TIMESTAMP_NTZ there, and an OBJECT or ARRAY written with a shape names
+     * the structured type, as the declared parameter's own family does.
+     *
+     * @param typeName the type's name; any parameters after it are ignored but for an OBJECT's or ARRAY's shape
+     * @return the family
+     */
+    public static String signatureFamily(final String typeName) {
+        final int open = typeName.indexOf('(');
+        final String name = (open >= 0 ? typeName.substring(0, open) : typeName).trim().toUpperCase();
+        if (open >= 0 && ("OBJECT".equals(name) || "ARRAY".equals(name))
+                && !typeName.substring(open + 1).replace(")", "").trim().isEmpty()) {
+            return "STRUCTURED " + name;
+        }
+        if ("TIMESTAMP".equals(name)) {
+            return "TIMESTAMP_NTZ";
+        }
         switch (name) {
             case "CHAR": case "CHARACTER": case "NCHAR": case "NVARCHAR": case "NVARCHAR2":
             case "VARCHAR2":
@@ -796,6 +856,21 @@ public class Schema extends SqlObject {
             default:
                 return name;
         }
+    }
+
+    /**
+     * A routine's signature as its argument types' families, {@code (NUMBER, VARCHAR)}: what tells its overloads
+     * apart, and what privileges on one overload are recorded under (GrantNames).
+     *
+     * @param parameters the routine's parameters
+     * @return the signature
+     */
+    public static String signatureText(final List<Parameter> parameters) {
+        final StringBuilder text = new StringBuilder("(");
+        for (int i = 0; i < parameters.size(); i++) {
+            text.append(i > 0 ? ", " : "").append(signatureFamily(parameters.get(i).getDataType()));
+        }
+        return text.append(')').toString();
     }
 
     private String formatParameters(final List<Parameter> params) {
@@ -1015,46 +1090,20 @@ public class Schema extends SqlObject {
         clonedSchema.setComment(this.getComment());
         clonedSchema.getParameters().copyFrom(parameters);
         clonedSchema.setManagedAccess(managedAccess);
+        clonedSchema.setTransientObject(transientObject);
         clonedSchema.setDataRetentionTimeInDays(dataRetentionTimeInDays);
+        copyTags(this, clonedSchema);
 
         // Clone tables (structure only, not data). A temporary table is not cloned, and the permanent
-        // table it hides is.
+        // table it hides is. Each is a full copy of its definition (Table.copyAs) and keeps its owner, as
+        // the children of a cloned container keep their grants. A clone suspends automatic clustering
+        // (documented).
         for (final Table table : getNonTemporaryTables()) {
-            final List<TableColumn> clonedColumns = new ArrayList<>();
-            for (final TableColumn col : table.getColumns()) {
-                final TableColumn clonedCol = new TableColumn(
-                    col.getName(),
-                    col.getDataType(),
-                    col.isNullable(),
-                    col.getDefaultValue(),
-                    col.isPrimaryKey(),
-                    col.isUnique(),
-                    col.isAutoIncrement()
-                );
-                clonedCol.setComment(col.getComment());
-                clonedCol.setCollation(col.getCollation());
-                clonedCol.setMaskingPolicyName(col.getMaskingPolicyName());
-                clonedColumns.add(clonedCol);
-            }
-
-            final Table clonedTable = new Table(table.getName(), clonedColumns, table.isTemporary(), table.isTransient());
-            clonedTable.setComment(table.getComment());
-            clonedTable.setClusterKeys(table.getClusterKeys());
-            if (table.hasRowAccessPolicy()) {
-                clonedTable.setRowAccessPolicyName(table.getRowAccessPolicyName());
-                clonedTable.setAggregationPolicyName(table.getAggregationPolicyName());
-                clonedTable.setJoinPolicyName(table.getJoinPolicyName());
-                for (final SearchOptimizationExpression expression : table.getSearchOptimization()) {
-                    clonedTable.restoreSearchOptimization(expression);
-                }
-                clonedTable.setAggregationEntityKey(table.getAggregationEntityKey());
-                for (final CheckConstraint check : table.getCheckConstraints()) {
-                    clonedTable.addCheckConstraint(check);
-                }
-                for (final Map.Entry<String, String> attached : table.getContacts().entrySet()) {
-                    clonedTable.setContact(attached.getKey(), attached.getValue());
-                }
-                clonedTable.setRowAccessPolicyColumns(table.getRowAccessPolicyColumns());
+            final Table clonedTable = table.copyAs(table.getName(), false, table.isTransient());
+            clonedTable.setOwner(table.getOwner());
+            clonedTable.setLastDdlBy(table.getLastDdlBy());
+            if (!clonedTable.getClusterKeys().isEmpty()) {
+                clonedTable.setReclusterSuspended(true);
             }
             clonedSchema.register(clonedTable);
         }
@@ -1063,7 +1112,56 @@ public class Schema extends SqlObject {
         // every view of an ordinary schema (whatever its name) is cloned.
         if (!"INFORMATION_SCHEMA".equals(getName())) {
             for (final View view : views.values()) {
-                clonedSchema.views.put(view.getName(), view.copy());
+                if (view.isTemporary()) {
+                    // A temporary object belongs to its session, so a clone leaves it out, as it leaves out a
+                    // temporary table.
+                    continue;
+                }
+                final View clonedView = view.copy();
+                clonedView.setOwner(view.getOwner());
+                copyTags(view, clonedView);
+                clonedSchema.views.put(view.getName(), clonedView);
+            }
+        }
+
+        // Tags are cloned with their schema, and the clone's assignments name them by their simple names,
+        // so an assignment in the clone reads the clone's tag (documented).
+        for (final Tag tag : tags.values()) {
+            final Tag clonedTag = new Tag(tag.getName(), tag.getAllowedValues(), tag.getComment());
+            clonedTag.setPropagate(tag.getPropagate());
+            clonedTag.setOnConflict(tag.getOnConflict());
+            clonedTag.setOwner(tag.getOwner());
+            copyTags(tag, clonedTag);
+            clonedSchema.tags.put(tag.getName(), clonedTag);
+        }
+
+        // Dynamic tables, as CREATE DYNAMIC TABLE ... CLONE makes one: the definition and settings, the
+        // clone suspended, its reclustering too. Their rows are their query's answer, so there is nothing
+        // else to copy.
+        for (final DynamicTable dynamicTable : dynamicTables.values()) {
+            final DynamicTable clonedDynamic = dynamicTable.copyAs(dynamicTable.getName());
+            clonedDynamic.setClone(true);
+            clonedDynamic.setState(State.SUSPENDED);
+            clonedDynamic.setSchedulingState("SUSPENDED");
+            clonedDynamic.setLastSuspendedOn(StatementClock.instant());
+            clonedDynamic.setReclusterSuspended(true);
+            clonedDynamic.setOwner(dynamicTable.getOwner());
+            copyTags(dynamicTable, clonedDynamic);
+            clonedSchema.dynamicTables.put(dynamicTable.getName(), clonedDynamic);
+        }
+
+        // Materialized views, which read what their definition names, as a cloned view does.
+        for (final MaterializedView view : materializedViews.values()) {
+            final MaterializedView clonedView = view.copy();
+            clonedView.setOwner(view.getOwner());
+            copyTags(view, clonedView);
+            clonedSchema.materializedViews.put(view.getName(), clonedView);
+        }
+
+        // Secrets, network rules and password policies live in the schema and are cloned with it.
+        for (final SecurityObjectKind kind : SecurityObjectKind.values()) {
+            for (final SecurityObject object : securityObjects.list(kind)) {
+                clonedSchema.securityObjects.add(object.copy());
             }
         }
 
@@ -1073,6 +1171,9 @@ public class Schema extends SqlObject {
         for (final Map.Entry<String, List<Procedure>> entry : procedures.entrySet()) {
             final List<Procedure> clonedOverloads = new ArrayList<>();
             for (final Procedure proc : entry.getValue()) {
+                if (proc.isTemporary()) {
+                    continue;   // a temporary procedure stays with its session (see the views above)
+                }
                 final Procedure clonedProc = new Procedure(
                     proc.getName(),
                     proc.getParameters(),
@@ -1090,9 +1191,13 @@ public class Schema extends SqlObject {
                 clonedProc.setExecuteAs(proc.getExecuteAs());
                 clonedProc.setNullHandling(proc.getNullHandling());
                 clonedProc.setVolatility(proc.getVolatility());
+                clonedProc.setOwner(proc.getOwner());
+                copyTags(proc, clonedProc);
                 clonedOverloads.add(clonedProc);
             }
-            clonedSchema.procedures.put(entry.getKey(), clonedOverloads);
+            if (!clonedOverloads.isEmpty()) {
+                clonedSchema.procedures.put(entry.getKey(), clonedOverloads);
+            }
         }
 
         // Clone functions — same story: keep LANGUAGE/handler/runtime plus the RETURNS TABLE columns and the
@@ -1101,6 +1206,9 @@ public class Schema extends SqlObject {
         for (final Map.Entry<String, List<Function>> entry : functions.entrySet()) {
             final List<Function> clonedOverloads = new ArrayList<>();
             for (final Function func : entry.getValue()) {
+                if (func.isTemporary()) {
+                    continue;   // a temporary function stays with its session (see the views above)
+                }
                 final Function clonedFunc = new Function(
                     func.getName(),
                     func.getParameters(),
@@ -1117,9 +1225,17 @@ public class Schema extends SqlObject {
                 clonedFunc.setVolatility(func.getVolatility());
                 clonedFunc.setSecure(func.isSecure());
                 clonedFunc.setImports(func.getImports());
+                clonedFunc.setMemoizable(func.isMemoizable());
+                if (func.isServiceFunction()) {
+                    clonedFunc.setService(func.getServiceName(), func.getServiceEndpoint(), func.getMaxBatchRows());
+                }
+                clonedFunc.setOwner(func.getOwner());
+                copyTags(func, clonedFunc);
                 clonedOverloads.add(clonedFunc);
             }
-            clonedSchema.functions.put(entry.getKey(), clonedOverloads);
+            if (!clonedOverloads.isEmpty()) {
+                clonedSchema.functions.put(entry.getKey(), clonedOverloads);
+            }
         }
 
         // Clone streams — preserve the source TYPE (TABLE vs VIEW), showInitialRows, the resolved base
@@ -1137,29 +1253,26 @@ public class Schema extends SqlObject {
             clonedStream.setBaseTableNames(stream.getBaseTableNames());
             clonedStream.setOwner(stream.getOwner());
             clonedStream.setComment(stream.getComment());
+            copyTags(stream, clonedStream);
             clonedSchema.streams.put(stream.getName(), clonedStream);
         }
 
-        // Clone tasks
+        // Clone tasks: the whole definition, AFTER and WHEN included, and suspended (documented). A task
+        // graph lives in one schema and names its tasks bare, so the clone's graph links the clone's tasks.
         for (final Task task : tasks.values()) {
-            final Task clonedTask = new Task(
-                task.getName(),
-                task.getSchedule(),
-                task.getScheduleType(),
-                task.getSqlStatement(),
-                task.getWarehouse()
-            );
-            clonedTask.setComment(task.getComment());
-            clonedTask.setState(task.getState());
-            clonedSchema.tasks.put(task.getName(), clonedTask);
+            clonedSchema.tasks.put(task.getName(), task.cloneDefinition());
         }
         // Clone alerts: a cloned alert keeps its definition and starts suspended.
         for (final Alert alert : alerts.values()) {
             clonedSchema.alerts.put(alert.getName(), alert.copy(alert.getName()));
         }
 
-        // Clone pipes
+        // Clone pipes. A pipe that loads from an internal stage is not cloned, and a cloned one does not run
+        // until it is resumed: paused, or STOPPED_CLONED for an auto-ingest pipe (documented).
         for (final Pipe pipe : pipes.values()) {
+            if (readsInternalStage(pipe)) {
+                continue;
+            }
             final Pipe clonedPipe = new Pipe(
                 pipe.getName(),
                 pipe.getCopyStatement(),
@@ -1167,7 +1280,11 @@ public class Schema extends SqlObject {
                 pipe.getNotificationChannel()
             );
             clonedPipe.setComment(pipe.getComment());
-            clonedPipe.setPaused(pipe.isPaused());
+            clonedPipe.setPaused(true);
+            clonedPipe.setStoppedCloned(pipe.isAutoIngest());
+            clonedPipe.setIntegration(pipe.getIntegration());
+            clonedPipe.setOwner(pipe.getOwner());
+            copyTags(pipe, clonedPipe);
             if (pipe.getErrorIntegration() != null) {
                 clonedPipe.setErrorIntegration(pipe.getErrorIntegration());
             }
@@ -1192,6 +1309,7 @@ public class Schema extends SqlObject {
             );
             // Preserve current value (use raw to avoid CURRVAL check)
             clonedSequence.setCurrentValue(sequence.getCurrentValueRaw());
+            clonedSequence.setOwner(sequence.getOwner());
             clonedSchema.sequences.put(sequence.getName(), clonedSequence);
         }
 
@@ -1204,34 +1322,36 @@ public class Schema extends SqlObject {
             clonedContact.setEmailDistributionList(contact.getEmailDistributionList());
             clonedSchema.contacts.put(contact.getName(), clonedContact);
         }
+        // Each policy keeps its comment, owner and tags.
         for (final ProjectionPolicy policy : projectionPolicies.values()) {
             clonedSchema.projectionPolicies.put(policy.getName().toUpperCase(),
-                new ProjectionPolicy(policy.getName(), policy.getBody()));
+                withPolicyDetails(policy, new ProjectionPolicy(policy.getName(), policy.getBody())));
         }
         for (final AggregationPolicy policy : aggregationPolicies.values()) {
             clonedSchema.aggregationPolicies.put(policy.getName().toUpperCase(),
-                new AggregationPolicy(policy.getName(), policy.getBody()));
+                withPolicyDetails(policy, new AggregationPolicy(policy.getName(), policy.getBody())));
         }
         for (final JoinPolicy policy : joinPolicies.values()) {
             clonedSchema.joinPolicies.put(policy.getName().toUpperCase(),
-                new JoinPolicy(policy.getName(), policy.getBody()));
+                withPolicyDetails(policy, new JoinPolicy(policy.getName(), policy.getBody())));
         }
         for (final MaskingPolicy policy : maskingPolicies.values()) {
-            clonedSchema.maskingPolicies.put(policy.getName().toUpperCase(),
-                new MaskingPolicy(policy.getName(), policy.getParameters(), policy.getReturnType(), policy.getBody()));
+            final MaskingPolicy clonedPolicy = new MaskingPolicy(policy.getName(), policy.getParameters(),
+                policy.getReturnType(), policy.getBody());
+            clonedPolicy.setReturnDataType(policy.getReturnDataType());
+            clonedSchema.maskingPolicies.put(policy.getName().toUpperCase(), withPolicyDetails(policy, clonedPolicy));
         }
         for (final RowAccessPolicy policy : rowAccessPolicies.values()) {
             clonedSchema.rowAccessPolicies.put(policy.getName().toUpperCase(),
-                new RowAccessPolicy(policy.getName(), policy.getParameters(), policy.getBody()));
+                withPolicyDetails(policy, new RowAccessPolicy(policy.getName(), policy.getParameters(), policy.getBody())));
         }
 
-        // Clone stages — the DEFINITION carries over (Snowflake's CLONE keeps stage definitions);
-        // the constructor recomputes the local directory from the URL. Dropping them silently broke
-        // every jar-backed UDF in a cloned database ("Stage does not exist" at first invocation).
+        // Clone stages — the DEFINITION carries over (Snowflake's CLONE keeps stage definitions), its
+        // file format options, copy options and directory setting included (Stage.copy). Dropping them
+        // silently broke every jar-backed UDF in a cloned database ("Stage does not exist" at first
+        // invocation).
         for (final Stage stage : stages.values()) {
-            final Stage clonedStage = new Stage(stage.getName(), stage.getType(), stage.getUrl(),
-                stage.getFileFormat(), stage.isEncryption(), stage.getComment(), stage.getS3Resolver());
-            clonedSchema.stages.put(stage.getName(), clonedStage);
+            clonedSchema.stages.put(stage.getName(), stage.copy());
         }
 
         // Clone file formats
@@ -1241,10 +1361,46 @@ public class Schema extends SqlObject {
                 clonedFormat.setOption(option.getKey(), option.getValue());
             }
             clonedFormat.setComment(fileFormat.getComment());
+            clonedFormat.setOwner(fileFormat.getOwner());
             clonedSchema.fileFormats.put(fileFormat.getName(), clonedFormat);
         }
 
         return clonedSchema;
+    }
+
+    /** Copies one object's tag assignments onto its clone. */
+    private static void copyTags(final Taggable source, final Taggable clone) {
+        for (final Map.Entry<String, String> tag : source.getTagValues().entrySet()) {
+            clone.setTag(tag.getKey(), tag.getValue());
+        }
+    }
+
+    /** A cloned policy given its source's comment, owner and tags. */
+    private static <T extends SqlObject> T withPolicyDetails(final SqlObject source, final T clone) {
+        clone.setComment(source.getComment());
+        clone.setOwner(source.getOwner());
+        copyTags(source, clone);
+        return clone;
+    }
+
+    /**
+     * Whether a pipe loads from an internal stage, which a clone of its schema leaves behind (documented). A
+     * user or table stage is internal; a named stage is looked up here when the pipe names it in this schema.
+     * A stage named elsewhere is taken as the external one a cloned pipe may still load from.
+     */
+    private boolean readsInternalStage(final Pipe pipe) {
+        final List<String> parts = pipe.stageParts();
+        if (parts == null) {
+            return false;
+        }
+        if (parts.isEmpty()) {
+            return true;
+        }
+        final boolean here = parts.size() == 1
+            || parts.get(parts.size() - 2).equalsIgnoreCase(getName())
+                && (parts.size() == 2 || databaseName == null || parts.get(0).equalsIgnoreCase(databaseName));
+        final Stage stage = here ? stages.get(keyFor(stages, parts.get(parts.size() - 1))) : null;
+        return stage != null && stage.getType() == StageType.INTERNAL;
     }
 
     // Stages

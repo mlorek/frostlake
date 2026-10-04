@@ -24,9 +24,14 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.IntervalDayTimeType;
 import dev.frostlake.types.IntervalYearMonthType;
+import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.StructuredTypes;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 
 /**
@@ -38,11 +43,24 @@ import dev.frostlake.types.VariantType;
  * BINARY source never reaches a VARIANT column, containers never leave their own family except through
  * VARIANT, and BINARY takes nothing but strings. A type with no audited static family is left alone: the
  * channel never guesses.
+ *
+ * <p>The structured types are families of their own, structured OBJECT and MAP one and structured ARRAY the
+ * other, as their casts sort them. A column of one takes only a value of its family, which is then converted to
+ * the column's type at row time. Snowflake's documentation: a semi-structured value "can't be coerced" to a
+ * structured one, nor the reverse, and a VARCHAR can't be coerced to a structured type either. So a plain OBJECT,
+ * ARRAY or VARIANT needs an explicit cast to reach a structured column, and a structured value one to reach a
+ * semi-structured column.
  */
 public final class ColumnTypeFamilies {
 
     /** The prefix of the two interval families' names. */
     private static final String INTERVAL_FAMILY = "INTERVAL";
+
+    /** Structured OBJECT and MAP, the family their casts share. */
+    private static final String STRUCTURED_OBJECT_FAMILY = "STRUCTURED_OBJECT";
+
+    /** Structured ARRAY. */
+    private static final String STRUCTURED_ARRAY_FAMILY = "STRUCTURED_ARRAY";
 
     private ColumnTypeFamilies() {
     }
@@ -116,6 +134,13 @@ public final class ColumnTypeFamilies {
      * in the rule (GEOGRAPHY, VECTOR, FILE and other engine-specific types keep their own paths).
      */
     private static String family(final DataType type) {
+        // Ahead of ARRAY and OBJECT, which the structured array and object types extend.
+        if (type instanceof StructuredObjectType || type instanceof MapType) {
+            return STRUCTURED_OBJECT_FAMILY;
+        }
+        if (type instanceof StructuredArrayType) {
+            return STRUCTURED_ARRAY_FAMILY;
+        }
         if (type instanceof NumericType) {
             return "NUMBER";
         }
@@ -172,8 +197,8 @@ public final class ColumnTypeFamilies {
             return false;
         }
         if ("VARIANT".equals(source)) {
-            // A VARIANT source casts at row time into every family except BINARY.
-            return !"BINARY".equals(target);
+            // A VARIANT source casts at row time into every family except BINARY and the structured ones.
+            return !"BINARY".equals(target) && !isStructuredFamily(target);
         }
         if ("NUMBER".equals(target) || "BOOLEAN".equals(target)) {
             return "STRING".equals(source)
@@ -199,12 +224,20 @@ public final class ColumnTypeFamilies {
             return "NUMBER".equals(source) || "BOOLEAN".equals(source)
                 || "ARRAY".equals(source) || "OBJECT".equals(source);
         }
-        // ARRAY and OBJECT accept only themselves and VARIANT, both handled above.
+        // ARRAY and OBJECT accept only themselves and VARIANT, both handled above; a structured family only
+        // itself.
         return false;
+    }
+
+    private static boolean isStructuredFamily(final String family) {
+        return STRUCTURED_OBJECT_FAMILY.equals(family) || STRUCTURED_ARRAY_FAMILY.equals(family);
     }
 
     /** A type spelled the way live's type-matching refusal spells it, parameters included. */
     static String spell(final DataType type) {
+        if (StructuredTypes.isStructured(type)) {
+            return StructuredTypes.describe(type);
+        }
         if (type instanceof NumericType) {
             final NumericType numeric = (NumericType) type;
             final String name = numeric.getName().toUpperCase();
@@ -212,6 +245,10 @@ public final class ColumnTypeFamilies {
                 return "FLOAT";
             }
             return "NUMBER(" + numeric.getPrecision() + "," + numeric.getScale() + ")";
+        }
+        if (type instanceof UuidType) {
+            // A UUID column is named by its own type, which takes no length (UuidType).
+            return "UUID";
         }
         if (type instanceof StringType) {
             final int length = ((StringType) type).getMaxLength();

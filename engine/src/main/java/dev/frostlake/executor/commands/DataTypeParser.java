@@ -33,6 +33,7 @@ import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
+import dev.frostlake.types.StructuredLeafWidths;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
@@ -104,10 +105,11 @@ public final class DataTypeParser {
             return new VectorType(vectorElem, vectorDim);
         }
         // MAP(k, v) likewise holds its key/value types in nested dataTypeName contexts, so it must be
-        // recognized before the leaf-token branches those nested types would otherwise trigger.
-        if (ctx.MAP() != null && ctx.dataTypeName().size() == 2) {
-            final DataType mapKey = nested(ctx.dataTypeName(0), null, bareStringDefault);
-            final DataType mapValue = nested(ctx.dataTypeName(1), null, bareStringDefault);
+        // recognized before the leaf-token branches those nested types would otherwise trigger. Each of the
+        // two carries its own parameters: MAP(VARCHAR(5), NUMBER(10,2)).
+        if (ctx.MAP() != null && ctx.mapKey != null && ctx.mapValue != null) {
+            final DataType mapKey = nested(ctx.mapKey, ctx.mapKeyParameters, bareStringDefault);
+            final DataType mapValue = nested(ctx.mapValue, ctx.mapValueParameters, bareStringDefault);
             IntervalTypeSpec.refuseNested(mapValue, "MAP with value type");
             return new MapType(mapKey, mapValue);
         }
@@ -137,7 +139,8 @@ public final class DataTypeParser {
                 }
                 return ArrayType.ARRAY;
             }
-            final DataType element = nested(ctx.dataTypeName(0), ctx.typeParameters(), bareStringDefault);
+            final DataType element = nested(ctx.dataTypeName(0),
+                ctx.typeParameters().isEmpty() ? null : ctx.typeParameters(0), bareStringDefault);
             IntervalTypeSpec.refuseNested(element, "Array with element type");
             return new StructuredArrayType(element);
         }
@@ -306,7 +309,10 @@ public final class DataTypeParser {
      * A type in a NESTED position — a structured {@code ARRAY(...)} element, an {@code OBJECT(...)} field
      * or a {@code MAP(...)} key/value. Identical to {@link #parse} except that FILE is rejected: live
      * {@code ARRAY(FILE)}, {@code OBJECT(x FILE)} and {@code MAP(VARCHAR, FILE)} all fail with
-     * "Unsupported data type 'FILE'." even though a top-level {@code f FILE} column is accepted.
+     * "Unsupported data type 'FILE'." even though a top-level {@code f FILE} column is accepted. In a CAST
+     * target, a VARCHAR or BINARY leaf written with no width is an UNSIZED leaf ({@link StructuredLeafWidths}),
+     * which SYSTEM$TYPEOF names bare: {@code ::OBJECT(a VARCHAR)} reads {@code OBJECT(a VARCHAR)} there where a
+     * column declared the same way reads {@code OBJECT(a VARCHAR(16777216))} (live-verified).
      */
     private static DataType nested(final FrostlakeParser.DataTypeNameContext ctx,
                                    final FrostlakeParser.TypeParametersContext typeParams,
@@ -314,7 +320,9 @@ public final class DataTypeParser {
         if (ctx.FILE() != null) {
             throw new RuntimeException("SQL compilation error:\nUnsupported data type 'FILE'.");
         }
-        return parse(ctx, typeParams, bareStringDefault);
+        final DataType leaf = parse(ctx, typeParams, bareStringDefault);
+        return bareStringDefault == CAST_STRING_DEFAULT && !hasTypeLength(typeParams)
+            ? StructuredLeafWidths.unsizedCastLeaf(leaf, CAST_STRING_DEFAULT) : leaf;
     }
 
     private static boolean hasTypeLength(final FrostlakeParser.TypeParametersContext typeParams) {

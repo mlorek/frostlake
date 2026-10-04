@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -31,4 +32,13 @@ public class FileFormatSnapshot implements Serializable {
     public String type;
     public Map<String, String> options = new LinkedHashMap<>();
     public String comment;
+    // The owning role. Null on snapshots written before it was saved, which restore the default owner.
+    public String owner;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public Instant createdAt;
+    /**
+     * INFORMATION_SCHEMA's LAST_ALTERED, the last DDL. Null on snapshots written before it was saved, which report
+     * the CREATE.
+     */
+    public Instant lastDdlAt;
 }

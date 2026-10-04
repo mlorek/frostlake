@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.QueryExecution;
 import dev.frostlake.metastore.Taggable;
 
@@ -72,8 +73,8 @@ public class Warehouse implements Taggable {
         this.maxClusterCount = 1;
         this.autoSuspendSeconds = 600; // 10 minutes default
         this.autoResume = true;
-        this.createdAt = LocalDateTime.now();
-        this.lastStateChange = LocalDateTime.now();
+        this.createdAt = StatementClock.hostLocal();
+        this.lastStateChange = createdAt;
         this.queryHistory = new ArrayList<>();
         this.totalQueriesExecuted = 0;
         this.totalCreditsUsed = 0;
@@ -91,7 +92,7 @@ public class Warehouse implements Taggable {
             Thread.currentThread().interrupt();
         }
         this.state = WarehouseState.STARTED;
-        this.lastStateChange = LocalDateTime.now();
+        this.lastStateChange = StatementClock.hostLocal();
     }
 
     /** ALTER WAREHOUSE … SUSPEND. Suspending a warehouse that is already suspended is an error
@@ -103,7 +104,7 @@ public class Warehouse implements Taggable {
         }
         this.state = WarehouseState.SUSPENDING;
         this.state = WarehouseState.SUSPENDED;
-        this.lastStateChange = LocalDateTime.now();
+        this.lastStateChange = StatementClock.hostLocal();
     }
 
     /**
@@ -185,7 +186,7 @@ public class Warehouse implements Taggable {
 
     public void setState(final WarehouseState state) {
         this.state = state;
-        this.lastStateChange = LocalDateTime.now();
+        this.lastStateChange = StatementClock.hostLocal();
     }
 
     public ScalingPolicy getScalingPolicy() {

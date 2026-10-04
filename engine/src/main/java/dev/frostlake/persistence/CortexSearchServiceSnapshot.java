@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -39,4 +40,6 @@ public class CortexSearchServiceSnapshot implements Serializable {
     public String owner;
     public boolean indexingSuspended;
     public boolean servingSuspended;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public LocalDateTime createdAt;
 }

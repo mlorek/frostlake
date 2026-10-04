@@ -19,6 +19,7 @@ package dev.frostlake.storage;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.TableStructure;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.ExactValues;
@@ -37,8 +38,6 @@ public class TableStorage {
     private final Table metadata;
     private final List<Row> rows;
     private final Map<Object, Integer> primaryKeyIndex;
-    private long nextAutoIncrementValue;
-    private long identityIncrement;
 
     // Stable, monotonic per-row identity, index-aligned with `rows`. Lets a transaction reference a
     // specific row across other mutations WITHOUT positional indices — the foundation for the
@@ -49,20 +48,35 @@ public class TableStorage {
 
     // When this storage came into being — the lower bound of its time-travel history. A real
     // account refuses AT/BEFORE points before the object's creation; snapshots are in-memory
-    // only, so a restored engine's history starts at restore, exactly like its snapshots.
-    private final long createdMillis = System.currentTimeMillis();
+    // only, so a restored engine's history starts at restore, exactly like its snapshots. It is the
+    // creating statement's instant, as the snapshots' stamps are: a replayed statement that reads the table
+    // at its recorded CURRENT_TIMESTAMP() then finds it there, as the original statement did.
+    private final long createdMillis = StatementClock.instant().toEpochMilli();
     // Where this storage's creation falls in the order snapshots are taken in: a point with a lower number
     // came before the table.
     private final long createdSequence = SnapshotSequence.next();
 
-/** Rolling window of snapshots, retention-bounded (default 90 s for testing). */
+    /**
+     * The rolling window of time-travel snapshots, at most {@link #MAX_SNAPSHOTS} of them. The retention period is not
+     * applied here but where a point is read (QueryExecutor), which refuses one older than the table's
+     * DATA_RETENTION_TIME_IN_DAYS: a stream's offset still reads the snapshot it stands on past that, as an account
+     * extends retention for a stream not yet consumed.
+     */
     private final CopyOnWriteArrayList<TableSnapshot> snapshots =
         new CopyOnWriteArrayList<>();
     private static final int MAX_SNAPSHOTS = 200;
+    /** Set once the window dropped a snapshot: the history before the oldest one kept is gone. */
+    private volatile boolean historyEvicted;
 
-    /** Force a snapshot now (called after each DML operation). */
+    /**
+     * Force a snapshot now (called after each DML operation).
+     *
+     * <p>Stamped with the committing statement's instant rather than the wall clock, so a replay stamps the
+     * snapshots the original run stamped and a point read from CURRENT_TIMESTAMP() resolves the same in both. A
+     * stamp is never earlier than the table's creation or than the snapshot before it: concurrent statements
+     * commit in an order their instants need not follow, and the snapshots must stay in order.
+     */
     public void takeSnapshot() {
-        final long now = System.currentTimeMillis();
         // A POINTER copy suffices: no write path mutates a stored row in place — UPDATE installs
         // replacement rows (replaceRow), INSERT/DELETE add/remove whole rows — so a snapshot's
         // rows are frozen by construction.
@@ -72,10 +86,49 @@ public class TableStorage {
             taken = new ArrayList<>(rows);
             takenIds = new ArrayList<>(rowIds);
         }
-        snapshots.add(new TableSnapshot(now, SnapshotSequence.next(), taken, takenIds));
-        if (snapshots.size() > MAX_SNAPSHOTS) {
-            snapshots.remove(0);
+        // The shape the rows are in, recorded first if a change to it went unrecorded; shared, never copied per write.
+        final TableStructure layout = metadata.currentStructure();
+        synchronized (snapshots) {
+            long now = Math.max(StatementClock.commitInstant().toEpochMilli(), createdMillis);
+            if (!snapshots.isEmpty()) {
+                now = Math.max(now, snapshots.get(snapshots.size() - 1).epochMillis);
+            }
+            snapshots.add(new TableSnapshot(now, SnapshotSequence.next(), taken, takenIds, layout, null));
+            StatementClock.committed(now);
+            if (snapshots.size() > MAX_SNAPSHOTS) {
+                snapshots.remove(0);
+                historyEvicted = true;
+                // No point reaches back past the oldest snapshot kept, so neither do the shapes before it.
+                metadata.forgetStructureBefore(snapshots.get(0).sequence);
+            }
         }
+    }
+
+    /**
+     * Whether the table's history at a point is gone: the window has dropped snapshots, and the point falls
+     * before the oldest snapshot it kept. A read there would find nothing and answer an empty table that never
+     * was, so it is refused like a point outside the retention period.
+     *
+     * @param targetMillis the point
+     * @param isBefore     whether the read is BEFORE the point, which also needs the snapshot before it
+     * @return whether the history at the point is gone
+     */
+    public boolean historyEvictedAt(final long targetMillis, final boolean isBefore) {
+        if (!historyEvicted) {
+            return false;
+        }
+        final long oldest = snapshots.get(0).epochMillis;
+        return isBefore ? targetMillis <= oldest : targetMillis < oldest;
+    }
+
+    /**
+     * {@link #historyEvictedAt} for a point given by the order snapshots are taken in.
+     *
+     * @param sequence a number from {@link SnapshotSequence#current()}
+     * @return whether the history at the point is gone
+     */
+    public boolean historyEvictedUpTo(final long sequence) {
+        return historyEvicted && sequence < snapshots.get(0).sequence;
     }
 
     /** Return the snapshot whose timestamp is closest to (but not after) targetMillis. */
@@ -125,7 +178,7 @@ public class TableStorage {
 
     /** Return offset seconds ago from now. */
     public TableSnapshot snapshotAtOffset(final long offsetSeconds) {
-        return snapshotAt(System.currentTimeMillis() - offsetSeconds * 1000L);
+        return snapshotAt(StatementClock.instant().toEpochMilli() - offsetSeconds * 1000L);
     }
 
     public List<TableSnapshot> getSnapshots() {
@@ -147,19 +200,48 @@ public class TableStorage {
         this.metadata = metadata;
         this.rows = Collections.synchronizedList(new ArrayList<>());
         this.primaryKeyIndex = new ConcurrentHashMap<>();
+        // The table's history of shapes starts with its rows: a clone as of a point before any DDL takes this one.
+        metadata.seedStructure(createdMillis, createdSequence);
+    }
 
-        // Initialize identity values from table metadata
-        long startValue = 1;
-        long incrementValue = 1;
-        for (final TableColumn col : metadata.getColumns()) {
-            if (col.isAutoIncrement()) {
-                startValue = col.getIdentityStart();
-                incrementValue = col.getIdentityIncrement();
-                break;
+    /**
+     * A snapshot's rows laid out in a shape of the table's: each column is found in the shape the snapshot was taken
+     * in by its position, which a column keeps for life. A column renamed or retyped in between keeps its values, one
+     * dropped in between is left out, and one added in between is NULL: a column added while the table holds rows
+     * takes a snapshot of its own as the ADD ends, so one added without one was added to a table with no rows.
+     *
+     * @param snapshot the snapshot
+     * @param shape    the shape to lay the rows out in, or null for the table's current columns
+     * @return the rows
+     */
+    public static List<Row> rowsIn(final TableSnapshot snapshot, final TableStructure shape) {
+        if (shape == null || snapshot.layout == null) {
+            return new ArrayList<>(snapshot.rows);
+        }
+        if (shape == snapshot.layout) {
+            return new ArrayList<>(snapshot.asTakenRows);
+        }
+        final List<TableColumn> from = snapshot.layout.getColumns();
+        final List<TableColumn> to = shape.getColumns();
+        final int[] slots = new int[to.size()];
+        for (int i = 0; i < to.size(); i++) {
+            slots[i] = -1;
+            for (int j = 0; j < from.size(); j++) {
+                if (from.get(j).getOrdinalPosition() == to.get(i).getOrdinalPosition()) {
+                    slots[i] = j;
+                    break;
+                }
             }
         }
-        this.nextAutoIncrementValue = startValue;
-        this.identityIncrement = incrementValue;
+        final List<Row> laidOut = new ArrayList<>(snapshot.asTakenRows.size());
+        for (final Row row : snapshot.asTakenRows) {
+            final List<Object> values = new ArrayList<>(slots.length);
+            for (final int slot : slots) {
+                values.add(slot >= 0 && slot < row.size() ? row.getValue(slot) : null);
+            }
+            laidOut.add(Row.of(values));
+        }
+        return laidOut;
     }
 
     public void insert(final Row written) {
@@ -284,9 +366,12 @@ public class TableStorage {
         written();
     }
 
-    /** Where every row write ends: the table's last data change is stamped and its snapshot scheduled. */
+    /**
+     * Where every row write ends: the table's last data change is stamped with the writing statement's instant, which
+     * an autocommit still holds once its pin is gone, and its snapshot is scheduled.
+     */
     private void written() {
-        metadata.markDataChanged(StatementClock.instant());
+        metadata.markDataChanged(StatementClock.commitInstant());
         engine.markDirty(this);
     }
 
@@ -338,7 +423,9 @@ public class TableStorage {
      * later occupies its slot. History loses the slot too: a time-travel read answers through the
      * table's CURRENT columns (live-verified — {@code AT(STATEMENT => …)} after a DROP COLUMN answers
      * without the dropped column). Called once the catalog has dropped the column, so the row
-     * identities, the order and every other value stay exactly as they were.
+     * identities, the order and every other value stay exactly as they were. Each snapshot keeps the
+     * rows as it took them besides ({@link TableSnapshot#asTakenRows}), which a CLONE as of a point
+     * before the drop reads, dropped column and all.
      *
      * @param index the dropped column's position before the drop
      */
@@ -357,7 +444,8 @@ public class TableStorage {
             for (final Row row : snapshot.rows) {
                 kept.add(withoutSlot(row, index, narrowed));
             }
-            snapshots.set(s, new TableSnapshot(snapshot.epochMillis, snapshot.sequence, kept, snapshot.rowIds));
+            snapshots.set(s, new TableSnapshot(snapshot.epochMillis, snapshot.sequence, kept, snapshot.rowIds,
+                snapshot.layout, snapshot.asTakenRows));
         }
         primaryKeyIndex.clear();
         if (metadata.hasPrimaryKeyColumns()) {
@@ -370,7 +458,8 @@ public class TableStorage {
      * holding the value the column takes where a row has none of its own — its default, or NULL. History
      * gains the slot too: a time-travel read answers through the table's CURRENT columns, and a row read
      * from before the ADD shows the new column's default (live-verified). Called once the catalog has
-     * added the column, as its last one.
+     * added the column, as its last one. Each snapshot keeps the rows as it took them besides, without the
+     * column, which a CLONE as of a point before the add reads.
      *
      * @param value the value the new column takes in the rows that already exist
      * @return the value as the column stores it, in its declared carrier
@@ -391,7 +480,8 @@ public class TableStorage {
             for (final Row row : snapshot.rows) {
                 kept.add(withSlotAppended(row, stored, widened));
             }
-            snapshots.set(s, new TableSnapshot(snapshot.epochMillis, snapshot.sequence, kept, snapshot.rowIds));
+            snapshots.set(s, new TableSnapshot(snapshot.epochMillis, snapshot.sequence, kept, snapshot.rowIds,
+                snapshot.layout, snapshot.asTakenRows));
         }
         if (hadRows) {
             written();
@@ -477,23 +567,15 @@ public class TableStorage {
         rows.clear();
         rowIds.clear();
         primaryKeyIndex.clear();
-        metadata.markDataChanged(StatementClock.instant());
+        metadata.markDataChanged(StatementClock.commitInstant());
 
         // Reset to identity start value
-        long startValue = 1;
-        for (final TableColumn col : metadata.getColumns()) {
-            if (col.isAutoIncrement()) {
-                startValue = col.getIdentityStart();
-                break;
-            }
-        }
-        nextAutoIncrementValue = startValue;
+        metadata.setNextIdentityValue(null);
     }
 
+    /** The next IDENTITY/AUTOINCREMENT value. The sequence is the table's own; see {@link Table#drawIdentityValue}. */
     public long getNextAutoIncrementValue() {
-        final long current = nextAutoIncrementValue;
-        nextAutoIncrementValue += identityIncrement;
-        return current;
+        return metadata.drawIdentityValue();
     }
 
     private Object extractPrimaryKey(final Row row) {

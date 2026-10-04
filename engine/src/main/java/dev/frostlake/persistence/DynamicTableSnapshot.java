@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.util.List;
 
 /** Serializable snapshot of a DYNAMIC TABLE definition. */
@@ -37,4 +38,19 @@ public class DynamicTableSnapshot implements Serializable {
     /** The CLUSTER BY keys as written; null in a snapshot taken before they were kept. */
     public List<String> clusterKeys;
     public boolean transientTable;
+    // The CREATE statement and its query as written, which SHOW DYNAMIC TABLES and GET_DDL show; the scheduling state
+    // and when the table was suspended; its retention settings; whether it is a clone and its reclustering is
+    // suspended. Null, zero or false on snapshots written before they were saved.
+    public String createText;
+    public String bodyText;
+    public String schedulingState;
+    public Instant lastSuspendedOn;
+    public Integer dataRetentionDays;
+    public Integer maxDataExtensionDays;
+    public boolean reclusterSuspended;
+    public boolean clone;
+    // When the object was created. Null on snapshots written before it was saved, which restore it as new.
+    public Instant createdAt;
+    /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
+    public Instant lastDdlAt;
 }

@@ -31,10 +31,10 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 
 /**
- * Verifies that {@link StreamManager}'s per-table change-tracking row-id counters are forgotten when a
- * table (or its schema / database) is dropped, so {@code rowIdCounters} cannot grow without bound as
- * objects are created and dropped. The cleanup is observable: a counter that is removed restarts at 1,
- * so a table recreated after a drop tracks from 1 again instead of inheriting the stale counter.
+ * Verifies that a table's change-tracking row ids are the table's own. A table recreated after a drop of it, its
+ * schema or its database tracks from 1 again instead of inheriting the old table's counter, and nothing restarts a
+ * live table's ids: METADATA$ROW_ID is "a unique, immutable row ID" (Snowflake's documentation). The counter lives on
+ * the table, so it goes with a dropped table and cannot accumulate as objects are created and dropped.
  *
  * <p>Deliberately NOT on the live surface: it asserts StreamManager bookkeeping through engine
  * internals, with no live counterpart — it runs its own embedded engine.
@@ -76,9 +76,9 @@ public class RowIdCounterCleanupTest {
             "a table recreated after DROP must restart row-id tracking at 1, not inherit the old counter");
     }
 
-    /** The schema-level (prefix) cleanup removes the counter for tables in that schema. */
+    /** A table recreated after DROP SCHEMA starts again at 1, and the schema hook never restarts a live table. */
     @Test
-    public void onSchemaDroppedResetsRowIdCounter() {
+    public void aTableRecreatedAfterItsSchemaIsDroppedStartsAgainAtOne() {
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t");
         engine.execute("INSERT INTO t VALUES (1)");
@@ -88,12 +88,19 @@ public class RowIdCounterCleanupTest {
         engine.getStreamManager().onSchemaDropped("TEST_DB", "TEST_SCHEMA");
 
         engine.execute("INSERT INTO t VALUES (3)");
-        assertEquals(1L, newestRowId("S"), "schema-prefix cleanup should have reset the counter");
+        assertEquals(3L, newestRowId("S"), "a live table's row ids never restart");
+
+        engine.execute("DROP SCHEMA test_schema");
+        engine.execute("CREATE SCHEMA test_schema");
+        engine.execute("CREATE TABLE t (id INT)");
+        engine.execute("CREATE STREAM s ON TABLE t");
+        engine.execute("INSERT INTO t VALUES (4)");
+        assertEquals(1L, newestRowId("S"), "the recreated table tracks from 1");
     }
 
-    /** The database-level (prefix) cleanup removes the counter for tables in that database. */
+    /** A table recreated after DROP DATABASE starts again at 1, and the database hook never restarts a live table. */
     @Test
-    public void onDatabaseDroppedResetsRowIdCounter() {
+    public void aTableRecreatedAfterItsDatabaseIsDroppedStartsAgainAtOne() {
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t");
         engine.execute("INSERT INTO t VALUES (1)");
@@ -103,7 +110,15 @@ public class RowIdCounterCleanupTest {
         engine.getStreamManager().onDatabaseDropped("TEST_DB");
 
         engine.execute("INSERT INTO t VALUES (3)");
-        assertEquals(1L, newestRowId("S"), "database-prefix cleanup should have reset the counter");
+        assertEquals(3L, newestRowId("S"), "a live table's row ids never restart");
+
+        engine.execute("DROP DATABASE test_db");
+        engine.execute("CREATE DATABASE test_db");
+        engine.execute("CREATE SCHEMA test_schema");
+        engine.execute("CREATE TABLE t (id INT)");
+        engine.execute("CREATE STREAM s ON TABLE t");
+        engine.execute("INSERT INTO t VALUES (4)");
+        assertEquals(1L, newestRowId("S"), "the recreated table tracks from 1");
     }
 
     /** Row id of the most recently tracked change on the named stream (read straight from the model). */

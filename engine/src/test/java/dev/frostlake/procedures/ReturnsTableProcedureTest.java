@@ -150,6 +150,26 @@ public class ReturnsTableProcedureTest extends BaseDatabaseTest {
         }
     }
 
+    /**
+     * A text cast to an UNSIZED string is a text like any other, whatever the declared width:
+     * tds-asgard-data's FETCH_EXPORT_ENRICHMENT_BATCH answers its empty table with {@code ''::VARCHAR}
+     * columns under {@code RETURNS TABLE (... VARCHAR ...)} on Snowflake, where an exact type-class match
+     * here refused it.
+     */
+    @Test
+    public void anUnsizedTextCastFillsADeclaredText() {
+        final String[][] taken = {
+            {"a VARCHAR", "SELECT 'abc'::VARCHAR AS a", "abc"},
+            {"a VARCHAR(10)", "SELECT CAST('abc' AS VARCHAR) AS a", "abc"},
+            {"a VARCHAR", "SELECT ''::VARCHAR AS a WHERE FALSE", "no row"},
+            {"a STRING", "SELECT 'abc'::TEXT AS a", "abc"},
+        };
+        for (int i = 0; i < taken.length; i++) {
+            tableProcedure("unsized" + i, taken[i][0], taken[i][1]);
+            assertEquals(taken[i][2], answer("CALL unsized" + i + "()"), taken[i][0] + " <- " + taken[i][1]);
+        }
+    }
+
     @Test
     public void aBodyEndingWithoutAReturnIsRefusedOnceItHasRun() {
         engine.execute("CREATE TABLE side_effects (a INT)");

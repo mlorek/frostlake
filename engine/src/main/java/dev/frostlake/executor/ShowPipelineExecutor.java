@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -118,7 +119,8 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("type", StringType.VARCHAR),
             new ResultSetColumn("stale", StringType.VARCHAR),
             new ResultSetColumn("mode", StringType.VARCHAR),
-            new ResultSetColumn("stale_after", StringType.VARCHAR),
+            // A timestamp like created_on, not text: TIMESTAMP_LTZ(3) (live-verified).
+            new ResultSetColumn("stale_after", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("invalid_reason", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR)
         );
@@ -128,7 +130,8 @@ final class ShowPipelineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
         final List<Row> rows = new ArrayList<>();
-        for (final Stream stream : catalog.getDatabase(dbName).getSchema(scName).getStreams()) {
+        final Schema home = catalog.getDatabase(dbName).getSchema(scName);
+        for (final Stream stream : home.getStreams()) {
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(stream.getCreatedAt()),
                 stream.getName(),
@@ -139,7 +142,7 @@ final class ShowPipelineExecutor {
                 sourceTypeText(stream),
                 qualifiedSourceName(dbName, scName, stream.getSourceTableName()),
                 "DELTA",
-                stream.isStale() ? "true" : "false",
+                stale(home, stream) ? "true" : "false",
                 stream.getStreamType() == StreamType.APPEND_ONLY ? "APPEND_ONLY" : "DEFAULT",
                 ShowResultHelpers.createdOn(staleAfter(stream)),
                 "N/A",
@@ -395,10 +398,26 @@ final class ShowPipelineExecutor {
 
     /** Live reports a stream's source with its database and schema, even for a same-schema table. */
     private String qualifiedSourceName(final String dbName, final String scName, final String source) {
-        if (source == null || source.indexOf('.') >= 0) {
-            return source;
+        if (source == null) {
+            return null;
         }
-        return dbName + "." + scName + "." + source;
+        final String[] parts = QualifiedName.parse(source).parts();
+        if (parts.length == 2) {
+            return dbName + "." + source;
+        }
+        return parts.length == 1 ? dbName + "." + scName + "." + source : source;
+    }
+
+    /**
+     * Whether a stream is stale: recorded so, a table stream whose table is gone (dropped or replaced by CREATE OR
+     * REPLACE), or a view stream any of whose view's tables is. Snowflake documents that recreating the source
+     * "makes any stream on the table or view stale", and that recreating or dropping any of a view's underlying
+     * tables does too.
+     */
+    private boolean stale(final Schema home, final Stream stream) {
+        return stream.isStale() || (stream.getSourceType() == StreamSourceType.TABLE
+            && StreamSources.sourceOf(catalog, home, stream) == null)
+            || StreamSources.missingBaseOf(catalog, stream) != null;
     }
 
     /** Live capitalises the source kind as words (Table, View, Stage, Dynamic Table), not as the enum constant. */
@@ -498,23 +517,24 @@ final class ShowPipelineExecutor {
         );
     }
 
+    /**
+     * DESCRIBE STREAM returns the stream's SHOW STREAMS row, as the documentation gives the two commands one set of
+     * columns, stale_after's timestamp included.
+     */
     public ResultSet describeStream(final String streamName) {
-        final List<Row> rows = new ArrayList<>();
-        final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("property", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
-        );
-
         final String dbName = catalog.getCurrentDatabase();
         final String scName = catalog.getCurrentSchema();
         final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
         final Stream stream = schema.getStream(streamName);
 
-        rows.add(new Row(Arrays.asList("name", stream.getName())));
-        rows.add(new Row(Arrays.asList("table_name", stream.getSourceTableName())));
-        rows.add(new Row(Arrays.asList("type", stream.getStreamType().toString())));
-
-        return new ResultSet(columns, rows);
+        final ResultSet listed = showStreams(dbName, scName);
+        final List<Row> rows = new ArrayList<>();
+        for (final Row row : listed.getRows()) {
+            if (stream.getName().equals(row.getValue(1))) {
+                rows.add(row);
+            }
+        }
+        return new ResultSet(listed.getColumns(), rows);
     }
 
     /** DESCRIBE TASK returns the task's SHOW TASKS row — live gives the two commands one shape. */

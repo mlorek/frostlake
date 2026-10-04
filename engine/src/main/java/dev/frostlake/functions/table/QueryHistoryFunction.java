@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.table;
 
+import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
@@ -113,10 +114,7 @@ public class QueryHistoryFunction extends TableFunction {
         if (resultLimit instanceof Number) {
             limit = ((Number) resultLimit).intValue();
         }
-        final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
-        for (final String name : COLUMN_NAMES) {
-            columns.add(new ResultSetColumn(name, columnType(name)));
-        }
+        final List<ResultSetColumn> columns = columns();
         final List<QueryHistory> history = new ArrayList<QueryHistory>(tracker.getAllHistory());
         Collections.reverse(history);   // most recent first, as in Snowflake
         final List<Row> rows = new ArrayList<Row>();
@@ -134,6 +132,23 @@ public class QueryHistoryFunction extends TableFunction {
             rows.add(new Row(values));
         }
         return new ResultSet(columns, rows);
+    }
+
+    /** The listing's columns are fixed, so a query over it is planned with their types before any row is read. */
+    @Override
+    public List<ResultSetColumn> outputColumns(final Map<String, Object> namedArgs) {
+        return columns();
+    }
+
+    private static List<ResultSetColumn> columns() {
+        final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
+        for (final String name : COLUMN_NAMES) {
+            final DataType type = columnType(name);
+            // The time columns declare their type too, so SYSTEM$TYPEOF and the type rules read TIMESTAMP_LTZ(3).
+            columns.add(type == ShowResultHelpers.CREATED_ON ? new ResultSetColumn(name, type, null, type)
+                : new ResultSetColumn(name, type));
+        }
+        return columns;
     }
 
     /**
@@ -196,6 +211,11 @@ public class QueryHistoryFunction extends TableFunction {
             case "SESSION_ID":
                 // The session's number, as CURRENT_SESSION() answers it but typed as the account types it.
                 return SESSION_ID_TYPE;
+            case "START_TIME":
+            case "END_TIME":
+                // TIMESTAMP_LTZ, as the documentation types both, at the millisecond the account's other time
+                // cells carry: an instant that reads in the session's zone and compares as one.
+                return ShowResultHelpers.CREATED_ON;
             default:
                 return StringType.VARCHAR;
         }
@@ -214,8 +234,8 @@ public class QueryHistoryFunction extends TableFunction {
             case "WAREHOUSE_NAME": return q.getWarehouse();
             case "EXECUTION_STATUS": return q.getStatus();
             case "ERROR_MESSAGE": return q.getErrorMessage();
-            case "START_TIME": return q.getStartTimeFormatted();
-            case "END_TIME": return q.getEndTimeFormatted();
+            case "START_TIME": return ShowResultHelpers.createdOn(q.getStartInstant());
+            case "END_TIME": return ShowResultHelpers.createdOn(q.getEndInstant());
             case "TOTAL_ELAPSED_TIME": return Long.valueOf(q.getExecutionTimeMs());
             case "EXECUTION_TIME": return Long.valueOf(q.getExecutionTimeMs());
             case "COMPILATION_TIME": return Long.valueOf(q.getCompilationTimeMs());

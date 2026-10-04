@@ -166,6 +166,8 @@ public class ProceduralExecutor {
     private final Map<String, DataType> initialiserTypes = new HashMap<>();
     /** The static types of the cursor records' fields in flight, keyed {@code REC.FIELD} as their values are. */
     private final Map<String, DataType> recordFieldTypes = new HashMap<>();
+    /** The script-supplied name of the query ID of the last statement a script ran (see #noteStatementQueryId). */
+    private static final String SQLID = "SQLID";
     /** What a bare RETURN of SQLROWCOUNT declares its result column (live-verified through the driver). */
     private static final DataType ROW_COUNT_RETURN = new NumericType("NUMBER", 0, 0);
 
@@ -410,6 +412,7 @@ public class ProceduralExecutor {
      * the record, so a handled failure does not label a later, unrelated one.
      */
     public void executeStatement(final Statement stmt) {
+        final String queryIdBefore = lastQueryIdOfSession();
         try {
             dispatchStatement(stmt);
         } catch (final RuntimeException failure) {
@@ -417,6 +420,7 @@ public class ProceduralExecutor {
             throw failure;
         }
         clearStatementFailure();
+        noteStatementQueryId(queryIdBefore);
     }
 
     private void dispatchStatement(final Statement stmt) {
@@ -1155,6 +1159,8 @@ public class ProceduralExecutor {
         // SQLROWCOUNT is a text to the typer, so arithmetic reads it as a NUMBER(18,5): SQLROWCOUNT + 1 is
         // NUMBER(19,5) (live-verified).
         typesInScope.put("SQLROWCOUNT", StringType.VARCHAR);
+        // SQLID holds a query ID, a text.
+        typesInScope.put(SQLID, StringType.VARCHAR);
         typesInScope.putAll(variableTypes);
         return typesInScope;
     }
@@ -1506,6 +1512,45 @@ public class ProceduralExecutor {
         }
     }
 
+    /**
+     * The query ID LAST_QUERY_ID() names in the running session now, or null before the session ran any: what
+     * {@link #noteStatementQueryId} compares against once a statement completes.
+     *
+     * @return the query ID, or null
+     */
+    public String lastQueryIdOfSession() {
+        return queryExecutor == null ? null : queryExecutor.getResultCache().getLastQueryId();
+    }
+
+    /**
+     * Starts a script's SQLID: NULL, because the script has run no statement yet. Called as the outermost block of a
+     * script begins - a block run directly, an EXECUTE IMMEDIATE's or a procedure's body - so the blocks nested in it
+     * share the one SQLID.
+     */
+    public void startStatementQueryIds() {
+        setVariable(SQLID, null);
+    }
+
+    /**
+     * Notes a completed statement of a script in SQLID, the query ID of the last statement the script ran: one
+     * that took a query ID, itself or through what it ran - a SQL statement, a CALL, an EXECUTE IMMEDIATE, a
+     * declaration's or a cursor's query, a SELECT ... INTO, the last statement of an IF or a loop - sets it to the ID
+     * LAST_QUERY_ID() names once it completes. A statement that took none (LET, an assignment, a RETURN, unrecorded
+     * SQL) leaves it as it was, and so does one that failed. Its value before the script ran any statement, NULL, is
+     * not verified against an account, and neither is a failed statement leaving it alone.
+     *
+     * @param queryIdBefore what {@link #lastQueryIdOfSession} answered as the statement began
+     */
+    public void noteStatementQueryId(final String queryIdBefore) {
+        if (!isExecutingBlock()) {
+            return;
+        }
+        final String queryIdAfter = lastQueryIdOfSession();
+        if (queryIdAfter != null && !queryIdAfter.equals(queryIdBefore)) {
+            setVariable(SQLID, queryIdAfter);
+        }
+    }
+
     /** The DML-status effect of a completed statement whose result never surfaced as a result set. */
     public void recordStatementWithoutResult() {
         setVariable("SQLROWCOUNT", null);
@@ -1821,8 +1866,9 @@ public class ProceduralExecutor {
                         }
                     }
                     callExpr.append(")");
-                    // Execute as SELECT expression
-                    final List<ResultSet> results = queryExecutor.execute("SELECT " + callExpr);
+                    // Execute as SELECT expression, outside the session's statement history: an expression is
+                    // not a statement, and must not move LAST_QUERY_ID off the statement before it.
+                    final List<ResultSet> results = queryExecutor.executeUnrecorded("SELECT " + callExpr);
                     if (!results.isEmpty()) {
                         final ResultSet rset = results.get(0);
                         if (rset.getRowCount() > 0) return rset.getRows().get(0).getValue(0);

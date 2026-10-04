@@ -20,6 +20,7 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.Schema;
@@ -120,15 +121,18 @@ final class StreamStart {
                  final boolean showInitialRows) {
         final List<Table> tables = new ArrayList<>();
         final List<TableStorage> storages = new ArrayList<>();
-        for (final String name : baseTables) {
-            final Table table = catalog.resolveTable(name);
+        // The tables the stream is bound to, each read where the view lives (StreamSources).
+        final List<Table> bound = stream.getBaseTables();
+        for (int i = 0; i < baseTables.size(); i++) {
+            final String name = baseTables.get(i);
+            final Table table = bound != null && i < bound.size() ? bound.get(i) : catalog.resolveTable(name);
             boolean seen = false;
             for (final Table known : tables) {
                 seen = seen || known == table;
             }
             if (!seen) {
                 tables.add(table);
-                storages.add(storageOf(table, name));
+                storages.add(bound != null ? storageOf(table) : storageOf(table, name));
             }
         }
         if (point == null) {
@@ -364,8 +368,15 @@ final class StreamStart {
         return tag == null ? new StreamRecord(copy, type, update, rowId) : new StreamRecord(copy, type, update, rowId, tag);
     }
 
-    /** Whether two streams read the same object: the same kind of source under the same qualified name. */
+    /**
+     * Whether two streams read the same object: the very same table for two table streams (StreamSources), else
+     * the same kind of source under the same qualified name.
+     */
     private boolean sameSource(final Stream a, final Stream b) {
+        if (a.getSourceType() == StreamSourceType.TABLE && b.getSourceType() == StreamSourceType.TABLE) {
+            final Table table = StreamSources.sourceOf(catalog, StreamSources.homeOf(catalog, a), a);
+            return table != null && table == StreamSources.sourceOf(catalog, StreamSources.homeOf(catalog, b), b);
+        }
         return a.getSourceType() == b.getSourceType() && qualified(a).equalsIgnoreCase(qualified(b));
     }
 
@@ -381,6 +392,13 @@ final class StreamStart {
         } catch (final RuntimeException unresolved) {
             return name;
         }
+    }
+
+    /** The storage of a table, found through the schema that holds it. */
+    private TableStorage storageOf(final Table table) {
+        final Schema schema = StreamSources.holderOf(catalog, table);
+        return queryExecutor.getStorageEngine().getTableStorage(
+            QualifiedName.key(schema.getDatabaseName(), schema.getName(), table.getName()));
     }
 
     private TableStorage storageOf(final Table table, final String name) {

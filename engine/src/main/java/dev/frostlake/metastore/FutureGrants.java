@@ -19,6 +19,7 @@ package dev.frostlake.metastore;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.FutureGrant;
+import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
@@ -63,9 +64,35 @@ public final class FutureGrants {
     public static String ownerOfNew(final Catalog catalog, final String objectKind,
                                     final Schema schema, final String objectName) {
         final String databaseName = schema == null ? null : schema.getDatabaseName();
-        if (databaseName == null) {
+        return ownerOfNewNamed(catalog, objectKind, schema, objectName,
+            databaseName == null ? null : QualifiedName.join(databaseName, schema.getName(), objectName));
+    }
+
+    /**
+     * {@link #ownerOfNew} for one overload of a routine, whose privileges are recorded under its signature
+     * ({@link GrantNames#routine}): the overload starts with none of a dropped same-signature overload's privileges,
+     * and its future grants are its own.
+     *
+     * @param catalog     the catalog holding the roles
+     * @param objectKind  FUNCTION or PROCEDURE
+     * @param schema      the schema the routine is created in
+     * @param routineName the routine's name
+     * @param parameters  the overload's parameters
+     * @return the role that owns the overload
+     */
+    public static String ownerOfNewRoutine(final Catalog catalog, final String objectKind, final Schema schema,
+                                           final String routineName, final List<Parameter> parameters) {
+        final String databaseName = schema == null ? null : schema.getDatabaseName();
+        return ownerOfNewNamed(catalog, objectKind, schema, routineName,
+            databaseName == null ? null : GrantNames.routine(schema, routineName, parameters));
+    }
+
+    private static String ownerOfNewNamed(final Catalog catalog, final String objectKind, final Schema schema,
+                                          final String objectName, final String qualified) {
+        if (qualified == null) {
             return catalog.currentRoleForOwner();
         }
+        final String databaseName = schema.getDatabaseName();
         final List<Role> holders = new ArrayList<>();
         final List<FutureGrant> covering = new ArrayList<>();
         collect(catalog, objectKind, "SCHEMA", QualifiedName.join(databaseName, schema.getName()),
@@ -73,8 +100,12 @@ public final class FutureGrants {
         if (covering.isEmpty()) {
             collect(catalog, objectKind, "DATABASE", databaseName, holders, covering);
         }
-        return apply(catalog, objectKind,
-            QualifiedName.join(databaseName, schema.getName(), objectName), holders, covering);
+        // The privileges a dropped object of this name held are not the new object's (GrantNames). A temporary
+        // table that takes a permanent one's name only hides it, and the permanent table keeps its privileges.
+        if (!("TABLE".equals(objectKind) && schema.shadowedTable(objectName) != null)) {
+            GrantNames.created(catalog, objectKind, qualified);
+        }
+        return apply(catalog, objectKind, qualified, holders, covering);
     }
 
     /**
@@ -122,7 +153,9 @@ public final class FutureGrants {
         final List<Role> holders = new ArrayList<>();
         final List<FutureGrant> covering = new ArrayList<>();
         collect(catalog, objectKind, "DATABASE", databaseName, holders, covering);
-        return apply(catalog, objectKind, QualifiedName.join(databaseName, objectName), holders, covering);
+        final String qualified = QualifiedName.join(databaseName, objectName);
+        GrantNames.created(catalog, objectKind, qualified);
+        return apply(catalog, objectKind, qualified, holders, covering);
     }
 
     /** Every future grant on that kind in that one scope, with the role holding each. */
