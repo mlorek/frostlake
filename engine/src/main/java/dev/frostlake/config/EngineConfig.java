@@ -47,6 +47,12 @@ public class EngineConfig {
     public static final String PROP_HTTP_REST_SYNC_WAIT_MS = "http.rest.syncWaitMs";
     /** How long a {@code /api/v2} result handle stays fetchable after it was issued. */
     public static final String PROP_HTTP_REST_RESULT_RETENTION_MS = "http.rest.resultRetentionMs";
+    /**
+     * How long an HTTP session may sit idle before the server ends it, in minutes; 0 keeps every session until it
+     * is released. The default is Snowflake's four hours (a session policy's SESSION_IDLE_TIMEOUT_MINS defaults to
+     * 240), and a client that sets CLIENT_SESSION_KEEP_ALIVE sends heartbeats that count as activity.
+     */
+    public static final String PROP_HTTP_SESSION_IDLE_TIMEOUT_MINUTES = "http.session.idleTimeoutMinutes";
     public static final String PROP_DATABASE_DEFAULT = "database.default";
     public static final String PROP_SCHEMA_DEFAULT = "schema.default";
     public static final String PROP_ACCOUNT_ID = "account.id";
@@ -87,6 +93,7 @@ public class EngineConfig {
     private static final int DEFAULT_MAX_CONNECTIONS = 100;
     private static final int DEFAULT_REST_SYNC_WAIT_MS = 30000;
     private static final int DEFAULT_REST_RESULT_RETENTION_MS = 3600000;
+    private static final int DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES = 240;
     private static final String DEFAULT_DATABASE = "SNOWFLAKE";
     private static final String DEFAULT_SCHEMA = "PUBLIC";
     private static final String DEFAULT_ACCOUNT_ID = "ABC12345";
@@ -170,6 +177,7 @@ public class EngineConfig {
         properties.setProperty(PROP_HTTP_MAX_CONNECTIONS, String.valueOf(DEFAULT_MAX_CONNECTIONS));
         properties.setProperty(PROP_HTTP_REST_SYNC_WAIT_MS, String.valueOf(DEFAULT_REST_SYNC_WAIT_MS));
         properties.setProperty(PROP_HTTP_REST_RESULT_RETENTION_MS, String.valueOf(DEFAULT_REST_RESULT_RETENTION_MS));
+        properties.setProperty(PROP_HTTP_SESSION_IDLE_TIMEOUT_MINUTES, String.valueOf(DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES));
         properties.setProperty(PROP_DATABASE_DEFAULT, DEFAULT_DATABASE);
         properties.setProperty(PROP_SCHEMA_DEFAULT, DEFAULT_SCHEMA);
         properties.setProperty(PROP_ACCOUNT_ID, DEFAULT_ACCOUNT_ID);
@@ -251,6 +259,15 @@ public class EngineConfig {
     /** How long a {@code /api/v2} result handle stays fetchable after it was issued. */
     public int getRestResultRetentionMs() {
         return getIntProperty(PROP_HTTP_REST_RESULT_RETENTION_MS, DEFAULT_REST_RESULT_RETENTION_MS);
+    }
+
+    /**
+     * How long an HTTP session may sit idle before the server ends it, in minutes; 0 when sessions never idle out.
+     * A negative value keeps the default.
+     */
+    public int getSessionIdleTimeoutMinutes() {
+        final int minutes = getIntProperty(PROP_HTTP_SESSION_IDLE_TIMEOUT_MINUTES, DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES);
+        return minutes < 0 ? DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES : minutes;
     }
 
     public String getDefaultDatabase() {

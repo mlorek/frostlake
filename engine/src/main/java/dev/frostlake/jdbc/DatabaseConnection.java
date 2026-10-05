@@ -57,6 +57,11 @@ public class DatabaseConnection implements Connection {
     public DatabaseConnection(final String baseUrl, final String database, final String schema, final Properties info) throws SQLException {
         final String sessionId = info.getProperty("sessionId");
         this.httpClient = new HttpClient(baseUrl, sessionId);
+        // CLIENT_SESSION_KEEP_ALIVE as the account's driver takes it: on, the connection sends a heartbeat every
+        // CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY seconds, so its session outlives the server's idle timeout.
+        final String keepAlive = property(info, "CLIENT_SESSION_KEEP_ALIVE");
+        httpClient.keepAlive(keepAlive != null && "true".equalsIgnoreCase(keepAlive.trim()),
+            seconds(property(info, "CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY")));
         this.database = database;
         this.schema = schema;
         this.closed = false;
@@ -85,6 +90,37 @@ public class DatabaseConnection implements Connection {
         }
 
         logger.info("Created connection to {} (session: {})", baseUrl, httpClient.getSessionId());
+    }
+
+    /** A connection property by name, in any case, as the account's driver reads CLIENT_SESSION_KEEP_ALIVE. */
+    private static String property(final Properties info, final String name) {
+        final String exact = info.getProperty(name);
+        if (exact != null) {
+            return exact;
+        }
+        for (final String key : info.stringPropertyNames()) {
+            if (key.equalsIgnoreCase(name)) {
+                return info.getProperty(key);
+            }
+        }
+        return null;
+    }
+
+    /** A whole number of seconds, or null when the property is absent or unreadable. */
+    private static Integer seconds(final String value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(value.trim());
+        } catch (final NumberFormatException unreadable) {
+            return null;
+        }
+    }
+
+    /** The transport, for the heartbeat tests. */
+    HttpClient transport() {
+        return httpClient;
     }
 
     @Override

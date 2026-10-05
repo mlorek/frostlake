@@ -37,6 +37,11 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The JDBC driver's HTTP transport: runs every statement of one connection in one server session, and
@@ -57,6 +62,11 @@ import java.util.List;
  * up on it went with it.
  *
  * <p>Closing releases a session this transport started: one DELETE, bounded, and never an error.
+ *
+ * <p>With CLIENT_SESSION_KEEP_ALIVE on, as the connection's properties or the session's own ALTER SESSION set it,
+ * the transport sends {@code POST /api/sessions/{id}/heartbeat} every CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY
+ * seconds, kept within the 900 to 3600 Snowflake documents, so the session outlives the server's idle timeout as
+ * long as the connection is open: what the account's drivers do.
  */
 class HttpClient {
 
@@ -67,6 +77,24 @@ class HttpClient {
 
     /** How long closing waits for the server to release the session. */
     private static final Duration RELEASE_TIMEOUT = Duration.ofSeconds(5);
+
+    /** How long a heartbeat waits for the server's answer. */
+    private static final Duration HEARTBEAT_TIMEOUT = Duration.ofSeconds(10);
+
+    /** CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY's range, in seconds, and its default: the most. */
+    private static final int MIN_HEARTBEAT_SECONDS = 900;
+    private static final int MAX_HEARTBEAT_SECONDS = 3600;
+
+    /** One daemon thread sends every connection's heartbeats; none of them keeps the JVM running. */
+    private static final ScheduledExecutorService HEARTBEATS = Executors.newSingleThreadScheduledExecutor(
+        new ThreadFactory() {
+            @Override
+            public Thread newThread(final Runnable task) {
+                final Thread thread = new Thread(task, "frostlake-jdbc-heartbeat");
+                thread.setDaemon(true);
+                return thread;
+            }
+        });
 
     /** What puts a replacement session in manual-commit mode, as the connection's own was. */
     private static final String MANUAL_COMMIT = "ALTER SESSION SET AUTOCOMMIT = FALSE";
@@ -95,6 +123,16 @@ class HttpClient {
     // What the session holds that a fresh one would not: context set up on it, an open transaction.
     private boolean holdsContext;
     private boolean inTransaction;
+    // CLIENT_SESSION_KEEP_ALIVE and its heartbeat frequency as the connection's properties set them, and as the
+    // session's own ALTER SESSION set them (null while it sets none, which leaves the properties in force).
+    private volatile boolean keepAliveProperty;
+    private volatile int heartbeatSecondsProperty = MAX_HEARTBEAT_SECONDS;
+    private volatile Boolean sessionKeepAlive;
+    private volatile Integer sessionHeartbeatSeconds;
+    // Guarded by heartbeatLock, not by this, so a beat never waits behind a running statement.
+    private final Object heartbeatLock = new Object();
+    private ScheduledFuture<?> heartbeat;
+    private int heartbeatSeconds;
 
     public HttpClient(final String baseUrl, final String sessionId) {
         this.baseUrl = baseUrl;
@@ -201,7 +239,10 @@ class HttpClient {
 
     /** Forgets the session and what it held; the scope goes onto the next one. */
     private void dropSession() {
+        stopHeartbeat();
         sessionId = null;
+        sessionKeepAlive = null;
+        sessionHeartbeatSeconds = null;
         callerNamedSession = false;
         holdsContext = false;
         inTransaction = false;
@@ -300,6 +341,7 @@ class HttpClient {
                     scopePending = true;
                 }
                 this.sessionId = response.getSessionId();
+                followKeepAlive(response);
             }
             return response;
 
@@ -367,6 +409,7 @@ class HttpClient {
      * connection is closing either way.
      */
     public void releaseSession() {
+        stopHeartbeat();
         final String held = sessionId;
         if (held == null || callerNamedSession || !Boolean.TRUE.equals(tracksSessions)) {
             return;
@@ -383,6 +426,112 @@ class HttpClient {
             // The server is gone or slow to answer; the idle sweep reclaims the session.
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * CLIENT_SESSION_KEEP_ALIVE and CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY as the connection's properties set
+     * them. The session's own ALTER SESSION, once it sets either, takes precedence.
+     *
+     * @param enabled whether the connection keeps its session alive
+     * @param seconds the heartbeat frequency, or null for the default
+     */
+    void keepAlive(final boolean enabled, final Integer seconds) {
+        this.keepAliveProperty = enabled;
+        this.heartbeatSecondsProperty = seconds != null ? seconds : MAX_HEARTBEAT_SECONDS;
+        rescheduleHeartbeat();
+    }
+
+    /** Follows what the answer says the session keeps itself alive by, as an ALTER SESSION may have changed it. */
+    private void followKeepAlive(final SqlResponse response) {
+        sessionKeepAlive = response.getClientSessionKeepAlive();
+        sessionHeartbeatSeconds = response.getClientSessionKeepAliveHeartbeatFrequency();
+        rescheduleHeartbeat();
+    }
+
+    /**
+     * Keeps the heartbeat in step with CLIENT_SESSION_KEEP_ALIVE: running at the frequency in force while it is on
+     * and the connection holds a session, stopped otherwise.
+     */
+    private void rescheduleHeartbeat() {
+        final boolean on = sessionKeepAlive != null ? sessionKeepAlive : keepAliveProperty;
+        final int seconds = heartbeatSeconds(
+            sessionHeartbeatSeconds != null ? sessionHeartbeatSeconds : heartbeatSecondsProperty);
+        synchronized (heartbeatLock) {
+            if (!on || sessionId == null) {
+                cancelHeartbeat();
+                return;
+            }
+            if (heartbeat != null && seconds == heartbeatSeconds) {
+                return;
+            }
+            cancelHeartbeat();
+            heartbeatSeconds = seconds;
+            heartbeat = HEARTBEATS.scheduleAtFixedRate(new Runnable() {
+                @Override
+                public void run() {
+                    sendHeartbeat();
+                }
+            }, seconds, seconds, TimeUnit.SECONDS);
+        }
+    }
+
+    /** The frequency kept within the range Snowflake documents for CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY. */
+    static int heartbeatSeconds(final int requested) {
+        return Math.max(MIN_HEARTBEAT_SECONDS, Math.min(MAX_HEARTBEAT_SECONDS, requested));
+    }
+
+    private void stopHeartbeat() {
+        synchronized (heartbeatLock) {
+            cancelHeartbeat();
+        }
+    }
+
+    /** Cancels the scheduled heartbeat; the caller holds heartbeatLock. */
+    private void cancelHeartbeat() {
+        if (heartbeat != null) {
+            heartbeat.cancel(false);
+            heartbeat = null;
+            heartbeatSeconds = 0;
+        }
+    }
+
+    /** The heartbeat's period in seconds while one is scheduled, else 0. */
+    int heartbeatPeriodSeconds() {
+        synchronized (heartbeatLock) {
+            return heartbeat != null ? heartbeatSeconds : 0;
+        }
+    }
+
+    /**
+     * One heartbeat: tells the server the session is in use. The beat is bounded, and an unreachable server only
+     * misses it; a server that no longer holds the session, or has no heartbeat to answer, stops the beats, and the
+     * next statement finds a lost session out as it would without them.
+     *
+     * @return whether the server counted the beat
+     */
+    boolean sendHeartbeat() {
+        final String held = sessionId;
+        if (held == null) {
+            return false;
+        }
+        final HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(baseUrl + "/api/sessions/"
+                + URLEncoder.encode(held, StandardCharsets.UTF_8).replace("+", "%20") + "/heartbeat"))
+            .timeout(HEARTBEAT_TIMEOUT)
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .build();
+        try {
+            final int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+            if ((status == 404 || status == 405) && held.equals(sessionId)) {
+                stopHeartbeat();
+            }
+            return status == 200;
+        } catch (final IOException e) {
+            return false;
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 

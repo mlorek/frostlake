@@ -29,13 +29,16 @@ import java.io.IOException;
 /**
  * The session collection: {@code GET /api/sessions} counts the live sessions, {@code POST /api/sessions}
  * starts one (optionally in a given database and schema) and {@code DELETE /api/sessions/{id}} releases
- * one, rolling back a transaction it left open. A session otherwise lives until its idle expiry.
+ * one, rolling back a transaction it left open. A session otherwise lives until its idle expiry, which
+ * {@code POST /api/sessions/{id}/heartbeat} puts off: the heartbeat a client that sets CLIENT_SESSION_KEEP_ALIVE
+ * sends, as the account's drivers do.
  */
 final class SessionInfoHandler implements HttpHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(SessionInfoHandler.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final String PATH = "/api/sessions";
+    private static final String HEARTBEAT = "/heartbeat";
 
     private final ConcurrentDatabaseEngine engine;
 
@@ -59,6 +62,8 @@ final class SessionInfoHandler implements HttpHandler {
                 create(exchange);
             } else if ("DELETE".equals(method) && rest.length() > 1 && rest.indexOf('/', 1) < 0) {
                 release(exchange, rest.substring(1));
+            } else if ("POST".equals(method) && isHeartbeat(rest)) {
+                heartbeat(exchange, rest.substring(1, rest.length() - HEARTBEAT.length()));
             } else {
                 HttpResponses.methodNotAllowed(exchange);
             }
@@ -105,6 +110,27 @@ final class SessionInfoHandler implements HttpHandler {
         // The one ending rule an expired session follows too: roll back, then drop the engine's state.
         engine.endSession(session);
         HttpResponses.send(exchange, 200, MAPPER.writeValueAsString(new SqlResponse(true, null)));
+    }
+
+    /** Whether the path below {@code /api/sessions} is {@code /{id}/heartbeat}. */
+    private static boolean isHeartbeat(final String rest) {
+        return rest.endsWith(HEARTBEAT) && rest.length() > HEARTBEAT.length() + 1
+            && rest.indexOf('/', 1) == rest.length() - HEARTBEAT.length();
+    }
+
+    /**
+     * A client's heartbeat: the session counts as in use now, which is all CLIENT_SESSION_KEEP_ALIVE asks of the
+     * server. Nothing runs. A session the server no longer holds is a 404, as for any request that names it.
+     */
+    private void heartbeat(final HttpExchange exchange, final String sessionId) throws IOException {
+        // Looking the session up marks it as used, which is the heartbeat.
+        final SessionContext session = engine.getSession(sessionId);
+        if (session == null) {
+            HttpResponses.send(exchange, 404, MAPPER.writeValueAsString(
+                SqlResponse.error(null, HttpResponses.unknownSession(sessionId))));
+            return;
+        }
+        HttpResponses.send(exchange, 200, MAPPER.writeValueAsString(new SqlResponse(true, sessionId)));
     }
 
     /** {@code IDENTIFIER('<name>')}: the name read as SQL reads an identifier reference, never spliced as text. */

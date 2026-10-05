@@ -171,7 +171,11 @@ simply hand the digits back.
 ## Sessions
 
 A session holds the current database and schema, session variables, `ALTER SESSION` settings and an open
-transaction. It lives until it is released or has been idle for 30 minutes.
+transaction. It lives until it is released or has been idle for `http.session.idleTimeoutMinutes` minutes: 240 by
+default, Snowflake's four hours (a session policy's `SESSION_IDLE_TIMEOUT_MINS` defaults to the same), and 0 keeps
+every session until it is released. Any request that names the session counts as activity, a heartbeat included.
+The idle sweep runs a quarter of the timeout apart, at least a second and at most five minutes, so a session ends
+within that much of reaching its timeout. Ending one rolls back a transaction it left open.
 
 - A request without `sessionId` runs in a new session; the response's `sessionId` names it, and `newSession` is
   `true`.
@@ -204,6 +208,24 @@ nothing, it answers `{"success": false, "errorMessage": "…", "sessionId": null
 
 Releases a session, rolling back a transaction it left open: 200 `{"success": true, …}`, or 404
 `{"success": false, …}` when the id names no live session.
+
+### `POST /api/sessions/{id}/heartbeat`
+
+Marks the session as in use, which puts off its idle timeout; nothing runs. It answers 200
+`{"success": true, "sessionId": "…", …}`, or 404 `{"success": false, …}` when the id names no live session.
+
+### Keeping a session alive
+
+A session that sets `CLIENT_SESSION_KEEP_ALIVE = TRUE` with `ALTER SESSION` reports it on every `/api/execute`
+answer, as `clientSessionKeepAlive`, and so does its `CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY`, as
+`clientSessionKeepAliveHeartbeatFrequency`. Each is absent while the session has not set it.
+
+Frostlake's JDBC driver keeps a session alive the way the account's drivers do. With `CLIENT_SESSION_KEEP_ALIVE` on,
+it sends a heartbeat every `CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY` seconds (3600 by default, kept within
+the 900 to 3600 Snowflake documents), so the session outlives the idle timeout for as long as the connection is
+open. The connection's properties or URL turn it on (`CLIENT_SESSION_KEEP_ALIVE=true`, any case), and so does the
+session's own `ALTER SESSION`, which takes precedence once it sets the parameter. Closing the connection stops the
+heartbeat, and a session the server no longer holds stops it too.
 
 ### `GET /api/sessions`
 

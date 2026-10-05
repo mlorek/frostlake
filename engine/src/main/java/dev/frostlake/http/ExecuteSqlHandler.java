@@ -122,6 +122,9 @@ final class ExecuteSqlHandler implements HttpHandler {
                 DynamicStatementCount.endRequest(displacedCount);
             }
             response.setNewSession(existing == null);
+            // What the session now keeps itself alive by, so the driver starts or stops its heartbeat when an ALTER
+            // SESSION changed CLIENT_SESSION_KEEP_ALIVE.
+            response.reportKeepAlive(session);
             if (response.isSuccess()) {
                 // An ALTER SESSION SET/UNSET MULTI_STATEMENT_COUNT that ran moves this session's gate, so
                 // the next request declaring no count of its own is judged by what the client asked for.

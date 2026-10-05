@@ -11,6 +11,10 @@ http.maxConnections=100
 # 202 Accepted with a result handle, and how long a handle stays fetchable at /api/v2/results/<handle>.
 http.rest.syncWaitMs=30000
 http.rest.resultRetentionMs=3600000
+# How long an HTTP session may sit idle before the server ends it, in minutes: Snowflake's four hours by default
+# (a session policy's SESSION_IDLE_TIMEOUT_MINS defaults to 240). 0 keeps every session until it is released. A
+# client that sets CLIENT_SESSION_KEEP_ALIVE sends heartbeats, which count as activity.
+http.session.idleTimeoutMinutes=240
 
 # Database Defaults — where every fresh session starts (the engine's bootstrap session and each
 # HTTP session alike). A non-default database is created on first boot, so this is the way to give

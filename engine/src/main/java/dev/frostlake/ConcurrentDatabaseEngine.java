@@ -66,10 +66,12 @@ public class ConcurrentDatabaseEngine {
     private ConcurrentDatabaseEngine(final DatabaseEngine engine) {
         this.engine = engine;
         // New sessions start where the engine's configuration points, exactly like the engine's
-        // own bootstrap session.
+        // own bootstrap session, and idle out after http.session.idleTimeoutMinutes (Snowflake's four hours
+        // unless set; 0 keeps them until they are released).
         this.sessionManager = new SessionManager(
             engine.getConfig().getDefaultDatabase().toUpperCase(),
-            engine.getConfig().getDefaultSchema().toUpperCase());
+            engine.getConfig().getDefaultSchema().toUpperCase(),
+            engine.getConfig().getSessionIdleTimeoutMinutes() * 60L * 1000L);
         // Non-fair: higher read throughput for this read-heavy engine. The JDK's non-fair RRWL still
         // blocks barging readers when a writer is queued, so writers are not badly starved.
         this.engineLock = new ReentrantReadWriteLock();
@@ -369,6 +371,11 @@ public class ConcurrentDatabaseEngine {
      */
     public int expireIdleSessions(final long idleMs) {
         return sessionManager.expireSessionsIdleFor(idleMs);
+    }
+
+    /** How long a session may sit idle before it is ended, in milliseconds; 0 when sessions never idle out. */
+    public long getSessionIdleTimeoutMs() {
+        return sessionManager.getSessionTimeoutMs();
     }
 
     public int getActiveSessionCount() {

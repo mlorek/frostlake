@@ -16,6 +16,7 @@
 
 package dev.frostlake.http;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import dev.frostlake.storage.ResultSet;
 
 import java.util.ArrayList;
@@ -38,6 +39,10 @@ public class SqlResponse {
     // predates the field sees it unset: such a server neither understands requireSession nor releases a
     // session on DELETE.
     private boolean newSessionAnswered;
+    // The session's CLIENT_SESSION_KEEP_ALIVE and CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY, when it has set
+    // them: the driver keeps the session alive by them. Absent when the session sets none.
+    private Boolean clientSessionKeepAlive;
+    private Integer clientSessionKeepAliveHeartbeatFrequency;
 
     public SqlResponse() {
         this.resultSets = new ArrayList<>();
@@ -127,6 +132,52 @@ public class SqlResponse {
      */
     public boolean carriesNewSession() {
         return newSessionAnswered;
+    }
+
+    /** The session's CLIENT_SESSION_KEEP_ALIVE, or null when the session has not set it. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Boolean getClientSessionKeepAlive() {
+        return clientSessionKeepAlive;
+    }
+
+    public void setClientSessionKeepAlive(final Boolean clientSessionKeepAlive) {
+        this.clientSessionKeepAlive = clientSessionKeepAlive;
+    }
+
+    /** The session's CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY in seconds, or null when it has not set it. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Integer getClientSessionKeepAliveHeartbeatFrequency() {
+        return clientSessionKeepAliveHeartbeatFrequency;
+    }
+
+    public void setClientSessionKeepAliveHeartbeatFrequency(final Integer clientSessionKeepAliveHeartbeatFrequency) {
+        this.clientSessionKeepAliveHeartbeatFrequency = clientSessionKeepAliveHeartbeatFrequency;
+    }
+
+    /**
+     * Reports what the session keeps itself alive by: its own CLIENT_SESSION_KEEP_ALIVE and heartbeat frequency, as
+     * ALTER SESSION set them. A value no driver could read is left out, as one the session never set is.
+     *
+     * @param session the session the statement ran in
+     */
+    public void reportKeepAlive(final SessionContext session) {
+        final Object keepAlive = session.getSettings().getParameter("CLIENT_SESSION_KEEP_ALIVE");
+        if (keepAlive instanceof Boolean) {
+            this.clientSessionKeepAlive = (Boolean) keepAlive;
+        } else if (keepAlive != null && ("TRUE".equalsIgnoreCase(keepAlive.toString().trim())
+                || "FALSE".equalsIgnoreCase(keepAlive.toString().trim()))) {
+            this.clientSessionKeepAlive = Boolean.valueOf(keepAlive.toString().trim());
+        }
+        final Object frequency = session.getSettings().getParameter("CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY");
+        if (frequency instanceof Number) {
+            this.clientSessionKeepAliveHeartbeatFrequency = ((Number) frequency).intValue();
+        } else if (frequency != null) {
+            try {
+                this.clientSessionKeepAliveHeartbeatFrequency = Integer.valueOf(frequency.toString().trim());
+            } catch (final NumberFormatException unreadable) {
+                // Left out: the driver keeps the frequency it had.
+            }
+        }
     }
 
 }

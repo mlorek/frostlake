@@ -112,7 +112,7 @@ public class DatabaseDriver implements Driver {
 
             logger.debug("Connecting to {} (database: {}, schema: {})", baseUrl, database, schema);
 
-            return new DatabaseConnection(baseUrl, database, schema, info);
+            return new DatabaseConnection(baseUrl, database, schema, withUrlKeepAlive(url, info));
 
         } catch (final Exception e) {
             throw new SQLException("Failed to create connection: " + e.getMessage(), e);
@@ -443,6 +443,30 @@ public class DatabaseDriver implements Driver {
 
         // Database names are case-insensitive and stored in uppercase
         return database != null && !database.isEmpty() ? database.toUpperCase() : null;
+    }
+
+    /**
+     * The connection properties with CLIENT_SESSION_KEEP_ALIVE and its heartbeat frequency added from the URL's
+     * query string where the properties do not set them, as the account's driver takes either.
+     */
+    private static Properties withUrlKeepAlive(final String url, final Properties info) {
+        final Properties merged = new Properties();
+        if (info != null) {
+            merged.putAll(info);
+        }
+        final int questionIndex = url.indexOf('?');
+        if (questionIndex < 0) {
+            return merged;
+        }
+        for (final String param : url.substring(questionIndex + 1).split("&")) {
+            final String[] keyValue = param.split("=", 2);
+            if (keyValue.length == 2 && ("CLIENT_SESSION_KEEP_ALIVE".equalsIgnoreCase(keyValue[0])
+                    || "CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY".equalsIgnoreCase(keyValue[0]))
+                    && merged.getProperty(keyValue[0].toUpperCase()) == null) {
+                merged.setProperty(keyValue[0].toUpperCase(), URLDecoder.decode(keyValue[1], StandardCharsets.UTF_8));
+            }
+        }
+        return merged;
     }
 
     private static String parseParameter(final String url, final String paramName) {

@@ -90,6 +90,16 @@ public final class SessionSettings {
         return parameters;
     }
 
+    /**
+     * A parameter ALTER SESSION set, as it was set, or null when the session has not set it.
+     *
+     * @param name the parameter's name, in any case
+     * @return its value, or null
+     */
+    public Object getParameter(final String name) {
+        return name == null ? null : parameters.get(name.toUpperCase());
+    }
+
     /** The variables SET defined, by upper-case name, in the order they were defined. */
     Map<String, Object> variables() {
         return variables;

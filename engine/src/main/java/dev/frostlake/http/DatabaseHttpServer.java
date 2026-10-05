@@ -63,7 +63,9 @@ public class DatabaseHttpServer {
     public DatabaseHttpServer(final EngineConfig config) throws IOException {
         this.config = config;
         this.port = config.getHttpPort();
-        this.engine = new ConcurrentDatabaseEngine();
+        // The engine runs on the server's own configuration, so a file named on the command line sets the engine's
+        // properties (database.default, http.session.idleTimeoutMinutes, ...) as well as the server's.
+        this.engine = new ConcurrentDatabaseEngine(config);
         enableNoDelay();
 
         final String host = config.getHttpHost();
