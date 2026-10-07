@@ -189,37 +189,22 @@ public class ProceduralBlockBuilder {
             return new EvaluateStatement(new FunctionCallExpression(
                 ctx.systemCallStatement().SYSTEM_FUNC().getText().toUpperCase(Locale.ROOT), arguments));
         }
+        if (ctx.callIntoStatement() != null) {
+            // CALL ... INTO :variable runs the CALL as a bare one runs, and assigns the value the procedure
+            // returns to the variable.
+            final FrostlakeParser.CallStatementContext call = ctx.callIntoStatement().callStatement();
+            final String target = visitor.getText(ctx.callIntoStatement().intoTarget().identifier());
+            if (call.systemFunctionName() != null) {
+                return new CallStatement(visitor.getOriginalText(call), target);
+            }
+            return callOf(call, target);
+        }
         if (ctx.callStatement() != null && ctx.callStatement().systemFunctionName() != null) {
             // A CALL of a SYSTEM$ function runs as the statement it is written as.
             return new SqlStatement(visitor.getOriginalText(ctx.callStatement()));
         }
         if (ctx.callStatement() != null) {
-            // The CALL is re-issued as SQL, so its name travels quoted, part by part: the canonical name
-            // then reads back as itself, and "procCase" is not folded to PROCCASE on the way.
-            final StringBuilder procName = new StringBuilder();
-            for (final String part : ParseTreeText.qualifiedNameParts(ctx.callStatement().qualifiedName())) {
-                procName.append(procName.length() > 0 ? "." : "").append('"').append(part.replace("\"", "\"\""))
-                    .append('"');
-            }
-            final List<BaseExpression> arguments = new ArrayList<>();
-            final List<String> argumentNames = new ArrayList<>();
-            if (ctx.callStatement().callArguments() != null) {
-                for (final FrostlakeParser.CallArgumentContext argCtx :
-                     ctx.callStatement().callArguments().callArgument()) {
-                    if (argCtx.namedArgument() != null) {
-                        if (argCtx.namedArgument().expression() == null) {
-                            throw new RuntimeException(
-                                "A bare subquery CALL argument is not supported; parenthesize it: (SELECT ...)");
-                        }
-                        arguments.add(visitor.buildExpression(argCtx.namedArgument().expression()));
-                        argumentNames.add(visitor.getText(argCtx.namedArgument().identifier()));
-                    } else {
-                        arguments.add(visitor.buildExpression(argCtx.expression()));
-                        argumentNames.add(null);
-                    }
-                }
-            }
-            return new CallStatement(procName.toString(), arguments, argumentNames);
+            return callOf(ctx.callStatement(), null);
         }
 
         if (ctx.asyncStatement() != null) {
@@ -284,6 +269,40 @@ public class ProceduralBlockBuilder {
         }
 
         return null;
+    }
+
+    /**
+     * A procedure's CALL, re-issued as SQL when it runs. Its name travels quoted, part by part: the canonical name
+     * then reads back as itself, and "procCase" is not folded to PROCCASE on the way.
+     *
+     * @param call       the CALL as parsed
+     * @param intoTarget the variable CALL ... INTO assigns the returned value to, or null for a bare CALL
+     * @return the statement
+     */
+    private CallStatement callOf(final FrostlakeParser.CallStatementContext call, final String intoTarget) {
+        final StringBuilder procName = new StringBuilder();
+        for (final String part : ParseTreeText.qualifiedNameParts(call.qualifiedName())) {
+            procName.append(procName.length() > 0 ? "." : "").append('"').append(part.replace("\"", "\"\""))
+                .append('"');
+        }
+        final List<BaseExpression> arguments = new ArrayList<>();
+        final List<String> argumentNames = new ArrayList<>();
+        if (call.callArguments() != null) {
+            for (final FrostlakeParser.CallArgumentContext argCtx : call.callArguments().callArgument()) {
+                if (argCtx.namedArgument() != null) {
+                    if (argCtx.namedArgument().expression() == null) {
+                        throw new RuntimeException(
+                            "A bare subquery CALL argument is not supported; parenthesize it: (SELECT ...)");
+                    }
+                    arguments.add(visitor.buildExpression(argCtx.namedArgument().expression()));
+                    argumentNames.add(visitor.getText(argCtx.namedArgument().identifier()));
+                } else {
+                    arguments.add(visitor.buildExpression(argCtx.expression()));
+                    argumentNames.add(null);
+                }
+            }
+        }
+        return new CallStatement(procName.toString(), arguments, argumentNames, intoTarget);
     }
 
     Statement buildIfStatement(final FrostlakeParser.IfStatementContext ctx) {

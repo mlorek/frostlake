@@ -1101,18 +1101,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // Handle: var := (call proc()) — capture procedure return value
         if (ctx.callStatement() != null) {
             final Object result = visitCallStatement(ctx.callStatement());
-            // If the procedure returned a ResultSet, extract the first column value
-            Object value = result;
-            if (result instanceof ResultSet) {
-                final ResultSet rs = (ResultSet) result;
-                if (rs.getRowCount() > 0) {
-                    value = rs.getRows().get(0).getValue(0);
-                } else {
-                    value = null;
-                }
-            }
             proceduralExecutor.executeStatement(new SetStatement(varName,
-                new LiteralExpression(value)));
+                new LiteralExpression(ProceduralExecutor.procedureReturnValue(result))));
             logger.trace("Assigned variable {} from procedure call", varName);
             return null;
         }
@@ -1516,6 +1506,28 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             throw new RuntimeException("Stored procedure execution error: "
                 + "Scoped transaction started in stored procedure is incomplete and it was rolled back.");
         }
+    }
+
+    /**
+     * CALL ... INTO :variable, a statement of a Snowflake Scripting block: the CALL runs as a bare one runs, and the
+     * value the procedure returns is assigned to the variable, coerced to its declared type as an assignment coerces.
+     * Outside a block the INTO clause is the syntax error it was before the block's statement took it.
+     */
+    @Override
+    public Object visitCallIntoStatement(final FrostlakeParser.CallIntoStatementContext ctx) {
+        boolean inBlock = false;
+        for (ParserRuleContext up = ctx.getParent(); up != null && !inBlock; up = up.getParent()) {
+            inBlock = up instanceof FrostlakeParser.BeginEndBlockContext;
+        }
+        if (!inBlock || proceduralExecutor == null) {
+            final Token into = ctx.INTO().getSymbol();
+            throw new RuntimeException(SqlCompilationError.of("syntax error line " + into.getLine()
+                + " at position " + into.getCharPositionInLine() + " unexpected 'INTO'."));
+        }
+        final Object result = visitCallStatement(ctx.callStatement());
+        proceduralExecutor.executeStatement(new SetStatement(getText(ctx.intoTarget().identifier()),
+            new LiteralExpression(ProceduralExecutor.procedureReturnValue(result))));
+        return result;
     }
 
     @Override

@@ -240,7 +240,8 @@ public final class StatementSeparation {
             return false;
         }
         final FrostlakeParser.ProceduralStatementContext procedural = first.proceduralStatement();
-        return procedural == null || procedural.callStatement() != null || procedural.executeImmediateStatement() != null;
+        return procedural == null || procedural.callStatement() != null || procedural.callIntoStatement() != null
+            || procedural.executeImmediateStatement() != null;
     }
 
     /**

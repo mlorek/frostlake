@@ -615,14 +615,15 @@ public class BeginEndBlockHandler implements CommandHandler {
 
     /**
      * Whether a statement of a block is a statement of the session's in its own right, a child statement with a
-     * query ID and a QUERY_HISTORY row of its own: a SQL statement, a CALL or an EXECUTE IMMEDIATE. A scripting
+     * query ID and a QUERY_HISTORY row of its own: a SQL statement, a CALL (with INTO or without) or an EXECUTE
+     * IMMEDIATE. A scripting
      * statement - LET, an assignment, IF, CASE, a loop, RETURN, a nested block, OPEN, FETCH, SELECT ... INTO - is
      * not; the queries it runs and the statements of its bodies are, and record themselves.
      */
     public static boolean isChildStatement(final FrostlakeParser.StatementContext stmtCtx) {
         final FrostlakeParser.ProceduralStatementContext procedural = stmtCtx.proceduralStatement();
-        return procedural == null || procedural.callStatement() != null || procedural.systemCallStatement() != null
-            || procedural.executeImmediateStatement() != null;
+        return procedural == null || procedural.callStatement() != null || procedural.callIntoStatement() != null
+            || procedural.systemCallStatement() != null || procedural.executeImmediateStatement() != null;
     }
 
     private void rollbackFailedStatement() {

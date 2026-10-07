@@ -3667,6 +3667,7 @@ proceduralStatement
     | breakStatement
     | continueStatement
     | raiseStatement
+    | callIntoStatement
     | callStatement
     | systemCallStatement
     | asyncStatement
@@ -3874,6 +3875,12 @@ raiseStatement
 callStatement
     : CALL qualifiedName LPAREN callArguments? RPAREN SEMI?
     | CALL systemFunctionName LPAREN callArguments? RPAREN SEMI?
+    ;
+
+// CALL <procedure>(...) INTO :variable: Snowflake Scripting assigns the value the procedure returns to the variable.
+// Only a block's statement takes the clause; written outside a block it is refused as the syntax error it was.
+callIntoStatement
+    : callStatement INTO intoTarget SEMI?
     ;
 
 // SYSTEM$LOG and SYSTEM$LOG_<level> standing as statements — `SYSTEM$LOG_INFO('message');` — the way Snowflake

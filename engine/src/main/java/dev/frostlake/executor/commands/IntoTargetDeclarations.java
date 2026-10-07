@@ -60,12 +60,18 @@ final class IntoTargetDeclarations {
             }
             return;
         }
+        if (block instanceof FrostlakeParser.CallIntoStatementContext) {
+            // A CALL ... INTO assigns to its target as SELECT ... INTO does, so its target is judged the same way.
+            final FrostlakeParser.CallIntoStatementContext into = (FrostlakeParser.CallIntoStatementContext) block;
+            requireVariable(into, into.intoTarget(), seeded);
+            return;
+        }
         for (int i = 0; i < block.getChildCount(); i++) {
             requireDeclared(block.getChild(i), seeded);
         }
     }
 
-    private static void requireVariable(final FrostlakeParser.SelectIntoStatementContext into,
+    private static void requireVariable(final ParserRuleContext into,
                                         final FrostlakeParser.IntoTargetContext target, final Set<String> seeded) {
         final String written = target.identifier().getText();
         final String name = ScriptingNameValidator.canonical(written);

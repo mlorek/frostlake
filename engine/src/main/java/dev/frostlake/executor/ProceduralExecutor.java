@@ -1567,8 +1567,44 @@ public class ProceduralExecutor {
         // variables resolve to their live values, written :name), then re-issue the CALL as a SQL
         // statement. That routes through the visitor's CALL handler, reusing the full multi-language
         // procedure dispatch (SQL / JavaScript / Python / Java / Scala). The re-entrant execute() runs at
-        // depth > 0, so this block's live cursors are preserved. A bare CALL statement discards the
-        // procedure's return value (Snowflake scripting semantics).
+        // depth > 0, so this block's live cursors are preserved. A bare CALL discards the value the procedure
+        // returns; CALL ... INTO :variable assigns it to the variable, coerced to its declared type as an assignment
+        // coerces. A CALL of a SYSTEM$ function runs as written.
+        final List<ResultSet> results = queryExecutor.execute(
+            stmt.getWrittenCall() != null ? stmt.getWrittenCall() : reissuedCall(stmt));
+        // A CALL is a statement too — commit its implicit transaction like any other (Snowflake).
+        queryExecutor.getTransactionManager().autocommitStatementEnd();
+        if (stmt.getIntoTarget() != null) {
+            executeStatement(new SetStatement(stmt.getIntoTarget(),
+                new LiteralExpression(procedureReturnValue(results))));
+        }
+    }
+
+    /**
+     * The value a CALL hands back: the first column of the first row the procedure answered, or null when it
+     * answered none.
+     *
+     * @param result the CALL's result: a result set, a list of them, or the value itself
+     * @return the value
+     */
+    public static Object procedureReturnValue(final Object result) {
+        Object answer = result;
+        if (answer instanceof List) {
+            final List<?> results = (List<?>) answer;
+            if (results.isEmpty()) {
+                return null;
+            }
+            answer = results.get(0);
+        }
+        if (answer instanceof ResultSet) {
+            final ResultSet rs = (ResultSet) answer;
+            return rs.getRowCount() > 0 ? rs.getRows().get(0).getValue(0) : null;
+        }
+        return answer;
+    }
+
+    /** A procedure's CALL as SQL, each argument evaluated in the block's scope and written as a literal. */
+    private String reissuedCall(final CallStatement stmt) {
         final List<String> argNames = stmt.getArgumentNames();
         final StringBuilder call = new StringBuilder("CALL ").append(stmt.getProcedureName()).append('(');
         for (int i = 0; i < stmt.getArguments().size(); i++) {
@@ -1585,9 +1621,7 @@ public class ProceduralExecutor {
             call.append(toSqlLiteral(evaluateExpression(arg)));
         }
         call.append(')');
-        queryExecutor.execute(call.toString());
-        // A CALL is a statement too — commit its implicit transaction like any other (Snowflake).
-        queryExecutor.getTransactionManager().autocommitStatementEnd();
+        return call.toString();
     }
 
     /**
