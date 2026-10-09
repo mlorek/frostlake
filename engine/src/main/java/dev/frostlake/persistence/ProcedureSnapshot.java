@@ -16,10 +16,11 @@
 
 package dev.frostlake.persistence;
 
-import java.time.Instant;
+import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.types.DataType;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,8 @@ public class ProcedureSnapshot implements Serializable {
     public List<String> packages = new ArrayList<>();
     public String executeAs;
     public List<String> imports = new ArrayList<>();
+    /** Artifact repository, target path, integrations and secrets; null on older snapshots. */
+    public RoutineEnvironment environment;
     public String comment;
     public String owner;
     // RETURNS TABLE and its declared columns; false and null on old snapshots, which kept neither.
@@ -48,6 +51,8 @@ public class ProcedureSnapshot implements Serializable {
     // The declared null handling and volatility; null on old snapshots, which read back as the defaults.
     public String nullHandling;
     public String volatility;
+    /** Created SECURE; false on snapshots written before a procedure could be. */
+    public boolean secure;
 
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.

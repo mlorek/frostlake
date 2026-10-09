@@ -27,6 +27,7 @@ import dev.frostlake.executor.expressions.JsonObjectExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.MultiColumnScalarSubqueryException;
+import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
@@ -94,17 +95,27 @@ final class InsertExecutor {
             // only inside its subqueries.
             final Map<String, ResultSet> cteResults = null;
 
-            final String tableName = ctx.objectName().qualifiedName() == null
+            // A target the current schema does not hold is looked for along the session's SEARCH_PATH.
+            final String tableName = executor.searchPathQualified(ctx.objectName().qualifiedName() == null
                 ? executor.resolveObjectName(ctx.objectName())
-                : executor.getQualifiedName(ctx.objectName().qualifiedName());
+                : executor.getQualifiedName(ctx.objectName().qualifiedName()));
             // A missing source relation is reported ahead of a missing target (live-verified).
             if (ctx.selectStatement() != null) {
                 executor.requireSourceRelations(ctx.selectStatement());
             }
+            DmlTarget.requireTable(executor, tableName, "INSERT");
             final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Table");
+            DmlTarget.refuseEventTable(table, "INSERT");
 
             // Check INSERT permission
             if (executor.getSecurityManager() != null) {
+                // What the source reads is asked for first, then INSERT on the target (live-verified).
+                if (ctx.selectStatement() != null) {
+                    final Set<String> sourceCteNames = new HashSet<>();
+                    QueryExecutor.collectCteNames(ctx.selectStatement(), sourceCteNames);
+                    executor.requireSelectIn(ctx.selectStatement(), sourceCteNames);
+                }
+                executor.requirePrivilege(Privilege.INSERT, "TABLE", tableName);
                 executor.getSecurityManager().checkPermission(Privilege.INSERT, SecurableObjectType.TABLE, tableName);
             }
 
@@ -265,9 +276,13 @@ final class InsertExecutor {
             // query are converted as expressions. The out-of-range refusal prints which of the two
             // happened, so the distinction travels with the row.
             final boolean boundToColumnSlot = ctx.valueTupleList() != null;
+            // A column the statement leaves out is no VALUES item: its DEFAULT is classed as a query's value is.
+            final boolean[] filledByDefault = boundToColumnSlot ? new boolean[table.columnCount()] : null;
             for (final List<Object> values : valuesList) {
-                final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values);
-                insertRowInto(table, fullyQualifiedName, row, guard, boundToColumnSlot, tableName);
+                final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values,
+                    filledByDefault);
+                executor.enforceColumnConstraintsForDml(table, row, boundToColumnSlot, tableName, filledByDefault);
+                storeInsertedRow(table, fullyQualifiedName, row, guard);
                 rowsInserted++;
             }
 
@@ -315,6 +330,7 @@ final class InsertExecutor {
      * A VALUES column holding a scalar subquery of several columns, where Frostlake reached the value and refused
      * its column count. A single row types it ROW(ANY), a type no column takes; across several rows the column
      * cannot fold it at all: "Invalid data type [ROW(NUMBER(1,0), NUMBER(1,0))] in VALUES clause" (live-verified).
+     * A parenthesized list is ROW(ANY) in one row and in several.
      */
     private static void rejectRowValue(final List<List<Expression>> rowCells, final int position,
                                        final TableColumn target, final ExpressionEvaluator evaluator) {
@@ -324,7 +340,7 @@ final class InsertExecutor {
             if (rowType == null) {
                 continue;
             }
-            if (rowCells.size() > 1) {
+            if (rowCells.size() > 1 && !(cell instanceof RowExpression)) {
                 throw new RuntimeException(SqlCompilationError.of("Invalid data type [" + rowType + "] in VALUES clause"));
             }
             ColumnTypeFamilies.rejectRowValue(target, "ROW(ANY)");
@@ -600,6 +616,17 @@ final class InsertExecutor {
     Row buildInsertRow(final Table table, final String fullyQualifiedName,
                                final List<String> columnNames, final int[] valueIndexes,
                                final List<Object> values) {
+        return buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values, null);
+    }
+
+    /**
+     * The same row, recording which of its columns the statement left out, so that they took their DEFAULT.
+     *
+     * @param filledByDefault one flag per table column, set for this row; null when the caller has no use for it
+     */
+    private Row buildInsertRow(final Table table, final String fullyQualifiedName,
+                               final List<String> columnNames, final int[] valueIndexes,
+                               final List<Object> values, final boolean[] filledByDefault) {
         // Snowflake requires the value count to match exactly — both with an explicit column list
         // and positionally (live-verified: "Insert value list does not match column list"); defaults
         // apply only to columns omitted from an explicit list.
@@ -621,7 +648,12 @@ final class InsertExecutor {
             // column list (or, positionally, missing trailing columns). A covered column keeps its
             // explicit value — including an explicit NULL (which must NOT be silently replaced by
             // the column default).
-            if (at >= 0 && !(values.get(at) instanceof DefaultMarkerExpression)) {
+            final boolean written = at >= 0 && !(values.get(at) instanceof DefaultMarkerExpression);
+            // Only a column the statement leaves out: a DEFAULT written in the VALUES list sits in the slot.
+            if (filledByDefault != null) {
+                filledByDefault[c] = at < 0;
+            }
+            if (written) {
                 rowValues.add(values.get(at));
             } else {
                 // An OMITTED column and an explicit DEFAULT take the same path — live writes the
@@ -692,6 +724,12 @@ final class InsertExecutor {
                        final DeferredInsertGuard guard, final boolean boundToColumnSlot,
                        final String writtenName) {
         executor.enforceColumnConstraintsForDml(table, row, boundToColumnSlot, writtenName);
+        storeInsertedRow(table, fullyQualifiedName, row, guard);
+    }
+
+    /** Write a row whose constraints have been enforced: buffered in the transaction's write set, or at once. */
+    private void storeInsertedRow(final Table table, final String fullyQualifiedName, final Row row,
+                                  final DeferredInsertGuard guard) {
         if (executor.isDeferredApply()) {
             final TableStorage base = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
             final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
@@ -708,7 +746,8 @@ final class InsertExecutor {
                 executor.getTransactionManager().getCurrentTransaction().logInsert(fullyQualifiedName, insertIndex, row);
             }
             if (executor.getStreamManager() != null) {
-                executor.getStreamManager().trackInsert(fullyQualifiedName, row);
+                executor.getStreamManager().trackInsert(fullyQualifiedName, row,
+                    executor.getStorageEngine().getTableStorage(fullyQualifiedName).getRowId(insertIndex));
             }
         }
     }
@@ -730,7 +769,10 @@ final class InsertExecutor {
             // expressions, all before a row is routed, so an empty source still refuses.
             executor.requireSourceRelations(ctx.selectStatement());
             for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
-                executor.getCatalog().resolveTableAsWritten(executor.getQualifiedName(into.qualifiedName()), "Table");
+                final String target = executor.getQualifiedName(into.qualifiedName());
+                DmlTarget.requireTable(executor, target, "INSERT (MULTI-TABLE)");
+                DmlTarget.refuseEventTable(executor.getCatalog().resolveTableAsWritten(target, "Table"),
+                    "INSERT (MULTI-TABLE)");
             }
             final ResultSet source;
             try {

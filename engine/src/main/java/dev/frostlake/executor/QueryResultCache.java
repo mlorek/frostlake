@@ -130,7 +130,29 @@ public class QueryResultCache {
      * @return The generated query ID
      */
     public String cacheResult(final String sql, final ResultSet result) {
-        final String queryId = generateQueryId();
+        return cacheResult(sql, result, null);
+    }
+
+    /**
+     * A query ID no statement has taken yet: the one a statement is listed under while it still runs, which it
+     * then takes as it ends (see the three-argument {@link #cacheResult}).
+     *
+     * @return the reserved query ID
+     */
+    public String reserveQueryId() {
+        return generateQueryId();
+    }
+
+    /**
+     * Store a query result under the query ID reserved for its statement.
+     *
+     * @param sql      the SQL statement executed
+     * @param result   the result set
+     * @param reserved the ID from {@link #reserveQueryId}, or null to generate one
+     * @return the query ID
+     */
+    public String cacheResult(final String sql, final ResultSet result, final String reserved) {
+        final String queryId = reserved != null ? reserved : generateQueryId();
         synchronized (cache) {
             cache.put(queryId, new CachedResult(sql, result));
         }
@@ -228,7 +250,18 @@ public class QueryResultCache {
      * @return The generated query ID
      */
     public String generateQueryId(final String sql) {
-        final String queryId = generateQueryId();
+        return generateQueryId(sql, null);
+    }
+
+    /**
+     * {@link #generateQueryId(String)} for a statement with a reserved ID.
+     *
+     * @param sql      the SQL statement
+     * @param reserved the ID from {@link #reserveQueryId}, or null to generate one
+     * @return the query ID
+     */
+    public String generateQueryId(final String sql, final String reserved) {
+        final String queryId = reserved != null ? reserved : generateQueryId();
         pushQueryId(queryId);
         return queryId;
     }
@@ -241,7 +274,18 @@ public class QueryResultCache {
      * @return the generated query ID
      */
     public String generateFailedQueryId(final String sql) {
-        final String queryId = generateQueryId(sql);
+        return generateFailedQueryId(sql, null);
+    }
+
+    /**
+     * {@link #generateFailedQueryId(String)} for a statement with a reserved ID.
+     *
+     * @param sql      the SQL statement
+     * @param reserved the ID from {@link #reserveQueryId}, or null to generate one
+     * @return the query ID
+     */
+    public String generateFailedQueryId(final String sql, final String reserved) {
+        final String queryId = generateQueryId(sql, reserved);
         synchronized (failedQueryIds) {
             failedQueryIds.put(queryId, Boolean.TRUE);
         }

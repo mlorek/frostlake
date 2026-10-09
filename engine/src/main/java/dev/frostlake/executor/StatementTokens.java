@@ -52,6 +52,18 @@ public final class StatementTokens {
     }
 
     /**
+     * A token spelled as a UUID is: 32 hexadecimal digits in groups of 8, 4, 4, 4 and 12. Drawn like any other
+     * token, so a statement replayed from the write-ahead log draws the one it first drew.
+     *
+     * @return the token
+     */
+    public static String uuid() {
+        final String digits = draw("0123456789abcdef", 32);
+        return digits.substring(0, 8) + "-" + digits.substring(8, 12) + "-" + digits.substring(12, 16) + "-"
+            + digits.substring(16, 20) + "-" + digits.substring(20);
+    }
+
+    /**
      * A token of the given length over the given characters.
      *
      * @param alphabet the characters a token is made of

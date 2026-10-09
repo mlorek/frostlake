@@ -195,6 +195,21 @@ public class TransactionManager {
         this.sessionContext = sessionContext;
     }
 
+    /**
+     * Record a transaction for a statement that ran as one of its own without this manager seeing it begin: a
+     * CREATE TABLE … AS SELECT, a table CLONE, a CREATE STREAM and a COPY into a table each do, and
+     * LAST_TRANSACTION answers a new id after them. Inside an open transaction nothing is recorded: that
+     * transaction's own end is.
+     */
+    public void recordStatementTransaction() {
+        if (sessionContext == null || currentTransaction.get() != null) {
+            return;
+        }
+        final Transaction txn = new Transaction(transactionIdGenerator.getAndIncrement(), catalog, storageEngine,
+            streamManager);
+        sessionContext.setLastTransactionId(String.valueOf(txn.getPublicId()));
+    }
+
     /** Record the id of a transaction that is about to complete (commit or rollback). */
     private void publishCompletion(final Transaction txn) {
         if (txn != null && sessionContext != null) {
@@ -248,6 +263,24 @@ public class TransactionManager {
             throw new RuntimeException("No active transaction");
         }
 
+        try {
+            txn.rollback();
+            txn.setState(TransactionState.ROLLED_BACK);
+        } finally {
+            activeTransactions.remove(txn.getId());
+            currentTransaction.remove();
+        }
+    }
+
+    /**
+     * Roll back the current transaction without recording it as the session's last: the transaction was begun
+     * for a statement that then never ran.
+     */
+    public void rollbackUnrecorded() {
+        final Transaction txn = currentTransaction.get();
+        if (txn == null) {
+            throw new RuntimeException("No active transaction");
+        }
         try {
             txn.rollback();
             txn.setState(TransactionState.ROLLED_BACK);

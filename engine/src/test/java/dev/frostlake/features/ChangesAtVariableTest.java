@@ -74,7 +74,7 @@ public class ChangesAtVariableTest {
     }
 
     @Test
-    public void aFunctionCallIsStillNoConstant() {
+    public void aFunctionWhoseValueMovesIsNoPoint() {
         String refusal = null;
         try {
             engine.executeQuery("SELECT a FROM ct CHANGES(INFORMATION => DEFAULT)"
@@ -82,7 +82,8 @@ public class ChangesAtVariableTest {
         } catch (final RuntimeException refused) {
             refusal = refused.getMessage();
         }
-        assertTrue(refusal != null && refusal.contains("argument TIMESTAMP to function AT needs to be constant"),
-            String.valueOf(refusal));
+        assertTrue(refusal != null && refusal.contains("Query contains time travel to a version containing function"
+            + " 'CURRENT_TIMESTAMP', but change tracking is not supported on queries with non-deterministic functions"
+            + " in versions."), String.valueOf(refusal));
     }
 }

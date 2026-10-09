@@ -64,7 +64,7 @@
      "skip": {"backends": ["snowflake"], "reason": "session-scoped embedded history"},
      "steps": [
       {"sql": "SELECT * FROM qid_table_that_does_not_exist", "expect": {"error": {}}},
-      {"sql": "SELECT COUNT_IF(query_id IS NOT NULL) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED' AND query_text LIKE '%qid_table_that_does_not_exist%'",
+      {"sql": "SELECT COUNT_IF(query_id IS NOT NULL) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED_WITH_ERROR' AND query_text LIKE '%qid_table_that_does_not_exist%'",
        "expect": {"value": "1"}}
     ]}
   ]

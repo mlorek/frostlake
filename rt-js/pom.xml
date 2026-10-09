@@ -81,7 +81,9 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.6</version>
                 <configuration>
-                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
+                    <!-- The add-opens is for the driver of the live-account test mode, whose Arrow results read
+                         java.nio buffers; the embedded runs do not need it. -->
+                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false --add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
                     <excludedGroups>${perf.excludedGroups}</excludedGroups>
                 </configuration>
             </plugin>

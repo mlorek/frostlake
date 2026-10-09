@@ -21,6 +21,7 @@ import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.QueryResultCache;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementBoundaries;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
@@ -45,6 +46,7 @@ import dev.frostlake.persistence.WalStatementKinds;
 import dev.frostlake.persistence.WriteAheadLog;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.security.SessionContext;
+import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.stream.StreamManager;
@@ -66,6 +68,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -173,7 +176,24 @@ public class DatabaseEngine {
 
             @Override
             public void runInOwnSession(final Runnable run) {
-                queryExecutor.runInOwnSession(run);
+                runInOwnSession(run, null);
+            }
+
+            @Override
+            public void runInOwnSession(final Runnable run, final Map<String, String> parameters) {
+                ownSessionDepth.set(Integer.valueOf(ownSessionDepth.get().intValue() + 1));
+                try {
+                    if (parameters == null) {
+                        queryExecutor.runInOwnSession(run);
+                    } else {
+                        queryExecutor.runInOwnSession(run, parameters);
+                    }
+                } finally {
+                    ownSessionDepth.set(Integer.valueOf(ownSessionDepth.get().intValue() - 1));
+                    if (ownSessionDepth.get().intValue() == 0) {
+                        runCompleted();
+                    }
+                }
             }
         };
 
@@ -403,6 +423,54 @@ public class DatabaseEngine {
      * explicit BEGIN…COMMIT blocks); without one (e.g. a DDL/USE that starts no transaction) it is appended
      * immediately as a one-statement record. Reads and transaction-control statements are not logged.
      */
+    /** How many statements the calling thread is running through {@link #execute}, one inside the other. */
+    private final ThreadLocal<Integer> statementDepth = new ThreadLocal<Integer>() {
+        @Override
+        protected Integer initialValue() {
+            return Integer.valueOf(0);
+        }
+    };
+
+    /** How many task, alert or pipe runs the calling thread has open, a graph's child inside its parent. */
+    private final ThreadLocal<Integer> ownSessionDepth = new ThreadLocal<Integer>() {
+        @Override
+        protected Integer initialValue() {
+            return Integer.valueOf(0);
+        }
+    };
+
+    /** Whether the calling thread's statement started a run whose work is not in the write-ahead log. */
+    private final ThreadLocal<Boolean> runCheckpointDue = new ThreadLocal<Boolean>();
+
+    /**
+     * A task's, an alert's or a pipe's run is over. The run executed its statements below the layer that writes
+     * the write-ahead log, in a session of its own, so the log holds neither what it changed nor its row of run
+     * history; a checkpoint keeps both. A run the schedule started is checkpointed here, on the scheduler's
+     * thread; one a statement started — EXECUTE TASK, EXECUTE ALERT — when that statement ends, so a recovery
+     * starts after the run and does not run its body a second time.
+     */
+    private void runCompleted() {
+        if (wal == null || replaying) {
+            return;
+        }
+        if (statementDepth.get().intValue() > 0) {
+            runCheckpointDue.set(Boolean.TRUE);
+            return;
+        }
+        checkpoint();
+    }
+
+    /** The checkpoint a statement owes for a run it started, unless its session holds a transaction open. */
+    private void checkpointAfterRun() {
+        if (!Boolean.TRUE.equals(runCheckpointDue.get())) {
+            return;
+        }
+        runCheckpointDue.remove();
+        if (wal != null && !replaying && !transactionManager.isExplicitTransaction()) {
+            checkpoint();
+        }
+    }
+
     private void recordStatementForWal(final String sql) {
         // A statement that ran a task, an alert or a pipe's load (EXECUTE TASK, EXECUTE ALERT, ALTER PIPE …
         // REFRESH) committed that work in a session of its own, so it is logged at once rather than inside the
@@ -638,6 +706,7 @@ public class DatabaseEngine {
         // neither logged again nor rolled back again below.
         final boolean[] statementByStatement = {false};
         final WriteSetSavepoint[] statementSavepoint = {null};
+        statementDepth.set(Integer.valueOf(statementDepth.get().intValue() + 1));
         final StatementBoundaries displacedBoundaries = queryExecutor.bindStatementBoundaries(new StatementBoundaries() {
             @Override
             public void begin() {
@@ -658,8 +727,8 @@ public class DatabaseEngine {
             }
 
             @Override
-            public void fail() {
-                rollbackFailedStatement(statementSavepoint[0]);
+            public void fail(final RuntimeException cause) {
+                rollbackFailedStatement(statementSavepoint[0], cause);
                 statementSavepoint[0] = null;
             }
         });
@@ -698,19 +767,23 @@ public class DatabaseEngine {
             // Log syntax errors with the failed query
             logger.error("SQL syntax error in query:\n{}\nError details:\n{}", sql, e.getMessage());
             if (!statementByStatement[0]) {
-                rollbackFailedStatement(stmtSavepoint);
+                rollbackFailedStatement(stmtSavepoint, e);
             }
             // Re-throw exception so tests and callers can handle it
             throw e;
         } catch (final Exception e) {
             logger.error("Error executing SQL:\n{}\nError: {}", sql, e.getMessage(), e);
             if (!statementByStatement[0]) {
-                rollbackFailedStatement(stmtSavepoint);
+                rollbackFailedStatement(stmtSavepoint, e);
             }
             // Re-throw exception so tests can catch it
             throw e;
         } finally {
             queryExecutor.restoreStatementBoundaries(displacedBoundaries);
+            statementDepth.set(Integer.valueOf(statementDepth.get().intValue() - 1));
+            if (statementDepth.get().intValue() == 0) {
+                checkpointAfterRun();
+            }
         }
     }
 
@@ -720,11 +793,19 @@ public class DatabaseEngine {
      * before the statement. Otherwise (implicit/autocommit txn, or legacy immediate-apply) roll back the
      * whole transaction, which for an autocommit statement is exactly that one statement.
      */
-    private void rollbackFailedStatement(final WriteSetSavepoint stmtSavepoint) {
+    private void rollbackFailedStatement(final WriteSetSavepoint stmtSavepoint, final Exception cause) {
         if (stmtSavepoint != null && transactionManager.isExplicitTransaction()) {
             transactionManager.getCurrentTransaction().getWriteSet().rollbackToSavepoint(stmtSavepoint);
         } else if (transactionManager.hasActiveTransaction()) {
             try {
+                // A statement refused while it compiled never ran, so it ran in no transaction: LAST_TRANSACTION
+                // answers what it answered before, where a statement that failed over a value leaves its own
+                // rolled-back transaction there (live-verified).
+                if (cause instanceof SqlSyntaxException
+                        || cause != null && SqlCompilationError.isCompilationError(cause.getMessage())) {
+                    transactionManager.rollbackUnrecorded();
+                    return;
+                }
                 transactionManager.rollback();
             } catch (final Exception rollbackEx) {
                 logger.error("Error rolling back transaction", rollbackEx);
@@ -911,10 +992,20 @@ public class DatabaseEngine {
             return;
         }
         try {
-            VariantJsonFormat.beginSessionScope(Integer.parseInt(indent.toString().trim()));
+            // The parameter takes any 32-bit number; the layout uses the widths from none to sixteen.
+            VariantJsonFormat.beginSessionScope(
+                Math.max(0, Math.min(VariantJsonFormat.WIDEST_INDENT, Integer.parseInt(indent.toString().trim()))));
         } catch (final NumberFormatException notANumber) {
             VariantJsonFormat.clearSessionScope();
         }
+    }
+
+    /**
+     * The sessions of this engine that SYSTEM$ABORT_SESSION can end. A front end that serves sessions of its own
+     * registers each under the number CURRENT_SESSION() answers there.
+     */
+    public SessionDirectory getSessionDirectory() {
+        return queryExecutor.getSessionDirectory();
     }
 
     /** The query-result cache backing RESULT_SCAN and LAST_QUERY_ID. */
@@ -924,6 +1015,17 @@ public class DatabaseEngine {
 
     public Catalog getCatalog() {
         return catalog;
+    }
+
+    /**
+     * A routine's imports as its handler loader reads them: a file an internal named stage keeps is given by its
+     * local path.
+     *
+     * @param imports the imports a routine keeps
+     * @return the imports, in the same order
+     */
+    public List<String> localImports(final List<String> imports) {
+        return queryExecutor.localImports(imports);
     }
 
     /** Resolver for s3:// (and S3-backed @stage) references to local files — see {@link S3PathResolver}. */

@@ -98,6 +98,17 @@ final class PlanEcho {
         printer.setOutputScopeNames(names);
     }
 
+    /**
+     * Have this echo spell a name read through the row around the query as the plan holds it: an aggregate a
+     * subquery writes in its WHERE over an enclosing column is {@code [MAX(CORRELATION(FZ.ID) + G.V)]}
+     * (live-verified).
+     *
+     * @param qualifiers the enclosing row's qualifiers, upper-cased
+     */
+    void readEnclosingQualifiers(final Set<String> qualifiers) {
+        printer.setEnclosingQualifiers(qualifiers);
+    }
+
     /** Any expression as live re-prints it, or its source text when it will not re-parse. */
     String print(final ParserRuleContext expression) {
         final String written = ParseTreeText.getOriginalText(expression);

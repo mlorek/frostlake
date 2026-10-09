@@ -87,30 +87,33 @@ public final class TaskGraphRuns {
     }
 
     /**
-     * The RESULT_LIMIT argument: 1000 when absent.
+     * The RESULT_LIMIT argument of the task history functions (live-verified): a number of 0 to 10000, its
+     * fraction dropped; a NULL is the limit a call leaves out, a text is refused by its type and a negative
+     * number by its value.
      *
-     * @throws RuntimeException when it exceeds 10000; below one it is taken as absent
+     * @param value  the argument's value, or null when it is absent or NULL
+     * @param absent the limit a call leaves out
+     * @return the limit
+     * @throws RuntimeException when it is no number, is negative or exceeds 10000
      */
-    static int limit(final Object value, final String function) {
+    static int limit(final Object value, final int absent) {
         if (value == null) {
-            return DEFAULT_LIMIT;
+            return absent;
         }
-        final long limit;
-        try {
-            limit = value instanceof Number ? ((Number) value).longValue() : Long.parseLong(text(value).trim());
-        } catch (final NumberFormatException notNumeric) {
-            throw new RuntimeException(SqlCompilationError.of("Invalid value " + value
-                + " for argument RESULT_LIMIT of function " + function + "."));
+        if (!(value instanceof Number)) {
+            throw new RuntimeException(SqlCompilationError.of("invalid type [VARCHAR(" + text(value).length()
+                + ")] for parameter 'RESULT_LIMIT'"));
         }
-        if (limit > MAX_LIMIT) {
+        final Number number = (Number) value;
+        if (number.doubleValue() < 0) {
+            throw new RuntimeException(SqlCompilationError.of("invalid value [" + value
+                + "] for parameter 'RESULT_LIMIT'"));
+        }
+        if (number.longValue() > MAX_LIMIT) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Value for parameter RESULT_LIMIT exceeds maximum allowable value (10,000)."));
         }
-        if (limit < 1) {
-            // A limit below one is taken as no limit given.
-            return DEFAULT_LIMIT;
-        }
-        return (int) limit;
+        return (int) number.longValue();
     }
 
     /**

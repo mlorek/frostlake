@@ -414,19 +414,32 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testPipeWithErrorIntegration() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ACCOUNT_HAS_NO_INTEGRATIONS);
         logger.info("Testing PIPE with error integration");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
         engine.execute("""
-            CREATE PIPE error_pipe
-            AUTO_INGEST = TRUE
-            ERROR_INTEGRATION = 'my_error_integration'
-            AS COPY INTO target
-            FROM @ps
+            CREATE OR REPLACE NOTIFICATION INTEGRATION my_error_integration ENABLED = TRUE TYPE = QUEUE
+            DIRECTION = OUTBOUND NOTIFICATION_PROVIDER = AWS_SNS
+            AWS_SNS_TOPIC_ARN = 'arn:aws:sns:us-east-2:111122223333:sns_topic'
+            AWS_SNS_ROLE_ARN = 'arn:aws:iam::111122223333:role/error_sns_role'
             """);
-
-        assertEquals("my_error_integration", catalogPipe("error_pipe").getErrorIntegration());
+        try {
+            engine.execute("""
+                CREATE PIPE error_pipe
+                AUTO_INGEST = TRUE
+                ERROR_INTEGRATION = my_error_integration
+                AS COPY INTO target
+                FROM @ps
+                """);
+            final ResultSet shown = engine.executeQuery("SHOW PIPES LIKE 'ERROR_PIPE'");
+            assertEquals("MY_ERROR_INTEGRATION",
+                shown.getRows().get(0).getValue(shown.getColumnIndex("error_integration")));
+            if (!isLiveSnowflake()) {
+                assertEquals("MY_ERROR_INTEGRATION", catalogPipe("error_pipe").getErrorIntegration());
+            }
+        } finally {
+            engine.execute("DROP INTEGRATION IF EXISTS my_error_integration");
+        }
     }
 
     @Test
@@ -623,11 +636,19 @@ public class PipesTest extends BaseDatabaseTest {
         Assumptions.assumeFalse(isLiveSnowflake(), ACCOUNT_HAS_NO_INTEGRATIONS);
         logger.info("Testing CREATE PIPE with INTEGRATION (notification integration)");
 
+        // The queue has to be in the cloud of the stage, and the account would look the queue itself up.
         engine.execute("CREATE TABLE t (id INTEGER)");
-        engine.execute("CREATE PIPE int_pipe AUTO_INGEST = TRUE INTEGRATION = 'my_notification_int' "
-            + "AS COPY INTO t FROM @ps");
+        engine.execute("CREATE STAGE paz URL = 'azure://myaccount.blob.core.windows.net/mycontainer/path/'");
+        engine.execute("""
+            CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_int TYPE = QUEUE
+            NOTIFICATION_PROVIDER = AZURE_STORAGE_QUEUE ENABLED = TRUE
+            AZURE_STORAGE_QUEUE_PRIMARY_URI = 'https://myqueue.queue.core.windows.net/mystoragequeue'
+            AZURE_TENANT_ID = 'a123b4c5-1234-123a-a12b-1a23b45678c9'
+            """);
+        engine.execute("CREATE PIPE int_pipe AUTO_INGEST = TRUE INTEGRATION = 'MY_NOTIFICATION_INT' "
+            + "AS COPY INTO t FROM @paz");
 
-        assertEquals("my_notification_int", catalogPipe("int_pipe").getIntegration());
+        assertEquals("MY_NOTIFICATION_INT", catalogPipe("int_pipe").getIntegration());
     }
 
     @Test

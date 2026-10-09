@@ -106,6 +106,12 @@ public final class ScriptingStatementPlacement {
                         && opensAStatement(statement)) {
                     return procedural.getStart();
                 }
+                // A SET that assigns with ':=' is a block's statement too, and there it is the name live refuses:
+                // SET x := 1 is 'x' (live-verified).
+                if (procedural != null && procedural.setStatement() != null
+                        && procedural.setStatement().COLON_EQ() != null && opensAStatement(statement)) {
+                    return procedural.setStatement().identifier().getStart();
+                }
             }
         }
         return null;

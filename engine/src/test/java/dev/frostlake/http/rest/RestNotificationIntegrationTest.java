@@ -49,7 +49,8 @@ public class RestNotificationIntegrationTest extends BaseRestTest {
         final JsonNode sns = ok(get("/api/v2/notification-integrations/rn_sns")).path("notification_hook");
         assertEquals("QUEUE_AWS_SNS_OUTBOUND", sns.path("type").asString());
         assertEquals("arn:t", sns.path("aws_sns_topic_arn").asString());
-        assertTrue(sns.path("sf_aws_iam_user_arn").isNull(), "no identity is invented: " + sns);
+        assertTrue(sns.path("sf_aws_iam_user_arn").asString().startsWith("arn:aws:iam::"), sns.toString());
+        assertTrue(sns.path("sf_aws_external_id").asString().contains("_SFCRole="), sns.toString());
         assertEquals("QUEUE_GCP_PUBSUB_INBOUND", ok(get("/api/v2/notification-integrations/rn_gcp"))
             .path("notification_hook").path("type").asString());
 

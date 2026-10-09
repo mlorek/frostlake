@@ -17,8 +17,8 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -43,7 +43,7 @@ public final class ExpressionColumns {
         if (expression == null || columnName == null) {
             return false;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();
@@ -68,6 +68,32 @@ public final class ExpressionColumns {
     }
 
     /**
+     * Whether an expression reads a column, by the test {@link #renamed} applies: a string literal, a function's
+     * name, a qualifier, a semi-structured path element and a type are not references.
+     *
+     * @param expression the expression as stored
+     * @param columnName the column's canonical name
+     * @return true when the expression reads the column
+     */
+    public static boolean reads(final String expression, final String columnName) {
+        if (expression == null || columnName == null) {
+            return false;
+        }
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        final List<Token> tokens = stream.getTokens();
+        for (int i = 0; i < tokens.size(); i++) {
+            if (namesColumn(tokens, i)
+                    && columnName.equals(SqlIdentifiers.canonicalTextParts(tokens.get(i).getText())[0])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * The expression with every reference to a column renamed, read from its tokens as {@link #references} reads them:
      * a string literal, a function's name, a qualifier, a semi-structured path element after {@code :} and a type
      * after {@code ::} are left alone. Each reference is re-spelled as the new name and the rest of the text is kept
@@ -83,7 +109,7 @@ public final class ExpressionColumns {
         if (expression == null || oldName == null || newName == null) {
             return expression;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();

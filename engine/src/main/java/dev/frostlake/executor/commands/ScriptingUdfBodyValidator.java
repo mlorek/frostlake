@@ -16,8 +16,12 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.functions.SnowflakeBuiltinNames;
+import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Function;
@@ -30,6 +34,7 @@ import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Checks a SQL UDF body that is a Snowflake-Scripting block against the restricted language Snowflake
@@ -46,9 +51,16 @@ import java.util.List;
  *   <li>{@code … : cursor declaration} — {@code DECLARE c CURSOR FOR SELECT …};</li>
  *   <li>{@code Unsupported expression for Snowscript UDF: <expr>} — any subquery
  *       ({@code RETURN (SELECT COUNT(*) FROM t)}, {@code EXISTS (SELECT …)}, {@code FOR r IN (SELECT …)},
- *       with a {@code :name} bind or a bare one alike), and any call of a user-defined function —
- *       including the routine calling ITSELF, so a Snowscript UDF cannot recurse.</li>
+ *       with a {@code :name} bind or a bare one alike), any call written with OVER, and any call of a function
+ *       the account does not build in: a user-defined one — including the routine calling ITSELF, so a
+ *       Snowscript UDF cannot recurse — and a name nothing declares.</li>
  * </ul>
+ *
+ * <p>An unsupported expression is named WHOLE, as the statement holds it, and re-printed from the plan rather
+ * than echoed: {@code RETURN ABS(nosuch(1) + 1)} is {@code ABS((NOSUCH(1)) + 1)}, an IF's condition
+ * {@code (NOSUCH(1)) > 0}, {@code RETURN (SELECT 1)} is {@code (SELECT 1 AS "1" FROM (VALUES (null)) DUAL)}.
+ * The first such expression in the body is the one refused. A built-in called with a wrong count, an aggregate
+ * and a name no variable carries are all created.
  *
  * <p>Control flow is fully available and was live-verified to work: {@code DECLARE}/{@code LET}
  * variables, assignment, {@code IF}, {@code CASE}, {@code WHILE}, {@code REPEAT}, {@code FOR i IN a TO b},
@@ -57,9 +69,8 @@ import java.util.List;
  * {@code PARSE_JSON}, {@code CURRENT_DATABASE}, …).
  *
  * <p>Like the rest of {@link RoutineBodyCompiler}, this FAILS OPEN: only a construct the engine can
- * positively read and knows Snowflake refuses is rejected. A call of a name the catalog does not hold is
- * left alone (Snowflake rejects it too, but as a Frostlake grammar subset an unknown name is more likely
- * a built-in this engine has not modelled than a genuine error).
+ * positively read and knows Snowflake refuses is rejected. A built-in the account has and this engine lacks
+ * counts as built in (see {@link SnowflakeBuiltinNames}).
  */
 final class ScriptingUdfBodyValidator {
 
@@ -82,7 +93,7 @@ final class ScriptingUdfBodyValidator {
 
     /** Walk the whole block, throwing on the first construct Snowflake refuses in a Snowscript UDF. */
     void validate(final FrostlakeParser.BeginEndBlockContext block) {
-        walk(block);
+        walk(block, null);
     }
 
     /**
@@ -138,7 +149,16 @@ final class ScriptingUdfBodyValidator {
         return body != null && queryExecutor != null && queryExecutor.isProceduralBlock(body.trim());
     }
 
-    private void walk(final ParseTree node) {
+    /**
+     * @param node       the node walked
+     * @param expression the outermost expression the node stands in, or null outside any
+     */
+    private void walk(final ParseTree node, final ParserRuleContext expression) {
+        ParserRuleContext whole = expression;
+        if (whole == null && (node instanceof FrostlakeParser.ExpressionContext
+                || node instanceof FrostlakeParser.BooleanExprContext)) {
+            whole = (ParserRuleContext) node;
+        }
         if (node instanceof FrostlakeParser.StatementContext) {
             final FrostlakeParser.StatementContext stmt = (FrostlakeParser.StatementContext) node;
             if (stmt.proceduralStatement() == null) {
@@ -158,13 +178,13 @@ final class ScriptingUdfBodyValidator {
         if (node instanceof FrostlakeParser.SelectStatementContext) {
             // Reached only from inside an expression or a declaration — a query STATEMENT was already
             // rejected above — so this is a subquery, which a Snowscript UDF may not contain.
-            throw unsupportedExpression((ParserRuleContext) node);
+            throw unsupportedExpression(whole != null ? whole : (ParserRuleContext) node);
         }
         if (node instanceof FrostlakeParser.FunctionNameContext) {
-            checkFunctionName((FrostlakeParser.FunctionNameContext) node);
+            checkFunctionName((FrostlakeParser.FunctionNameContext) node, whole);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            walk(node.getChild(i));
+            walk(node.getChild(i), whole);
         }
     }
 
@@ -181,18 +201,47 @@ final class ScriptingUdfBodyValidator {
         }
     }
 
-    /** Reject a call of a user-defined function — Snowscript UDFs may call built-ins only, never a UDF. */
-    private void checkFunctionName(final FrostlakeParser.FunctionNameContext name) {
+    /**
+     * Reject a call a Snowscript UDF may not make: one written with OVER, and one of a function the account does
+     * not build in — a user-defined function, the routine itself, a name nothing declares.
+     */
+    private void checkFunctionName(final FrostlakeParser.FunctionNameContext name, final ParserRuleContext whole) {
         if (name.identifier() == null || name.identifier().isEmpty()) {
             return;   // IDENTIFIER(expr) — the name is only known at run time
         }
+        final ParserRuleContext named = whole != null ? whole : callSite(name);
+        if (name.getParent() instanceof FrostlakeParser.FunctionCallExprContext
+                && ((FrostlakeParser.FunctionCallExprContext) name.getParent()).overClause() != null) {
+            throw unsupportedExpression(named);
+        }
         final String called = SqlIdentifiers.canonical(name.identifier().get(name.identifier().size() - 1));
         if (routineName != null && name.identifier().size() == 1 && called.equals(routineName)) {
-            throw unsupportedExpression(callSite(name));
+            throw unsupportedExpression(named);
         }
-        if (isUserDefinedFunction(name, called)) {
-            throw unsupportedExpression(callSite(name));
+        if (isUserDefinedFunction(name, called) || !isBuiltIn(name, called)) {
+            throw unsupportedExpression(named);
         }
+    }
+
+    /**
+     * Whether a call names a function the account builds in: a bare name on the account's list or in this
+     * engine's registry, or a qualified one the registry holds under its whole name.
+     */
+    private boolean isBuiltIn(final FrostlakeParser.FunctionNameContext name, final String called) {
+        final FunctionRegistry registry = queryExecutor == null ? null : queryExecutor.getFunctionRegistry();
+        if (name.identifier().size() > 1) {
+            final StringBuilder whole = new StringBuilder();
+            for (final FrostlakeParser.IdentifierContext part : name.identifier()) {
+                whole.append(whole.length() > 0 ? "." : "").append(SqlIdentifiers.canonical(part));
+            }
+            return registry != null && registry.hasFunction(whole.toString().toUpperCase(Locale.ROOT));
+        }
+        if (name.identifier().get(0).getText().startsWith("\"") && !called.equals(called.toUpperCase(Locale.ROOT))) {
+            return false;   // a quoted name of another case is no built-in's
+        }
+        return registry == null || SnowflakeBuiltinNames.contains(called) || called.startsWith("SYSTEM$")
+            || registry.hasFunction(called) || registry.hasTableFunction(called)
+            || registry.getAggregateFunction(called) != null || WindowFunctionNames.handles(called);
     }
 
     /** Whether {@code called} names a UDF held by the schema the call resolves against. */
@@ -236,7 +285,21 @@ final class ScriptingUdfBodyValidator {
     }
 
     private RuntimeException unsupportedExpression(final ParserRuleContext ctx) {
-        return new RuntimeException("Unsupported expression for Snowscript UDF: " + text(ctx));
+        return new RuntimeException("Unsupported expression for Snowscript UDF: " + planned(ctx));
+    }
+
+    /** An expression as the plan holds it, or its source text where it does not re-print. */
+    private String planned(final ParserRuleContext ctx) {
+        final String written = text(ctx);
+        if (queryExecutor == null) {
+            return written;
+        }
+        try {
+            return new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(), catalog, queryExecutor)
+                .plannedText(ExpressionEvaluator.parse(written));
+        } catch (final RuntimeException notPrinted) {
+            return written;
+        }
     }
 
     /** The context's ORIGINAL source text, so the message reads like the body the user wrote. */

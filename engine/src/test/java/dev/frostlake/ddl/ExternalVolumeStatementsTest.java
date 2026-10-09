@@ -69,10 +69,14 @@ public class ExternalVolumeStatementsTest extends BaseDatabaseTest {
         assertEquals("vol", shown.getRows().get(0).getValue(shown.getColumnIndex("comment")));
 
         assertEquals("false", describeValue("ev_a", "ALLOW_WRITES"));
+        // The identity generated for the role is the account's own, so only its place is compared.
         assertEquals("{\"NAME\":\"loc1\",\"STORAGE_PROVIDER\":\"S3\",\"STORAGE_BASE_URL\":\"s3://bucket/path/\","
             + "\"STORAGE_ALLOWED_LOCATIONS\":[\"s3://bucket/path/*\"],\"STORAGE_AWS_ROLE_ARN\":\"arn:aws:iam::1:role/r\","
+            + "\"STORAGE_AWS_IAM_USER_ARN\":\"<user>\",\"STORAGE_AWS_EXTERNAL_ID\":\"<id>\","
             + "\"ENCRYPTION_TYPE\":\"AWS_SSE_KMS\",\"ENCRYPTION_KMS_KEY_ID\":\"key1\"}",
-            describeValue("ev_a", "STORAGE_LOCATION_1"));
+            describeValue("ev_a", "STORAGE_LOCATION_1")
+                .replaceFirst("\"STORAGE_AWS_IAM_USER_ARN\":\"[^\"]+\"", "\"STORAGE_AWS_IAM_USER_ARN\":\"<user>\"")
+                .replaceFirst("\"STORAGE_AWS_EXTERNAL_ID\":\"[^\"]+\"", "\"STORAGE_AWS_EXTERNAL_ID\":\"<id>\""));
         assertEquals("", describeValue("ev_a", "ACTIVE"));
         assertEquals("vol", describeValue("ev_a", "COMMENT"));
         engine.executeQuery("DROP EXTERNAL VOLUME ev_a");

@@ -52,6 +52,10 @@ public class ResultSetColumn {
     // stamps it from the expression it projects, so a derived relation, a view and a CTAS all carry the
     // collation out to whoever reads the column next.
     private final String collation;
+    // Whether that collation was NAMED by a COLLATE in the query that produced the column, or by one a
+    // derived relation, a view or a set operation carried out: a named collation outranks a column's
+    // declared one wherever the two meet, through any number of query blocks.
+    private final boolean collationExplicit;
     // Whether the projection is a number or boolean constant wrapped into a VARIANT, or a column carrying
     // one out of a derived relation — the value a cast to a sized VARCHAR converts unchecked. Read only by
     // that cast, through a derived relation or a scalar subquery built from this result set.
@@ -101,7 +105,7 @@ public class ResultSetColumn {
                            final boolean nullabilityKnown, final ValueRange valueRange,
                            final DataType spelledNumber) {
         this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, null,
-            false, false, null);
+            false, false, false, null);
     }
 
     private ResultSetColumn(final String name, final DataType dataType, final String tableName,
@@ -109,7 +113,7 @@ public class ResultSetColumn {
                             final boolean nullabilityKnown, final ValueRange valueRange,
                             final DataType spelledNumber, final String collation,
                             final boolean uncheckedConstant, final boolean foldedDouble,
-                            final String projectionPolicyName) {
+                            final boolean collationExplicit, final String projectionPolicyName) {
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
@@ -121,6 +125,7 @@ public class ResultSetColumn {
         this.collation = collation;
         this.uncheckedConstant = uncheckedConstant;
         this.foldedDouble = foldedDouble;
+        this.collationExplicit = collationExplicit;
         this.projectionPolicyName = projectionPolicyName;
     }
 
@@ -132,8 +137,30 @@ public class ResultSetColumn {
      * @return a copy of this column carrying it
      */
     public ResultSetColumn withCollation(final String spec) {
+        return withCollation(spec, false);
+    }
+
+    /**
+     * This column carrying a collation at the level it is held: one a COLLATE named outranks a column's
+     * declared one, and keeps that rank in the relation built from this result set.
+     *
+     * @param spec     the collation specification, lower-cased
+     * @param explicit whether a COLLATE named it
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withCollation(final String spec, final boolean explicit) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble, projectionPolicyName);
+            valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble, spec != null && explicit,
+            projectionPolicyName);
+    }
+
+    /**
+     * Whether a COLLATE named this column's collation (see {@link #withCollation(String, boolean)}).
+     *
+     * @return true for a named collation
+     */
+    public boolean isCollationExplicit() {
+        return collationExplicit;
     }
 
     /**
@@ -144,7 +171,7 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withUncheckedConstant() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, true, foldedDouble, projectionPolicyName);
+            valueRange, spelledNumber, collation, true, foldedDouble, collationExplicit, projectionPolicyName);
     }
 
     /**
@@ -155,7 +182,7 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withFoldedDouble() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, uncheckedConstant, true, projectionPolicyName);
+            valueRange, spelledNumber, collation, uncheckedConstant, true, collationExplicit, projectionPolicyName);
     }
 
     /**
@@ -166,7 +193,7 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withProjectionPolicy(final String policyName) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, policyName);
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, policyName);
     }
 
     /**

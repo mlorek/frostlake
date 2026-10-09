@@ -74,6 +74,8 @@ public class UserSnapshot implements Serializable {
     // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
     /** Who granted each role in grantedRoles, by role name. */
     public HashMap<String, String> roleGrantors;
+    /** When each role in grantedRoles was granted, by role name. */
+    public HashMap<String, Instant> roleGrantTimes;
     /** The database roles granted to this user, by qualified name, each with its grantor. */
     public HashMap<String, String> databaseRoleGrants;
     public HashMap<String, String> tags;

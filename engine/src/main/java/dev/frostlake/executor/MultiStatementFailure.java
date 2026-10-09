@@ -82,9 +82,14 @@ public final class MultiStatementFailure extends RuntimeException {
             + HELPER + " line: 10";
     }
 
+    /** How much of the failing statement the sentence quotes before it cuts it short. */
+    private static final int QUOTED_LENGTH = 30;
+
     /**
-     * The statement as it was written, without the separator that follows it. Read from the source the
-     * parser saw rather than rebuilt from tokens, so it keeps its own spacing.
+     * The statement as it was written, without the separator that follows it, and cut to its first thirty
+     * characters with {@code ...} after them when it is longer — a line break counting as one character. Read
+     * from the source the parser saw rather than rebuilt from tokens, so it keeps its own spacing
+     * (live-verified: {@code "SELECT * FROM nowhere_xyz12345..."}).
      */
     private static String statementText(final FrostlakeParser.StatementContext failing) {
         final Token start = failing.getStart();
@@ -104,6 +109,6 @@ public final class MultiStatementFailure extends RuntimeException {
         while (last > 0 && Character.isWhitespace(text.charAt(last - 1))) {
             last--;
         }
-        return text.substring(0, last);
+        return last > QUOTED_LENGTH ? text.substring(0, QUOTED_LENGTH) + "..." : text.substring(0, last);
     }
 }

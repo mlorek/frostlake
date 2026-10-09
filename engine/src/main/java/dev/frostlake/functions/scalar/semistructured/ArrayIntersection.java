@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -80,5 +81,13 @@ public class ArrayIntersection extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0 || position == 1) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        return null;
     }
 }

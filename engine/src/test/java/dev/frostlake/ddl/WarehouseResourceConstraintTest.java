@@ -51,7 +51,7 @@ public class WarehouseResourceConstraintTest extends BaseDatabaseTest {
         engine.execute("ALTER WAREHOUSE rc_std UNSET GENERATION");
         assertEquals("STANDARD_GEN_2", show("RC_STD", "resource_constraint"));
         engine.execute("CREATE WAREHOUSE rc_sp WAREHOUSE_TYPE = 'SNOWPARK-OPTIMIZED' RESOURCE_CONSTRAINT = 'memory_1x_x86'");
-        assertEquals("MEMORY_1X_x86", show("RC_SP", "resource_constraint"));
+        assertEquals("MEMORY_1X_X86", show("RC_SP", "resource_constraint"), "listed in upper case throughout");
         assertEquals("X-Small", show("RC_SP", "size"), "a 1X constraint keeps the X-Small default");
         assertEquals(null, show("RC_SP", "generation"));
         final RuntimeException tooSmall = assertThrows(RuntimeException.class, new Executable() {
@@ -79,10 +79,11 @@ public class WarehouseResourceConstraintTest extends BaseDatabaseTest {
         final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.execute("CREATE WAREHOUSE rc_bad RESOURCE_CONSTRAINT = MEMORY_2X");
+                engine.execute("CREATE WAREHOUSE rc_bad RESOURCE_CONSTRAINT = memory_2x_x86");
             }
         });
-        assertTrue(refused.getMessage().contains("RESOURCE_CONSTRAINT"), refused.getMessage());
+        assertTrue(refused.getMessage().contains("invalid value 'MEMORY_2X_X86' for property 'RESOURCE_CONSTRAINT'"),
+            refused.getMessage());
         assertEquals(0, engine.executeQuery("SHOW WAREHOUSES LIKE 'RC_BAD'").getRows().size());
     }
 

@@ -114,7 +114,13 @@ public final class DataTypeParser {
             return new MapType(mapKey, mapValue);
         }
         if (ctx.GEOGRAPHY() != null) return GeographyType.GEOGRAPHY;
-        if (ctx.GEOMETRY() != null) return GeometryType.GEOMETRY;
+        if (ctx.GEOMETRY() != null) {
+            // The name reads with one parameter and is refused for carrying it (live-verified).
+            if (typeParams != null) {
+                throw new RuntimeException(SqlCompilationError.of("Unsupported data type 'GEOMETRY with arguments'."));
+            }
+            return GeometryType.GEOMETRY;
+        }
         if (ctx.FILE() != null) {
             // FILE takes no type parameters — live, both `FILE(10)` and `FILE()` fail with
             // "syntax error ... unexpected '('". The grammar shares `dataTypeName typeParameters?` across

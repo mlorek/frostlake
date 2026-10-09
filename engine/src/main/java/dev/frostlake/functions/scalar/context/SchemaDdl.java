@@ -209,7 +209,8 @@ final class SchemaDdl {
 
         final Map<String, List<String>> tasks = new TreeMap<String, List<String>>();
         for (final Task task : schema.getTasks()) {
-            add(tasks, task.getName(), ObjectDdl.task(task, schema, names.object(schema, task.getName())));
+            add(tasks, task.getName(), ObjectDdl.task(task, schema, names.object(schema, task.getName()),
+                relations.tagAssignments(task, schema)));
         }
         appendAll(out, tasks);
 

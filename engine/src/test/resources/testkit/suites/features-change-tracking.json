@@ -1,6 +1,6 @@
 {
   "suite": "features-change-tracking",
-  "description": "CHANGE_TRACKING through the SQL surface (the change_tracking cell of SHOW TABLES): a fresh table is OFF; the CREATE TABLE option, ALTER ... SET, or creating a stream turns it ON (and it survives the stream); the CHANGES clause requires it - an untracked table refuses with the single-line wording - and a CHANGES point is bounded by the table's creation (the retention wording) and must be a CONSTANT. Converted 1:1 from features/ChangeTrackingTest (now retired).",
+  "description": "CHANGE_TRACKING through the SQL surface (the change_tracking cell of SHOW TABLES): a fresh table is OFF; the CREATE TABLE option, ALTER ... SET, or creating a stream turns it ON (and it survives the stream); the CHANGES clause requires it - an untracked table refuses with the single-line wording - and a CHANGES point is bounded by the table's creation (the retention wording) and reads no function whose value moves between two calls. Converted 1:1 from features/ChangeTrackingTest (now retired).",
   "tags": ["features", "converted"],
   "tests": [
     {"name": "a-fresh-table-is-off", "steps": [
@@ -59,7 +59,7 @@
     {"name": "a-changes-point-must-be-constant", "steps": [
       {"sql": "CREATE TABLE ct_const (id INTEGER) CHANGE_TRACKING = TRUE"},
       {"sql": "SELECT * FROM ct_const CHANGES (INFORMATION => DEFAULT) AT (TIMESTAMP => DATEADD(minute, -30, CURRENT_TIMESTAMP()))",
-       "expect": {"error": {"messageContains": "argument TIMESTAMP to function AT needs to be constant"}}}
+       "expect": {"error": {"messageContains": "but change tracking is not supported on queries with non-deterministic functions in versions"}}}
     ]}
   ]
 }

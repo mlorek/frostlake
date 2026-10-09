@@ -195,15 +195,16 @@ final class StreamStart {
      * table was; a later one is unsupported, for the history of the table's refreshes is not kept.
      *
      * @param stream          the new stream
+     * @param home            the schema the dynamic table lives in
      * @param dynamicTable    its dynamic table
      * @param point           the AT | BEFORE point, or null
      * @param showInitialRows whether the stream first reports the table's rows
      */
-    void forDynamicTable(final Stream stream, final DynamicTable dynamicTable,
+    void forDynamicTable(final Stream stream, final Schema home, final DynamicTable dynamicTable,
                          final FrostlakeParser.StreamPointContext point, final boolean showInitialRows) {
         final List<List<Object>> image = new ArrayList<>();
         if (dynamicTable.getLastRefreshedTime() != null) {
-            for (final Row row : queryExecutor.dynamicTableRows(dynamicTable)) {
+            for (final Row row : queryExecutor.dynamicTableRows(home, dynamicTable)) {
                 image.add(new ArrayList<>(row.getValues()));
             }
         }

@@ -92,7 +92,8 @@ public final class ProcedureResource implements RestResource {
             final RestIdentifier name = RestIdentifier.ofResolved(row.string("name"));
             final List<RestRow> describe = RoutineSupport.describe(call, "PROCEDURE", name,
                 RoutineSupport.showArgumentTypes(row));
-            out.add(RoutineSupport.toJson(row, describe, true, true));
+            out.add(RoutineSupport.toJson(row, describe, true, true,
+                RoutineSupport.defaults(call, "PROCEDURE", name, RoutineSupport.showArgumentTypes(row))));
         }
         return RestResponse.json(200, out);
     }
@@ -110,7 +111,7 @@ public final class ProcedureResource implements RestResource {
             : RoutineSupport.showArgumentTypes(shows.get(0));
         final List<RestRow> describe = RoutineSupport.describe(call, "PROCEDURE", signature.name(), types);
         return RoutineSupport.toJson(RoutineSupport.pick(shows, RoutineSupport.signatureTypes(describe)), describe,
-            true);
+            true, false, RoutineSupport.defaults(call, "PROCEDURE", signature.name(), types));
     }
 
     private static RestResponse delete(final RestCall call) {

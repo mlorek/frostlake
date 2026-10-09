@@ -26,21 +26,25 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeSet;
+import java.util.Set;
 
 /**
  * PIVOT / UNPIVOT query stages extracted from {@link QueryExecutor}. Both are planned with their shape and
  * run as pipeline stages that transform their input rows: identifier text comes from the stateless
- * {@link ParseTreeText} helper and the per-cell reduction from {@link AggregateFunctions}. The owning
- * executor answers a subquery-driven IN list and builds the relation shape.
+ * {@link ParseTreeText} helper and each cell is the aggregate a grouped query would compute over the cell's
+ * rows. The owning executor answers a subquery-driven IN list and builds the relation shape.
  */
 final class PivotUnpivotExecutor {
 
@@ -66,16 +70,18 @@ final class PivotUnpivotExecutor {
     PlannedRelation planPivot(final Table table, final FrostlakeParser.PivotClauseContext pivotCtx,
                               final List<Row> rowsForAny, final List<String> renamedColumns,
                               final String relationName) {
-        // Extract PIVOT components
+        // The aggregate is one registered aggregate over one column of the relation (see PivotAggregateCall).
+        final String aggColumn = PivotAggregateCall.column(pivotCtx.aggregateFunction(), table,
+            executor.getFunctionRegistry());
         final String aggFuncName = pivotCtx.aggregateFunction().functionName().getText().toUpperCase();
-        final String aggColumn = pivotCtx.aggregateFunction().expression().getText();
+        final String aggregateText = ParseTreeText.getOriginalText(pivotCtx.aggregateFunction());
+        final FrostlakeParser.ExpressionContext aggregateCall = executor.parsedExpression(aggregateText);
         final String pivotColumn = ParseTreeText.getIdentifier(pivotCtx.identifier());
         // Get column indices
         final int aggColIndex = table.getColumnIndex(aggColumn);
         final int pivotColIndex = table.getColumnIndex(pivotColumn);
         // Get pivot values: an explicit list, ANY (dynamic: the distinct FOR-column values), or a subquery.
-        final List<String> pivotValues = new ArrayList<>();
-        final Map<String, String> pivotAliases = new HashMap<>();
+        final List<PivotValue> pivotValues = new ArrayList<>();
         final FrostlakeParser.PivotInListContext inList = pivotCtx.pivotInList();
         if (inList.pivotValueList() != null) {
             for (final FrostlakeParser.PivotValueContext pvCtx : inList.pivotValueList().pivotValue()) {
@@ -84,36 +90,55 @@ final class PivotUnpivotExecutor {
                 // value 'q1' produces a column called 'q1' that is referenced as "'q1'" (which is exactly how
                 // real queries write it, e.g. MAX("'q1'")). Naming it `q1` instead made "'q1'" unresolvable and,
                 // worse, made MAX("'q1'") silently return the STRING q1. An explicit alias still wins.
-                final String value = pvCtx.literal().getText().replace("'", "");
-                pivotValues.add(value);
-                String alias = pvCtx.literal().getText();
-                if (pvCtx.identifier() != null) {
-                    alias = ParseTreeText.getIdentifier(pvCtx.identifier());
-                }
-                pivotAliases.put(value, alias);
+                pivotValues.add(PivotValue.written(pvCtx.literal(), literalValue(pvCtx.literal()),
+                    pvCtx.identifier() != null ? ParseTreeText.getIdentifier(pvCtx.identifier()) : null));
             }
         } else if (inList.ANY() != null) {
-            // Dynamic pivot: the distinct values of the FOR column, ascending for a deterministic
-            // column order (an ORDER BY inside ANY parses; the natural value order is used).
-            final TreeSet<String> distinct = new TreeSet<>();
+            // Dynamic pivot: the distinct values of the FOR column in their own order — ascending, or as the
+            // ORDER BY inside ANY says — with the rows holding none last, or first when descending.
+            final boolean descending = !inList.orderItem().isEmpty() && inList.orderItem(0).DESC() != null;
+            final Map<Object, Object> distinct = new LinkedHashMap<>();
+            boolean anyNull = false;
             for (final Row row : rowsForAny) {
                 final Object value = DeferredFault.read(row.getValue(pivotColIndex));
-                if (value != null) {
-                    distinct.add(value.toString());
+                if (value == null) {
+                    anyNull = true;
+                } else {
+                    distinct.putIfAbsent(ValueComparisons.canonicalGroupKeyValue(value), value);
                 }
             }
-            for (final String value : distinct) {
-                pivotValues.add(value);
-                pivotAliases.put(value, "'" + value + "'");
+            final List<Object> ordered = new ArrayList<>(distinct.values());
+            Collections.sort(ordered, new Comparator<Object>() {
+                @Override
+                public int compare(final Object left, final Object right) {
+                    final int order = ValueComparisons.compareValues(left, right);
+                    return descending ? -order : order;
+                }
+            });
+            if (anyNull && descending) {
+                pivotValues.add(PivotValue.read(null));
+            }
+            for (final Object value : ordered) {
+                pivotValues.add(PivotValue.read(value));
+            }
+            if (anyNull && !descending) {
+                pivotValues.add(PivotValue.read(null));
             }
         } else if (inList.selectStatement() != null) {
-            // Subquery-driven pivot columns: the first column of the subquery result, in result order.
+            // Subquery-driven pivot columns: the first column of the subquery result, in result order, a NULL
+            // it answers among them.
             final ResultSet sub = executor.executeSelectFromContext(inList.selectStatement());
+            final Set<Object> seen = new HashSet<>();
+            boolean nullSeen = false;
             for (final Row row : sub.getRows()) {
                 final Object value = DeferredFault.read(row.getValue(0));
-                if (value != null && !pivotValues.contains(value.toString())) {
-                    pivotValues.add(value.toString());
-                    pivotAliases.put(value.toString(), "'" + value + "'");
+                if (value == null) {
+                    if (!nullSeen) {
+                        pivotValues.add(PivotValue.read(null));
+                    }
+                    nullSeen = true;
+                } else if (seen.add(ValueComparisons.canonicalGroupKeyValue(value))) {
+                    pivotValues.add(PivotValue.read(value));
                 }
             }
         }
@@ -134,10 +159,10 @@ final class PivotUnpivotExecutor {
             resultColumns.add(new ResultSetColumn(col.getName(), col.getDataType(), null));
         }
         final DataType aggregated = aggColIndex >= 0 ? table.getColumns().get(aggColIndex).getDataType() : null;
-        final DataType pivotedType = pivotColumnType(aggFuncName, aggregated);
-        for (final String pivotValue : pivotValues) {
-            final String colName = pivotAliases.get(pivotValue);
-            resultColumns.add(new ResultSetColumn(colName, pivotedType, null));
+        final DataType pivotedType = pivotColumnType(aggFuncName, aggregated, aggregateText, table,
+            inList.pivotValueList() != null);
+        for (final PivotValue pivotValue : pivotValues) {
+            resultColumns.add(new ResultSetColumn(pivotValue.name(), pivotedType, null));
         }
         final Table shape = executor.resultSetToTable(
             new ResultSet(renamed(resultColumns, renamedColumns), new ArrayList<Row>()), relationName);
@@ -147,8 +172,16 @@ final class PivotUnpivotExecutor {
             protected List<Row> apply(final List<Row> rows) {
                 // Group rows by the non-pivot columns. Buckets use canonicalized keys (so equal numbers with
                 // different runtime types group together); output rows keep the first row's raw values.
-                final Map<List<Object>, Map<String, List<Object>>> groups = new LinkedHashMap<>();
+                final Map<List<Object>, Map<Integer, List<Row>>> groups = new LinkedHashMap<>();
                 final Map<List<Object>, List<Object>> groupKeyDisplayValues = new HashMap<>();
+                // The pivoted column each FOR-column value belongs to, found once per value.
+                final Map<Object, Integer> columnOf = new HashMap<>();
+                if (groupByColIndices.isEmpty()) {
+                    // With nothing to group by the pivot is one aggregate row, over no rows too.
+                    final List<Object> everything = new ArrayList<>();
+                    groups.put(everything, new HashMap<Integer, List<Row>>());
+                    groupKeyDisplayValues.put(everything, new ArrayList<Object>());
+                }
                 for (final Row row : rows) {
                     // Build group key from non-pivot columns
                     final List<Object> rawKey = new ArrayList<>();
@@ -159,30 +192,47 @@ final class PivotUnpivotExecutor {
                         rawKey.add(value);
                         groupKey.add(ValueComparisons.canonicalGroupKeyValue(value));
                     }
-                    // Get pivot column value
-                    final String pivotValue = DeferredFault.read(row.getValue(pivotColIndex)).toString();
-                    // Get aggregate column value
-                    final Object aggValue = DeferredFault.read(row.getValue(aggColIndex));
-                    Map<String, List<Object>> groupBuckets = groups.get(groupKey);
+                    // A row belongs to its group, and to the pivoted column its FOR column's value is — a NULL to
+                    // the column written NULL, when there is one.
+                    final Object pivotCell = DeferredFault.read(row.getValue(pivotColIndex));
+                    DeferredFault.read(row.getValue(aggColIndex));
+                    Map<Integer, List<Row>> groupBuckets = groups.get(groupKey);
                     if (groupBuckets == null) {
                         groupBuckets = new HashMap<>();
                         groups.put(groupKey, groupBuckets);
                         groupKeyDisplayValues.put(groupKey, rawKey);
                     }
-                    List<Object> pivotBucket = groupBuckets.get(pivotValue);
+                    final Object cellKey = ValueComparisons.canonicalGroupKeyValue(pivotCell);
+                    Integer column = columnOf.get(cellKey);
+                    if (column == null) {
+                        column = Integer.valueOf(-1);
+                        for (int i = 0; i < pivotValues.size(); i++) {
+                            if (pivotValues.get(i).holds(pivotCell)) {
+                                column = Integer.valueOf(i);
+                                break;
+                            }
+                        }
+                        columnOf.put(cellKey, column);
+                    }
+                    if (column.intValue() < 0) {
+                        continue;
+                    }
+                    List<Row> pivotBucket = groupBuckets.get(column);
                     if (pivotBucket == null) {
                         pivotBucket = new ArrayList<>();
-                        groupBuckets.put(pivotValue, pivotBucket);
+                        groupBuckets.put(column, pivotBucket);
                     }
-                    pivotBucket.add(aggValue);
+                    pivotBucket.add(row);
                 }
-                // Build result rows
+                // Build result rows: each cell is the aggregate over its rows, as a grouped query computes it, so
+                // a cell no row reaches holds what the aggregate answers over none — a zero count, an empty list.
                 final List<Row> resultRows = new ArrayList<>();
-                for (final Map.Entry<List<Object>, Map<String, List<Object>>> entry : groups.entrySet()) {
+                for (final Map.Entry<List<Object>, Map<Integer, List<Row>>> entry : groups.entrySet()) {
                     final List<Object> rowValues = new ArrayList<>(groupKeyDisplayValues.get(entry.getKey()));
-                    for (final String pivotValue : pivotValues) {
-                        final List<Object> values = entry.getValue().getOrDefault(pivotValue, new ArrayList<>());
-                        Object aggResult = AggregateFunctions.applyAggregateFunction(aggFuncName, values);
+                    for (int i = 0; i < pivotValues.size(); i++) {
+                        final List<Row> cellRows = entry.getValue().getOrDefault(Integer.valueOf(i),
+                            new ArrayList<Row>());
+                        Object aggResult = executor.aggregateOverRows(aggregateCall, cellRows, table);
                         if (aggResult == null && defaultOnNull != null) {
                             aggResult = defaultOnNull;
                         }
@@ -283,15 +333,31 @@ final class PivotUnpivotExecutor {
      */
     /**
      * What a pivoted column declares: its aggregate's type over the aggregated column, as the same aggregate
-     * declares in a grouped SELECT. COUNT declares the counter's width, MIN and MAX the column's own type, and
-     * SUM and AVG widen it by the type inferencer's rules. Declaring every pivoted column BIGINT told a driver
-     * that reads the declared scale to round an average of 92.5 to 92.
+     * declares in a grouped SELECT. COUNT declares the counter's width, MIN and MAX the column's own type, SUM
+     * and AVG widen it by the type inferencer's rules, and any other aggregate declares what its call does.
+     * Declaring every pivoted column BIGINT told a driver that reads the declared scale to round an average of
+     * 92.5 to 92. A text answer over a written list of values declares no width of its own — VARCHAR(134217728) —
+     * where one over ANY or a subquery keeps the column's (live-verified).
      *
-     * @param aggFuncName the aggregate's upper-case name
-     * @param aggregated  the aggregated column's type, or null when it is not a column of the source
+     * @param aggFuncName   the aggregate's upper-case name
+     * @param aggregated    the aggregated column's type, or null when it is not a column of the source
+     * @param aggregateText the aggregate call as written
+     * @param table         the relation pivoted
+     * @param writtenValues whether the IN list writes its values out
      * @return the pivoted columns' type
      */
-    private static DataType pivotColumnType(final String aggFuncName, final DataType aggregated) {
+    private DataType pivotColumnType(final String aggFuncName, final DataType aggregated, final String aggregateText,
+                                     final Table table, final boolean writtenValues) {
+        final DataType declared = declaredAggregateType(aggFuncName, aggregated, aggregateText, table);
+        if (writtenValues && declared instanceof StringType) {
+            return new StringType("VARCHAR", DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR);
+        }
+        return declared;
+    }
+
+    private DataType declaredAggregateType(final String aggFuncName, final DataType aggregated,
+                                           final String aggregateText, final Table table) {
+        final DataType inferred = typedCall(aggregateText, table);
         if (aggFuncName.equals("COUNT")) {
             return IntegerResultWidths.COUNTER;
         }
@@ -302,7 +368,20 @@ final class PivotUnpivotExecutor {
             return aggregated;
         }
         final DataType computed = AggregateResultTypes.computing(aggFuncName, aggregated);
-        return computed != null ? computed : NumericType.BIGINT;
+        if (computed != null) {
+            return computed;
+        }
+        return inferred != null ? inferred : NumericType.BIGINT;
+    }
+
+    /** The type the aggregate call declares over the relation, or null when it cannot be told. */
+    private DataType typedCall(final String aggregateText, final Table table) {
+        try {
+            return new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor)
+                .inferStaticType(ExpressionEvaluator.parse(aggregateText));
+        } catch (final RuntimeException notTypeable) {
+            return null;
+        }
     }
 
     private static List<ResultSetColumn> renamed(final List<ResultSetColumn> columns, final List<String> names) {
@@ -318,6 +397,14 @@ final class PivotUnpivotExecutor {
     }
 
     /** Evaluate a constant expression (the PIVOT DEFAULT ON NULL value) with no row context. */
+    /** The value a pivot value's literal spells; null for the word NULL. */
+    private Object literalValue(final FrostlakeParser.LiteralContext literal) {
+        final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            dummyTable, executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        return evaluator.evaluate(ParseTreeText.getOriginalText(literal), new Row(new ArrayList<>()));
+    }
+
     private Object evaluateConstant(final FrostlakeParser.ExpressionContext expr) {
         final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(

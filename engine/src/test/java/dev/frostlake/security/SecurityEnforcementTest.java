@@ -107,7 +107,7 @@ public class SecurityEnforcementTest {
             }
         }, "User without SELECT permission should be denied");
 
-        assertTrue(exception.getMessage().contains("Permission denied"));
+        assertTrue(exception.getMessage().contains("Insufficient privileges to operate on table 'EMPLOYEES'"));
         assertTrue(exception.getMessage().contains("SELECT"));
     }
 
@@ -148,7 +148,7 @@ public class SecurityEnforcementTest {
             }
         }, "User without INSERT permission should be denied");
 
-        assertTrue(exception.getMessage().contains("Permission denied"));
+        assertTrue(exception.getMessage().contains("Insufficient privileges to operate on table 'EMPLOYEES'"));
         assertTrue(exception.getMessage().contains("INSERT"));
     }
 
@@ -189,8 +189,9 @@ public class SecurityEnforcementTest {
             }
         }, "User without UPDATE permission should be denied");
 
-        assertTrue(exception.getMessage().contains("Permission denied"));
-        assertTrue(exception.getMessage().contains("UPDATE"));
+        assertTrue(exception.getMessage().contains("Insufficient privileges to operate on table 'EMPLOYEES'"));
+        // The statement reads the rows it changes, so SELECT is asked for first.
+        assertTrue(exception.getMessage().contains("must have SELECT granted on TABLE"));
     }
 
     @Test
@@ -230,8 +231,9 @@ public class SecurityEnforcementTest {
             }
         }, "User without DELETE permission should be denied");
 
-        assertTrue(exception.getMessage().contains("Permission denied"));
-        assertTrue(exception.getMessage().contains("DELETE"));
+        assertTrue(exception.getMessage().contains("Insufficient privileges to operate on table 'EMPLOYEES'"));
+        // The statement reads the rows it changes, so SELECT is asked for first.
+        assertTrue(exception.getMessage().contains("must have SELECT granted on TABLE"));
     }
 
     @Test
@@ -276,7 +278,7 @@ public class SecurityEnforcementTest {
             }
         }, "User should lose access after REVOKE");
 
-        assertTrue(exception.getMessage().contains("Permission denied"));
+        assertTrue(exception.getMessage().contains("Insufficient privileges to operate on table 'EMPLOYEES'"));
         assertTrue(exception.getMessage().contains("SELECT"));
     }
 
@@ -337,7 +339,7 @@ public class SecurityEnforcementTest {
             }
         }, "User should not have permissions from ungranted operations");
 
-        assertTrue(exception.getMessage().contains("Permission denied"));
+        assertTrue(exception.getMessage().contains("Insufficient privileges to operate on table 'EMPLOYEES'"));
         assertTrue(exception.getMessage().contains("UPDATE"));
     }
 
@@ -418,8 +420,9 @@ public class SecurityEnforcementTest {
             }
         }, "Users should be restricted again after re-enabling security");
 
-        assertTrue(exception.getMessage().contains("Permission denied"));
-        assertTrue(exception.getMessage().contains("UPDATE"));
+        assertTrue(exception.getMessage().contains("Insufficient privileges to operate on table 'EMPLOYEES'"));
+        // The statement reads the rows it changes, so SELECT is asked for first.
+        assertTrue(exception.getMessage().contains("must have SELECT granted on TABLE"));
     }
 
     @Test
@@ -462,7 +465,7 @@ public class SecurityEnforcementTest {
             }
         }, "User should not be able to INSERT into employees without permission");
 
-        assertTrue(exception.getMessage().contains("Permission denied"));
+        assertTrue(exception.getMessage().contains("Insufficient privileges to operate on table 'EMPLOYEES'"));
         assertTrue(exception.getMessage().contains("INSERT"));
     }
 }

@@ -58,11 +58,77 @@ public final class SqlAccessControlError {
     }
 
     /**
+     * The refusal for creating an object in a schema or a database where the primary role holds neither the
+     * container nor the CREATE privilege for the object's kind: {@code Insufficient privileges to operate on
+     * schema 'S'. Your primary role R must have CREATE TABLE granted on SCHEMA D.S.}
+     *
+     * <p>Inside a stored procedure that runs with owner's rights the role asked is the procedure's owner, and the
+     * sentence says so: {@code This executable runs with owner's rights. The owner role R must have …}
+     * (live-verified).
+     *
+     * @param containerKind the container's kind, {@code SCHEMA} or {@code DATABASE}
+     * @param name          the container's own name
+     * @param role          the role asked: the session's primary role, or the owner of the procedure running
+     * @param ownersRights  whether the role is the owner of a procedure running with owner's rights
+     * @param privilege     the privilege's words, {@code CREATE FILE FORMAT}
+     * @param fullName      the container's name in full
+     */
+    public static String createPrivilegeRequired(final String containerKind, final String name, final String role,
+                                                 final boolean ownersRights, final String privilege,
+                                                 final String fullName) {
+        return insufficientPrivileges(containerKind.toLowerCase(Locale.ROOT), name)
+            + (ownersRights ? " This executable runs with owner's rights. The owner role " : " Your primary role ")
+            + role + " must have " + privilege + " granted on " + containerKind + " " + fullName + ".";
+    }
+
+    /**
+     * The refusal for a statement that needs a privilege the session's roles do not hold on an object another
+     * role owns: {@code Insufficient privileges to operate on table 'T'. Your primary role R must have SELECT
+     * granted on TABLE D.S.T.} The first sentence names the kind in lower case with its words joined by
+     * underscores; the second the kind the privilege is granted on — a view's and a materialized view's is
+     * TABLE — and the object in full, a routine with its argument types (live-verified).
+     *
+     * @param kind        the object's kind as {@link GrantedObject#getKind()} reports it
+     * @param name        the object's own name
+     * @param primaryRole the session's primary role
+     * @param secondary   whether the session asked for secondary roles, which the sentence then names beside it
+     * @param privilege   the privilege's words, or null for "at least one privilege"
+     * @param fullName    the object's name in full
+     * @return the refusal
+     */
+    public static String privilegeRequired(final String kind, final String name, final String primaryRole,
+                                           final boolean secondary, final String privilege,
+                                           final String fullName) {
+        return insufficientPrivileges(kind.toLowerCase(Locale.ROOT).replace(' ', '_'), name)
+            + " Your primary role " + primaryRole + (secondary ? " or one of your secondary roles" : "")
+            + " must have "
+            + (privilege == null ? "at least one privilege" : privilege) + " granted on "
+            + grantedOnKind(kind.replace(' ', '_')) + " " + fullName + ".";
+    }
+
+    /**
+     * The refusal for a stream over a table whose change tracking is off, created by a role that may read the
+     * table but not alter it: the stream would have to turn change tracking on (live-verified).
+     *
+     * @param name        the table's own name
+     * @param primaryRole the session's primary role
+     * @param secondary   whether the session asked for secondary roles
+     * @param fullName    the table's name in full
+     * @return the refusal
+     */
+    public static String changeTrackingRequired(final String name, final String primaryRole,
+                                                final boolean secondary, final String fullName) {
+        return insufficientPrivileges("stream source without CHANGE_TRACKING enabled", name)
+            + " Your primary role " + primaryRole + (secondary ? " or one of your secondary roles" : "")
+            + " must have MODIFY granted on TABLE " + fullName + ".";
+    }
+
+    /**
      * How the second sentence names a kind: the kind a view or a schema policy is granted on, words spaced. A
      * network policy, an account object, keeps its own two words.
      */
     private static String grantedOnKind(final String kind) {
-        if ("VIEW".equals(kind)) {
+        if ("VIEW".equals(kind) || "MATERIALIZED_VIEW".equals(kind)) {
             return "TABLE";
         }
         if (kind.endsWith("_POLICY") && !"NETWORK_POLICY".equals(kind)) {

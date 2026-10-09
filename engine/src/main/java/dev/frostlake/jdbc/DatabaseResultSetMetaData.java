@@ -84,8 +84,8 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
     public int getColumnDisplaySize(final int column) throws SQLException {
         checkColumnIndex(column);
         final ColumnData described = columns.get(column - 1);
-        return DriverColumnMetrics.displaySize(getColumnTypeName(column), described.getPrecision(),
-            described.getScale(), described.getLength());
+        return DriverColumnMetrics.displaySize(getColumnTypeName(column), described.precisionOrZero(),
+            described.scaleOrZero(), described.getLength());
     }
 
     @Override
@@ -109,7 +109,8 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
         checkColumnIndex(column);
         // The wire carries a NUMBER's precision and scale, and a text or binary column's length.
         final ColumnData described = columns.get(column - 1);
-        return DriverColumnMetrics.precision(getColumnTypeName(column), described.getPrecision(), described.getLength());
+        return DriverColumnMetrics.precision(getColumnTypeName(column), described.precisionOrZero(),
+            described.getLength());
     }
 
     @Override
@@ -118,7 +119,7 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
         // The wire's scale is a NUMBER's scale, an interval's field code, and a time or timestamp's
         // fractional-second precision, so a TIMESTAMP_NTZ(3) reads 3 here as it does in process. A server
         // that predates the digits sends 0 for every time and timestamp column.
-        final int scale = columns.get(column - 1).getScale();
+        final int scale = columns.get(column - 1).scaleOrZero();
         return DriverColumnMetrics.scale(getColumnTypeName(column), scale, scale);
     }
 
@@ -136,7 +137,7 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
     public int getColumnType(final int column) throws SQLException {
         // The scale travels on the wire beside the name, and it is what separates an integer column
         // from a decimal one now that every integer alias is NUMBER — so both transports answer alike.
-        return JdbcMarshaling.driverSqlType(getColumnTypeName(column), columns.get(column - 1).getScale());
+        return JdbcMarshaling.driverSqlType(getColumnTypeName(column), columns.get(column - 1).scaleOrZero());
     }
 
     @Override

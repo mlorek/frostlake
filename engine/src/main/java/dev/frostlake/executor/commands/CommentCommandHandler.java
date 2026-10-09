@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.InformationSchemaGuard;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlAccessControlError;
@@ -32,6 +34,7 @@ import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.Pipe;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
@@ -104,7 +107,7 @@ public class CommentCommandHandler implements CommandHandler {
         RoutineSignatureForm.requireTypesOnly(ctx.dataTypeList());
         try {
             final boolean ifExists = ctx.if_exists() != null;
-            final String comment = visitor.extractStringLiteral(ctx.STRING_LITERAL());
+            final String comment = ParseTreeText.stringValue(ctx.stringText());
 
             if (ctx.DATABASE() != null) {
                 // COMMENT ON DATABASE
@@ -136,6 +139,7 @@ public class CommentCommandHandler implements CommandHandler {
                 // COMMENT ON SCHEMA
                 final String schemaName = visitor.getText(ctx.qualifiedName());
                 final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                queryExecutor.requirePrivilege(Privilege.MODIFY, "SCHEMA", parts, null);
 
                 final Schema schema;
                 try {
@@ -192,6 +196,8 @@ public class CommentCommandHandler implements CommandHandler {
             } else if (ctx.TABLE() != null) {
                 // COMMENT ON TABLE
                 final String tableName = visitor.getText(ctx.qualifiedName());
+                InformationSchemaGuard.refuseWrite(catalog, qualifiedNameParts(ctx.qualifiedName()));
+                queryExecutor.requireOnRelation(Privilege.MODIFY, tableName);
                 // A dynamic table is a table to COMMENT ON TABLE too (live-verified).
                 final DynamicTable dynamicTable = dynamicTableOrNull(qualifiedNameParts(ctx.qualifiedName()));
                 if (dynamicTable != null) {
@@ -218,6 +224,10 @@ public class CommentCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Table",
                         queryExecutor.getFullyQualifiedTableName(tableName)));
                 }
+                // An Iceberg table's comment is set by ALTER ICEBERG TABLE alone (live-verified).
+                if (table.getIcebergMetadata() != null) {
+                    throw IcebergTables.alteredAsTable(table);
+                }
                 table.setComment(comment);
                 table.markDdl(catalog.currentUserForDdl());
                 logger.trace("Set comment on table: {}", tableName);
@@ -235,6 +245,9 @@ public class CommentCommandHandler implements CommandHandler {
                 // Last part is column name, rest is table name
                 final String columnName = parts[parts.length - 1];
                 final String tableName = String.join(".", Arrays.copyOf(parts, parts.length - 1));
+                // One of INFORMATION_SCHEMA's views is refused before its column is looked for (live-verified).
+                InformationSchemaGuard.refuseWrite(catalog, Arrays.copyOf(parts, parts.length - 1));
+                queryExecutor.requireOnRelation(Privilege.MODIFY, tableName);
 
                 final Table table;
                 try {
@@ -257,6 +270,10 @@ public class CommentCommandHandler implements CommandHandler {
                         queryExecutor.getFullyQualifiedTableName(tableName)));
                 }
 
+                if (table.getIcebergMetadata() != null) {
+                    throw IcebergTables.alteredAsTable(table);
+                }
+
                 // COMMENT ON COLUMN reports a missing column as an OBJECT, the way RENAME COLUMN does —
                 // live: "Object 'NONEXISTENT' does not exist or not authorized." — rather than
                 // the "invalid identifier" a query would answer with.
@@ -275,6 +292,7 @@ public class CommentCommandHandler implements CommandHandler {
             } else if (ctx.VIEW() != null) {
                 // COMMENT ON VIEW
                 final String viewName = visitor.getText(ctx.qualifiedName());
+                queryExecutor.requireOnRelation(Privilege.MODIFY, viewName);
                 final View view;
                 try {
                     view = catalog.resolveView(QualifiedName.of(qualifiedNameParts(ctx.qualifiedName())));
@@ -335,7 +353,7 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Function function;
                 try {
-                    function = schema.getFunctionBySignature(funcName, writtenSignature(ctx));
+                    function = schema.getFunctionByWrittenSignature(funcName, writtenSignature(ctx));
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Function does not exist (IF EXISTS): {}", functionName);
@@ -383,7 +401,7 @@ public class CommentCommandHandler implements CommandHandler {
 
                 final Procedure procedure;
                 try {
-                    procedure = schema.getProcedureBySignature(procName, writtenSignature(ctx));
+                    procedure = schema.getProcedureByWrittenSignature(procName, writtenSignature(ctx));
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("Procedure does not exist (IF EXISTS): {}", procedureName);
@@ -678,7 +696,7 @@ public class CommentCommandHandler implements CommandHandler {
         final List<DataType> argumentTypes = new ArrayList<>();
         if (ctx.dataTypeList() != null) {
             for (final FrostlakeParser.DataTypeNameContext typeCtx : ctx.dataTypeList().dataTypeName()) {
-                argumentTypes.add(visitor.parseDataType(typeCtx, null));
+                argumentTypes.add(visitor.parseDataType(typeCtx, RoutineSignatureForm.parametersOf(typeCtx)));
             }
         }
         return argumentTypes;

@@ -24,7 +24,6 @@ import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
-import java.util.List;
 import java.util.Locale;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -181,8 +180,7 @@ public final class TagValues {
      * @param value the text the tag would be set to
      */
     public static void requireAllowed(final Tag tag, final String value) {
-        final List<String> allowed = tag.getAllowedValues();
-        if (!allowed.isEmpty() && !allowed.contains(value)) {
+        if (!tag.isValueAllowed(value)) {
             throw new RuntimeException("Value '" + value + "' is not allowed by the specified allowed_values for tag '"
                 + tag.getName() + "'.");
         }

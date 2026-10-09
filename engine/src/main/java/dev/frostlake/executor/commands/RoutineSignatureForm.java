@@ -39,6 +39,24 @@ final class RoutineSignatureForm {
     }
 
     /**
+     * The parameters written after one type of an argument list — {@code (2)} of {@code CHAR(2)} — or null when
+     * the type is written bare.
+     *
+     * @param type a type of a written argument list
+     * @return the type's own parameters
+     */
+    static FrostlakeParser.TypeParametersContext parametersOf(final FrostlakeParser.DataTypeNameContext type) {
+        final ParseTree list = type.getParent();
+        for (int i = 0; list != null && i + 1 < list.getChildCount(); i++) {
+            if (list.getChild(i) == type) {
+                return list.getChild(i + 1) instanceof FrostlakeParser.TypeParametersContext
+                    ? (FrostlakeParser.TypeParametersContext) list.getChild(i + 1) : null;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Refuse the first argument written with a name, at its type.
      *
      * @param signature the written argument list, or null when there is none

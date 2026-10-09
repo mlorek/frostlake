@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.FutureGrant;
@@ -68,9 +69,9 @@ public final class AccessControlListings {
             new ResultSetColumn("is_default", StringType.VARCHAR),
             new ResultSetColumn("is_current", StringType.VARCHAR),
             new ResultSetColumn("is_inherited", StringType.VARCHAR),
-            new ResultSetColumn("granted_to_roles", NumericType.INTEGER),
-            new ResultSetColumn("granted_to_database_roles", NumericType.INTEGER),
-            new ResultSetColumn("granted_database_roles", NumericType.INTEGER),
+            new ResultSetColumn("granted_to_roles", NumericType.NUMBER),
+            new ResultSetColumn("granted_to_database_roles", NumericType.NUMBER),
+            new ResultSetColumn("granted_database_roles", NumericType.NUMBER),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR)
@@ -132,7 +133,8 @@ public final class AccessControlListings {
             final Instant granted = role.getDatabaseRoleGrantTime(held.getKey());
             rows.add(new Row(Arrays.<Object>asList(
                 granted != null ? ShowResultHelpers.createdOn(granted) : ShowResultHelpers.createdOn(role.getCreatedTime()),
-                "USAGE", DATABASE_ROLE, held.getKey(), granteeKind, granteeName, "false", held.getValue())));
+                "USAGE", DATABASE_ROLE, SqlIdentifiers.spellAlreadyCanonicalPath(held.getKey()), granteeKind,
+                granteeName, "false", held.getValue())));
         }
         if (role instanceof DatabaseRole) {
             // A database role holds USAGE on its own database from the moment it exists, granted by no one; a USAGE
@@ -149,11 +151,15 @@ public final class AccessControlListings {
             final int split = entry.getKey().indexOf(':');
             final String objectType = entry.getKey().substring(0, split);
             final String objectName = entry.getKey().substring(split + 1);
+            if (!GrantNames.present(catalog, objectType, objectName)) {
+                continue;
+            }
             for (final Privilege privilege : entry.getValue()) {
                 final Instant granted = role.getPrivilegeGrantTime(objectType, objectName, privilege);
                 rows.add(new Row(Arrays.<Object>asList(
                     granted != null ? ShowResultHelpers.createdOn(granted) : ShowResultHelpers.createdOn(role.getCreatedTime()),
-                    privilege.displayName(), objectType, objectName, granteeKind, granteeName,
+                    privilege.displayName(), objectType, GrantNames.spelled(objectType, objectName), granteeKind,
+                    granteeName,
                     role.hasGrantOption(objectType, objectName, privilege) ? "true" : "false",
                     role.getPrivilegeGrantor(objectType, objectName, privilege))));
             }
@@ -212,36 +218,37 @@ public final class AccessControlListings {
             new ResultSetColumn("granted_by", StringType.VARCHAR)
         );
         final String qualified = role.getQualifiedName();
+        final String shown = SqlIdentifiers.spellAlreadyCanonicalPath(qualified);
         final List<Row> rows = new ArrayList<>();
         for (final Role holder : catalog.getAllRoles()) {
-            addHolder(rows, holder, qualified, "ROLE", holder.getName());
+            addHolder(rows, holder, qualified, shown, "ROLE", holder.getName());
         }
         final Database database = catalog.getDatabase(role.getDatabase());
         if (database != null) {
             for (final DatabaseRole holder : database.getDatabaseRoles()) {
                 // A database role as GRANTEE is named BARE in every listing, where the same role as the
                 // OBJECT of a grant keeps its database (live-verified).
-                addHolder(rows, holder, qualified, DATABASE_ROLE, holder.getName());
+                addHolder(rows, holder, qualified, shown, DATABASE_ROLE, holder.getName());
             }
         }
         for (final User user : catalog.getAllUsers()) {
             final String grantor = user.getDatabaseRoleGrants().get(qualified);
             if (grantor != null) {
                 rows.add(new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(user.getCreatedTime()),
-                    qualified, "USER", user.getName(), grantor)));
+                    shown, "USER", user.getName(), grantor)));
             }
         }
         return new ResultSet(columns, rows);
     }
 
     private static void addHolder(final List<Row> rows, final Role holder, final String qualified,
-                                  final String kind, final String name) {
+                                  final String shown, final String kind, final String name) {
         final String grantor = holder.getDatabaseRoleGrants().get(qualified);
         if (grantor != null) {
             final Instant granted = holder.getDatabaseRoleGrantTime(qualified);
             rows.add(new Row(Arrays.<Object>asList(
                 granted != null ? ShowResultHelpers.createdOn(granted) : ShowResultHelpers.createdOn(holder.getCreatedTime()),
-                qualified, kind, name, grantor)));
+                shown, kind, name, grantor)));
         }
     }
 
@@ -269,36 +276,38 @@ public final class AccessControlListings {
         final boolean databaseRole = role instanceof DatabaseRole;
         final String kind = databaseRole ? DATABASE_ROLE : "ROLE";
         final String name = databaseRole ? ((DatabaseRole) role).getQualifiedName() : role.getName();
+        // A database role is listed as a sentence spells it, its key apart from its spelling.
+        final String shown = databaseRole ? SqlIdentifiers.spellAlreadyCanonicalPath(name) : name;
         final List<Row> rows = new ArrayList<>();
         final String owner = role.getOwner();
         if (owner != null && !owner.isEmpty()) {
             rows.add(new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(role.getCreatedTime()), "OWNERSHIP",
-                kind, name, "ROLE", owner, "true", owner, ShowResultHelpers.OWNER_ROLE_TYPE)));
+                kind, shown, "ROLE", owner, "true", owner, ShowResultHelpers.OWNER_ROLE_TYPE)));
         }
         if (databaseRole) {
             for (final Role holder : catalog.getAllRoles()) {
                 addUsage(rows, holder.getDatabaseRoleGrants().get(name), holder.getDatabaseRoleGrantTime(name),
-                    holder, kind, name, "ROLE");
+                    holder, kind, shown, "ROLE");
             }
             final Database database = catalog.getDatabase(((DatabaseRole) role).getDatabase());
             if (database != null) {
                 for (final DatabaseRole holder : database.getDatabaseRoles()) {
                     addUsage(rows, holder.getDatabaseRoleGrants().get(name), holder.getDatabaseRoleGrantTime(name),
-                        holder, kind, name, DATABASE_ROLE);
+                        holder, kind, shown, DATABASE_ROLE);
                 }
             }
             for (final User user : catalog.getAllUsers()) {
                 final String grantor = user.getDatabaseRoleGrants().get(name);
                 if (grantor != null) {
                     rows.add(new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(user.getCreatedTime()),
-                        "USAGE", kind, name, "USER", user.getName(), "false", grantor,
+                        "USAGE", kind, shown, "USER", user.getName(), "false", grantor,
                         ShowResultHelpers.OWNER_ROLE_TYPE)));
                 }
             }
         } else {
             for (final Role holder : catalog.getAllRoles()) {
                 if (holder.getGrantedRoles().contains(name)) {
-                    addUsage(rows, holder.getRoleGrantor(name), null, holder, kind, name, "ROLE");
+                    addUsage(rows, holder.getRoleGrantor(name), null, holder, kind, shown, "ROLE");
                 }
             }
         }
@@ -420,11 +429,11 @@ public final class AccessControlListings {
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("region_group", StringType.VARCHAR),
             new ResultSetColumn("old_account_url", StringType.VARCHAR),
-            new ResultSetColumn("account_old_url_saved_on", ShowResultHelpers.CREATED_ON),
-            new ResultSetColumn("account_old_url_last_used", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("account_old_url_saved_on", ShowResultHelpers.WHOLE_SECONDS),
+            new ResultSetColumn("account_old_url_last_used", ShowResultHelpers.WHOLE_SECONDS),
             new ResultSetColumn("organization_old_url", StringType.VARCHAR),
-            new ResultSetColumn("organization_old_url_saved_on", ShowResultHelpers.CREATED_ON),
-            new ResultSetColumn("organization_old_url_last_used", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("organization_old_url_saved_on", ShowResultHelpers.WHOLE_SECONDS),
+            new ResultSetColumn("organization_old_url_last_used", ShowResultHelpers.WHOLE_SECONDS),
             new ResultSetColumn("tenant_type", StringType.VARCHAR),
             new ResultSetColumn("domain_names", StringType.VARCHAR)
         );

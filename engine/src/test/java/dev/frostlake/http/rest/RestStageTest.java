@@ -82,7 +82,10 @@ public class RestStageTest extends BaseRestTest {
             + "\"encryption\":{\"type\":\"AWS_SSE_S3\"}}"));
         final JsonNode fetched = ok(get(stages("stg_ext") + "/ext"));
         assertEquals("s3://bucket/path/", fetched.path("url").asString());
-        assertEquals("aws", fetched.path("cloud").asString());
+        // The body relays SHOW STAGES' cells: the provider as the listing spells it, and the two flags.
+        assertEquals("AWS", fetched.path("cloud").asString());
+        assertTrue(fetched.path("has_credentials").asBoolean(), fetched.toString());
+        assertEquals("PERMANENT", fetched.path("kind").asString());
         assertTrue(fetched.get("credentials").isNull(), "credentials are write-only: " + fetched);
     }
 
@@ -96,7 +99,7 @@ public class RestStageTest extends BaseRestTest {
         ok(post(stages("stg_modes") + "?createMode=orReplace", "{\"name\":\"m\",\"comment\":\"third\"}"));
         assertEquals("third", ok(get(stages("stg_modes") + "/m")).path("comment").asString());
         ok(post(stages("stg_modes"), "{\"name\":\"tmp\",\"kind\":\"TEMPORARY\"}"));
-        ok(get(stages("stg_modes") + "/tmp"));
+        assertEquals("TEMPORARY", ok(get(stages("stg_modes") + "/tmp")).path("kind").asString());
         error(400, post(stages("stg_modes"), "{\"name\":\"bad\",\"kind\":\"TRANSIENT\"}"));
         error(400, post(stages("stg_modes"), "{\"comment\":\"no name\"}"));
         error(400, post(stages("stg_modes"), "{\"name\":\"bad\",\"file_format\":{\"type\":\"CSV\",\"x y\":1}}"));

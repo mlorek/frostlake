@@ -118,7 +118,7 @@ final class FromSourceNames {
             if (ref == null) {
                 continue;
             }
-            if (ref.pivotClause() != null || ref.unpivotClause() != null) {
+            if (ref.pivotClause() != null || ref.unpivotClause() != null || ref.matchRecognizeClause() != null) {
                 return false;
             }
             final FrostlakeParser.TableSourceContext source = ref.tableSource();

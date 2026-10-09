@@ -25,6 +25,7 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
@@ -53,7 +54,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 /**
  * CREATE, ALTER, DROP, SHOW and DESCRIBE of network rules, network policies, password policies and secrets, and the
@@ -70,17 +70,6 @@ public final class SecurityObjectCommandHandler {
     private static final String ACCOUNT = "ACCOUNT";
     private static final String PASSWORD_POLICY_PREFIX = "PASSWORD_POLICY|";
     private static final String NETWORK_POLICY_PREFIX = "NETWORK_POLICY|";
-
-    /** The modes a network rule of type IPV4 takes. */
-    private static final List<String> IPV4_MODES = Collections.unmodifiableList(Arrays.asList("INGRESS",
-        "POSTGRES_INGRESS", "POSTGRES_EGRESS"));
-
-    /** One DNS label: letters and digits, with hyphens inside it only. */
-    private static final Pattern HOST_LABEL = Pattern.compile("[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?");
-
-    /** The top-level domains reserved never to resolve. */
-    private static final List<String> RESERVED_TOP_LEVEL_DOMAINS = Collections.unmodifiableList(Arrays.asList(
-        "example", "invalid", "localhost", "test"));
 
     private final Catalog catalog;
     private final QueryExecutor queryExecutor;
@@ -153,7 +142,7 @@ public final class SecurityObjectCommandHandler {
         }
         final Schema schema = kind.isSchemaObject() ? owningSchema(ctx.qualifiedName(0)) : null;
         if (schema != null) {
-            schema.requireCreatable(Privilege.valueOf("CREATE_" + kind.name()));
+            queryExecutor.requireCreatePrivilege(Privilege.valueOf("CREATE_" + kind.name()), schema);
         }
         final String name = kind.isSchemaObject() ? lastPart(ctx.qualifiedName(0))
             : SqlIdentifiers.canonical(ctx.identifier(0));
@@ -165,7 +154,9 @@ public final class SecurityObjectCommandHandler {
         final SecurityObject existing = store.get(kind, name);
         if (existing != null && ctx.or_alter() != null) {
             recreateInPlace(existing, properties);
-            return created(kind, name);
+            // An object found is altered, and the statement answers as an ALTER does.
+            ConditionalDdlOutcome.alteredInPlace();
+            return null;
         }
         if (existing != null && ctx.or_replace() != null) {
             // Replacing an object needs OWNERSHIP of it.
@@ -186,9 +177,12 @@ public final class SecurityObjectCommandHandler {
                 + SqlIdentifiers.spellAlreadyCanonicalPath(written) + "' already exists."));
         }
         requireCreatable(kind, properties);
-        if (kind == SecurityObjectKind.NETWORK_RULE && "HOST_PORT".equals(properties.get("TYPE"))
-                && properties.get("VALUE_LIST") != null) {
-            requireResolvableHosts(asStrings(properties.get("VALUE_LIST")));
+        if (kind == SecurityObjectKind.SECRET && properties.get("API_AUTHENTICATION") != null) {
+            // The integration a secret authenticates through has to exist and to suit the secret's type.
+            final Object scopes = properties.get("OAUTH_SCOPES");
+            new IntegrationReferences(catalog).requireSecretAuthentication(String.valueOf(properties.get("TYPE")),
+                properties.get("API_AUTHENTICATION").toString(),
+                scopes == null ? new ArrayList<String>() : asStrings(scopes));
         }
         final SecurityObject created = new SecurityObject(kind, name);
         created.setOwner(catalog.currentRoleForOwner());
@@ -229,11 +223,11 @@ public final class SecurityObjectCommandHandler {
             throw new RuntimeException(SqlCompilationError.of("Missing option(s): [TYPE]"));
         }
         if (kind == SecurityObjectKind.NETWORK_RULE) {
+            // A rule's type decides the modes it takes and how its values read (see NetworkRuleChecks).
             final Object mode = properties.containsKey("MODE") ? properties.get("MODE") : "INGRESS";
-            if ("IPV4".equals(type) && !IPV4_MODES.contains(mode)) {
-                throw new RuntimeException(SqlCompilationError.PREFIX + " The network rule mode " + mode
-                    + " is not supported by the network rule type IPv4. The network rule mode must be one of "
-                    + IPV4_MODES + ".\n");
+            NetworkRuleChecks.requireMode(type.toString(), mode.toString());
+            if (properties.get("VALUE_LIST") != null) {
+                NetworkRuleChecks.requireValues(type.toString(), asStrings(properties.get("VALUE_LIST")));
             }
             return;
         }
@@ -255,21 +249,38 @@ public final class SecurityObjectCommandHandler {
     }
 
     /**
-     * CREATE OR ALTER over an existing network rule or network policy: the properties the statement names are set,
-     * and the others are left as they are. A network rule's TYPE and MODE cannot change.
+     * CREATE OR ALTER over an existing network rule or network policy: the statement tells the whole object, so a
+     * rule's value list and comment it leaves out are emptied, and so are a policy's four lists and its comment.
+     * A network rule's TYPE and MODE cannot change; a MODE left out changes nothing (live-verified).
      */
     private static void recreateInPlace(final SecurityObject existing, final Map<String, Object> properties) {
+        final Map<String, Object> changes = new LinkedHashMap<>(properties);
         if (existing.getKind() == SecurityObjectKind.NETWORK_RULE) {
             for (final String fixed : new String[] {"TYPE", "MODE"}) {
-                final Object given = properties.containsKey(fixed) ? properties.get(fixed)
-                    : "MODE".equals(fixed) ? "INGRESS" : null;
-                if (!existing.getProperty(fixed).equals(given)) {
+                final boolean kept = "MODE".equals(fixed) && !properties.containsKey(fixed);
+                if (!kept && !existing.getProperty(fixed).equals(properties.get(fixed))) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Property '" + fixed
                         + "' cannot be changed in CREATE OR ALTER.");
                 }
             }
+            if (properties.get("VALUE_LIST") != null) {
+                NetworkRuleChecks.requireValues(existing.text("TYPE"), asStrings(properties.get("VALUE_LIST")));
+            }
+            if (!changes.containsKey("VALUE_LIST")) {
+                changes.put("VALUE_LIST", new ArrayList<String>());
+            }
+            if (!changes.containsKey("COMMENT")) {
+                changes.put("COMMENT", null);
+            }
         }
-        final Map<String, Object> changes = new LinkedHashMap<>(properties);
+        if (existing.getKind() == SecurityObjectKind.NETWORK_POLICY) {
+            for (final String told : new String[] {"ALLOWED_IP_LIST", "BLOCKED_IP_LIST", "ALLOWED_NETWORK_RULE_LIST",
+                "BLOCKED_NETWORK_RULE_LIST", "COMMENT"}) {
+                if (!changes.containsKey(told)) {
+                    changes.put(told, null);
+                }
+            }
+        }
         changes.remove("TYPE");
         changes.remove("MODE");
         apply(existing, changes);
@@ -373,6 +384,9 @@ public final class SecurityObjectCommandHandler {
                     throw new RuntimeException(
                         "The network rule type must be one of the snowflake supported network rule type.");
                 }
+                if ("MODE".equals(key) && spec.getChoices().length > 0 && "INGRESS".equals(spec.getChoices()[0])) {
+                    throw NetworkRuleChecks.unknownMode();
+                }
                 throw invalidValue(written, key);
         }
     }
@@ -381,61 +395,6 @@ public final class SecurityObjectCommandHandler {
     private static String[] nameParts(final FrostlakeParser.SecurityObjectStatementContext ctx,
                                       final SecurityObjectKind kind, final String name) {
         return kind.isSchemaObject() ? ParseTreeText.qualifiedNameParts(ctx.qualifiedName(0)) : new String[] {name};
-    }
-
-    /**
-     * A HOST_PORT rule's values name hosts the account resolves when the rule is made, each with an optional port,
-     * and one that cannot resolve refuses the whole list. With no resolver at hand the name's shape is read instead:
-     * a port is 0 to 65535, and a host is two or more DNS labels behind an optional leading {@code *.} wildcard,
-     * whose last label is not numeric — an address is no host name — and is no top-level domain reserved never to
-     * resolve.
-     */
-    private static void requireResolvableHosts(final List<String> values) {
-        for (final String value : values) {
-            if (!resolvableHostPort(value)) {
-                throw new RuntimeException(SqlCompilationError.of("invalid value '" + values
-                    + "' for property 'VALUE_LIST', Reason: One or more values might be an unresolvable host name."
-                    + " Verify all hosts are resolvable, or use a wildcard pattern."));
-            }
-        }
-    }
-
-    private static boolean resolvableHostPort(final String value) {
-        String host = value;
-        final int colon = value.lastIndexOf(':');
-        if (colon >= 0) {
-            final String port = value.substring(colon + 1);
-            if (port.isEmpty() || port.length() > 5) {
-                return false;
-            }
-            for (int i = 0; i < port.length(); i++) {
-                if (!Character.isDigit(port.charAt(i))) {
-                    return false;
-                }
-            }
-            if (Integer.parseInt(port) > 65535) {
-                return false;
-            }
-            host = value.substring(0, colon);
-        }
-        if (host.startsWith("*.")) {
-            host = host.substring(2);
-        }
-        final String[] labels = host.split("\\.", -1);
-        if (labels.length < 2) {
-            return false;
-        }
-        for (final String label : labels) {
-            if (!HOST_LABEL.matcher(label).matches()) {
-                return false;
-            }
-        }
-        final String topLevel = labels[labels.length - 1].toLowerCase(Locale.ROOT);
-        boolean numeric = true;
-        for (int i = 0; i < topLevel.length(); i++) {
-            numeric &= Character.isDigit(topLevel.charAt(i));
-        }
-        return !numeric && !RESERVED_TOP_LEVEL_DOMAINS.contains(topLevel);
     }
 
     /** A secret property the secret's type does not take. */
@@ -585,11 +544,11 @@ public final class SecurityObjectCommandHandler {
                 final Tag tag = catalog.getTag(ParseTreeText.getQualifiedName(assign.qualifiedName()));
                 final String value = TagValues.text(assign.qualifiedName(), assign.tagValue(), queryExecutor);
                 TagValues.requireAllowed(tag, value);
-                target.setTag(tag.getName(), value);
+                TagAssignments.set(target, tag, value);
             }
         } else if (ctx.tagUnset() != null) {
             for (final FrostlakeParser.QualifiedNameContext tagName : ctx.tagUnset().qualifiedName()) {
-                target.unsetTag(catalog.getTag(ParseTreeText.getQualifiedName(tagName)).getName());
+                TagAssignments.unset(target, catalog.getTag(ParseTreeText.getQualifiedName(tagName)));
             }
         }
         return null;
@@ -613,9 +572,8 @@ public final class SecurityObjectCommandHandler {
             if (kind == SecurityObjectKind.NETWORK_POLICY) {
                 requireIngressRules(properties, target.getName());
             }
-            if (kind == SecurityObjectKind.NETWORK_RULE && "HOST_PORT".equals(target.text("TYPE"))
-                    && properties.get("VALUE_LIST") != null) {
-                requireResolvableHosts(asStrings(properties.get("VALUE_LIST")));
+            if (kind == SecurityObjectKind.NETWORK_RULE && properties.get("VALUE_LIST") != null) {
+                NetworkRuleChecks.requireValues(target.text("TYPE"), asStrings(properties.get("VALUE_LIST")));
             }
             apply(target, properties);
             return;
@@ -767,7 +725,7 @@ public final class SecurityObjectCommandHandler {
         }
         if (kind == SecurityObjectKind.NETWORK_POLICY) {
             return filter(showNetworkPolicies(), ctx.LIKE() == null ? null
-                : SqlStringLiterals.decode(ctx.STRING_LITERAL(0).getText()));
+                : ParseTreeText.stringValue(ctx.stringText(0)));
         }
         if (kind == SecurityObjectKind.PASSWORD_POLICY && ctx.ON() != null) {
             return showPasswordPoliciesOn(ctx);
@@ -779,10 +737,10 @@ public final class SecurityObjectCommandHandler {
             }
         }
         ResultSet listing = new ResultSet(showColumns(kind, false), rows);
-        final TerminalNode like = ctx.LIKE() != null ? ctx.STRING_LITERAL(0) : null;
-        listing = sorted(filter(listing, like == null ? null : SqlStringLiterals.decode(like.getText())));
+        final FrostlakeParser.StringTextContext like = ctx.LIKE() != null ? ctx.stringText(0) : null;
+        listing = sorted(filter(listing, like == null ? null : ParseTreeText.stringValue(like)));
         if (ctx.STARTS() != null) {
-            final String prefix = SqlStringLiterals.decode(ctx.STRING_LITERAL(like == null ? 0 : 1).getText());
+            final String prefix = ParseTreeText.stringValue(ctx.stringText(like == null ? 0 : 1));
             listing = startingWith(listing, prefix);
         }
         if (ctx.LIMIT() != null) {
@@ -791,22 +749,30 @@ public final class SecurityObjectCommandHandler {
                 throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");
             }
             final String from = ctx.FROM() == null ? null
-                : SqlStringLiterals.decode(ctx.STRING_LITERAL(ctx.STRING_LITERAL().size() - 1).getText());
-            listing = page(listing, limit, from);
+                : ParseTreeText.stringValue(ctx.stringText(ctx.stringText().size() - 1));
+            // A network rule listing starts at the name's own row; a secret listing after it (live-verified).
+            listing = page(listing, limit, from, kind == SecurityObjectKind.NETWORK_RULE ? ShowPageStart.AT_NAME
+                : ShowPageStart.AFTER_NAME);
         }
         return listing;
     }
 
     /**
      * The schemas a listing's scope covers: every schema of the account, of a database, or one schema. With no
-     * scope the current database is listed, or the account when there is none; a bare DATABASE or SCHEMA with no
-     * current one has no effect.
+     * scope the current schema is listed (live-verified), or the account when there is none; a bare DATABASE or
+     * SCHEMA with no current one has no effect.
      */
     private List<Schema> scope(final FrostlakeParser.SecurityListingScopeContext scope) {
         final String currentDatabase = catalog.getCurrentDatabase();
-        if (scope == null || scope.ACCOUNT() != null) {
-            return scope == null && currentDatabase != null ? schemasOf(catalog.databaseExact(currentDatabase))
-                : allSchemas();
+        if (scope == null) {
+            if (currentDatabase == null || catalog.getCurrentSchema() == null) {
+                return allSchemas();
+            }
+            return Collections.singletonList(catalog.databaseExact(currentDatabase)
+                .schemaExact(catalog.getCurrentSchema()));
+        }
+        if (scope.ACCOUNT() != null) {
+            return allSchemas();
         }
         final String[] parts = scope.qualifiedName() == null ? new String[0]
             : ParseTreeText.qualifiedNameParts(scope.qualifiedName());
@@ -849,7 +815,9 @@ public final class SecurityObjectCommandHandler {
                 columns.add(new ResultSetColumn(name, ShowResultHelpers.CREATED_ON));
             } else if (name.endsWith("_expiry_time")) {
                 columns.add(new ResultSetColumn(name, ShowResultHelpers.CREATED_ON));
-            } else if (name.startsWith("entries_in_") || "key_length".equals(name)) {
+            } else if (name.startsWith("entries_in_")) {
+                columns.add(new ResultSetColumn(name, ShowResultHelpers.COUNT));
+            } else if ("key_length".equals(name)) {
                 columns.add(new ResultSetColumn(name, NumericType.NUMBER));
             } else {
                 columns.add(new ResultSetColumn(name, StringType.VARCHAR));
@@ -980,12 +948,13 @@ public final class SecurityObjectCommandHandler {
         return new ResultSet(listing.getColumns(), kept);
     }
 
-    private static ResultSet page(final ResultSet listing, final int limit, final String from) {
+    private static ResultSet page(final ResultSet listing, final int limit, final String from,
+                                  final ShowPageStart start) {
         final int name = nameIndex(listing);
         final List<Row> kept = new ArrayList<>();
         for (final Row row : listing.getRows()) {
             final Object value = row.getValue(name);
-            if (from != null && (value == null || value.toString().compareTo(from) <= 0)) {
+            if (from != null && !start.keeps(value == null ? null : value.toString(), from, !kept.isEmpty())) {
                 continue;
             }
             kept.add(row);

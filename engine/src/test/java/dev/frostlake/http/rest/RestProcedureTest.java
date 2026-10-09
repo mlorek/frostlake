@@ -91,8 +91,9 @@ public class RestProcedureTest extends BaseRestTest {
     public void unsupportedFormsAndMissingProceduresAreRefused() throws Exception {
         error(501, post(PROCS, "{\"name\":\"sec_proc\",\"is_secure\":true,\"arguments\":[],"
             + "\"return_type\":{\"datatype\":\"NUMBER\"},\"language_config\":{\"language\":\"SQL\"},\"body\":\"BEGIN RETURN 1; END\"}"));
-        error(501, post(PROCS, "{\"name\":\"rc_proc\",\"execute_as\":\"RESTRICTED CALLER\",\"arguments\":[],"
+        ok(post(PROCS, "{\"name\":\"rc_proc\",\"execute_as\":\"RESTRICTED CALLER\",\"arguments\":[],"
             + "\"return_type\":{\"datatype\":\"NUMBER\"},\"language_config\":{\"language\":\"SQL\"},\"body\":\"BEGIN RETURN 1; END\"}"));
+        assertEquals("RESTRICTED CALLER", ok(get(PROCS + "/rc_proc()")).path("execute_as").asString());
         error(400, post(PROCS, "{\"name\":\"no_ret\",\"arguments\":[],\"language_config\":{\"language\":\"SQL\"}}"));
         assertEquals("002141", json(post(PROCS + "/no_such_proc:call", "{\"call_arguments\":[]}")).path("code")
             .asString());

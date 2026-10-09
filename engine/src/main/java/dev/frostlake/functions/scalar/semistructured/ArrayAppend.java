@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -90,5 +91,13 @@ public class ArrayAppend extends VariantAccessorFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        return null;
     }
 }

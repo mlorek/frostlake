@@ -37,6 +37,8 @@ public class MaskingPolicySnapshot implements Serializable {
      * {@code RETURNS VARCHAR}. Null on snapshots written before it was saved, which fall back to the name.
      */
     public DataType returnDataType;
+    /** The RETURNS type as a description spells it; null on snapshots written before it was saved. */
+    public String returnSpelling;
     public String body;
     public String comment;
     public String owner;

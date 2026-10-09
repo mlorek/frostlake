@@ -35,6 +35,8 @@ public class TableColumn implements Taggable {
     private final boolean autoIncrement;
     private final long identityStart;
     private final long identityIncrement;
+    // Whether the identity was declared ORDER: its numbers are handed out in order. NOORDER is the default.
+    private boolean identityOrdered;
     private String comment;
     private String collation;
 
@@ -86,6 +88,12 @@ public class TableColumn implements Taggable {
     // A DERIVED relation's column projecting a double live's compiler folds, which TO_VARIANT wraps keeping
     // its FLOAT origin (see isFoldedDouble); false for every other column.
     private boolean foldedDouble;
+    // Whether the column holds nothing but an untyped NULL (see isUntypedNull); false for every other column.
+    private boolean untypedNull;
+
+    // Whether a DERIVED relation's column holds its collation because a COLLATE named it (see
+    // isCollationExplicit); false for every other column, a catalog column's among them.
+    private boolean collationExplicit;
 
     public TableColumn(final String name, final DataType dataType, final boolean nullable,
                  final Object defaultValue, final boolean primaryKey, final boolean unique,
@@ -191,12 +199,45 @@ public class TableColumn implements Taggable {
      *
      * @return true for such a column
      */
+    /**
+     * Whether the column holds nothing but an untyped NULL: DUAL's COLUMN1, a VALUES column written as NULL in
+     * every row, a derived column over the bare word. It has no type of its own, so every type rule reads a
+     * reference to it as the bare word NULL, while the column itself describes as a zero-width string
+     * (live-verified).
+     *
+     * @return true for such a column
+     */
+    public boolean isUntypedNull() {
+        return untypedNull;
+    }
+
+    public void setUntypedNull(final boolean untypedNull) {
+        this.untypedNull = untypedNull;
+    }
+
     public boolean isFoldedDouble() {
         return foldedDouble;
     }
 
     public void setFoldedDouble(final boolean foldedDouble) {
         this.foldedDouble = foldedDouble;
+    }
+
+    /**
+     * Whether this DERIVED relation's column holds its collation because a COLLATE named it, in the query
+     * that built the relation or in one below it: such a collation outranks a column's declared one wherever
+     * the two meet, so {@code SELECT … FROM (SELECT c COLLATE 'en-cs' AS x, c FROM t) WHERE x = c} compares
+     * under {@code en-cs}. A catalog column never does — a table created from such a query declares the
+     * collation as its own.
+     *
+     * @return true for a named collation
+     */
+    public boolean isCollationExplicit() {
+        return collationExplicit;
+    }
+
+    public void setCollationExplicit(final boolean collationExplicit) {
+        this.collationExplicit = collationExplicit;
     }
 
     /**
@@ -234,7 +275,9 @@ public class TableColumn implements Taggable {
     /** {@code copy} given every attribute of this column its constructor does not take; answers the copy. */
     private TableColumn carriedInto(final TableColumn copy) {
         copy.comment = comment;
+        copy.identityOrdered = identityOrdered;
         copy.collation = collation;
+        copy.collationExplicit = collationExplicit;
         copy.ordinalPosition = ordinalPosition;
         copy.referencedTable = referencedTable;
         copy.referencedColumn = referencedColumn;
@@ -251,6 +294,7 @@ public class TableColumn implements Taggable {
         copy.spelledNumber = spelledNumber;
         copy.uncheckedConstant = uncheckedConstant;
         copy.foldedDouble = foldedDouble;
+        copy.untypedNull = untypedNull;
         return copy;
     }
 
@@ -267,6 +311,7 @@ public class TableColumn implements Taggable {
             unique, autoIncrement, identityStart, identityIncrement);
         copy.comment = comment;
         copy.collation = collation;
+        copy.collationExplicit = collationExplicit;
         copy.referencedTable = referencedTable;
         copy.referencedColumn = referencedColumn;
         copy.onDelete = onDelete;
@@ -281,6 +326,7 @@ public class TableColumn implements Taggable {
         copy.spelledNumber = spelledNumber;
         copy.uncheckedConstant = uncheckedConstant;
         copy.foldedDouble = foldedDouble;
+        copy.untypedNull = untypedNull;
         return copy;
     }
 
@@ -303,6 +349,7 @@ public class TableColumn implements Taggable {
             unique, autoIncrement, identityStart, identityIncrement);
         copy.comment = comment;
         copy.collation = collation;
+        copy.collationExplicit = collationExplicit;
         copy.referencedTable = referencedTable;
         copy.referencedColumn = referencedColumn;
         copy.onDelete = onDelete;
@@ -434,6 +481,15 @@ public class TableColumn implements Taggable {
 
     public Boolean getRely() {
         return rely;
+    }
+
+    /** Whether the column's identity was declared ORDER; false for NOORDER, for none and for no identity. */
+    public boolean isIdentityOrdered() {
+        return identityOrdered;
+    }
+
+    public void setIdentityOrdered(final boolean identityOrdered) {
+        this.identityOrdered = identityOrdered;
     }
 
     public void setRely(final Boolean rely) {

@@ -32,6 +32,7 @@ import dev.frostlake.types.StringType;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -63,14 +64,14 @@ final class ShowInfraExecutor {
             new ResultSetColumn("state", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR),
             new ResultSetColumn("size", StringType.VARCHAR),
-            new ResultSetColumn("min_cluster_count", NumericType.INTEGER),
-            new ResultSetColumn("max_cluster_count", NumericType.INTEGER),
-            new ResultSetColumn("started_clusters", NumericType.INTEGER),
-            new ResultSetColumn("running", NumericType.INTEGER),
-            new ResultSetColumn("queued", NumericType.INTEGER),
+            new ResultSetColumn("min_cluster_count", ShowResultHelpers.COUNT),
+            new ResultSetColumn("max_cluster_count", ShowResultHelpers.COUNT),
+            new ResultSetColumn("started_clusters", ShowResultHelpers.COUNT),
+            new ResultSetColumn("running", ShowResultHelpers.COUNT),
+            new ResultSetColumn("queued", ShowResultHelpers.COUNT),
             new ResultSetColumn("is_default", StringType.VARCHAR),
             new ResultSetColumn("is_current", StringType.VARCHAR),
-            new ResultSetColumn("auto_suspend", NumericType.INTEGER),
+            new ResultSetColumn("auto_suspend", ShowResultHelpers.COUNT),
             new ResultSetColumn("auto_resume", StringType.VARCHAR),
             new ResultSetColumn("available", StringType.VARCHAR),
             new ResultSetColumn("provisioning", StringType.VARCHAR),
@@ -82,18 +83,18 @@ final class ShowInfraExecutor {
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("enable_query_acceleration", StringType.VARCHAR),
-            new ResultSetColumn("query_acceleration_max_scale_factor", NumericType.INTEGER),
+            new ResultSetColumn("query_acceleration_max_scale_factor", ShowResultHelpers.COUNT),
             new ResultSetColumn("resource_monitor", StringType.VARCHAR),
-            new ResultSetColumn("actives", NumericType.INTEGER),
-            new ResultSetColumn("pendings", NumericType.INTEGER),
-            new ResultSetColumn("failed", NumericType.INTEGER),
-            new ResultSetColumn("suspended", NumericType.INTEGER),
+            new ResultSetColumn("actives", ShowResultHelpers.COUNT),
+            new ResultSetColumn("pendings", ShowResultHelpers.COUNT),
+            new ResultSetColumn("failed", ShowResultHelpers.COUNT),
+            new ResultSetColumn("suspended", ShowResultHelpers.COUNT),
             new ResultSetColumn("uuid", StringType.VARCHAR),
             new ResultSetColumn("scaling_policy", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
             new ResultSetColumn("resource_constraint", StringType.VARCHAR),
             new ResultSetColumn("generation", StringType.VARCHAR),
-            new ResultSetColumn("query_throughput_multiplier", StringType.VARCHAR),
+            new ResultSetColumn("query_throughput_multiplier", ShowResultHelpers.COUNT),
             new ResultSetColumn("max_query_performance_level", StringType.VARCHAR),
             new ResultSetColumn("disabled_reasons", StringType.VARCHAR),
             new ResultSetColumn("tables", StringType.VARCHAR)
@@ -119,8 +120,9 @@ final class ShowInfraExecutor {
                 wh.getName().equalsIgnoreCase(currentWarehouse) ? "Y" : "N",
                 wh.getAutoSuspendSeconds() == null ? null : Long.valueOf(wh.getAutoSuspendSeconds().longValue()),
                 String.valueOf(wh.isAutoResume()),
-                // The four cluster-health cells are empty strings on an idle warehouse.
-                "", "", "", "",
+                // The four cluster-health cells: all of a started warehouse's compute is available, and a
+                // suspended one tells nothing (live-verified, the leading space included).
+                running ? " 100" : "", running ? "0" : "", running ? "0" : "", running ? "0" : "",
                 created, lastChange, lastChange,
                 wh.getOwner(),
                 ShowResultHelpers.text(wh.getComment()),
@@ -177,16 +179,20 @@ final class ShowInfraExecutor {
         final String scName = schema.getName();
         for (final Stage stage : schema.getStages()) {
             final String url = stage.getUrl() != null ? stage.getUrl() : "";
-            final String type = url.startsWith("s3://") || url.startsWith("azure://") || url.startsWith("gcs://")
-                ? "EXTERNAL" : "INTERNAL";
-            final String cloud = url.startsWith("s3://") ? "aws" : url.startsWith("azure://") ? "azure"
-                : url.startsWith("gcs://") ? "gcp" : null;
+            // An internal stage with server-side encryption alone is INTERNAL NO CSE; a temporary stage says so
+            // after its kind; the cloud is named in upper case (live-verified).
+            final boolean external = url.startsWith("s3://") || url.startsWith("azure://") || url.startsWith("gcs://");
+            final String type = external ? stage.isTemporary() ? "EXTERNAL TEMPORARY" : "EXTERNAL"
+                : stage.isTemporary() ? "INTERNAL TEMPORARY"
+                : "SNOWFLAKE_SSE".equalsIgnoreCase(stage.getEncryptionType()) ? "INTERNAL NO CSE" : "INTERNAL";
+            final String cloud = url.startsWith("s3://") ? "AWS" : url.startsWith("azure://") ? "AZURE"
+                : url.startsWith("gcs://") ? "GCP" : null;
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(stage.getCreatedAt()),
                 stage.getName(),
                 dbName, scName,
                 url,
-                "N", "N",
+                stage.hasCredentials() ? "Y" : "N", stage.hasEncryptionKey() ? "Y" : "N",
                 stage.getOwner(),
                 ShowResultHelpers.text(stage.getComment()),
                 null, type, cloud, null, null, null,
@@ -232,16 +238,16 @@ final class ShowInfraExecutor {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("state", StringType.VARCHAR),
-            new ResultSetColumn("min_nodes", NumericType.NUMBER),
-            new ResultSetColumn("max_nodes", NumericType.NUMBER),
+            new ResultSetColumn("min_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("max_nodes", ShowResultHelpers.COUNT),
             new ResultSetColumn("instance_family", StringType.VARCHAR),
-            new ResultSetColumn("num_services", NumericType.NUMBER),
-            new ResultSetColumn("num_jobs", NumericType.NUMBER),
+            new ResultSetColumn("num_services", ShowResultHelpers.COUNT),
+            new ResultSetColumn("num_jobs", ShowResultHelpers.COUNT),
             new ResultSetColumn("auto_suspend_secs", NumericType.NUMBER),
             new ResultSetColumn("auto_resume", StringType.VARCHAR),
-            new ResultSetColumn("active_nodes", NumericType.NUMBER),
-            new ResultSetColumn("idle_nodes", NumericType.NUMBER),
-            new ResultSetColumn("target_nodes", NumericType.NUMBER),
+            new ResultSetColumn("active_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("idle_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("target_nodes", ShowResultHelpers.COUNT),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("resumed_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
@@ -268,16 +274,16 @@ final class ShowInfraExecutor {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("state", StringType.VARCHAR),
-            new ResultSetColumn("min_nodes", NumericType.NUMBER),
-            new ResultSetColumn("max_nodes", NumericType.NUMBER),
+            new ResultSetColumn("min_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("max_nodes", ShowResultHelpers.COUNT),
             new ResultSetColumn("instance_family", StringType.VARCHAR),
-            new ResultSetColumn("num_services", NumericType.NUMBER),
-            new ResultSetColumn("num_jobs", NumericType.NUMBER),
+            new ResultSetColumn("num_services", ShowResultHelpers.COUNT),
+            new ResultSetColumn("num_jobs", ShowResultHelpers.COUNT),
             new ResultSetColumn("auto_suspend_secs", NumericType.NUMBER),
             new ResultSetColumn("auto_resume", StringType.VARCHAR),
-            new ResultSetColumn("active_nodes", NumericType.NUMBER),
-            new ResultSetColumn("idle_nodes", NumericType.NUMBER),
-            new ResultSetColumn("target_nodes", NumericType.NUMBER),
+            new ResultSetColumn("active_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("idle_nodes", ShowResultHelpers.COUNT),
+            new ResultSetColumn("target_nodes", ShowResultHelpers.COUNT),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("resumed_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
@@ -391,6 +397,9 @@ final class ShowInfraExecutor {
      * The CSV file-format property tree a real account describes for a stage, in its order:
      * property, type, default. DESC STAGE overlays the stage's own declared options on these.
      */
+    /** How DESCRIBE STAGE spells the moment of a directory table's last refresh. */
+    private static final DateTimeFormatter LAST_REFRESHED = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS xx");
+
     private static final String[][] STAGE_FORMAT_PROPERTIES = {
         {"TYPE", "String", "CSV"},
         {"RECORD_DELIMITER", "String", "\\n"},
@@ -469,7 +478,11 @@ final class ShowInfraExecutor {
         if (written == null) {
             return whenUnwritten;
         }
-        return "Boolean".equals(type) ? written.toLowerCase(Locale.ROOT) : written;
+        if ("Boolean".equals(type)) {
+            return written.toLowerCase(Locale.ROOT);
+        }
+        // A quote a text holds is listed behind a backslash, as a backslash itself is.
+        return "String".equals(type) ? written.replace("\"", "\\\"") : written;
     }
 
     /** The five columns every stage-property listing answers in. */
@@ -511,27 +524,43 @@ final class ShowInfraExecutor {
             new ResultSetColumn("property_default", StringType.VARCHAR));
         final Stage stage = catalog.getStage(stageName);
         final List<Row> rows = new ArrayList<>();
-        for (final String[] property : STAGE_FORMAT_PROPERTIES) {
-            String value = stage.getFileFormatOptions().get(property[0]);
-            if (value == null) {
-                value = "TYPE".equals(property[0]) ? stage.getFileFormat() : property[2];
-            }
-            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property[0], property[1],
-                value, property[2])));
+        // The tree is the one of the stage's own format TYPE, as a table's stage answers its written format
+        // (live-verified): a JSON stage lists STRIP_OUTER_ARRAY and no FIELD_DELIMITER.
+        final String type = stage.getFileFormat();
+        final String formatName = stage.getFileFormatOptions().get("FORMAT_NAME");
+        if (formatName != null) {
+            // A stage that names a file format lists the name alone, as the statement wrote it; the format's
+            // own options are the format's to describe.
+            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", "FORMAT_NAME", "String",
+                formatName.replace("\"", "\\\""), "")));
+        }
+        for (final FormatProperty property : formatName != null ? new ArrayList<FormatProperty>()
+                : FileFormatSurfaces.tree(type)) {
+            final String written = "TYPE".equals(property.name) ? type
+                : stage.getFileFormatOptions().get(property.name.toUpperCase(Locale.ROOT));
+            // A stage's default format is CSV whichever tree is answered, so the TYPE row's default column
+            // reads CSV even under a JSON format.
+            final String shownDefault = "TYPE".equals(property.name) ? "CSV" : property.shownDefault;
+            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
+                spelled(written, property.type, property.valueDefault), shownDefault)));
         }
         for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
-            String value = stage.getCopyOptions().get(property[0]);
-            if (value == null) {
-                value = property[2];
-            }
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
-                value, property[2])));
+                spelled(stage.getCopyOptions().get(property[0]), property[1], property[2]), property[2])));
         }
         rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String",
             stage.getUrl() != null ? stage.getUrl() : "", "")));
+        if (stage.isDirectoryEnabled()) {
+            // Told for a directory table that is on alone: empty until its first refresh, then the moment of
+            // the last one at the session's offset (live-verified).
+            rows.add(new Row(Arrays.asList("DIRECTORY", "LAST_REFRESHED_ON", "Timestamp",
+                stage.getDirectoryRefreshed() == null ? ""
+                    : LAST_REFRESHED.format(stage.getDirectoryRefreshed().atZone(SessionZone.current())), "")));
+        }
         rows.add(new Row(Arrays.asList("DIRECTORY", "ENABLE", "Boolean",
             String.valueOf(stage.isDirectoryEnabled()), "false")));
-        rows.add(new Row(Arrays.asList("DIRECTORY", "AUTO_REFRESH", "Boolean", "false", "false")));
+        rows.add(new Row(Arrays.asList("DIRECTORY", "AUTO_REFRESH", "Boolean",
+            String.valueOf(stage.isDirectoryAutoRefresh()), "false")));
         return new ResultSet(columns, rows);
     }
 }

@@ -200,6 +200,7 @@
      "skip": {"backends": ["snowflake"], "reason": "USE ROLE of a just-created role needs a grant to the session user on a live account (Java test had the same assumption)"},
      "steps": [
       {"sql": "CREATE OR REPLACE ROLE data_owner"},
+      {"sql": "GRANT CREATE TABLE ON SCHEMA test_schema TO ROLE data_owner"},
       {"sql": "USE ROLE data_owner"},
       {"sql": "CREATE TABLE owned_tbl (id INTEGER)"},
       {"sql": "SHOW TABLES LIKE 'owned_tbl'", "expect": {"rowCount": 1}},

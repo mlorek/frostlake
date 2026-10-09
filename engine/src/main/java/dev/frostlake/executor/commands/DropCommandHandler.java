@@ -26,6 +26,7 @@ import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
+import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
@@ -104,6 +105,11 @@ public class DropCommandHandler implements CommandHandler {
         }
     }
 
+    /** Whether the statement ends in RESTRICT. */
+    private static boolean restricted(final FrostlakeParser.DropStatementContext ctx) {
+        return ctx.dropBehavior() != null && ctx.dropBehavior().RESTRICT() != null;
+    }
+
     /**
      * Whether IF EXISTS forgives a failed drop: it forgives the object's absence, never an access-control
      * refusal — dropping an object another role owns is refused with or without it.
@@ -145,12 +151,13 @@ public class DropCommandHandler implements CommandHandler {
             }
             out.put(fqn, new ArrayList<>(storage.getTableStorage(fqn).scan()));
             storage.dropTable(fqn);
-            queryExecutor.resetCopyLoadHistory(fqn);
+            queryExecutor.resetCopyLoadHistory(fqn, table.isTemporary());
             queryExecutor.getTransactionManager().discardBufferedWritesFor(fqn);
         }
         // The permanent tables temporary ones hid go with the schema, and come back with it.
         for (final Table hidden : schema.getShadowedTables()) {
             final String fqn = QualifiedName.key(databaseName, schema.getName(), hidden.getName());
+            queryExecutor.resetCopyLoadHistory(fqn, hidden.isTemporary());
             if (storage.hasShadowedTable(fqn)) {
                 hiddenOut.put(fqn, new ArrayList<>(storage.getShadowedTableStorage(fqn).scan()));
                 storage.dropShadowedTable(fqn);
@@ -310,6 +317,13 @@ public class DropCommandHandler implements CommandHandler {
                     checkDrop(SecurableObjectType.DATABASE, dbName);
                     queryExecutor.requireOwnership("DATABASE", dropNameParts(ctx), null);
                     final Database droppedDb = catalog.databaseExact(dbName);
+                    // A database holding a table another table references stays under RESTRICT. Otherwise the
+                    // foreign keys tables of other databases hold on its tables go with it.
+                    final ForeignKeyDependents dependents = new ForeignKeyDependents(catalog);
+                    if (restricted(ctx) && dependents.referencesInto(droppedDb.getName())) {
+                        throw new DropDependencyRefusal("database");
+                    }
+                    dependents.releaseFromOutside(droppedDb.getName());
                     DroppedObject dropped = null;
                     if (droppedDb != null) {
                         // Snapshot every table's rows and RELEASE its storage (as DROP TABLE does), so the
@@ -335,7 +349,7 @@ public class DropCommandHandler implements CommandHandler {
                     }
                     logger.trace("Dropped database: {}", dbName);
                 } catch (final RuntimeException e) {
-                    if (!forgiven(ifExists, e)) throw e;
+                    if (!forgiven(ifExists, e) || e instanceof DropDependencyRefusal) throw e;
                     ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Database does not exist (IF EXISTS): {}", dbName);
                 }
@@ -358,6 +372,13 @@ public class DropCommandHandler implements CommandHandler {
                     final String snapSchemaName = parts.length == 1 ? parts[0] : parts[1];
                     final Database snapDb = catalog.databaseExact(snapDbName);
                     final Schema snapSchema = snapDb.schemaExact(snapSchemaName);
+                    // A schema holding a table another table references stays under RESTRICT. Otherwise the drop
+                    // takes the foreign keys tables outside it hold with it.
+                    final ForeignKeyDependents dependents = new ForeignKeyDependents(catalog);
+                    if (restricted(ctx) && dependents.referencesInto(snapDbName, snapSchema)) {
+                        throw new DropDependencyRefusal("schema");
+                    }
+                    dependents.releaseFromOutside(snapDbName, snapSchema);
                     final String droppedKey = "SCHEMA:" + QualifiedName.key(snapDbName, snapSchemaName);
                     DroppedObject dropped = null;
                     if (snapSchema != null) {
@@ -389,7 +410,7 @@ public class DropCommandHandler implements CommandHandler {
                     }
                     logger.trace("Dropped schema: {}", schemaName);
                 } catch (final RuntimeException e) {
-                    if (!forgiven(ifExists, e)) throw e;
+                    if (!forgiven(ifExists, e) || e instanceof DropDependencyRefusal) throw e;
                     ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Schema does not exist (IF EXISTS): {}", schemaName);
                 }
@@ -465,6 +486,14 @@ public class DropCommandHandler implements CommandHandler {
                     checkDrop(SecurableObjectType.TABLE, qualifiedName);
                     queryExecutor.requireOwnership("TABLE", parts, null);
 
+                    // A table another table's foreign key references stays under RESTRICT; otherwise the drop
+                    // takes those foreign keys with it.
+                    final ForeignKeyDependents dependents = new ForeignKeyDependents(catalog);
+                    if (restricted(ctx) && dependents.references(databaseName, schema, table)) {
+                        throw new DropDependencyRefusal("table");
+                    }
+                    dependents.release(databaseName, schema, table);
+
                     final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                     // Snapshot table metadata + rows for UNDROP before removing the storage.
                     final List<Row> snapshotRows =
@@ -478,12 +507,14 @@ public class DropCommandHandler implements CommandHandler {
 
                     schema.dropTable(table.getName());
                     queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
-                    if (schema.shadowedTable(table.getName()) == null) {
-                        queryExecutor.resetCopyLoadHistory(fullyQualifiedName);
-                        // Its stage waits for an UNDROP. A temporary table that hid a permanent one of its name shared
-                        // that one's stage, which stays where it is.
-                        queryExecutor.setAsideStages("TABLE:" + fullyQualifiedName, dropped);
+                    if (!table.isTemporary()) {
+                        MaterializedViewValidity.baseTableDropped(catalog, databaseName, schema.getName(),
+                            table.getName());
                     }
+                    // Its load history goes and its stage waits for an UNDROP. Both are the dropped table's own: a
+                    // permanent table a temporary one hid keeps its files and its history.
+                    queryExecutor.resetCopyLoadHistory(fullyQualifiedName, table.isTemporary());
+                    queryExecutor.setAsideStages("TABLE:" + fullyQualifiedName, dropped);
                     // Drop any buffered writes for this table so an uncommitted INSERT/UPDATE/DELETE earlier
                     // in the same transaction (e.g. a proc that seeds then drops a temp table) isn't flushed
                     // to now-missing storage at commit.
@@ -496,9 +527,10 @@ public class DropCommandHandler implements CommandHandler {
 
                     logger.trace("Dropped table: {}", qualifiedName);
                 } catch (final RuntimeException e) {
-                    // IF EXISTS forgives absence, never an access-control refusal and never a name
-                    // another kind holds.
-                    if (!forgiven(ifExists, e) || SqlCompilationError.isWrongObjectType(e.getMessage())) {
+                    // IF EXISTS forgives absence, never an access-control refusal, never a name
+                    // another kind holds and never a dependency RESTRICT stops at.
+                    if (!forgiven(ifExists, e) || SqlCompilationError.isWrongObjectType(e.getMessage())
+                            || e instanceof DropDependencyRefusal) {
                         throw e;
                     }
                     ConditionalDdlOutcome.dropSkipped();
@@ -649,15 +681,15 @@ public class DropCommandHandler implements CommandHandler {
             } else if (ctx.CORTEX() != null) {
                 final String serviceName = dropNameText(ctx);
                 final String[] serviceParts = dropNameParts(ctx);
-                try {
-                    ddl.resolveSchemaFromQualifiedName(serviceName)
-                        .dropCortexSearchService(serviceParts[serviceParts.length - 1]);
-                    logger.trace("Dropped Cortex search service: {}", serviceName);
-                } catch (final RuntimeException e) {
-                    if (!ifExists) {
-                        throw e;
-                    }
+                // A quoted name is the service of exactly that spelling; IF EXISTS forgives only its absence.
+                final Schema serviceSchema = catalog.requireOwningSchema(QualifiedName.of(serviceParts));
+                final String ownName = serviceParts[serviceParts.length - 1];
+                if (ifExists && !serviceSchema.hasCortexSearchServiceExact(ownName)) {
+                    ConditionalDdlOutcome.dropSkipped();
                     logger.debug("Cortex search service does not exist (IF EXISTS): {}", serviceName);
+                } else {
+                    serviceSchema.dropCortexSearchServiceExact(ownName);
+                    logger.trace("Dropped Cortex search service: {}", serviceName);
                 }
             } else if (ctx.COMPUTE() != null && ctx.POOL() != null) {
                 final String poolName = dropNameText(ctx);
@@ -734,11 +766,11 @@ public class DropCommandHandler implements CommandHandler {
                     final List<DataType> argumentTypes = new ArrayList<>();
                     if (ctx.dataTypeList() != null) {
                         for (final FrostlakeParser.DataTypeNameContext dtCtx : ctx.dataTypeList().dataTypeName()) {
-                            argumentTypes.add(columnParser.parseDataType(dtCtx));
+                            argumentTypes.add(columnParser.parseDataType(dtCtx, RoutineSignatureForm.parametersOf(dtCtx)));
                         }
                     }
                     queryExecutor.requireFunctionOwnership(schema, functionName, argumentTypes);
-                    schema.dropFunctionBySignature(functionName, argumentTypes);
+                    schema.dropFunctionByWrittenSignature(functionName, argumentTypes);
                     logger.trace("Dropped function: {}", qualifiedName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;
@@ -774,11 +806,11 @@ public class DropCommandHandler implements CommandHandler {
                     final List<DataType> argumentTypes = new ArrayList<>();
                     if (ctx.dataTypeList() != null) {
                         for (final FrostlakeParser.DataTypeNameContext dtCtx : ctx.dataTypeList().dataTypeName()) {
-                            argumentTypes.add(columnParser.parseDataType(dtCtx));
+                            argumentTypes.add(columnParser.parseDataType(dtCtx, RoutineSignatureForm.parametersOf(dtCtx)));
                         }
                     }
                     queryExecutor.requireProcedureOwnership(schema, procedureName, argumentTypes);
-                    schema.dropProcedureBySignature(procedureName, argumentTypes);
+                    schema.dropProcedureByWrittenSignature(procedureName, argumentTypes);
                     logger.trace("Dropped procedure: {}", qualifiedName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;

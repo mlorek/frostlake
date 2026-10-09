@@ -29,7 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * A pivoted column declares its aggregate's type over the aggregated column, as the same aggregate does in
  * a grouped SELECT. AVG widens an integer to NUMBER(38,6), SUM keeps the scale and widens the precision,
- * COUNT declares the counter's NUMBER(18,0), and MIN and MAX pass the column's own type through. A driver
+ * COUNT declares the counter's NUMBER(18,0), and MIN and MAX pass the column's own type through — a text's
+ * width aside, which a written list of values does not keep. A driver
  * that reads the declared scale rounds a BIGINT-declared average of 92.5 to 92.
  */
 public class PivotColumnTypeTest extends BaseDatabaseTest {
@@ -81,6 +82,9 @@ public class PivotColumnTypeTest extends BaseDatabaseTest {
     public void minAndMaxPassTheColumnTypeThrough() {
         assertEquals("NUMBER(38,0)", pivotedType("SELECT * FROM ints PIVOT (MAX(score) FOR subject IN ('Math'))"));
         assertEquals("NUMBER(10,2)", pivotedType("SELECT * FROM decs PIVOT (MIN(grade) FOR subject IN ('Math'))"));
-        assertEquals("VARCHAR(20)", pivotedType("SELECT * FROM texts PIVOT (MAX(note) FOR subject IN ('Math'))"));
+        assertEquals("VARCHAR(134217728)", pivotedType("SELECT * FROM texts PIVOT (MAX(note) FOR subject IN ('Math'))"),
+            "a text over a written list of values declares no width of its own");
+        assertEquals("VARCHAR(20)", pivotedType("SELECT * FROM texts PIVOT (MAX(note) FOR subject IN (ANY))"),
+            "over ANY it keeps the column's");
     }
 }

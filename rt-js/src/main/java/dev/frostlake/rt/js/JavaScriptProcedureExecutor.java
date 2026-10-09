@@ -74,14 +74,14 @@ public final class JavaScriptProcedureExecutor {
             throw new RuntimeException("No JavaScript engine available. Please ensure GraalVM JavaScript or a compatible engine is installed.");
         }
 
+        final List<Parameter> parameters = procedure.getParameters();
+        if (parameters.size() != arguments.size()) {
+            throw new RuntimeException("Procedure " + procedure.getName() + " expects " +
+                parameters.size() + " arguments but got " + arguments.size());
+        }
+        final String source = JavaScriptHandler.source(procedure.getName(), parameters, procedure.getBody(), true);
         try {
-            final List<Parameter> parameters = procedure.getParameters();
-            if (parameters.size() != arguments.size()) {
-                throw new RuntimeException("Procedure " + procedure.getName() + " expects " +
-                    parameters.size() + " arguments but got " + arguments.size());
-            }
-            final Object invoker = scriptEngine.eval(
-                JavaScriptHandler.source(procedure.getName(), parameters, procedure.getBody(), true));
+            final Object invoker = scriptEngine.eval(source);
             final Object result = JavaScriptHandler.invoke(scriptEngine, invoker, new SnowflakeAPIWrapper(engine),
                 parameters, arguments);
             logger.debug("JavaScript procedure {} executed successfully", procedure.getName());
@@ -89,8 +89,8 @@ public final class JavaScriptProcedureExecutor {
         } catch (final ScriptException e) {
             logger.error("Error executing JavaScript procedure: {}", procedure.getName(), e);
             throw new RuntimeException(JavaScriptErrorText.of(e, procedure.getName(), procedure.getBody(),
-                JavaScriptHandler.BODY_FIRST_LINE, "Error executing JavaScript procedure " + procedure.getName() + ": "
-                    + e.getMessage()), e);
+                JavaScriptHandler.BODY_FIRST_LINE, source, GraalJsEngine.hostOf(scriptEngine),
+                "Error executing JavaScript procedure " + procedure.getName() + ": " + e.getMessage()), e);
         } catch (final NoSuchMethodException e) {
             throw new RuntimeException("Error executing JavaScript procedure " + procedure.getName() + ": "
                 + e.getMessage(), e);

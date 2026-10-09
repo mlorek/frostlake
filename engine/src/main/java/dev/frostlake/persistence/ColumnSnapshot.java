@@ -66,6 +66,7 @@ public class ColumnSnapshot implements Serializable {
     public boolean autoIncrement;
     public long identityStart;
     public long identityIncrement;
+    public boolean identityOrdered;
     public String collation;
 
     // The position the table gave this column: kept so a restored table reports the same gaps a

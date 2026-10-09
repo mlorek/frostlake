@@ -117,9 +117,9 @@ final class StarModifierCheck {
         }
         for (final FrostlakeParser.StarModifierContext modifier : modifiers) {
             if (modifier.ILIKE() != null) {
-                final String literal = modifier.STRING_LITERAL().getText();
                 final Pattern pattern = Pattern.compile(
-                    QueryExecutor.ilikeToRegex(literal.substring(1, literal.length() - 1)), Pattern.CASE_INSENSITIVE);
+                    QueryExecutor.ilikeToRegex(ParseTreeText.stringBody(modifier.stringText())),
+                    Pattern.CASE_INSENSITIVE);
                 final List<String> matching = new ArrayList<>();
                 for (final String name : available) {
                     if (pattern.matcher(name).matches()) {

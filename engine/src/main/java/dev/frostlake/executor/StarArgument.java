@@ -264,8 +264,7 @@ public final class StarArgument {
     private static String ilikeOf(final List<FrostlakeParser.StarArgumentModifierContext> modifiers) {
         for (final FrostlakeParser.StarArgumentModifierContext modifier : modifiers) {
             if (modifier.ILIKE() != null) {
-                final String written = modifier.STRING_LITERAL().getText();
-                return written.substring(1, written.length() - 1);
+                return ParseTreeText.stringBody(modifier.stringText());
             }
         }
         return null;

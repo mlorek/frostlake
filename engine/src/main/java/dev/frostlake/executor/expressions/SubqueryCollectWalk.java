@@ -21,11 +21,19 @@ import java.util.List;
 
 /**
  * Collects the subqueries an expression holds, in the order they are written, without descending into
- * them: a subquery nested in one of them compiles with that one.
+ * them: a subquery nested in one of them compiles with that one. It notes a ROW written as a parenthesized
+ * list too.
  */
 final class SubqueryCollectWalk extends AstPrinterVisitor {
 
     private final List<SubqueryExpression> subqueries = new ArrayList<>();
+    private boolean row;
+
+    @Override
+    public String visitFunctionCall(final FunctionCallExpression expr) {
+        row = row || expr instanceof RowExpression;
+        return super.visitFunctionCall(expr);
+    }
 
     @Override
     public String visitSubquery(final SubqueryExpression expr) {
@@ -36,6 +44,11 @@ final class SubqueryCollectWalk extends AstPrinterVisitor {
     @Override
     public String visitLambda(final LambdaExpression expr) {
         return "";   // a lambda's body is bound by the call that takes it
+    }
+
+    /** Whether a ROW written as a parenthesized list was found. */
+    boolean holdsRow() {
+        return row;
     }
 
     /** The subqueries found, in the order written. */

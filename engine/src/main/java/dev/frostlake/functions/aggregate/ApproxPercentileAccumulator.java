@@ -20,15 +20,16 @@ import dev.frostlake.functions.AggregateFunction;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
  * Accumulator for APPROX_PERCENTILE(expr, percentile). Snowflake computes an <em>approximate</em> percentile
- * from a t-digest sketch; this emulator computes the exact interpolated percentile (identical to
- * PERCENTILE_CONT), which is the best possible approximation and matches Snowflake within its documented
- * error bound for typical data. The percentile (a constant in [0, 1]) is supplied by the executor from the
- * function's second argument via {@link #setPercentile(double)}.
+ * from a t-digest sketch, which holds every value while there are few and is then read as the values
+ * themselves: the exact interpolated percentile (identical to PERCENTILE_CONT). Past that the sketch is read as
+ * a digest, each value a centroid whose mass sits around it, and the answer moves by half a position
+ * ({@code APPROX_PERCENTILE(v, 0.25)} over 0 … 1400 is 349.75). Both readings are {@link PercentileDigest}'s,
+ * which this accumulator hands its values. The percentile (a constant in [0, 1]) is supplied by the executor
+ * from the function's second argument via {@link #setPercentile(double)}.
  */
 public class ApproxPercentileAccumulator implements AggregateFunction.Accumulator {
 
@@ -51,12 +52,11 @@ public class ApproxPercentileAccumulator implements AggregateFunction.Accumulato
         if (values.isEmpty()) {
             return null;
         }
-        final List<Double> sorted = new ArrayList<>(values);
-        Collections.sort(sorted);
-        final double idx = percentile * (sorted.size() - 1);
-        final int lo = (int) idx;
-        final int hi = Math.min(lo + 1, sorted.size() - 1);
-        return sorted.get(lo) * (1 - (idx - lo)) + sorted.get(hi) * (idx - lo);
+        final PercentileDigest digest = new PercentileDigest();
+        for (final Double value : values) {
+            digest.add(value.doubleValue());
+        }
+        return digest.estimate(percentile);
     }
 
     @Override

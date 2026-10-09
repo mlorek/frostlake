@@ -86,12 +86,7 @@ public class TaskHistoryFunction extends TableFunction {
 
         final String filterTaskName = namedArgs.containsKey("TASK_NAME")
             ? namedArgs.get("TASK_NAME").toString().toUpperCase().replaceAll("^'|'$", "") : null;
-        int resultLimit = 100;
-        if (namedArgs.containsKey("RESULT_LIMIT")) {
-            final Object rl = namedArgs.get("RESULT_LIMIT");
-            if (rl instanceof Number) resultLimit = ((Number) rl).intValue();
-            else try { resultLimit = Integer.parseInt(rl.toString()); } catch (final NumberFormatException ignored) {}
-        }
+        final int resultLimit = TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), 100);
 
         final List<Row> rows = new ArrayList<>();
 

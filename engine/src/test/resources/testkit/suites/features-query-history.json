@@ -382,7 +382,7 @@
      }
     },
     {
-     "sql": "SELECT COUNT(*) >= 1 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED' AND error_message IS NOT NULL",
+     "sql": "SELECT COUNT(*) >= 1 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED_WITH_ERROR' AND error_message IS NOT NULL",
      "expect": {
       "value": "true"
      }

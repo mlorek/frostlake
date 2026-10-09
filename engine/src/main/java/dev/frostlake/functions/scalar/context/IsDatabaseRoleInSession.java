@@ -13,12 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Role;
@@ -29,14 +27,15 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
- * IS_DATABASE_ROLE_IN_SESSION(name) — TRUE when the session's current role holds the database role: granted to
- * it or to a role it inherits, directly or through other database roles. The name is {@code db.role}, or a bare
- * role name in the current database; a name no database role answers to is FALSE, as on the account. The bare
- * word NULL and a number are refused while the statement compiles (see the visitor's argument rules).
+ * IS_DATABASE_ROLE_IN_SESSION(name) — TRUE when the session acts with the named database role of the current
+ * database: granted to one of the session's roles, directly or through other database roles. The name is one
+ * identifier, read as {@link RoleNameText} reads it — a name qualified by its database names nothing, and neither
+ * does a role of another database (live-verified). A name no database role answers to is FALSE, and a NULL from a
+ * row answers NULL. The bare word NULL and a number are refused while the statement compiles (see the visitor's
+ * argument rules).
  */
 public class IsDatabaseRoleInSession extends BuiltInFunction {
 
@@ -55,54 +54,27 @@ public class IsDatabaseRoleInSession extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) {
+        if (RoleNameText.isNull(args.get(0))) {
             return null;
         }
-        final String text = args.get(0).toString();
-        final QualifiedName name;
-        try {
-            name = QualifiedName.parse(text);
-        } catch (final RuntimeException notAName) {
+        final String name = RoleNameText.of(args.get(0));
+        final String databaseName = catalog.getCurrentDatabase();
+        if (name == null || databaseName == null) {
             return Boolean.FALSE;
         }
-        if (name.size() == 0 || name.size() > 2) {
-            return Boolean.FALSE;
-        }
-        final String databaseName = name.size() >= 2 ? name.part(name.size() - 2) : catalog.getCurrentDatabase();
-        Database database = null;
+        final Database database;
         try {
-            database = databaseName == null ? null : catalog.getDatabase(databaseName);
+            database = catalog.getDatabase(databaseName);
         } catch (final RuntimeException noSuchDatabase) {
             return Boolean.FALSE;
         }
-        final DatabaseRole wanted = database == null ? null
-            : database.getDatabaseRole(name.last().toUpperCase(Locale.ROOT));
+        final DatabaseRole wanted = database == null ? null : database.getDatabaseRole(name);
         if (wanted == null) {
             return Boolean.FALSE;
         }
-        final String current = sessionContext == null ? "SYSADMIN" : sessionContext.getCurrentRole();
-        final Set<String> seenRoles = new HashSet<>();
         final Set<String> heldDatabaseRoles = new HashSet<>();
-        final Deque<String> roles = new ArrayDeque<>();
         final Deque<String> databaseRoles = new ArrayDeque<>();
-        if (current != null) {
-            roles.add(current.toUpperCase(Locale.ROOT));
-        }
-        while (!roles.isEmpty()) {
-            final String roleName = roles.poll();
-            if (!seenRoles.add(roleName)) {
-                continue;
-            }
-            Role role = null;
-            for (final Role candidate : catalog.getAllRoles()) {
-                if (candidate.getName().equals(roleName)) {
-                    role = candidate;
-                }
-            }
-            if (role == null) {
-                continue;
-            }
-            roles.addAll(role.getGrantedRoles());
+        for (final Role role : SessionRoles.held(catalog, sessionContext)) {
             databaseRoles.addAll(role.getDatabaseRoleGrants().keySet());
         }
         while (!databaseRoles.isEmpty()) {

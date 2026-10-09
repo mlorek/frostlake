@@ -17,9 +17,11 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.functions.SystemFunctionNames;
+import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
+import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphConfig;
@@ -41,8 +43,8 @@ import java.util.UUID;
 
 /**
  * Evaluates {@code SYSTEM$FUNCNAME(...)} built-in system functions invoked from expression context.
- * Extracted from {@link QueryExecutor}; depends only on the catalog, storage engine, and transaction
- * manager (no QueryExecutor back-pointer).
+ * Extracted from {@link QueryExecutor}; depends only on the catalog, storage engine, transaction
+ * manager and the directory of abortable sessions (no QueryExecutor back-pointer).
  */
 public class SystemFunctionEvaluator {
 
@@ -51,12 +53,15 @@ public class SystemFunctionEvaluator {
     private final Catalog catalog;
     private final StorageEngine storageEngine;
     private final TransactionManager transactionManager;
+    private final SessionDirectory sessionDirectory;
 
     public SystemFunctionEvaluator(final Catalog catalog, final StorageEngine storageEngine,
-                                   final TransactionManager transactionManager) {
+                                   final TransactionManager transactionManager,
+                                   final SessionDirectory sessionDirectory) {
         this.catalog = catalog;
         this.storageEngine = storageEngine;
         this.transactionManager = transactionManager;
+        this.sessionDirectory = sessionDirectory;
     }
 
     /** Evaluate a SYSTEM$FUNCNAME call from expression context (no ANTLR ctx available). */
@@ -123,7 +128,7 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$ABORT_TRANSACTION":
                 return abortTransaction(args);
             case "SYSTEM$ABORT_SESSION":
-                return "Session aborted.";
+                return SessionAbort.abort(args.isEmpty() ? null : args.get(0), sessionDirectory);
             case "SYSTEM$CANCEL_QUERY":
             case "SYSTEM$CANCEL_ALL_QUERIES":
                 return "Query cancelled.";
@@ -196,17 +201,10 @@ public class SystemFunctionEvaluator {
                 return UUID.randomUUID().toString();
             case "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN":
                 return "{\"token\": \"" + UUID.randomUUID() + "\", \"expires_at\": null}";
-            case "SYSTEM$GET_TAG": {
-                if (args.size() >= 3 && args.get(0) != null && args.get(1) != null) {
-                    final String tagName = args.get(0).toString().replaceAll("^'|'$", "");
-                    // A string naming an object is an identifier reference: unquoted folds up, quoted keeps case.
-                    final String objectName = SqlIdentifiers.canonicalText(
-                        args.get(1).toString().replaceAll("^'|'$", ""));
-                    final String domain = args.get(2) == null ? null : args.get(2).toString().replaceAll("^'|'$", "");
-                    return catalog.getObjectTagValue(tagName, objectName, domain);
-                }
-                return null;
-            }
+            case "SYSTEM$GET_TAG":
+                return TagReferencesFunction.systemGetTag(catalog, args);
+            case "SYSTEM$GET_TAG_ALLOWED_VALUES":
+                return TagReferencesFunction.systemGetTagAllowedValues(catalog, args);
             case "SYSTEM$GET_TAG_ON_CURRENT_COLUMN":
             case "SYSTEM$GET_TAG_ON_CURRENT_TABLE":
                 return null;

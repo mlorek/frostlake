@@ -148,7 +148,7 @@ public class ScriptStatementsInHistoryTest {
     @Test
     public void aFailedStatementOfABlockIsAFailedRow() {
         final String id = first("BEGIN SELECT 1/0; EXCEPTION WHEN OTHER THEN RETURN LAST_QUERY_ID(); END");
-        assertEquals("FAILED", historyColumn("execution_status", id));
+        assertEquals("FAILED_WITH_ERROR", historyColumn("execution_status", id));
         assertEquals("SELECT 1/0;", historyColumn("query_text", id));
 
         final String inHandler = first("BEGIN SELECT 1/0; EXCEPTION WHEN OTHER THEN INSERT INTO t VALUES (5);"

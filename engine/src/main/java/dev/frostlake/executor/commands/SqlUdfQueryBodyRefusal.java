@@ -18,14 +18,16 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.parser.BareAlias;
 import dev.frostlake.parser.ColdPrediction;
 import dev.frostlake.parser.EndOfInput;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.ParseCancellationException;
@@ -92,14 +94,14 @@ final class SqlUdfQueryBodyRefusal {
      * closing parenthesis — {@code SELECT 1 +} at the frame's — or when it breaks on a word or an operator that
      * opens what must follow and reads on to a closing parenthesis or the end before giving up: {@code SELECT CASE},
      * {@code SELECT 1 FROM t JOIN}, {@code … WHERE a IN (SELECT a FROM t WHERE)}. The account's {@code ORDER BY ALL}
-     * breaks this grammar on a word that can end a query, and {@code MATCH_RECOGNIZE (…)} where the parse gives up
-     * mid-way. The parse is a cold one, so the answer is the body's own and not the prediction cache's.
+     * breaks this grammar on a word that can end a query. The parse is a cold one, so the answer is the body's own
+     * and not the prediction cache's.
      *
      * @param framed the body inside its frame
      * @return whether the parse ran out of text
      */
     static boolean runsOut(final String framed) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(framed));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(framed));
         lexer.removeErrorListeners();
         final int[] furthest = {0};
         final CommonTokenStream tokens = new CommonTokenStream(lexer) {
@@ -188,7 +190,7 @@ final class SqlUdfQueryBodyRefusal {
     /** Whether the select item alias written without AS at {@code start} is found in {@code tree}. */
     private static boolean isSelectAlias(final ParseTree tree, final int start) {
         if (tree instanceof FrostlakeParser.ExprItemContext) {
-            final FrostlakeParser.IdentifierContext alias = ((FrostlakeParser.ExprItemContext) tree).identifier();
+            final ParserRuleContext alias = BareAlias.of((FrostlakeParser.ExprItemContext) tree);
             if (alias != null && alias.getStart().getStartIndex() == start) {
                 return true;
             }
@@ -349,7 +351,7 @@ final class SqlUdfQueryBodyRefusal {
 
     /** The text's spoken tokens: comments and whitespace dropped, end of input excluded. */
     private static List<Token> spokenTokens(final String text) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();

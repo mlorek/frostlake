@@ -21,8 +21,8 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 import java.util.List;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -151,7 +151,7 @@ public final class BindsInDefinition {
         if (body == null || body.indexOf('?') < 0) {
             return;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();

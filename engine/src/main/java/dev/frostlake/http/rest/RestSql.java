@@ -66,6 +66,8 @@ public final class RestSql {
     public static final String CODE_NON_ROOT_TASK = "091435";
     /** The account's code for a tag conflict rule the tag does not take. */
     public static final String CODE_ON_CONFLICT = "391892";
+    /** The account's code for an ALTER ICEBERG TABLE action the table's kind does not take. */
+    public static final String CODE_ICEBERG_TABLE_KIND = "091352";
     /** The prefix a compilation error's message starts with. */
     public static final String COMPILATION_ERROR = "SQL compilation error:";
 
@@ -225,6 +227,9 @@ public final class RestSql {
         }
         if (message.startsWith("Invalid on_conflict strategy")) {
             return new RestException(400, relayed, CODE_ON_CONFLICT);
+        }
+        if (message.contains("ALTER command failed. The provided table must be an Iceberg table")) {
+            return new RestException(400, relayed, CODE_ICEBERG_TABLE_KIND);
         }
         return new RestException(400, relayed, null);
     }

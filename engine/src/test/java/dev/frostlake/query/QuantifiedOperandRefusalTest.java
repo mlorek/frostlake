@@ -1,0 +1,408 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.query;
+
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.ResultSet;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * A quantifier takes a query. A value written after it - a literal, a name, a call, a sum, a list of values in
+ * parentheses - is read, and refused while the statement compiles, before a table or a function of the statement
+ * is looked for: {@code Invalid query block: <token>.}, naming the token the value turns on. A name is told by its
+ * first part and a call by its function's, as written; an array or an object by its whole text; a typed literal
+ * as TOK_ANSI_LITERAL. Every row is live-verified.
+ */
+public class QuantifiedOperandRefusalTest extends BaseDatabaseTest {
+
+    /** A statement, and its answer or the words it is refused in. */
+    private static final String[][] CASES = {
+            {"SELECT 1 = ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY (1)",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ALL 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 > ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = SOME 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY (1, 2)",
+                "REFUSED SQL compilation error:\nInvalid query block: (."},
+            {"SELECT 1 = ANY (1 + 2)",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY ((SELECT 1))",
+                "true"},
+            {"SELECT 1 = ANY (SELECT 1)",
+                "true"},
+            {"SELECT 1 = ANY NULL",
+                "REFUSED SQL compilation error:\nInvalid query block: NULL."},
+            {"SELECT 1 = ANY 'a'",
+                "REFUSED SQL compilation error:\nInvalid query block: 'a'."},
+            {"SELECT 1 = ANY x FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT x = ANY x FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT x = ANY a FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: a."},
+            {"SELECT 1 = ANY ARRAY_CONSTRUCT(1)",
+                "REFUSED SQL compilation error:\nInvalid query block: ARRAY_CONSTRUCT."},
+            {"SELECT 1 = ANY [1]",
+                "REFUSED SQL compilation error:\nInvalid query block: [1]."},
+            {"SELECT 1 <> ALL 5",
+                "REFUSED SQL compilation error:\nInvalid query block: 5."},
+            {"SELECT 1 = ANY -1",
+                "REFUSED SQL compilation error:\nInvalid query block: -."},
+            {"SELECT 1 = ANY 1 + 2",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY 1 AND TRUE",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY (SELECT 1) + 1",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT * FROM pq WHERE x = ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT * FROM pq WHERE x = ANY (1)",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT * FROM pq WHERE x = ANY (x)",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT * FROM pq WHERE x = ANY pq.x",
+                "REFUSED SQL compilation error:\nInvalid query block: pq."},
+            {"SELECT 1 = ANY",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 14 unexpected '<EOF>'."},
+            {"SELECT 1 = ANY FROM pq",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 15 unexpected 'FROM'."},
+            {"SELECT 1 = ANY ()",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 16 unexpected ')'."},
+            {"SELECT 1 = ANY (SELECT 1, 2)",
+                "REFUSED SQL compilation error: error line 1 at position 9\nInvalid argument types for function '=': (NUMBER(1,0), ROW(NUMBER(1,0), NUMBER(1,0)))"},
+            {"SELECT 1 = ANY ((1))",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY (((SELECT 1)))",
+                "true"},
+            {"SELECT 1 = ANY 1.5",
+                "REFUSED SQL compilation error:\nInvalid query block: 1.5."},
+            {"SELECT 1 = ANY TRUE",
+                "REFUSED SQL compilation error:\nInvalid query block: TRUE."},
+            {"SELECT 1 = ANY x.y FROM pq x",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT 1 = ANY ABS(1)",
+                "REFUSED SQL compilation error:\nInvalid query block: ABS."},
+            {"SELECT 1 = ANY CAST(1 AS INT)",
+                "REFUSED SQL compilation error:\nInvalid query block: CAST."},
+            {"SELECT 1 = ANY 1::INT",
+                "REFUSED SQL compilation error:\nInvalid query block: ::."},
+            {"SELECT 1 = ANY CASE WHEN TRUE THEN 1 END",
+                "REFUSED SQL compilation error:\nInvalid query block: CASE."},
+            {"SELECT 1 = ANY (VALUES (1))",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 16 unexpected 'VALUES'.\nsyntax error line 1 at position 24 unexpected '1'."},
+            {"SELECT 1 = ANY pq",
+                "REFUSED SQL compilation error:\nInvalid query block: pq."},
+            {"SELECT 1 = ANY :v",
+                "REFUSED SQL compilation error:\nInvalid query block: :."},
+            {"SELECT 1 = ANY $1 FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: $1."},
+            {"SELECT 1 = ANY ?",
+                "REFUSED SQL compilation error:\nInvalid query block: ?."},
+            {"SELECT 1 = ANY CURRENT_DATE",
+                "REFUSED SQL compilation error:\nInvalid query block: CURRENT_DATE."},
+            {"SELECT 1 = ANY ALL 1",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 15 unexpected 'ALL'."},
+            {"SELECT 1 = ANY ANY",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 15 unexpected 'ANY'."},
+            {"SELECT 1 IN ANY (1)",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 12 unexpected 'ANY'."},
+            {"SELECT 1 = ANY 1, 2",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT (1 = ANY 1)",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT NOT 1 = ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY 1 = ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT COUNT(*) FROM pq GROUP BY x = ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 FROM pq ORDER BY x = ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY 2 x",
+                "REFUSED SQL compilation error:\nInvalid query block: 2."},
+            {"SELECT 1 = ANY 12345678901234567890",
+                "REFUSED SQL compilation error:\nInvalid query block: 12345678901234567890."},
+            {"SELECT 1 = ANY 'it''s'",
+                "REFUSED SQL compilation error:\nInvalid query block: 'it''s'."},
+            {"SELECT 1 = ANY \"q\" FROM (SELECT 1 \"q\")",
+                "REFUSED SQL compilation error:\nInvalid query block: \"q\"."},
+            {"SELECT 1 = ANY (1) x",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY (x) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT 1 = ANY (x + 1) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY (ABS(x)) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: ABS."},
+            {"SELECT 1 = ANY (1, (SELECT 2))",
+                "REFUSED SQL compilation error:\nInvalid query block: (."},
+            {"SELECT 1 = ANY 1 FROM nosuch",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY null",
+                "REFUSED SQL compilation error:\nInvalid query block: null."},
+            {"SELECT 1 = ANY true",
+                "REFUSED SQL compilation error:\nInvalid query block: true."},
+            {"SELECT 1 = ANY False",
+                "REFUSED SQL compilation error:\nInvalid query block: False."},
+            {"SELECT 1 = ANY x IS NULL FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: IS."},
+            {"SELECT 1 = ANY x || 'a' FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: ||."},
+            {"SELECT 1 = ANY x * 2 FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: *."},
+            {"SELECT 1 = ANY v:a FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: :."},
+            {"SELECT 1 = ANY a[0] FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: [."},
+            {"SELECT 1 = ANY 'a' COLLATE 'de'",
+                "REFUSED SQL compilation error:\nInvalid query block: COLLATE."},
+            {"SELECT 1 = ANY DATE '2020-01-01'",
+                "REFUSED SQL compilation error:\nInvalid query block: TOK_ANSI_LITERAL."},
+            {"SELECT 1 = ANY INTERVAL '1 day'",
+                "REFUSED SQL compilation error:\nInvalid query block: TOK_ANSI_LITERAL."},
+            {"SELECT 1 = ANY x LIKE 'a' FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT 1 = ANY x IN (1) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT 1 = ANY x BETWEEN 1 AND 2 FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT 1 = ANY NOT TRUE",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 15 unexpected 'NOT'."},
+            {"SELECT 1 = ANY {'a': 1}",
+                "REFUSED SQL compilation error:\nInvalid query block: {'a': 1}."},
+            {"SELECT 1 = ANY [1, 2]",
+                "REFUSED SQL compilation error:\nInvalid query block: [1, 2]."},
+            {"SELECT 1 = ANY []",
+                "REFUSED SQL compilation error:\nInvalid query block: []."},
+            {"SELECT 1 = ANY (1)::INT",
+                "REFUSED SQL compilation error:\nInvalid query block: ::."},
+            {"SELECT 1 = ANY pq.x.y FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: pq."},
+            {"SELECT 1 = ANY \"A\".\"b\" FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: \"A\"."},
+            {"SELECT 1 = ANY nosuchfn(x) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: nosuchfn."},
+            {"SELECT 1 = ANY COUNT(*) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: COUNT."},
+            {"SELECT 1 = ANY 1 = TRUE",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY 1 IS NULL",
+                "REFUSED SQL compilation error:\nInvalid query block: IS."},
+            {"SELECT 1 = ANY (1) + 1",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY -x FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: -."},
+            {"SELECT 1 = ANY +1",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY - -1",
+                "REFUSED SQL compilation error:\nInvalid query block: -."},
+            {"SELECT 1 = ANY 1 - 2 * 3",
+                "REFUSED SQL compilation error:\nInvalid query block: -."},
+            {"SELECT 1 = ANY 1 * 2 + 3",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY 1 || 2 + 3",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY x::INT + 1 FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY TRY_CAST('1' AS INT)",
+                "REFUSED SQL compilation error:\nInvalid query block: TRY_CAST."},
+            {"SELECT 1 = ANY 1e5",
+                "REFUSED SQL compilation error:\nInvalid query block: 1e5."},
+            {"SELECT 1 = ANY .5",
+                "REFUSED SQL compilation error:\nInvalid query block: .5."},
+            {"SELECT 1 = ANY $$a$$",
+                "REFUSED SQL compilation error:\nInvalid query block: $$a$$."},
+            {"SELECT 1 = ANY Abs(1)",
+                "REFUSED SQL compilation error:\nInvalid query block: Abs."},
+            {"SELECT 1 = ANY abs(1)",
+                "REFUSED SQL compilation error:\nInvalid query block: abs."},
+            {"SELECT 1 = ANY Pq.X FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: Pq."},
+            {"SELECT 1 = ANY current_date",
+                "REFUSED SQL compilation error:\nInvalid query block: current_date."},
+            {"SELECT 1 = ANY case when true then 1 end",
+                "REFUSED SQL compilation error:\nInvalid query block: case."},
+            {"SELECT 1 = ANY cast(1 as int)",
+                "REFUSED SQL compilation error:\nInvalid query block: cast."},
+            {"SELECT 1 = ANY x and true FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT 1 = ANY 1 OR TRUE",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY 1 <> 2",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY (1 = 1)",
+                "REFUSED SQL compilation error:\nInvalid query block: =."},
+            {"SELECT 1 = ANY (NOT TRUE)",
+                "REFUSED SQL compilation error:\nInvalid query block: NOT."},
+            {"SELECT 1 = ANY (x IS NULL) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: IS."},
+            {"SELECT 1 = ANY (1) IS NULL",
+                "REFUSED SQL compilation error:\nInvalid query block: IS."},
+            {"SELECT 1 = ANY (SELECT 1) x",
+                "true"},
+            {"SELECT 1 = ANY 1 x",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY 1 AS x",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY a[0]:b FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: :."},
+            {"SELECT 1 = ANY v:a::INT FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: ::."},
+            {"SELECT 1 = ANY v:a.b FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: :."},
+            {"SELECT 1 = ANY 1 % 2",
+                "REFUSED SQL compilation error:\nInvalid query block: %."},
+            {"SELECT 1 = ANY 1 / 2",
+                "REFUSED SQL compilation error:\nInvalid query block: /."},
+            {"SELECT 1 = ANY (1 / 2)",
+                "REFUSED SQL compilation error:\nInvalid query block: /."},
+            {"SELECT 1 = ANY ((1) + (2))",
+                "REFUSED SQL compilation error:\nInvalid query block: +."},
+            {"SELECT 1 = ANY x OVER () FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: OVER."},
+            {"SELECT 1 = ANY SUM(x) OVER () FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: OVER."},
+            {"SELECT 1 = ANY 1, x OVER () FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT x OVER (), 1 = ANY 1 FROM pq",
+                "REFUSED SQL compilation error:\ninvalid function 'X'"},
+            {"SELECT x OVER () FROM pq WHERE 1 = ANY 1",
+                "REFUSED SQL compilation error:\ninvalid function 'X'"},
+            {"SELECT nosuchfn(1), 1 = ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY 1, nosuchfn(1)",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 1 = ANY 1 FROM pq WHERE",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 30 unexpected '<EOF>'."},
+            {"SELECT 1 = ANY 1 FROM pq GROUP",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 30 unexpected '<EOF>'."},
+            {"SELECT 2 = ALL 2, 1 = ANY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 2."},
+            {"SELECT 1 != 2",
+                "true"},
+            {"SELECT x!=y FROM pg",
+                "true"},
+            {"SELECT x!==y FROM pg",
+                "REFUSED SQL compilation error:\nsyntax error line 1 at position 10 unexpected '='."},
+            {"SELECT nosuchfn(1), nosuchfn2(2)",
+                "REFUSED SQL compilation error:\nUnknown functions NOSUCHFN, NOSUCHFN2."},
+            {"SELECT nosuchfn(1), nosuchfn(2)",
+                "REFUSED SQL compilation error:\nUnknown functions NOSUCHFN, NOSUCHFN."},
+            {"SELECT 1 = ANY [1,2]",
+                "REFUSED SQL compilation error:\nInvalid query block: [1,2]."},
+            {"SELECT 1 = ANY [ 1 , 2 ]",
+                "REFUSED SQL compilation error:\nInvalid query block: [ 1 , 2 ]."},
+            {"SELECT 1 = ANY {'a':1}",
+                "REFUSED SQL compilation error:\nInvalid query block: {'a':1}."},
+            {"SELECT 1 = ANY { 'a' : 1 }",
+                "REFUSED SQL compilation error:\nInvalid query block: { 'a' : 1 }."},
+            {"SELECT 1 = ANY 1 FROM (SELECT x OVER () FROM pq)",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT x OVER () FROM (SELECT 1 = ANY 1 x)",
+                "REFUSED SQL compilation error:\ninvalid function 'X'"},
+            {"WITH c AS (SELECT 1 = ANY 1 x) SELECT x OVER () FROM c",
+                "REFUSED SQL compilation error:\ninvalid function 'X'"},
+            {"SELECT 1 FROM pq WHERE x OVER () = 1 ORDER BY 1 = ANY 1",
+                "REFUSED SQL compilation error:\ninvalid function 'X'"},
+            {"SELECT 1 = ANY 1 UNION ALL SELECT x OVER () FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT x OVER () FROM pq UNION ALL SELECT 1 = ANY 1",
+                "REFUSED SQL compilation error:\ninvalid function 'X'"},
+            {"SELECT 1 = ANY x IS DISTINCT FROM 2 FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: IS."},
+            {"SELECT 1 = ANY db.sch.f(1)",
+                "REFUSED SQL compilation error:\nInvalid query block: db."},
+            {"SELECT 1 = ANY (b AND TRUE) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: AND."},
+            {"SELECT 1 = ANY (b OR TRUE) FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: OR."},
+            {"SELECT 1 = ANY TIMESTAMP '2020-01-01 00:00:00'",
+                "REFUSED SQL compilation error:\nInvalid query block: TOK_ANSI_LITERAL."},
+            {"SELECT 1 = ANY val 'x'",
+                "REFUSED SQL compilation error:\nInvalid query block: TOK_ANSI_LITERAL."},
+            {"SELECT 1 = ANY x.y.z FROM pq",
+                "REFUSED SQL compilation error:\nInvalid query block: x."},
+            {"SELECT 1 FROM pg ORDER BY b IS NULL",
+                "1"},
+            {"SELECT 1 FROM pg ORDER BY x = 1",
+                "1"},
+            {"SELECT 1 = ANY 1 ORDER BY 1",
+                "REFUSED SQL compilation error:\nInvalid query block: 1."},
+            {"SELECT 2 * 3 = ANY (SELECT 6)",
+                "true"},
+            {"SELECT 1 = ANY (SELECT 1) AND 1 = ALL (SELECT 1)",
+                "true"},
+            {"SELECT x OVER () FROM pg ORDER BY 1 = ANY 1",
+                "REFUSED SQL compilation error:\ninvalid function 'X'"},
+            {"SELECT IFF(NOT b, 1, 2), CASE WHEN NOT b THEN 1 END FROM pg",
+                "2|null"},
+            {"SELECT COALESCE(NOT b, TRUE) FROM pg",
+                "false"},
+    };
+
+    /** A statement's answer as one text: a bar between cells, " ;; " between rows; a refusal as REFUSED and its words. */
+    private String answer(final String sql) {
+        try {
+            final ResultSet rs = engine.executeQuery(sql);
+            final StringBuilder out = new StringBuilder();
+            boolean firstRow = true;
+            while (rs.next()) {
+                out.append(firstRow ? "" : " ;; ");
+                firstRow = false;
+                for (int c = 0; c < rs.getColumnCount(); c++) {
+                    out.append(c == 0 ? "" : "|").append(String.valueOf(rs.getValue(c)));
+                }
+            }
+            return out.toString();
+        } catch (final RuntimeException refused) {
+            return "REFUSED " + refused.getMessage();
+        }
+    }
+
+    /** Each statement answers the given text, or is refused in the given words. */
+    private void assertAnswers(final String[][] cases) {
+        for (final String[] one : cases) {
+            final String answered = answer(one[0]);
+            if (one[1].startsWith("REFUSED ")) {
+                assertTrue(answered.startsWith("REFUSED ") && answered.contains(one[1].substring("REFUSED ".length())),
+                    one[0] + " -> " + answered);
+            } else {
+                assertEquals(one[1], answered, one[0]);
+            }
+        }
+    }
+
+    @Test
+    public void aValueAfterAQuantifierIsRefusedByTheTokenItTurnsOn() {
+        engine.execute("CREATE OR REPLACE TABLE pq (x INT, a ARRAY, v VARIANT, b BOOLEAN)");
+        engine.execute("INSERT INTO pq SELECT 1, ARRAY_CONSTRUCT(1, 2), PARSE_JSON('{\"a\": 1}'), TRUE");
+        engine.execute("CREATE OR REPLACE TABLE po (x INT, a ARRAY)");
+        engine.execute("INSERT INTO po SELECT 1, ARRAY_CONSTRUCT(1)");
+        engine.execute("CREATE OR REPLACE TABLE pg (x INT, y INT, b BOOLEAN)");
+        engine.execute("INSERT INTO pg VALUES (1, 2, TRUE)");
+        assertAnswers(CASES);
+    }
+}

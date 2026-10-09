@@ -239,7 +239,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         final ResultSet history = engine.executeQuery("""
             SELECT query_id, execution_status
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
-            WHERE execution_status = 'FAILED'
+            WHERE execution_status = 'FAILED_WITH_ERROR'
             AND query_text LIKE '%table_that_does_not_exist%'
             LIMIT 1
             """);

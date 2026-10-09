@@ -67,6 +67,7 @@ import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -103,7 +104,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 
@@ -598,7 +598,7 @@ public class ProceduralExecutor {
         if (!t.startsWith("(") || !t.endsWith(")")) {
             return false;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(t.substring(1, t.length() - 1)));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(t.substring(1, t.length() - 1)));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         final int firstTokenType = tokens.LT(1).getType();
@@ -2170,6 +2170,19 @@ public class ProceduralExecutor {
      * that name carries.
      */
     /** The declared type recorded for a variable, or null when its declaration carried none. */
+    /**
+     * Whether a call's name is no built-in function's, so that the call is a user-defined function's: its
+     * overloads are chosen, and its arguments judged, by the types the call hands it.
+     *
+     * @param name the upper-case name the call writes
+     * @return whether no built-in answers to it
+     */
+    public boolean isUserFunctionName(final String name) {
+        return queryExecutor != null && !name.startsWith("SYSTEM$")
+            && queryExecutor.getFunctionRegistry().getFunction(name) == null
+            && queryExecutor.getFunctionRegistry().getAggregateFunction(name) == null;
+    }
+
     public DataType getDeclaredVariableType(final String name) {
         if (name == null) {
             return null;

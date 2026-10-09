@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.ArrayAccessExpression;
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
@@ -113,6 +114,10 @@ final class WindowFunctionEvaluator {
     // Set/restored around computeWindowFunctions so a nested subquery's window functions don't clobber it;
     // empty outside a window computation, so evaluateOrderKey behaves exactly as before there.
     private Map<String, String> windowSelectAliases = new HashMap<>();
+
+    // The keys of the window computation currently running, each with the SELECT aliases it reads written out
+    // as their defining expressions; per relation, since a relation's own column outranks an alias.
+    private Map<Table, Map<String, String>> windowKeysReadThroughAliases = new IdentityHashMap<>();
 
     // Canonical AST print of each SELECT item -> projected column index, for the window computation
     // currently running over ALREADY-PROJECTED (grouped) rows; empty otherwise. Lets a PARTITION BY /
@@ -484,7 +489,8 @@ final class WindowFunctionEvaluator {
      * @param node the tree to walk
      */
     void rejectFrameWithoutOrderBy(final ParseTree node) {
-        if (node == null) {
+        // A MATCH_RECOGNIZE clause's windows are its own: a frame there stands with no ORDER BY beside it.
+        if (node == null || node instanceof FrostlakeParser.MatchRecognizeClauseContext) {
             return;
         }
         if (node instanceof FrostlakeParser.OverClauseContext) {
@@ -526,7 +532,8 @@ final class WindowFunctionEvaluator {
      * @param node any parse-tree node; the walk covers the statement
      */
     void rejectUnsupportedFrameForWholePartitionAggregate(final ParseTree node) {
-        if (node == null) {
+        // A MATCH_RECOGNIZE clause's windows are its own: a frame there stands with no ORDER BY beside it.
+        if (node == null || node instanceof FrostlakeParser.MatchRecognizeClauseContext) {
             return;
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
@@ -576,7 +583,8 @@ final class WindowFunctionEvaluator {
     }
 
     void rejectWindowWithoutRequiredOrderBy(final ParseTree node) {
-        if (node == null) {
+        // A MATCH_RECOGNIZE clause's windows are its own: a frame there stands with no ORDER BY beside it.
+        if (node == null || node instanceof FrostlakeParser.MatchRecognizeClauseContext) {
             return;
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
@@ -763,6 +771,7 @@ final class WindowFunctionEvaluator {
         final Map<String, String> saved = windowSelectAliases;
         savedCanonicalScopes.push(windowSelectItemCanonicalIndex);
         windowSelectAliases = buildSelectAliasMap(ctx);
+        windowKeysReadThroughAliases = new IdentityHashMap<>();
         windowSelectItemCanonicalIndex =
             rowsAreProjected ? buildSelectItemCanonicalIndex(ctx) : new HashMap<>();
         return saved;
@@ -849,6 +858,7 @@ final class WindowFunctionEvaluator {
     /** Restore the alias scope saved by {@link #beginWindowAliasScope}. */
     void endWindowAliasScope(final Map<String, String> saved) {
         windowSelectAliases = saved;
+        windowKeysReadThroughAliases = new IdentityHashMap<>();
         windowSelectItemCanonicalIndex =
             savedCanonicalScopes.isEmpty() ? new HashMap<>() : savedCanonicalScopes.pop();
     }
@@ -2877,10 +2887,13 @@ final class WindowFunctionEvaluator {
         }
         final String argExpr = ParseTreeText.getOriginalText(args.get(0));
         final Object[] vector = frameArgVector(partition, argExpr, table, VECTOR_MODE_ORDER_KEY);
+        // DISTINCT counts each value of the frame once, as the grouped COUNT does.
+        final Set<Object> seen = funcCtx.DISTINCT() != null ? new HashSet<>() : null;
         long count = 0;
         for (int i = from; i <= to; i++) {
             final Object raw = vector != null ? vector[i] : extractColumnValue(partition.get(i), argExpr, table);
-            if (VariantJsonNulls.asAggregateInput("COUNT", raw) != null) {
+            final Object counted = VariantJsonNulls.asAggregateInput("COUNT", raw);
+            if (counted != null && (seen == null || seen.add(ValueComparisons.normalizeValueForDistinct(counted)))) {
                 count++;
             }
         }
@@ -3251,6 +3264,8 @@ final class WindowFunctionEvaluator {
             if (!table.hasColumn(canon) && windowSelectAliases.containsKey(canon)) {
                 toEvaluate = expandAliasExpression(windowSelectAliases.get(canon), table);
             }
+        } else if (!windowSelectAliases.isEmpty()) {
+            toEvaluate = readThroughAliases(trimmed, table);
         }
         try {
             return executor.evaluateExpression(toEvaluate, row, table);
@@ -3260,6 +3275,54 @@ final class WindowFunctionEvaluator {
                 throw e;
             }
             return null;
+        }
+    }
+
+    /**
+     * A key that is an expression, with each SELECT alias it names written out as the alias's defining
+     * expression: {@code OVER (ORDER BY x + 0)} beside {@code id * -1 AS x} orders by the negated value. The
+     * names are read off the key's parse tree, so a function called like an alias, a qualified name and a nested
+     * query are left alone, and a real column of the same name still wins (live-verified). A key that does not
+     * parse on its own is evaluated as written.
+     */
+    private String readThroughAliases(final String key, final Table table) {
+        Map<String, String> read = windowKeysReadThroughAliases.get(table);
+        if (read == null) {
+            read = new HashMap<>();
+            windowKeysReadThroughAliases.put(table, read);
+        }
+        String written = read.get(key);
+        if (written == null) {
+            written = key;
+            try {
+                final FrostlakeParser.BooleanExprContext tree = AntlrExpressionParser.parseTree(key);
+                final List<TextReplacement> replacements = new ArrayList<>();
+                collectAliasReads(tree, table, replacements);
+                written = TextReplacement.apply(tree, replacements);
+            } catch (final RuntimeException unparsed) {
+                written = key;
+            }
+            read.put(key, written);
+        }
+        return written;
+    }
+
+    private void collectAliasReads(final ParseTree node, final Table table, final List<TextReplacement> out) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final FrostlakeParser.QualifiedNameExprContext name = (FrostlakeParser.QualifiedNameExprContext) node;
+            final String[] parts = ParseTreeText.qualifiedNameParts(name.qualifiedName());
+            if (parts.length == 1 && windowSelectAliases.containsKey(parts[0])
+                    && (table == null || !table.hasColumn(parts[0]))) {
+                out.add(new TextReplacement(name,
+                    "(" + expandAliasExpression(windowSelectAliases.get(parts[0]), table) + ")"));
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectAliasReads(node.getChild(i), table, out);
         }
     }
 

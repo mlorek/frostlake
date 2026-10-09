@@ -57,7 +57,7 @@ public final class ValueCaster {
      * the type it prints, and only the caller holding the source EXPRESSION can tell a nullable column
      * from a literal. Every other caller reads as not-null, which is what live answers for one.
      */
-    static Object castValue(final Object value, final String targetType, final boolean nullableSource) {
+    public static Object castValue(final Object value, final String targetType, final boolean nullableSource) {
         if (value == null) {
             return null;
         }

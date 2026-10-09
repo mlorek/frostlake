@@ -114,9 +114,9 @@ public class ImplicitStageTest {
         final ResultSet unload = engine.executeQuery("COPY INTO @%t FROM t FILE_FORMAT = (TYPE = CSV)");
         assertEquals(3, ((Number) unload.getRows().get(0).getValue(0)).intValue());
 
-        engine.execute("CREATE TABLE t2 (id INTEGER, name VARCHAR)");
-        engine.execute("COPY INTO t2 FROM @%t FILE_FORMAT = (TYPE = CSV)");
-        assertEquals(3, count("t2"));
+        // A table's stage loads into that table alone, so the round trip ends where it began.
+        engine.execute("COPY INTO t FROM @%t FILE_FORMAT = (TYPE = CSV)");
+        assertEquals(6, count("t"));
     }
 
     @Test
@@ -143,12 +143,12 @@ public class ImplicitStageTest {
         engine.executeQuery("COPY INTO @%b FROM b FILE_FORMAT = (TYPE = CSV)");
 
         engine.execute("CREATE TABLE from_user (id INTEGER)");
-        engine.execute("CREATE TABLE from_table (id INTEGER)");
         engine.execute("COPY INTO from_user FROM @~ FILE_FORMAT = (TYPE = CSV)");
-        engine.execute("COPY INTO from_table FROM @%b FILE_FORMAT = (TYPE = CSV)");
+        // b's own stage holds b's one row, and loads into b alone.
+        engine.execute("COPY INTO b FROM @%b FILE_FORMAT = (TYPE = CSV)");
 
         assertEquals(2, count("from_user"));
-        assertEquals(1, count("from_table"));
+        assertEquals(2, count("b"));
     }
 
     /**

@@ -17,7 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeLexer;
-import org.antlr.v4.runtime.CharStreams;
+import dev.frostlake.parser.SqlCharStream;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -56,7 +56,7 @@ public final class SqlIdentifierSubstitution {
      * {@code child_stats}; {@code so} itself, colon AFTER it, still binds).
      */
     public static String substitute(final String body, final String identifier, final String replacement) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();
@@ -112,7 +112,7 @@ public final class SqlIdentifierSubstitution {
      */
     public static String substituteParameters(final String body, final List<String> names,
                                               final List<String> replacements) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();
@@ -163,7 +163,7 @@ public final class SqlIdentifierSubstitution {
      */
     public static String substituteAll(final String body, final Map<String, String> replacements,
                                        final List<int[]> replaced) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();

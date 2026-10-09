@@ -34,8 +34,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class ExplainTest extends BaseDatabaseTest {
 
     private static final String PLAN_SHAPE =
-        "asserts Frostlake's operator names (TableScan / Filter / Aggregate / …); an EXPLAIN plan on a real "
-        + "account is Snowflake's own internal plan shape, with different rows, columns and operator names";
+        "the tables are empty, which the account's optimizer answers with a single Generator rather than with the "
+        + "operators of the statement as it is written";
 
     private Set<String> operations(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);
@@ -56,8 +56,7 @@ public class ExplainTest extends BaseDatabaseTest {
         assertTrue(ops.contains("TableScan"), ops.toString());
         assertTrue(ops.contains("Filter"), ops.toString());
         assertTrue(ops.contains("Aggregate"), ops.toString());
-        assertTrue(ops.contains("Sort"), ops.toString());
-        assertTrue(ops.contains("Limit"), ops.toString());
+        assertTrue(ops.contains("SortWithLimit"), ops.toString());
     }
 
     @Test
@@ -66,7 +65,8 @@ public class ExplainTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE a (id INTEGER)");
         engine.execute("CREATE TABLE b (id INTEGER)");
         final Set<String> ops = operations("EXPLAIN SELECT * FROM a JOIN b ON a.id = b.id");
-        assertTrue(ops.contains("Join"), ops.toString());
+        assertTrue(ops.contains("InnerJoin"), ops.toString());
+        assertTrue(ops.contains("JoinFilter"), ops.toString());
         assertTrue(ops.contains("TableScan"), ops.toString());
     }
 

@@ -20,6 +20,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -54,6 +55,9 @@ public final class DdlStatusMessage {
     public static final String EXECUTED = "Statement executed successfully.";
 
     /** Words that may sit between CREATE/DROP and the object's kind, and are never part of it. */
+    /** The kind phrase of a row access policy, whose created sentence is its own. */
+    private static final String ROW_ACCESS_POLICY = "Row access policy";
+
     private static final Set<String> MODIFIERS = new HashSet<>();
 
     static {
@@ -140,6 +144,11 @@ public final class DdlStatusMessage {
                 if (branch == ConditionalDdlBranch.CREATE_SKIPPED) {
                     return name + " already exists, statement succeeded.";
                 }
+                if (branch == ConditionalDdlBranch.ALTER_SKIPPED) {
+                    // A Cortex Search Service that is not there is named, where other kinds answer the bare
+                    // sentence (live-verified).
+                    return "Cortex Search Service " + name + " does not exist.";
+                }
                 return "Drop statement executed successfully (" + name + " already dropped).";
             }
         }
@@ -161,6 +170,10 @@ public final class DdlStatusMessage {
             return name + " successfully dropped.";
         }
         final String kind = kindPhrase(statement);
+        if (ROW_ACCESS_POLICY.equals(kind)) {
+            // A row access policy alone quotes its name and "is" created (live-verified).
+            return kind + " '" + name + "' is successfully created.";
+        }
         return kind == null ? EXECUTED : kind + " " + name + " successfully created.";
     }
 
@@ -257,7 +270,7 @@ public final class DdlStatusMessage {
      */
     private static String kindPhrase(final FrostlakeParser.StatementContext statement) {
         final ParseTree reference = identifierReference(statement);
-        final ParseTree name = reference != null ? reference : firstIdentifier(statement);
+        final ParseTree name = reference != null ? reference : firstName(statement);
         final StringBuilder phrase = new StringBuilder();
         collectKindWords(statement, name, phrase);
         final String words = phrase.toString().trim();
@@ -276,7 +289,39 @@ public final class DdlStatusMessage {
         if ("ARTIFACT REPOSITORY".equals(words)) {
             return "Artifact Repository";
         }
+        if ("DYNAMIC TABLE".equals(words) && clones(statement)) {
+            // A cloned dynamic table is answered for as a table (live-verified).
+            return "Table";
+        }
         return words.charAt(0) + words.substring(1).toLowerCase(Locale.ROOT);
+    }
+
+    /** Whether the statement is a CREATE … CLONE. */
+    private static boolean clones(final ParseTree node) {
+        if (node instanceof FrostlakeParser.CreateStatementContext) {
+            return ((FrostlakeParser.CreateStatementContext) node).CLONE() != null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (node.getChild(i) instanceof ParserRuleContext && clones(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Where the object's name begins: the first qualified name or the first identifier, whichever is written first.
+     * A name that is a keyword — CREATE TABLE case — holds no identifier, so the qualified name is what ends the
+     * kind words there.
+     */
+    private static ParseTree firstName(final FrostlakeParser.StatementContext statement) {
+        final FrostlakeParser.QualifiedNameContext qualified = firstQualifiedName(statement);
+        final FrostlakeParser.IdentifierContext identifier = firstIdentifier(statement);
+        if (qualified == null || identifier != null
+                && identifier.getStart().getTokenIndex() < qualified.getStart().getTokenIndex()) {
+            return identifier;
+        }
+        return qualified;
     }
 
     /** Walk the statement's own tokens up to the name, keeping the ones that are not modifiers. */

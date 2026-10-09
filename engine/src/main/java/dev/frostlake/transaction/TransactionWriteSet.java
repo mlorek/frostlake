@@ -24,6 +24,7 @@ import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.stream.StreamManager;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -73,15 +74,83 @@ public class TransactionWriteSet {
     // copy() paid O(all pending rows) per statement however few tables the statement touched.
     private WriteSetSavepoint activeSavepoint;
 
+    /** How many completed statements' savepoints are kept at most, the same window a table's history keeps. */
+    private static final int MAX_KEPT_STATEMENTS = 200;
+
+    /** How many rows and row ids the kept savepoints may hold between them. */
+    private static final long MAX_KEPT_ENTRIES = 1_000_000L;
+
+    /**
+     * The savepoints of the statements that completed and changed something, oldest first: each holds the tables
+     * its statement changed as they stood before it.
+     */
+    private final ArrayDeque<WriteSetSavepoint> completed = new ArrayDeque<>();
+    private long keptEntries;
+
+    /** The ordinal of the statement begun last, from 1. */
+    private long statementOrdinal;
+
+    /** The newest ordinal whose savepoint was let go: a point that needs one at or below it cannot be read. */
+    private long lastForgotten;
+
     /** Begin a statement savepoint (deferred-apply explicit transactions). */
     public WriteSetSavepoint beginStatementSavepoint() {
-        activeSavepoint = new WriteSetSavepoint(new LinkedHashMap<>(tableLocks));
+        activeSavepoint = new WriteSetSavepoint(new LinkedHashMap<>(tableLocks), ++statementOrdinal);
         return activeSavepoint;
     }
 
     /** End the statement savepoint without restoring (the statement succeeded). */
     public void endStatementSavepoint() {
+        if (activeSavepoint != null && !activeSavepoint.touchedTables().isEmpty()) {
+            completed.addLast(activeSavepoint);
+            keptEntries += activeSavepoint.heldEntries();
+            while (completed.size() > MAX_KEPT_STATEMENTS || keptEntries > MAX_KEPT_ENTRIES && completed.size() > 1) {
+                final WriteSetSavepoint oldest = completed.removeFirst();
+                keptEntries -= oldest.heldEntries();
+                lastForgotten = oldest.ordinal();
+            }
+        }
         activeSavepoint = null;
+    }
+
+    /**
+     * The ordinal of the statement running now among the transaction's statements.
+     *
+     * @return the ordinal, from 1, or -1 when the statement runs under no savepoint
+     */
+    public long activeOrdinal() {
+        return activeSavepoint == null ? -1L : activeSavepoint.ordinal();
+    }
+
+    /**
+     * This transaction's view of {@code table} as it stood at one of the transaction's own statements: with every
+     * change the transaction made up to and including that statement, or — for {@code before} — up to it and
+     * without it. The view is the committed base under the pending changes of that moment, which the first later
+     * statement to change the table kept as its pre-image; when none did, the table stands now as it stood then.
+     *
+     * @param table   the table's fully qualified name
+     * @param base    the table's committed rows
+     * @param ordinal the statement's ordinal, from {@link #activeOrdinal} as it ran
+     * @param before  whether the view leaves the statement's own changes out
+     * @return the rows, or null when the savepoints the point needs are no longer kept
+     */
+    public List<Row> overlayRowsAsOf(final String table, final TableStorage base, final long ordinal,
+                                     final boolean before) {
+        final long firstAfter = before ? ordinal : ordinal + 1;
+        if (firstAfter <= lastForgotten) {
+            return null;
+        }
+        for (final WriteSetSavepoint later : completed) {
+            if (later.ordinal() >= firstAfter && later.isTouched(table)) {
+                return overlay(base, later.insertsBefore(table), later.updatesBefore(table),
+                    later.deletesBefore(table));
+            }
+        }
+        if (activeSavepoint != null && activeSavepoint.ordinal() >= firstAfter && activeSavepoint.isTouched(table)) {
+            return overlay(base, activeSavepoint.insertsBefore(table), activeSavepoint.updatesBefore(table),
+                activeSavepoint.deletesBefore(table));
+        }
+        return overlayRows(table, base);
     }
 
     /** Restore exactly the entries the failed statement touched, and the lock map. */
@@ -336,10 +405,12 @@ public class TransactionWriteSet {
      * the engine lock so {@code scan()} and {@code getRowIds()} stay index-aligned.
      */
     public List<Row> overlayRows(final String table, final TableStorage base) {
-        final Set<Long> del = deletes.get(table);
-        final Map<Long, Row> upd = updates.get(table);
-        final List<Row> ins = inserts.get(table);
+        return overlay(base, inserts.get(table), updates.get(table), deletes.get(table));
+    }
 
+    /** A table's committed rows under one set of pending changes: updates applied, deletes removed, inserts last. */
+    private static List<Row> overlay(final TableStorage base, final List<Row> ins, final Map<Long, Row> upd,
+                                     final Set<Long> del) {
         // Fast path: the write set holds NOTHING for this table — the base scan copy IS the view,
         // with no per-row id walk and no rowIds copy at all.
         if ((del == null || del.isEmpty()) && (upd == null || upd.isEmpty())) {
@@ -484,7 +555,8 @@ public class TransactionWriteSet {
                         final Row oldRow = captured ? base.getRow(idx).copy() : null;
                         base.update(idx, entry.getValue());
                         if (captured) {
-                            streamManager.trackUpdate(capturing, table, oldRow, entry.getValue());
+                            streamManager.trackUpdate(capturing, table, oldRow, entry.getValue(),
+                                entry.getKey().longValue());
                         }
                     }
                 }
@@ -500,15 +572,17 @@ public class TransactionWriteSet {
                     }
                 }
                 Collections.sort(indices, Collections.reverseOrder());
-                // Capture the old images first, then delete ALL rows in one compaction pass.
+                // Capture the old images and their identities first, then delete ALL rows in one compaction pass.
                 final List<Row> oldRows = new ArrayList<>(indices.size());
+                final List<Long> oldIds = new ArrayList<>(indices.size());
                 for (final Integer idx : indices) {
                     oldRows.add(captured ? base.getRow(idx).copy() : null);
+                    oldIds.add(captured ? Long.valueOf(base.getRowId(idx)) : null);
                 }
                 base.deleteAll(indices);
                 if (captured) {
-                    for (final Row oldRow : oldRows) {
-                        streamManager.trackDelete(capturing, table, oldRow);
+                    for (int i = 0; i < oldRows.size(); i++) {
+                        streamManager.trackDelete(capturing, table, oldRows.get(i), oldIds.get(i).longValue());
                     }
                 }
             }
@@ -519,7 +593,7 @@ public class TransactionWriteSet {
                 for (final Row row : ins) {
                     base.insert(row);
                     if (captured) {
-                        streamManager.trackInsert(capturing, table, row);
+                        streamManager.trackInsert(capturing, table, row, base.getRowId(base.getRowCount() - 1));
                     }
                 }
             }
@@ -545,6 +619,14 @@ public class TransactionWriteSet {
         deletes.clear();
         tableLocks.clear();
         lockNotedRaw.clear();
+        forgetStatements();
+    }
+
+    /** Let go of every completed statement's savepoint: no point before now can be read any more. */
+    private void forgetStatements() {
+        completed.clear();
+        keptEntries = 0;
+        lastForgotten = statementOrdinal;
     }
 
     /**

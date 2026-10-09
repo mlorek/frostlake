@@ -97,9 +97,9 @@ public final class StatementClock {
      * latest instant SQL has read on any thread.
      *
      * <p>The JDK's clock reads microseconds, which a TIMESTAMP_NTZ(3) column cannot hold, so a
-     * CURRENT_TIMESTAMP() stored in one no longer equalled the variable it was read into. tds-asgard-data's
-     * APA export tests compare exactly that, and pass on Snowflake, whose CURRENT_TIMESTAMP(9) carries zeros
-     * past the third fractional digit.
+     * CURRENT_TIMESTAMP() stored in one no longer equalled the variable it was read into. A procedure that
+     * compares exactly that passes on Snowflake, whose CURRENT_TIMESTAMP(9) carries zeros past the third
+     * fractional digit.
      *
      * <p>A statement on the account takes at least a millisecond, so a statement never reads the instant one that
      * finished before it read; the engine runs several within one millisecond, where a loader reading the rows

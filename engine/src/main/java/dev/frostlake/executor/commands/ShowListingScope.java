@@ -16,16 +16,14 @@
 
 package dev.frostlake.executor.commands;
 
-import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.SearchPath;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
-import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Where a schema-level SHOW listing looks, as live resolves its scope — one rule for every listing, measured
@@ -120,66 +118,14 @@ final class ShowListingScope {
         if (ctx.IN() != null || ctx.BUILTIN() != null || !listing.listsSearchPathUnscoped()) {
             return null;
         }
-        final String databaseName = catalog.getCurrentDatabase();
-        final String schemaName = catalog.getCurrentSchema();
-        if (databaseName == null || schemaName == null) {
+        if (catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null) {
             return null;
         }
-        final Database database = catalog.getDatabase(databaseName);
-        final List<Schema> schemas = new ArrayList<>();
-        for (final String written : entries(searchPath)) {
-            final Schema schema = pathSchema(written, database, schemaName, catalog);
-            if (schema != null && !schemas.contains(schema)) {
-                schemas.add(schema);
-            }
-        }
         final List<String> names = new ArrayList<>();
-        for (final Schema schema : schemas) {
+        for (final Schema schema : SearchPath.schemas(catalog, searchPath)) {
             names.add(QualifiedName.join(schema.getDatabaseName(), schema.getName()));
         }
         return names;
-    }
-
-    /** The comma-separated entries of a search path, trimmed; a comma inside double quotes separates nothing. */
-    private static List<String> entries(final String searchPath) {
-        final List<String> entries = new ArrayList<>();
-        final StringBuilder entry = new StringBuilder();
-        boolean quoted = false;
-        for (int i = 0; i < searchPath.length(); i++) {
-            final char c = searchPath.charAt(i);
-            if (c == '"') {
-                quoted = !quoted;
-            }
-            if (c == ',' && !quoted) {
-                entries.add(entry.toString().trim());
-                entry.setLength(0);
-            } else {
-                entry.append(c);
-            }
-        }
-        entries.add(entry.toString().trim());
-        return entries;
-    }
-
-    /** The schema one search-path entry names in the session, or null when it names none. */
-    private static Schema pathSchema(final String written, final Database database, final String currentSchema,
-                                     final Catalog catalog) {
-        if (written.isEmpty()) {
-            return null;
-        }
-        final String lower = written.toLowerCase(Locale.ROOT);
-        try {
-            if ("$current".equals(lower)) {
-                return database.getSchema(currentSchema);
-            }
-            if ("$public".equals(lower)) {
-                return database.hasSchemaExact("PUBLIC") ? database.getSchema("PUBLIC") : null;
-            }
-            // Any other entry is written as an identifier: unquoted parts fold, quoted ones keep their case.
-            return catalog.resolveSchema(SqlIdentifiers.canonicalText(written));
-        } catch (final RuntimeException missing) {
-            return null;
-        }
     }
 
     /** @return the container level the listing looks in */

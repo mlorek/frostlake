@@ -21,6 +21,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.TreeMap;
 import javax.tools.FileObject;
 import javax.tools.ForwardingJavaFileManager;
 import javax.tools.JavaFileObject;
@@ -59,5 +60,14 @@ public class InMemoryJavaFileManager extends ForwardingJavaFileManager<StandardJ
     public byte[] getClassBytes(final String className) {
         final ByteArrayOutputStream baos = classBytes.get(className);
         return baos != null ? baos.toByteArray() : null;
+    }
+
+    /** Every class the compilation produced, by its binary name, in name order. */
+    public Map<String, byte[]> getAllClassBytes() {
+        final Map<String, byte[]> all = new TreeMap<>();
+        for (final Map.Entry<String, ByteArrayOutputStream> entry : classBytes.entrySet()) {
+            all.put(entry.getKey(), entry.getValue().toByteArray());
+        }
+        return all;
     }
 }

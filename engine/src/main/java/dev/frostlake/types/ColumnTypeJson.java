@@ -59,6 +59,8 @@ public final class ColumnTypeJson {
      * selecting the same column still reports the full width.
      */
     private static final long DESCRIBED_STRING_MAXIMUM = SqlTypeNames.DESCRIBED_STRING_MAXIMUM;
+    /** The most bytes a string's descriptor reports, which is the widest a value can be. */
+    private static final long WIDEST_BYTE_LENGTH = StringResultWidths.UNBOUNDED;
 
     private ColumnTypeJson() {
     }
@@ -75,8 +77,28 @@ public final class ColumnTypeJson {
             return null;
         }
         final StringBuilder out = new StringBuilder();
-        append(out, type, nullable);
+        append(out, type, nullable, DESCRIBED_STRING_MAXIMUM);
         return out.toString();
+    }
+
+    /**
+     * The descriptor of a TABLE's own column, which keeps the length it was declared with however long: a
+     * {@code VARCHAR(134217728)} reads {@code "length":134217728,"byteLength":134217728} and a
+     * {@code VARCHAR(16777217)} {@code "length":16777217,"byteLength":67108868}, the bytes stopping at the widest
+     * a value can be (live-verified).
+     *
+     * @param type      the column's declared type
+     * @param nullable  whether it takes NULL
+     * @param collation its collation specification, or null
+     * @return the descriptor
+     */
+    public static String renderDeclared(final DataType type, final boolean nullable, final String collation) {
+        if (type == null) {
+            return null;
+        }
+        final StringBuilder out = new StringBuilder();
+        append(out, type, nullable, Long.MAX_VALUE);
+        return collated(out.toString(), type, collation);
     }
 
     /**
@@ -90,7 +112,10 @@ public final class ColumnTypeJson {
      * @return the descriptor
      */
     public static String render(final DataType type, final boolean nullable, final String collation) {
-        final String rendered = render(type, nullable);
+        return collated(render(type, nullable), type, collation);
+    }
+
+    private static String collated(final String rendered, final DataType type, final String collation) {
         if (rendered == null || collation == null || collation.isEmpty() || !(type instanceof StringType)) {
             return rendered;
         }
@@ -98,7 +123,8 @@ public final class ColumnTypeJson {
         return rendered.substring(0, rendered.length() - 1) + ",\"collation\":\"" + escaped + "\"}";
     }
 
-    private static void append(final StringBuilder out, final DataType type, final boolean nullable) {
+    private static void append(final StringBuilder out, final DataType type, final boolean nullable,
+                               final long widestString) {
         if (type instanceof IntervalDayTimeType || type instanceof IntervalYearMonthType) {
             appendInterval(out, type, nullable);
             return;
@@ -111,10 +137,9 @@ public final class ColumnTypeJson {
                .append(",\"scale\":").append(numeric.getScale());
         } else if (type instanceof StringType && !(type instanceof UuidType)) {
             // A UUID is no string here: live's descriptor is {"type":"UUID","nullable":true}.
-            final long length = Math.min(((StringType) type).getMaxLength(),
-                DESCRIBED_STRING_MAXIMUM);
+            final long length = Math.min(((StringType) type).getMaxLength(), widestString);
             out.append(",\"length\":").append(length)
-               .append(",\"byteLength\":").append(length * BYTES_PER_CHARACTER);
+               .append(",\"byteLength\":").append(Math.min(length * BYTES_PER_CHARACTER, WIDEST_BYTE_LENGTH));
         } else if (type instanceof BinaryType) {
             final long length = ((BinaryType) type).getMaxLength();
             out.append(",\"length\":").append(length).append(",\"byteLength\":").append(length);
@@ -129,7 +154,7 @@ public final class ColumnTypeJson {
         } else if (type instanceof BinaryType) {
             out.append(",\"fixed\":").append(((BinaryType) type).isFixed());
         }
-        appendContained(out, type);
+        appendContained(out, type, widestString);
         out.append('}');
     }
 
@@ -158,7 +183,7 @@ public final class ColumnTypeJson {
     }
 
     /** The nested descriptors a structured type carries after its own {@code nullable}. */
-    private static void appendContained(final StringBuilder out, final DataType type) {
+    private static void appendContained(final StringBuilder out, final DataType type, final long widestString) {
         if (type instanceof StructuredObjectType) {
             final List<StructuredField> fields = ((StructuredObjectType) type).getFields();
             out.append(",\"fields\":[");
@@ -166,23 +191,23 @@ public final class ColumnTypeJson {
                 final StructuredField field = fields.get(i);
                 out.append(i == 0 ? "" : ",").append("{\"fieldName\":\"").append(field.getName())
                    .append("\",\"fieldType\":");
-                append(out, field.getDataType(), !field.isNotNull());
+                append(out, field.getDataType(), !field.isNotNull(), widestString);
                 out.append('}');
             }
             out.append(']');
         } else if (type instanceof StructuredArrayType) {
             out.append(",\"elementType\":");
-            append(out, ((StructuredArrayType) type).getElementType(), true);
+            append(out, ((StructuredArrayType) type).getElementType(), true, widestString);
         } else if (type instanceof MapType) {
             final MapType map = (MapType) type;
             out.append(",\"keyType\":");
-            append(out, map.getKeyType(), false);
+            append(out, map.getKeyType(), false, widestString);
             out.append(",\"valueType\":");
-            append(out, map.getValueType(), true);
+            append(out, map.getValueType(), true, widestString);
         } else if (type instanceof VectorType) {
             final VectorType vector = (VectorType) type;
             out.append(",\"vectorElementType\":");
-            append(out, vectorElement(vector), false);
+            append(out, vectorElement(vector), false, widestString);
             out.append(",\"dimension\":").append(vector.getDimension());
         }
     }

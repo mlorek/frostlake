@@ -105,6 +105,11 @@ final class StarModifierPlace {
                 return own == null || !statementClause(up) ? null
                     : new StarModifierPlace(StarModifierPlaceKind.CLAUSE, null, null, false, null);
             }
+            if (isMergeCondition(up)) {
+                // A MERGE's ON is read as a clause is.
+                return own == null || inBlock(up) ? null
+                    : new StarModifierPlace(StarModifierPlaceKind.CLAUSE, null, null, false, null);
+            }
             if (!(up instanceof FrostlakeParser.ParenExprContext) && opensABracket(up)) {
                 if (own == null) {
                     own = up;
@@ -115,6 +120,71 @@ final class StarModifierPlace {
                 } else {
                     return null;
                 }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The ON of the join whose condition holds the star at {@code star}, when the join is one of a statement's own
+     * query; else null. A star call's misplaced modifier or word there is refused at that ON, and nothing after it
+     * is read (live-verified).
+     *
+     * @param tree the parse of the text before the fault, its brackets closed
+     * @param star the star token of the original text
+     * @return the join's ON, or null
+     */
+    static Token joinOn(final FrostlakeParser.SqlScriptContext tree, final Token star) {
+        final TerminalNode node = starAt(tree, star.getStartIndex());
+        for (ParserRuleContext up = node == null ? null : (ParserRuleContext) node.getParent(); up != null;
+                up = up.getParent()) {
+            if (up instanceof FrostlakeParser.SelectStatementContext) {
+                return null;
+            }
+            if (up instanceof FrostlakeParser.JoinClauseContext) {
+                final FrostlakeParser.JoinClauseContext join = (FrostlakeParser.JoinClauseContext) up;
+                return join.ON() != null && statementQuery(queryOf(join)) ? join.ON().getSymbol() : null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * For a star whose call is the select item of a subquery that stands in a select item of a statement's own
+     * query: the subquery's SELECT and the '(' of the star's call, the two places live refuses such a subquery at
+     * (live-verified); else null.
+     *
+     * @param tree the parse of the text before the fault, its brackets closed
+     * @param star the star token of the original text
+     * @return the subquery's SELECT and the call's opening parenthesis, or null
+     */
+    static Token[] scalarSubqueryItem(final FrostlakeParser.SqlScriptContext tree, final Token star) {
+        final TerminalNode node = starAt(tree, star.getStartIndex());
+        ParserRuleContext own = null;
+        FrostlakeParser.SelectStatementContext subquery = null;
+        for (ParserRuleContext up = node == null ? null : (ParserRuleContext) node.getParent(); up != null;
+                up = up.getParent()) {
+            if (subquery == null) {
+                if (up instanceof FrostlakeParser.SelectStatementContext) {
+                    subquery = (FrostlakeParser.SelectStatementContext) up;
+                } else if (up instanceof FrostlakeParser.ExprItemContext) {
+                    if (own == null) {
+                        return null;
+                    }
+                } else if (isClause(up) || up instanceof FrostlakeParser.OverClauseContext) {
+                    return null;
+                } else if (!(up instanceof FrostlakeParser.ParenExprContext) && opensABracket(up)) {
+                    if (own != null) {
+                        return null;
+                    }
+                    own = up;
+                }
+            } else if (up instanceof FrostlakeParser.SelectStatementContext || isClause(up)) {
+                return null;
+            } else if (up instanceof FrostlakeParser.ExprItemContext) {
+                final Token select = subquery.getStart();
+                return own != null && select.getType() == FrostlakeLexer.SELECT && statementQuery(queryOf(up))
+                    ? new Token[] {select, openingParen(own)} : null;
             }
         }
         return null;
@@ -163,6 +233,22 @@ final class StarModifierPlace {
             || context instanceof FrostlakeParser.HavingClauseContext
             || context instanceof FrostlakeParser.QualifyClauseContext
             || context instanceof FrostlakeParser.OrderByClauseContext;
+    }
+
+    /** Whether a context is the condition a MERGE joins its source on. */
+    private static boolean isMergeCondition(final ParserRuleContext context) {
+        return context.getParent() instanceof FrostlakeParser.MergeStatementContext
+            && context == ((FrostlakeParser.MergeStatementContext) context.getParent()).booleanExpr();
+    }
+
+    /** Whether a context stands in a block's statement list. */
+    private static boolean inBlock(final ParserRuleContext context) {
+        for (ParserRuleContext up = context; up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.StatementListContext) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether a clause belongs to a query or an UPDATE or DELETE that is a statement of its own. */

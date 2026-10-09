@@ -63,6 +63,8 @@ public class TaskSnapshot implements Serializable {
     public String successIntegration;
     public String finalizedRootTask;
     public String executeAsUser;
+    /** The contacts attached to the task, by purpose. Null on older snapshots. */
+    public Map<String, String> contacts;
     public String serverlessTaskMinStatementSize;
 
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were

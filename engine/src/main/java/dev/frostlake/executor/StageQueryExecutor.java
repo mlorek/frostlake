@@ -17,11 +17,14 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.copy.CopyCommandExecutor;
+import dev.frostlake.executor.copy.CsvEscapes;
+import dev.frostlake.executor.copy.CsvFormatOptions;
 import dev.frostlake.executor.copy.StageFileReader;
 import dev.frostlake.executor.copy.StageReaderFactory;
 import dev.frostlake.executor.copy.StagedFileIo;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StagePositions;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -42,13 +45,18 @@ import tools.jackson.databind.JsonNode;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.TreeMap;
 
 /**
  * Query staged files directly — {@code SELECT $1, $2, metadata$filename FROM @stage[/path]
@@ -76,14 +84,12 @@ final class StageQueryExecutor {
                          final FrostlakeParser.StageQueryParamsContext params, final String alias) {
         String fileFormat = "CSV";
         String pattern = null;
-        char delimiter = ',';
-        Character enclosure = null;
         int skipHeader = 0;
-        // CSV's EMPTY_FIELD_AS_NULL reaches the stage-query path too, default TRUE and all: an unenclosed
-        // empty field reads as SQL NULL, not as the empty string. Live-verified with a control
-        // beside it — the same file read through a format carrying EMPTY_FIELD_AS_NULL = FALSE answered the
-        // empty string for the same field.
-        boolean emptyFieldAsNull = true;
+        // The CSV options reach the stage-query path at their defaults, a named format's in their place: an
+        // unenclosed empty field reads as SQL NULL (EMPTY_FIELD_AS_NULL), so does the text \N (NULL_IF), and a
+        // backslash takes the delimiter or itself literally (ESCAPE_UNENCLOSED_FIELD). Live-verified, each with
+        // a control beside it — the same file read through a format that turns the option off.
+        final CsvFormatOptions csvOptions = new CsvFormatOptions();
 
         if (params != null) {
             for (final FrostlakeParser.StageQueryParamContext param : params.stageQueryParam()) {
@@ -103,19 +109,10 @@ final class StageQueryExecutor {
                     }
                     if (named != null) {
                         fileFormat = named.getType();
-                        if (named.getOption("FIELD_DELIMITER") != null && !named.getOption("FIELD_DELIMITER").isEmpty()) {
-                            delimiter = named.getOption("FIELD_DELIMITER").charAt(0);
-                        }
+                        csvOptions.takeAll(named.getOptions());
+                        csvOptions.takeNullIf(named.getNullIfValues());
                         if (named.getOption("SKIP_HEADER") != null) {
                             skipHeader = Integer.parseInt(named.getOption("SKIP_HEADER"));
-                        }
-                        final String enclosed = named.getOption("FIELD_OPTIONALLY_ENCLOSED_BY");
-                        if (enclosed != null && !enclosed.isEmpty() && !"NONE".equalsIgnoreCase(enclosed)) {
-                            enclosure = enclosed.charAt(0);
-                        }
-                        if (named.getOption("EMPTY_FIELD_AS_NULL") != null) {
-                            emptyFieldAsNull =
-                                !"FALSE".equalsIgnoreCase(named.getOption("EMPTY_FIELD_AS_NULL"));
                         }
                     } else {
                         fileFormat = value.toUpperCase();
@@ -125,6 +122,12 @@ final class StageQueryExecutor {
                 }
             }
         }
+
+        // A delimiter of NONE splits nothing: the stand-in is a character no file holds.
+        final char delimiter = csvOptions.getFieldDelimiter() == null || csvOptions.getFieldDelimiter().isEmpty()
+            ? '\u0000' : csvOptions.getFieldDelimiter().charAt(0);
+        final Character enclosure = csvOptions.getEnclosure();
+        final boolean emptyFieldAsNull = csvOptions.isEmptyFieldAsNull();
 
         // The path selects files by prefix, at any depth, and PATTERN matches the file's stored path —
         // the reading COPY gives both (live-verified).
@@ -153,23 +156,29 @@ final class StageQueryExecutor {
                     }
                 } else {
                     // Compressed files read through, as COPY reads them: a gzipped unload is a CSV file too.
-                    final List<String> lines = readLines(file);
+                    // RECORD_DELIMITER = NONE makes the whole file one record, and FIELD_DELIMITER = NONE a
+                    // record one field; an escaped line break joins the lines it was split over.
+                    final boolean wholeFile = csvOptions.getRecordDelimiter() == null;
+                    final List<String> lines = wholeFile ? Arrays.asList(readText(file))
+                        : CsvEscapes.joined(readLines(file), csvOptions.getEscapeUnenclosed());
                     for (int ln = skipHeader; ln < lines.size(); ln++) {
-                        if (lines.get(ln).isEmpty()) {
+                        if (lines.get(ln).isEmpty() && !wholeFile) {
                             continue;
                         }
                         final List<Boolean> enclosedEmpty = new ArrayList<>();
-                        final List<String> fields = CopyCommandExecutor.parseCsvLine(
-                            lines.get(ln), delimiter, enclosure, enclosedEmpty);
+                        final List<String> fields = CsvEscapes.exposed(CopyCommandExecutor.parseCsvLine(
+                            CsvEscapes.shielded(lines.get(ln), delimiter, enclosure, csvOptions.getEscapeUnenclosed(),
+                                csvOptions.getEscape()),
+                            delimiter, enclosure, enclosedEmpty, null, csvOptions.getEscape()),
+                            delimiter, csvOptions.getEscapeUnenclosed());
                         width = Math.max(width, fields.size());
                         final List<Object> values = new ArrayList<Object>(fields);
-                        if (emptyFieldAsNull) {
-                            for (int f = 0; f < values.size(); f++) {
-                                final boolean enclosedBlank = f < enclosedEmpty.size()
-                                    && enclosedEmpty.get(f).booleanValue();
-                                if ("".equals(values.get(f)) && !enclosedBlank) {
-                                    values.set(f, null);
-                                }
+                        for (int f = 0; f < values.size(); f++) {
+                            final boolean enclosedBlank = f < enclosedEmpty.size()
+                                && enclosedEmpty.get(f).booleanValue();
+                            if (csvOptions.getNullIf().contains(values.get(f))
+                                    || emptyFieldAsNull && "".equals(values.get(f)) && !enclosedBlank) {
+                                values.set(f, null);
                             }
                         }
                         fieldRows.add(values);
@@ -247,7 +256,8 @@ final class StageQueryExecutor {
     TableData directoryTable(final FrostlakeParser.StageRefContext stageRef, final String alias) {
         DirectoryStageReference.refuse(stageRef, executor.getCatalog());
         final List<TableColumn> columns = directoryColumns();
-        final List<Row> rows = directoryListing(executor.stageRefToLocation(stageRef));
+        final List<Row> rows = registeredFiles(StageReferenceShape.namedStage(stageRef, executor.getCatalog()),
+            executor.stageRefToLocation(stageRef));
         final Table virtualTable = new Table(alias != null ? alias : "DIRECTORY", columns, false);
         return new TableData(virtualTable, rows, alias);
     }
@@ -264,7 +274,29 @@ final class StageQueryExecutor {
         return columns;
     }
 
-    /** The directory table's rows for a stage location: every file of the stage, at any depth. */
+    /**
+     * The rows a directory table lists: the files its last refresh registered, each as it was then, by path. A
+     * file staged, replaced or removed since is listed as registered until the next refresh (live-verified). The
+     * modification time is told at the session's offset and the file URL under the stage's names as they are now.
+     */
+    private List<Row> registeredFiles(final Stage stage, final String location) {
+        final List<Row> rows = new ArrayList<>();
+        for (final List<Object> registered : new TreeMap<>(stage.getDirectoryRegistry()).values()) {
+            final List<Object> values = new ArrayList<>(registered);
+            if (values.get(2) instanceof ZonedDateTime) {
+                values.set(2, ((ZonedDateTime) values.get(2)).withZoneSameInstant(SessionZone.current())
+                    .withFixedOffsetZone());
+            }
+            values.set(5, executor.stageFileUrl(location, String.valueOf(values.get(0))));
+            rows.add(new Row(values));
+        }
+        return rows;
+    }
+
+    /**
+     * What a refresh would register for a stage location: every file of the stage, at any depth, as it is now.
+     * MD5 and ETAG are the digest of the file's bytes.
+     */
     List<Row> directoryListing(final String location) {
         // A directory table lists every file of the stage, at any depth, by its stage-relative path.
         final StagePrefix staged = requireRoot(executor.resolveStagePrefix(location), location);
@@ -273,18 +305,39 @@ final class StageQueryExecutor {
             final String relative = staged.relative(file);
             long size = 0;
             ZonedDateTime modified = null;
+            String digest = null;
             try {
                 size = Files.size(file);
                 modified = Instant.ofEpochMilli(Files.getLastModifiedTime(file).toMillis())
                     .atZone(SessionZone.current()).withFixedOffsetZone();
+                digest = md5Of(file);
             } catch (final IOException e) {
                 logger.warn("DIRECTORY(@stage): cannot stat {}: {}", file, e.getMessage());
             }
             // FILE_URL is the file's stage file URL, as BUILD_STAGE_FILE_URL(@stage, RELATIVE_PATH) spells it.
-            rows.add(new Row(Arrays.asList(relative, size, modified, null, null,
+            rows.add(new Row(Arrays.asList(relative, size, modified, digest, digest,
                 executor.stageFileUrl(location, relative))));
         }
         return rows;
+    }
+
+    /** The MD5 of a file's bytes, in lower-case hex. */
+    private static String md5Of(final Path file) throws IOException {
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("MD5");
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException("MD5 is unavailable", e);
+        }
+        final byte[] buffer = new byte[8192];
+        try (InputStream in = Files.newInputStream(file)) {
+            int read = in.read(buffer);
+            while (read >= 0) {
+                digest.update(buffer, 0, read);
+                read = in.read(buffer);
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     /** A DIRECTORY listing's column, its type as the account declares it. */
@@ -301,6 +354,20 @@ final class StageQueryExecutor {
         } catch (final RuntimeException e) {
             return null;
         }
+    }
+
+    /** A staged file's whole text, decompressed when the file is gzipped. */
+    private static String readText(final Path file) throws IOException {
+        final StringBuilder text = new StringBuilder();
+        try (BufferedReader reader = StagedFileIo.reader(file)) {
+            final char[] buffer = new char[8192];
+            int read = reader.read(buffer);
+            while (read >= 0) {
+                text.append(buffer, 0, read);
+                read = reader.read(buffer);
+            }
+        }
+        return text.toString();
     }
 
     /** A staged file's lines, decompressed when the file is gzipped. */

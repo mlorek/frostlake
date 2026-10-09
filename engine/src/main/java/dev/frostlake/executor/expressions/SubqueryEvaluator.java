@@ -58,6 +58,10 @@ final class SubqueryEvaluator {
     private final ExpressionEvaluatorVisitor visitor;
     /** The subqueries whose correlation this evaluator has judged supported, keyed by use and text. */
     private final Set<String> judgedCorrelations = new HashSet<>();
+    /** Each EXISTS met, by its copy's key, as it is run (see {@link #countedBody}). */
+    private final Map<String, SubqueryExpression> countedBodies = new HashMap<>();
+    /** Scalar subqueries by key, each as it is run (see {@link #statisticsBody}). */
+    private final Map<String, SubqueryExpression> statisticsBodies = new HashMap<>();
 
     SubqueryEvaluator(final ExpressionEvaluatorVisitor visitor) {
         this.visitor = visitor;
@@ -69,16 +73,91 @@ final class SubqueryEvaluator {
             throw new RuntimeException("Cannot evaluate EXISTS: QueryExecutor not available");
         }
 
-        if (requireSupportedCorrelation(expr, false, false, false, null)) {
+        final SubqueryExpression body = countedBody(expr, null);
+        if (requireSupportedCorrelation(expr, body, false, false, false, null)) {
             return false;
         }
-        final List<ResultSet> results = countedSubquery(expr);
+        final List<ResultSet> results = countedSubquery(body);
 
         if (results.isEmpty()) {
             return false;
         }
 
         return results.get(0).getRowCount() > 0;
+    }
+
+    /**
+     * An EXISTS's body as it is run: an aggregate of its select list over the outer row alone is the outer
+     * query's value, so the body counts its rows with a constant in its place (see
+     * {@link CorrelatedSubqueryRule#countedBodyText}). Every other subquery is run as written.
+     *
+     * @param expr  the subquery
+     * @param names the names the scope offers the subquery where it is compiling, or null for the row's own
+     * @return the subquery to run, positioned as {@code expr} is
+     */
+    private SubqueryExpression countedBody(final SubqueryExpression expr, final Map<String, Object> names) {
+        if (!expr.isExistence()) {
+            return expr;
+        }
+        final String key = memoKey(expr);
+        SubqueryExpression body = names == null ? countedBodies.get(key) : null;
+        if (body != null) {
+            return body;
+        }
+        body = expr;
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(expr.getSubquery());
+        if (parsed != null) {
+            final Set<String> outerNames = new HashSet<>();
+            for (final String name : (names == null ? buildLateralContext() : names).keySet()) {
+                outerNames.add(name.toUpperCase());
+            }
+            final String text = new CorrelatedSubqueryRule(queryExecutor, outerNames).countedBodyText(parsed);
+            if (text != null) {
+                body = new SubqueryExpression(text);
+                body.setPosition(expr.getPosition());
+                body.setQueryPosition(expr.getQueryPosition());
+                body.setExistence(true);
+            }
+        }
+        if (names == null) {
+            countedBodies.put(key, body);
+        }
+        return body;
+    }
+
+    /**
+     * A scalar subquery as it is run: an aggregate of its select list that the outer table's statistics answer is
+     * a value, written in its place (see {@link CorrelatedSubqueryRule#statisticsBodyText}). Every other subquery
+     * is run as written.
+     *
+     * @param expr the subquery
+     * @return the subquery to run, positioned as {@code expr} is
+     */
+    private SubqueryExpression statisticsBody(final SubqueryExpression expr) {
+        final String key = memoKey(expr);
+        SubqueryExpression body = statisticsBodies.get(key);
+        if (body != null) {
+            return body;
+        }
+        body = expr;
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(expr.getSubquery());
+        if (parsed != null) {
+            final Set<String> outerNames = new HashSet<>();
+            for (final String name : buildLateralContext().keySet()) {
+                outerNames.add(name.toUpperCase());
+            }
+            final String text = new CorrelatedSubqueryRule(queryExecutor, outerNames, visitor.scopeRelations())
+                .statisticsBodyText(parsed);
+            if (text != null) {
+                body = new SubqueryExpression(text);
+                body.setPosition(expr.getPosition());
+                body.setQueryPosition(expr.getQueryPosition());
+            }
+        }
+        statisticsBodies.put(key, body);
+        return body;
     }
 
     Object evaluateScalarSubquery(final SubqueryExpression expr) {
@@ -94,7 +173,7 @@ final class SubqueryEvaluator {
         final long outerReads = visitor.lateralReadCount();
         final List<ResultSet> results;
         try {
-            results = executeSubquery(expr);
+            results = executeSubquery(statisticsBody(expr));
         } catch (final RuntimeException failed) {
             throw SubqueryAhead.raised(visitor.getQueryExecutor(), expr.getSubquery(), failed,
                 visitor.lateralReadCount() == outerReads);
@@ -170,19 +249,27 @@ final class SubqueryEvaluator {
 
         final ResultSet resultSet = results.get(0);
 
-        // Three-valued logic (live-verified), mirroring the literal-list IN in
-        // ExpressionEvaluatorVisitor.visitIn: a NULL probe is UNKNOWN even over an EMPTY subquery
-        // (the probe short-circuits before membership is considered); a non-NULL probe over an
-        // empty subquery is FALSE for IN / TRUE for NOT IN; and a miss over a set that contains a
-        // NULL member is UNKNOWN for both.
-        if (value == null) {
+        final SubqueryMemo subqueryMemo = visitor.getSubqueryMemo();
+        // A query that reads the row around it is matched row against row, as a join is: its IN is TRUE for a
+        // match and FALSE for everything else, a NULL probe and a NULL in the set included, where its NOT IN keeps
+        // the three values (live-verified).
+        final boolean twoValued = !not && subqueryMemo != null && subqueryMemo.isCorrelated(subquery);
+        // A NULL probe that reads no column is folded with its membership, which is UNKNOWN whatever the set
+        // holds: NULL IN (…) over an empty set and over a query reading the row around it (live-verified).
+        if (value == null && readsNoColumn(subject)) {
             return null;
         }
+        // An empty set holds nothing: FALSE for IN and TRUE for NOT IN, a NULL probe read from a row included
+        // (live-verified).
         if (resultSet.getRowCount() == 0) {
             return not;
         }
-
-        final SubqueryMemo subqueryMemo = visitor.getSubqueryMemo();
+        // Three-valued logic otherwise (live-verified), mirroring the literal-list IN in
+        // ExpressionEvaluatorVisitor.visitIn: a NULL probe is UNKNOWN, and a miss over a set that contains a
+        // NULL member is UNKNOWN for both.
+        if (value == null) {
+            return twoValued ? Boolean.FALSE : null;
+        }
         // Uncorrelated subquery (result cached, identical for every outer row): build a membership
         // index once and probe O(1) per outer row, instead of an O(subqueryRows) linear scan per row.
         // A collated probe cannot use the hash index: membership is what the collation calls equal,
@@ -213,7 +300,29 @@ final class SubqueryEvaluator {
             }
         }
 
-        return anyNull ? null : not;
+        return anyNull && !twoValued ? null : not;
+    }
+
+    /**
+     * Whether an operand reads no column of the row it is evaluated over, so the plan folds it before any row
+     * is read; false where the operand is not known.
+     */
+    boolean readsNoColumn(final Expression operand) {
+        if (operand == null) {
+            return false;
+        }
+        final ColumnReferenceCollectWalk walk = new ColumnReferenceCollectWalk();
+        operand.accept(walk);
+        return walk.references().isEmpty();
+    }
+
+    /**
+     * Whether a query read the row around it when it last ran: one matched row against row, whose positive
+     * membership is two-valued (see {@link #evaluateInSubquery}).
+     */
+    boolean readsOuterRow(final SubqueryExpression expr) {
+        final SubqueryMemo subqueryMemo = visitor.getSubqueryMemo();
+        return subqueryMemo != null && subqueryMemo.isCorrelated(memoKey(expr));
     }
 
     /**
@@ -282,8 +391,8 @@ final class SubqueryEvaluator {
         try {
             // The compiled shape says whether the subquery's select list hands out values a projection policy
             // restricts, which the select list holding it then hands out too (ProjectionLineage).
-            ProjectionLineage.recordSubquery(expr.getSubquery(),
-                visitor.getQueryExecutor().executeWithLateralContext(expr.getSubquery(), outerNames));
+            ProjectionLineage.recordSubquery(expr.getSubquery(), visitor.getQueryExecutor()
+                .executeWithLateralContext(countedBody(expr, outerNames).getSubquery(), outerNames));
             return null;
         } catch (final UnsupportedSubqueryException judgedPerRow) {
             return null;
@@ -292,6 +401,7 @@ final class SubqueryEvaluator {
                 return null;
             }
             if (refusesAName(refused.getMessage()) || refusesACorrelatedWindow(refused.getMessage())
+                    || refusesAnAggregatePlace(refused.getMessage())
                     || ranksTypes && SubqueryTypeRanking.ranksAheadOfEnclosingTypes(refused.getMessage())) {
                 throw refused;
             }
@@ -311,6 +421,14 @@ final class SubqueryEvaluator {
      */
     private static boolean refusesACorrelatedWindow(final String message) {
         return message.contains("Window function [") && message.contains("] contains a correlation.");
+    }
+
+    /**
+     * Whether a compilation refusal is of a subquery standing where the aggregate it holds does not let it, which
+     * live raises as it compiles the statement, once the names have resolved (see {@code CorrelatedAggregatePlace}).
+     */
+    private static boolean refusesAnAggregatePlace(final String message) {
+        return message.contains("Subquery containing correlated aggregate function [");
     }
 
     /** Whether a compilation refusal is about a name: a column, a function or a relation nothing resolves. */
@@ -479,6 +597,16 @@ final class SubqueryEvaluator {
      */
     private boolean requireSupportedCorrelation(final SubqueryExpression expr, final boolean scalar,
                                                 final boolean in, final boolean not, final Expression subject) {
+        return requireSupportedCorrelation(expr, expr, scalar, in, not, subject);
+    }
+
+    /**
+     * {@link #requireSupportedCorrelation(SubqueryExpression, boolean, boolean, boolean, Expression)} for a
+     * subquery run as {@code run} where it is written as {@code expr}: the shape judged is the one run.
+     */
+    private boolean requireSupportedCorrelation(final SubqueryExpression expr, final SubqueryExpression run,
+                                                final boolean scalar, final boolean in, final boolean not,
+                                                final Expression subject) {
         final String key = scalar ? PlannedCorrelations.valueKey(expr.getSubquery())
             : PlannedCorrelations.membershipKey(expr.getSubquery());
         if (PlannedCorrelations.refused(key)) {
@@ -488,7 +616,7 @@ final class SubqueryEvaluator {
             return false;
         }
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
-        final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(expr.getSubquery());
+        final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(run.getSubquery());
         if (parsed != null && !outerHoldsOneRowAtMost(queryExecutor)) {
             final Set<String> outerNames = new HashSet<>();
             for (final String name : buildLateralContext().keySet()) {

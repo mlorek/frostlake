@@ -103,6 +103,12 @@ public class Stage extends SqlObject {
         copy.fileFormatOptions.putAll(fileFormatOptions);
         copy.copyOptions.putAll(copyOptions);
         copy.directoryEnabled = directoryEnabled;
+        copy.directoryDeclared = directoryDeclared;
+        copy.directoryAutoRefresh = directoryAutoRefresh;
+        copy.temporary = temporary;
+        copy.credentials = credentials;
+        copy.encryptionKey = encryptionKey;
+        copy.directoryRefreshed = directoryRefreshed;
         if (url != null) {
             for (final Map.Entry<String, List<Object>> file : directoryRegistry.entrySet()) {
                 copy.directoryRegistry.put(file.getKey(), new ArrayList<>(file.getValue()));
@@ -198,6 +204,105 @@ public class Stage extends SqlObject {
 
     public void setEncryptionType(final String encryptionType) {
         this.encryptionType = encryptionType;
+    }
+
+    // What SHOW STAGES says of the stage beyond its location: whether it is temporary, and whether it was given
+    // credentials or an encryption key of its own.
+    private boolean temporary;
+    private boolean credentials;
+    private boolean encryptionKey;
+
+    /** Whether the stage was created TEMPORARY. */
+    public boolean isTemporary() {
+        return temporary;
+    }
+
+    public void setTemporary(final boolean temporary) {
+        this.temporary = temporary;
+    }
+
+    /** Whether the stage was given CREDENTIALS. */
+    public boolean hasCredentials() {
+        return credentials;
+    }
+
+    public void setCredentials(final boolean credentials) {
+        this.credentials = credentials;
+    }
+
+    /** Whether the stage's ENCRYPTION names a key: a MASTER_KEY or a KMS_KEY_ID. */
+    public boolean hasEncryptionKey() {
+        return encryptionKey;
+    }
+
+    public void setEncryptionKey(final boolean encryptionKey) {
+        this.encryptionKey = encryptionKey;
+    }
+
+    // Whether a DIRECTORY property list was ever written for the stage, at CREATE or by an ALTER … SET: a stage
+    // that never had one reports no directory flag at all, where one that had reports TRUE or FALSE.
+    private boolean directoryDeclared;
+
+    /** Whether the stage was ever given a DIRECTORY property list. */
+    public boolean isDirectoryDeclared() {
+        return directoryDeclared;
+    }
+
+    public void setDirectoryDeclared(final boolean directoryDeclared) {
+        this.directoryDeclared = directoryDeclared;
+    }
+
+    // DIRECTORY = (AUTO_REFRESH = …), kept as written.
+    private boolean directoryAutoRefresh;
+
+    /** The directory table's AUTO_REFRESH property. */
+    public boolean isDirectoryAutoRefresh() {
+        return directoryAutoRefresh;
+    }
+
+    public void setDirectoryAutoRefresh(final boolean directoryAutoRefresh) {
+        this.directoryAutoRefresh = directoryAutoRefresh;
+    }
+
+    // The id a directory refresh names the stage's files under, {@code stages/<id>/<path>}: the stage's own,
+    // the same at every refresh.
+    private String directoryId;
+
+    /** The id a directory refresh names the stage's files under, or null before one was given. */
+    public String getDirectoryId() {
+        return directoryId;
+    }
+
+    public void setDirectoryId(final String directoryId) {
+        this.directoryId = directoryId;
+    }
+
+    /**
+     * Turns the directory table on or off. Turning it off forgets the files it had registered and when it was
+     * last refreshed, so a table turned on again starts empty; turning on a table that is on changes nothing.
+     *
+     * @param enable whether the directory table is on
+     */
+    public void switchDirectory(final boolean enable) {
+        if (enable == directoryEnabled) {
+            return;
+        }
+        directoryEnabled = enable;
+        directoryRegistry.clear();
+        directoryRefreshed = null;
+    }
+
+    // When the directory table last registered the stage's files: at a CREATE that enables it and at each
+    // REFRESH, never at an ALTER that enables it.
+    private Instant directoryRefreshed;
+
+    /** When the directory table was last refreshed, or null when it never was. */
+    public Instant getDirectoryRefreshed() {
+        return directoryRefreshed;
+    }
+
+    public void setDirectoryRefreshed(final Instant directoryRefreshed) {
+        this.directoryRefreshed = directoryRefreshed;
     }
 
     public Instant getCreatedAt() {

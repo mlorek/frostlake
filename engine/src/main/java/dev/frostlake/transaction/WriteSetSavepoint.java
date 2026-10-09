@@ -34,6 +34,10 @@ import java.util.Set;
  * <p>A null pre-image list/map/set means the table had NO entry of that kind before the statement
  * (restore removes the entry). The lock map is snapshotted eagerly — it holds one entry per touched
  * table, never per row.
+ *
+ * <p>A savepoint of a statement that completed is kept by its write set for a while (see
+ * {@link TransactionWriteSet#overlayRowsAsOf}): the pre-images are the tables as the transaction saw them before
+ * the statement, which is what a time-travel read naming one of the transaction's own statements reads.
  */
 public final class WriteSetSavepoint {
 
@@ -43,8 +47,31 @@ public final class WriteSetSavepoint {
     private final Map<String, Set<Long>> deletesBefore = new HashMap<>();
     private final Map<String, TableLock> locksBefore;
 
-    WriteSetSavepoint(final Map<String, TableLock> lockSnapshot) {
+    /** Where the statement falls among the transaction's statements, from 1. */
+    private final long ordinal;
+
+    WriteSetSavepoint(final Map<String, TableLock> lockSnapshot, final long ordinal) {
         this.locksBefore = lockSnapshot;
+        this.ordinal = ordinal;
+    }
+
+    long ordinal() {
+        return ordinal;
+    }
+
+    /** How many rows and row ids the pre-images hold: what keeping this savepoint costs. */
+    long heldEntries() {
+        long held = 0;
+        for (final List<Row> rows : insertsBefore.values()) {
+            held += rows == null ? 0 : rows.size();
+        }
+        for (final Map<Long, Row> rows : updatesBefore.values()) {
+            held += rows == null ? 0 : rows.size();
+        }
+        for (final Set<Long> ids : deletesBefore.values()) {
+            held += ids == null ? 0 : ids.size();
+        }
+        return held;
     }
 
     boolean isTouched(final String table) {

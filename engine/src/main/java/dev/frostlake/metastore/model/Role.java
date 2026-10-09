@@ -42,7 +42,7 @@ public class Role implements Taggable {
     private final Map<String, String> privilegeGrantors = new HashMap<>();  // OBJTYPE:OBJNAME:PRIV -> grantor role
     private final Map<String, Instant> privilegeGrantTimes = new HashMap<>();  // OBJTYPE:OBJNAME:PRIV -> when granted
     private final Map<String, String> roleGrantors = new HashMap<>();        // granted role name -> grantor role
-    private final LocalDateTime createdTime;
+    private LocalDateTime createdTime;
     private String comment;
     /** OBJTYPE:OBJNAME:PRIV of each privilege held WITH GRANT OPTION. */
     private final Set<String> grantOptions = new HashSet<>();
@@ -91,6 +91,17 @@ public class Role implements Taggable {
         return createdTime;
     }
 
+    /**
+     * Put back the time a restored role was created at.
+     *
+     * @param created the recorded creation time, or null to keep the one it has
+     */
+    public void restoreCreatedTime(final LocalDateTime created) {
+        if (created != null) {
+            this.createdTime = created;
+        }
+    }
+
     public String getComment() {
         return comment;
     }
@@ -99,8 +110,17 @@ public class Role implements Taggable {
         this.comment = comment;
     }
 
+    /**
+     * The key a grant on an object is kept under: the object's kind, then its name exactly as it is recorded. A
+     * name is one object's alone, so a quoted {@code "t"} and an unquoted {@code T} are two objects with two sets
+     * of grants (live-verified); the callers hand in canonical names.
+     */
+    private static String key(final String objectType, final String objectName) {
+        return objectType.toUpperCase() + ":" + objectName;
+    }
+
     public void grantPrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final String key = key(objectType, objectName);
         Set<Privilege> granted = objectPrivileges.get(key);
         if (granted == null) {
             granted = new HashSet<>();
@@ -110,9 +130,9 @@ public class Role implements Taggable {
     }
 
     public void revokePrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        grantOptions.remove(objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name());
-        privilegeGrantTimes.remove(objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name());
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        grantOptions.remove(key(objectType, objectName) + ":" + privilege.name());
+        privilegeGrantTimes.remove(key(objectType, objectName) + ":" + privilege.name());
+        final String key = key(objectType, objectName);
         final Set<Privilege> privileges = objectPrivileges.get(key);
         if (privileges != null) {
             privileges.remove(privilege);
@@ -123,13 +143,13 @@ public class Role implements Taggable {
     }
 
     public boolean hasPrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final String key = key(objectType, objectName);
         final Set<Privilege> privileges = objectPrivileges.get(key);
         return privileges != null && privileges.contains(privilege);
     }
 
     public Set<Privilege> getPrivileges(final String objectType, final String objectName) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final String key = key(objectType, objectName);
         return objectPrivileges.getOrDefault(key, new HashSet<>());
     }
 
@@ -143,6 +163,7 @@ public class Role implements Taggable {
 
     public void revokeRole(final String roleName) {
         grantedRoles.remove(roleName.toUpperCase());
+        roleGrantTimes.remove(roleName.toUpperCase());
     }
 
     public boolean hasRole(final String roleName) {
@@ -157,7 +178,7 @@ public class Role implements Taggable {
 
     public void grantPrivilege(final String objectType, final String objectName, final Privilege privilege, final String grantor) {
         grantPrivilege(objectType, objectName, privilege);
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name();
+        final String key = key(objectType, objectName) + ":" + privilege.name();
         privilegeGrantors.put(key, grantor);
         // A grant dates from when it was first made; granting it again, or recording a new grantor, keeps that.
         privilegeGrantTimes.putIfAbsent(key, StatementClock.instant());
@@ -169,23 +190,52 @@ public class Role implements Taggable {
      * @return the moment of the grant, or null for a grant with no recorded moment
      */
     public Instant getPrivilegeGrantTime(final String objectType, final String objectName, final Privilege privilege) {
-        return privilegeGrantTimes.get(objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name());
+        return privilegeGrantTimes.get(key(objectType, objectName) + ":" + privilege.name());
     }
 
     /** Puts back when a privilege was granted to this role, as a restored snapshot recorded it. */
     public void setPrivilegeGrantTime(final String objectType, final String objectName, final Privilege privilege,
                                       final Instant granted) {
-        privilegeGrantTimes.put(objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name(),
+        privilegeGrantTimes.put(key(objectType, objectName) + ":" + privilege.name(),
             granted);
     }
 
     public String getPrivilegeGrantor(final String objectType, final String objectName, final Privilege privilege) {
-        return privilegeGrantors.getOrDefault(objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name(), "SYSADMIN");
+        return privilegeGrantors.getOrDefault(key(objectType, objectName) + ":" + privilege.name(), "SYSADMIN");
     }
 
     public void grantRole(final String roleName, final String grantor) {
         grantRole(roleName);
         roleGrantors.put(roleName.toUpperCase(), grantor);
+        // The grant is stamped with the statement's own instant, which a replay restores.
+        roleGrantTimes.put(roleName.toUpperCase(), StatementClock.instant());
+    }
+
+    /** When each role in grantedRoles was granted, by role name; none for a grant made with no moment recorded. */
+    private final Map<String, Instant> roleGrantTimes = new HashMap<>();
+
+    /**
+     * When a role was granted to this one.
+     *
+     * @param roleName the granted role
+     * @return the moment, or null for a grant with none recorded
+     */
+    public Instant getRoleGrantTime(final String roleName) {
+        return roleGrantTimes.get(roleName.toUpperCase());
+    }
+
+    /**
+     * Put back the moment a restored grant was made at.
+     *
+     * @param roleName the granted role
+     * @param granted  when it was granted, or null when the snapshot recorded no moment for it
+     */
+    public void restoreRoleGrantTime(final String roleName, final Instant granted) {
+        if (granted != null) {
+            roleGrantTimes.put(roleName.toUpperCase(), granted);
+        } else {
+            roleGrantTimes.remove(roleName.toUpperCase());
+        }
     }
 
     public String getRoleGrantor(final String roleName) {
@@ -193,7 +243,7 @@ public class Role implements Taggable {
     }
 
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final String key = key(objectType, objectName);
         Map<String, Set<Privilege>> byColumn = columnPrivileges.get(key);
         if (byColumn == null) {
             byColumn = new HashMap<>();
@@ -209,7 +259,7 @@ public class Role implements Taggable {
     }
 
     public void revokeColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final String key = key(objectType, objectName);
         final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
         if (columns != null) {
             final Set<Privilege> privileges = columns.get(columnName.toUpperCase());
@@ -232,7 +282,7 @@ public class Role implements Taggable {
         }
 
         // Then check column-level privilege
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final String key = key(objectType, objectName);
         final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
         if (columns != null) {
             final Set<Privilege> privileges = columns.get(columnName.toUpperCase());
@@ -243,7 +293,7 @@ public class Role implements Taggable {
 
     public Set<String> getColumnsWithPrivilege(final String objectType, final String objectName, final Privilege privilege) {
         final Set<String> result = new HashSet<>();
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final String key = key(objectType, objectName);
         final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
         if (columns != null) {
             for (final Map.Entry<String, Set<Privilege>> entry : columns.entrySet()) {
@@ -270,7 +320,7 @@ public class Role implements Taggable {
      */
     public void setGrantOption(final String objectType, final String objectName, final Privilege privilege,
                                final boolean holds) {
-        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name();
+        final String key = key(objectType, objectName) + ":" + privilege.name();
         if (holds) {
             grantOptions.add(key);
         } else {
@@ -280,7 +330,7 @@ public class Role implements Taggable {
 
     /** Whether a privilege this role holds on an object carries the grant option. */
     public boolean hasGrantOption(final String objectType, final String objectName, final Privilege privilege) {
-        return grantOptions.contains(objectType.toUpperCase() + ":" + objectName.toUpperCase() + ":" + privilege.name());
+        return grantOptions.contains(key(objectType, objectName) + ":" + privilege.name());
     }
 
     /** The future grants this role holds, in the order they were made. */
@@ -414,6 +464,7 @@ public class Role implements Taggable {
         grantOptions.addAll(source.grantOptions);
         grantedRoles.addAll(source.grantedRoles);
         roleGrantors.putAll(source.roleGrantors);
+        roleGrantTimes.putAll(source.roleGrantTimes);
         remapGrants(new GrantRemap(kinds, new String[] {fromDatabase}, new String[] {toDatabase}, false, false,
             GrantRemap.ALL));
         final String prefix = fromDatabase + ".";
@@ -449,12 +500,22 @@ public class Role implements Taggable {
      */
     public void purgeGrants(final String objectType, final String objectName, final boolean ownershipOnly) {
         GrantKeys.purge(objectPrivileges, columnPrivileges, privilegeGrantors, privilegeGrantTimes, grantOptions,
-            objectType.toUpperCase() + ":" + objectName.toUpperCase(), ownershipOnly);
+            key(objectType, objectName), ownershipOnly);
     }
 
     public void rename(final String newName) {
         // Match the constructor, which upper-cases the name; a verbatim rename would
         // otherwise leave getName() inconsistent with every freshly-created role.
         this.name = newName.toUpperCase();
+    }
+
+    /**
+     * Names the role exactly as given, without the folding an account role's name takes: for a kind of role that
+     * keeps a quoted name's case.
+     *
+     * @param exactName the canonical name
+     */
+    protected final void nameExactly(final String exactName) {
+        this.name = exactName;
     }
 }

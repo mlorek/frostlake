@@ -117,7 +117,7 @@ Each section lists the endpoints by the specification's `operationId`, what each
 | `useWarehouse` `POST /warehouses/{name}:use` | `USE WAREHOUSE` in the call's session (see `X-Sfc-Session`) |
 | `setTags`, `unsetTags`, `getTags` | see *Tags* |
 
-- **`resource_constraint`** takes the memory constraints (`MEMORY_1X` … `MEMORY_64X_x86`) of a Snowpark-optimized
+- **`resource_constraint`** takes the memory constraints (`MEMORY_1X` … `MEMORY_64X_X86`) of a Snowpark-optimized
   warehouse. A standard warehouse's constraint is its generation: `STANDARD_GEN_1 | STANDARD_GEN_2` is refused
   (`400`, code `000682`, `cannot set resource constraint to '…'. use the generation property …`), and so is unsetting
   it. A `PUT` therefore never sets or unsets `RESOURCE_CONSTRAINT` on a standard warehouse — its constraint follows
@@ -411,8 +411,13 @@ table (columns, `AS SELECT`, `CLONE`, `LIKE`) stores the rows as an ordinary tab
 table written without an external volume is kept in `SNOWFLAKE_MANAGED` storage (where a `BASE_LOCATION` is
 refused; a schema's, database's or account's `EXTERNAL_VOLUME` parameter is not consulted, where a real account uses
 it) and one without a base location gets `<DB>/<SCHEMA>/<NAME>.<8 random characters>/` — a clone keeps its
-source's — as on a real account. Change tracking is always on (`CHANGE_TRACKING = FALSE` is refused). `SHOW TABLES` reports it with
-`is_iceberg = Y`, `SHOW ICEBERG TABLES` lists it, and `DROP ICEBERG TABLE` refuses a table that is not one.
+source's — as on a real account. Change tracking is always on (`CHANGE_TRACKING = FALSE` is refused, at CREATE and
+in `ALTER ICEBERG TABLE`). `SHOW TABLES` reports it with `is_iceberg = Y`, `SHOW ICEBERG TABLES` lists it, and `DROP
+ICEBERG TABLE` refuses a table that is not one. Its columns take the Iceberg format's types, as on a real account: a
+string is `VARCHAR(134217728)` and a binary `BINARY(67108864)` (no other length is taken), a time or a timestamp is
+at scale 6, `INT` is `NUMBER(10,0)` and `BIGINT` `NUMBER(19,0)`, a NUMBER is written with its precision and scale,
+and CHAR, SMALLINT, VARIANT, TIMESTAMP_TZ and the other types the format lacks are refused. An Iceberg table is
+altered by `ALTER ICEBERG TABLE` alone and cloned by `CREATE ICEBERG TABLE … CLONE` alone.
 
 | endpoint | runs |
 |---|---|
@@ -454,9 +459,9 @@ written upper-cased, each value as the literal its JSON type calls for (text quo
 an array of strings as a list; anything else is `400`). `credentials` is write-only and never read back. A fetched stage answers every property its DESCRIBE lists —
 an empty one as null (`size_limit`, `file_extension`) — with text decoded from the listing's escapes (`\\` is a
 backslash, `\n` a line break), every `directory_table` property (`aws_sns_topic` and `notification_integration` null,
-`refresh_on_create` true when not listed), an internal stage's empty `url` as `""` and an empty comment as null. Frostlake's
-DESCRIBE STAGE lists the CSV options whatever the format's type (a real account lists the type's own), so a JSON
-format's own options (`strip_outer_array`, …) are not read back. A `file_format` of type `FORMAT_REF` is written
+`refresh_on_create` true when not listed), an internal stage's empty `url` as `""` and an empty comment as null.
+DESCRIBE STAGE lists the options of the format's own type, so a JSON format's options (`strip_outer_array`, …) are
+read back as a CSV format's are. A `file_format` of type `FORMAT_REF` is written
 `FILE_FORMAT = (FORMAT_NAME = '…')`; a fetch reports an inline format with the options the specification lists for its
 type. `kind` is read from the listing's `type` column; the engine does not report a stage as temporary there, so a
 fetched stage is always `PERMANENT`.
@@ -498,8 +503,10 @@ SQL: `CREATE`, `ALTER EXTERNAL VOLUME … ADD STORAGE_LOCATION = (…) | REMOVE 
 STORAGE_LOCATION = '<name>' CREDENTIALS = (…) | SET ALLOW_WRITES | SET COMMENT`, `DROP`, `UNDROP`, `SHOW EXTERNAL
 VOLUMES [LIKE]` (`name, allow_writes, comment`) and `DESC[RIBE] EXTERNAL VOLUME` (`parent_property, property,
 property_type, property_value, property_default`). Frostlake never reaches the storage: the `ACTIVE` location is
-empty, and the IAM user and external id a real account generates are absent (so is `created_on` / `owner` in the
-API's body, which the listing does not carry).
+empty, and the identity a real account generates for a location is a stand-in — `STORAGE_AWS_IAM_USER_ARN` reads one
+fixed IAM user, `STORAGE_AWS_EXTERNAL_ID` the id that was written or else the one derived from the volume's name,
+and a GCS location's `STORAGE_GCP_SERVICE_ACCOUNT` one fixed service account. `created_on` /
+`owner` are null in the API's body, as the listing does not carry them.
 
 ### Streams and tasks (`stream.yaml`, `task.yaml`)
 
@@ -601,14 +608,17 @@ The body's `arguments` (with `default_value`), `return_type` (`DATATYPE`, with `
 or `TABLE` with its `column_list`), `language_config` (`language`, `runtime_version`,
 `packages`, `imports`, `handler`, and for a function `called_on_null_input` and `is_volatile`; a procedure's
 `called_on_null_input` is left out), `comment`, `body` and, for a procedure, `execute_as` become
-the statement's clauses. Properties no clause of the engine's statement carries are left out of it:
-`external_access_integrations`, `secrets`, `target_path`, `artifact_repository`, `artifact_repository_packages`,
-and the `copyGrants` parameter. `is_aggregate: true` answers `501` (no aggregate UDFs), as do a secure procedure
-and `execute_as: RESTRICTED CALLER`. A fetch reports what SHOW and DESCRIBE carry, with the account's defaults for
+the statement's clauses, and so do `external_access_integrations`, `secrets` (`'variable' = secret`),
+`target_path`, `artifact_repository` and `artifact_repository_packages` (written with the packages). The
+`copyGrants` parameter is left out. `is_aggregate: true` answers `501` (no aggregate UDFs), as does a secure
+procedure. A fetch reports what SHOW, DESCRIBE and the DDL carry, with the account's defaults for
 what they do not (`called_on_null_input` true, `nullable: true`, `log_level` and `trace_level` `OFF`; for a
 function `is_temporary: false` and `is_volatile` true; and `is_builtin: true` for a procedure, as the account reports
 it);
-`default_value`, `owner` and `owner_role_type` are `null`. A listing leaves the body out (`null` for a function,
+each argument's `default_value` is its default as the DDL spells it (`null` for an argument that has none or
+defaults to NULL), and `language_config` tells a handler routine's `packages`, `imports`, `target_path`,
+`artifact_repository`, `artifact_repository_packages`, `external_access_integrations` and `secrets`, each secret
+by its full name; `owner` and `owner_role_type` are `null`. A listing leaves the body out (`null` for a function,
 `""` for a procedure), as the account's listing does.
 
 Service functions (`function.yaml`) are functions whose calls go to a Snowpark Container Services service:
@@ -727,7 +737,10 @@ OWNERSHIP grant `SHOW GRANTS ON NETWORK POLICY` lists (list and fetch run it per
 
 The SQL behind them: `CREATE [OR REPLACE | OR ALTER] NETWORK RULE [IF NOT EXISTS]`, `CREATE [OR REPLACE | OR ALTER]
 NETWORK POLICY [IF NOT EXISTS]`, `CREATE [OR REPLACE] PASSWORD POLICY [IF NOT EXISTS]`, `CREATE [OR REPLACE] SECRET
-[IF NOT EXISTS]` (CREATE OR ALTER sets what it names and keeps the rest; a rule's TYPE and MODE cannot change);
+[IF NOT EXISTS]` (CREATE OR ALTER over a network rule tells the whole rule — a value list or a comment it leaves out
+is emptied — and a rule's TYPE and MODE cannot change; a rule's TYPE decides the modes it takes and how its values
+read, each refused in the account's words, and a HOST_PORT rule's hosts are judged by their shape, no name being
+resolved);
 `ALTER … SET` / `UNSET` of the documented properties (`ALTER SECRET … UNSET` is refused as unsupported, as on the
 account), `ALTER NETWORK POLICY … RENAME TO` / `ADD` / `REMOVE {ALLOWED | BLOCKED}_NETWORK_RULE_LIST = ('<rule>', …)` /
 `SET TAG` / `UNSET TAG`, `ALTER PASSWORD POLICY … RENAME TO` / `SET TAG` / `UNSET TAG`; `DROP … [IF EXISTS]`; `SHOW
@@ -771,9 +784,12 @@ created. A statement naming a kind the integration is not answers `Integration <
 
 Differences from a real account: nothing is validated against the outside world — a real account refuses an Azure
 or Google gateway URL it cannot reach, contacts a Polaris/REST catalog on CREATE, and accepts only GCP Pub/Sub
-names of its own cloud; the identities a real account hands out (`API_AWS_IAM_USER_ARN`, `API_AWS_EXTERNAL_ID`,
-`SF_AWS_IAM_USER_ARN`, `GLUE_AWS_IAM_USER_ARN`, …) are not invented, so those `DESCRIBE` rows and the
-notification hooks' `sf_aws_*` / `gcp_pubsub_service_account` / `azure_consent_url` properties are absent or null.
+names of its own cloud. The identities a real account hands out are stand-ins: `API_AWS_IAM_USER_ARN`,
+`SF_AWS_IAM_USER_ARN` and `GLUE_AWS_IAM_USER_ARN` read one fixed IAM user, each `…_AWS_EXTERNAL_ID` an id derived from
+the integration's kind and name (`<ACCOUNT>_SFCRole=1_<28 characters>`, the same for as long as the integration keeps
+its name), `API_GCP_SERVICE_ACCOUNT` one fixed service account, and a Glue catalog written without `GLUE_REGION`
+reads the account's own region. The notification hooks' `sf_aws_*` properties carry the same values; their
+`gcp_pubsub_service_account` / `azure_consent_url` properties stay null.
 
 ### Alerts (`alert.yaml`)
 

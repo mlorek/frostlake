@@ -29,6 +29,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableSnapshot;
 import dev.frostlake.storage.TableStorage;
@@ -39,7 +40,6 @@ import java.util.List;
 import java.util.Set;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.misc.ParseCancellationException;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -238,7 +238,7 @@ final class ChangeTimes {
         if (query == null) {
             return null;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(query));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(query));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
         parser.removeErrorListeners();

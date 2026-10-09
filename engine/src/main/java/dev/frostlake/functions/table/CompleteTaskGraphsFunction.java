@@ -44,7 +44,9 @@ public class CompleteTaskGraphsFunction extends TableFunction {
 
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
-        final int limit = TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), "COMPLETE_TASK_GRAPHS");
+        // A limit of zero still answers the latest graph run (live-verified), where the other task history
+        // functions answer no row.
+        final int limit = Math.max(1, TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), TaskGraphRuns.DEFAULT_LIMIT));
         final String rootTaskName = TaskGraphRuns.text(namedArgs.get("ROOT_TASK_NAME"));
         final boolean errorOnly = TaskGraphRuns.flag(namedArgs.get("ERROR_ONLY"), false);
         return new ResultSet(TaskGraphRuns.columns(true),

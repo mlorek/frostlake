@@ -17,14 +17,20 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.storage.Row;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.IntervalDayTimeType;
 import dev.frostlake.types.IntervalYearMonthType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.ValueRange;
 
@@ -32,12 +38,14 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -84,6 +92,14 @@ import java.util.Set;
  *       reads the outer row: {@code EXISTS (SELECT MAX(v) FROM g WHERE g.id = fz.id)} is refused, and an IN so
  *       written is refused only where such a filter compares otherwise than by equality. An IN whose item reads
  *       the outer row and nothing of its own over a FROM is refused: {@code IN (SELECT fz.id + 0 FROM g)}.</li>
+ *   <li><b>An aggregate over the outer row alone</b> in the select list of an EXISTS is the outer query's own
+ *       value, not an aggregate of the EXISTS: its select counts rows as if a constant stood there, so
+ *       {@code EXISTS (SELECT MAX(fz.id) FROM g WHERE g.id = fz.id)} is answered row by row and
+ *       {@code EXISTS (SELECT MAX(fz.id) FROM g LIMIT 1)} reads no outer row at all. Where the value itself is
+ *       read — under DISTINCT, or by a HAVING naming the item — the EXISTS is refused. An aggregate of an
+ *       EXISTS's or an IN's own may not read the outer row inside its argument ({@code MAX(fz.id + g.v)}), unless
+ *       the select groups by a GROUP BY or a HAVING: under EXISTS nothing reads such an item, and a constant
+ *       stands in its place as well.</li>
  *   <li><b>A set operation</b> under EXISTS or IN is judged operand by operand. A UNION keeps the operands
  *       the planner does not prune; each is held to the rules above, and where more than one remains they
  *       must read the outer row alike — the same comparisons of the same outer expressions of the same
@@ -127,9 +143,14 @@ public final class CorrelatedSubqueryRule {
     private final OuterNameConstancy constancy;
     private CorrelatedFilterFold filterFold;
     private boolean sawOuter;
+    /** The subquery being judged, and the deepest level it reads the outer row from (see {@link #outerReadDepth}). */
+    private FrostlakeParser.SelectStatementContext walked;
+    private int deepestOuterRead;
     private boolean sawUnknown;
     /** Whether a shape is being judged, so a derived column computed from the outer row reads it. */
     private boolean judging;
+    /** While set, every outer name counts as read where it is written (see {@link #neverReached}). */
+    private boolean readsAsWritten;
     /**
      * Whether a rule is being judged that reads an outer name only where the statistics show it varying (see
      * {@link #readsVaryingOuter}), so a name they say nothing of correlates nothing there.
@@ -139,7 +160,16 @@ public final class CorrelatedSubqueryRule {
     private boolean semiJoin;
     /** The judged IN's left operand as written, or null where it is not known or the membership is an EXISTS. */
     private String inSubject;
+    /**
+     * The EXISTS body being judged: an aggregate of its select lists over the outer row alone reads as a constant
+     * (see {@link #countedAggregates}), as one in the body of an EXISTS nested in the subquery does.
+     */
+    private FrostlakeParser.SelectStatementContext countedBody;
+    /** The aggregate calls of {@link #countedBody} over the outer row alone, which are no aggregates of its own. */
+    private Set<ParserRuleContext> countedCalls = Collections.emptySet();
     private StoredColumnValues storedValues;
+    /** The select-list aggregates of the subquery being judged that the outer table's statistics answer. */
+    private Set<ParserRuleContext> statisticsCalls = Collections.emptySet();
 
     /**
      * @param outerNames every name the evaluated row offers the subquery, upper-cased: bare columns and
@@ -179,16 +209,27 @@ public final class CorrelatedSubqueryRule {
     /** Whether live refuses {@code subquery} read as a value. */
     public boolean refusesScalar(final FrostlakeParser.SelectStatementContext subquery) {
         final boolean judgingBefore = judging;
+        final Set<ParserRuleContext> statisticsBefore = statisticsCalls;
         judging = true;
+        statisticsCalls = Collections.emptySet();
         try {
+            statisticsCalls = new HashSet<>(statisticsAggregates(subquery));
             return judgesScalar(subquery);
         } finally {
             judging = judgingBefore;
+            statisticsCalls = statisticsBefore;
         }
     }
 
     private boolean judgesScalar(final FrostlakeParser.SelectStatementContext subquery) {
-        if (!judgeable(subquery) || !singleColumn(subquery)) {
+        if (!judgeableWithDepth(subquery)) {
+            return false;
+        }
+        if (deepestOuterRead > 1) {
+            // A query inside the subquery reads the outer row: no shape of that is turned.
+            return true;
+        }
+        if (!singleColumn(subquery)) {
             return false;
         }
         final FrostlakeParser.SelectClauseContext clause = mainClause(subquery);
@@ -218,14 +259,14 @@ public final class CorrelatedSubqueryRule {
         if (clause.tableExpression() != null && !readsOneRowRelationsOnly(clause)) {
             // A filter the relations' statistics settle leaves no correlation to plan (see CorrelatedFilterFold):
             // settled FALSE it reads no row and the value is NULL — tt.id = fz.id over key ranges that never
-            // meet, through a join or an ORDER BY too — and settled TRUE, with the outer row read nowhere else,
-            // the subquery runs as if uncorrelated (live-verified).
+            // meet, through a join or an ORDER BY too — and settled TRUE the subquery runs as if uncorrelated,
+            // each only with the outer row read nowhere else: (SELECT v + fz.id FROM g WHERE FALSE) is refused
+            // as it is with no filter (live-verified).
             if (clause.whereClause() == null) {
                 return true;
             }
-            final Boolean settled = settlement(clause.whereClause().booleanExpr());
-            return !(Boolean.FALSE.equals(settled) || Boolean.TRUE.equals(settled)
-                && !readsOuterBeyond(subquery, clause, scopes, clause.whereClause()));
+            return settlement(clause.whereClause().booleanExpr()) == null
+                || readsOuterBeyond(subquery, clause, scopes, clause.whereClause());
         }
         return clause.whereClause() != null || clause.havingClause() != null || clause.qualifyClause() != null
             || ordered(subquery) || !limitKeepsTheRow(subquery, clause);
@@ -244,7 +285,7 @@ public final class CorrelatedSubqueryRule {
         for (final FrostlakeParser.TableReferenceContext relation : from.tableReference()) {
             final FrostlakeParser.TableSourceContext source = relation.tableSource();
             if (source == null || source.selectStatement() == null || relation.LATERAL() != null
-                    || relation.pivotClause() != null || relation.unpivotClause() != null
+                    || relation.pivotClause() != null || relation.unpivotClause() != null || relation.matchRecognizeClause() != null
                     || relation.sampleClause() != null || limited(source.selectStatement())) {
                 return false;
             }
@@ -289,16 +330,466 @@ public final class CorrelatedSubqueryRule {
         final boolean judgingBefore = judging;
         final boolean semiJoinBefore = this.semiJoin;
         final String subjectBefore = inSubject;
+        final FrostlakeParser.SelectStatementContext countedBefore = countedBody;
+        final Set<ParserRuleContext> callsBefore = countedCalls;
         judging = true;
         this.semiJoin = in && semiJoin;
         inSubject = in ? subject : null;
+        countedBody = in ? null : subquery;
+        countedCalls = Collections.emptySet();
         try {
-            return judgeable(subquery) && refusesMembershipStatement(subquery, in);
+            if (!in) {
+                if (readsCountedValue(subquery)) {
+                    return true;
+                }
+                countedCalls = new HashSet<>(countedAggregates(subquery));
+            }
+            return judgeableWithDepth(subquery)
+                && (deepestOuterRead > 1 || refusesMembershipStatement(subquery, in));
         } finally {
             judging = judgingBefore;
             this.semiJoin = semiJoinBefore;
             inSubject = subjectBefore;
+            countedBody = countedBefore;
+            countedCalls = callsBefore;
         }
+    }
+
+    // ── an outer aggregate the statistics answer ─────────────────────────────────────
+
+    /**
+     * The aggregates of a scalar subquery's select list that the OUTER table's statistics answer: MIN, MAX or
+     * COUNT of one bare column of a table the outer query reads. Live answers such a call from the whole table —
+     * not the outer query's group, and not the rows its WHERE keeps — where the subquery reads one table of its
+     * own with no filter, grouping or ordering and writes an aggregate of its own first: over h holding 1 … 3,
+     * {@code (SELECT MAX(g.v) + MIN(h.id) FROM g)} adds 1 on every row, also beside {@code WHERE id > 1}, while
+     * SUM, AVG, DISTINCT, an expression argument, a view or a derived table as the outer relation, a filter in
+     * the subquery and a call that stands first are all refused (live-verified).
+     *
+     * @param subquery the scalar subquery
+     * @return the calls, in written order; empty where the shape is not one the statistics answer
+     */
+    public List<ParserRuleContext> statisticsAggregates(final FrostlakeParser.SelectStatementContext subquery) {
+        final List<ParserRuleContext> none = new ArrayList<>();
+        final FrostlakeParser.SelectClauseContext clause = mainClause(subquery);
+        if (clause == null || clause.whereClause() != null || clause.groupByClause() != null
+                || clause.havingClause() != null || clause.qualifyClause() != null
+                || clause.connectByClause() != null || ordered(subquery)) {
+            return none;
+        }
+        final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
+        if (from == null || !from.joinClause().isEmpty() || from.tableReference().size() != 1) {
+            return none;
+        }
+        final FrostlakeParser.TableSourceContext source = from.tableReference(0).tableSource();
+        if (source == null || source.tableQualifiedName() == null || storedTable(source.tableQualifiedName()) == null) {
+            return none;
+        }
+        final List<CorrelationScope> scopes = scopeOfAlone(clause);
+        final List<ParserRuleContext> calls = aggregateCalls(clause.selectList());
+        final List<ParserRuleContext> answered = new ArrayList<>();
+        for (int i = 0; i < calls.size(); i++) {
+            final ParserRuleContext call = calls.get(i);
+            if (!readsOuterRowAlone(call, scopes)) {
+                continue;
+            }
+            // The subquery's own aggregate comes first, and every outer one is a statistic.
+            if (i == 0 || statisticOf(call) == null) {
+                return none;
+            }
+            answered.add(call);
+        }
+        return answered;
+    }
+
+    /**
+     * A scalar subquery as it is run: each aggregate the outer table's statistics answer (see
+     * {@link #statisticsAggregates}) replaced by its value, typed as the call is.
+     *
+     * @param subquery the scalar subquery
+     * @return the text to run, or null where the subquery holds no such call
+     */
+    public String statisticsBodyText(final FrostlakeParser.SelectStatementContext subquery) {
+        final boolean judgingBefore = judging;
+        judging = true;
+        final List<ParserRuleContext> calls;
+        try {
+            calls = statisticsAggregates(subquery);
+        } finally {
+            judging = judgingBefore;
+        }
+        if (calls.isEmpty() || subquery.getStart() == null || subquery.getStart().getInputStream() == null) {
+            return null;
+        }
+        final StringBuilder text = new StringBuilder(ParseTreeText.getOriginalText(subquery));
+        final int base = subquery.getStart().getStartIndex();
+        for (int i = calls.size() - 1; i >= 0; i--) {
+            final ParserRuleContext call = calls.get(i);
+            final String value = statisticOf(call);
+            final int from = call.getStart().getStartIndex() - base;
+            final int to = call.getStop().getStopIndex() - base;
+            if (value == null || from < 0 || to >= text.length()) {
+                return null;
+            }
+            text.replace(from, to + 1, value);
+        }
+        return text.toString();
+    }
+
+    /**
+     * The value of one outer aggregate as the outer table's statistics give it, written as SQL of the call's own
+     * type; null where the call is no MIN, MAX or COUNT of one bare column of a stored outer table.
+     */
+    private String statisticOf(final ParserRuleContext call) {
+        if (!(call instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.FunctionCallExprContext written = (FrostlakeParser.FunctionCallExprContext) call;
+        final String name = written.functionName().getText().toUpperCase(Locale.ROOT);
+        if (!"MIN".equals(name) && !"MAX".equals(name) && !"COUNT".equals(name)
+                || written.DISTINCT() != null || written.withinGroupClause() != null
+                || written.functionArgList() == null || written.functionArgList().functionArg().size() != 1) {
+            return null;
+        }
+        ParseTree argument = written.functionArgList().functionArg(0);
+        while (!(argument instanceof FrostlakeParser.QualifiedNameExprContext) && argument.getChildCount() == 1) {
+            argument = argument.getChild(0);
+        }
+        if (!(argument instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return null;
+        }
+        final List<String> parts = partsOf(((FrostlakeParser.QualifiedNameExprContext) argument).qualifiedName());
+        final String column = parts.get(parts.size() - 1);
+        Table owner = null;
+        if (parts.size() > 1) {
+            owner = outerRelations.get(parts.get(parts.size() - 2));
+        } else {
+            for (final Table relation : outerRelations.values()) {
+                if (relation != null && relation.hasColumn(column)) {
+                    if (owner != null && owner != relation) {
+                        return null;
+                    }
+                    owner = relation;
+                }
+            }
+        }
+        final Table stored = owner == null ? null : owner.residentSource();
+        if (stored == null || stored != owner || !stored.hasColumn(column) || stored.getQualifiedName() == null
+                || !executor.getStorageEngine().hasTable(stored.getQualifiedName())) {
+            return null;
+        }
+        if ("COUNT".equals(name)) {
+            // A COUNT is not read from the statistics: it counts the subquery's own rows, once each where the
+            // outer value is there, so over a three-row table of its own it is 3 (live-verified).
+            return "IFF(" + ParseTreeText.getOriginalText((ParserRuleContext) argument) + " IS NULL, 0, COUNT(*))";
+        }
+        final TableColumn declared = stored.getColumn(column);
+        final DataType type = declared.getDataType();
+        if (!(type instanceof NumericType || type instanceof StringType || type instanceof DateTimeType
+                || type instanceof BooleanType)) {
+            return null;
+        }
+        final int index = stored.getColumnIndex(declared.getName());
+        Object extreme = null;
+        for (final Row row : executor.readTableRowsForTransaction(stored.getQualifiedName())) {
+            final Object value = index < row.size() ? row.getValue(index) : null;
+            if (value == null) {
+                continue;
+            }
+            if (extreme == null || ("MIN".equals(name) ? ValueComparisons.compareValues(value, extreme) < 0
+                    : ValueComparisons.compareValues(value, extreme) > 0)) {
+                extreme = value;
+            }
+        }
+        final String literal;
+        if (extreme == null) {
+            literal = "NULL";
+        } else if (extreme instanceof Boolean) {
+            literal = ((Boolean) extreme).booleanValue() ? "TRUE" : "FALSE";
+        } else if (extreme instanceof Number) {
+            literal = extreme instanceof BigDecimal ? ((BigDecimal) extreme).toPlainString() : extreme.toString();
+        } else if (SharedFunctionHelpers.temporalSqlLiteral(extreme) != null) {
+            literal = SharedFunctionHelpers.temporalSqlLiteral(extreme);
+        } else if (extreme instanceof String) {
+            literal = SqlStringLiterals.encode((String) extreme);
+        } else {
+            return null;
+        }
+        return "CAST(" + literal + " AS " + SqlTypeNames.canonical(type) + ")";
+    }
+
+    /** Whether a reference is written inside an aggregate the statistics answer. */
+    private boolean insideStatisticsCall(final ParseTree reference) {
+        if (statisticsCalls.isEmpty()) {
+            return false;
+        }
+        for (ParseTree at = reference.getParent(); at != null; at = at.getParent()) {
+            if (at instanceof FrostlakeParser.SelectClauseContext) {
+                return false;
+            }
+            if (statisticsCalls.contains(at)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ── an EXISTS over the outer query's own aggregate ───────────────────────────────
+
+    /**
+     * An EXISTS body as it is run: each aggregate of its select lists that the body's rows are not counted by
+     * (see {@link #countedAggregates}) replaced by a constant as wide as the call, so every place after it keeps
+     * its position. An aggregate over the outer row alone is the outer query's value and not an aggregate of the
+     * body, whose rows are counted as if no aggregate stood there: {@code EXISTS (SELECT MAX(fz.id) FROM g WHERE
+     * FALSE)} is FALSE, where {@code EXISTS (SELECT MAX(fz.id), COUNT(*) FROM g WHERE FALSE)} aggregates its own
+     * rows and is TRUE (live-verified).
+     *
+     * @param body the EXISTS's select
+     * @return the text to run, or null where the body holds no such call
+     */
+    public String countedBodyText(final FrostlakeParser.SelectStatementContext body) {
+        final List<ParserRuleContext> calls = countedAggregates(body);
+        if (calls.isEmpty() || body.getStart() == null || body.getStart().getInputStream() == null) {
+            return null;
+        }
+        final StringBuilder text = new StringBuilder(ParseTreeText.getOriginalText(body));
+        final int base = body.getStart().getStartIndex();
+        for (final ParserRuleContext call : calls) {
+            final int from = call.getStart().getStartIndex() - base;
+            final int to = call.getStop().getStopIndex() - base;
+            if (from < 0 || to >= text.length()) {
+                return null;
+            }
+            text.setCharAt(from, '1');
+            for (int i = from + 1; i <= to; i++) {
+                if (text.charAt(i) != '\n' && text.charAt(i) != '\r') {
+                    text.setCharAt(i, ' ');
+                }
+            }
+        }
+        return text.toString();
+    }
+
+    /**
+     * The aggregate calls in the select lists of an EXISTS body — its one select, or each operand of its set
+     * operation — whose place a constant takes without changing the body's rows (see {@link #counts}), in the
+     * order written.
+     */
+    public List<ParserRuleContext> countedAggregates(final FrostlakeParser.SelectStatementContext body) {
+        final List<FrostlakeParser.SelectClauseContext> arms = new ArrayList<>();
+        collectArms(body, arms);
+        final List<ParserRuleContext> counted = new ArrayList<>();
+        for (final FrostlakeParser.SelectClauseContext arm : arms) {
+            final List<ParserRuleContext> calls = aggregateCalls(arm.selectList());
+            if (calls.isEmpty()) {
+                continue;
+            }
+            final List<CorrelationScope> scopes = scopeOfAlone(arm);
+            for (final ParserRuleContext call : calls) {
+                if (counts(call, arm, scopes)) {
+                    counted.add(call);
+                }
+            }
+        }
+        return counted;
+    }
+
+    /**
+     * The aggregate calls written anywhere inside {@code subquery}, through every select nested in it, that read
+     * the outer row and no row of a select they stand in: the outer query's own aggregates, in the order written.
+     * A call with an OVER is a window and no aggregate.
+     */
+    public List<ParserRuleContext> outerAggregates(final FrostlakeParser.SelectStatementContext subquery) {
+        final List<ParserRuleContext> found = new ArrayList<>();
+        collectOuterAggregates(subquery, new ArrayList<CorrelationScope>(), found);
+        return found;
+    }
+
+    private void collectOuterAggregates(final ParseTree node, final List<CorrelationScope> scopes,
+                                        final List<ParserRuleContext> into) {
+        if (node instanceof FrostlakeParser.LambdaFunctionContext) {
+            return;
+        }
+        if (isAggregateCall(node) && readsOuterRowAlone((ParserRuleContext) node, scopes)) {
+            into.add((ParserRuleContext) node);
+            return;
+        }
+        final boolean clause = node instanceof FrostlakeParser.SelectClauseContext;
+        if (clause) {
+            scopes.add(scopeOf((FrostlakeParser.SelectClauseContext) node));
+        }
+        final FrostlakeParser.SelectClauseContext ordered = node instanceof FrostlakeParser.SelectStatementContext
+            ? mainClause((FrostlakeParser.SelectStatementContext) node) : null;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final ParseTree child = node.getChild(i);
+            // A statement's own ORDER BY reads the names of the select it orders.
+            final boolean orderBy = ordered != null
+                && child == ((FrostlakeParser.SelectStatementContext) node).orderByClause();
+            if (orderBy) {
+                scopes.add(scopeOf(ordered));
+            }
+            collectOuterAggregates(child, scopes, into);
+            if (orderBy) {
+                scopes.remove(scopes.size() - 1);
+            }
+        }
+        if (clause) {
+            scopes.remove(scopes.size() - 1);
+        }
+    }
+
+    /** The selects a statement runs: its own, and each operand's through a set operation and parentheses. */
+    private static void collectArms(final FrostlakeParser.SelectStatementContext statement,
+                                    final List<FrostlakeParser.SelectClauseContext> into) {
+        for (final FrostlakeParser.SelectOperandContext operand : statement.selectOperand()) {
+            if (operand.selectClause() != null) {
+                into.add(operand.selectClause());
+            } else if (operand.selectStatement() != null) {
+                collectArms(operand.selectStatement(), into);
+            }
+        }
+    }
+
+    /**
+     * Whether an aggregate call in a select list of an EXISTS body leaves the body's rows as they are when a
+     * constant stands in its place: one over the outer row alone, which is the outer query's value, and one of
+     * the body's own reading the outer row where the select groups without it — by a GROUP BY, or by a HAVING
+     * that aggregates — since nothing reads the item's value. {@code EXISTS (SELECT MAX(fz.id + g.v) FROM g GROUP
+     * BY g.s)} and {@code … FROM g HAVING COUNT(*) > 0} are answered (live-verified).
+     */
+    private boolean counts(final ParserRuleContext call, final FrostlakeParser.SelectClauseContext arm,
+                           final List<CorrelationScope> scopes) {
+        if (readsOuterRowAlone(call, scopes)) {
+            return true;
+        }
+        if (arm.groupByClause() == null
+                && (arm.havingClause() == null || plainAggregateCalls(arm.havingClause()).isEmpty())) {
+            return false;
+        }
+        final List<FrostlakeParser.QualifiedNameExprContext> names = new ArrayList<>();
+        collectNamesOutsideQueries(call, names);
+        final boolean judgingBefore = judging;
+        judging = false;
+        try {
+            for (final FrostlakeParser.QualifiedNameExprContext name : names) {
+                if (placedSideOf(name, scopes) == CorrelationSide.OUTER) {
+                    return true;
+                }
+            }
+        } finally {
+            judging = judgingBefore;
+        }
+        return false;
+    }
+
+    /** Every aggregate call {@code node} holds outside any nested select, the outer query's own included. */
+    private List<ParserRuleContext> plainAggregateCalls(final ParseTree node) {
+        final Set<ParserRuleContext> callsBefore = countedCalls;
+        countedCalls = Collections.emptySet();
+        try {
+            return aggregateCalls(node);
+        } finally {
+            countedCalls = callsBefore;
+        }
+    }
+
+    /** Whether every name a call reads, outside the queries nested in it, is the outer row's, and it reads one. */
+    private boolean readsOuterRowAlone(final ParserRuleContext call, final List<CorrelationScope> scopes) {
+        final List<FrostlakeParser.QualifiedNameExprContext> names = new ArrayList<>();
+        collectNamesOutsideQueries(call, names);
+        final boolean judgingBefore = judging;
+        judging = false;
+        try {
+            for (final FrostlakeParser.QualifiedNameExprContext name : names) {
+                if (placedSideOf(name, scopes) != CorrelationSide.OUTER) {
+                    return false;
+                }
+            }
+        } finally {
+            judging = judgingBefore;
+        }
+        return !names.isEmpty();
+    }
+
+    /**
+     * Whether a reference stands inside an aggregate over the outer row alone, in a select list of the EXISTS
+     * body judged or of an EXISTS nested in the subquery.
+     */
+    private boolean insideCountedAggregate(final FrostlakeParser.QualifiedNameExprContext reference,
+                                           final List<CorrelationScope> scopes) {
+        ParserRuleContext call = null;
+        ParserRuleContext at = reference.getParent();
+        while (at != null && !(at instanceof FrostlakeParser.SelectListContext)) {
+            if (at instanceof FrostlakeParser.SelectStatementContext || at instanceof FrostlakeParser.SelectClauseContext) {
+                return false;
+            }
+            if (isAggregateCall(at)) {
+                call = at;
+            }
+            at = at.getParent();
+        }
+        if (at == null || call == null || !(at.getParent() instanceof FrostlakeParser.SelectClauseContext)) {
+            return false;
+        }
+        final FrostlakeParser.SelectClauseContext arm = (FrostlakeParser.SelectClauseContext) at.getParent();
+        ParserRuleContext statement = at.getParent().getParent();
+        while (statement != null && !(statement instanceof FrostlakeParser.SelectStatementContext
+                && !(statement.getParent() instanceof FrostlakeParser.SelectOperandContext))) {
+            statement = statement.getParent();
+        }
+        return statement != null
+            && (statement == countedBody || statement.getParent() instanceof FrostlakeParser.ExistsExprContext)
+            && counts(call, arm, scopes);
+    }
+
+    /**
+     * Whether an EXISTS body reads the value of an aggregate over the outer row alone, which its rows are not
+     * counted by: under DISTINCT, or in a HAVING naming the item that holds it. {@code EXISTS (SELECT DISTINCT
+     * MAX(fz.id) FROM g)} and {@code EXISTS (SELECT MAX(fz.id) AS m FROM g HAVING m > 5)} are refused
+     * (live-verified).
+     */
+    private boolean readsCountedValue(final FrostlakeParser.SelectStatementContext body) {
+        final List<FrostlakeParser.SelectClauseContext> arms = new ArrayList<>();
+        collectArms(body, arms);
+        for (final FrostlakeParser.SelectClauseContext arm : arms) {
+            if (arm.DISTINCT() == null && arm.havingClause() == null || aggregateCalls(arm.selectList()).isEmpty()) {
+                continue;
+            }
+            final List<CorrelationScope> scopes = scopeOfAlone(arm);
+            for (final FrostlakeParser.SelectItemContext item : arm.selectList().selectItem()) {
+                boolean counted = false;
+                for (final ParserRuleContext call : aggregateCalls(item)) {
+                    counted |= readsOuterRowAlone(call, scopes);
+                }
+                if (counted && (arm.DISTINCT() != null || namedIn(arm.havingClause(), item))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Whether a clause reads, outside any nested select, the name a select item is given. */
+    private static boolean namedIn(final ParserRuleContext clause, final FrostlakeParser.SelectItemContext item) {
+        if (clause == null || !(item instanceof FrostlakeParser.ExprItemContext)) {
+            return false;
+        }
+        final FrostlakeParser.ExprItemContext named = (FrostlakeParser.ExprItemContext) item;
+        final String alias = named.aliasName() != null ? ParseTreeText.getIdentifier(named.aliasName()).toUpperCase()
+            : named.identifier() != null ? ParseTreeText.getIdentifier(named.identifier()).toUpperCase()
+            : named.bareAliasWord() != null ? ParseTreeText.getIdentifier(named.bareAliasWord()) : null;
+        if (alias == null) {
+            return false;
+        }
+        final List<FrostlakeParser.QualifiedNameExprContext> names = new ArrayList<>();
+        collectNamesOutsideQueries(clause, names);
+        for (final FrostlakeParser.QualifiedNameExprContext name : names) {
+            final List<String> parts = partsOf(name.qualifiedName());
+            if (parts.size() == 1 && parts.get(0).equals(alias)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether live refuses a statement under IN or EXISTS: one select, or a set operation of several. */
@@ -329,6 +820,9 @@ public final class CorrelatedSubqueryRule {
         if (groupsByOuter(clause, scopes) && !(semiJoin && groupingOnlyDeduplicates(clause, scopes))) {
             return true;
         }
+        if (aggregatesBesideOuterOverPrunedScan(clause, scopes, in)) {
+            return true;
+        }
         if (prunedAway(clause) || subjectRuledOut(clause) || statement != null && limitedToNoRow(statement, clause)) {
             return false;
         }
@@ -344,11 +838,68 @@ public final class CorrelatedSubqueryRule {
         if (aggregatesOuterDerived(clause, scopes) || aggregateBodyFilteredByOuter(clause, scopes, in)) {
             return true;
         }
+        // An aggregate of its own, with no GROUP BY or HAVING, may not read the outer row inside its argument, as a
+        // scalar subquery's may not: EXISTS (SELECT MAX(fz.id + g.v) FROM g) and IN (SELECT MAX(fz.id + g.v) FROM g)
+        // are refused (live-verified).
+        if (clause.groupByClause() == null && clause.havingClause() == null
+                && readsOuterInsideAggregate(clause, statement, scopes)) {
+            return true;
+        }
         if (in && clause.tableExpression() != null && readsVaryingOuter(clause.selectList(), scopes)
                 && !readsDirectly(clause.selectList(), CorrelationSide.INNER, scopes)) {
             return true;
         }
         return !filtersSupported(clause, scopes) || !derivedTablesSupported(clause, scopes);
+    }
+
+    /**
+     * Whether a membership selects an aggregate of its own with the outer row read in the select list, over a
+     * scan a filter of its own prunes. The pruned scan does not fold the membership away as it does a plain one:
+     * {@code IN (SELECT MAX(v) + fz.id FROM g WHERE FALSE)} is refused, as it is under {@code WHERE NULL},
+     * {@code WHERE g.id > 100} past every stored id, {@code WHERE g.id = 5 AND FALSE}, grouped, under NOT IN and
+     * beside a LIMIT, where {@code WHERE 1 = 0}, which reads no column, a filter reading the outer row, a HAVING
+     * and an empty table leave it answered. An EXISTS over an ungrouped aggregate is refused under any filter
+     * that never holds, {@code WHERE 1 = 0} included (live-verified).
+     */
+    private boolean aggregatesBesideOuterOverPrunedScan(final FrostlakeParser.SelectClauseContext clause,
+                                                        final List<CorrelationScope> scopes, final boolean in) {
+        if (clause.whereClause() == null || aggregateCalls(clause.selectList()).isEmpty()
+                || !in && clause.groupByClause() != null || !readsOuterIn(clause.selectList(), scopes)) {
+            return false;
+        }
+        final List<FrostlakeParser.BooleanExprContext> conjuncts = new ArrayList<>();
+        collectConjuncts(clause.whereClause().booleanExpr(), conjuncts);
+        for (final FrostlakeParser.BooleanExprContext conjunct : conjuncts) {
+            // A conjunct naming the outer row is none of the scan's own, whatever the statistics make of it.
+            final boolean before = readsAsWritten;
+            readsAsWritten = true;
+            final boolean correlated;
+            try {
+                correlated = readsOuterIn(conjunct, scopes);
+            } finally {
+                readsAsWritten = before;
+            }
+            if (correlated) {
+                continue;
+            }
+            if (isFalseOrNullLiteral(conjunct)) {
+                return true;
+            }
+            if ((!in || readsDirectly(conjunct, CorrelationSide.INNER, scopes)) && provenFalse(conjunct, clause, scopes)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isFalseOrNullLiteral(final FrostlakeParser.BooleanExprContext conjunct) {
+        if (!(conjunct instanceof FrostlakeParser.ValueExprContext)
+                || !(((FrostlakeParser.ValueExprContext) conjunct).expression() instanceof FrostlakeParser.LiteralExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.LiteralContext literal =
+            ((FrostlakeParser.LiteralExprContext) ((FrostlakeParser.ValueExprContext) conjunct).expression()).literal();
+        return literal.FALSE() != null || literal.NULL() != null;
     }
 
     // ── EXISTS and IN ───────────────────────────────────────────────────────────────
@@ -381,8 +932,8 @@ public final class CorrelatedSubqueryRule {
     }
 
     /** What a grouping expression groups by: the item an ordinal or a select alias names, else itself. */
-    private static ParseTree groupedItem(final FrostlakeParser.SelectClauseContext clause,
-                                         final FrostlakeParser.ExpressionContext grouping) {
+    static ParseTree groupedItem(final FrostlakeParser.SelectClauseContext clause,
+                                 final FrostlakeParser.ExpressionContext grouping) {
         final List<FrostlakeParser.SelectItemContext> items = clause.selectList().selectItem();
         if (grouping instanceof FrostlakeParser.LiteralExprContext
                 && grouping.getStart().getType() == FrostlakeLexer.INTEGER_LITERAL) {
@@ -818,6 +1369,50 @@ public final class CorrelatedSubqueryRule {
         return false;
     }
 
+    /**
+     * The outer names the table functions of a subquery's FROM read, in the order written; empty where none
+     * reads the outer row (see {@link #readsOuterThroughTableFunction}).
+     *
+     * @param subquery the subquery
+     * @return the references, each naming a column of the query around the subquery
+     */
+    public List<FrostlakeParser.QualifiedNameExprContext> tableFunctionOuterReads(
+            final FrostlakeParser.SelectStatementContext subquery) {
+        final List<FrostlakeParser.QualifiedNameExprContext> reads = new ArrayList<>();
+        final FrostlakeParser.SelectClauseContext clause = mainClause(subquery);
+        if (clause == null || clause.tableExpression() == null) {
+            return reads;
+        }
+        final List<CorrelationScope> scopes = scopeOfAlone(clause);
+        final List<FrostlakeParser.TableReferenceContext> relations = new ArrayList<>();
+        collectRelations(clause.tableExpression(), relations);
+        for (final FrostlakeParser.TableReferenceContext relation : relations) {
+            final FrostlakeParser.TableSourceContext source = relation.tableSource();
+            if (source != null
+                    && (source.TABLE() != null || source.FLATTEN() != null || source.tableFunctionExpr() != null)) {
+                collectDirectReads(source, scopes, reads);
+            }
+        }
+        return reads;
+    }
+
+    private void collectDirectReads(final ParseTree node, final List<CorrelationScope> scopes,
+                                    final List<FrostlakeParser.QualifiedNameExprContext> into) {
+        if (node instanceof FrostlakeParser.SelectStatementContext
+                || node instanceof FrostlakeParser.LambdaFunctionContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            if (sideOf((FrostlakeParser.QualifiedNameExprContext) node, scopes) == CorrelationSide.OUTER) {
+                into.add((FrostlakeParser.QualifiedNameExprContext) node);
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectDirectReads(node.getChild(i), scopes, into);
+        }
+    }
+
     /** Whether a clause of the select other than {@code except} reads the outer row. */
     private boolean readsOuterBeyond(final FrostlakeParser.SelectStatementContext statement,
                                      final FrostlakeParser.SelectClauseContext clause,
@@ -861,7 +1456,8 @@ public final class CorrelatedSubqueryRule {
      *
      * @param subquery         a select nested in the query whose names are wanted
      * @param filterAggregates whether an aggregate written in a WHERE or ON inside the subquery counts too: in the
-     *                         select list the subquery refuses that one itself first, in HAVING the grouping speaks
+     *                         select list the subquery refuses that one itself first — ahead of the names an
+     *                         aggregate of its select list reads, too — and in HAVING the grouping speaks
      * @return the references, each still to be placed in that query, in the order written
      */
     public List<FrostlakeParser.QualifiedNameExprContext> enclosingReferencesWithMixedAggregates(
@@ -869,6 +1465,14 @@ public final class CorrelatedSubqueryRule {
         final List<FrostlakeParser.QualifiedNameExprContext> references = new ArrayList<>();
         collectEnclosingReferences(subquery, new ArrayList<CorrelationScope>(), references, true, filterAggregates,
             false);
+        if (!filterAggregates) {
+            final List<FrostlakeParser.QualifiedNameExprContext> filtered = new ArrayList<>();
+            collectEnclosingReferences(subquery, new ArrayList<CorrelationScope>(), filtered, true, true, false);
+            if (filtered.size() > references.size()) {
+                // An aggregate of the subquery's filter reads both rows: its refusal is the subquery's own.
+                return enclosingReferences(subquery);
+            }
+        }
         return references;
     }
 
@@ -964,6 +1568,113 @@ public final class CorrelatedSubqueryRule {
         return sawOuter && !sawUnknown;
     }
 
+    /** {@link #judgeable}, with the depth the outer row is read from measured for a subquery it judges. */
+    private boolean judgeableWithDepth(final FrostlakeParser.SelectStatementContext subquery) {
+        deepestOuterRead = 0;
+        if (!judgeable(subquery)) {
+            return false;
+        }
+        walked = subquery;
+        deepestOuterRead = outerDepthIn(subquery, new ArrayList<CorrelationScope>(), 0);
+        return true;
+    }
+
+    /**
+     * The deepest level a read of the outer row stands at below {@code node}. A query nested in the subquery
+     * that the statistics settle is left out — one they prove reads no row, or one whose filter they prove true
+     * and that reads the outer row nowhere else — since nothing of its correlation is left to turn.
+     */
+    private int outerDepthIn(final ParseTree node, final List<CorrelationScope> scopes, final int level) {
+        if (node instanceof FrostlakeParser.LambdaFunctionContext) {
+            return 0;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            return sideOf((FrostlakeParser.QualifiedNameExprContext) node, scopes) == CorrelationSide.OUTER ? level : 0;
+        }
+        int deepest = 0;
+        if (node instanceof FrostlakeParser.SelectClauseContext) {
+            final FrostlakeParser.SelectClauseContext clause = (FrostlakeParser.SelectClauseContext) node;
+            final boolean ownLevel = isLevel(clause);
+            if (ownLevel && level >= 1 && settledAway(clause, scopes)) {
+                return 0;
+            }
+            scopes.add(scopeOf(clause));
+            for (int i = 0; i < node.getChildCount(); i++) {
+                deepest = Math.max(deepest, outerDepthIn(node.getChild(i), scopes, level + (ownLevel ? 1 : 0)));
+            }
+            scopes.remove(scopes.size() - 1);
+            return deepest;
+        }
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            // The statement's own ORDER BY reads the names of the select it orders, at that select's level.
+            final FrostlakeParser.SelectStatementContext statement = (FrostlakeParser.SelectStatementContext) node;
+            final FrostlakeParser.SelectClauseContext ordered = mainClause(statement);
+            for (int i = 0; i < node.getChildCount(); i++) {
+                final ParseTree child = node.getChild(i);
+                if (child == statement.orderByClause() && ordered != null) {
+                    scopes.add(scopeOf(ordered));
+                    deepest = Math.max(deepest, outerDepthIn(child, scopes, level + (isLevel(ordered) ? 1 : 0)));
+                    scopes.remove(scopes.size() - 1);
+                } else {
+                    deepest = Math.max(deepest, outerDepthIn(child, scopes, level));
+                }
+            }
+            return deepest;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            deepest = Math.max(deepest, outerDepthIn(node.getChild(i), scopes, level));
+        }
+        return deepest;
+    }
+
+    /** Whether the statistics settle a nested query's correlation away (see {@link #outerDepthIn}). */
+    private boolean settledAway(final FrostlakeParser.SelectClauseContext clause, final List<CorrelationScope> scopes) {
+        if (prunedAway(clause)) {
+            return true;
+        }
+        if (clause.whereClause() == null) {
+            return false;
+        }
+        ParseTree statement = clause.getParent();
+        while (statement != null && !(statement instanceof FrostlakeParser.SelectStatementContext)) {
+            statement = statement.getParent();
+        }
+        final List<CorrelationScope> own = new ArrayList<>(scopes);
+        own.add(scopeOf(clause));
+        return Boolean.TRUE.equals(settlement(clause.whereClause().booleanExpr()))
+            && !readsOuterBeyond((FrostlakeParser.SelectStatementContext) statement, clause, own, clause.whereClause());
+    }
+
+    /**
+     * How many queries with a FROM of their own lie between the outer row and the deepest place the subquery last
+     * judged reads it from: 1 for a subquery that reads it itself, 2 for one whose own subquery does. A FROM-less
+     * select is no level — it is an expression of the query around it — and neither is a derived table. Live
+     * turns a correlation one level at a time, so a read from two levels in is refused whatever the shape
+     * (live-verified: {@code (SELECT COUNT(*) FROM g WHERE g.v > (SELECT MIN(v) FROM g g2 WHERE g2.id <= fz.id))}).
+     *
+     * @return the depth, 0 where the outer row is read from no query with a FROM
+     */
+    public int outerReadDepth() {
+        return deepestOuterRead;
+    }
+
+    /** Whether a select clause is a level of its own: it reads relations, as a subquery and not as a relation. */
+    private boolean isLevel(final FrostlakeParser.SelectClauseContext clause) {
+        if (clause.FROM() == null) {
+            return false;
+        }
+        ParseTree at = clause.getParent();
+        while (at != null && at != walked
+                && (at instanceof FrostlakeParser.SelectOperandContext
+                    || at instanceof FrostlakeParser.SelectStatementContext)) {
+            at = at.getParent();
+        }
+        return at == walked || at instanceof FrostlakeParser.ScalarSubqueryExprContext
+            || at instanceof FrostlakeParser.ExistsExprContext || at instanceof FrostlakeParser.InSubqueryExprContext
+            || at instanceof FrostlakeParser.TupleInSubqueryExprContext
+            || at instanceof FrostlakeParser.FunctionArgContext;
+    }
+
     private void walk(final ParseTree node, final List<CorrelationScope> scopes) {
         if (node instanceof FrostlakeParser.LambdaFunctionContext) {
             return;   // a lambda's parameters are its own names
@@ -1006,12 +1717,180 @@ public final class CorrelatedSubqueryRule {
     }
 
     /**
+     * Whether an outer name stands where the statistics prove no row ever reads it: an argument of COALESCE, NVL
+     * or IFNULL after one that holds no NULL, NVL2's third argument beside a first that holds none, and the
+     * branch of IFF or of a searched CASE that a settled condition leaves out. Live reduces such a call before it
+     * plans the correlation, so the name correlates nothing: over a g.id holding no NULL,
+     * {@code COALESCE(g.id, fz.id) = 5} is answered where {@code GREATEST(g.id, fz.id) = 5} is refused
+     * (live-verified).
+     *
+     * <p>So does a name inside a condition the statistics settle, wherever the condition stands — a disjunct or
+     * a conjunct of a filter, a select item, a call's argument — and an element of an IN list that the subject
+     * never equals: over tt.id holding 1 and 2 and fz.id holding 5 and 7, {@code tt.id = fz.id OR tt.id = 1},
+     * {@code tt.id < fz.id AND tt.id = 1}, {@code tt.id IN (fz.id, 1)} and {@code IFF(tt.id = fz.id, 'x', value)}
+     * read tt alone (live-verified). A condition is folded so only where {@link #foldsWhereItStands} lets it.
+     */
+    private boolean neverReached(final ParseTree reference) {
+        if (!judging || readsAsWritten) {
+            return false;
+        }
+        ParseTree below = null;
+        ParseTree child = reference;
+        FrostlakeParser.FunctionArgContext argument = null;
+        for (ParseTree at = reference.getParent(); at != null; below = child, child = at, at = at.getParent()) {
+            if (at instanceof FrostlakeParser.SelectClauseContext || at instanceof FrostlakeParser.SelectStatementContext) {
+                return false;
+            }
+            if (isCondition(at) && settledBranchCondition((ParserRuleContext) at) != null && foldsWhereItStands(at)) {
+                return true;
+            }
+            if (at instanceof FrostlakeParser.InListExprContext
+                    && child == ((FrostlakeParser.InListExprContext) at).expressionList()
+                    && below instanceof ParserRuleContext
+                    && neverListed((FrostlakeParser.InListExprContext) at, (ParserRuleContext) below)
+                    && foldsWhereItStands(at)) {
+                return true;
+            }
+            if (at instanceof FrostlakeParser.FunctionArgContext) {
+                argument = (FrostlakeParser.FunctionArgContext) at;
+            } else if (at instanceof FrostlakeParser.FunctionCallExprContext) {
+                if (argument != null && unreachedArgument((FrostlakeParser.FunctionCallExprContext) at, argument)) {
+                    return true;
+                }
+                argument = null;
+            } else if (at instanceof FrostlakeParser.SearchedCaseExprContext
+                    && unreachedBranch((FrostlakeParser.SearchedCaseExprContext) at, child, below)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a settled condition is folded where it stands: outside every aggregate call of its select, which is
+     * computed over the select's rows alone, and in a select with no outer join, whose NULL-extended rows the
+     * statistics do not describe — an outer join's ON reading the outer row stays refused.
+     */
+    private boolean foldsWhereItStands(final ParseTree node) {
+        for (ParseTree at = node.getParent(); at != null; at = at.getParent()) {
+            if (at instanceof FrostlakeParser.SelectClauseContext) {
+                return !joinsOuter((FrostlakeParser.SelectClauseContext) at);
+            }
+            if (at instanceof FrostlakeParser.SelectStatementContext || isAggregateCall(at)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a node is a condition the statistics may settle: a comparison, a test, or a connective of them. */
+    private static boolean isCondition(final ParseTree node) {
+        return node instanceof FrostlakeParser.ComparisonExprContext || node instanceof FrostlakeParser.BetweenExprContext
+            || node instanceof FrostlakeParser.IsNullExprContext || node instanceof FrostlakeParser.IsDistinctExprContext
+            || node instanceof FrostlakeParser.InListExprContext || node instanceof FrostlakeParser.LikeExprContext
+            || node instanceof FrostlakeParser.AndExprContext || node instanceof FrostlakeParser.OrExprContext
+            || node instanceof FrostlakeParser.NotExprContext;
+    }
+
+    /** Whether the statistics prove an IN list's subject never equals one of its elements, which then drops out. */
+    private boolean neverListed(final FrostlakeParser.InListExprContext list, final ParserRuleContext element) {
+        if (list.expression() == null || !aggregateCalls(list).isEmpty()) {
+            return false;
+        }
+        return Boolean.FALSE.equals(fold().settles("(" + ParseTreeText.getOriginalText(list.expression()) + ") = ("
+            + ParseTreeText.getOriginalText(element) + ")"));
+    }
+
+    private boolean unreachedArgument(final FrostlakeParser.FunctionCallExprContext call,
+                                      final FrostlakeParser.FunctionArgContext argument) {
+        if (call.functionArgList() == null || call.overClause() != null) {
+            return false;
+        }
+        final List<FrostlakeParser.FunctionArgContext> arguments = call.functionArgList().functionArg();
+        final int index = arguments.indexOf(argument);
+        final String name = call.functionName().getText().toUpperCase(Locale.ROOT);
+        if ("COALESCE".equals(name) || "NVL".equals(name) || "IFNULL".equals(name)) {
+            for (int i = 0; i < index; i++) {
+                if (holdsNoNull(arguments.get(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if ("NVL2".equals(name)) {
+            return index == 2 && arguments.size() == 3 && holdsNoNull(arguments.get(0));
+        }
+        if ("IFF".equals(name) && arguments.size() == 3 && index > 0) {
+            final Boolean settled = settledBranchCondition(arguments.get(0));
+            return settled != null && settled.booleanValue() == (index == 2);
+        }
+        return false;
+    }
+
+    /** Whether the place {@code child} holds in a searched CASE is one a settled condition leaves out. */
+    private boolean unreachedBranch(final FrostlakeParser.SearchedCaseExprContext conditional, final ParseTree child,
+                                    final ParseTree below) {
+        for (final FrostlakeParser.WhenClauseContext when : conditional.whenClause()) {
+            final Boolean settled = settledBranchCondition(when.booleanExpr(0));
+            if (when == child) {
+                // Its own result is left out by a condition that never holds.
+                return below == when.booleanExpr(1) && Boolean.FALSE.equals(settled);
+            }
+            if (Boolean.TRUE.equals(settled)) {
+                return true;   // every row is answered here, before the place asked about
+            }
+            if (settled == null) {
+                return false;  // some row may pass this one by, and reach the place
+            }
+        }
+        return false;
+    }
+
+    /** How the statistics settle a branch condition: an IS [NOT] NULL over an operand that holds none, or a filter. */
+    private Boolean settledBranchCondition(final ParserRuleContext condition) {
+        final List<FrostlakeParser.IsNullExprContext> tests = new ArrayList<>();
+        collectWhole(condition, tests);
+        if (!tests.isEmpty()) {
+            final FrostlakeParser.IsNullExprContext test = tests.get(0);
+            return holdsNoNull(test.expression()) ? Boolean.valueOf(test.NOT() != null) : null;
+        }
+        return settlement(condition);
+    }
+
+    /** The IS [NOT] NULL test a condition is as a whole, through the wrappers a lone expression stands in. */
+    private static void collectWhole(final ParseTree node, final List<FrostlakeParser.IsNullExprContext> into) {
+        if (node instanceof FrostlakeParser.IsNullExprContext) {
+            into.add((FrostlakeParser.IsNullExprContext) node);
+            return;
+        }
+        if (node.getChildCount() == 1) {
+            collectWhole(node.getChild(0), into);
+        }
+    }
+
+    /** Whether the statistics prove an expression never answers NULL. */
+    private boolean holdsNoNull(final ParserRuleContext expression) {
+        final ValueRange range = fold().rangeOf(ParseTreeText.getOriginalText(expression));
+        return range != null && !range.isNullable();
+    }
+
+    /**
      * Where a reference resolves: the innermost scope that carries it, else the outer row, else nowhere. While a
      * shape is judged, a derived column computed from the outer row reads the outer row, and an outer name the
      * statistics pin to one value reads a constant.
      */
     private CorrelationSide sideOf(final FrostlakeParser.QualifiedNameExprContext reference,
                                    final List<CorrelationScope> scopes) {
+        final CorrelationSide side = placedSideOf(reference, scopes);
+        // The outer query's own aggregate in an EXISTS's select list is a value its rows are not counted by, and
+        // one the outer table's statistics answer is a value whatever row is read.
+        return side == CorrelationSide.OUTER
+            && (insideCountedAggregate(reference, scopes) || insideStatisticsCall(reference))
+            ? CorrelationSide.CONSTANT : side;
+    }
+
+    private CorrelationSide placedSideOf(final FrostlakeParser.QualifiedNameExprContext reference,
+                                         final List<CorrelationScope> scopes) {
         final List<String> parts = partsOf(reference.qualifiedName());
         final String column = parts.get(parts.size() - 1);
         if (parts.size() == 1) {
@@ -1024,7 +1903,8 @@ public final class CorrelatedSubqueryRule {
             if (!outerNames.contains(column)) {
                 return CorrelationSide.UNKNOWN;
             }
-            return constant(null, column) ? CorrelationSide.CONSTANT : CorrelationSide.OUTER;
+            return constant(null, column) || neverReached(reference)
+                ? CorrelationSide.CONSTANT : CorrelationSide.OUTER;
         }
         final String relation = parts.get(parts.size() - 2);
         for (int i = scopes.size() - 1; i >= 0; i--) {
@@ -1036,7 +1916,8 @@ public final class CorrelatedSubqueryRule {
         if (!outerNames.contains(relation + "." + column) && !outerNames.contains(String.join(".", parts))) {
             return CorrelationSide.UNKNOWN;
         }
-        return constant(relation, column) ? CorrelationSide.CONSTANT : CorrelationSide.OUTER;
+        return constant(relation, column) || neverReached(reference)
+            ? CorrelationSide.CONSTANT : CorrelationSide.OUTER;
     }
 
     /**
@@ -1161,6 +2042,8 @@ public final class CorrelatedSubqueryRule {
                     scope.addAlias(ParseTreeText.getIdentifier(exprItem.aliasName()).toUpperCase());
                 } else if (exprItem.identifier() != null) {
                     scope.addAlias(ParseTreeText.getIdentifier(exprItem.identifier()).toUpperCase());
+                } else if (exprItem.bareAliasWord() != null) {
+                    scope.addAlias(ParseTreeText.getIdentifier(exprItem.bareAliasWord()));
                 }
             }
         }
@@ -1247,7 +2130,7 @@ public final class CorrelatedSubqueryRule {
         final String lastPart = name.namePart().isEmpty() ? canonical(name.nameStartPart().getText())
             : canonical(name.namePart(name.namePart().size() - 1).getText());
         scope.addQualifier(alias != null ? alias : lastPart);
-        if (relation.pivotClause() != null || relation.unpivotClause() != null) {
+        if (relation.pivotClause() != null || relation.unpivotClause() != null || relation.matchRecognizeClause() != null) {
             scope.markOpaque();
             return;
         }
@@ -1296,6 +2179,8 @@ public final class CorrelatedSubqueryRule {
                 name = ParseTreeText.getIdentifier(exprItem.aliasName()).toUpperCase();
             } else if (exprItem.identifier() != null) {
                 name = ParseTreeText.getIdentifier(exprItem.identifier()).toUpperCase();
+            } else if (exprItem.bareAliasWord() != null) {
+                name = ParseTreeText.getIdentifier(exprItem.bareAliasWord());
             } else if (exprItem.booleanExpr() instanceof FrostlakeParser.ValueExprContext
                     && ((FrostlakeParser.ValueExprContext) exprItem.booleanExpr()).expression()
                         instanceof FrostlakeParser.QualifiedNameExprContext) {
@@ -1542,7 +2427,9 @@ public final class CorrelatedSubqueryRule {
             return;
         }
         if (isAggregateCall(node)) {
-            into.add((ParserRuleContext) node);
+            if (!countedCalls.contains(node) && !statisticsCalls.contains(node)) {
+                into.add((ParserRuleContext) node);
+            }
             return;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -1684,7 +2571,7 @@ public final class CorrelatedSubqueryRule {
             return null;
         }
         final FrostlakeParser.TableReferenceContext relation = from.tableReference(0);
-        if (relation.LATERAL() != null || relation.pivotClause() != null || relation.unpivotClause() != null
+        if (relation.LATERAL() != null || relation.pivotClause() != null || relation.unpivotClause() != null || relation.matchRecognizeClause() != null
                 || relation.sampleClause() != null || relation.tableSource() == null) {
             return null;
         }
@@ -2411,7 +3298,7 @@ public final class CorrelatedSubqueryRule {
         for (final FrostlakeParser.TableReferenceContext relation : relations) {
             final FrostlakeParser.TableSourceContext source = relation.tableSource();
             final boolean stored = source != null && source.tableQualifiedName() != null
-                && relation.pivotClause() == null && relation.unpivotClause() == null;
+                && relation.pivotClause() == null && relation.unpivotClause() == null && relation.matchRecognizeClause() == null;
             final Table table = stored ? storedTable(source.tableQualifiedName()) : null;
             if (qualifier != null) {
                 final String name = aliasOf(relation) != null ? aliasOf(relation)
@@ -2473,7 +3360,7 @@ public final class CorrelatedSubqueryRule {
             final FrostlakeParser.TableSourceContext source = relation.tableSource();
             final Table table = source == null || source.tableQualifiedName() == null ? null
                 : storedTable(source.tableQualifiedName());
-            if (table == null || relation.pivotClause() != null || relation.unpivotClause() != null) {
+            if (table == null || relation.pivotClause() != null || relation.unpivotClause() != null || relation.matchRecognizeClause() != null) {
                 return false;   // the item may read a relation whose statistics are not read here
             }
             own.put(aliasOf(relation) != null ? aliasOf(relation) : lastNamePart(source.tableQualifiedName()), table);

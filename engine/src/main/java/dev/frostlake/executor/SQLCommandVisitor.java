@@ -64,8 +64,10 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.AnsiFromFormSyntax;
@@ -76,11 +78,13 @@ import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.IntoListLookahead;
 import dev.frostlake.parser.LimitValueSyntax;
+import dev.frostlake.parser.OperandRefusals;
 import dev.frostlake.parser.PositionNeedleSyntax;
 import dev.frostlake.parser.PostParseRefusals;
-import dev.frostlake.parser.QuantifiedComparisonOperand;
+import dev.frostlake.parser.RoutineArgumentOrder;
 import dev.frostlake.parser.ScriptingStatementPlacement;
 import dev.frostlake.parser.SignatureTailLine;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.parser.SyntaxErrorListener;
 import dev.frostlake.parser.ValueFunctionSyntax;
@@ -92,8 +96,9 @@ import dev.frostlake.stream.StreamManager;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
-import org.antlr.v4.runtime.CharStreams;
+import dev.frostlake.types.UuidType;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -217,10 +222,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      * position, naming it upper-cased: "Session variable '$NOSUCH' does not exist" (live-verified). A
      * variable SET to NULL exists and reads NULL; a session PARAMETER of the same name is not a variable.
      * Checked once per statement, so a SET earlier in the same script counts. A DESCRIBE's properties are judged
-     * one by one in the order written, each name before its value (DescribeProperties), so theirs wait.
+     * one by one in the order written, each name before its value (DescribeProperties), so theirs wait; so does
+     * an ALTER SESSION's value, judged with the rest of its list (SessionParameterSettings).
      */
     private void rejectUnsetSessionVariables(final ParseTree node) {
-        if (node instanceof FrostlakeParser.DescribePropertyContext) {
+        if (node instanceof FrostlakeParser.DescribePropertyContext
+                || node instanceof FrostlakeParser.SessionValueContext) {
             return;
         }
         if (node instanceof TerminalNode) {
@@ -435,6 +442,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         try {
             final boolean ifExists = ctx.if_exists() != null;
             final String tableName = queryExecutor.resolveObjectName(ctx.objectName());
+            if (ctx.objectName().qualifiedName() != null) {
+                InformationSchemaGuard.refuseWrite(catalog,
+                    ParseTreeText.qualifiedNameParts(ctx.objectName().qualifiedName()));
+            }
 
             // Execute truncate via query executor
             queryExecutor.executeTruncate(tableName, ifExists);
@@ -589,10 +600,61 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // A procedure runs in the caller's session and may not reconfigure it.
             rejectInsideProcedure("ALTER_SESSION");
         }
-        if (!alterSession && queryExecutor.getTransactionManager().hasActiveTransaction()) {
+        if (!alterSession && ctx.truncateStatement() == null
+                && queryExecutor.getTransactionManager().hasActiveTransaction()) {
             queryExecutor.getTransactionManager().commit();
         }
-        return visitChildren(ctx);
+        final Object answer = visitChildren(ctx);
+        if (runsAsOwnTransaction(ctx.createStatement())) {
+            queryExecutor.getTransactionManager().recordStatementTransaction();
+        }
+        settleConstraintNames(ctx);
+        return answer;
+    }
+
+    /**
+     * A CREATE TABLE or an ALTER TABLE names the constraints it leaves without one before it ends (see
+     * {@code Table.settleConstraintNames}).
+     */
+    private void settleConstraintNames(final FrostlakeParser.DdlStatementContext ctx) {
+        final FrostlakeParser.ObjectNameContext named;
+        if (ctx.createStatement() != null && ctx.createStatement().TABLE() != null
+                && ctx.createStatement().STREAM() == null) {
+            named = ctx.createStatement().objectName();
+        } else if (ctx.alterStatement() != null && ctx.alterStatement().TABLE() != null) {
+            named = ctx.alterStatement().objectName();
+        } else {
+            named = null;
+        }
+        if (named == null) {
+            return;
+        }
+        final Table table;
+        try {
+            table = queryExecutor.getCatalog().resolveTable(queryExecutor.resolveObjectName(named));
+        } catch (final RuntimeException notATable) {
+            // Renamed, dropped by the statement itself, or no table at all: nothing is left to name.
+            return;
+        }
+        if (table != null) {
+            table.settleConstraintNames();
+        }
+    }
+
+    /**
+     * Whether a CREATE runs as a transaction LAST_TRANSACTION then answers: one filling a table from a query or
+     * from another table, and one creating a stream. Any other DDL leaves the session's last transaction as it
+     * was (live-verified).
+     */
+    private static boolean runsAsOwnTransaction(final FrostlakeParser.CreateStatementContext create) {
+        if (create == null) {
+            return false;
+        }
+        if (create.STREAM() != null) {
+            return true;
+        }
+        return create.TABLE() != null && create.DYNAMIC() == null && create.EVENT() == null
+            && (create.CLONE() != null || create.selectStatement() != null);
     }
 
     // ==================== DML STATEMENTS ====================
@@ -638,7 +700,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitCopyIntoStatement(final FrostlakeParser.CopyIntoStatementContext ctx) {
-        return dmlHandler.handleCopyIntoStatement(ctx);
+        final Object answer = dmlHandler.handleCopyIntoStatement(ctx);
+        // A load into a table runs as a transaction of its own (see TransactionManager.recordStatementTransaction).
+        if (ctx.qualifiedName() != null) {
+            queryExecutor.getTransactionManager().recordStatementTransaction();
+        }
+        return answer;
     }
 
     // ==================== QUERY STATEMENTS ====================
@@ -1284,7 +1351,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     }
 
     private FrostlakeParser.SelectStatementContext parseSelectStatement(final String sql) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         final SyntaxErrorListener errorListener = new SyntaxErrorListener(sql);
         lexer.removeErrorListeners();
         lexer.addErrorListener(errorListener);
@@ -1533,11 +1600,17 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     @Override
     public Object visitCallStatement(final FrostlakeParser.CallStatementContext ctx) {
         CallArgumentTypes.enterCall();
-        // An owner's-rights body re-pins how its refusals are worded (see executeCall); the caller's comes back.
+        // An owner's-rights body re-pins how its refusals are worded and whom it creates as (see executeCall); the
+        // caller's come back.
         final SessionRole callerRole = SessionRole.pinned();
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        final String callerOwner = security == null ? null : security.getSessionContext().getExecutableOwner();
         try {
             return executeCall(ctx);
         } finally {
+            if (security != null) {
+                security.getSessionContext().setExecutableOwner(callerOwner);
+            }
             SessionRole.restore(callerRole);
             CallArgumentTypes.exitCall();
         }
@@ -1571,6 +1644,15 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     private ResultSet callSystemFunction(final FrostlakeParser.CallStatementContext ctx) {
         final String name = ctx.systemFunctionName().getText();
         rejectSystemCallArity(ctx, name.toUpperCase(Locale.ROOT));
+        return callAsSelect(ctx, name);
+    }
+
+    /**
+     * A CALL of a built-in function that is no procedure: the account runs it as it runs a SYSTEM$ function's,
+     * {@code CALL UPPER('a')} answering A in a column UPPER and {@code CALL SUM(1)} answering 1, with whatever the
+     * arguments are - a nested call, a subquery (live-verified). A user-defined function is never called this way.
+     */
+    private ResultSet callAsSelect(final FrostlakeParser.CallStatementContext ctx, final String name) {
         final Token call = ctx.CALL().getSymbol();
         final String afterCall = call.getInputStream().getText(
             Interval.of(call.getStopIndex() + 1, ctx.RPAREN().getSymbol().getStopIndex()));
@@ -1615,6 +1697,18 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         final String qualifiedName = getText(ctx.qualifiedName());
         final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+        if (ctx.BANG() != null) {
+            // A method of a class instance: there are no classes here, so the instance and its method name
+            // nothing, and miss in the words a missing routine does (live-verified).
+            final StringBuilder spelled = new StringBuilder();
+            for (final String part : parts) {
+                spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+            }
+            spelled.append('!').append(SqlIdentifiers.spellCanonical(ParseTreeText.getIdentifier(ctx.identifier())));
+            throw new RuntimeException(SqlCompilationError.of(parts.length > 1
+                ? "Unknown user-defined function " + spelled + "."
+                : "Unknown function " + spelled + "."));
+        }
         // The canonical name, resolved exactly: CALL proccase() does not reach "procCase" (live-verified).
         final String procName = parts[parts.length - 1];
 
@@ -1629,19 +1723,39 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } else if (parts.length == 2) {
             schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
         } else {
-            schema = resolveCurrentSchema();
+            // An unqualified procedure is looked for along the session's SEARCH_PATH.
+            Schema onPath = null;
+            for (final Schema candidate : queryExecutor.searchPathSchemas()) {
+                if (onPath == null && !candidate.getProcedureOverloads(procName).isEmpty()) {
+                    onPath = candidate;
+                }
+            }
+            schema = onPath != null ? onPath : resolveCurrentSchema();
         }
 
         final List<Procedure> overloads = schema.getProcedureOverloads(procName);
         if (overloads.isEmpty()) {
+            final String builtIn = procName.toUpperCase(Locale.ROOT);
+            if (parts.length == 1 && ctx.qualifiedName().getStart().getType() != FrostlakeLexer.QUOTED_IDENTIFIER
+                    && (queryExecutor.getFunctionRegistry().hasFunction(builtIn)
+                        || queryExecutor.getFunctionRegistry().hasAggregateFunction(builtIn))
+                    && schema.getFunctionOverloads(procName).isEmpty()) {
+                return callAsSelect(ctx, builtIn);
+            }
             throw unknownProcedure(parts);
         }
-        // An overloaded name runs the overload the arguments choose, as live chooses it.
-        final Procedure procedure = overloads.size() == 1 || ctx.callArguments() == null
+        // An overloaded name runs the overload the arguments choose, as live chooses it — a CALL without
+        // arguments the overload that takes none.
+        final List<FrostlakeParser.CallArgumentContext> written = ctx.callArguments() == null
+            ? new ArrayList<FrostlakeParser.CallArgumentContext>() : ctx.callArguments().callArgument();
+        final Procedure procedure = overloads.size() == 1
             ? overloads.get(0)
-            : CallArgumentTypes.chooseOverload(procName, overloads, ctx.callArguments().callArgument(),
+            : CallArgumentTypes.chooseOverload(procName, overloads, written,
                 new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog(),
                     queryExecutor));
+        // Calling another role's procedure asks for USAGE on it.
+        queryExecutor.requireRoutinePrivilege(Privilege.USAGE, schema, procedure);
+        RoutineSecretsCheck.require(queryExecutor.getCatalog(), procedure.getEnvironment());
 
         // Evaluate call arguments — positional and/or named (name => value). Positional args bind to
         // parameters left-to-right; a named arg binds to the parameter whose name it matches; any
@@ -1653,6 +1767,14 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final Object[] boundValues = new Object[params.size()];
         final boolean[] boundFlags = new boolean[params.size()];
         int positionalIndex = 0;
+        if (ctx.callArguments() == null && !CallArgumentTypes.isNested()
+                && (proceduralExecutor == null || proceduralExecutor.getBlockDepth() == 0)) {
+            // A CALL that gives no argument is judged like any other: a parameter without a default it leaves
+            // unfilled is the argument-type refusal over no types.
+            CallArgumentTypes.check(procName, params, written, false,
+                new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog(),
+                    queryExecutor));
+        }
         if (ctx.callArguments() != null) {
             // A CALL is all-named or all-positional. Live-verified on a real account:
             // CALL p_ab(1, b => 2) fails "illegal mixing of named and positional arguments for function
@@ -1668,10 +1790,14 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 }
             }
             if (sawNamed && sawPositional) {
-                throw new RuntimeException("SQL compilation error:\n"
-                    + "illegal mixing of named and positional arguments for function " + procName);
+                // Placed at the procedure's name (live-verified).
+                final Token named = ctx.qualifiedName().getStart();
+                throw new RuntimeException(SqlCompilationError.at(named.getLine(), named.getCharPositionInLine(),
+                    "illegal mixing of named and positional arguments for function " + procName));
             }
+            CallArgumentTypes.refuseNamedShape(procName, params, ctx.callArguments().callArgument());
             CallArgumentTypes.refuseRows(procName, params, ctx.callArguments().callArgument());
+            CallArgumentTypes.refuseMisnamed(procName, params, ctx.callArguments().callArgument());
             // Each argument's TYPE is matched against its parameter before any is evaluated, as live
             // matches them while the CALL compiles, for a CALL written at the top level only. One issued
             // from a block or a procedure body arrives with its :binds already substituted into the text
@@ -1741,7 +1867,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final Object returnValue;
         // Whatever language the body is in, one that runs with owner's rights has its refusals worded for the
         // owner, still naming the session's primary role (live-verified); visitCallStatement puts the caller's back.
-        SessionRole.enterProcedure(!"CALLER".equals(procedure.getExecuteAs()));
+        SessionRole.enterProcedure(!procedure.runsWithCallersRights());
+        // It creates objects as its owner, and with its owner's privilege to create them (live-verified); a
+        // caller's-rights body creates as whoever calls it, which inside an owner's-rights body is that one's owner.
+        if (!procedure.runsWithCallersRights() && procedure.getOwner() != null
+                && queryExecutor.getSecurityManager() != null) {
+            queryExecutor.getSecurityManager().getSessionContext().setExecutableOwner(procedure.getOwner());
+        }
         // Snowflake's scoped-transaction rule (live-verified): a transaction STARTED inside a stored
         // procedure must be completed inside it — returning with it open rolls it back and errors.
         final boolean txnOpenBeforeCall = queryExecutor.getTransactionManager().isExplicitTransaction();
@@ -1765,11 +1897,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // unqualified/partially-qualified reference inside (e.g. UTILS.IS_VALID_TIER, or a bare table)
             // resolves relative to where the procedure lives — matching Snowflake — rather than against the
             // caller's current database. Restored in the finally.
+            // The home is the schema the procedure was found in — along the search path for a bare name — and a
+            // procedure that runs with its CALLER's rights stays where the caller is (live-verified).
             final String savedDb = catalog.getCurrentDatabase();
             final String savedSchema = catalog.getCurrentSchema();
-            final String homeDb = parts.length == 3 ? parts[0] : savedDb;
-            final String homeSchema = parts.length == 3 ? parts[1]
-                : parts.length == 2 ? parts[0] : savedSchema;
+            final boolean callersRights = procedure.runsWithCallersRights();
+            final String homeDb = callersRights ? null : schema.getDatabaseName();
+            final String homeSchema = callersRights ? null : schema.getName();
             // The body runs under its declared RETURNS type (none for a table-returning one), so a
             // RETURN written directly in it converts — see the executor's rule.
             final Set<String> parameterNames = new HashSet<>();
@@ -1795,7 +1929,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 }
 
                 final String body = procedure.getBody();
-                final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+                final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
                 final SyntaxErrorListener errorListener = new SyntaxErrorListener(body);
                 lexer.removeErrorListeners();
                 lexer.addErrorListener(errorListener);
@@ -1812,7 +1946,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 // Only an OWNER's-rights procedure may not touch the session it runs in; an
                 // EXECUTE AS CALLER body changes session state freely (live-verified), so the
                 // session-statement refusal is armed for owner's-rights bodies alone.
-                final boolean ownersRights = !"CALLER".equals(procedure.getExecuteAs());
+                final boolean ownersRights = !procedure.runsWithCallersRights();
                 if (ownersRights) {
                     procedureDepth++;
                 }
@@ -1972,7 +2106,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             }
 
             // Parse and execute the dynamic SQL
-            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sqlString));
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sqlString));
 
             final SyntaxErrorListener errorListener = new SyntaxErrorListener(sqlString);
             lexer.removeErrorListeners();
@@ -1988,6 +2122,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             IntoListLookahead.requireBefore(sqlScriptCtx, tokens, sqlString, errorListener);
             EmptySchemaPartSyntax.requireWellFormedBefore(sqlScriptCtx, tokens, sqlString, errorListener);
             PostParseRefusals.requireBefore(tokens, sqlString, errorListener);
+            RoutineArgumentOrder.requireBefore(tokens, errorListener);
             SignatureTailLine.requireBefore(sqlScriptCtx, sqlString, errorListener);
             errorListener.throwIfErrors();
             EmptySchemaPartSyntax.requireWellFormed(sqlScriptCtx, tokens, sqlString);
@@ -2008,7 +2143,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             }
             if (!severalStatements) {
                 StageArgumentSyntax.requirePlacement(sqlScriptCtx, sqlString);
-                QuantifiedComparisonOperand.requireNoValueOperator(sqlScriptCtx);
+                OperandRefusals.require(sqlScriptCtx);
                 IntervalLiteralSyntax.requireReadable(sqlScriptCtx);
                 NamedCallRewrite.apply(sqlScriptCtx);
             }
@@ -2064,7 +2199,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                             // A statement of several compiles when it runs, after the ones before it have run, and
                             // fails named for what it earns there (live-verified).
                             StageArgumentSyntax.requireArguments(stmtCtx);
-                            QuantifiedComparisonOperand.requireNoValueOperator(stmtCtx);
+                            OperandRefusals.require(stmtCtx);
                             IntervalLiteralSyntax.requireReadable(stmtCtx);
                             NamedCallRewrite.apply(stmtCtx);
                         }
@@ -2399,10 +2534,11 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     // (shared with DDL) so there is a single source of truth — the visitor previously carried a
     // divergent copy that dropped NUMBER precision, VARCHAR length, and TINYINT/UUID/VECTOR/DATETIME.
     /**
-     * The type a SCRIPTING declaration writes. It differs from a column's in one place: an unsized
-     * BINARY binds at the type's 64MB maximum, where a column's unsized BINARY is BINARY(8388608) —
-     * so the width that was WRITTEN is what tells them apart, and an explicit BINARY(8388608) keeps
-     * its own width (live-verified).
+     * The type a SCRIPTING declaration writes. It differs from a column's in two places: an unsized
+     * BINARY binds at the type's 64MB maximum, where a column's unsized BINARY is BINARY(8388608), and an
+     * unsized VARCHAR, STRING or TEXT at VARCHAR(134217728), where a column's is VARCHAR(16777216) —
+     * so the width that was WRITTEN is what tells them apart, and an explicit BINARY(8388608) or
+     * VARCHAR(16777216) keeps its own width (live-verified).
      *
      * @param name       the type as written
      * @param parameters its parameters, or null when none were written
@@ -2411,6 +2547,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     private DataType parseDeclaredType(final FrostlakeParser.DataTypeNameContext name,
                                        final FrostlakeParser.TypeParametersContext parameters) {
         final DataType declared = parseDataType(name, parameters);
+        if (parameters == null && declared instanceof StringType && !(declared instanceof UuidType)
+                && ((StringType) declared).getMaxLength() == StringType.VARCHAR.getMaxLength()) {
+            // A text declared without a length is held at the width nothing bounds, where a column's is 16MB:
+            // a NULL it binds is a VARCHAR(134217728), and an explicit VARCHAR(16777216) keeps its own width.
+            return new StringType("VARCHAR", StringResultWidths.UNBOUNDED);
+        }
         return parameters == null && declared instanceof BinaryType ? BinaryType.AT_MAXIMUM : declared;
     }
 
@@ -2540,7 +2682,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             }
 
             final String body = function.getBody();
-            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
             final SyntaxErrorListener errorListener = new SyntaxErrorListener(body);
             lexer.removeErrorListeners();
             lexer.addErrorListener(errorListener);

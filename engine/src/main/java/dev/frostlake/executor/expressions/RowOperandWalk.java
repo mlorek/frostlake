@@ -43,6 +43,55 @@ final class RowOperandWalk extends AstPrinterVisitor {
     }
 
     @Override
+    public String visitUnaryOperation(final UnaryOperationExpression expr) {
+        final String printed = super.visitUnaryOperation(expr);
+        context.rejectRowOperation(expr);
+        return printed;
+    }
+
+    @Override
+    public String visitCast(final CastExpression expr) {
+        final String printed = super.visitCast(expr);
+        context.rejectRowOperation(expr);
+        return printed;
+    }
+
+    @Override
+    public String visitObjectAccess(final ObjectAccessExpression expr) {
+        final String printed = super.visitObjectAccess(expr);
+        context.rejectRowOperation(expr);
+        return printed;
+    }
+
+    @Override
+    public String visitArrayAccess(final ArrayAccessExpression expr) {
+        final String printed = super.visitArrayAccess(expr);
+        context.rejectRowOperation(expr);
+        return printed;
+    }
+
+    @Override
+    public String visitCaseExpression(final CaseExpression expr) {
+        final String printed = super.visitCaseExpression(expr);
+        context.rejectRowOperation(expr);
+        return printed;
+    }
+
+    @Override
+    public String visitJsonArray(final JsonArrayExpression expr) {
+        final String printed = super.visitJsonArray(expr);
+        context.rejectRowOperation(expr);
+        return printed;
+    }
+
+    @Override
+    public String visitJsonObject(final JsonObjectExpression expr) {
+        final String printed = super.visitJsonObject(expr);
+        context.rejectRowOperation(expr);
+        return printed;
+    }
+
+    @Override
     public String visitIsNull(final IsNullExpression expr) {
         final String printed = super.visitIsNull(expr);
         context.rejectRowOperation(expr);

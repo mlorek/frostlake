@@ -1,6 +1,6 @@
 {
   "suite": "ddl-materialized-view",
-  "description": "CREATE / DROP / ALTER MATERIALIZED VIEW: SHOW MATERIALIZED VIEWS listing and text cell, DROP with and without IF EXISTS, SUSPEND / RESUME / REFRESH accepted (their suspended-flag effect has no SQL read surface - SHOW carries no such cell, live-verified - so the Java class's embedded-internal flag asserts are represented here as statement acceptance), COMMENT before AS, and ALTER SET COMMENT. Converted from ddl/CreateMaterializedViewTest (now retired).",
+  "description": "CREATE / DROP / ALTER MATERIALIZED VIEW: SHOW MATERIALIZED VIEWS listing and text cell, DROP with and without IF EXISTS, SUSPEND / RESUME accepted (their suspended-flag effect has no SQL read surface - SHOW carries no such cell, live-verified - so the Java class's embedded-internal flag asserts are represented here as statement acceptance), REFRESH refused as the syntax error it is, COMMENT before AS, and ALTER SET COMMENT. Converted from ddl/CreateMaterializedViewTest (now retired).",
   "tags": ["ddl", "converted"],
   "tests": [
     {"name": "create-simple-materialized-view", "steps": [
@@ -37,10 +37,10 @@
       {"sql": "ALTER MATERIALIZED VIEW mv_data SUSPEND"},
       {"sql": "ALTER MATERIALIZED VIEW mv_data RESUME"}
     ]},
-    {"name": "alter-materialized-view-refresh-is-accepted", "steps": [
+    {"name": "alter-materialized-view-refresh-is-a-syntax-error", "steps": [
       {"sql": "CREATE TABLE data (id INTEGER, value VARCHAR)"},
       {"sql": "CREATE MATERIALIZED VIEW mv_data AS SELECT * FROM data"},
-      {"sql": "ALTER MATERIALIZED VIEW mv_data REFRESH"}
+      {"sql": "ALTER MATERIALIZED VIEW mv_data REFRESH", "expect": {"error": {"messageContains": "syntax error line 1 at position 32 unexpected 'REFRESH'."}}}
     ]},
     {"name": "create-materialized-view-with-comment", "steps": [
       {"sql": "CREATE TABLE sales (id INTEGER, amount INTEGER)"},

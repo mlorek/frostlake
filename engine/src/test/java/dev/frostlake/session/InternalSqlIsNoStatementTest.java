@@ -23,6 +23,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -117,7 +120,7 @@ public class InternalSqlIsNoStatementTest {
     }
 
     @Test
-    public void toQueryJoinViewStreamsAndTemplatesAreOneStatement() {
+    public void toQueryJoinViewStreamsAndTemplatesAreOneStatement() throws IOException {
         assertEquals("mark / 1", afterMarker("SELECT * FROM TABLE(TO_QUERY('SELECT a FROM t'))"));
 
         engine.execute("CREATE TABLE u (a INT, b INT)");
@@ -127,9 +130,14 @@ public class InternalSqlIsNoStatementTest {
         assertEquals("mark / 1", afterMarker("SELECT a, b, METADATA$ACTION FROM sjv"));
         assertEquals("1", first("SELECT COUNT(*) FROM sjv"), "the stream still reads the joined row");
 
-        assertEquals("mark / 1", afterMarker("CREATE TABLE tpl USING TEMPLATE (SELECT ARRAY_AGG(OBJECT_CONSTRUCT("
-            + "'COLUMN_NAME', value:n::VARCHAR, 'TYPE', value:t::VARCHAR, 'NULLABLE', TRUE)) FROM TABLE(FLATTEN("
-            + "INPUT => PARSE_JSON('[{\"n\":\"id\",\"t\":\"NUMBER(38, 0)\"}]'))))"));
+        // A template query reads INFER_SCHEMA, so a file is staged for it to read.
+        final Path file = Files.createTempDirectory("fl_internal_tpl").resolve("one.csv");
+        Files.writeString(file, "id\n1\n");
+        engine.execute("CREATE STAGE tpl_st");
+        engine.execute("CREATE FILE FORMAT tpl_ff TYPE = CSV PARSE_HEADER = TRUE");
+        engine.execute("PUT file://" + file.toAbsolutePath() + " @tpl_st AUTO_COMPRESS=FALSE");
+        assertEquals("mark / 1", afterMarker("CREATE TABLE tpl USING TEMPLATE (SELECT ARRAY_AGG(OBJECT_CONSTRUCT(*))"
+            + " FROM TABLE(INFER_SCHEMA(LOCATION => '@tpl_st', FILE_FORMAT => 'tpl_ff')))"));
         assertEquals("id", first("SELECT column_name FROM information_schema.columns WHERE table_name = 'TPL'"),
             "the template's name as written");
     }

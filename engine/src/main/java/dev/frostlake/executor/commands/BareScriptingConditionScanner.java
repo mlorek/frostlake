@@ -17,8 +17,8 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -51,7 +51,7 @@ final class BareScriptingConditionScanner {
      *                        first token at its own column ({@code unexpected 'n'}).
      */
     static String describe(final String body, final boolean anchorOnKeyword) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();

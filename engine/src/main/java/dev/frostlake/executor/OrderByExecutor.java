@@ -76,18 +76,18 @@ final class OrderByExecutor {
         // Where each key written as itself begins, so a refusal its evaluation raises is placed in the statement.
         final List<SourcePosition> keyOrigins = new ArrayList<>();
 
+        final OrderKeyOutputNames outputNames = outputNames(ctx, table, aliasToTable, allTables);
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
             // Resolve the ORDER BY key to text we can evaluate per row: a positional ordinal → the N-th
-            // SELECT expression; a SELECT alias → that item's expression; otherwise the key as written (a
-            // column name, or an arbitrary expression that resolveOrderValue evaluates against the row).
+            // SELECT expression; a name the SELECT list gives an output column → that column's expression,
+            // wherever the name stands in the key; otherwise the key as written (a column name, or an
+            // arbitrary expression that resolveOrderValue evaluates against the row).
             // The key text must come from getOriginalText, NOT getText: the latter concatenates tokens
             // with no whitespace, so a key needing separators — `x IS NOT NULL` → `xISNOTNULL`,
             // `CAST(x AS NUMBER)` → `CAST(xASNUMBER)` — collapsed into an unparseable identifier and
             // failed to resolve. (Only the ordinal DETECTION needs the bare text, and digits are
             // unaffected by spacing.)
-            String colName = resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), ctx,
-                table, aliasToTable);
-            colName = resolveOrderAlias(colName, ctx, table, aliasToTable);
+            final String colName = resolveOrderKey(item, ctx, table, aliasToTable, outputNames);
             orderColumns.add(colName);
             keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(item.expression()))
                 ? new SourcePosition(item.expression().getStart().getLine(),
@@ -472,57 +472,26 @@ final class OrderByExecutor {
         }
     }
 
-    /** ORDER BY by a SELECT alias → that item's expression text, so it can be evaluated per row. */
-    private String resolveOrderAlias(final String text, final FrostlakeParser.SelectStatementContext ctx,
-                                     final Table table, final Map<String, Table> aliasToTable) {
+    /** The output names of the statement's select list, as its ORDER BY keys read them. */
+    OrderKeyOutputNames outputNames(final FrostlakeParser.SelectStatementContext ctx, final Table table,
+                                    final Map<String, Table> aliasToTable, final List<Table> allTables) {
         final FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
         final FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
             ? firstOp.selectClause()
             : firstOp.selectStatement().selectOperand(0).selectClause();
-        for (final FrostlakeParser.SelectItemContext item : firstClause.selectList().selectItem()) {
-            // CANONICAL and EXACT: the alias arrives folded already, so comparing it case-insensitively
-            // to the key AS WRITTEN let an unquoted key answer to a quoted alias — live resolves
-            // `SELECT a AS "x" … ORDER BY x` to nothing at all.
-            if (SelectItemAccessors.getItemAlias(item) != null
-                    && (SelectItemAccessors.getItemAlias(item))
-                        .equals(SqlIdentifiers.canonicalText(text))) {
-                final ParserRuleContext e = SelectItemAccessors.getItemExpression(item);
-                if (e != null) {
-                    return ParseTreeText.getOriginalText(e);
-                }
-            }
-        }
-        return resolveStarOutputName(text, firstClause, table, aliasToTable);
+        return new OrderKeyOutputNames(executor, firstClause, table, aliasToTable, allTables);
     }
 
     /**
-     * ORDER BY by the OUTPUT name of a star's column, where the star's REPLACE or RENAME gave that column
-     * an expression of its own: {@code SELECT * REPLACE (id * -1 AS id) … ORDER BY id} sorts by the
-     * REPLACED value, and {@code SELECT * RENAME (id AS k) … ORDER BY k} sorts by the renamed column —
-     * each exactly as a written alias would. The star's output name wins over a source column of the same
-     * name, and over an ambiguous one across a join, since it names an output rather than a relation.
-     * A column the star passes through unchanged is not answered here, so it resolves against the
-     * relation as before; a qualified key ({@code ORDER BY fz.id}) names the source column and is left
-     * alone, as live leaves it.
+     * One ORDER BY key as the text the source rows evaluate: a position is the expression of the output column
+     * it counts to, and a name the select list gives an output column is that column's expression.
      */
-    private String resolveStarOutputName(final String text, final FrostlakeParser.SelectClauseContext clause,
-                                         final Table table, final Map<String, Table> aliasToTable) {
-        final String wanted = SqlIdentifiers.canonicalText(text);
-        if (table == null || wanted == null) {
-            return text;
-        }
-        for (final FrostlakeParser.SelectItemContext item : clause.selectList().selectItem()) {
-            if (SelectItemAccessors.getStarModifiers(item).isEmpty()
-                    || SelectItemAccessors.isObjectStarItem(item)) {
-                continue;
-            }
-            for (final StarColumn column : executor.starItemColumns(item, table, aliasToTable)) {
-                if ((column.isReplaced() || column.isRenamed()) && column.getOutputName().equals(wanted)) {
-                    return column.getExpression();
-                }
-            }
-        }
-        return text;
+    private String resolveOrderKey(final FrostlakeParser.OrderItemContext item,
+                                   final FrostlakeParser.SelectStatementContext ctx, final Table table,
+                                   final Map<String, Table> aliasToTable, final OrderKeyOutputNames outputNames) {
+        final String written = ParseTreeText.getOriginalText(item.expression());
+        final String positioned = resolveOrderOrdinal(written, ctx, table, aliasToTable);
+        return positioned.equals(written) ? outputNames.expand(item.expression()) : positioned;
     }
 
     /**
@@ -1223,12 +1192,25 @@ final class OrderByExecutor {
         }
         final Table outputTable = new Table("unioned", outputAsTableColumns, false);
 
+        // A name two output columns carry names neither, alone or inside a key: SELECT 1 a, 2 a UNION ALL …
+        // ORDER BY a.
+        final Set<String> repeatedNames = new HashSet<>();
+        final Set<String> seenNames = new HashSet<>();
+        for (final ResultSetColumn column : outputColumns) {
+            if (!seenNames.add(column.getName())) {
+                repeatedNames.add(column.getName());
+            }
+        }
+
         ExpressionEvaluator keyEvaluator = null;
         for (int k = 0; k < nKeys; k++) {
             final FrostlakeParser.OrderItemContext item = items.get(k);
             ascending[k] = item.DESC() == null;
             nullsFirst[k] = ValueComparisons.nullsFirstFlag(item);
             final String asWritten = ParseTreeText.getOriginalText(item.expression()).trim();
+            if (!repeatedNames.isEmpty()) {
+                AmbiguousOutputNames.refuseReferences(item.expression(), repeatedNames);
+            }
             int matched = -1;
             final long ordinal = OrdinalLiteral.positionOf(asWritten);
             if (ordinal != OrdinalLiteral.NOT_AN_ORDINAL) {
@@ -1464,10 +1446,9 @@ final class OrderByExecutor {
                                final Map<String, Table> aliasToTable, final List<Table> allTables) {
         final List<String> orderColumns = new ArrayList<>();
         final List<SourcePosition> keyOrigins = new ArrayList<>();
+        final OrderKeyOutputNames outputNames = outputNames(ctx, table, aliasToTable, allTables);
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            String colName = resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), ctx,
-                table, aliasToTable);
-            colName = resolveOrderAlias(colName, ctx, table, aliasToTable);
+            final String colName = resolveOrderKey(item, ctx, table, aliasToTable, outputNames);
             orderColumns.add(colName);
             keyOrigins.add(colName.equals(ParseTreeText.getOriginalText(item.expression()))
                 ? new SourcePosition(item.expression().getStart().getLine(),

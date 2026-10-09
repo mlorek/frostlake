@@ -45,6 +45,8 @@ public class RegexpReplace extends TextArgumentFunction {
         final int position = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 1;
         final int occurrence = args.size() > 4 && args.get(4) != null ? ((Number) args.get(4)).intValue() : 0;
         final String parameters = args.size() > 5 && args.get(5) != null ? args.get(5).toString() : null;
+        RegexpHelper.requirePosition(position);
+        RegexpHelper.requireOccurrenceOrAll(occurrence);
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);
@@ -60,7 +62,11 @@ public class RegexpReplace extends TextArgumentFunction {
         while (matcher.find()) {
             count++;
             if (occurrence == 0 || count == occurrence) {
-                matcher.appendReplacement(sb, javaReplacement);
+                try {
+                    matcher.appendReplacement(sb, javaReplacement);
+                } catch (final IndexOutOfBoundsException noSuchGroup) {
+                    throw RegexpHelper.missingReplacementGroup(pattern, replacement);
+                }
                 if (occurrence != 0) {
                     break;
                 }

@@ -22,6 +22,7 @@ import dev.frostlake.metastore.CloneReferences;
 import dev.frostlake.metastore.NameKeys;
 import dev.frostlake.metastore.PolicyReferences;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.TagAssignments;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -231,6 +232,8 @@ public class Database extends SqlObject {
         }
 
         // Clone all schemas
+        final List<Schema> clonedFrom = new ArrayList<>();
+        final List<Schema> clonedTo = new ArrayList<>();
         for (final Schema schema : schemas.values()) {
             final String schemaName = schema.getName();
             if ("INFORMATION_SCHEMA".equals(schemaName)) {
@@ -243,6 +246,15 @@ public class Database extends SqlObject {
                 // stages, file formats and policies, and its tables without their policies.
                 final Schema clonedSchema = schema.clone();
                 clonedDb.registerSchema(schemaName, clonedSchema);
+                clonedFrom.add(schema);
+                clonedTo.add(clonedSchema);
+            }
+        }
+        // A cloned table that drew from a sequence of ANOTHER schema of this database draws from that sequence's
+        // clone too: the whole database was cloned, sequences and all.
+        for (final Schema cloned : clonedDb.schemas.values()) {
+            for (int i = 0; i < clonedFrom.size(); i++) {
+                cloned.rebindSequenceDefaults(clonedFrom.get(i), clonedTo.get(i));
             }
         }
         // An attachment to a policy of this database names the clone's copy of it; one to a policy in another
@@ -250,6 +262,8 @@ public class Database extends SqlObject {
         PolicyReferences.repoint(clonedDb.getAllSchemas(), null, new String[] {getName()}, new String[] {newName});
         // So do its foreign keys, sequence defaults and materialized views (CloneReferences).
         CloneReferences.repoint(clonedDb.getAllSchemas(), new String[] {getName()}, new String[] {newName});
+        // And a tag set on anything in it names the clone's copy of a tag that lives in it.
+        TagAssignments.mapToClones(clonedDb.getAllSchemas(), clonedDb);
 
         return clonedDb;
     }
@@ -289,6 +303,7 @@ public class Database extends SqlObject {
             new String[] {clone.getDatabaseName(), clone.getName()});
         CloneReferences.repoint(scope, new String[] {source.getDatabaseName(), source.getName()},
             new String[] {clone.getDatabaseName(), clone.getName()});
+        TagAssignments.mapToClones(scope, null);
     }
 
     public boolean isReadOnly() {

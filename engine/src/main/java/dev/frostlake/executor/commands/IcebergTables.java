@@ -33,7 +33,6 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
@@ -58,6 +57,8 @@ final class IcebergTables {
           "fields" : [ ]
         } ]""";
     private static final List<String> POLICIES = Arrays.asList("COMPATIBLE", "OPTIMIZED");
+    private static final String CHANGE_TRACKING_REFUSAL = "invalid value 'false' for property 'CHANGE_TRACKING',"
+        + " Reason: Change Tracking cannot be turned off for Iceberg tables";
     /** The storage an Iceberg table written without an external volume is kept in. */
     private static final String DEFAULT_VOLUME = "SNOWFLAKE_MANAGED";
     private static final String SUFFIX_CHARACTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -130,8 +131,7 @@ final class IcebergTables {
             if (tail.optionKey() != null && tail.copyOptionValue() != null
                     && "CHANGE_TRACKING".equalsIgnoreCase(tail.optionKey().getText())
                     && "FALSE".equalsIgnoreCase(tail.copyOptionValue().getText())) {
-                throw new RuntimeException(SqlCompilationError.of("invalid value 'false' for property"
-                    + " 'CHANGE_TRACKING', Reason: Change Tracking cannot be turned off for Iceberg tables"));
+                throw new RuntimeException(SqlCompilationError.of(CHANGE_TRACKING_REFUSAL));
             }
         }
         table.setChangeTracking(true);
@@ -221,6 +221,55 @@ final class IcebergTables {
         }
     }
 
+    /**
+     * A clone is of its source's kind: an Iceberg table is cloned by CREATE ICEBERG TABLE … CLONE alone, and
+     * that statement clones nothing else (live-verified).
+     */
+    static void requireCloneOfSameKind(final FrostlakeParser.CreateStatementContext ctx, final Table source) {
+        final boolean iceberg = source.getIcebergMetadata() != null;
+        if (iceberg && ctx.ICEBERG() == null) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid operation The table " + source.getName()
+                + " is an Iceberg table. Clone Iceberg table should use CREATE ICEBERG TABLE CLONE command. Please"
+                + " ensure the appropriate command format is used."));
+        }
+        if (!iceberg && ctx.ICEBERG() != null) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid operation The table " + source.getName()
+                + " is not Iceberg table. Clone from Non-Iceberg table to Iceberg table is not supported. Please use"
+                + " Iceberg table with Snowflake catalog to clone."));
+        }
+    }
+
+    /** The refusal of a statement that alters an Iceberg table as an ordinary one (live-verified). */
+    static RuntimeException alteredAsTable(final Table table) {
+        return new RuntimeException("SQL Compilation error: The table " + table.getName() + " is an Iceberg table."
+            + " Iceberg tables should use ALTER ICEBERG TABLE commands. Please ensure the appropriate command"
+            + " format is used.");
+    }
+
+    /**
+     * An Iceberg table always tracks its changes: a SET that turns CHANGE_TRACKING off and an UNSET of it are
+     * refused, whatever else the statement sets, before anything is changed (live-verified).
+     */
+    static void requireChangeTrackingKept(final Table table, final FrostlakeParser.TableActionContext action) {
+        if (table.getIcebergMetadata() == null) {
+            return;
+        }
+        boolean turnedOff = false;
+        if (action.tableUnsetProperties() != null) {
+            for (final FrostlakeParser.OptionKeyContext key : action.tableUnsetProperties().optionKey()) {
+                turnedOff = turnedOff || "CHANGE_TRACKING".equalsIgnoreCase(key.getText());
+            }
+        }
+        for (final FrostlakeParser.TableSetPropertyContext property : action.tableSetProperty()) {
+            turnedOff = turnedOff || "CHANGE_TRACKING".equalsIgnoreCase(property.optionKey().getText())
+                && property.copyOptionValue() != null
+                && "FALSE".equalsIgnoreCase(property.copyOptionValue().getText());
+        }
+        if (turnedOff) {
+            throw new RuntimeException(SqlCompilationError.of(CHANGE_TRACKING_REFUSAL));
+        }
+    }
+
     /** The table's Iceberg metadata; a table that has none is refused as a table of another type. */
     static IcebergTableMetadata requireIceberg(final Table table) {
         if (table.getIcebergMetadata() == null) {
@@ -242,8 +291,8 @@ final class IcebergTables {
                 "name_mapping", "catalog_sync_name", "auto_refresh_status", "partition_specs")) {
             columns.add(new ResultSetColumn(name, StringType.VARCHAR));
         }
-        columns.add(new ResultSetColumn("current_partition_spec_id", NumericType.BIGINT));
-        columns.add(new ResultSetColumn("iceberg_table_format_version", NumericType.BIGINT));
+        columns.add(new ResultSetColumn("current_partition_spec_id", ShowResultHelpers.COUNT));
+        columns.add(new ResultSetColumn("iceberg_table_format_version", ShowResultHelpers.COUNT));
         final int iceberg = tableListing.getColumnIndex("is_iceberg");
         final int created = tableListing.getColumnIndex("created_on");
         final int name = tableListing.getColumnIndex("name");

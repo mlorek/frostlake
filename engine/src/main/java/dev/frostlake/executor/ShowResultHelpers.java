@@ -25,6 +25,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
 import java.time.Instant;
@@ -153,7 +154,12 @@ public final class ShowResultHelpers {
         return "'" + s.replace("'", "''") + "'";
     }
 
-    /** SQL LIKE match (case-insensitive, {@code %} and {@code _} wildcards) for SHOW … LIKE filters. */
+    /**
+     * SQL LIKE match (case-insensitive, {@code %} and {@code _} wildcards) for SHOW … LIKE filters. A backslash
+     * before a wildcard makes it the character itself: {@code SHOW STAGES LIKE 'LK\\_INT'} names LK_INT and not
+     * LKXINT (live-verified). The pattern reaches here as the statement wrote it or already decoded, so the
+     * backslash may stand once or twice.
+     */
     public static boolean matchesLike(final String value, final String pattern) {
         if (value == null) {
             return false;
@@ -161,6 +167,17 @@ public final class ShowResultHelpers {
         final StringBuilder regex = new StringBuilder();
         for (int i = 0; i < pattern.length(); i++) {
             final char c = pattern.charAt(i);
+            if (c == '\\') {
+                int next = i + 1;
+                if (next < pattern.length() && pattern.charAt(next) == '\\') {
+                    next++;
+                }
+                if (next < pattern.length() && (pattern.charAt(next) == '_' || pattern.charAt(next) == '%')) {
+                    regex.append('\\').append(pattern.charAt(next));
+                    i = next;
+                    continue;
+                }
+            }
             if (c == '%') {
                 regex.append(".*");
             } else if (c == '_') {
@@ -208,6 +225,15 @@ public final class ShowResultHelpers {
      * also the precision the cells carry (see {@link #createdOn(Instant)}).
      */
     public static final DateTimeType CREATED_ON = new DateTimeType("TIMESTAMP_LTZ", 3, true);
+
+    /**
+     * The type of a listing's small counts — an argument count, a key's position, a warehouse's clusters:
+     * NUMBER(9,0), where its sizes and ids are NUMBER(38,0) (live-verified).
+     */
+    public static final NumericType COUNT = new NumericType("NUMBER", 9, 0);
+
+    /** A listing's timestamp kept to the second, as SHOW MANAGED ACCOUNTS keeps its old-URL instants. */
+    public static final DateTimeType WHOLE_SECONDS = new DateTimeType("TIMESTAMP_LTZ", 0, true);
 
     public static OffsetDateTime createdOn(final Instant createdTime) {
         if (createdTime == null) {

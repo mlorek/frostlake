@@ -18,7 +18,6 @@ package dev.frostlake.parser;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
@@ -116,7 +115,7 @@ public final class PostParseRefusals {
      * ends nowhere a check could read.
      */
     private static String repairedPrefix(final String prefix) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(prefix));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(prefix));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();

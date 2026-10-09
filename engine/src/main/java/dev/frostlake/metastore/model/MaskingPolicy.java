@@ -37,6 +37,7 @@ public class MaskingPolicy extends SqlObject {
     // The RETURNS type as the statement declared it, kept so a later SET BODY is judged against the
     // same type the CREATE was — the name alone cannot spell a width back.
     private DataType returnDataType;
+    private String returnSpelling;
 
     public MaskingPolicy(final String name, final List<Parameter> parameters,
                          final String returnType, final String body) {
@@ -54,6 +55,12 @@ public class MaskingPolicy extends SqlObject {
 
     /** Records the declared RETURNS type. */
     public void setReturnDataType(final DataType returnDataType) { this.returnDataType = returnDataType; }
+
+    /** The RETURNS type as a description spells it, or null for a policy created before it was recorded. */
+    public String getReturnSpelling() { return returnSpelling; }
+
+    /** Records the RETURNS type's spelling. */
+    public void setReturnSpelling(final String returnSpelling) { this.returnSpelling = returnSpelling; }
     public String getBody() { return body; }
     public void setBody(final String body) { this.body = body; }
 

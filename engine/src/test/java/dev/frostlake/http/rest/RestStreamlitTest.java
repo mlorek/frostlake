@@ -33,6 +33,10 @@ public class RestStreamlitTest extends BaseRestTest {
         sql("CREATE DATABASE st_db");
         sql("CREATE SCHEMA st_db.s");
         sql("CREATE WAREHOUSE st_wh INITIALLY_SUSPENDED = TRUE");
+        // An app created from a source location copies its files, so the stage holds the main file first.
+        sql("CREATE STAGE st_db.s.stg");
+        sql("COPY INTO @st_db.s.stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
+            + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE");
     }
 
     @Test

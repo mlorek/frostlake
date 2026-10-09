@@ -151,10 +151,9 @@ public class ReturnsTableProcedureTest extends BaseDatabaseTest {
     }
 
     /**
-     * A text cast to an UNSIZED string is a text like any other, whatever the declared width:
-     * tds-asgard-data's FETCH_EXPORT_ENRICHMENT_BATCH answers its empty table with {@code ''::VARCHAR}
-     * columns under {@code RETURNS TABLE (... VARCHAR ...)} on Snowflake, where an exact type-class match
-     * here refused it.
+     * A text cast to an UNSIZED string is a text like any other, whatever the declared width: a procedure
+     * may answer its empty table with {@code ''::VARCHAR} columns under {@code RETURNS TABLE (... VARCHAR ...)}
+     * on Snowflake, where an exact type-class match here refused it.
      */
     @Test
     public void anUnsizedTextCastFillsADeclaredText() {

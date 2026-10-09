@@ -65,6 +65,16 @@ final class ShowTailSyntax {
             return;
         }
         final ShowTailGrammar grammar = listing.tail();
+        final FrostlakeParser.ShowParametersScopeContext parametersScope = ctx.showParametersScope();
+        if (parametersScope != null && parametersScope.getChildCount() == 1 && parametersScope.SESSION() == null
+                && parametersScope.qualifiedName() == null && tail.getChildCount() > 1) {
+            // A container PARAMETERS is asked about without a name takes a LIMIT or STARTS written there as that
+            // name, as LOCKS does below.
+            final Token named = terminal(tail, 0);
+            if (isToken(named, FrostlakeLexer.LIMIT) || isToken(named, FrostlakeLexer.STARTS)) {
+                throw refused(lineAfter(ctx, tail, isToken(terminal(tail, 1), FrostlakeLexer.WITH) ? 1 : 0));
+            }
+        }
         if (listing.isAccountLevel() && grammar == ShowTailGrammar.NONE && ctx.ACCOUNT() != null
                 && ctx.objectName() == null && tail.getChildCount() > 1) {
             // LOCKS and TRANSACTIONS name an account after IN ACCOUNT, and live reads a LIMIT or STARTS written
@@ -86,7 +96,7 @@ final class ShowTailSyntax {
                 if (!isToken(terminal(tail, i + 1), FrostlakeLexer.WITH)) {
                     throw refused(lineAfter(ctx, tail, i));
                 }
-                if (!isToken(terminal(tail, i + 2), FrostlakeLexer.STRING_LITERAL)) {
+                if (!isString(terminal(tail, i + 2))) {
                     throw refused(lineAfter(ctx, tail, i + 1));
                 }
                 i += 2;
@@ -103,16 +113,43 @@ final class ShowTailSyntax {
                 if (!isToken(terminal(tail, i + 1), FrostlakeLexer.INTEGER_LITERAL)) {
                     throw refused(lineAfter(ctx, tail, i));
                 }
+                if (!grammar.readsLimitFrom() && isToken(terminal(tail, i + 2), FrostlakeLexer.FROM)) {
+                    throw refused(lineAt(terminal(tail, i + 2)));
+                }
             } else if (word.getType() == FrostlakeLexer.WITH) {
                 if (!grammar.readsPrivileges() || !isToken(terminal(tail, i + 1), FrostlakeLexer.PRIVILEGES)) {
                     throw refused(lineAfter(ctx, tail, i));
                 }
-                if (i + 2 >= tail.getChildCount()) {
+                if (i + 2 >= tail.getChildCount() || tail.getChild(i + 2) == tail.showTailExtra()) {
                     throw refused(lineAfter(ctx, tail, i + 1));
                 }
+                refuseExtra(tail, true);
                 return;
             }
         }
+        refuseExtra(tail, false);
+    }
+
+    /**
+     * A modifier written a second time or after one it has to stand before is refused at its own word; a STARTS
+     * WITH written after the privilege list stacks a second line at its prefix, and a WITH is read on and refused
+     * at the word after it (all live-verified).
+     */
+    private static void refuseExtra(final FrostlakeParser.ShowTailContext tail, final boolean afterPrivileges) {
+        final FrostlakeParser.ShowTailExtraContext extra = tail.showTailExtra();
+        if (extra == null) {
+            return;
+        }
+        final Token word = extra.getStart();
+        if (word.getType() == FrostlakeLexer.WITH) {
+            final Token next = extra.getChildCount() > 1 ? startOf(extra.getChild(1)) : null;
+            throw next != null ? refused(lineAt(next)) : SyntaxAfter.unexpected(extra);
+        }
+        final Token prefix = extra.stringText() == null ? null : extra.stringText().getStart();
+        if (word.getType() == FrostlakeLexer.STARTS && afterPrivileges && prefix != null) {
+            throw refused(lineAt(word) + "\n" + lineAt(prefix));
+        }
+        throw refused(lineAt(word));
     }
 
     /**
@@ -123,13 +160,24 @@ final class ShowTailSyntax {
      * @param ctx the statement
      */
     static void requireCountOnly(final FrostlakeParser.ShowStatementContext ctx) {
-        final FrostlakeParser.ShowTailContext tail = ctx.showTail();
+        requireCountOnly(ctx, ctx.showTail());
+    }
+
+    /**
+     * As {@link #requireCountOnly(FrostlakeParser.ShowStatementContext)}, for any statement that carries the
+     * listing modifiers: the grant listings of a database role, a role and a future grant read a LIMIT and its
+     * count alone.
+     *
+     * @param ctx  the statement
+     * @param tail its modifiers, or null
+     */
+    static void requireCountOnly(final ParserRuleContext ctx, final FrostlakeParser.ShowTailContext tail) {
         if (tail == null) {
             return;
         }
         for (int i = 0; i < tail.getChildCount(); i++) {
             final Token word = startOf(tail.getChild(i));
-            if (word.getType() != FrostlakeLexer.LIMIT) {
+            if (word.getType() != FrostlakeLexer.LIMIT || tail.getChild(i) == tail.showTailExtra()) {
                 throw refused(lineAt(word));
             }
             if (!isToken(terminal(tail, i + 1), FrostlakeLexer.INTEGER_LITERAL)) {
@@ -164,14 +212,14 @@ final class ShowTailSyntax {
         final String first = lineAt(terminal(tail, index));
         final Token prefix = terminal(tail, index + 2);
         if (listing.startsWithStacksItsPrefix() && isToken(terminal(tail, index + 1), FrostlakeLexer.WITH)
-                && isToken(prefix, FrostlakeLexer.STRING_LITERAL)) {
+                && isString(prefix)) {
             return first + "\n" + lineAt(prefix);
         }
         return first;
     }
 
     /** The line at the token after the tail's child at {@code index}: its next child, the semicolon, or the end. */
-    private static String lineAfter(final FrostlakeParser.ShowStatementContext ctx,
+    private static String lineAfter(final ParserRuleContext ctx,
                                     final FrostlakeParser.ShowTailContext tail, final int index) {
         if (index + 1 < tail.getChildCount()) {
             return lineAt(startOf(tail.getChild(index + 1)));
@@ -196,15 +244,24 @@ final class ShowTailSyntax {
     }
 
     /** The tail's child at {@code index} when it is a token, or null. */
+    /** The token a child of the tail is: a word, or the one token a written string is. */
     private static Token terminal(final FrostlakeParser.ShowTailContext tail, final int index) {
-        if (index >= tail.getChildCount() || !(tail.getChild(index) instanceof TerminalNode)) {
+        if (index >= tail.getChildCount()) {
             return null;
         }
-        return ((TerminalNode) tail.getChild(index)).getSymbol();
+        if (tail.getChild(index) instanceof FrostlakeParser.StringTextContext) {
+            return ((FrostlakeParser.StringTextContext) tail.getChild(index)).getStart();
+        }
+        return tail.getChild(index) instanceof TerminalNode ? ((TerminalNode) tail.getChild(index)).getSymbol() : null;
     }
 
     private static boolean isToken(final Token token, final int type) {
         return token != null && token.getType() == type;
+    }
+
+    /** Whether a token is a string, written between quotes or between dollar signs. */
+    private static boolean isString(final Token token) {
+        return isToken(token, FrostlakeLexer.STRING_LITERAL) || isToken(token, FrostlakeLexer.DOLLAR_QUOTED_STRING);
     }
 
     private static Token startOf(final ParseTree tree) {

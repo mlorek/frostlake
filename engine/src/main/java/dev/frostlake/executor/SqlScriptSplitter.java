@@ -18,9 +18,9 @@ package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 
 import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
@@ -47,7 +47,7 @@ public final class SqlScriptSplitter {
     }
 
     public static List<String> split(final String script) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(script));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(script));
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         final FrostlakeParser parser = new FrostlakeParser(tokens);
         final boolean[] failed = new boolean[1];
@@ -79,7 +79,7 @@ public final class SqlScriptSplitter {
             return statements;
         }
         // Unparseable script: lexer-token split at SEMI, so each piece can report its own error.
-        final FrostlakeLexer relexer = new FrostlakeLexer(CharStreams.fromString(script));
+        final FrostlakeLexer relexer = new FrostlakeLexer(SqlCharStream.of(script));
         relexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(relexer);
         stream.fill();

@@ -26,7 +26,11 @@ public class TagSnapshot implements Serializable {
     private static final long serialVersionUID = 1L;
 
     public String name;
+    /** The tag's identity, under which objects keep their assignments; null on snapshots written before it. */
+    public String id;
     public List<String> allowedValues = new ArrayList<>();
+    /** Whether the tag has an ALLOWED_VALUES list, which tells an emptied list from none. */
+    public boolean allowedValuesListed;
     public String comment;
     public String owner;
     // When the object was created. Null on snapshots written before it was saved, which restore it as new.

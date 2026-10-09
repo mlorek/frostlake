@@ -56,6 +56,7 @@ public class SessionContext {
     private String currentRole;
     private String displayUser;
     private final Set<String> activeRoles;
+    private boolean secondaryRolesInUse;
     private boolean securityEnabled;
     /**
      * The settings of a statement run outside any front-end's session: the ALTER SESSION parameters and the
@@ -67,6 +68,8 @@ public class SessionContext {
     private final SessionSettings ownSettings = new SessionSettings();
     /** The settings of the session whose request runs on this thread, when a front-end bound one. */
     private final ThreadLocal<SessionSettings> boundSettings = new ThreadLocal<SessionSettings>();
+    /** The owner of the owner's-rights procedure running on this thread (see {@link #getExecutableOwner}). */
+    private final ThreadLocal<String> executableOwner = new ThreadLocal<String>();
 
     public SessionContext() {
         this.activeRoles = new HashSet<>();
@@ -131,6 +134,34 @@ public class SessionContext {
         return new HashSet<>(activeRoles);
     }
 
+    /**
+     * The role that owns the stored procedure running with owner's rights on this thread, or null where none
+     * runs: the role its statements create objects as, and for, in place of the session's primary role.
+     */
+    public String getExecutableOwner() {
+        return executableOwner.get();
+    }
+
+    /**
+     * Enter or leave an owner's-rights procedure on this thread.
+     *
+     * @param owner the procedure's owner, or null to leave; a caller puts back what {@link #getExecutableOwner}
+     *              answered before the call
+     */
+    public void setExecutableOwner(final String owner) {
+        if (owner == null) {
+            executableOwner.remove();
+        } else {
+            executableOwner.set(owner.toUpperCase());
+        }
+    }
+
+    /** The role a statement creates as: an owner's-rights procedure's owner while one runs, else the primary role. */
+    public String getCreatingRole() {
+        final String owner = executableOwner.get();
+        return owner != null ? owner : currentRole;
+    }
+
     public void addActiveRole(final String role) {
         if (role != null) {
             activeRoles.add(role.toUpperCase());
@@ -141,6 +172,19 @@ public class SessionContext {
         activeRoles.clear();
         // Always keep PUBLIC role
         activeRoles.add("PUBLIC");
+    }
+
+    /**
+     * Whether the session asked for secondary roles with USE SECONDARY ROLES, which a privilege refusal says:
+     * {@code Your primary role R or one of your secondary roles must have …}.
+     */
+    public boolean isSecondaryRolesInUse() {
+        return secondaryRolesInUse;
+    }
+
+    /** Records whether the session asked for secondary roles. */
+    public void setSecondaryRolesInUse(final boolean secondaryRolesInUse) {
+        this.secondaryRolesInUse = secondaryRolesInUse;
     }
 
     public boolean isSecurityEnabled() {
@@ -158,6 +202,7 @@ public class SessionContext {
         activeRoles.clear();
         activeRoles.add("SYSADMIN");
         activeRoles.add("PUBLIC");
+        secondaryRolesInUse = false;
         securityEnabled = true;
         settings().reset();
     }

@@ -20,9 +20,13 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.TagAssignment;
+import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
+import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Table;
@@ -39,7 +43,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 
 /**
  * The INFORMATION_SCHEMA.TAG_REFERENCES(object_name, object_domain) TABLE FUNCTION — the tags associated with
@@ -49,14 +52,15 @@ import java.util.TreeMap;
  * case and a double-quoted one is kept as written ({@code '"MyWh"'}); a name with fewer parts resolves against
  * the session's current database and schema. A real account takes TABLE for every table-like object — passing
  * VIEW is refused with "Please use object type TABLE for all kinds of table-like objects" — and takes COLUMN
- * with a name whose last part is the column. A name that finds nothing is refused without the privilege sentence
- * other refusals carry: {@code Table 'DB.PUBLIC.NO_SUCH_TABLE' does not exist or not authorized.} (live-verified for a
- * table; every other domain is refused the same way).
+ * with a name whose last part is the column. A table-like object that is not there is refused as any table is,
+ * by its bare name when it was written bare and by its full name otherwise; a column is refused by its full name,
+ * without the privilege sentence (live-verified).
  *
  * <p>The rows follow tag inheritance through the securable object hierarchy: an object reports the tags set on
  * it ({@code APPLY_METHOD} {@code MANUAL}) and those it inherits from its table, schema and database
  * ({@code INHERITED}), each row's {@code LEVEL} naming the domain the tag is set on. A tag set at several levels
- * is reported once, from the level nearest the object, whose value overrides the others.
+ * is reported once, from the level nearest the object, whose value overrides the others. Two tags of one name
+ * that live in two schemas are two tags, each reported (TagAssignments).
  */
 public class TagReferencesFunction extends TableFunction {
 
@@ -102,12 +106,131 @@ public class TagReferencesFunction extends TableFunction {
 
     @Override
     public ResultSet execute(final List<Object> positionalArgs) {
-        if (positionalArgs == null || positionalArgs.size() != 2
-            || positionalArgs.get(0) == null || positionalArgs.get(1) == null) {
-            throw new RuntimeException("TAG_REFERENCES requires an object name and an object domain");
+        requireArguments("TAG_REFERENCES", positionalArgs);
+        return new ResultSet(columns(), rows(positionalArgs.get(0).toString(), positionalArgs.get(1).toString()));
+    }
+
+    /**
+     * The two arguments, each given: one left out or given as NULL is refused by its name, at the position the
+     * account reports for every such call (live-verified).
+     *
+     * @param function the function's name
+     * @param positionalArgs the call's arguments
+     */
+    static void requireArguments(final String function, final List<Object> positionalArgs) {
+        if (positionalArgs == null || positionalArgs.isEmpty() || positionalArgs.size() > 2) {
+            throw new RuntimeException(function + " requires an object name and an object domain");
         }
-        final String domain = positionalArgs.get(1).toString().trim().toUpperCase(Locale.ROOT);
-        final String[] parts = SqlIdentifiers.canonicalTextParts(positionalArgs.get(0).toString());
+        final String missing = positionalArgs.get(0) == null ? "OBJECT_NAME"
+            : positionalArgs.size() < 2 || positionalArgs.get(1) == null ? "DOMAIN" : null;
+        if (missing != null) {
+            throw new RuntimeException(SqlCompilationError.PREFIX + " error line 1 at position 419\n"
+                + "missing required argument [" + missing + "] for function [" + function + "]");
+        }
+    }
+
+    /** The result's columns, in the account's order. */
+    static List<ResultSetColumn> columns() {
+        final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
+        for (final String name : COLUMN_NAMES) {
+            columns.add(new ResultSetColumn(name, StringType.VARCHAR));
+        }
+        return columns;
+    }
+
+    /**
+     * The value a tag has on an object: the object's own, else the one it inherits from the nearest object above
+     * it, else null. The tag and the object each have to exist (live-verified).
+     *
+     * @param tagName the tag's name, read as an identifier is
+     * @param objectName the object's name, read as an identifier is
+     * @param domain the object's domain
+     * @return the value, or null when the tag does not reach the object
+     */
+    public String valueOf(final String tagName, final String objectName, final String domain) {
+        final String[] written = SqlIdentifiers.canonicalTextParts(tagName);
+        final Schema home = catalog.resolveOwningSchema(QualifiedName.join(written));
+        final String name = written[written.length - 1];
+        if (!home.hasTagExact(name)) {
+            // A tag named bare is refused by that name, one named by a path by its full name. The name is matched
+            // as an identifier is: a quoted "tg" is no tag TG.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", written.length == 1
+                ? QualifiedName.join(written) : home.qualifiedName(name)));
+        }
+        final String stored = home.getTag(name).getName();
+        for (final Row row : rows(objectName, domain)) {
+            if (home.getDatabaseName().equals(row.getValue(0)) && home.getName().equals(row.getValue(1))
+                    && stored.equals(row.getValue(2))) {
+                return (String) row.getValue(3);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * SYSTEM$GET_TAG(tag, object, domain): {@link #valueOf} of three arguments, none of them NULL (live-verified).
+     *
+     * @param catalog the catalog
+     * @param args the call's arguments
+     * @return the tag's value on the object, or null when the tag does not reach it
+     */
+    public static String systemGetTag(final Catalog catalog, final List<Object> args) {
+        for (int i = 0; i < args.size() && i < 3; i++) {
+            if (args.get(i) == null) {
+                throw new RuntimeException(SqlCompilationError.of("argument " + i
+                    + " to function SYSTEM$GET_TAG needs to be constant, found 'null'"));
+            }
+        }
+        if (args.size() < 3) {
+            return null;
+        }
+        return new TagReferencesFunction(catalog).valueOf(unquoted(args.get(0)), unquoted(args.get(1)),
+            unquoted(args.get(2)));
+    }
+
+    /**
+     * SYSTEM$GET_TAG_ALLOWED_VALUES(tag): the tag's ALLOWED_VALUES as a JSON array in text — {@code ["a","b"]},
+     * {@code []} for a list emptied value by value — or NULL for a tag without a list. The one argument is a
+     * text naming the tag, read as an identifier is, a bare name in the session's schema (live-verified).
+     *
+     * @param catalog the catalog
+     * @param args the call's arguments
+     * @return the list as text, or null
+     */
+    public static String systemGetTagAllowedValues(final Catalog catalog, final List<Object> args) {
+        if (args.isEmpty()) {
+            return null;
+        }
+        final Object argument = args.get(0);
+        if (argument == null) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "argument 0 to function SYSTEM$GET_TAG_ALLOWED_VALUES needs to be constant, found 'null'"));
+        }
+        if (!(argument instanceof String)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "argument needs to be a string: 'SYSTEM$GET_TAG_ALLOWED_VALUES'"));
+        }
+        final String[] written = SqlIdentifiers.canonicalTextParts(unquoted(argument));
+        final Schema home = catalog.resolveOwningSchema(QualifiedName.join(written));
+        final String name = written[written.length - 1];
+        if (!home.hasTagExact(name)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", written.length == 1
+                ? QualifiedName.join(written) : home.qualifiedName(name)));
+        }
+        return home.getTag(name).allowedValuesText();
+    }
+
+    /** An argument's text, without the quotes of a string literal handed over as written. */
+    private static String unquoted(final Object argument) {
+        final String text = argument.toString();
+        return text.length() >= 2 && text.startsWith("'") && text.endsWith("'")
+            ? text.substring(1, text.length() - 1) : text;
+    }
+
+    /** One row per tag reaching the object of that name and domain. */
+    private List<Row> rows(final String writtenName, final String writtenDomain) {
+        final String domain = writtenDomain.trim().toUpperCase(Locale.ROOT);
+        final String[] parts = SqlIdentifiers.canonicalTextParts(writtenName);
         // A refusal names the object as resolved, each part quoted only where it has to be.
         final String objectName = QualifiedName.join(parts);
         final List<Row> rows = new ArrayList<Row>();
@@ -129,28 +252,55 @@ public class TagReferencesFunction extends TableFunction {
         } else if ("DATABASE ROLE".equals(domain)) {
             addDatabaseRoleTags(parts, objectName, rows);
         } else if ("VIEW".equals(domain) || "MATERIALIZED VIEW".equals(domain)) {
-            throw new RuntimeException("Invalid value " + domain + " for argument OBJECT_TYPE. "
-                + "Please use object type TABLE for all kinds of table-like objects.");
+            throw new RuntimeException(tableLikeOnly(domain));
         } else if (!DOMAINS.contains(domain)) {
             throw new RuntimeException("Unknown domain: " + domain + ".");
         }
-        final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
-        for (final String name : COLUMN_NAMES) {
-            columns.add(new ResultSetColumn(name, StringType.VARCHAR));
-        }
-        return new ResultSet(columns, rows);
+        return rows;
+    }
+
+    /** The refusal of a domain that names one kind of table-like object: TABLE stands for them all. */
+    static String tableLikeOnly(final String domain) {
+        return SqlCompilationError.inline("Invalid value " + domain + " for argument OBJECT_TYPE. "
+            + "Please use object type TABLE for all kinds of table-like objects.");
+    }
+
+    /** Whether the account knows the domain, resolved here or not. */
+    static boolean isDomain(final String domain) {
+        return DOMAINS.contains(domain);
     }
 
     /** Tags on a table-like object, and those it inherits from its schema and database. */
     private void addTableTags(final String[] written, final String objectName, final List<Row> rows) {
-        final String[] name = qualify(written, 3, "Table", objectName);
+        final String[] name = tableName(written, objectName);
         final Schema schema = resolveSchema(name[0], name[1], "Table", objectName);
-        final Taggable table = tableLike(schema, name[2]);
-        if (table == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Table", objectName));
-        }
+        final Taggable table = requireTableLike(schema, name[2], written, objectName);
         addLineage(rows, new Taggable[] {table, schema, catalog.getDatabase(name[0])},
             new String[] {"TABLE", "SCHEMA", "DATABASE"}, name[0], name[1], name[2], "TABLE", null);
+    }
+
+    /** A table-like object's name completed to three parts from the session's database and schema. */
+    String[] tableName(final String[] written, final String objectName) {
+        return qualify(written, 3, "Table", objectName);
+    }
+
+    /** The schema a completed table name places its object in. */
+    Schema tableSchema(final String[] name, final String objectName) {
+        return resolveSchema(name[0], name[1], "Table", objectName);
+    }
+
+    /**
+     * The table-like object of that name; a miss is refused by the name as written when it was written bare, and
+     * by the full name otherwise (live-verified).
+     */
+    Taggable requireTableLike(final Schema schema, final String name, final String[] written,
+                              final String objectName) {
+        final Taggable table = tableLike(schema, name);
+        if (table == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table", written.length == 1 ? objectName
+                : schema.qualifiedName(name)));
+        }
+        return table;
     }
 
     /** Tags on a schema, named as {@code db.schema} or bare. Live leaves OBJECT_SCHEMA null here. */
@@ -175,23 +325,27 @@ public class TagReferencesFunction extends TableFunction {
     /** Tags on one column, and those it inherits from its table, schema and database. */
     private void addColumnTags(final String[] written, final String objectName, final List<Row> rows) {
         if (written.length < 2) {
-            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column", objectName));
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column", QualifiedName.join(
+                catalog.getCurrentDatabase(), catalog.getCurrentSchema(), written[0])));
         }
         final String[] name = qualify(written, 4, "Table", objectName);
         final Schema schema = resolveSchema(name[0], name[1], "Table", objectName);
-        if (!schema.hasTable(name[2])) {
-            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Table", objectName));
+        final Table table = schema.tableExact(name[2]);
+        if (table == null) {
+            // A column whose table is not there is refused as a column, by its full name (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column",
+                QualifiedName.join(name)));
         }
-        final Table table = schema.getTable(name[2]);
         for (final TableColumn column : table.getColumns()) {
-            if (name[3].equalsIgnoreCase(column.getName())) {
+            // The column is matched as an identifier is, too: fz."id" names no column ID.
+            if (name[3].equals(column.getName())) {
                 addLineage(rows, new Taggable[] {column, table, schema, catalog.getDatabase(name[0])},
                     new String[] {"COLUMN", "TABLE", "SCHEMA", "DATABASE"}, name[0], name[1], name[2], "COLUMN",
                     column.getName());
                 return;
             }
         }
-        throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column", name[3]));
+        throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column", QualifiedName.join(name)));
     }
 
     /** Tags on an object that lives in a schema, and those it inherits from its schema and database. */
@@ -235,7 +389,9 @@ public class TagReferencesFunction extends TableFunction {
             }
         }
         if (found == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
+            // A missing warehouse is refused as any warehouse is (live-verified); the other kinds are not measured.
+            throw new RuntimeException("WAREHOUSE".equals(domain) ? SqlCompilationError.doesNotExist(kind, objectName)
+                : SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
         }
         final Taggable object = found instanceof Taggable ? (Taggable) found : null;
         addLineage(rows, new Taggable[] {object}, new String[] {domain}, null, null, simpleName, domain, null);
@@ -256,24 +412,26 @@ public class TagReferencesFunction extends TableFunction {
     }
 
     /** The table, view, dynamic table or materialized view of that name, or null. */
-    private static Taggable tableLike(final Schema schema, final String name) {
-        if (schema.hasTable(name)) {
-            return schema.getTable(name);
+    static Taggable tableLike(final Schema schema, final String name) {
+        // The name is matched as an identifier is: a quoted "fz" names no table FZ.
+        final Table table = schema.tableExact(name);
+        if (table != null) {
+            return table;
         }
-        if (schema.hasView(name)) {
+        if (schema.hasView(name) && name.equals(schema.getView(name).getName())) {
             return schema.getView(name);
         }
         try {
-            final Object dynamic = schema.getDynamicTable(name);
-            if (dynamic instanceof Taggable) {
+            final DynamicTable dynamic = schema.getDynamicTable(name);
+            if (dynamic instanceof Taggable && name.equals(dynamic.getName())) {
                 return (Taggable) dynamic;
             }
         } catch (final RuntimeException notDynamic) {
             // not a dynamic table
         }
         try {
-            final Object materialized = schema.getMaterializedView(name);
-            if (materialized instanceof Taggable) {
+            final MaterializedView materialized = schema.getMaterializedView(name);
+            if (materialized instanceof Taggable && name.equals(materialized.getName())) {
                 return (Taggable) materialized;
             }
         } catch (final RuntimeException notMaterialized) {
@@ -315,65 +473,20 @@ public class TagReferencesFunction extends TableFunction {
      * One row per tag reaching the object: the levels are ordered from the object itself outwards, and a tag is
      * reported from the first level that sets it — MANUAL on the object, INHERITED above it.
      */
-    private void addLineage(final List<Row> rows, final Taggable[] levels, final String[] levelNames,
-                            final String objectDatabase, final String objectSchema, final String objectName,
-                            final String domain, final String columnName) {
+    void addLineage(final List<Row> rows, final Taggable[] levels, final String[] levelNames,
+                    final String objectDatabase, final String objectSchema, final String objectName,
+                    final String domain, final String columnName) {
         final Set<String> seen = new HashSet<String>();
         for (int i = 0; i < levels.length; i++) {
-            if (levels[i] == null) {
-                continue;
-            }
-            for (final Map.Entry<String, String> tag : new TreeMap<String, String>(levels[i].getTagValues())
-                    .entrySet()) {
-                final String[] tagName = tagLocation(tag.getKey(), objectDatabase, objectSchema);
-                if (!seen.add(QualifiedName.join(tagName))) {
+            for (final TagAssignment tag : TagAssignments.on(catalog, levels[i], objectDatabase, objectSchema)) {
+                if (!seen.add(tag.getTag().getId())) {
                     continue;
                 }
                 rows.add(new Row(Arrays.<Object>asList(
-                    tagName[0], tagName[1], tagName[2], tag.getValue(), levelNames[i], objectDatabase,
-                    objectSchema, objectName, domain, columnName, i == 0 ? MANUAL : INHERITED)));
+                    tag.getDatabase(), tag.getSchema(), tag.getTag().getName(), tag.getValue(), levelNames[i],
+                    objectDatabase, objectSchema, objectName, domain, columnName, i == 0 ? MANUAL : INHERITED)));
             }
         }
-    }
-
-    /**
-     * Where the tag an assignment names is defined: the assignment names the tag by its name, so the tag is
-     * looked for in the object's schema, then the object's database, then the session's schema, then the whole
-     * account; a tag found nowhere is reported in the session's schema.
-     */
-    private String[] tagLocation(final String key, final String objectDatabase, final String objectSchema) {
-        final String[] written = QualifiedName.parse(key).parts();
-        if (written.length == 3) {
-            return written;
-        }
-        final String name = written[written.length - 1];
-        final Database home = objectDatabase == null ? null : catalog.getDatabase(objectDatabase);
-        if (home != null && objectSchema != null && home.hasSchema(objectSchema)
-                && home.getSchema(objectSchema).hasTag(name)) {
-            return new String[] {home.getName(), objectSchema, name};
-        }
-        if (home != null) {
-            for (final Schema schema : home.getAllSchemas()) {
-                if (schema.hasTag(name)) {
-                    return new String[] {home.getName(), schema.getName(), name};
-                }
-            }
-        }
-        final String currentDatabase = catalog.getCurrentDatabase();
-        final String currentSchema = catalog.getCurrentSchema();
-        final Database current = currentDatabase == null ? null : catalog.getDatabase(currentDatabase);
-        if (current != null && currentSchema != null && current.hasSchema(currentSchema)
-                && current.getSchema(currentSchema).hasTag(name)) {
-            return new String[] {currentDatabase, currentSchema, name};
-        }
-        for (final Database database : catalog.getAllDatabases()) {
-            for (final Schema schema : database.getAllSchemas()) {
-                if (schema.hasTag(name)) {
-                    return new String[] {database.getName(), schema.getName(), name};
-                }
-            }
-        }
-        return new String[] {currentDatabase, currentSchema, name};
     }
 
     /**
@@ -402,8 +515,13 @@ public class TagReferencesFunction extends TableFunction {
     private Schema resolveSchema(final String databaseName, final String schemaName, final String kind,
                                  final String objectName) {
         final Database database = databaseName == null ? null : catalog.getDatabase(databaseName);
-        if (database == null || schemaName == null || !database.hasSchema(schemaName)) {
+        if (database == null || schemaName == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
+        }
+        if (!database.hasSchema(schemaName)) {
+            // The schema the name places its object in is what is missing, and is refused as such (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Schema",
+                QualifiedName.join(database.getName(), schemaName)));
         }
         return database.getSchema(schemaName);
     }

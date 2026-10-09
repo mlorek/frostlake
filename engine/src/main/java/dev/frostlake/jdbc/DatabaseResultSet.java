@@ -143,7 +143,7 @@ public class DatabaseResultSet implements ResultSet {
         }
         final ColumnData column = data.getColumns().get(columnIndex - 1);
         return column.getDataType() != null && column.getDataType().toUpperCase().startsWith("NUMBER")
-            && column.getScale() == 0;
+            && column.scaleOrZero() == 0;
     }
 
     /** Whether a 1-based column is declared BOOLEAN, read off the wire metadata. */
@@ -1285,7 +1285,7 @@ public class DatabaseResultSet implements ResultSet {
             return null;
         }
         final ColumnData column = data.getColumns().get(columnIndex - 1);
-        return IntervalColumnReads.kindOf(column.getDataType(), column.getScale());
+        return IntervalColumnReads.kindOf(column.getDataType(), column.scaleOrZero());
     }
 
     /** A 1-based interval column's current cell: the wire's decimal digits as a number, null for SQL NULL. */

@@ -163,7 +163,7 @@
      "skip": {"backends": ["snowflake"], "reason": "compute pools are SPCS/account-tier-gated on live"},
      "steps": [
       {"sql": "SHOW COMPUTE POOL INSTANCE FAMILIES",
-       "expect": {"rowCount": 26, "columns": ["name", "description", "vcpu", "memory_gib", "storage_gib", "gpu", "gpu_count", "gpu_memory_gib", "current_node_usage", "message"]}},
+       "expect": {"rowCount": 27, "columns": ["name", "description", "vcpu", "memory_gib", "storage_gib", "gpu", "gpu_count", "gpu_memory_gib", "current_node_usage", "message"]}},
       {"sql": "SET qid = LAST_QUERY_ID()"},
       {"sql": "SELECT \"name\", \"vcpu\", \"storage_gib\" FROM TABLE(RESULT_SCAN($qid)) LIMIT 1",
        "expect": {"rows": [["CPU_X64_XS", "1", "93.13"]], "ordered": true}},

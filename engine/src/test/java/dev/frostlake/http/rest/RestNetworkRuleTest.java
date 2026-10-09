@@ -83,6 +83,8 @@ public class RestNetworkRuleTest extends BaseRestTest {
         ok(post(RULES, "{\"name\":\"nr_page_b\",\"type\":\"IPV4\"}"));
         ok(post(RULES, "{\"name\":\"nr_page_c\",\"type\":\"IPV4\"}"));
         assertEquals("NR_PAGE_A,NR_PAGE_B,NR_PAGE_C", names(ok(get(RULES + "?startsWith=NR_PAGE"))));
-        assertEquals("NR_PAGE_B", names(ok(get(RULES + "?startsWith=NR_PAGE&showLimit=1&fromName=NR_PAGE_A"))));
+        assertEquals("NR_PAGE_A", names(ok(get(RULES + "?startsWith=NR_PAGE&showLimit=1&fromName=NR_PAGE_A"))),
+            "the page starts at the named rule, as the listing it relays does");
+        assertEquals("NR_PAGE_B,NR_PAGE_C", names(ok(get(RULES + "?startsWith=NR_PAGE&fromName=NR_PAGE_B"))));
     }
 }

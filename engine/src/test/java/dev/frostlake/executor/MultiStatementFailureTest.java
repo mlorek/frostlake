@@ -110,6 +110,29 @@ public class MultiStatementFailureTest extends BaseDatabaseTest {
             messageOf("CREATE TABLE synt_t (id INTEGER);\nSELEKT * FROM synt_t"));
     }
 
+    /**
+     * The sentence quotes thirty characters of the failing statement at most, and marks a longer one with
+     * {@code ...}: its spacing is kept, and a line break counts as one character (live-verified).
+     */
+    @Test
+    public void aLongStatementIsQuotedByItsFirstThirtyCharacters() {
+        assertEquals(hinted(named("SELECT * FROM nowhere_xyz1234", 1, 10,
+                "SQL compilation error:\nObject 'NOWHERE_XYZ1234' does not exist or not authorized.")),
+            messageOf("SELECT 1; SELECT * FROM nowhere_xyz1234"));
+        assertEquals(hinted(named("SELECT * FROM nowhere_xyz12345", 1, 10,
+                "SQL compilation error:\nObject 'NOWHERE_XYZ12345' does not exist or not authorized.")),
+            messageOf("SELECT 1; SELECT * FROM nowhere_xyz12345"));
+        assertEquals(hinted(named("SELECT * FROM nowhere_xyz12345...", 1, 10,
+                "SQL compilation error:\nObject 'NOWHERE_XYZ123456' does not exist or not authorized.")),
+            messageOf("SELECT 1; SELECT * FROM nowhere_xyz123456"));
+        assertEquals(hinted(named("SELECT *\nFROM nowhere_xyz_long...", 1, 10,
+                "SQL compilation error:\nObject 'NOWHERE_XYZ_LONG_NAME_HERE' does not exist or not authorized.")),
+            messageOf("SELECT 1; SELECT *\nFROM nowhere_xyz_long_name_here"));
+        assertEquals(hinted(named("SELECT    *    FROM nowhere_xy...", 1, 10,
+                "SQL compilation error:\nObject 'NOWHERE_XYZ' does not exist or not authorized.")),
+            messageOf("SELECT 1; SELECT    *    FROM nowhere_xyz"));
+    }
+
     /** A trailing separator after the failing statement is not part of the statement it names. */
     @Test
     public void theNamedStatementExcludesItsSeparator() {

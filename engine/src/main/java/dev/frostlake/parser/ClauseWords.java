@@ -21,7 +21,8 @@ import org.antlr.v4.runtime.Token;
 /**
  * Words a clause is written with that the lexer keeps as plain names, because each one may also name a column:
  * {@code GRAPH} and {@code RUN} of {@code EXECUTE TASK … RETRY GRAPH RUN GROUP}, {@code INSERT_ONLY} of
- * {@code CREATE STREAM} and {@code SUBPATH} of {@code ALTER STAGE … REFRESH}. A parse predicate reads the word
+ * {@code CREATE STREAM}, and a key constraint's {@code MATCH}, {@code SIMPLE}, {@code PARTIAL},
+ * {@code DEFERRABLE}, {@code INITIALLY}, {@code DEFERRED} and {@code VALIDATE}. A parse predicate reads the word
  * off the token ahead, so the clause is recognised without the word becoming a keyword.
  */
 public final class ClauseWords {

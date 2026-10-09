@@ -20,18 +20,22 @@ import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.functions.HigherOrderFunctionNames;
 import dev.frostlake.functions.SnowflakeBuiltinNames;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.parser.BangOperator;
 import dev.frostlake.parser.FrostlakeParser;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
@@ -80,7 +84,23 @@ final class SqlUdfBodyCalls {
         final ExpressionEvaluator scan = new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(),
             queryExecutor.getCatalog(), queryExecutor);
         final List<FunctionCallExpression> unknown = new ArrayList<FunctionCallExpression>();
-        for (final FrostlakeParser.FunctionCallExprContext call : calls) {
+        final List<ParserRuleContext> written = new ArrayList<ParserRuleContext>();
+        collectNamed(body, written);
+        for (final ParserRuleContext one : written) {
+            if (!(one instanceof FrostlakeParser.FunctionCallExprContext)) {
+                // A leading '!' and a class instance's method are calls of what no account has.
+                try {
+                    final Expression unnamed = ExpressionEvaluator.parse(
+                        bodyText.substring(one.getStart().getStartIndex(), one.getStop().getStopIndex() + 1));
+                    if (unnamed instanceof FunctionCallExpression) {
+                        unknown.add((FunctionCallExpression) unnamed);
+                    }
+                } catch (final RuntimeException notACallOnItsOwn) {
+                    // judged where it is evaluated
+                }
+                continue;
+            }
+            final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) one;
             final List<String> parts = nameParts(call);
             if (parts.size() == 1 && SnowflakeBuiltinNames.contains(parts.get(0))) {
                 continue;
@@ -91,8 +111,19 @@ final class SqlUdfBodyCalls {
             } catch (final RuntimeException notACallOnItsOwn) {
                 continue;
             }
-            if (parsed instanceof FunctionCallExpression
-                    && (!scan.resolvesToAFunctionName(parsed) || !qualifiedCallResolves(queryExecutor, parts, database))) {
+            if (!(parsed instanceof FunctionCallExpression)) {
+                continue;
+            }
+            if (namedByLiteral(call)) {
+                // IDENTIFIER('name')(…) names its function while the body compiles, as a written name does.
+                final FunctionCallExpression named = new FunctionCallExpression(String.join(".", parts),
+                    ((FunctionCallExpression) parsed).getArguments());
+                if (!scan.resolvesToAFunctionName(named) || !qualifiedCallResolves(queryExecutor, parts, database)
+                        || !reachedFromTheSession(queryExecutor, parts)) {
+                    unknown.add(named);
+                }
+            } else if (!scan.resolvesToAFunctionName(parsed) || !qualifiedCallResolves(queryExecutor, parts, database)
+                    || !reachedFromTheSession(queryExecutor, parts)) {
                 unknown.add((FunctionCallExpression) parsed);
             }
         }
@@ -121,6 +152,43 @@ final class SqlUdfBodyCalls {
         } catch (final RuntimeException noSuchSchema) {
             return false;
         }
+    }
+
+    /**
+     * Whether an UNQUALIFIED call reaches a function from where the session is: one the engine registers, or a
+     * user-defined one in a schema of the session's search path. A function of that name in a schema the path
+     * does not name is not reached — the body compiles in the session's schema whatever schema the routine is
+     * created in. A qualified call answers true.
+     */
+    private static boolean reachedFromTheSession(final QueryExecutor queryExecutor, final List<String> parts) {
+        if (parts.size() != 1) {
+            return true;
+        }
+        final String name = parts.get(0);
+        final String upper = name.toUpperCase(Locale.ROOT);
+        final FunctionRegistry registry = queryExecutor.getFunctionRegistry();
+        if (registry.hasFunction(upper) || registry.hasAggregateFunction(upper) || registry.hasTableFunction(upper)
+                || WindowFunctionNames.handles(upper) || upper.startsWith("SYSTEM$") || "IDENTIFIER".equals(upper)
+                || HigherOrderFunctionNames.contains(upper)) {
+            return true;
+        }
+        final List<Schema> path = queryExecutor.searchPathSchemas();
+        if (path.isEmpty()) {
+            return true;   // no current schema to judge from
+        }
+        for (final Schema schema : path) {
+            if (!schema.getFunctionOverloads(name).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a call names its function through IDENTIFIER over a string literal. */
+    private static boolean namedByLiteral(final FrostlakeParser.FunctionCallExprContext call) {
+        return call.functionName() != null && call.functionName().identifierArgument() != null
+            && (call.functionName().identifierArgument().STRING_LITERAL() != null
+                || call.functionName().identifierArgument().DOLLAR_QUOTED_STRING() != null);
     }
 
     /** Whether a refusal is live's unknown-function sentence, for a name this engine could not resolve. */
@@ -205,12 +273,37 @@ final class SqlUdfBodyCalls {
 
     /** Every call under the node, inner calls before the call holding them, except a TABLE(…) source's own. */
     private static void collect(final ParseTree node, final List<FrostlakeParser.FunctionCallExprContext> calls) {
+        if (node instanceof FrostlakeParser.MatchRecognizeClauseContext) {
+            return;   // the clause judges its own calls where it is planned: MATCH_NUMBER(), LAG(v) with no OVER
+        }
         for (int i = 0; i < node.getChildCount(); i++) {
             collect(node.getChild(i), calls);
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext
                 && !(((FrostlakeParser.FunctionCallExprContext) node).getParent() instanceof FrostlakeParser.TableSourceContext)) {
             calls.add((FrostlakeParser.FunctionCallExprContext) node);
+        }
+    }
+
+    /**
+     * Every call under the node that names a function, inner calls first: the calls {@link #collect} gathers, a
+     * method of a class instance written without OVER, and a leading {@code !} that negates no EXISTS.
+     */
+    private static void collectNamed(final ParseTree node, final List<ParserRuleContext> calls) {
+        if (node instanceof FrostlakeParser.MatchRecognizeClauseContext) {
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectNamed(node.getChild(i), calls);
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext
+                && !(((FrostlakeParser.FunctionCallExprContext) node).getParent()
+                    instanceof FrostlakeParser.TableSourceContext)
+                || node instanceof FrostlakeParser.InstanceMethodCallExprContext
+                    && ((FrostlakeParser.InstanceMethodCallExprContext) node).overClause() == null
+                || node instanceof FrostlakeParser.BangExprContext
+                    && !BangOperator.negatesExists((FrostlakeParser.BangExprContext) node)) {
+            calls.add((ParserRuleContext) node);
         }
     }
 
@@ -246,6 +339,17 @@ final class SqlUdfBodyCalls {
     private static List<String> nameParts(final FrostlakeParser.FunctionCallExprContext call) {
         final List<String> parts = new ArrayList<String>();
         if (call.functionName() == null) {
+            return parts;
+        }
+        if (namedByLiteral(call)) {
+            final FrostlakeParser.IdentifierArgumentContext literal = call.functionName().identifierArgument();
+            final String written = literal.STRING_LITERAL() != null
+                ? SqlStringLiterals.decode(literal.STRING_LITERAL().getText())
+                : literal.DOLLAR_QUOTED_STRING().getText().substring(2,
+                    literal.DOLLAR_QUOTED_STRING().getText().length() - 2);
+            for (final String part : SqlIdentifiers.canonicalTextParts(written)) {
+                parts.add(part);
+            }
             return parts;
         }
         for (final FrostlakeParser.IdentifierContext part : call.functionName().identifier()) {

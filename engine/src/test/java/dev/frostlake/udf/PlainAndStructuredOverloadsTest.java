@@ -98,6 +98,8 @@ public class PlainAndStructuredOverloadsTest {
         while (listed.next()) {
             arguments.append(arguments.length() > 0 ? " ; " : "").append(listed.getValue("arguments"));
         }
-        assertEquals("F1(X OBJECT) RETURN VARCHAR ; F1(X OBJECT(a NUMBER(38,0))) RETURN VARCHAR", arguments.toString());
+        // The argument types alone, the structured shape spelled with bare type names, the shaped overload first
+        // (live-verified).
+        assertEquals("F1(OBJECT(a NUMBER)) RETURN VARCHAR ; F1(OBJECT) RETURN VARCHAR", arguments.toString());
     }
 }

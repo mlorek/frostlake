@@ -52,6 +52,28 @@ public class Table extends SqlObject {
         this.dataRetentionTimeInDays = dataRetentionTimeInDays;
     }
 
+    /** The MAX_DATA_EXTENSION_TIME_IN_DAYS this table declares, or null when it inherits its container's. */
+    private Integer maxDataExtensionTimeInDays;
+
+    public Integer getMaxDataExtensionTimeInDays() {
+        return maxDataExtensionTimeInDays;
+    }
+
+    public void setMaxDataExtensionTimeInDays(final Integer maxDataExtensionTimeInDays) {
+        this.maxDataExtensionTimeInDays = maxDataExtensionTimeInDays;
+    }
+
+    /** The DEFAULT_DDL_COLLATION this table declares, or null when it inherits its container's. */
+    private String defaultDdlCollation;
+
+    public String getDefaultDdlCollation() {
+        return defaultDdlCollation;
+    }
+
+    public void setDefaultDdlCollation(final String defaultDdlCollation) {
+        this.defaultDdlCollation = defaultDdlCollation;
+    }
+
 
     private final List<TableColumn> columns;
     // The highest position ever given to a column of this table; a dropped column's number stays spent.
@@ -80,6 +102,8 @@ public class Table extends SqlObject {
     // Writes that reached the rows since the table was made or restored: below the millisecond in getChangeToken.
     private final AtomicLong dataChanges = new AtomicLong();
     private List<String> clusterKeys;
+    // The clustering key as its statement wrote it after CLUSTER BY; null when the keys alone are known.
+    private String clusterByText;
     // CHECK constraints, in declaration order — the order GET_DDL renders them in.
     private final List<CheckConstraint> checkConstraints = new ArrayList<>();
     private String rowAccessPolicyName;  // qualified name of attached row access policy, or null
@@ -154,6 +178,8 @@ public class Table extends SqlObject {
     // being, so a derived relation, which never holds rows of its own, keeps none.
     private final List<TableStructure> structureHistory = new ArrayList<>();
 
+    private boolean namedByAliasList;
+
     public Table(final String name, final List<TableColumn> columns, final boolean isTemporary) {
         this(name, columns, isTemporary, false);
     }
@@ -184,20 +210,6 @@ public class Table extends SqlObject {
 
     public void setQualifiedName(final String qualifiedName) {
         this.qualifiedName = qualifiedName;
-    }
-
-    /** The next METADATA$ROW_ID; see {@link #nextStreamRowId}. */
-    private final AtomicLong streamRowIds = new AtomicLong(1);
-
-    /**
-     * The row id the next change to this table hands the streams capturing it. The sequence is the table's own, so a
-     * rename, a move, a swap or an UNDROP continues it, where one keyed by the table's name started again and handed
-     * out ids its streams already held: the row id is "unique, immutable" (Snowflake's documentation).
-     *
-     * @return the row id
-     */
-    public long nextStreamRowId() {
-        return streamRowIds.getAndIncrement();
     }
 
     /** The statistics a derived relation carries of the catalog table beneath it, or null. */
@@ -248,6 +260,20 @@ public class Table extends SqlObject {
 
     public void setJoinKeyNames(final List<String> joinKeyNames) {
         this.joinKeyNames = joinKeyNames;
+    }
+
+    /**
+     * Whether the relation's column names come from an alias list written after it — {@code FROM t AS q (x, y)},
+     * {@code (VALUES …) v (a, b)}. Such a list may give one name twice, and a reference to it then reads the
+     * first column of the name, where two columns a query projects under one name are ambiguous (live-verified).
+     */
+    public boolean isNamedByAliasList() {
+        return namedByAliasList;
+    }
+
+    /** Records that an alias list written after the relation names its columns. */
+    public void setNamedByAliasList(final boolean namedByAliasList) {
+        this.namedByAliasList = namedByAliasList;
     }
 
     /** The relations a join's merged relation joins and which of them an outer join extends with NULLs,
@@ -342,7 +368,10 @@ public class Table extends SqlObject {
         copy.setHighestOrdinal(highestOrdinal);
         copyConstraintsInto(copy);
         copy.clusterKeys = getClusterKeys();
+        copy.clusterByText = clusterByText;
         copy.dataRetentionTimeInDays = dataRetentionTimeInDays;
+        copy.maxDataExtensionTimeInDays = maxDataExtensionTimeInDays;
+        copy.defaultDdlCollation = defaultDdlCollation;
         copy.hybrid = hybrid;
         copy.eventTable = eventTable;
         copy.icebergMetadata = icebergMetadata != null ? icebergMetadata.copy() : null;
@@ -369,8 +398,6 @@ public class Table extends SqlObject {
         copy.schemaEvolution = schemaEvolution;
         copy.reclusterSuspended = reclusterSuspended;
         copy.nextIdentityValue = getNextIdentityValue();
-        // The copy holds the rows' history up to now, so its streams go on from the row ids already handed out.
-        copy.streamRowIds.set(streamRowIds.get());
         copy.setComment(getComment());
         copyTagsInto(copy);
         return copy;
@@ -401,6 +428,7 @@ public class Table extends SqlObject {
         final Table copy = new Table(newName, likeColumns, temporary, transientTable);
         copyConstraintsInto(copy);
         copy.clusterKeys = getClusterKeys();
+        copy.clusterByText = clusterByText;
         copyTagsInto(copy);
         return copy;
     }
@@ -745,6 +773,48 @@ public class Table extends SqlObject {
     }
 
     /**
+     * Puts the primary key's columns in the order its declaration wrote them, which a foreign key that points
+     * at the key has to follow. A list that is not exactly the key's columns changes nothing.
+     *
+     * @param declared the key's columns as declared
+     */
+    public void orderPrimaryKey(final List<String> declared) {
+        if (declared == null || declared.size() != primaryKeys.size()) {
+            return;
+        }
+        final List<String> ordered = new ArrayList<>();
+        for (final String name : declared) {
+            for (final String key : primaryKeys) {
+                if (key.equalsIgnoreCase(name) && !ordered.contains(key)) {
+                    ordered.add(key);
+                }
+            }
+        }
+        if (ordered.size() == primaryKeys.size()) {
+            primaryKeys.clear();
+            primaryKeys.addAll(ordered);
+        }
+    }
+
+    /**
+     * Give every constraint that was declared without a name the one it keeps: its primary key, each column-level
+     * UNIQUE and each inline REFERENCES. A name is drawn the first time it is read, so the statement that declares
+     * the constraints reads them all here — its replay from the write-ahead log then draws the same names, where a
+     * name left for a later SHOW to draw would be another one after every recovery.
+     */
+    public void settleConstraintNames() {
+        primaryKeyConstraintName();
+        for (final TableColumn column : columns) {
+            if (column.isUnique()) {
+                uniqueConstraintName(column.getName());
+            }
+            if (column.hasForeignKey()) {
+                columnForeignKeyConstraintName(column.getName());
+            }
+        }
+    }
+
+    /**
      * Record the name an explicit {@code CONSTRAINT <name> PRIMARY KEY} declaration gave this table's
      * primary key. A null or blank name changes nothing, leaving the constraint to auto-name itself.
      */
@@ -808,6 +878,33 @@ public class Table extends SqlObject {
             }
         }
         return false;
+    }
+
+    /**
+     * Whether the table has a constraint of exactly this name: a primary or unique key, a foreign key or a check.
+     *
+     * @param constraintName the name, as stored
+     * @return whether a constraint carries it
+     */
+    public boolean hasConstraintNamed(final String constraintName) {
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equals(constraintName)) {
+                return true;
+            }
+        }
+        for (final ForeignKeyConstraint foreignKey : foreignKeys) {
+            if (foreignKey.getConstraintName().equals(constraintName)) {
+                return true;
+            }
+        }
+        for (final CheckConstraint check : checkConstraints) {
+            if (check.getName().equals(constraintName)) {
+                return true;
+            }
+        }
+        return hasPrimaryKeyColumn() && constraintName.equals(primaryKeyConstraintName)
+            || uniqueConstraintNames.containsValue(constraintName)
+            || columnForeignKeyConstraintNames.containsValue(constraintName);
     }
 
     /** The columns a named constraint covers, or an empty list when no constraint carries that name. */
@@ -1387,7 +1484,46 @@ public class Table extends SqlObject {
     }
 
     public void setClusterKeys(final List<String> clusterKeys) {
+        setClusterKeys(clusterKeys, null);
+    }
+
+    /**
+     * Sets the clustering key with the text its statement wrote, which every surface reads back.
+     *
+     * @param clusterKeys the key expressions, each as written; null or empty for no key
+     * @param written the text after CLUSTER BY as written — {@code (a, b)} or {@code linear(a, b)} — or null
+     */
+    public void setClusterKeys(final List<String> clusterKeys, final String written) {
         this.clusterKeys = clusterKeys != null ? new ArrayList<>(clusterKeys) : new ArrayList<>();
+        this.clusterByText = this.clusterKeys.isEmpty() ? null : written;
+    }
+
+    /**
+     * The clustering key as written after CLUSTER BY: the statement's own text where it is known, the keys in
+     * parentheses otherwise.
+     *
+     * @return the text, or null for a table with no key
+     */
+    public String getClusterByText() {
+        if (clusterKeys == null || clusterKeys.isEmpty()) {
+            return null;
+        }
+        return clusterByText != null ? clusterByText : "(" + String.join(", ", clusterKeys) + ")";
+    }
+
+    /**
+     * Whether a clustering key expression reads the column.
+     *
+     * @param columnName the column's canonical name
+     * @return true when a key reads it
+     */
+    public boolean isClusteringKeyColumn(final String columnName) {
+        for (final String key : getClusterKeys()) {
+            if (ExpressionColumns.reads(key, columnName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public void addColumn(final TableColumn column) {
@@ -1501,6 +1637,9 @@ public class Table extends SqlObject {
         final List<String> clustered = new ArrayList<>();
         for (final String key : getClusterKeys()) {
             clustered.add(ExpressionColumns.renamed(key, was, newName));
+        }
+        if (!clustered.equals(getClusterKeys())) {
+            clusterByText = null;
         }
         clusterKeys = clustered;
         for (int i = 0; i < searchOptimization.size(); i++) {

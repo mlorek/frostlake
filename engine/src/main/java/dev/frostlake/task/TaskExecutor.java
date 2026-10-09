@@ -18,6 +18,7 @@ package dev.frostlake.task;
 
 import dev.frostlake.storage.ResultSet;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Interface for executing SQL statements for tasks
@@ -59,5 +60,16 @@ public interface TaskExecutor {
      */
     default void runInOwnSession(final Runnable run) {
         run.run();
+    }
+
+    /**
+     * {@link #runInOwnSession(Runnable)} for a session that starts with parameters of its own, as a task's run
+     * starts with the parameters the task sets. This default leaves the parameters aside.
+     *
+     * @param run        the run
+     * @param parameters the parameters the session starts with, by name, each as its text
+     */
+    default void runInOwnSession(final Runnable run, final Map<String, String> parameters) {
+        runInOwnSession(run);
     }
 }

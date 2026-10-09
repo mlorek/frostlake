@@ -25,6 +25,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
@@ -257,9 +258,11 @@ final class TaskProperties {
                     throw invalidKind(key, value);
                 }
                 // A quoted name is the integration's exact name; a bare one folds as an identifier does.
-                if (catalog.getIntegrations().find(value.text()) == null) {
+                final Integration named = catalog.getIntegrations().find(value.text());
+                if (named == null) {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Integration", value.text()));
                 }
+                IntegrationReferences.requireTaskNotification(named);
                 return;
             default:
                 break;

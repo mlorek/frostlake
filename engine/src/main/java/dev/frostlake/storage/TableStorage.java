@@ -39,12 +39,12 @@ public class TableStorage {
     private final List<Row> rows;
     private final Map<Object, Integer> primaryKeyIndex;
 
-    // Stable, monotonic per-row identity, index-aligned with `rows`. Lets a transaction reference a
-    // specific row across other mutations WITHOUT positional indices — the foundation for the
-    // write-set / deferred-apply transaction model (see transaction.TransactionWriteSet). Internal
-    // only: never surfaced in query results, never persisted (reassigned on reload).
+    // Stable, monotonic per-row identity, index-aligned with `rows`, drawn from the engine's one sequence
+    // (StorageEngine#nextRowId). Lets a transaction reference a specific row across other mutations WITHOUT
+    // positional indices — the foundation for the write-set / deferred-apply transaction model (see
+    // transaction.TransactionWriteSet) — and is what a stream and a CHANGES clause spell as METADATA$ROW_ID
+    // (see StreamRowIds). Never persisted: reassigned on reload.
     private final List<Long> rowIds = Collections.synchronizedList(new ArrayList<>());
-    private long nextRowId = 0;
 
     // When this storage came into being — the lower bound of its time-travel history. A real
     // account refuses AT/BEFORE points before the object's creation; snapshots are in-memory
@@ -284,7 +284,7 @@ public class TableStorage {
         }
 
         rows.add(row);
-        rowIds.add(nextRowId++);
+        rowIds.add(engine.nextRowId());
         written();
     }
 

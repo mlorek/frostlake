@@ -240,16 +240,8 @@ final class ShowSessionExecutor {
         return likePattern == null || ShowResultHelpers.matchesLike(name, likePattern);
     }
 
-    public ResultSet showParametersInTask(final String taskName, final String likePattern) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        if (dbName == null || scName == null) {
-            throw new RuntimeException("No database or schema selected");
-        }
-        final Task task = catalog.getDatabase(dbName).getSchema(scName).getTask(taskName);
-        if (task == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", taskName));
-        }
+    public ResultSet showParametersInTask(final SchemaObjectName written, final String likePattern) {
+        final Task task = written.schema().getTask(written.name());
         final Object[][] params = {
             {"SERVERLESS_TASK_MAX_STATEMENT_SIZE",
                 task.getServerlessTaskMaxStatementSize() != null
@@ -395,6 +387,68 @@ final class ShowSessionExecutor {
         return new ResultSet(parameterColumns(), rows);
     }
 
+    /**
+     * SHOW PARAMETERS IN TABLE: the parameters a table can set on itself, each with the value in force and the
+     * level it comes from, the table's own (level {@code TABLE}), its schema's, its database's or the account
+     * default (level empty). The TABLE and STREAM keywords read alike and the object decides: a table lists its
+     * parameters, while a view and a stream are found and list none (live-verified).
+     */
+    public ResultSet showParametersInTable(final SchemaObjectName written, final String likePattern) {
+        final Schema schema = written.schema();
+        final String name = written.name();
+        final List<Row> rows = new ArrayList<>();
+        if (!schema.hasTable(name)) {
+            if (schema.hasView(name) || schema.hasMaterializedView(name) || schema.hasStreamExact(name)
+                    || schema.hasDynamicTable(name)) {
+                return new ResultSet(parameterColumns(), rows);
+            }
+            // A missing table is named as the statement wrote it, bare or in full (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table",
+                written.isQualified() ? written.fullName() : name));
+        }
+        final Table table = schema.getTable(name);
+        final Database database = written.database();
+        for (final SessionParameterRow parameter : ContainerParameterCatalog.tableRows()) {
+            final String key = parameter.getName();
+            if (!matchesLike(key, likePattern)) {
+                continue;
+            }
+            String value = tableValue(key, table);
+            String level = "TABLE";
+            if (value == null) {
+                value = containerValue(key, schema.getDataRetentionTimeInDays(), schema.getParameters());
+                level = "SCHEMA";
+            }
+            if (value == null) {
+                value = containerValue(key, database.getDataRetentionTimeInDays(), database.getParameters());
+                level = "DATABASE";
+            }
+            if (value == null) {
+                value = parameter.getDefaultValue();
+                level = "";
+            }
+            rows.add(new Row(Arrays.asList(key, value, parameter.getDefaultValue(), level,
+                parameter.getDescription(), parameter.getType())));
+        }
+        return new ResultSet(parameterColumns(), rows);
+    }
+
+    /** A table's own setting of a parameter, or null when it inherits it. */
+    private static String tableValue(final String key, final Table table) {
+        if ("DATA_RETENTION_TIME_IN_DAYS".equals(key)) {
+            return table.getDataRetentionTimeInDays() == null ? null
+                : String.valueOf(table.getDataRetentionTimeInDays());
+        }
+        if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equals(key)) {
+            return table.getMaxDataExtensionTimeInDays() == null ? null
+                : String.valueOf(table.getMaxDataExtensionTimeInDays());
+        }
+        if ("DEFAULT_DDL_COLLATION".equals(key)) {
+            return table.getDefaultDdlCollation();
+        }
+        return null;
+    }
+
     /** A container's own setting of a parameter, or null when it inherits it; the retention is kept apart. */
     private static String containerValue(final String key, final Integer retention,
                                          final ObjectParameters parameters) {
@@ -404,10 +458,12 @@ final class ShowSessionExecutor {
         return parameters.get(key);
     }
 
-    /** Whether a parameter name survives a SHOW PARAMETERS … LIKE filter. */
+    /**
+     * Whether a container's parameter survives a SHOW PARAMETERS … LIKE filter: a pattern as for every other
+     * listing, so {@code 'CATALOG_SYN_'} names CATALOG_SYNC and {@code 'DATA'} names nothing (live-verified).
+     */
     private boolean matchesParameterFilter(final String key, final String likePattern) {
-        return likePattern == null
-            || key.toUpperCase().contains(likePattern.toUpperCase().replace("%", ""));
+        return matchesLike(key, likePattern);
     }
 
     /**
@@ -599,11 +655,11 @@ final class ShowSessionExecutor {
     public ResultSet showLocks(final boolean inAccount) {
         final List<ResultSetColumn> columns = new ArrayList<>();
         if (inAccount) {
-            columns.add(new ResultSetColumn("session", NumericType.BIGINT));
+            columns.add(new ResultSetColumn("session", NumericType.NUMBER));
         }
         columns.add(new ResultSetColumn("resource", StringType.VARCHAR));
         columns.add(new ResultSetColumn("type", StringType.VARCHAR));
-        columns.add(new ResultSetColumn("transaction", NumericType.BIGINT));
+        columns.add(new ResultSetColumn("transaction", NumericType.NUMBER));
         columns.add(new ResultSetColumn("transaction_started_on", ShowResultHelpers.CREATED_ON));
         columns.add(new ResultSetColumn("status", StringType.VARCHAR));
         columns.add(new ResultSetColumn("acquired_on", ShowResultHelpers.CREATED_ON));
@@ -640,13 +696,13 @@ final class ShowSessionExecutor {
      */
     public ResultSet showTransactions(final String likePattern) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("id", NumericType.BIGINT),
+            new ResultSetColumn("id", NumericType.NUMBER),
             new ResultSetColumn("user", StringType.VARCHAR),
-            new ResultSetColumn("session", NumericType.BIGINT),
+            new ResultSetColumn("session", NumericType.NUMBER),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("started_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("state", StringType.VARCHAR),
-            new ResultSetColumn("scope", NumericType.BIGINT)
+            new ResultSetColumn("scope", NumericType.NUMBER)
         );
         final List<Row> rows = new ArrayList<>();
         for (final Transaction txn : transactionManager.getActiveTransactions()) {
@@ -716,7 +772,7 @@ final class ShowSessionExecutor {
         // the variable NAME is folded upper, an unset comment is '', and type names the value's
         // family (fixed / text / boolean).
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("session_id", NumericType.BIGINT),
+            new ResultSetColumn("session_id", NumericType.NUMBER),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -836,7 +892,7 @@ final class ShowSessionExecutor {
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("table_name", StringType.VARCHAR),
             new ResultSetColumn("column_name", StringType.VARCHAR),
-            new ResultSetColumn("key_sequence", NumericType.INTEGER),
+            new ResultSetColumn("key_sequence", ShowResultHelpers.COUNT),
             new ResultSetColumn("constraint_name", StringType.VARCHAR),
             new ResultSetColumn("rely", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR));
@@ -845,11 +901,12 @@ final class ShowSessionExecutor {
             final String dbName = databaseNameOf(schema);
             for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
                 if (primary) {
+                    // Numbered in the key's own order, which is its declaration's and not the columns'.
                     int seq = 1;
-                    for (final TableColumn col : table.getColumns()) {
-                        if (col.isPrimaryKey()) {
-                            rows.add(keyRow(dbName, schema, table, col.getName(), seq++,
-                                table.primaryKeyConstraintName(), col.getRely()));
+                    for (final String columnName : table.getPrimaryKeys()) {
+                        if (table.hasColumn(columnName)) {
+                            rows.add(keyRow(dbName, schema, table, table.getColumn(columnName).getName(), seq++,
+                                table.primaryKeyConstraintName(), table.getColumn(columnName).getRely()));
                         }
                     }
                 } else {
@@ -912,7 +969,7 @@ final class ShowSessionExecutor {
             new ResultSetColumn("fk_schema_name", StringType.VARCHAR),
             new ResultSetColumn("fk_table_name", StringType.VARCHAR),
             new ResultSetColumn("fk_column_name", StringType.VARCHAR),
-            new ResultSetColumn("key_sequence", NumericType.INTEGER),
+            new ResultSetColumn("key_sequence", ShowResultHelpers.COUNT),
             new ResultSetColumn("update_rule", StringType.VARCHAR),
             new ResultSetColumn("delete_rule", StringType.VARCHAR),
             new ResultSetColumn("fk_name", StringType.VARCHAR),
@@ -926,7 +983,7 @@ final class ShowSessionExecutor {
                 // Inline column-level `REFERENCES parent[(col)]` is a single-column FK held on the
                 // column, not in getForeignKeys() — enumerate those too (the same source
                 // INFORMATION_SCHEMA.TABLE_CONSTRAINTS reads), or SHOW IMPORTED KEYS misses them.
-                for (final dev.frostlake.metastore.model.TableColumn col : table.getColumns()) {
+                for (final TableColumn col : table.getColumns()) {
                     if (col.getReferencedTable() == null) {
                         continue;
                     }
@@ -1014,7 +1071,7 @@ final class ShowSessionExecutor {
         if (target == null) {
             return null;
         }
-        for (final dev.frostlake.metastore.model.TableColumn col : target.getColumns()) {
+        for (final TableColumn col : target.getColumns()) {
             if (col.isPrimaryKey()) {
                 return col.getName();
             }
@@ -1051,6 +1108,9 @@ final class ShowSessionExecutor {
             }
         } else if ("SCHEMA".equals(scopeKind) && scopeName != null) {
             schemas.add(catalog.resolveSchema(scopeName));
+        } else if ("TABLE".equals(scopeKind) && scopeName != null) {
+            // A table named with its schema is listed under that schema, whatever the session's own is.
+            schemas.add(catalog.resolveOwningSchema(scopeName));
         } else if (!"NONE".equals(scopeKind)) {
             schemas.add(resolveDescribeSchema());
         }

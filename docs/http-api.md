@@ -62,8 +62,8 @@ execution` = `Multiple statements executed successfully.`, in its place. An `EXE
 not counted, and answers with its last statement's result alone.
 
 When one statement of such a request fails, the answer **names the statement that failed**, as the account names
-it: its own text, the line it starts on, and its column within that line — counted from zero — with the
-statement's own error carried inside.
+it: its own text — the first thirty characters of it, followed by `...`, when it is longer — the line it starts
+on, and its column within that line — counted from zero — with the statement's own error carried inside.
 
 ```
 JavaScript execution error: Uncaught Execution of multiple statements failed on statement
@@ -81,7 +81,7 @@ of it runs, with an ordinary syntax error naming no statement.
 
 ```json
 {"columns": [{"name": "I", "dataType": "NUMBER", "precision": 38, "scale": 0, "nullable": true},
-             {"name": "S", "dataType": "VARCHAR", "precision": 0, "scale": 0, "nullable": true, "length": 9},
+             {"name": "S", "dataType": "VARCHAR", "nullable": true, "length": 9},
              {"name": "T", "dataType": "TIMESTAMP_NTZ", "precision": 0, "scale": 3, "nullable": true}],
  "rows": [[1, "a", "2024-01-01 00:00:00.000"], [2, "b", null]], "rowCount": 2, "updateCount": -1,
  "jdbcUpdateCount": -1}
@@ -92,7 +92,10 @@ TIMESTAMP_LTZ and TIMESTAMP_TZ alike — sends `precision` 0 and its fractional-
 the account's own result metadata does, and Snowflake's drivers report that number as the column's scale:
 `TIME(3)` sends 3, `TIMESTAMP_NTZ(0)` 0, a bare `TIMESTAMP_LTZ` and `CURRENT_TIMESTAMP` 9, `CURRENT_TIMESTAMP(3)`
 3, and a SHOW command's `created_on` 3. A server that predates these digits sends 0 for every time and timestamp
-column. Every other type sends 0 for both, DATE included, except an interval (below). `length` is sent for
+column. Every other type **omits both fields**, as the account's own result metadata leaves them null there —
+text, binary, FLOAT, BOOLEAN, DATE, VARIANT, OBJECT, ARRAY, VECTOR and an untyped NULL — except an interval
+(below); a client reports such a column's precision and scale as unknown, or as 0 where its API has no way to
+say so. A server before 0.2.1 sends 0 for both instead, which reads the same. `length` is sent for
 a text (VARCHAR) or binary (BINARY) column only: its length in characters or bytes, the number Snowflake's own
 driver reports as the column's precision and display size. `VARCHAR(9)` sends 9, a table's bare `VARCHAR`
 16777216, a cast to bare `VARCHAR` 134217728, a table's bare `BINARY` 8388608, and a binary the plan never sized
@@ -191,6 +194,9 @@ within that much of reaching its timeout. Ending one rolls back a transaction it
   still started a fresh session for an unknown id unless `requireSession: true` was set, so a client that relies
   on the refusal sends `requireSession: true` explicitly once it has seen `newSession`: every such server
   refuses then.
+- `SYSTEM$ABORT_SESSION(<CURRENT_SESSION() of a session>)` ends that session as `DELETE /api/sessions/{id}`
+  does, once the request that called it is answered: its open transaction is rolled back, and its next
+  request is refused (404). A session may abort itself; the request still answers.
 
 ### `POST /api/sessions`
 

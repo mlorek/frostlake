@@ -36,9 +36,10 @@ import java.util.List;
  * of weight 1, exactly what the account returns below roughly a thousand values, where it begins to
  * merge neighbours.
  *
- * <p>The estimate, live-verified in both regimes: over centroids that ALL weigh 1 it is the exact
- * interpolated percentile — position {@code fraction × (n − 1)} between the sorted values, the same
- * number APPROX_PERCENTILE gives — while a state holding any other weight is read as a digest: the
+ * <p>The estimate, live-verified in both regimes: over up to 1400 centroids that ALL weigh 1 it is the
+ * exact interpolated percentile — position {@code fraction × (n − 1)} between the sorted values, the same
+ * number APPROX_PERCENTILE gives — while a state holding any other weight, or more centroids than that, is
+ * read as a digest ({@code APPROX_PERCENTILE(v, 0.25)} over 0 … 1400 is 349.75, not 350): the
  * target rank {@code fraction × total weight} is placed among the centroids' mean positions
  * ({@code weight before + weight / 2}) and interpolated linearly, extrapolated along the end segments
  * past the first or last centroid, so {@code [1 ×1, 9 ×3]} estimates 3 at 0.25, 0.6 at 0.1 and 13.4
@@ -48,6 +49,9 @@ public class PercentileDigest {
 
     /** The {@code type} member a state carries. */
     public static final String STATE_TYPE = "tdigest";
+
+    /** The most unit centroids the estimate still reads as the values themselves. */
+    private static final int EXACT_CENTROIDS = 1400;
 
     private static final String NOT_A_STATE =
         "First argument of the function must be an object which maps the key 'state' to an array";
@@ -138,7 +142,7 @@ public class PercentileDigest {
         if (count == 1) {
             return means.get(order.get(0));
         }
-        if (allUnit) {
+        if (allUnit && count <= EXACT_CENTROIDS) {
             final double position = fraction * (count - 1);
             final int low = (int) Math.floor(position);
             final int high = Math.min(low + 1, count - 1);

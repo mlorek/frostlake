@@ -97,7 +97,7 @@ final class SelectListResync {
             return null;
         }
         final Token refused = spoken.get(fault);
-        final boolean aliased = !afterAs && (item.AS() != null || item.identifier() != null);
+        final boolean aliased = !afterAs && (item.AS() != null || BareAlias.of(item) != null);
         if (!aliased && (StarModifierResync.isName(refused)
                 || !afterAs && (refused.getType() == FrostlakeLexer.RPAREN
                     || refused.getType() == FrostlakeLexer.COMMA))) {

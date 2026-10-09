@@ -66,7 +66,8 @@ public class RestTaskTest extends BaseRestTest {
         assertEquals("T1,T2,T3", names(ok(get(tasks("tsk_basic")))));
         assertEquals("T1,T3", names(ok(get(tasks("tsk_basic") + "?rootOnly=true"))));
         assertEquals("T2", names(ok(get(tasks("tsk_basic") + "?like=%252"))));
-        assertEquals("T3", names(ok(get(tasks("tsk_basic") + "?fromName=T2"))), "the rows after the named one");
+        assertEquals("T2,T3", names(ok(get(tasks("tsk_basic") + "?fromName=T2"))),
+            "the named task and the rows after it, as the listing it relays answers");
 
         ok(delete(tasks("tsk_basic") + "/t3"));
         error(404, get(tasks("tsk_basic") + "/t3"));

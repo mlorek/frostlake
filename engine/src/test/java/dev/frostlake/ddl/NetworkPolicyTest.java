@@ -16,6 +16,7 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.LiveSnowflake;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
@@ -29,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * CREATE, ALTER, DROP, SHOW and DESCRIBE NETWORK POLICY, and attaching a network policy to the account and to a
@@ -121,8 +123,8 @@ public class NetworkPolicyTest extends BaseDatabaseTest {
         engine.execute("CREATE OR REPLACE NETWORK POLICY np_d COMMENT = 'third'");
         engine.execute("CREATE OR ALTER NETWORK POLICY np_d ALLOWED_IP_LIST = ('1.1.1.1')");
         final ResultSet listed = engine.executeQuery("SHOW NETWORK POLICIES");
-        assertEquals("third", cell(listed, soleRowWhere(listed, "name", "NP_D"), "comment"),
-            "what CREATE OR ALTER leaves out is kept");
+        assertEquals("", cell(listed, soleRowWhere(listed, "name", "NP_D"), "comment"),
+            "what CREATE OR ALTER leaves out is cleared");
         assertEquals("1", cell(listed, soleRowWhere(listed, "name", "NP_D"), "entries_in_allowed_ip_list"));
         engine.execute("DROP NETWORK POLICY np_d");
         engine.execute("DROP NETWORK POLICY IF EXISTS np_d");
@@ -131,6 +133,8 @@ public class NetworkPolicyTest extends BaseDatabaseTest {
 
     @Test
     public void attachingToTheAccountAndToAUserIsRecorded() {
+        assumeFalse(LiveSnowflake.enabled(), "attaching a network policy to a real account locks its sessions out,"
+            + " and the test makes a user");
         engine.execute("CREATE NETWORK POLICY np_e ALLOWED_IP_LIST = ('1.1.1.1')");
         engine.execute("CREATE USER np_user");
         engine.execute("ALTER ACCOUNT SET NETWORK_POLICY = np_e");

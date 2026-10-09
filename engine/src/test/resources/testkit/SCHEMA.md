@@ -46,6 +46,10 @@ One suite per `*.json` file:
    The first statement matters: a request holds **one** statement unless the session or the request
    asks for more, and several cases send a script of two or three. `0` means "any number", which is
    what a test session wants — an exact count would then refuse the single statements around it.
+   A runner replaying against a live account, where one session serves every case, first puts back the role and
+   the warehouse the session opened with and runs `USE SECONDARY ROLES NONE`. A case that reads through a role it
+   changes to therefore runs `USE SECONDARY ROLES ALL` itself, before its first `USE ROLE`; against Frostlake the
+   statement changes nothing, the engine keeping no secondary roles.
 2. **Steps run in order in one session** (session state — USE, variables, open transactions —
    must carry across steps; over HTTP that means reusing the returned `sessionId`).
 3. A step with no `expect` must simply succeed. The first failed check stops the test.

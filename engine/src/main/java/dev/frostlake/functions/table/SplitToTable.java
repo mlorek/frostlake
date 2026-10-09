@@ -40,7 +40,7 @@ import java.util.regex.Pattern;
  * <p>The measured row rules:
  * <ul>
  *   <li>SEQ numbers the INPUT RECORD, not the part: every row of one call carries the same SEQ, and it
- *       starts at 1. INDEX is the 1-based position of the part.</li>
+ *       starts at 1 (see {@link InputRecordSequence}). INDEX is the 1-based position of the part.</li>
  *   <li>A NULL string or a NULL delimiter yields NO rows.</li>
  *   <li>An EMPTY delimiter does not split at all — the whole string comes back as one row.</li>
  *   <li>An empty string yields one row whose VALUE is empty, and empty parts between consecutive
@@ -48,12 +48,6 @@ import java.util.regex.Pattern;
  * </ul>
  */
 public class SplitToTable extends TableFunction {
-
-    /**
-     * Snowflake's SEQ is a sequence number for the INPUT RECORD, so one call numbers all its rows
-     * alike. Live increments it across the rows of a scanned column; a single call always reports 1.
-     */
-    private static final long INPUT_SEQUENCE = 1L;
 
     public SplitToTable() {
         super("SPLIT_TO_TABLE");
@@ -100,9 +94,10 @@ public class SplitToTable extends TableFunction {
             }
         }
 
+        final long inputSequence = InputRecordSequence.current();
         for (int i = 0; i < parts.size(); i++) {
             final List<Object> values = new ArrayList<>();
-            values.add(INPUT_SEQUENCE);
+            values.add(inputSequence);
             values.add((long) (i + 1));
             values.add(parts.get(i));
             rows.add(new Row(values));

@@ -24,8 +24,10 @@ import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.stream.StreamManager;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +46,8 @@ public class Transaction {
     private final List<String> walStatements = new ArrayList<>();   // mutating SQL to log on commit (WAL)
     // The statements run inside this transaction, whose changes become visible when it commits.
     private final List<QueryHistory> statements = new ArrayList<>();
+    /** Each statement that ran here under a savepoint, by identity, with its ordinal among them. */
+    private final Map<QueryHistory, Long> ordinals = new IdentityHashMap<>();
     /** What each buffered statement called "now" — one per entry of walStatements, same order. */
     private final List<Instant> walInstants = new ArrayList<>();
     // CDC streams read by this txn's DML, each with the scope of what the read SAW (committed cut +
@@ -93,6 +97,50 @@ public class Transaction {
     /** Record a statement that ran inside this transaction, so its commit can date the statement's changes. */
     public void addStatement(final QueryHistory statement) {
         statements.add(statement);
+        noteOrdinal(statement);
+    }
+
+    /**
+     * Note where a statement falls among this transaction's statements, whether it succeeded or failed: what a
+     * time-travel read naming it, while the transaction is still open, reads the transaction's own changes up to
+     * (see {@link TransactionWriteSet#overlayRowsAsOf}).
+     *
+     * @param statement the statement, as it ends
+     */
+    public void noteOrdinal(final QueryHistory statement) {
+        final long ordinal = writeSet.activeOrdinal();
+        if (ordinal >= 0 && !ordinals.containsKey(statement)) {
+            ordinals.put(statement, Long.valueOf(ordinal));
+        }
+    }
+
+    /**
+     * Where a statement falls among this transaction's statements.
+     *
+     * @param statement a statement
+     * @return its ordinal, or -1 when it did not run in this transaction or ran under no savepoint
+     */
+    public long ordinalOf(final QueryHistory statement) {
+        final Long ordinal = statement == null ? null : ordinals.get(statement);
+        return ordinal == null ? -1L : ordinal.longValue();
+    }
+
+    /**
+     * The ordinal of the last of this transaction's statements that had ended by an instant.
+     *
+     * @param instant  the instant
+     * @param strictly whether the statement must have ended before the instant rather than by it
+     * @return the ordinal, or -1 when none had
+     */
+    public long lastOrdinalEndedBy(final LocalDateTime instant, final boolean strictly) {
+        long last = -1L;
+        for (final Map.Entry<QueryHistory, Long> noted : ordinals.entrySet()) {
+            final LocalDateTime ended = noted.getKey().getEndTime();
+            if (ended != null && (strictly ? ended.isBefore(instant) : !ended.isAfter(instant))) {
+                last = Math.max(last, noted.getValue().longValue());
+            }
+        }
+        return last;
     }
 
     /** The statements that ran inside this transaction, in the order they ran. */

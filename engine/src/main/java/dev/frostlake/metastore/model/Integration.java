@@ -93,7 +93,8 @@ public class Integration extends SqlObject {
 
     /**
      * The type SHOW INTEGRATIONS reports: {@code EXTERNAL_API} for an API integration, {@code CATALOG} for a
-     * catalog integration, and for a notification integration its TYPE, a queue's followed by its provider.
+     * catalog integration, for a notification integration its TYPE, a queue's followed by its provider, and for a
+     * security integration its TYPE.
      */
     public String getType() {
         switch (kind) {
@@ -105,6 +106,8 @@ public class Integration extends SqlObject {
                     return "QUEUE - " + text("NOTIFICATION_PROVIDER");
                 }
                 return type;
+            case SECURITY:
+                return text("TYPE");
             case STORAGE:
                 return "EXTERNAL_STAGE";
             case EXTERNAL_ACCESS:

@@ -256,8 +256,8 @@ public class MissingObjectPrivilegeHintTest extends BaseDatabaseTest {
     }
 
     /**
-     * POLICY_REFERENCES and TAG_REFERENCES name a missing object, a policy included, with no hint after it
-     * (live-verified for a missing policy, a table under POLICY_REFERENCES and a table under TAG_REFERENCES).
+     * POLICY_REFERENCES names a missing object, a policy included, with no hint after it; TAG_REFERENCES refuses a
+     * missing table as any statement does, hint and all (live-verified).
      */
     @Test
     public void theReferenceFunctionsNameAMissingObjectWithoutAHint() {
@@ -266,7 +266,7 @@ public class MissingObjectPrivilegeHintTest extends BaseDatabaseTest {
         assertEquals(ERROR + "Table 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist or not authorized.",
             refusal("SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES("
                 + "REF_ENTITY_NAME => 'test_db.test_schema.nosuch_t', REF_ENTITY_DOMAIN => 'table'))"));
-        assertEquals(ERROR + "Table 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist or not authorized.",
+        assertEquals(hinted(ERROR + "Table 'TEST_DB.TEST_SCHEMA.NOSUCH_T' does not exist or not authorized."),
             refusal("SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('test_db.test_schema.nosuch_t', 'table'))"));
     }
 

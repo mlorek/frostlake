@@ -18,7 +18,6 @@ package dev.frostlake.parser;
 
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStream;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.DefaultErrorStrategy;
 import org.antlr.v4.runtime.Parser;
@@ -93,6 +92,16 @@ public final class UnseparatedStatementOpener {
         // A word is judged only at the script's first fault, never in the wreckage of an earlier one, not after a
         // table's alias, which this parser may have read out of a word live reads as a clause of its own, and not
         // where live reads the word as the name of a property.
+        // A number or a string is no property's name and nothing a statement goes on with: it is refused where it
+        // stands (see LiteralRunIn).
+        // INSERT after a select list's trailing comma is the string function's name, not a statement's opener: the
+        // token after it is the fault, as the parse reports it (SELECT 'foo', INSERT FROM t is the FROM).
+        if (opener.getType() == FrostlakeLexer.INSERT && last.getStop().getType() == FrostlakeLexer.COMMA) {
+            return null;
+        }
+        if (firstFault && LiteralRunIn.isLiteral(opener)) {
+            return endsInTableAlias(last) ? null : opener;
+        }
         return !firstFault || endsInTableAlias(last) || readsWordAsProperty(last) || takesWord(last, opener)
             ? null : opener;
     }
@@ -114,6 +123,92 @@ public final class UnseparatedStatementOpener {
             return !endsInQuery(statement);
         }
         return leading == FrostlakeLexer.ALTER && endsInAssignment(statement);
+    }
+
+    /**
+     * Whether a word that opens a statement stands straight after an ALTER SESSION SET's last value and is the
+     * last word of the input. Live takes a SET's assignments without commas between them, so it reads such a word
+     * as the next parameter's name and refuses at the end of input, where its '=' is missing.
+     *
+     * @param recognizer the parser that met the fault
+     * @param word the word the doomed statement opens with
+     * @return whether live reads the word as a parameter's name
+     */
+    static boolean namesNextSessionParameter(final Recognizer<?, ?> recognizer, final Token word) {
+        if (!(recognizer instanceof Parser)) {
+            return false;
+        }
+        final Parser parser = (Parser) recognizer;
+        final Token after = nextOnDefaultChannel(parser.getInputStream(), word.getTokenIndex());
+        if (after != null && after.getType() != Token.EOF) {
+            return false;
+        }
+        final FrostlakeParser.StatementContext last = runOnStatement(parser, word);
+        for (ParseTree node = last; node != null && node.getChildCount() > 0;
+                node = node.getChild(node.getChildCount() - 1)) {
+            if (node instanceof FrostlakeParser.SessionActionContext) {
+                return ((FrostlakeParser.SessionActionContext) node).SET() != null;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a word that opens a statement stands where live reads the name of a property: straight after a
+     * CREATE that does not end in a query, or an ALTER whose last clause assigns a property, with no semicolon
+     * between them. Live refuses what follows such a word - the end of input, or the token that is no '=' - and
+     * never the word itself: CREATE TABLE t (a INT) x runs out of input, and CREATE TABLE t (a INT) x y is refused
+     * at the y (live-verified).
+     *
+     * @param recognizer the parser that met the fault
+     * @param word the word the doomed statement opens with
+     * @return whether live reads the word as a property's name
+     */
+    static boolean namesNextProperty(final Recognizer<?, ?> recognizer, final Token word) {
+        if (!(recognizer instanceof Parser) || word.getType() != FrostlakeLexer.IDENTIFIER
+                && word.getType() != FrostlakeLexer.QUOTED_IDENTIFIER) {
+            return false;
+        }
+        final FrostlakeParser.StatementContext last = runOnStatement((Parser) recognizer, word);
+        if (last == null || endsInQuotedRoutineBody(last)) {
+            return false;
+        }
+        final int leading = last.getStart().getType();
+        return (leading == FrostlakeLexer.CREATE || leading == FrostlakeLexer.ALTER) && readsWordAsProperty(last);
+    }
+
+    /**
+     * Whether a word that opens a statement stands where live reads a relation's alias: straight after a table
+     * reference that has none yet, with no semicolon between them. Live takes the word as the alias and refuses
+     * what follows it — {@code SELECT a FROM t COMMENT = 'x'} and {@code SELECT a FROM t foo = 'x'} are refused at
+     * the '=', a second word at that word — and never the first word itself (live-verified).
+     *
+     * @param recognizer the parser that met the fault
+     * @param word the word the doomed statement opens with
+     * @return whether live reads the word as a relation's alias
+     */
+    static boolean namesTableAlias(final Recognizer<?, ?> recognizer, final Token word) {
+        if (!(recognizer instanceof Parser)) {
+            return false;
+        }
+        final FrostlakeParser.StatementContext last = runOnStatement((Parser) recognizer, word);
+        if (last == null) {
+            return false;
+        }
+        ParseTree leaf = last;
+        while (leaf.getChildCount() > 0) {
+            leaf = leaf.getChild(leaf.getChildCount() - 1);
+        }
+        for (ParseTree up = leaf.getParent(); up != null && up != last; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.TableReferenceContext) {
+                final FrostlakeParser.TableReferenceContext reference = (FrostlakeParser.TableReferenceContext) up;
+                // The reference ends in its source alone: no alias, and no clause after which none can come.
+                return reference.aliasName() == null && reference.nonJoinKeywordIdentifier() == null
+                    && reference.getChildCount() > 0
+                    && reference.getChild(reference.getChildCount() - 1) == reference.tableSource();
+            }
+        }
+        return false;
     }
 
     /** Whether a statement's last construct is a query, as a CREATE … AS query's is. */
@@ -171,7 +266,7 @@ public final class UnseparatedStatementOpener {
         if (input == null || statement.getStart() == null) {
             return true;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(
             input.getText(Interval.of(statement.getStart().getStartIndex(), word.getStopIndex()))));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);

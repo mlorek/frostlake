@@ -38,9 +38,12 @@ public class Function extends SqlObject {
     private NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
     private Volatility volatility = Volatility.VOLATILE;
     private boolean secure = false;
+    /** The schema that holds the function, or null while none does. */
+    private volatile Schema home;
     private boolean memoizable = false;
     private boolean temporary = false;
     private List<String> imports = new ArrayList<>();
+    private RoutineEnvironment environment = new RoutineEnvironment();
 
     public Function(final String name, final List<Parameter> parameters,
                    final DataType returnType, final String body, final boolean isTableFunction) {
@@ -118,6 +121,21 @@ public class Function extends SqlObject {
     public void setVolatility(final String v) { this.volatility = Volatility.fromString(v); }
 
     public boolean isSecure() { return secure; }
+
+    /**
+     * The schema that holds the function: where the names its body writes without a schema are looked for when it
+     * is called.
+     *
+     * @return the schema, or null while no schema holds the function
+     */
+    public Schema getHome() {
+        return home;
+    }
+
+    /** Records the schema the function is added to, or null when it is removed from one. */
+    void setHome(final Schema home) {
+        this.home = home;
+    }
     public void setSecure(final boolean secure) { this.secure = secure; }
 
     /**
@@ -136,6 +154,14 @@ public class Function extends SqlObject {
     public boolean isTemporary() { return temporary; }
 
     public void setTemporary(final boolean temporary) { this.temporary = temporary; }
+
+    /** What the routine is given to run with: packages, repository, target path, integrations and secrets. */
+    public RoutineEnvironment getEnvironment() { return environment; }
+
+    /** Records what the routine is given to run with. */
+    public void setEnvironment(final RoutineEnvironment environment) {
+        this.environment = environment == null ? new RoutineEnvironment() : environment;
+    }
 
     public List<String> getImports() { return new ArrayList<>(imports); }
     public void setImports(final List<String> imports) { this.imports = imports != null ? new ArrayList<>(imports) : new ArrayList<>(); }

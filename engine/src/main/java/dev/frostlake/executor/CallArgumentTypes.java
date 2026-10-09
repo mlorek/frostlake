@@ -31,6 +31,8 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VariantType;
 
+import org.antlr.v4.runtime.Token;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -189,9 +191,110 @@ final class CallArgumentTypes {
     }
 
     /**
+     * Judge the positional arguments of a table procedure called as a FROM source, {@code TABLE(p(1, 'a'))}. Where a
+     * CALL tells too many arguments from arguments of another type, the FROM form has one sentence for every
+     * misfit — too few, too many, another type — placed at the procedure's name: {@code Invalid argument types for
+     * function 'P': (NUMBER(1,0), VARCHAR(1))} (live-verified).
+     *
+     * @param procName the procedure's name as the sentence prints it
+     * @param params   its parameters, in declaration order
+     * @param values   the arguments written
+     * @param at       the procedure's name in the statement
+     * @param typer    the evaluator whose static typing reads each argument
+     */
+    static void checkTableSource(final String procName, final List<Parameter> params,
+                                 final List<FrostlakeParser.ExpressionContext> values, final Token at,
+                                 final ExpressionEvaluator typer) {
+        final List<String> spelled = new ArrayList<String>();
+        boolean refused = values.size() > params.size();
+        for (int i = 0; i < values.size(); i++) {
+            if (isUntypedNull(values.get(i))) {
+                spelled.add("NULL");
+                continue;
+            }
+            final DataType type = staticType(values.get(i), typer);
+            if (type == null) {
+                return;   // an argument this pass cannot type refuses nothing
+            }
+            spelled.add(SqlTypeNames.refusalSpelling(type));
+            refused |= i < params.size() && refuses(params.get(i).getDataType(), type);
+        }
+        for (int i = values.size(); i < params.size(); i++) {
+            refused |= !params.get(i).hasDefault();
+        }
+        if (refused) {
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                "Invalid argument types for function '" + procName + "': (" + String.join(", ", spelled) + ")"));
+        }
+    }
+
+    /**
+     * Refuse an all-named CALL that names one argument twice, at the second writing — {@code duplicate named
+     * argument A for function P} — or gives more arguments than its procedure has parameters, which is the
+     * too-many-arguments refusal with each argument echoed by its value alone: {@code too many arguments for
+     * function [P(1)] expected 0, got 1} (live-verified).
+     *
+     * @param procName  the procedure's name as the sentence prints it
+     * @param params    its parameters, in declaration order
+     * @param arguments the CALL's arguments
+     */
+    static void refuseNamedShape(final String procName, final List<Parameter> params,
+                                 final List<FrostlakeParser.CallArgumentContext> arguments) {
+        final List<String> seen = new ArrayList<String>();
+        final List<String> values = new ArrayList<String>();
+        for (final FrostlakeParser.CallArgumentContext argument : arguments) {
+            if (argument.namedArgument() == null) {
+                return;
+            }
+            final String name = SqlIdentifiers.canonical(argument.namedArgument().identifier());
+            if (seen.contains(name)) {
+                final Token at = argument.namedArgument().identifier().getStart();
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    "duplicate named argument " + name + " for function " + procName));
+            }
+            seen.add(name);
+            values.add(argument.namedArgument().expression() == null
+                ? ParseTreeText.getOriginalText(argument.namedArgument())
+                : ParseTreeText.getOriginalText(argument.namedArgument().expression()));
+        }
+        if (arguments.size() > params.size()) {
+            throw new RuntimeException(SqlCompilationError.at(0, -1, "too many arguments for function ["
+                + procName + "(" + String.join(", ", values) + ")] expected " + params.size() + ", got "
+                + arguments.size()));
+        }
+    }
+
+    /**
+     * Refuse a CALL whose named arguments its procedure does not take — a name no parameter has, a quoted name of
+     * another case, a parameter without a default left out — at any depth, as live refuses it while the CALL
+     * compiles: {@code named arguments [X, Z] do not match any signature for function NP}, every name the CALL
+     * writes (see {@link NamedArguments}).
+     *
+     * @param procName  the procedure's name as the sentence prints it
+     * @param params    its parameters, in declaration order
+     * @param arguments the CALL's arguments, all of them named
+     */
+    static void refuseMisnamed(final String procName, final List<Parameter> params,
+                               final List<FrostlakeParser.CallArgumentContext> arguments) {
+        final List<String> written = new ArrayList<String>();
+        for (final FrostlakeParser.CallArgumentContext argument : arguments) {
+            if (argument.namedArgument() == null) {
+                return;
+            }
+            written.add(argument.namedArgument().identifier().getText());
+        }
+        if (written.isEmpty() || new HashSet<String>(written).size() != written.size()
+                || NamedArguments.fit(params, written)) {
+            return;
+        }
+        throw new RuntimeException(SqlCompilationError.at(0, -1, "named arguments ["
+            + NamedArguments.listed(params, written) + "] do not match any signature for function " + procName));
+    }
+
+    /**
      * Refuse a CALL one of whose named arguments is a parenthesized list, a ROW no parameter takes — at any depth,
      * as live refuses it while the CALL compiles: {@code named arguments [A, B] do not match any signature for
-     * function PAB}, the named parameters in declaration order, then any name no parameter has.
+     * function PAB}, every name the CALL writes (see {@link NamedArguments}).
      *
      * @param procName  the procedure's name as the sentence prints it
      * @param params    its parameters, in declaration order
@@ -211,35 +314,26 @@ final class CallArgumentTypes {
         if (!row) {
             return;
         }
-        final List<String> names = new ArrayList<String>();
-        for (final Parameter param : params) {
-            for (final String name : written) {
-                if (name.equalsIgnoreCase(param.getName())) {
-                    names.add(param.getName().toUpperCase(Locale.ROOT));
-                }
-            }
-        }
-        for (final String name : written) {
-            if (!names.contains(name.toUpperCase(Locale.ROOT))) {
-                names.add(name.toUpperCase(Locale.ROOT));
-            }
-        }
-        throw new RuntimeException(SqlCompilationError.at(0, -1, "named arguments [" + String.join(", ", names)
-            + "] do not match any signature for function " + procName));
+        throw new RuntimeException(SqlCompilationError.at(0, -1, "named arguments ["
+            + NamedArguments.listed(params, written) + "] do not match any signature for function " + procName));
     }
 
-    /** An all-named CALL: each named parameter's argument against its type, named in declaration order. */
+    /** An all-named CALL: each named parameter's argument against its type, every name the CALL writes listed. */
     private static void checkNamed(final String procName, final List<Parameter> params,
                                    final List<FrostlakeParser.CallArgumentContext> arguments,
                                    final ExpressionEvaluator typer) {
-        final List<String> names = new ArrayList<String>();
+        final List<String> written = new ArrayList<String>();
+        for (final FrostlakeParser.CallArgumentContext argument : arguments) {
+            if (argument.namedArgument() != null) {
+                written.add(argument.namedArgument().identifier().getText());
+            }
+        }
         boolean refused = false;
         for (final Parameter param : params) {
             final FrostlakeParser.ExpressionContext value = namedValue(arguments, param.getName());
             if (value == null) {
                 continue;
             }
-            names.add(param.getName().toUpperCase(Locale.ROOT));
             if (isUntypedNull(value)) {
                 continue;
             }
@@ -251,7 +345,7 @@ final class CallArgumentTypes {
         }
         if (refused) {
             throw new RuntimeException(SqlCompilationError.at(0, -1, "named arguments ["
-                + String.join(", ", names) + "] do not match any signature for function " + procName));
+                + NamedArguments.listed(params, written) + "] do not match any signature for function " + procName));
         }
     }
 
@@ -270,8 +364,9 @@ final class CallArgumentTypes {
 
     /**
      * The overload a positional CALL of an overloaded procedure runs (live-verified over fifteen pairs and
-     * a triple). The overloads that take the argument COUNT are kept — a count none takes is "too many
-     * arguments … expected N, got M", N the widest signature. Of those, each argument ranks a parameter:
+     * a triple). The overloads that take the argument COUNT are kept — a count past the widest signature is
+     * "too many arguments … expected N, got M", N that signature's, and any other count none takes is the
+     * argument-type refusal. Of those, each argument ranks a parameter:
      * its own family first; then any family that takes it, in the order of the internal type names
      * (ARRAY, BINARY, BOOLEAN, DATE, FIXED, OBJECT, REAL, TEXT, TIME, TIMESTAMP_LTZ, TIMESTAMP_NTZ,
      * TIMESTAMP_TZ, VARIANT) — so an untyped NULL picks the first name, a NUMBER(38,0) over DATE —
@@ -297,7 +392,7 @@ final class CallArgumentTypes {
                 counted.add(overload);
             }
         }
-        if (counted.isEmpty()) {
+        if (counted.isEmpty() && arguments.size() > widest) {
             final List<String> written = new ArrayList<String>();
             for (final FrostlakeParser.CallArgumentContext argument : arguments) {
                 written.add(ParseTreeText.getOriginalText(argument));

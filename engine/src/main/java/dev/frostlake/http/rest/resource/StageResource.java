@@ -167,7 +167,10 @@ public final class StageResource implements RestResource {
                 continue;
             }
             if ("DIRECTORY".equals(parent)) {
-                describedValue(directory, key.toLowerCase(Locale.ROOT), property);
+                // The moment of the last refresh is the listing's alone; a stage's body does not carry it.
+                if (!"LAST_REFRESHED_ON".equals(key)) {
+                    describedValue(directory, key.toLowerCase(Locale.ROOT), property);
+                }
             } else if ("STAGE_COPY_OPTIONS".equals(parent)) {
                 describedValue(copyOptions, key.toLowerCase(Locale.ROOT), property);
             } else if ("STAGE_FILE_FORMAT".equals(parent)) {

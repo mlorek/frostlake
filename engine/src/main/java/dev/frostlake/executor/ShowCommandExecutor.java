@@ -259,6 +259,11 @@ public class ShowCommandExecutor {
         return routineExecutor.showFunctions(schemaName, userOnly);
     }
 
+    /** A schema's routines by the text their listing prints, each beside its declaration with parameter names. */
+    public Map<String, String> namedRoutineDeclarations(final String schemaName, final boolean procedures) {
+        return routineExecutor.namedDeclarations(schemaName, procedures);
+    }
+
     public ResultSet showBuiltinFunctions() {
         return routineExecutor.showBuiltinFunctions();
     }
@@ -393,16 +398,16 @@ public class ShowCommandExecutor {
         return relationalExecutor.describeDatabase(databaseName);
     }
 
-    public ResultSet describeStream(final String streamName) {
-        return pipelineExecutor.describeStream(streamName);
+    public ResultSet describeStream(final SchemaObjectName stream) {
+        return pipelineExecutor.describeStream(stream);
     }
 
-    public ResultSet describeTask(final String taskName) {
-        return pipelineExecutor.describeTask(taskName);
+    public ResultSet describeTask(final SchemaObjectName task) {
+        return pipelineExecutor.describeTask(task);
     }
 
-    public ResultSet describePipe(final String pipeName) {
-        return pipelineExecutor.describePipe(pipeName);
+    public ResultSet describePipe(final SchemaObjectName pipe) {
+        return pipelineExecutor.describePipe(pipe);
     }
 
     public ResultSet showSequences(final String schemaName) {
@@ -413,8 +418,8 @@ public class ShowCommandExecutor {
         return pipelineExecutor.showSequencesInDatabase(databaseName);
     }
 
-    public ResultSet describeSequence(final String sequenceName) {
-        return pipelineExecutor.describeSequence(sequenceName);
+    public ResultSet describeSequence(final SchemaObjectName sequence) {
+        return pipelineExecutor.describeSequence(sequence);
     }
 
     public ResultSet showComputePools() {
@@ -656,8 +661,8 @@ public class ShowCommandExecutor {
         return pipelineExecutor.showCortexSearchServicesInAccount(like);
     }
 
-    public ResultSet describeCortexSearchService(final String serviceName) {
-        return pipelineExecutor.describeCortexSearchService(serviceName);
+    public ResultSet describeCortexSearchService(final String[] serviceParts) {
+        return pipelineExecutor.describeCortexSearchService(serviceParts);
     }
 
     public ResultSet showDynamicTables(final String schemaName) {
@@ -685,8 +690,12 @@ public class ShowCommandExecutor {
         return sessionExecutor.showParameters(likePattern, inAccount);
     }
 
-    public ResultSet showParametersInTask(final String taskName, final String likePattern) {
-        return sessionExecutor.showParametersInTask(taskName, likePattern);
+    public ResultSet showParametersInTask(final SchemaObjectName task, final String likePattern) {
+        return sessionExecutor.showParametersInTask(task, likePattern);
+    }
+
+    public ResultSet showParametersInTable(final SchemaObjectName table, final String likePattern) {
+        return sessionExecutor.showParametersInTable(table, likePattern);
     }
 
     public ResultSet showParametersInUser(final String userName, final String likePattern) {

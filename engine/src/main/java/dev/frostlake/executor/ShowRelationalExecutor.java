@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
+import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
@@ -26,6 +27,7 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SequenceDefault;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
@@ -33,6 +35,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.system.InformationSchemaColumns;
 import dev.frostlake.types.ColumnTypeJson;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
@@ -80,31 +83,43 @@ final class ShowRelationalExecutor {
      * and empty for an IDENTITY column too, whose generator belongs in {@link #columnAutoincrementText}.
      */
     private static String columnDefaultText(final TableColumn col) {
-        if (col.isAutoIncrement()) {
+        if (col.isAutoIncrement() || col.getDefaultValue() instanceof SequenceDefault) {
             return "";
         }
         return col.getDefaultValue() != null
             ? ShowResultHelpers.renderDefaultExpression(col.getDefaultValue()) : "";
     }
 
-    /** {@code IDENTITY START n INCREMENT m NOORDER}, the spelling both surfaces use for a generator. */
+    /**
+     * {@code IDENTITY START n INCREMENT m ORDER | NOORDER}, the spelling both surfaces use for a generator:
+     * ORDER for an identity declared so, NOORDER for every other (live-verified).
+     */
     private static String identityGenerator(final TableColumn col) {
         return "IDENTITY START " + col.getIdentityStart()
-            + " INCREMENT " + col.getIdentityIncrement() + " NOORDER";
+            + " INCREMENT " + col.getIdentityIncrement() + (col.isIdentityOrdered() ? " ORDER" : " NOORDER");
     }
 
     /**
      * The autoincrement cell: an identity column spells its whole generator here —
      * {@code IDENTITY START 1 INCREMENT 1 NOORDER} — and every other column the empty string.
      *
-     * <p>Frostlake does not model the ORDER / NOORDER half of the generator, so it always spells
-     * NOORDER, which is what a plain {@code AUTOINCREMENT} declaration produces on a live account.
+     * <p>A column whose DEFAULT draws from a sequence names that sequence here too, in full, and leaves its
+     * default cell empty (live-verified).
      */
     private static String columnAutoincrementText(final TableColumn col) {
+        if (col.getDefaultValue() instanceof SequenceDefault) {
+            return col.getDefaultValue().toString();
+        }
         if (!col.isAutoIncrement()) {
             return "";
         }
         return identityGenerator(col);
+    }
+
+    /** A table's clustering key as SHOW lists it: its written text, under LINEAR when it names no ordering. */
+    private String clusterByText(final Table table) {
+        final String listed = ClusteringKeySpelling.listed(table.getClusterByText());
+        return listed == null ? "" : listed;
     }
 
     /** How live renders a clustering key in SHOW output: LINEAR(a, b), or empty when unclustered. */
@@ -466,8 +481,8 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("owner", StringType.VARCHAR),
-            new ResultSetColumn("rows", NumericType.BIGINT),
-            new ResultSetColumn("bytes", NumericType.BIGINT),
+            new ResultSetColumn("rows", NumericType.NUMBER),
+            new ResultSetColumn("bytes", NumericType.NUMBER),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
@@ -507,15 +522,15 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("kind", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("cluster_by", StringType.VARCHAR),
-            new ResultSetColumn("rows", NumericType.BIGINT),
-            new ResultSetColumn("bytes", NumericType.BIGINT),
+            new ResultSetColumn("rows", NumericType.NUMBER),
+            new ResultSetColumn("bytes", NumericType.NUMBER),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("retention_time", StringType.VARCHAR),
             new ResultSetColumn("automatic_clustering", StringType.VARCHAR),
             new ResultSetColumn("change_tracking", StringType.VARCHAR),
             new ResultSetColumn("search_optimization", StringType.VARCHAR),
-            new ResultSetColumn("search_optimization_progress", StringType.VARCHAR),
-            new ResultSetColumn("search_optimization_bytes", NumericType.BIGINT),
+            new ResultSetColumn("search_optimization_progress", NumericType.NUMBER),
+            new ResultSetColumn("search_optimization_bytes", NumericType.NUMBER),
             new ResultSetColumn("is_external", StringType.VARCHAR),
             new ResultSetColumn("enable_schema_evolution", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
@@ -548,7 +563,8 @@ final class ShowRelationalExecutor {
                         dbName, scName, dt.isTransient() ? "TRANSIENT" : "TABLE",
                         ShowResultHelpers.text(dt.getComment()),
                         clusterByText(dt.getClusterKeys()),
-                        0L,
+                        // The rows its last refresh held; no size is told.
+                        dt.getRefreshedRows(),
                         0L,
                         ShowResultHelpers.text(dt.getOwner()),
                         effectiveRetention(databaseOrNull(dbName), schema, null),
@@ -577,7 +593,9 @@ final class ShowRelationalExecutor {
                 for (int i = 0; i < dropped.size(); i++) {
                     final DroppedObject version = dropped.get(i);
                     final Table table = (Table) version.getObject();
-                    byName.put(versionKey(scName, table.getName(), table.getCreatedTime(), version.getDroppedOn(), i),
+                    // The versions come newest first, so within one millisecond the older one keeps the earlier place.
+                    byName.put(versionKey(scName, table.getName(), table.getCreatedTime(), version.getDroppedOn(),
+                            dropped.size() - 1 - i),
                         tableRow(table, dbName, scName, version.getRows() == null ? 0L : version.getRows().size(),
                         String.valueOf(version.getRetentionDays()), true, version.getDroppedOn()));
                 }
@@ -613,7 +631,7 @@ final class ShowRelationalExecutor {
                     table.getName(),
                     dbName, scName, kind,
                     ShowResultHelpers.text(table.getComment()),
-                    clusterByText(table.getClusterKeys()),
+                    clusterByText(table),
                     rowCount,
                     0L,
                     ShowResultHelpers.text(table.getOwner()),
@@ -792,8 +810,8 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("cluster_by", StringType.VARCHAR),
-            new ResultSetColumn("rows", NumericType.BIGINT),
-            new ResultSetColumn("bytes", NumericType.BIGINT),
+            new ResultSetColumn("rows", NumericType.NUMBER),
+            new ResultSetColumn("bytes", NumericType.NUMBER),
             new ResultSetColumn("source_database_name", StringType.VARCHAR),
             new ResultSetColumn("source_schema_name", StringType.VARCHAR),
             new ResultSetColumn("source_table_name", StringType.VARCHAR),
@@ -821,9 +839,9 @@ final class ShowRelationalExecutor {
                     mv.getName(),
                     "",
                     dbName, scName,
-                    "",
-                    // The counts read as SHOW TABLES reads a table's.
-                    0L,
+                    clusterByText(mv.getClusterKeys()),
+                    // The rows it materialized; no size is told.
+                    mv.getMaterializedRows(),
                     0L,
                     ShowResultHelpers.text(mv.getSourceDatabase()),
                     ShowResultHelpers.text(mv.getSourceSchema()),
@@ -831,14 +849,14 @@ final class ShowRelationalExecutor {
                     refreshedOn,
                     refreshedOn,
                     ShowResultHelpers.text(mv.getOwner()),
-                    mv.isSuspended() ? "true" : "false",
-                    mv.isSuspended() ? "Marked Materialized View as invalid manually." : null,
+                    MaterializedViewValidity.reason(mv) != null ? "true" : "false",
+                    MaterializedViewValidity.reason(mv),
                     MaterializedViewRefresh.behindBy(catalog, mv),
                     ShowResultHelpers.text(mv.getComment()),
                     // The full CREATE statement, as written.
                     mv.getListedText() != null ? mv.getListedText() : mv.ddl(scName + "." + mv.getName()),
                     mv.isSecure() ? "true" : "false",
-                    "OFF",
+                    mv.getClusterKeys().isEmpty() || mv.isReclusterSuspended() ? "OFF" : "ON",
                     "ROLE"
                 )));
             }
@@ -894,6 +912,11 @@ final class ShowRelationalExecutor {
         for (final MaterializedView mv : schema.getMaterializedViews()) {
             byRelation.put(mv.getName(), viewColumnRows(mv.getName(), mv.getResolvedColumns(),
                 mv.getColumnNames(), databaseName, schema.getName()));
+        }
+        // A dynamic table's columns are listed too, as they resolved when it was created.
+        for (final DynamicTable dt : schema.getDynamicTables()) {
+            byRelation.put(dt.getName(), viewColumnRows(dt.getName(), dt.getResolvedColumns(),
+                new ArrayList<String>(), databaseName, schema.getName()));
         }
         for (final Map.Entry<String, List<Row>> relation : byRelation.entrySet()) {
             rows.addAll(relation.getValue());
@@ -1001,6 +1024,12 @@ final class ShowRelationalExecutor {
                 materialized.getColumnNames(), relationDatabase(name), relationSchema(name)));
             return new ResultSet(columns, rows);
         }
+        final DynamicTable dynamic = findDynamicTableOrNull(name);
+        if (dynamic != null) {
+            rows.addAll(viewColumnRows(dynamic.getName(), dynamic.getResolvedColumns(), new ArrayList<String>(),
+                relationDatabase(name), relationSchema(name)));
+            return new ResultSet(columns, rows);
+        }
         // Nothing derived by that name: the table path owns the lookup and its refusal, which echoes
         // the name as the statement WROTE it and speaks the named kind.
         final Table table = catalog.resolveTableAsWritten(name, view ? "View" : "Table");
@@ -1050,8 +1079,8 @@ final class ShowRelationalExecutor {
                 schemaName,
                 col.getName(),
                 // The data_type cell is a JSON descriptor in Snowflake's internal vocabulary,
-                // never a type name — see ColumnTypeJson.
-                ColumnTypeJson.render(col.getDataType(), col.isNullable(), col.getCollation()),
+                // never a type name — see ColumnTypeJson. A table's column keeps its declared length.
+                ColumnTypeJson.renderDeclared(col.getDataType(), col.isNullable(), col.getCollation()),
                 // Snowflake reports NOT_NULL for a non-nullable column and the text "true" for a
                 // nullable one (live-captured), not Y/N.
                 col.isNullable() ? "true" : "NOT_NULL",
@@ -1147,8 +1176,8 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("kind", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("cluster_by", StringType.VARCHAR),
-            new ResultSetColumn("rows", NumericType.BIGINT),
-            new ResultSetColumn("bytes", NumericType.BIGINT),
+            new ResultSetColumn("rows", NumericType.NUMBER),
+            new ResultSetColumn("bytes", NumericType.NUMBER),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("retention_time", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
@@ -1169,7 +1198,7 @@ final class ShowRelationalExecutor {
                     objectRow(ShowResultHelpers.createdOn(t.getCreatedTime()), t.getName(),
                     dbName, scName, t.isTemporary() ? "TEMPORARY" : "TABLE",
                     ShowResultHelpers.text(t.getComment()),
-                    clusterByText(t.getClusterKeys()), storedRows(dbName, schema, t), ShowResultHelpers.text(t.getOwner()),
+                    clusterByText(t), storedRows(dbName, schema, t), ShowResultHelpers.text(t.getOwner()),
                     effectiveRetention(databaseOrNull(dbName), schema, t), t.isHybrid(), false));
             }
             for (final View v : schema.getViews()) {
@@ -1191,7 +1220,7 @@ final class ShowRelationalExecutor {
                     objectRow(ShowResultHelpers.createdOn(dt.getCreatedTime()), dt.getName(),
                     // As for a transient TABLE, this listing reports a transient dynamic table as
                     // plain TABLE — SHOW TABLES is the one that spells the transience.
-                    dbName, scName, "TABLE", dt.getComment(), "", 0L,
+                    dbName, scName, "TABLE", dt.getComment(), "", dt.getRefreshedRows(),
                     ShowResultHelpers.text(dt.getOwner()),
                     effectiveRetention(databaseOrNull(dbName), schema, null), false, true));
             }
@@ -1219,6 +1248,9 @@ final class ShowRelationalExecutor {
     public ResultSet describeRelation(final String name, final String reportedKind) {
         final View view = findViewOrNull(name);
         if (view != null) {
+            if ("INFORMATION_SCHEMA".equals(catalog.resolveOwningSchema(name).getName())) {
+                return describeSystemView(view.getName());
+            }
             return describeDerivedColumns(view.getResolvedColumns(), view.getColumnNames());
         }
         final MaterializedView materialized = findMaterializedViewOrNull(name);
@@ -1306,6 +1338,21 @@ final class ShowRelationalExecutor {
         }
     }
 
+    private DynamicTable findDynamicTableOrNull(final String name) {
+        try {
+            final String[] parts = QualifiedName.parse(name).parts();
+            final Schema schema = parts.length == 1
+                ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema())
+                : parts.length == 2
+                    ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
+                    : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            return schema.hasDynamicTable(parts[parts.length - 1])
+                ? schema.getDynamicTable(parts[parts.length - 1]) : null;
+        } catch (final RuntimeException notDynamic) {
+            return null;
+        }
+    }
+
     private MaterializedView findMaterializedViewOrNull(final String name) {
         try {
             final String[] parts = QualifiedName.parse(name).parts();
@@ -1350,6 +1397,19 @@ final class ShowRelationalExecutor {
     }
 
     /**
+     * One of INFORMATION_SCHEMA's own views: each column with the type, the nullability and the description the
+     * account gives it (live-verified).
+     */
+    private ResultSet describeSystemView(final String viewName) {
+        final List<Row> rows = new ArrayList<>();
+        for (final String[] column : InformationSchemaColumns.of(viewName)) {
+            rows.add(new Row(Arrays.asList(column[0], column[1], "COLUMN", column[2], null, "N", "N", null, null,
+                column[3], null, null, null)));
+        }
+        return new ResultSet(describeColumns(), rows);
+    }
+
+    /**
      * DESCRIBE's own column shape — the same thirteen for a table, a view, a materialized view and a dynamic
      * table. The privacy domain is typed OBJECT, whatever it holds (live-verified over the driver's metadata).
      */
@@ -1387,7 +1447,7 @@ final class ShowRelationalExecutor {
             // A collated column carries its collation inside the type cell — VARCHAR … COLLATE 'spec'.
             // The type is spelled CANONICALLY, never as the alias the column was declared with:
             // INT and BIGINT both read NUMBER(38,0), STRING reads VARCHAR(16777216) (live-verified).
-            final String canonicalType = SqlTypeNames.columnMetadata(col.getDataType());
+            final String canonicalType = SqlTypeNames.tableColumnMetadata(col.getDataType());
             final String typeText = col.getCollation() != null
                 ? canonicalType + " COLLATE '" + col.getCollation() + "'"
                 : canonicalType;

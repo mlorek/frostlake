@@ -18,7 +18,6 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.metastore.QualifiedName;
 
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -66,7 +65,7 @@ public final class GrantRemap {
      *
      * @param kind the kind it is recorded under
      * @param name the recorded name
-     * @return the new name, upper-cased as grants record names, or null when this change leaves it alone
+     * @return the new name, canonical as grants record names, or null when this change leaves it alone
      */
     public String mapped(final String kind, final String name) {
         if (!kinds.contains(kind)) {
@@ -78,14 +77,14 @@ public final class GrantRemap {
             return null;
         }
         for (int i = 0; i < from.length; i++) {
-            if (!parts[i].equalsIgnoreCase(from[i])) {
+            if (!parts[i].equals(from[i])) {
                 return null;
             }
         }
         final String[] mapped = new String[to.length + parts.length - from.length];
         System.arraycopy(to, 0, mapped, 0, to.length);
         System.arraycopy(parts, from.length, mapped, to.length, parts.length - from.length);
-        return QualifiedName.join(mapped).toUpperCase(Locale.ROOT);
+        return QualifiedName.join(mapped);
     }
 
     /** Whether the privileges are copied, the originals kept. */

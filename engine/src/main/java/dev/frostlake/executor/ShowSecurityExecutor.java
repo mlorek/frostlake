@@ -30,6 +30,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -138,9 +139,9 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("is_default", StringType.VARCHAR),
             new ResultSetColumn("is_current", StringType.VARCHAR),
             new ResultSetColumn("is_inherited", StringType.VARCHAR),
-            new ResultSetColumn("assigned_to_users", NumericType.INTEGER),
-            new ResultSetColumn("granted_to_roles", NumericType.INTEGER),
-            new ResultSetColumn("granted_roles", NumericType.INTEGER),
+            new ResultSetColumn("assigned_to_users", NumericType.NUMBER),
+            new ResultSetColumn("granted_to_roles", NumericType.NUMBER),
+            new ResultSetColumn("granted_roles", NumericType.NUMBER),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("is_from_organization_user_group", StringType.VARCHAR)
@@ -193,9 +194,9 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("is_default", StringType.VARCHAR),
             new ResultSetColumn("is_current", StringType.VARCHAR),
             new ResultSetColumn("is_inherited", StringType.VARCHAR),
-            new ResultSetColumn("granted_to_roles", NumericType.INTEGER),
-            new ResultSetColumn("granted_to_database_roles", NumericType.INTEGER),
-            new ResultSetColumn("granted_database_roles", NumericType.INTEGER),
+            new ResultSetColumn("granted_to_roles", NumericType.NUMBER),
+            new ResultSetColumn("granted_to_database_roles", NumericType.NUMBER),
+            new ResultSetColumn("granted_database_roles", NumericType.NUMBER),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR)
@@ -308,7 +309,10 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("granted_by_role_type", StringType.VARCHAR)
         );
         final String grantedOn = granted != null ? granted.getKind() : objectType;
-        final String reportedName = granted != null ? granted.getName() : qualifiedObjectName(objectType, objectName);
+        // A routine's granted object already names it as a listing does, signature and quotes included.
+        final boolean routine = "FUNCTION".equals(grantedOn) || "PROCEDURE".equals(grantedOn);
+        final String reportedName = granted != null && routine ? granted.getName() : GrantNames.spelled(grantedOn,
+            granted != null ? granted.getName() : qualifiedObjectName(objectType, objectName));
         // A grant is recorded under the object's own kind (a relation's, whichever keyword named it) and the
         // name its statement wrote, so the object's kind is asked under each name the object answers to.
         final List<String> spellings = new ArrayList<>();
@@ -358,6 +362,26 @@ final class ShowSecurityExecutor {
                 ShowResultHelpers.OWNER_ROLE_TYPE
             )));
         }
+        if ("DATABASE".equals(grantedOn)) {
+            // Each database role of the database holds USAGE on it from the moment it exists, granted by no one,
+            // and the database's own listing tells so (live-verified).
+            Database listed = null;
+            try {
+                listed = catalog.getDatabase(objectName);
+            } catch (final RuntimeException noSuchDatabase) {
+                listed = null;
+            }
+            if (listed != null) {
+                for (final DatabaseRole role : listed.getDatabaseRoles()) {
+                    rows.add(new Row(Arrays.asList(
+                        ShowResultHelpers.createdOn(role.getCreatedTime()),
+                        Privilege.USAGE.displayName(),
+                        grantedOn, reportedName,
+                        AccessControlListings.DATABASE_ROLE, role.getName(),
+                        "false", "", "")));
+                }
+            }
+        }
         Collections.sort(rows, new Comparator<Row>() {
             @Override
             public int compare(final Row left, final Row right) {
@@ -373,6 +397,14 @@ final class ShowSecurityExecutor {
      * A grant row's created_on: when the privilege was granted, or the grantee's own creation for a grant with no
      * recorded moment.
      */
+    /**
+     * A role grant's created_on: when the role was granted, or its holder's own creation for a grant with no
+     * recorded moment (the ones every account starts with).
+     */
+    private static Object roleGrantedOn(final Instant granted, final LocalDateTime holderCreated) {
+        return granted != null ? ShowResultHelpers.createdOn(granted) : ShowResultHelpers.createdOn(holderCreated);
+    }
+
     private static Object grantedOn(final Role role, final String objectType, final String objectName,
                                     final Privilege privilege) {
         final Instant granted = role.getPrivilegeGrantTime(objectType, objectName, privilege);
@@ -422,14 +454,14 @@ final class ShowSecurityExecutor {
         for (final User user : catalog.getAllUsers()) {
             if (user.getGrantedRoles().contains(role.getName())) {
                 rows.add(new Row(Arrays.asList(
-                    ShowResultHelpers.createdOn(user.getCreatedTime()),
+                    roleGrantedOn(user.getRoleGrantTime(role.getName()), user.getCreatedTime()),
                     role.getName(), "USER", user.getName(), user.getRoleGrantor(role.getName()))));
             }
         }
         for (final Role holder : catalog.getAllRoles()) {
             if (holder.getGrantedRoles().contains(role.getName())) {
                 rows.add(new Row(Arrays.asList(
-                    ShowResultHelpers.createdOn(holder.getCreatedTime()),
+                    roleGrantedOn(holder.getRoleGrantTime(role.getName()), holder.getCreatedTime()),
                     role.getName(), "ROLE", holder.getName(),
                     holder.getRoleGrantor(role.getName()))));
             }
@@ -463,7 +495,7 @@ final class ShowSecurityExecutor {
                     continue;
                 }
                 rows.add(new Row(Arrays.asList(
-                    ShowResultHelpers.createdOn(user.getCreatedTime()),
+                    roleGrantedOn(user.getRoleGrantTime(roleName), user.getCreatedTime()),
                     "USAGE", "ROLE", roleName, roleName,
                     "USER", user.getName(),
                     "false", user.getRoleGrantor(roleName))));
@@ -506,7 +538,7 @@ final class ShowSecurityExecutor {
                     continue;
                 }
                 rows.add(new Row(Arrays.asList(
-                    ShowResultHelpers.createdOn(user.getCreatedTime()),
+                    roleGrantedOn(user.getRoleGrantTime(roleName), user.getCreatedTime()),
                     "USAGE", "ROLE", roleName, roleName,
                     "USER", user.getName(),
                     "false", user.getRoleGrantor(roleName)
@@ -519,7 +551,8 @@ final class ShowSecurityExecutor {
                 }
                 rows.add(new Row(Arrays.<Object>asList(
                     ShowResultHelpers.createdOn(user.getCreatedTime()),
-                    "USAGE", AccessControlListings.DATABASE_ROLE, held.getKey(), null,
+                    "USAGE", AccessControlListings.DATABASE_ROLE,
+                    SqlIdentifiers.spellAlreadyCanonicalPath(held.getKey()), null,
                     "USER", user.getName(), "false", held.getValue())));
             }
             for (final Map.Entry<String, Set<Privilege>> entry : user.getAllPrivileges().entrySet()) {
@@ -538,7 +571,7 @@ final class ShowSecurityExecutor {
             final Role role = catalog.getRole(targetName);
             for (final String grantedRoleName : role.getGrantedRoles()) {
                 rows.add(new Row(Arrays.asList(
-                    ShowResultHelpers.createdOn(role.getCreatedTime()),
+                    roleGrantedOn(role.getRoleGrantTime(grantedRoleName), role.getCreatedTime()),
                     "USAGE", "ROLE", grantedRoleName,
                     "ROLE", role.getName(),
                     "false", role.getRoleGrantor(grantedRoleName)

@@ -25,12 +25,12 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -266,7 +266,7 @@ public final class CloneReferences {
     }
 
     private static List<Token> tokens(final String text) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();

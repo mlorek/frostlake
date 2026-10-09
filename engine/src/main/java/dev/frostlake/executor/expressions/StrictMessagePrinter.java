@@ -1150,6 +1150,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 }
                 return renamed + "." + spelledColumn(expr);
             }
+            if (correlationScope == null && context.isEnclosingQualifier(expr.getTableName())
+                    && !namesARelationOf(context, expr.getTableName())) {
+                // A name of the row around this query, which none of its own relations answers to.
+                return "CORRELATION(" + expr.getTableName().toUpperCase() + "." + spelledColumn(expr) + ")";
+            }
             if (correlationScope != null && !ownQualifiers.contains(expr.getTableName())
                     && namesAnOuterRelation(expr.getTableName())
                     || correlationScope == null && compiledOuterQualifier(expr) != null) {

@@ -49,6 +49,12 @@ public class MaterializedViewSnapshot implements Serializable {
     /** Whether the view is suspended. */
     public boolean suspended;
 
+    /** Why the view is invalid, or null while it is valid. */
+    public String invalidReason;
+
+    /** Whether a RESUME was accepted while the view was invalid. */
+    public boolean resumedWhileInvalid;
+
     /** Whether the view is secure. */
     public boolean secure;
 
@@ -69,6 +75,14 @@ public class MaterializedViewSnapshot implements Serializable {
 
     /** The source table's last data change the view has materialized, or null. */
     public Instant materializedAsOf;
+    /** The rows the view materialized; null in a snapshot taken before they were kept. */
+    public Long materializedRows;
+
+    /** The clustering key's expressions, or null in a snapshot written before a view could have one. */
+    public ArrayList<String> clusterKeys;
+
+    /** Whether automatic reclustering is paused. */
+    public boolean reclusterSuspended;
 
     /** The tags set on the view. */
     public HashMap<String, String> tags = new HashMap<>();

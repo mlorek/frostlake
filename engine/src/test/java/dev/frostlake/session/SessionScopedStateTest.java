@@ -63,6 +63,26 @@ public class SessionScopedStateTest {
         return rs.getValue(0);
     }
 
+    /** A session's current warehouse is its own: a USE, a CREATE or a DROP in one leaves another's alone. */
+    @Test
+    public void aSessionsCurrentWarehouseIsItsOwn() {
+        final SessionContext a = engine.createSession();
+        final SessionContext b = engine.createSession();
+        final Object initial = one(b, "SELECT CURRENT_WAREHOUSE()");
+        engine.execute("CREATE WAREHOUSE ss_wh_one", a);
+        engine.execute("CREATE WAREHOUSE ss_wh_two", a);
+        engine.execute("USE WAREHOUSE ss_wh_one", a);
+        assertEquals(initial, one(b, "SELECT CURRENT_WAREHOUSE()"));
+        engine.execute("USE WAREHOUSE ss_wh_two", b);
+        assertEquals("SS_WH_ONE", one(a, "SELECT CURRENT_WAREHOUSE()"));
+        assertEquals("SS_WH_TWO", one(b, "SELECT CURRENT_WAREHOUSE()"));
+        // A session opened later starts from the engine's own warehouse, not from another session's.
+        assertEquals(initial, one(engine.createSession(), "SELECT CURRENT_WAREHOUSE()"));
+        engine.execute("DROP WAREHOUSE ss_wh_two", a);
+        assertEquals("SS_WH_ONE", one(a, "SELECT CURRENT_WAREHOUSE()"));
+        assertNull(one(b, "SELECT CURRENT_WAREHOUSE()"));
+    }
+
     /** B's LAST_TRANSACTION is B's: A committing one leaves B's NULL, and B's own ROLLBACK sets it. */
     @Test
     public void lastTransactionIsEachSessionsOwn() {

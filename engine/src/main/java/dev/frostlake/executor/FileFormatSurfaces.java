@@ -113,7 +113,6 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             prop("TYPE", "String", "ORC"),
             prop("TRIM_SPACE", "Boolean", "false"),
             new FormatProperty("NULL_IF", "List", "[]", "[\\\\N]"),
-            prop("COMPRESSION", "String", "AUTO"),
             prop("REPLACE_INVALID_CHARACTERS", "Boolean", "false")));
     }
 

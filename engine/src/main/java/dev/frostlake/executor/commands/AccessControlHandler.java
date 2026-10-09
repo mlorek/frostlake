@@ -21,11 +21,15 @@ import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
+import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.AccountDirectory;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.metastore.model.Account;
 import dev.frostlake.metastore.model.Alert;
@@ -58,7 +62,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.regex.Pattern;
 
 /**
  * Database roles (CREATE, ALTER, DROP, SHOW DATABASE ROLES, GRANT and REVOKE DATABASE ROLE), the grants listings
@@ -100,20 +103,16 @@ public final class AccessControlHandler {
         if (ctx.ACCOUNT() != null) {
             return account(ctx, first);
         }
-        if (ctx.FUTURE() != null) {
-            return futureGrants(ctx);
-        }
-        if (ctx.GRANTS() != null) {
-            return grantsListing(ctx);
+        if (ctx.FUTURE() != null || ctx.GRANTS() != null) {
+            // A grant listing reads a LIMIT and its count and no other listing modifier (live-verified).
+            final FrostlakeParser.ShowTailContext tail = ctx.showTail();
+            ShowTailSyntax.requireCountOnly(ctx, tail);
+            final ResultSet listing = ctx.FUTURE() != null ? futureGrants(ctx) : grantsListing(ctx);
+            return tail == null || tail.LIMIT() == null ? listing
+                : firstRows(listing, Integer.parseInt(tail.INTEGER_LITERAL().getText()));
         }
         if (ctx.ROLES() != null) {
-            final Database database = catalog.databaseExact(visitor.getText(ctx.identifier()));
-            ResultSet listing = new AccessControlListings(catalog).databaseRoles(database);
-            if (ctx.LIMIT() != null) {
-                listing = limitFrom(listing, Integer.parseInt(ctx.INTEGER_LITERAL().getText()),
-                    ctx.STRING_LITERAL() == null ? null : visitor.extractStringLiteral(ctx.STRING_LITERAL()));
-            }
-            return listing;
+            return showDatabaseRoles(ctx);
         }
         if (first == FrostlakeParser.CREATE) {
             return createDatabaseRole(ctx);
@@ -126,6 +125,42 @@ public final class AccessControlHandler {
     }
 
     // ---- database roles --------------------------------------------------------------------------------
+
+    /**
+     * SHOW DATABASE ROLES [LIKE 'p'] IN [DATABASE] db [STARTS WITH 's'] [LIMIT n [FROM 'name']]. The pattern
+     * matches whatever the case, the prefix and the FROM name read the names as they are. A listing without a
+     * database, and a TERSE one, are features the account does not have (live-verified).
+     */
+    private ResultSet showDatabaseRoles(final FrostlakeParser.AccessControlStatementContext ctx) {
+        if (ctx.TERSE() != null) {
+            throw new RuntimeException("Unsupported feature 'SHOW TERSE DATABASE ROLES'.");
+        }
+        final String pattern = ctx.likePattern == null ? null : ParseTreeText.stringValue(ctx.likePattern);
+        if (ctx.identifier() == null) {
+            throw new RuntimeException("Unsupported feature 'SHOW DATABASE ROLES" + (pattern == null ? ""
+                : " LIKE '" + pattern + "'") + "'; use 'SHOW DATABASE ROLES IN DATABASE <database_name>' instead.");
+        }
+        final Database database = catalog.databaseExact(visitor.getText(ctx.identifier()));
+        ResultSet listing = new AccessControlListings(catalog).databaseRoles(database);
+        final String prefix = ctx.startsPrefix == null ? null : ParseTreeText.stringValue(ctx.startsPrefix);
+        if (pattern != null || prefix != null) {
+            final int nameIndex = listing.getColumnIndex("name");
+            final List<Row> kept = new ArrayList<>();
+            for (final Row row : listing.getRows()) {
+                final String name = String.valueOf(row.getValue(nameIndex));
+                if ((pattern == null || ShowResultHelpers.matchesLike(name, pattern))
+                        && (prefix == null || name.startsWith(prefix))) {
+                    kept.add(row);
+                }
+            }
+            listing = new ResultSet(listing.getColumns(), kept);
+        }
+        if (ctx.LIMIT() != null) {
+            listing = limitFrom(listing, Integer.parseInt(ctx.INTEGER_LITERAL().getText()),
+                ctx.fromName == null ? null : ParseTreeText.stringValue(ctx.fromName));
+        }
+        return listing;
+    }
 
     /**
      * The database and role a database role's name holds, canonical: {@code db.role}, or {@code role} in the
@@ -141,7 +176,16 @@ public final class AccessControlHandler {
         if (database == null) {
             throw NoCurrentDatabaseRefusal.forStatement();
         }
-        return new String[] {database, parts[parts.length - 1].toUpperCase(Locale.ROOT)};
+        return new String[] {database, parts[parts.length - 1]};
+    }
+
+    /**
+     * A database role's name as a sentence and a listing spell it: with its database, each part quoted where it
+     * could not have been written bare — {@code DB."dr_low"} for a role created under a quoted name, which is a
+     * role of its own beside {@code DB.DR_LOW} (live-verified).
+     */
+    static String shown(final String database, final String role) {
+        return SqlIdentifiers.spellAlreadyCanonicalPath(QualifiedName.join(database, role));
     }
 
     /**
@@ -171,7 +215,7 @@ public final class AccessControlHandler {
         }
         final String[] parts = databaseRoleName(catalog, ctx.qualifiedName());
         final Database database = catalog.databaseExact(parts[0]);
-        final String qualified = QualifiedName.join(database.getName(), parts[1]);
+        final String qualified = shown(database.getName(), parts[1]);
         final DatabaseRole existing = database.getDatabaseRole(parts[1]);
         if (existing != null && ctx.or_replace() == null) {
             if (ctx.if_not_exists() != null) {
@@ -210,10 +254,10 @@ public final class AccessControlHandler {
                 throw new RuntimeException(SqlCompilationError.of(
                     "A database role cannot be renamed into another database."));
             }
-            final String newName = target[target.length - 1].toUpperCase(Locale.ROOT);
+            final String newName = target[target.length - 1];
             if (database.getDatabaseRole(newName) != null) {
                 throw new RuntimeException(SqlCompilationError.of("Object '"
-                    + QualifiedName.join(database.getName(), newName) + "' already exists."));
+                    + shown(database.getName(), newName) + "' already exists."));
             }
             final String oldQualified = role.getQualifiedName();
             database.removeDatabaseRole(role.getName());
@@ -249,7 +293,7 @@ public final class AccessControlHandler {
         }
         database.removeDatabaseRole(role.getName());
         forgetDatabaseRole(role);
-        return StatusResults.dropped(QualifiedName.join(database.getName(), role.getName()));
+        return StatusResults.dropped(shown(database.getName(), role.getName()));
     }
 
     /** Takes a dropped database role back from every role, database role and user that held it. */
@@ -300,7 +344,7 @@ public final class AccessControlHandler {
             final DatabaseRole holder = databaseRole(catalog, ctx.databaseRoleGrantee().qualifiedName());
             if (holder == role) {
                 throw new RuntimeException(SqlCompilationError.of("Cannot grant database role '"
-                    + role.getQualifiedName() + "' to itself."));
+                    + shown(role.getDatabase(), role.getName()) + "' to itself."));
             }
             holder.grantDatabaseRole(role.getQualifiedName(), grantor);
         } else if (ctx.USER() != null) {
@@ -329,13 +373,13 @@ public final class AccessControlHandler {
             final Tag tag = catalog.getTag(visitor.getText(assign.qualifiedName()));
             final String value = TagValues.text(assign.qualifiedName(), assign.tagValue(), queryExecutor);
             TagValues.requireAllowed(tag, value);
-            target.setTag(tag.getName(), value);
+            TagAssignments.set(target, tag, value);
         }
     }
 
     private void applyTagUnset(final Taggable target, final FrostlakeParser.TagUnsetContext unset) {
         for (final FrostlakeParser.QualifiedNameContext name : unset.qualifiedName()) {
-            target.unsetTag(catalog.getTag(visitor.getText(name)).getName());
+            TagAssignments.unset(target, catalog.getTag(visitor.getText(name)));
         }
     }
 
@@ -422,6 +466,20 @@ public final class AccessControlHandler {
 
     private static void addObjects(final List<String> names, final String schemaName, final Schema schema,
                                    final String kind) {
+        // A routine's privileges are each overload's own, so ALL FUNCTIONS and ALL PROCEDURES reach every
+        // overload under its signature and count each one (live-verified).
+        if ("FUNCTION".equals(kind)) {
+            for (final Function function : schema.getFunctions()) {
+                names.add(GrantNames.routine(schema, function.getName(), function.getParameters()));
+            }
+            return;
+        }
+        if ("PROCEDURE".equals(kind)) {
+            for (final Procedure procedure : schema.getProcedures()) {
+                names.add(GrantNames.routine(schema, procedure.getName(), procedure.getParameters()));
+            }
+            return;
+        }
         for (final String object : objectNames(schema, kind)) {
             names.add(schemaName + "." + QualifiedName.join(object));
         }
@@ -621,8 +679,8 @@ public final class AccessControlHandler {
         final AccountDirectory directory = catalog.getAccountDirectory();
         if (first == FrostlakeParser.SHOW) {
             final List<ManagedAccount> listed = new ArrayList<>();
-            final String pattern = ctx.STRING_LITERAL() == null ? null
-                : visitor.extractStringLiteral(ctx.STRING_LITERAL());
+            final String pattern = ctx.stringText().isEmpty() ? null
+                : ParseTreeText.stringValue(ctx.stringText(0));
             for (final ManagedAccount account : directory.managedAccounts()) {
                 if (pattern == null || likeMatches(account.getName(), pattern)) {
                     listed.add(account);
@@ -687,21 +745,19 @@ public final class AccessControlHandler {
 
     /** SQL LIKE, case-insensitive, as the SHOW listings match their LIKE. */
     private static boolean likeMatches(final String value, final String pattern) {
-        final StringBuilder regex = new StringBuilder("(?is)");
-        for (int i = 0; i < pattern.length(); i++) {
-            final char c = pattern.charAt(i);
-            if (c == '%') {
-                regex.append(".*");
-            } else if (c == '_') {
-                regex.append('.');
-            } else {
-                regex.append(Pattern.quote(String.valueOf(c)));
-            }
-        }
-        return value.matches(regex.toString());
+        return ShowResultHelpers.matchesLike(value, pattern);
     }
 
     /** LIMIT n FROM 'name': at most n rows, from the first whose name sorts after the given one. */
+    /** The first rows of a listing, in its own order; a count of zero is no page size. */
+    private static ResultSet firstRows(final ResultSet listing, final int limit) {
+        if (limit <= 0) {
+            throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");
+        }
+        return limit >= listing.getRows().size() ? listing
+            : new ResultSet(listing.getColumns(), new ArrayList<>(listing.getRows().subList(0, limit)));
+    }
+
     private static ResultSet limitFrom(final ResultSet listing, final int limit, final String from) {
         if (limit <= 0) {
             throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");

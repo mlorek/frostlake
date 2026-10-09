@@ -53,9 +53,10 @@ public final class SystemFunctionArity {
         declare("SYSTEM$STREAM_HAS_DATA", 1, 1);
         declare("SYSTEM$PIPE_STATUS", 1, -1);
         declare("SYSTEM$CLUSTERING_DEPTH", 1, -1);
-        declare("SYSTEM$ABORT_SESSION", 1, -1);
+        declare("SYSTEM$ABORT_SESSION", 1, 1);
         declare("SYSTEM$LAST_CHANGE_COMMIT_TIME", 1, -1);
         declare("SYSTEM$GET_TAG", 3, -1);
+        declare("SYSTEM$GET_TAG_ALLOWED_VALUES", 1, 1);
         declare("SYSTEM$GET_TASK_GRAPH_CONFIG", 0, 1);
     }
 

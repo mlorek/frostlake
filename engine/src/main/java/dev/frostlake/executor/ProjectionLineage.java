@@ -19,10 +19,10 @@ package dev.frostlake.executor;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -144,7 +144,7 @@ public final class ProjectionLineage {
         if (!upper.contains("COUNT") && !upper.contains("HLL") && !upper.contains("OVER") && !upper.contains("WITHIN")) {
             return expression;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();
@@ -199,7 +199,7 @@ public final class ProjectionLineage {
         if (expression.indexOf('*') < 0) {
             return false;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();

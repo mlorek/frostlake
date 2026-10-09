@@ -42,7 +42,8 @@ public final class SecurityPropertySpecs {
             "AZURELINKID", "GCPPSCID", "HOST_PORT", "PRIVATE_HOST_PORT", "COMPUTE_POOL"));
         add(rule, new SecurityPropertySpec("VALUE_LIST", SecurityPropertyType.TEXT_LIST).alterable().unsettable());
         add(rule, new SecurityPropertySpec("MODE", SecurityPropertyType.CHOICE).choices("INGRESS", "INTERNAL_STAGE",
-            "SNOWFLAKE_MANAGED_STORAGE_VOLUME", "EGRESS", "POSTGRES_INGRESS", "POSTGRES_EGRESS").defaults("INGRESS"));
+            "SNOWFLAKE_MANAGED_STORAGE_VOLUME", "EGRESS", "POSTGRES_INGRESS", "POSTGRES_EGRESS",
+            "DATA_CONNECTIVITY_PROXY_EGRESS").defaults("INGRESS"));
         add(rule, comment());
         SPECS.put(SecurityObjectKind.NETWORK_RULE, rule);
 
@@ -91,7 +92,6 @@ public final class SecurityPropertySpecs {
         add(secret, new SecurityPropertySpec("OAUTH_SCOPES", SecurityPropertyType.TEXT_LIST).alterable());
         add(secret, new SecurityPropertySpec("OAUTH_REFRESH_TOKEN", SecurityPropertyType.TEXT).alterable().writeOnly());
         add(secret, new SecurityPropertySpec("OAUTH_REFRESH_TOKEN_EXPIRY_TIME", SecurityPropertyType.TEXT).alterable());
-        add(secret, new SecurityPropertySpec("ENABLED", SecurityPropertyType.BOOLEAN));
         add(secret, new SecurityPropertySpec("USERNAME", SecurityPropertyType.TEXT).alterable());
         add(secret, new SecurityPropertySpec("PASSWORD", SecurityPropertyType.TEXT).alterable().writeOnly());
         add(secret, new SecurityPropertySpec("SECRET_STRING", SecurityPropertyType.TEXT).alterable().writeOnly());
@@ -134,7 +134,7 @@ public final class SecurityPropertySpecs {
                 "COMMENT");
         }
         if ("CLOUD_PROVIDER_TOKEN".equals(type)) {
-            return names("API_AUTHENTICATION", "ENABLED", "COMMENT");
+            return names("API_AUTHENTICATION", "COMMENT");
         }
         if ("PASSWORD".equals(type)) {
             return names("USERNAME", "PASSWORD", "COMMENT");

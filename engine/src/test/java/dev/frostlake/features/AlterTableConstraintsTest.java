@@ -230,13 +230,13 @@ public class AlterTableConstraintsTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterTableDropNamedPrimaryKeyThenReAdd() {
-        engine.execute("CREATE TABLE ticket (container_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL,"
-            + " action VARCHAR NOT NULL, CONSTRAINT pk_ticket PRIMARY KEY (container_id, ticket_id))");
+        engine.execute("CREATE TABLE ticket (site_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL,"
+            + " action VARCHAR NOT NULL, CONSTRAINT pk_ticket PRIMARY KEY (site_id, ticket_id))");
 
         engine.execute("ALTER TABLE ticket DROP CONSTRAINT pk_ticket");
-        assertEquals("N", describeCell("ticket", "CONTAINER_ID", "primary key"));
+        assertEquals("N", describeCell("ticket", "SITE_ID", "primary key"));
 
-        engine.execute("ALTER TABLE ticket ADD CONSTRAINT pk_ticket PRIMARY KEY (container_id, ticket_id, action)");
+        engine.execute("ALTER TABLE ticket ADD CONSTRAINT pk_ticket PRIMARY KEY (site_id, ticket_id, action)");
         assertEquals("Y", describeCell("ticket", "ACTION", "primary key"));
     }
 

@@ -18,8 +18,8 @@ package dev.frostlake.executor.udf;
 
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 
 /**
@@ -96,7 +96,7 @@ public final class TemporaryObjectStatements {
             return null;
         }
         try {
-            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sqlText));
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sqlText));
             lexer.removeErrorListeners();
             final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
             parser.removeErrorListeners();

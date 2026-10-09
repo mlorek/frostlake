@@ -55,7 +55,7 @@ import java.util.Set;
  * <p>The measured row rules:
  * <ul>
  *   <li>SEQ numbers the INPUT RECORD, not the element: every row of one call carries the same SEQ,
- *       starting at 1.</li>
+ *       starting at 1 (see {@link InputRecordSequence}).</li>
  *   <li>Only a container expands. A VARIANT holding a scalar — a string, a number, a JSON null —
  *       contributes NO rows, so {@code FLATTEN(PARSE_JSON('"abc"'))} is empty rather than one row, and
  *       a string that merely LOOKS like JSON is not re-read as JSON.</li>
@@ -72,12 +72,6 @@ import java.util.Set;
 public class Flatten extends TableFunction {
 
     private static final ObjectMapper JACKSON = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
-
-    /**
-     * Snowflake's SEQ is a sequence number for the INPUT RECORD, so one call numbers all its rows
-     * alike. Live increments it across the rows of a scanned column; a single call always reports 1.
-     */
-    private static final long INPUT_SEQUENCE = 1L;
 
     /** The order the positional form fills FLATTEN's parameters in. */
     private static final String[] POSITIONAL_PARAMETERS = {"INPUT", "PATH", "OUTER", "RECURSIVE", "MODE"};
@@ -156,7 +150,7 @@ public class Flatten extends TableFunction {
         // NULL, and a path that matched nothing all leave THIS and PATH null too.
         if (outer && rows.isEmpty()) {
             final List<Object> values = new ArrayList<>();
-            values.add(INPUT_SEQUENCE);              // SEQ
+            values.add(InputRecordSequence.current());   // SEQ
             values.add(null);                        // KEY
             values.add(expandable ? pathPrefix : null);   // PATH
             values.add(null);                        // INDEX
@@ -307,7 +301,7 @@ public class Flatten extends TableFunction {
     private void addRow(final List<Row> rows, final String key, final String path, final Long index,
                        final Object value, final VariantValue thisValue) {
         final List<Object> values = new ArrayList<>();
-        values.add(INPUT_SEQUENCE);
+        values.add(InputRecordSequence.current());
         values.add(key);
         // An empty path stays EMPTY rather than becoming NULL: the OUTER stand-in row for a container
         // that held nothing is the only row that has one, and live reports '' there.

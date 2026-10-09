@@ -23,11 +23,15 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StageDirectoryRefresh;
+import dev.frostlake.executor.StorageIntegrationReference;
 import dev.frostlake.executor.WarehouseReference;
+import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
-import dev.frostlake.metastore.InstanceFamilies;
 import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.InstanceFamilies;
+import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
@@ -167,13 +171,20 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             properties.requireRootSettings(task);
             properties.requireServerlessSettings(task);
+            // The tags are written right after the name, before every property, and each has to exist.
+            if (ctx.tagList() != null) {
+                InlineTags.apply(task, ctx.tagList(), queryExecutor);
+            }
+            if (ctx.taskContacts() != null) {
+                TaskContacts.apply(task, ctx.taskContacts(), catalog);
+            }
             if (orReplace && hasTaskNamed(schema, taskName)) {
                 schema.dropTask(taskName);
             }
             schema.addTask(task);
             logger.trace("Created task: {}", taskQualifiedName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Task already exists (IF NOT EXISTS): {}", taskName);
         }
         return null;
@@ -214,6 +225,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String pipeName = QualifiedName.parse(pipeQualifiedName).last();
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("PIPE", qualifiedNameParts(ctx.qualifiedName(0)), null);
+            // Asked before the pipe a replacement drops is gone.
+            ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, pipeSchema);
             try { pipeSchema.dropPipe(pipeName); } catch (final RuntimeException ignored) {}
         }
         try {
@@ -223,13 +236,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
             // The COPY's names resolve in the pipe's schema, as they do when the pipe loads.
             final String[] priorScope = catalog.currentSessionScope();
             catalog.beginSessionScope(pipeSchema.getDatabaseName(), pipeSchema.getName());
+            final Stage pipeStage;
             try {
-                validatePipeCopyBody(ctx.copyStatement());
+                pipeStage = validatePipeCopyBody(ctx.copyStatement());
             } finally {
                 catalog.restoreSessionScope(priorScope);
             }
 
             // Parse pipe options
+            Boolean autoIngestWritten = null;
             boolean autoIngest = false;
             String awsSnsTopicArn = null;
             String errorIntegration = null;
@@ -240,6 +255,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 for (final FrostlakeParser.PipeOptionContext optionCtx : ctx.pipeOptions().pipeOption()) {
                     if (optionCtx.AUTO_INGEST() != null) {
                         autoIngest = optionCtx.booleanValue().TRUE() != null;
+                        autoIngestWritten = Boolean.valueOf(autoIngest);
                     } else if (optionCtx.AWS_SNS_TOPIC() != null) {
                         awsSnsTopicArn = ddl.extractStringLiteral(optionCtx.STRING_LITERAL());
                     } else if (optionCtx.ERROR_INTEGRATION() != null) {
@@ -252,6 +268,17 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         optionComment = ddl.extractStringLiteral(optionCtx.STRING_LITERAL());
                     }
                 }
+            }
+
+            // An integration the pipe names has to exist and to be a queue of the right direction.
+            final IntegrationReferences references = new IntegrationReferences(catalog);
+            if (errorIntegration != null) {
+                references.requirePipeError(errorIntegration);
+            }
+            if (integration != null) {
+                references.requirePipeNotification(integration, autoIngestWritten, pipeStage);
+            } else if (autoIngest) {
+                references.requireNotificationFor(pipeStage);
             }
 
             // An SNS topic feeds automatic ingestion: without AUTO_INGEST = TRUE the pipe is refused.
@@ -286,7 +313,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             pipeSchema.addPipe(pipe);
             logger.trace("Created pipe: {}", pipeName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Pipe already exists (IF NOT EXISTS): {}", pipeName);
         }
         return null;
@@ -300,13 +327,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
      * values, unknown format options) belongs to the engine-wide option-value surface and is not
      * pipe-specific.
      */
-    private void validatePipeCopyBody(final FrostlakeParser.CopyStatementContext copyCtx) {
+    private Stage validatePipeCopyBody(final FrostlakeParser.CopyStatementContext copyCtx) {
         if (copyCtx == null) {
-            return;
+            return null;
         }
         requirePipeTargetTableExists(copyCtx);
-        requirePipeStageExists(copyCtx);
+        final Stage stage = requirePipeStageExists(copyCtx);
         refusePipeOnlyCopyOptions(copyCtx);
+        return stage;
     }
 
     /** COPY INTO's target must exist when the PIPE is created, live-verified wording. */
@@ -363,11 +391,13 @@ public class CreateInfrastructureHandler implements CommandHandler {
      * ({@code copyRestOfStatement} keeps raw tokens), so the named-stage reference is read off the
      * token stream: the first {@code @} followed by an identifier chain. A user stage ({@code @~})
      * is refused outright; a table stage ({@code @%t}) resolves implicitly and is not checked.
+     *
+     * @return the named stage, or null when the pipe reads a table's own
      */
-    private void requirePipeStageExists(final FrostlakeParser.CopyStatementContext copyCtx) {
+    private Stage requirePipeStageExists(final FrostlakeParser.CopyStatementContext copyCtx) {
         if (copyCtx == null || copyCtx.copyRestOfStatement() == null
                 || copyCtx.copyRestOfStatement().children == null) {
-            return;
+            return null;
         }
         final List<String> parts = new ArrayList<>();
         boolean inStageName = false;
@@ -390,7 +420,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     + " Stage: '~' cannot be a user stage in the pipe definition.");
             }
             if (type == FrostlakeParser.PERCENT) {
-                return;
+                return null;
             }
             if (expectPart && (type == FrostlakeParser.IDENTIFIER
                     || type == FrostlakeParser.QUOTED_IDENTIFIER
@@ -406,7 +436,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             break;
         }
         if (parts.isEmpty()) {
-            return;
+            return null;
         }
         final StringBuilder joined = new StringBuilder();
         for (final String part : parts) {
@@ -415,19 +445,28 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             joined.append(part);
         }
-        ddl.resolveSchemaFromQualifiedName(joined.toString()).getStage(parts.get(parts.size() - 1));
+        return ddl.resolveSchemaFromQualifiedName(joined.toString()).getStage(parts.get(parts.size() - 1));
     }
 
     public Object handleCreateSequence(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        CreatedObjectProperties.requireSequenceProperties(ctx);
         final String sequenceQualifiedName = getText(ctx.qualifiedName(0));
         final String sequenceName = ddl.extractObjectName(sequenceQualifiedName);
         // A clone continues from where its source stands: the same next value, step, ordering and comment.
         final Sequence cloneSource = ctx.CLONE() == null ? null
             : ddl.resolveSchemaFromQualifiedName(getText(ctx.qualifiedName(1)))
                 .getSequence(ddl.extractObjectName(getText(ctx.qualifiedName(1))));
+        final Schema sequenceSchema = ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName);
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("SEQUENCE", qualifiedNameParts(ctx.qualifiedName(0)), null);
-            try { ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName).dropSequence(sequenceName); } catch (final RuntimeException ignored) {}
+        }
+        // Asked before the sequence a replacement drops is gone; a plain CREATE of a name a sequence already
+        // holds is refused for the name ahead of the privilege (live-verified).
+        if (ctx.or_replace() != null || ifNotExists || !sequenceSchema.hasSequenceExact(sequenceName)) {
+            ddl.checkCreatePrivilege(Privilege.CREATE_SEQUENCE, sequenceSchema);
+        }
+        if (ctx.or_replace() != null) {
+            try { sequenceSchema.dropSequence(sequenceName); } catch (final RuntimeException ignored) {}
         }
         try {
             long startValue = 1;
@@ -480,13 +519,13 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     cloneSource.isOrder(), cloneSource.getComment())
                 : new Sequence(sequenceName, startValue, increment, order, comment);
 
-            final Schema schema = ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName);
-            ddl.checkCreatePrivilege(Privilege.CREATE_SEQUENCE, schema);
+            final Schema schema = sequenceSchema;
+            schema.requireCreatable(Privilege.CREATE_SEQUENCE);
             sequence.setOwner(FutureGrants.ownerOfNew(catalog, "SEQUENCE", schema, sequence.getName()));
             schema.addSequence(sequence);
             logger.trace("Created sequence: {} with START={}, INCREMENT={}", sequenceQualifiedName, startValue, increment);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Sequence already exists (IF NOT EXISTS): {}", sequenceName);
         }
         return null;
@@ -657,6 +696,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             logger.trace("Created warehouse: {}", warehouseName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
+            // The warehouse that was already there becomes the session's current one all the same (live-verified).
+            catalog.useWarehouse(warehouseName);
             logger.debug("Warehouse already exists (IF NOT EXISTS): {}", warehouseName);
         }
         return null;
@@ -670,6 +711,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
     private static final Set<String> STAGE_OPTION_NAMES = Set.of(
         "CREDENTIALS", "STORAGE_INTEGRATION", "DIRECTORY", "COPY_OPTIONS",
         "AWS_ROLE", "AWS_EXTERNAL_ID", "SNOWFLAKE_IAM_USER", "ENCRYPTION");
+
+    /** Whether a word names a stage property a CREATE STAGE or an ALTER STAGE … SET takes by a plain name. */
+    static boolean isStageOption(final String name) {
+        return STAGE_OPTION_NAMES.contains(name);
+    }
 
     /** The load-format types a real account accepts for FILE_FORMAT TYPE, live-refused otherwise. */
     private static void requireKnownFormatType(final String type, final String written) {
@@ -696,6 +742,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
                                      final Map<String, String> into) {
         for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
             final String key = option.optionKey().getText().toUpperCase();
+            if (option.LPAREN() != null) {
+                into.put(key, listedValues(option.stringLiteralList()));
+                continue;
+            }
             String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : "";
             if (value.length() >= 2 && value.startsWith("'") && value.endsWith("'")) {
                 value = value.substring(1, value.length() - 1);
@@ -704,15 +754,50 @@ public class CreateInfrastructureHandler implements CommandHandler {
         }
     }
 
+    /**
+     * A list option's values as a stage lists them: {@code NULL_IF = ('\\N', 'NULL')} reads {@code [\\N, NULL]},
+     * a backslash doubled, and a list of nothing but empty texts reads {@code []} (live-verified).
+     *
+     * @param list the written list, or null for an empty pair of parentheses
+     * @return the listed text
+     */
+    static String listedValues(final FrostlakeParser.StringLiteralListContext list) {
+        final List<String> values = new ArrayList<>();
+        if (list != null) {
+            for (final TerminalNode node : list.STRING_LITERAL()) {
+                final String value = ParseTreeText.extractStringLiteral(node);
+                if (!value.isEmpty()) {
+                    values.add(value.replace("\\", "\\\\"));
+                }
+            }
+        }
+        return "[" + String.join(", ", values) + "]";
+    }
+
+    /**
+     * The CREATE privilege a new object of a schema asks, unless the statement makes a temporary one, which needs
+     * no privilege on the schema it is named in (live-verified); nothing is created in INFORMATION_SCHEMA either way.
+     */
+    private void requireCreateUnlessTemporary(final FrostlakeParser.CreateStatementContext ctx,
+                                              final Privilege createPrivilege, final String qualifiedName) {
+        final Schema schema = ddl.resolveSchemaFromQualifiedName(qualifiedName);
+        if (TemporaryObjectStatements.isTemporary(ctx)) {
+            schema.requireCreatable(createPrivilege);
+        } else {
+            ddl.checkCreatePrivilege(createPrivilege, schema);
+        }
+    }
+
     public Object handleCreateStage(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String stageName = getText(ctx.qualifiedName(0));
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("STAGE", qualifiedNameParts(ctx.qualifiedName(0)), null);
+            // Asked before the stage a replacement drops is gone.
+            requireCreateUnlessTemporary(ctx, Privilege.CREATE_STAGE, stageName);
             try { catalog.dropStage(stageName); } catch (final RuntimeException ignored) {}
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_STAGE,
-                ddl.resolveSchemaFromQualifiedName(stageName));
+            requireCreateUnlessTemporary(ctx, Privilege.CREATE_STAGE, stageName);
             // A URL-less CREATE STAGE makes an internal named stage (Snowflake's default when URL is omitted);
             // a URL (except file://) denotes an external stage.
             final boolean hasProps = ctx.stageProperties() != null;
@@ -723,7 +808,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
             String comment = null;
             boolean sawFileFormat = false;
             boolean sawCloudAccessOption = false;
-            boolean directoryEnable = false;
+            boolean credentials = false;
+            boolean encryptionKey = false;
+            StageDirectoryOptions directory = null;
             final Map<String, String> formatOptions = new LinkedHashMap<>();
             final Map<String, String> copyOptions = new LinkedHashMap<>();
             String declaredEncryptionType = null;
@@ -742,9 +829,12 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         if (option.STRING_LITERAL() != null) {
                             fileFormat = ddl.extractStringLiteral(option.STRING_LITERAL());
                             FileFormatReference.require(catalog, SqlIdentifiers.canonicalText(fileFormat));
+                            formatOptions.put("FORMAT_NAME", fileFormat);
                         } else if (option.qualifiedName() != null) {
                             fileFormat = getText(option.qualifiedName());
                             FileFormatReference.require(catalog, fileFormat);
+                            // The listing keeps the name as the statement wrote it.
+                            formatOptions.put("FORMAT_NAME", ddl.getOriginalText(option.qualifiedName()));
                         } else if (option.parenOptionList() != null) {
                             FileFormatReference.require(catalog,
                                 SqlIdentifiers.canonicalText(formatNameFromOptions(option.parenOptionList())));
@@ -759,6 +849,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             final Map<String, String> encryptionOptions = new LinkedHashMap<>();
                             collectParenOptions(option.parenOptionList(), encryptionOptions);
                             declaredEncryptionType = encryptionOptions.get("TYPE");
+                            encryptionKey = encryptionOptions.containsKey("MASTER_KEY")
+                                || encryptionOptions.containsKey("KMS_KEY_ID");
                             // Only Snowflake-managed encryption fits an internal stage, live-verified.
                             if (url == null && declaredEncryptionType != null
                                     && !declaredEncryptionType.toUpperCase().startsWith("SNOWFLAKE_")) {
@@ -780,12 +872,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         if (!STAGE_OPTION_NAMES.contains(key)) {
                             throw ParameterRegistry.invalidProperty(key, "STAGE");
                         }
+                        if ("STORAGE_INTEGRATION".equals(key)) {
+                            // The integration is looked up before the stage's own shape is judged.
+                            StorageIntegrationReference.require(catalog, option.copyOptionValue());
+                        }
                         if ("CREDENTIALS".equals(key) || "STORAGE_INTEGRATION".equals(key)) {
                             sawCloudAccessOption = true;
-                        } else if ("DIRECTORY".equals(key) && option.parenOptionList() != null) {
-                            final Map<String, String> directoryOptions = new LinkedHashMap<>();
-                            collectParenOptions(option.parenOptionList(), directoryOptions);
-                            directoryEnable = "TRUE".equalsIgnoreCase(directoryOptions.get("ENABLE"));
+                            credentials = credentials || "CREDENTIALS".equals(key);
+                        } else if ("DIRECTORY".equals(key)) {
+                            directory = StageDirectoryOptions.read(option.parenOptionList(), true);
                         } else if ("COPY_OPTIONS".equals(key) && option.parenOptionList() != null) {
                             collectParenOptions(option.parenOptionList(), copyOptions);
                         }
@@ -811,8 +906,20 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final Stage created = catalog.getStage(stageName);
             created.getFileFormatOptions().putAll(formatOptions);
             created.getCopyOptions().putAll(copyOptions);
-            created.setDirectoryEnabled(directoryEnable);
             created.setEncryptionType(declaredEncryptionType);
+            created.setTemporary(ctx.TEMPORARY() != null || ctx.TEMP() != null);
+            created.setCredentials(credentials);
+            created.setEncryptionKey(encryptionKey);
+            if (directory != null) {
+                directory.applyTo(created);
+                if (directory.enables() && directory.refreshesOnCreate()) {
+                    // A directory table enabled at creation registers the files its stage already holds, unless
+                    // REFRESH_ON_CREATE says otherwise; one enabled later registers none before its first refresh.
+                    final Schema owner = catalog.resolveOwningSchema(stageName);
+                    StageDirectoryRefresh.refresh(queryExecutor, created, owner.getDatabaseName(),
+                        owner.getDatabaseName() + "." + owner.getName() + "." + created.getName(), "");
+                }
+            }
 
             final String statementComment = ddl.extractCommentFromList(ctx.commentClause());
             if (statementComment != null) {
@@ -822,7 +929,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             logger.trace("Created stage: {}", stageName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Stage already exists (IF NOT EXISTS): {}", stageName);
         }
         return null;
@@ -842,8 +949,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String serviceName = getText(ctx.qualifiedName(0));
         final String searchColumn = SqlIdentifiers.canonical(ctx.identifier(0));
         final List<String> attributeColumns = new ArrayList<>();
-        if (!ctx.identifierList().isEmpty()) {
-            for (final FrostlakeParser.IdentifierContext attribute : ctx.identifierList(0).identifier()) {
+        if (ctx.identifierList() != null) {
+            for (final FrostlakeParser.IdentifierContext attribute : ctx.identifierList().identifier()) {
                 attributeColumns.add(SqlIdentifiers.canonical(attribute));
             }
         }
@@ -870,24 +977,22 @@ public class CreateInfrastructureHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("Missing option(s): [TARGET_LAG]"));
         }
         WarehouseReference.require(catalog, warehouse);
-        ddl.resolveSchemaFromQualifiedName(serviceName).requireCreatable(Privilege.CREATE_CORTEX_SEARCH_SERVICE);
+        ddl.checkCreatePrivilege(Privilege.CREATE_CORTEX_SEARCH_SERVICE, ddl.resolveSchemaFromQualifiedName(serviceName));
 
-        if (ctx.or_replace() != null) {
-            try {
-                catalog.resolveCortexSearchService(serviceName);
-                dropCortexSearchService(serviceName, ctx.qualifiedName(0));
-            } catch (final RuntimeException nothingToReplace) {
-                // OR REPLACE over a name that is not taken.
-            }
+        // The name's parts off the parse tree: a quoted name keeps its case, and is that service alone.
+        final String[] serviceParts = qualifiedNameParts(ctx.qualifiedName(0));
+        final Schema serviceSchema = catalog.requireOwningSchema(QualifiedName.of(serviceParts));
+        final String ownName = serviceParts[serviceParts.length - 1];
+        if (ctx.or_replace() != null && serviceSchema.hasCortexSearchServiceExact(ownName)) {
+            serviceSchema.dropCortexSearchServiceExact(ownName);
         }
-        if (ctx.or_replace() == null && existingCortexSearchService(serviceName)) {
+        if (ctx.or_replace() == null && serviceSchema.hasCortexSearchServiceExact(ownName)) {
             if (ifNotExists) {
                 ConditionalDdlOutcome.createSkipped();
                 return null;
             }
-            final String[] existingParts = qualifiedNameParts(ctx.qualifiedName(0));
             throw new RuntimeException(SqlCompilationError.of("Object '"
-                + SqlIdentifiers.spellCanonical(existingParts[existingParts.length - 1]) + "' already exists."));
+                + SqlIdentifiers.spellCanonical(ownName) + "' already exists."));
         }
 
         final String definition = ddl.getOriginalText(ctx.selectStatement());
@@ -897,12 +1002,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
             requireProjected(columns, attribute);
         }
 
-        final String[] serviceParts = qualifiedNameParts(ctx.qualifiedName(0));
         final CortexSearchService service = new CortexSearchService(
-            serviceParts[serviceParts.length - 1].toUpperCase(), searchColumn, attributeColumns, columns,
+            ownName, searchColumn, attributeColumns, columns,
             warehouse, targetLag, embeddingModel, definition, comment);
         service.setOwner(catalog.currentRoleForOwner());
-        ddl.resolveSchemaFromQualifiedName(serviceName).addCortexSearchService(service);
+        serviceSchema.addCortexSearchService(service);
         logger.trace("Created Cortex search service: {}", serviceName);
         return null;
     }
@@ -926,21 +1030,6 @@ public class CreateInfrastructureHandler implements CommandHandler {
         throw new RuntimeException(SqlCompilationError.invalidIdentifier(column));
     }
 
-    private boolean existingCortexSearchService(final String serviceName) {
-        try {
-            catalog.resolveCortexSearchService(serviceName);
-            return true;
-        } catch (final RuntimeException absent) {
-            return false;
-        }
-    }
-
-    private void dropCortexSearchService(final String serviceName,
-                                         final FrostlakeParser.QualifiedNameContext nameCtx) {
-        final String[] parts = qualifiedNameParts(nameCtx);
-        ddl.resolveSchemaFromQualifiedName(serviceName).dropCortexSearchService(parts[parts.length - 1]);
-    }
-
     public Object handleCreateFileFormat(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String name = getText(ctx.qualifiedName(0));
         // The simple name is the parse tree's last identifier part — never a re-split of the
@@ -949,6 +1038,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String simpleName = nameParts[nameParts.length - 1];
         if (ctx.or_replace() != null) {
             queryExecutor.requireOwnership("FILE_FORMAT", nameParts, null);
+            // Asked before the file format a replacement drops is gone.
+            requireCreateUnlessTemporary(ctx, Privilege.CREATE_FILE_FORMAT, name);
             try {
                 catalog.dropFileFormat(name);
             } catch (final RuntimeException ignored) {
@@ -956,8 +1047,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
         }
         try {
-            ddl.checkCreatePrivilege(Privilege.CREATE_FILE_FORMAT,
-                ddl.resolveSchemaFromQualifiedName(name));
+            requireCreateUnlessTemporary(ctx, Privilege.CREATE_FILE_FORMAT, name);
             final FileFormat fileFormat = new FileFormat(simpleName, "CSV");
             fileFormat.setOwner(catalog.currentRoleForOwner());
             applyFileFormatOptions(fileFormat, ctx.copyFormatOption());
@@ -968,12 +1058,13 @@ public class CreateInfrastructureHandler implements CommandHandler {
             // The options are judged BEFORE existence: an invalid option refuses even over an existing
             // format, IF NOT EXISTS or not (live-verified).
             if (catalog.hasFileFormat(name)) {
-                throw new RuntimeException(SqlCompilationError.of("Object '" + catalog.getFileFormat(name).getName() + "' already exists."));
+                throw new NameTakenException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(catalog.getFileFormat(name).getName()) + "' already exists."));
             }
             catalog.addFileFormat(name, fileFormat);
             logger.trace("Created file format: {}", simpleName);
         } catch (final RuntimeException e) {
-            ddl.handleIfNotExists(ifNotExists, e, "object");
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
         }
         return null;
     }
@@ -991,6 +1082,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     + ddl.extractObjectName(name).toUpperCase()));
         }
         final FrostlakeParser.FileFormatActionContext action = ctx.fileFormatAction();
+        if (action.RENAME() == null) {
+            queryExecutor.requirePrivilege(Privilege.MODIFY, "FILE_FORMAT", name);
+        }
         if (action.RENAME() != null) {
             final String newName = getText(action.qualifiedName());
             final String[] newParts = qualifiedNameParts(action.qualifiedName());
@@ -998,7 +1092,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             catalog.resolveOwningSchema(newName).requireCreatable(Privilege.CREATE_FILE_FORMAT);
             // The new name is taken: refused before the old one is given up.
             if (catalog.hasFileFormat(newName)) {
-                throw new RuntimeException(SqlCompilationError.of("Object '" + catalog.getFileFormat(newName).getName() + "' already exists."));
+                throw DDLCommandHandler.namedAsWritten(new NameTakenException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(newSimple) + "' already exists.")), newParts);
             }
             final String grantedBefore = catalog.resolveOwningSchema(name).qualifiedName(fileFormat.getName());
             catalog.dropFileFormat(name);

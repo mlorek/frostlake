@@ -98,12 +98,13 @@ and the sub-second words are no fields: after the string they are an alias.
 | `!=`, `<>` | `a != b` | Inequality — both spellings lex to the same operator. |
 | `<`, `<=`, `>`, `>=` | `a < b` | Ordering. |
 | Row comparison | `(a, b) = (1, 2)`, `(a, b) < (c, d)` | Two row constructors of one width with `=`, `!=`/`<>`, `<`, `<=`, `>`, `>=`. Equality reads the whole row: one differing pair makes it FALSE, and a NULL decides only when nothing else does. The ordering operators compare lexicographically, stopping at the first differing pair. A row opposite a scalar, or two rows of different widths, is refused while the statement compiles. |
+| Row value | `(a, b)`, `((1, 2))` | A parenthesized list of two or more values is one ROW value wherever a value may stand, behind any number of parentheses. Rows compare with rows — the comparison above, `IS [NOT] DISTINCT FROM`, `BETWEEN` two rows, `IN` a list of rows or a query, `= ANY` / `<op> ALL` a query, the two sides of a simple `CASE` — and `ORDER BY (b, a) DESC` and `GROUP BY (a, b)` read one as its values, one by one. Anything else refuses it by type while the statement compiles: an operator as `Invalid argument types for function '+': (ROW(NUMBER(1,0), NUMBER(1,0)), NUMBER(1,0))`, a function at its call, a select item as `Unsupported: SELECT list element with multiple columns.`, a condition as `Invalid data type [ROW(…)] for predicate […]`. |
 | `IS [NOT] NULL` | `a IS NULL` | Two-valued (never UNKNOWN). |
 | `IS [NOT] DISTINCT FROM` | `a IS DISTINCT FROM b` | NULL-safe equality. |
 | `[NOT] BETWEEN` | `a BETWEEN x AND y` | Inclusive range. |
 | `[NOT] LIKE` | `a LIKE p [ESCAPE e]` | `%`/`_` wildcards, optional ESCAPE. Without ESCAPE nothing is an escape; the escape makes whatever follows it literal. A pattern ending in its escape is refused with `Escape character at end of LIKE pattern` where it is matched in full; a literal run with at most a leading or trailing run of `%` is compared directly and keeps that escape as a character. |
 | `[NOT] ILIKE` | `a ILIKE p [ESCAPE e]` | Case-insensitive LIKE. Every pattern is matched in full, so one ending in its escape is always refused. |
-| `LIKE ANY / LIKE ALL / ILIKE ANY` | `a LIKE ANY (p1, p2, …) [ESCAPE e]` | Multi-pattern forms. Snowflake has ONLY these three: `NOT LIKE ANY/ALL` and `ILIKE ALL` are compile errors there, so Frostlake deliberately omits them (live-verified). A pattern ending in its escape is refused where it is reached: LIKE ALL matches each pattern in written order and stops at the first miss, ILIKE ANY checks every pattern before matching, and LIKE ANY answers from its directly compared patterns first and checks the others only when none of those matched. |
+| `LIKE ANY / LIKE ALL / ILIKE ANY` | `a LIKE ANY (p1, p2, …) [ESCAPE e]`, `a LIKE ANY p [ESCAPE e]` | Multi-pattern forms. One pattern needs no parentheses (`c LIKE ANY 'a%'`, `c LIKE ALL p \|\| '%'`), and a query written as LIKE ANY's pattern gives a pattern per row it answers - none is FALSE - where LIKE ALL reads it as one value. Snowflake has ONLY these three: `NOT LIKE ANY/ALL` and `ILIKE ALL` are compile errors there, so Frostlake deliberately omits them (live-verified). A pattern ending in its escape is refused where it is reached: LIKE ALL matches each pattern in written order and stops at the first miss, ILIKE ANY checks every pattern before matching, and LIKE ANY answers from its directly compared patterns first and checks the others only when none of those matched. |
 | `[NOT] RLIKE`, `[NOT] REGEXP` | `a RLIKE p` | Whole-string regex match (the `REGEXP_LIKE` function family is the callable twin). |
 | `[NOT] IN` | see below | Membership, in all of Snowflake's shapes. |
 
@@ -125,7 +126,7 @@ simple `CASE`, and `DECODE`.
 | Shape | Example | Notes |
 |---|---|---|
 | Scalar list | `a IN (1, 2, 3)` | Three-valued (a NULL probe or NULL member yields UNKNOWN). |
-| Scalar subquery | `a IN (SELECT x FROM t)` | Three-valued — a NULL probe is UNKNOWN even over an empty result (live-measured). |
+| Scalar subquery | `a IN (SELECT x FROM t)` | Three-valued over a query that reads no outer row. A query that reads the row around it is matched as a join is: `IN` is TRUE for a match and FALSE for everything else, a NULL probe and a NULL in the result included, while `NOT IN` keeps the three values. An empty result is FALSE (TRUE for `NOT IN`) whatever a probe read from a row holds; a NULL probe that reads no column (`NULL IN (…)`) is UNKNOWN whatever the result (live-measured). |
 | Tuple row list | `(a, b) IN ((1, 2), (3, 4))` | Three-valued. |
 | Tuple subquery | `(a, b) IN (SELECT x, y FROM t)` | TWO-valued, unlike the other shapes (live-measured). |
 | Tuple flat list | `(a, b) IN (1, 2)` | Parses but is a compile-time type error (ROW vs scalars), matching Snowflake. |
@@ -137,14 +138,15 @@ simple `CASE`, and `DECODE`.
 | `AND` | `p AND q` | Three-valued. |
 | `OR` | `p OR q` | Three-valued. |
 | `NOT` | `NOT p` | Three-valued. |
+| `!` | `!EXISTS (SELECT …)` | Read where NOT is read. It negates an EXISTS, through any NOT, `!` or parentheses between the two; before anything else it is a call of a function named `"!"`, which no account has (`Unknown function "!".`), and it is no value operator: `x = !y` is a syntax error. |
 
 ## Subquery operators
 
 | Operator | Form | Notes |
 |---|---|---|
-| `[NOT] EXISTS` | `EXISTS (SELECT …)` | Correlated or not. |
+| `[NOT] EXISTS` | `EXISTS (SELECT …)` | Correlated or not. An aggregate in its select list over the outer query's columns alone (`EXISTS (SELECT MAX(o.id) FROM t WHERE t.id = o.id)`) is the outer query's value and does not make the EXISTS aggregate its own rows; a subquery holding such an aggregate stands in the outer query's select list or HAVING only (`Subquery containing correlated aggregate function [MAX(O.ID)] can only appear in having or select clause`). |
 | Scalar subquery | `(SELECT …)` in expression position | Must produce one column; more than one row is a runtime error. |
-| Quantified comparison | `a > ANY (SELECT …)`, `a = ALL (SELECT …)` | Quantifiers `ANY`, `SOME`, `ALL` with every comparison operator; NULL propagation follows the measured three-valued rules. |
+| Quantified comparison | `a > ANY (SELECT …)`, `a = ALL (SELECT …)` | Quantifiers `ANY`, `SOME`, `ALL` with every comparison operator; NULL propagation follows the measured three-valued rules, and `ANY` over a query that reads the row around it answers FALSE where no row matches, as `IN` does. A value where the query is taken is read and refused as the statement compiles, by the token it turns on: `1 = ANY 1` is `Invalid query block: 1.`, `1 = ANY x + 1` is `Invalid query block: +.` |
 
 ## Set operators
 
@@ -178,4 +180,5 @@ typing.
 | `->` | `FILTER(arr, x -> x > 1)` | Lambda body separator in higher-order function arguments (`TRANSFORM`, `FILTER`, `REDUCE`, …) — valid only there. |
 | `**` | `GREATEST(** [1, 5, 3])` | Argument splatting: splices a CONSTANT array literal (or `ARRAY_CONSTRUCT` call) into the enclosing argument list. A runtime expression operand is rejected, and there is no object-literal or bare `SELECT **` spread — all live-verified. |
 | `$N` | `SELECT $1 FROM @stage`, `SELECT $2 FROM t` | Positional column reference — staged-file fields in COPY/stage queries, ordinal columns in table queries; an unaliased `$N` item is itself named `$N`. |
+| `!` | `model!PREDICT(…)` | A method of a class instance. Frostlake has no classes, so the call is read and refused by its name as the unknown function it is: `Unknown function MODEL!PREDICT.`, in a CALL too. |
 | `?`, `:name` | `WHERE a = ?` | Bind parameters (JDBC positional `?`, named/positional `:x` binds); substituted client-side by the drivers and `EXECUTE IMMEDIATE … USING`. |

@@ -25,12 +25,14 @@ import dev.frostlake.executor.udf.RoutineImports;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.FutureGrants;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.NullHandling;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
+import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.metastore.model.Volatility;
@@ -131,6 +133,7 @@ public class CreateRoutineHandler implements CommandHandler {
         // syntax rule), the language, EXECUTE AS, a VECTOR the language cannot carry and MEMOIZABLE's shape
         // (live-verified).
         RoutineStatementRules.judge(ctx);
+        rejectSourcelessCopyGrants(ctx);
         rejectVectorSignature(ctx, functionLanguage(ctx), false, hasMemoizableOption(ctx));
         if (hasMemoizableOption(ctx)) {
             final boolean table = ctx.returnType() != null && ctx.returnType().TABLE() != null;
@@ -144,7 +147,12 @@ public class CreateRoutineHandler implements CommandHandler {
         // before it does nothing (live-verified).
         final Schema schema = routineSchema(parts, qualifiedName, "function");
         final String functionName = parts[parts.length - 1];
-        ddl.checkCreatePrivilege(Privilege.CREATE_FUNCTION, schema);
+        // A temporary function needs no privilege on the schema it is named in (live-verified).
+        if (TemporaryObjectStatements.isTemporary(ctx)) {
+            schema.requireCreatable(Privilege.CREATE_FUNCTION);
+        } else {
+            ddl.checkCreatePrivilege(Privilege.CREATE_FUNCTION, schema);
+        }
         final List<Parameter> parameters = parseParameters(ctx);
         // OR REPLACE needs OWNERSHIP of the overload it replaces; the overload itself is dropped only once the
         // new definition has passed every check, so a refused replacement leaves it in place (live-verified).
@@ -157,6 +165,12 @@ public class CreateRoutineHandler implements CommandHandler {
 
         validateRoutineProperties(functionLanguage(ctx).name(), functionRuntimeVersion(ctx), functionHandler(ctx),
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
+        final RoutineEnvironments environments = new RoutineEnvironments(catalog, queryExecutor);
+        final RoutineEnvironment environment = environments.read(ctx.functionOption(), functionLanguage(ctx), false,
+            ctx.bodyDefinition() != null, orReplace ? replacedFunctionPath(schema, functionName, argumentTypes) : null);
+        if (!namesService(ctx)) {
+            requireBody(ctx, functionLanguage(ctx), false);
+        }
         // A handler body is compiled, and its handler checked against the signature, before the signature's own
         // names are: a Python or Java handler taking the wrong number of arguments is refused for that even when
         // an argument name repeats (live-verified).
@@ -199,7 +213,8 @@ public class CreateRoutineHandler implements CommandHandler {
                 if (ctx.returnType().columnList() != null) {
                     for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
                         if (colCtx.columnDef() != null) {
-                            final String colName = ParseTreeText.namePartText(colCtx.columnDef().columnDefName()).toUpperCase();
+                            // A quoted name as written, as a table procedure's is.
+                            final String colName = ParseTreeText.namePartText(colCtx.columnDef().columnDefName());
                             final DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
                             returnColumns.add(new Parameter(colName, colType));
                         }
@@ -264,11 +279,14 @@ public class CreateRoutineHandler implements CommandHandler {
             // The declared-vs-actual return-type check runs at CREATE, like the body compile above. A service
             // function's body is the path its calls are sent to, not SQL.
             if (service == null) {
+                // The body compiles where the session is, not where the function is created (live-verified).
+                final Schema compiledIn = sessionSchemaOr(schema);
+                SqlUdfBodyArguments.reject(queryExecutor, language, isTableFunction, parameters, body, compiledIn);
                 RoutineReturnTypeChecker.checkScalarSqlUdf(queryExecutor, catalog, language,
-                    isTableFunction, returnType, parameters, body, schema);
+                    isTableFunction, returnType, parameters, body, compiledIn);
                 if (isTableFunction && "SQL".equals(language)) {
                     SqlTableFunctionReturnTypes.check(queryExecutor, functionName, declaredColumnNames(ctx),
-                        parameterTypes(returnColumns), body, schema);
+                        parameterTypes(returnColumns), body, compiledIn);
                 }
             }
 
@@ -278,16 +296,29 @@ public class CreateRoutineHandler implements CommandHandler {
             function.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
             function.setNullHandling(nullHandling);
             function.setVolatility(volatility);
-            if (!imports.isEmpty()) function.setImports(imports);
+            if (!imports.isEmpty()) function.setImports(RoutineImports.canonical(imports, catalog));
             if (comment != null) function.setComment(comment);
             function.setMemoizable(memoizable);
+            function.setEnvironment(environment);
 
             // A handler body was compiled before the signature was judged (compileHandlerBody).
             if (service != null) {
                 function.setService(service, endpoint, maxBatchRows);
             }
 
+            String grantsKept = null;
             if (orReplace) {
+                if (!ctx.copyGrants().isEmpty()) {
+                    // COPY GRANTS: the replaced overload's privileges are kept for the new one (live-verified).
+                    // They are set aside before the overload goes, which takes its privileges with it.
+                    final String replacing = signatureOf(schema, function.getName(), function.getParameters());
+                    for (final Function replaced : schema.getFunctionOverloads(functionName)) {
+                        if (replacing.equals(signatureOf(schema, replaced.getName(), replaced.getParameters()))) {
+                            grantsKept = GrantNames.routine(schema, replaced.getName(), replaced.getParameters());
+                            GrantNames.setAside(catalog, "FUNCTION", grantsKept);
+                        }
+                    }
+                }
                 try {
                     schema.dropFunctionBySignature(functionName, argumentTypes);
                     logger.trace("Dropped existing function overload for OR REPLACE: {}", qualifiedName);
@@ -299,12 +330,64 @@ public class CreateRoutineHandler implements CommandHandler {
             function.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "FUNCTION", schema, function.getName(),
                 function.getParameters()));
             schema.addFunction(function);
+            keepHandlerClasses(environments, ctx, handler, body);
+            if (grantsKept != null) {
+                GrantNames.takeBack(catalog, "FUNCTION", grantsKept, true);
+                GrantNames.renamed(catalog, "FUNCTION", grantsKept,
+                    GrantNames.routine(schema, function.getName(), function.getParameters()));
+            }
             logger.trace("Created function: {}", qualifiedName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
             logger.debug("Function already exists (IF NOT EXISTS): {}", qualifiedName);
         }
         return null;
+    }
+
+    /** Keep a created routine's handler classes at its TARGET_PATH, when its options name one. */
+    private static void keepHandlerClasses(final RoutineEnvironments environments,
+                                           final FrostlakeParser.CreateStatementContext ctx, final String handler,
+                                           final String body) {
+        final String targetPath = RoutineEnvironments.writtenTargetPath(ctx.functionOption());
+        if (targetPath != null) {
+            environments.store(targetPath, functionLanguage(ctx), handler, body);
+        }
+    }
+
+    /** The target path of the function overload a CREATE OR REPLACE replaces, or null when it replaces none. */
+    private static String replacedFunctionPath(final Schema schema, final String name,
+                                               final List<DataType> argumentTypes) {
+        try {
+            return schema.getFunctionByWrittenSignature(name, argumentTypes).getEnvironment().getTargetPath();
+        } catch (final RuntimeException nothingReplaced) {
+            return null;
+        }
+    }
+
+    /** The target path of the procedure overload a CREATE OR REPLACE replaces, or null when it replaces none. */
+    private static String replacedProcedurePath(final Schema schema, final String name,
+                                                final List<DataType> argumentTypes) {
+        try {
+            return schema.getProcedureByWrittenSignature(name, argumentTypes).getEnvironment().getTargetPath();
+        } catch (final RuntimeException nothingReplaced) {
+            return null;
+        }
+    }
+
+    /** A routine's name and argument type families, whatever defaults its parameters carry: what tells an overload. */
+    private static String signatureOf(final Schema schema, final String name, final List<Parameter> parameters) {
+        return GrantNames.routine(schema, name, parameters).replace("DEFAULT ", "");
+    }
+
+    /**
+     * COPY GRANTS copies a replaced routine's privileges, so a CREATE that replaces nothing has none to copy
+     * (live-verified).
+     */
+    private static void rejectSourcelessCopyGrants(final FrostlakeParser.CreateStatementContext ctx) {
+        if (!ctx.copyGrants().isEmpty() && ctx.or_replace() == null) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Invalid operation COPY GRANTS without specifying source object. Please use OR REPLACE"));
+        }
     }
 
     /** Whether a CREATE FUNCTION names a SERVICE: a service function. */
@@ -326,6 +409,7 @@ public class CreateRoutineHandler implements CommandHandler {
         // function: what the statement says of itself, then the schema, then an existing overload, then the rest
         // (live-verified).
         RoutineStatementRules.judge(ctx);
+        rejectSourcelessCopyGrants(ctx);
         final UdfLanguage procedureLanguage = functionLanguage(ctx);
         rejectVectorSignature(ctx, procedureLanguage, true, hasMemoizableOption(ctx));
         // A procedure is never memoizable. Its language is judged first, as a function's is (live-verified).
@@ -335,7 +419,11 @@ public class CreateRoutineHandler implements CommandHandler {
         }
         final Schema schema = routineSchema(parts, qualifiedName, "procedure");
         final String procedureName = parts[parts.length - 1];
-        ddl.checkCreatePrivilege(Privilege.CREATE_PROCEDURE, schema);
+        if (TemporaryObjectStatements.isTemporary(ctx)) {
+            schema.requireCreatable(Privilege.CREATE_PROCEDURE);
+        } else {
+            ddl.checkCreatePrivilege(Privilege.CREATE_PROCEDURE, schema);
+        }
         final List<Parameter> parameters = parseParameters(ctx);
         // OR REPLACE needs OWNERSHIP of the overload it replaces; the overload itself is dropped only once the
         // new definition has passed every check, so a refused replacement leaves it in place.
@@ -348,6 +436,10 @@ public class CreateRoutineHandler implements CommandHandler {
 
         validateRoutineProperties(procedureLanguage.name(), functionRuntimeVersion(ctx), functionHandler(ctx),
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
+        final RoutineEnvironments environments = new RoutineEnvironments(catalog, queryExecutor);
+        final RoutineEnvironment environment = environments.read(ctx.functionOption(), procedureLanguage, true,
+            ctx.bodyDefinition() != null, orReplace ? replacedProcedurePath(schema, procedureName, argumentTypes) : null);
+        requireBody(ctx, procedureLanguage, true);
         rejectRepeatedSignatureNames(ctx);
         rejectServiceOptions(ctx);
 
@@ -419,13 +511,15 @@ public class CreateRoutineHandler implements CommandHandler {
 
             final Procedure procedure = new Procedure(procedureName, parameters, returnType, body, language, handler, runtimeVersion, packages);
             procedure.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
+            procedure.setSecure(ctx.SECURE() != null);
             procedure.setReturnsTable(procedureReturnsTable);
             procedure.setReturnColumns(procReturnColumns);
             procedure.setNullHandling(nullHandling.getSqlText());
             procedure.setVolatility(volatility.name());
+            procedure.setEnvironment(environment);
 
             if (hasImportsOption(ctx)) {
-                procedure.setImports(functionImports(ctx));
+                procedure.setImports(RoutineImports.canonical(functionImports(ctx), catalog));
             }
 
             if (comment != null) {
@@ -433,13 +527,24 @@ public class CreateRoutineHandler implements CommandHandler {
             }
 
             if (!ctx.executeAsClause().isEmpty()) {
-                final String execAs = ctx.executeAsClause(0).OWNER() != null ? "OWNER" : "CALLER";
-                procedure.setExecuteAs(execAs);
+                procedure.setExecuteAs(executeAsText(ctx.executeAsClause(0)));
             }
 
             RoutineBodyCompiler.compileProcedureBody(procedure);
 
+            String grantsKept = null;
             if (orReplace) {
+                if (!ctx.copyGrants().isEmpty()) {
+                    // COPY GRANTS: the replaced overload's privileges are kept for the new one (live-verified).
+                    // They are set aside before the overload goes, which takes its privileges with it.
+                    final String replacing = signatureOf(schema, procedure.getName(), procedure.getParameters());
+                    for (final Procedure replaced : schema.getProcedureOverloads(procedureName)) {
+                        if (replacing.equals(signatureOf(schema, replaced.getName(), replaced.getParameters()))) {
+                            grantsKept = GrantNames.routine(schema, replaced.getName(), replaced.getParameters());
+                            GrantNames.setAside(catalog, "PROCEDURE", grantsKept);
+                        }
+                    }
+                }
                 try {
                     schema.dropProcedureBySignature(procedureName, argumentTypes);
                     logger.trace("Dropped existing procedure overload for OR REPLACE: {}", qualifiedName);
@@ -451,6 +556,12 @@ public class CreateRoutineHandler implements CommandHandler {
             procedure.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "PROCEDURE", schema, procedure.getName(),
                 procedure.getParameters()));
             schema.addProcedure(procedure);
+            keepHandlerClasses(environments, ctx, handler, body);
+            if (grantsKept != null) {
+                GrantNames.takeBack(catalog, "PROCEDURE", grantsKept, true);
+                GrantNames.renamed(catalog, "PROCEDURE", grantsKept,
+                    GrantNames.routine(schema, procedure.getName(), procedure.getParameters()));
+            }
             logger.trace("Created procedure: {}", qualifiedName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
@@ -636,8 +747,9 @@ public class CreateRoutineHandler implements CommandHandler {
 
     /**
      * The schema a routine is created in: the current one for a bare name, one of the current database for a
-     * two-part name, the named one for a three-part name. A database or schema that is not there is refused
-     * here, after what the statement says of itself and before anything else (live-verified).
+     * two-part name, the named one for a three-part name, each qualifier matched exactly. A database or schema
+     * that is not there is refused here, after what the statement says of itself and before anything else
+     * (live-verified).
      */
     private Schema routineSchema(final String[] parts, final String qualifiedName, final String kind) {
         if (parts.length == 1) {
@@ -647,10 +759,10 @@ public class CreateRoutineHandler implements CommandHandler {
             if (catalog.getCurrentDatabase() == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
             }
-            return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
+            return catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(parts[0]);
         }
         if (parts.length == 3) {
-            return catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            return catalog.databaseExact(parts[0]).schemaExact(parts[1]);
         }
         throw new RuntimeException("Invalid " + kind + " name: " + qualifiedName);
     }
@@ -710,7 +822,7 @@ public class CreateRoutineHandler implements CommandHandler {
                             : ctx.returnType().columnList().columnOrConstraint()) {
                         if (column.columnDef() != null) {
                             returnColumns.add(new Parameter(
-                                ParseTreeText.namePartText(column.columnDef().columnDefName()).toUpperCase(),
+                                ParseTreeText.namePartText(column.columnDef().columnDefName()),
                                 columnParser.parseDataType(column.columnDef().dataTypeName(),
                                     column.columnDef().typeParameters())));
                         }
@@ -733,6 +845,18 @@ public class CreateRoutineHandler implements CommandHandler {
         RoutineBodyCompiler.compileFunctionBody(function);
     }
 
+
+    /** The session's current schema, or {@code fallback} when the session has none. */
+    private Schema sessionSchemaOr(final Schema fallback) {
+        if (catalog.getCurrentDatabase() == null || catalog.getCurrentSchema() == null) {
+            return fallback;
+        }
+        try {
+            return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+        } catch (final RuntimeException dropped) {
+            return fallback;
+        }
+    }
 
     /**
      * The per-language property rules, live-verified and applied to functions and procedures alike, judged
@@ -791,6 +915,56 @@ public class CreateRoutineHandler implements CommandHandler {
             throw new RuntimeException("Property 'handler' must be specified");
         }
         rejectDecommissionedRuntime(lang, runtimeVersion);
+    }
+
+    /**
+     * Refuse a routine written with neither a body nor a file to take one from, in the account's words by
+     * language: a procedure and a JavaScript function ask for the AS property, a handler language for a body or an
+     * import, and a SQL table function for its query. A SQL scalar function alone may be written without one — it
+     * answers NULL. The refusal follows the routine's other properties, a TARGET_PATH that wants a body among
+     * them, and precedes its signature's names; IF NOT EXISTS over an existing overload does not spare it
+     * (live-verified).
+     *
+     * @param ctx       the CREATE statement
+     * @param language  the routine's language
+     * @param procedure whether the routine is a procedure
+     */
+    private static void requireBody(final FrostlakeParser.CreateStatementContext ctx, final UdfLanguage language,
+                                    final boolean procedure) {
+        if (ctx.bodyDefinition() != null) {
+            return;
+        }
+        switch (language) {
+            case SQL:
+                if (procedure) {
+                    throw new RuntimeException("Property 'as' must be specified");
+                }
+                if (ctx.returnType() != null && ctx.returnType().TABLE() != null) {
+                    throw new RuntimeException("Table function definition expected a subquery, found 'null'.");
+                }
+                return;
+            case JAVASCRIPT:
+                throw new RuntimeException("Property 'as' must be specified");
+            case PYTHON:
+                requireImportedBody(ctx, "a ZIP or PY file");
+                return;
+            case JAVA:
+                requireImportedBody(ctx, "a JAR file");
+                return;
+            case SCALA:
+                requireImportedBody(ctx, "a function body or imports file");
+                return;
+            default:
+                return;
+        }
+    }
+
+    /** A handler language's routine without a body takes its code from an import, or is refused. */
+    private static void requireImportedBody(final FrostlakeParser.CreateStatementContext ctx, final String file) {
+        if (!hasImportsOption(ctx)) {
+            throw new RuntimeException(SqlCompilationError.inline(
+                "Either a function BODY or " + file + " in the IMPORTS clause is required."));
+        }
     }
 
     /**
@@ -1028,4 +1202,17 @@ public class CreateRoutineHandler implements CommandHandler {
         }
     }
 
+
+    /**
+     * The mode an EXECUTE AS clause writes: OWNER, CALLER or RESTRICTED CALLER.
+     *
+     * @param clause the clause
+     * @return the mode as SQL writes it
+     */
+    static String executeAsText(final FrostlakeParser.ExecuteAsClauseContext clause) {
+        if (clause.OWNER() != null) {
+            return "OWNER";
+        }
+        return clause.identifier() != null ? "RESTRICTED CALLER" : "CALLER";
+    }
 }

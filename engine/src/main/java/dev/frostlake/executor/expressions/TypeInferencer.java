@@ -300,6 +300,10 @@ final class TypeInferencer {
                     }
                 }
             }
+            if (visitor.readsUntypedNull(reference)) {
+                // A column holding nothing but an untyped NULL has no type, as the bare word has none.
+                return null;
+            }
             final TableColumn resolved = visitor.resolveDeclaredColumn((ColumnReferenceExpression) expr);
             if (resolved == null && visitor.readsSequence(reference)) {
                 return SequenceRead.TYPE;
@@ -396,7 +400,7 @@ final class TypeInferencer {
                 // NUMBER(19,0), NULL * n10_2 NUMBER(28,2), NULL / n10_2 NUMBER(26,6), NULL + NULL
                 // NUMBER(19,0) — and a NUMBER(1,0) under the remainder operator (NULL % 7 is
                 // NUMBER(2,0), NULL % n10_2 NUMBER(10,2)); a FLOAT or a text beside it keeps its own
-                // rule. Beside a DATE, a TIME, a TIMESTAMP or a BOOLEAN the pair is refused at the
+                // rule. Beside a DATE, a TIME, a TIMESTAMP, a BOOLEAN or a BINARY the pair is refused at the
                 // operator, the NULL spelled as such: "Invalid argument types for function '+':
                 // (DATE, NULL)" (all live-verified).
                 final boolean leftNull = leftType == null && isNullLiteral(binary.getLeft());
@@ -404,8 +408,8 @@ final class TypeInferencer {
                 if (leftNull && refusesNullBeside(rightType) || rightNull && refusesNullBeside(leftType)) {
                     throw new RuntimeException(positioned("Invalid argument types for function '"
                         + operatorSymbol(binary.getOperator()) + "': ("
-                        + (leftNull ? "NULL" : SqlTypeNames.canonical(leftType)) + ", "
-                        + (rightNull ? "NULL" : SqlTypeNames.canonical(rightType)) + ")", binary));
+                        + (leftNull ? "NULL" : besideNull(leftType)) + ", "
+                        + (rightNull ? "NULL" : besideNull(rightType)) + ")", binary));
                 }
                 if (leftNull && (rightNull || acceptsNullBeside(rightType))) {
                     leftType = arithmeticNullType(binary.getOperator(), rightType);
@@ -519,7 +523,8 @@ final class TypeInferencer {
             visitor.validateComparingCollation(call);
             // SYSTEM$TYPEOF answers a string of no width: its result column is VARCHAR(134217728), typed
             // again it reads VARCHAR, and a table built over it stores VARCHAR(16777216) (live-verified).
-            if ("SYSTEM$TYPEOF".equals(funcName)) {
+            // SYSTEM$WAIT's sentence is a result column of that width too.
+            if ("SYSTEM$TYPEOF".equals(funcName) || "SYSTEM$WAIT".equals(funcName)) {
                 return WidthlessStringType.WIDTHLESS;
             }
             if (CONDITIONAL_FUNCTIONS.contains(funcName)) {
@@ -1617,7 +1622,10 @@ final class TypeInferencer {
      * @return true for an untyped NULL
      */
     private boolean isNullLiteral(final Expression branch) {
-        return UntypedNullFold.isUntypedNull(branch);
+        // A reference to a column that holds nothing but an untyped NULL is read as the bare word.
+        return UntypedNullFold.isUntypedNull(branch)
+            || branch instanceof ColumnReferenceExpression
+                && visitor.readsUntypedNull((ColumnReferenceExpression) branch);
     }
 
     private boolean laterBranchIsBinary(final List<Expression> branches, final Expression from) {
@@ -1701,6 +1709,16 @@ final class TypeInferencer {
             // [INTERVAL DAY(9) TO SECOND(9)] (live-verified).
             return !(expected instanceof BinaryType) && !(offered instanceof BinaryType)
                 && !IntervalCasts.isIntervalType(expected) && !IntervalCasts.isIntervalType(offered);
+        }
+        if (expected instanceof UuidType || offered instanceof UuidType) {
+            // A UUID meets only a text, which reads as one. Beside a number, a date or a boolean it is refused,
+            // whichever of the two comes first: IFF(c, u, 1) names the 1 into [UUID], IFF(c, 1, u) the UUID into
+            // [NUMBER(1,0)] — and so through CASE, COALESCE, NVL, NVL2, DECODE, GREATEST and LEAST (live-verified).
+            final DataType other = expected instanceof UuidType ? offered : expected;
+            if (other instanceof NumericType || other instanceof DateTimeType || other instanceof BooleanType) {
+                return false;
+            }
+            return true;
         }
         if (!knownRefusableFamily(expected) || !knownRefusableFamily(offered)) {
             return true;
@@ -2447,9 +2465,14 @@ final class TypeInferencer {
     }
 
     /** A bare NULL beside one of these is refused in arithmetic. */
+    /** A type as the refusal of a NULL beside it names it: a binary at the width a value of it can have. */
+    private static String besideNull(final DataType type) {
+        return type instanceof BinaryType ? ((BinaryType) type).refusalText() : SqlTypeNames.canonical(type);
+    }
+
     private static boolean refusesNullBeside(final DataType other) {
         return other instanceof DateTimeType || other instanceof BooleanType || other instanceof IntervalDayTimeType
-            || other instanceof IntervalYearMonthType;
+            || other instanceof IntervalYearMonthType || other instanceof BinaryType;
     }
 
     /** A bare NULL beside one of these takes the arithmetic NULL's NUMBER type. */

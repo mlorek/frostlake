@@ -102,7 +102,8 @@ public final class ShowScopeWords {
      * {@code SHOW FUNCTIONS [LIKE '…'] IN}: a USER, BUILTIN or TERSE listing reads MODEL as no kind (live-verified).
      */
     private static boolean listsFunctions(final Token[] before) {
-        final int listing = before[2] != null && before[2].getType() == FrostlakeLexer.STRING_LITERAL ? 4 : 2;
+        final int listing = before[2] != null && (before[2].getType() == FrostlakeLexer.STRING_LITERAL
+            || before[2].getType() == FrostlakeLexer.DOLLAR_QUOTED_STRING) ? 4 : 2;
         if (listing == 4 && (before[3] == null || before[3].getType() != FrostlakeLexer.LIKE)) {
             return false;
         }

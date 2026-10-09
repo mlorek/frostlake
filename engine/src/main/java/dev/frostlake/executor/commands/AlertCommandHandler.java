@@ -24,6 +24,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Alert;
 import dev.frostlake.metastore.model.AlertState;
@@ -91,6 +92,8 @@ public final class AlertCommandHandler {
                 WarehouseReference.requireForTask(catalog, warehouseName(property.warehouseClause()));
             }
         }
+        // Asked once the warehouse is known to be there (live-verified).
+        queryExecutor.requireCreatePrivilege(Privilege.CREATE_ALERT, schema);
         if (schema.hasAlert(name)) {
             if (ctx.or_alter() != null) {
                 alterInPlace(schema, schema.getAlert(name), definition);
@@ -103,7 +106,8 @@ public final class AlertCommandHandler {
                 return null;
             }
             if (ctx.or_replace() == null) {
-                throw new RuntimeException(SqlCompilationError.of("Object '" + name + "' already exists."));
+                throw DDLCommandHandler.namedAsWritten(new NameTakenException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(name) + "' already exists.")), parts);
             }
         }
         final Alert alert;

@@ -17,10 +17,13 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.Taggable;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A Cortex search service: a named, indexed view over one text column of a query's result, queried
@@ -35,7 +38,7 @@ import java.util.List;
  * <p>The embedding model defaults to {@code snowflake-arctic-embed-m-v1.5}, which is the model
  * Snowflake picks when CREATE names none.
  */
-public class CortexSearchService {
+public class CortexSearchService implements Taggable {
 
     /** The model Snowflake indexes with when CREATE names no EMBEDDING_MODEL. */
     public static final String DEFAULT_EMBEDDING_MODEL = "snowflake-arctic-embed-m-v1.5";
@@ -46,8 +49,8 @@ public class CortexSearchService {
     private final String searchColumn;
     private final List<String> attributeColumns;
     private final List<String> columns;
-    private final String warehouse;
-    private final String targetLag;
+    private String warehouse;
+    private String targetLag;
     private final String embeddingModel;
     private final String definition;
     private String comment;
@@ -55,6 +58,11 @@ public class CortexSearchService {
     private String owner;
     private boolean indexingSuspended;
     private boolean servingSuspended;
+    private final List<String> primaryKeyColumns = new ArrayList<String>();
+    private Integer fullIndexBuildIntervalDays;
+    private boolean requestLogging;
+    private Integer autoSuspend;
+    private final Map<String, String> tags = new LinkedHashMap<String, String>();
 
     public CortexSearchService(final String name, final String searchColumn,
                                final List<String> attributeColumns, final List<String> columns,
@@ -175,5 +183,79 @@ public class CortexSearchService {
     /** Suspends or resumes serving. */
     public void setServingSuspended(final boolean servingSuspended) {
         this.servingSuspended = servingSuspended;
+    }
+
+    /** ALTER … SET WAREHOUSE: the warehouse that refreshes the service from now on. */
+    public void setWarehouse(final String warehouse) {
+        this.warehouse = warehouse;
+    }
+
+    /** ALTER … SET TARGET_LAG. */
+    public void setTargetLag(final String targetLag) {
+        this.targetLag = targetLag;
+    }
+
+    /** ALTER … SET ATTRIBUTES (…) / UNSET ATTRIBUTES: the attribute columns, replaced whole. */
+    public void setAttributeColumns(final List<String> attributes) {
+        attributeColumns.clear();
+        attributeColumns.addAll(attributes);
+    }
+
+    /** The primary key columns ALTER … SET PRIMARY KEY names; empty when none is set. */
+    public List<String> getPrimaryKeyColumns() {
+        return new ArrayList<String>(primaryKeyColumns);
+    }
+
+    /** ALTER … SET PRIMARY KEY = (…) / UNSET PRIMARY KEY: the key's columns, replaced whole. */
+    public void setPrimaryKeyColumns(final List<String> columns) {
+        primaryKeyColumns.clear();
+        primaryKeyColumns.addAll(columns);
+    }
+
+    /** The days between full index rebuilds, or null when not set. */
+    public Integer getFullIndexBuildIntervalDays() {
+        return fullIndexBuildIntervalDays;
+    }
+
+    public void setFullIndexBuildIntervalDays(final Integer days) {
+        this.fullIndexBuildIntervalDays = days;
+    }
+
+    /** Whether the service logs its requests. */
+    public boolean isRequestLogging() {
+        return requestLogging;
+    }
+
+    public void setRequestLogging(final boolean requestLogging) {
+        this.requestLogging = requestLogging;
+    }
+
+    /** The seconds of inactivity after which serving suspends, or null when it never does. */
+    public Integer getAutoSuspend() {
+        return autoSuspend;
+    }
+
+    public void setAutoSuspend(final Integer seconds) {
+        this.autoSuspend = seconds;
+    }
+
+    @Override
+    public void setTag(final String tagName, final String value) {
+        tags.put(tagName, value);
+    }
+
+    @Override
+    public void unsetTag(final String tagName) {
+        tags.remove(tagName);
+    }
+
+    @Override
+    public String getTagValue(final String tagName) {
+        return tags.get(tagName);
+    }
+
+    @Override
+    public Map<String, String> getTagValues() {
+        return new LinkedHashMap<String, String>(tags);
     }
 }

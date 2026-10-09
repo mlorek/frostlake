@@ -19,7 +19,11 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RoutineBody;
+import dev.frostlake.executor.RoutineSecretsCheck;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifierSubstitution;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.commands.ServiceFunctions;
 import dev.frostlake.executor.udf.JarHandlerLoader;
@@ -345,8 +349,8 @@ final class UdfInvoker {
     /**
      * Reorder positionally-evaluated argument values to a function's declared parameter order when the call
      * used named arguments — {@code f(b => 2, a => 1)}. Any leading positional arguments (name == null) map
-     * to the first parameters in order; each named argument maps to the parameter whose name matches
-     * (case-insensitive). An unknown name or too many positional arguments is an error.
+     * to the first parameters in order; each named argument maps to the parameter it names, read as an
+     * identifier. An unknown name or too many positional arguments is an error.
      */
     List<Object> reorderNamedArgs(final List<String> names, final List<Object> argValues,
             final List<Parameter> params, final String funcName) {
@@ -363,11 +367,18 @@ final class UdfInvoker {
         }
         for (int j = positional; j < names.size(); j++) {
             final String argName = names.get(j);
+            // A name is read as an identifier is — "A" names the parameter A — and matched exactly; a call no
+            // compile-time rule judged still finds its parameter whatever the case it was written in.
+            final String canonical = SqlIdentifiers.canonicalText(argName);
             int target = -1;
-            for (int p = 0; p < params.size(); p++) {
+            for (int p = 0; p < params.size() && target < 0; p++) {
+                if (params.get(p).getName().equals(canonical)) {
+                    target = p;
+                }
+            }
+            for (int p = 0; p < params.size() && target < 0; p++) {
                 if (params.get(p).getName().equalsIgnoreCase(argName)) {
                     target = p;
-                    break;
                 }
             }
             if (target < 0) {
@@ -388,6 +399,7 @@ final class UdfInvoker {
 
     Object evaluateUserDefinedFunction(final Function function, final List<Object> rawArgs) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        RoutineSecretsCheck.require(catalog, function.getEnvironment());
         final List<Object> args = coerceArgsToParameterTypes(function, withParameterDefaults(function, rawArgs));
         // RETURNS NULL ON NULL INPUT (a.k.a. STRICT): a NULL in ANY argument short-circuits to NULL and the
         // body is NEVER entered. The clause was parsed and stored but not enforced, so a handler written on
@@ -462,7 +474,25 @@ final class UdfInvoker {
         return result;
     }
 
+    /**
+     * A SQL function's body, run where the function lives: the names it writes without a schema are looked for
+     * in the function's own schema — then along the search path from there — whatever schema the calling
+     * session is in, and CURRENT_SCHEMA() inside it is the function's (live-verified).
+     */
     private Object evaluateSqlFunction(final Function function, final List<Object> args) {
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        if (queryExecutor == null) {
+            return evaluateSqlFunctionBody(function, args);
+        }
+        return queryExecutor.inRoutineHome(function.getHome(), new RoutineBody() {
+            @Override
+            public Object run() {
+                return evaluateSqlFunctionBody(function, args);
+            }
+        });
+    }
+
+    private Object evaluateSqlFunctionBody(final Function function, final List<Object> args) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         // A body that closes its own frame before a semicolon runs what the frame holds (see SqlUdfBodyFrame).
         final String body = SqlUdfBodyFrame.executableBody(function.getBody());
@@ -477,18 +507,27 @@ final class UdfInvoker {
         if (queryExecutor != null && queryExecutor.isQueryStatement(trimmedBody)) {
             // Substitute parameter placeholders
             final String sql = substituteParams(trimmedBody, params, args);
+            final List<ResultSet> results;
             try {
                 // The body is part of the calling query, not a statement of its own: Snowflake inlines it, so
                 // it takes no query ID and adds nothing to QUERY_HISTORY, however many rows call it.
-                final List<ResultSet> results = queryExecutor.executeUnrecorded(sql);
-                if (!results.isEmpty() && results.get(0).getRowCount() > 0) {
-                    return results.get(0).getRows().get(0).getValue(0);
-                }
-                return null;
+                results = queryExecutor.executeUnrecorded(sql);
             } catch (final Exception e) {
                 rethrowDeferredConversion(args, e);
+                if (e instanceof RuntimeException && SqlCompilationError.isCompilationError(e.getMessage())) {
+                    // A name the body's query cannot resolve is the statement's own compilation error.
+                    throw (RuntimeException) e;
+                }
                 throw new RuntimeException("Error executing SQL function: " + describe(e), e);
             }
+            if (results.isEmpty() || results.get(0).getRowCount() == 0) {
+                return null;
+            }
+            if (results.get(0).getRowCount() > 1) {
+                // The body is the scalar subquery the call inlines, and answers as one (live-verified).
+                throw new RuntimeException("Single-row subquery returns more than one row.");
+            }
+            return results.get(0).getRows().get(0).getValue(0);
         }
 
         // A body that is a Snowflake-Scripting block runs as one — parameters bound as procedural
@@ -554,7 +593,7 @@ final class UdfInvoker {
                 return eval.evaluate(exprBody, paramRow);
             } catch (final Exception e) {
                 rethrowDeferredConversion(args, e);
-                throw new RuntimeException("Error in SQL function body: " + describe(e), e);
+                throw inBody(e);
             }
         }
 
@@ -570,10 +609,21 @@ final class UdfInvoker {
             try {
                 return eval.evaluate(exprBody, emptyRow);
             } catch (final Exception e) {
-                throw new RuntimeException("Error in SQL function body: " + describe(e), e);
+                throw inBody(e);
             }
         }
         return null;
+    }
+
+    /**
+     * A failure of a function's expression body. A name the body cannot resolve is the statement's own
+     * compilation error, as the account reports it; anything else says where it came from.
+     */
+    private RuntimeException inBody(final Exception failure) {
+        if (failure instanceof RuntimeException && SqlCompilationError.isCompilationError(failure.getMessage())) {
+            return (RuntimeException) failure;
+        }
+        return new RuntimeException("Error in SQL function body: " + describe(failure), failure);
     }
 
     /**
@@ -710,7 +760,8 @@ final class UdfInvoker {
         // The handler class comes from the IMPORTS jar(s) if given, else from compiling the inline body.
         final Class<?> compiledClass;
         if (!function.getImports().isEmpty()) {
-            compiledClass = JarHandlerLoader.load(function.getImports(), className, catalog,
+            compiledClass = JarHandlerLoader.load(queryExecutor != null
+                    ? queryExecutor.localImports(function.getImports()) : function.getImports(), className, catalog,
                 queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
         } else {
             final String sourceCode = function.getBody();
@@ -736,9 +787,9 @@ final class UdfInvoker {
             final Object arg = sqlArgs.get(i);
             if (arg == null) {
                 javaArgs[i] = null;
-            } else if (arg instanceof Long) {
-                javaArgs[i] = ((Long) arg).intValue();
             } else if (arg instanceof Number || arg instanceof String || arg instanceof Boolean) {
+                // A number goes as it is: the handler's own parameter type decides which Java number it
+                // becomes (JavaFunctionCompiler.invokeMethod).
                 javaArgs[i] = arg;
             } else {
                 javaArgs[i] = arg.toString();

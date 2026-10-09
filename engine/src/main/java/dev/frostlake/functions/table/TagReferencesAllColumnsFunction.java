@@ -1,0 +1,135 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package dev.frostlake.functions.table;
+
+import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.functions.TableFunction;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.Taggable;
+import dev.frostlake.metastore.model.MaterializedView;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.View;
+import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/**
+ * The INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS(object_name, object_domain) TABLE FUNCTION — the tags reaching
+ * every column of one table-like object, as
+ * {@code SELECT … FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS('db.schema.t', 'TABLE'))}.
+ *
+ * <p>It answers {@link TagReferencesFunction}'s columns, one row per column and tag: a tag set on the column
+ * itself ({@code LEVEL} {@code COLUMN}, {@code APPLY_METHOD} {@code MANUAL}) and each tag the column inherits
+ * from its table, schema and database. The rows of one tag stay together, its columns in their own order.
+ *
+ * <p>The domain is {@code TABLE} for every table-like object: a kind of one is refused as
+ * {@link TagReferencesFunction} refuses it, any other domain the account knows as not supported, and an unknown one
+ * as unknown (live-verified).
+ */
+public class TagReferencesAllColumnsFunction extends TableFunction {
+
+    private static final String NAME = "TAG_REFERENCES_ALL_COLUMNS";
+
+    private final Catalog catalog;
+    private final TagReferencesFunction references;
+
+    public TagReferencesAllColumnsFunction(final Catalog catalog) {
+        super(NAME);
+        this.catalog = catalog;
+        this.references = new TagReferencesFunction(catalog);
+    }
+
+    @Override
+    public void validateArgs(final Map<String, Object> namedArgs) {
+        // Validated in execute, where both positional arguments are in hand.
+    }
+
+    @Override
+    public ResultSet execute(final Map<String, Object> namedArgs) {
+        throw new RuntimeException(NAME + " requires an object name and an object domain");
+    }
+
+    @Override
+    public ResultSet execute(final List<Object> positionalArgs) {
+        TagReferencesFunction.requireArguments(NAME, positionalArgs);
+        final String domain = positionalArgs.get(1).toString().trim().toUpperCase(Locale.ROOT);
+        if ("VIEW".equals(domain) || "MATERIALIZED VIEW".equals(domain)) {
+            throw new RuntimeException(TagReferencesFunction.tableLikeOnly(domain));
+        }
+        if (!"TABLE".equals(domain)) {
+            throw new RuntimeException(TagReferencesFunction.isDomain(domain)
+                ? "Unsupported feature 'Only table-like objects are currently supported'."
+                : "Unknown domain: " + domain + ".");
+        }
+        final String[] written = SqlIdentifiers.canonicalTextParts(positionalArgs.get(0).toString());
+        final String objectName = QualifiedName.join(written);
+        final String[] name = references.tableName(written, objectName);
+        final Schema schema = references.tableSchema(name, objectName);
+        final Taggable table = references.requireTableLike(schema, name[2], written, objectName);
+        final List<Row> rows = new ArrayList<Row>();
+        for (final Taggable column : columnsOf(table)) {
+            references.addLineage(rows, new Taggable[] {column instanceof TableColumn ? column : null, table, schema,
+                catalog.getDatabase(name[0])}, new String[] {"COLUMN", "TABLE", "SCHEMA", "DATABASE"}, name[0],
+                name[1], name[2], "COLUMN", nameOf(column));
+        }
+        // The rows of one tag stay together; the sort is stable, so its columns keep their order.
+        Collections.sort(rows, new Comparator<Row>() {
+            @Override
+            public int compare(final Row a, final Row b) {
+                return tagOf(a).compareTo(tagOf(b));
+            }
+        });
+        return new ResultSet(TagReferencesFunction.columns(), rows);
+    }
+
+    private static String tagOf(final Row row) {
+        return row.getValue(0) + "." + row.getValue(1) + "." + row.getValue(2);
+    }
+
+    /**
+     * The object's columns: a table's own, and a view's as its query resolved them. A view's column carries no
+     * tag of its own, so it stands here by its name alone.
+     */
+    private static List<Taggable> columnsOf(final Taggable object) {
+        final List<Taggable> columns = new ArrayList<Taggable>();
+        if (object instanceof Table) {
+            columns.addAll(((Table) object).getColumns());
+            return columns;
+        }
+        final List<TableColumn> resolved = object instanceof View ? ((View) object).getResolvedColumns()
+            : object instanceof MaterializedView ? ((MaterializedView) object).getResolvedColumns() : null;
+        if (resolved != null) {
+            for (final TableColumn column : resolved) {
+                columns.add(new NamedColumn(column.getName()));
+            }
+        }
+        return columns;
+    }
+
+    private static String nameOf(final Taggable column) {
+        return column instanceof TableColumn ? ((TableColumn) column).getName() : ((NamedColumn) column).getName();
+    }
+}

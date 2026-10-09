@@ -22,6 +22,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -214,8 +217,15 @@ public class RestTableTest extends BaseRestTest {
 
     @Test
     public void usingTemplateTakesTheColumnsTheQueryDescribes() throws Exception {
-        final String query = "SELECT%20ARRAY_AGG(OBJECT_CONSTRUCT('COLUMN_NAME',%20value::VARCHAR,%20'TYPE',%20'TEXT',"
-            + "%20'NULLABLE',%20FALSE))%20FROM%20TABLE(FLATTEN(INPUT%20%3D%3E%20ARRAY_CONSTRUCT('c1')))";
+        // A template query reads INFER_SCHEMA, so a file is staged for it to read.
+        final Path file = Files.createTempDirectory("fl_rest_tpl").resolve("one.csv");
+        Files.writeString(file, "c1\nx\n");
+        sql("CREATE OR REPLACE STAGE rest_db.s1.tpl_st");
+        sql("CREATE OR REPLACE FILE FORMAT rest_db.s1.tpl_ff TYPE = CSV PARSE_HEADER = TRUE");
+        sql("PUT file://" + file.toAbsolutePath() + " @rest_db.s1.tpl_st AUTO_COMPRESS=FALSE");
+        final String query = "SELECT%20ARRAY_AGG(OBJECT_CONSTRUCT('COLUMN_NAME',%20column_name,%20'TYPE',%20'TEXT',"
+            + "%20'NULLABLE',%20FALSE))%20FROM%20TABLE(INFER_SCHEMA(LOCATION%20%3D%3E%20'@rest_db.s1.tpl_st',"
+            + "%20FILE_FORMAT%20%3D%3E%20'rest_db.s1.tpl_ff'))";
         ok(post(TABLES + ":using-template?query=" + query, "{\"name\":\"t_tpl\"}"));
         final JsonNode column = ok(get(TABLES + "/t_tpl")).path("columns").get(0);
         assertEquals("\"c1\"", column.path("name").asString());

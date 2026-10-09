@@ -19,8 +19,9 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 
+import dev.frostlake.parser.SqlCharStream;
+import dev.frostlake.parser.TypeParameterLines;
 import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Token;
@@ -64,7 +65,7 @@ public final class AntlrExpressionParser {
      * @return the parse tree of the whole expression (the grammar's {@code booleanExpr} entry rule)
      */
     public static FrostlakeParser.BooleanExprContext parseTree(final String expression) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
 
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
@@ -94,7 +95,7 @@ public final class AntlrExpressionParser {
      * @return the token the parser stopped at — its line and position locate the syntax error
      */
     public static Token failurePoint(final String expression) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
 
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
@@ -121,7 +122,7 @@ public final class AntlrExpressionParser {
      * @return the offending token, or null when the parse did not fail
      */
     public static Token offendingToken(final String expression) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(expression));
         lexer.removeErrorListeners();
 
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
@@ -133,10 +134,14 @@ public final class AntlrExpressionParser {
             parser.booleanExpr();
             return null;
         } catch (final ParseCancellationException bailed) {
-            if (bailed.getCause() instanceof RecognitionException) {
-                return ((RecognitionException) bailed.getCause()).getOffendingToken();
+            final Token offending = bailed.getCause() instanceof RecognitionException
+                ? ((RecognitionException) bailed.getCause()).getOffendingToken() : parser.getCurrentToken();
+            if (offending != null && offending.getType() == Token.EOF) {
+                // A text that stops in a type's parameter list is refused at the list, not at its end.
+                final Token inList = TypeParameterLines.unfinishedAt(tokens, offending);
+                return inList != null ? inList : offending;
             }
-            return parser.getCurrentToken();
+            return offending;
         }
     }
 }

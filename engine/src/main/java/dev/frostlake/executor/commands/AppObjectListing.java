@@ -325,7 +325,7 @@ public class AppObjectListing {
         final List<ResultSetColumn> columns = new ArrayList<>();
         for (int i = 0; i < names.size(); i++) {
             if ("idle_auto_shutdown_time_seconds".equals(names.get(i))) {
-                columns.add(new ResultSetColumn(names.get(i), NumericType.BIGINT));
+                columns.add(new ResultSetColumn(names.get(i), NumericType.NUMBER));
             } else {
                 columns.add(new ResultSetColumn(names.get(i), StringType.VARCHAR));
             }
@@ -341,7 +341,7 @@ public class AppObjectListing {
             if ("created_on".equals(name)) {
                 columns.add(new ResultSetColumn(name, ShowResultHelpers.CREATED_ON));
             } else if ("idle_auto_shutdown_time_seconds".equals(name)) {
-                columns.add(new ResultSetColumn(name, NumericType.BIGINT));
+                columns.add(new ResultSetColumn(name, NumericType.NUMBER));
             } else {
                 columns.add(new ResultSetColumn(name, StringType.VARCHAR));
             }

@@ -611,6 +611,11 @@ public final class SharedFunctionHelpers {
             throw new RuntimeException("Timestamp '" + s + "' is not recognized");
         }
         if (offset[0] == AutoTemporalParser.NO_OFFSET) {
+            // A wall clock the zone's clocks skip is read where it stands, not moved forward.
+            final ZoneOffset skipped = SkippedWallClock.offset(scanned, zone);
+            if (skipped != null) {
+                return scanned.toInstant(skipped).atZone(zone).toOffsetDateTime();
+            }
             return scanned.atZone(zone).toOffsetDateTime();
         }
         return scanned.toInstant(ZoneOffset.ofTotalSeconds(offset[0] * 60))
@@ -664,6 +669,11 @@ public final class SharedFunctionHelpers {
             throw new RuntimeException("Timestamp '" + s + "' is not recognized");
         }
         if (offset[0] == AutoTemporalParser.NO_OFFSET) {
+            // A wall clock the zone's clocks skip keeps its digits, at one of the two offsets around the change.
+            final ZoneOffset skipped = SkippedWallClock.offset(scanned, zone);
+            if (skipped != null) {
+                return scanned.atOffset(skipped).toZonedDateTime();
+            }
             return scanned.atZone(zone).withFixedOffsetZone();
         }
         return scanned.atOffset(ZoneOffset.ofTotalSeconds(offset[0] * 60)).toZonedDateTime();
@@ -1175,16 +1185,25 @@ public final class SharedFunctionHelpers {
         }
     }
 
+    /**
+     * The weekday a NEXT_DAY or PREVIOUS_DAY word names: its first two letters decide, in any case, after any
+     * leading spaces — {@code 'mo'}, {@code 'Mon'} and {@code 'monday'} are all a Monday — and a word that names
+     * none is "Weekday 'zz' is not recognized" (live-verified).
+     *
+     * @param name the word as given
+     * @return the weekday
+     */
     public static DayOfWeek parseDayOfWeek(final String name) {
-        switch (name.toUpperCase().substring(0, Math.min(3, name.length()))) {
-            case "MON": return DayOfWeek.MONDAY;
-            case "TUE": return DayOfWeek.TUESDAY;
-            case "WED": return DayOfWeek.WEDNESDAY;
-            case "THU": return DayOfWeek.THURSDAY;
-            case "FRI": return DayOfWeek.FRIDAY;
-            case "SAT": return DayOfWeek.SATURDAY;
-            case "SUN": return DayOfWeek.SUNDAY;
-            default: throw new RuntimeException("Unknown day of week: " + name);
+        final String word = name.stripLeading().toUpperCase(Locale.ROOT);
+        switch (word.substring(0, Math.min(2, word.length()))) {
+            case "MO": return DayOfWeek.MONDAY;
+            case "TU": return DayOfWeek.TUESDAY;
+            case "WE": return DayOfWeek.WEDNESDAY;
+            case "TH": return DayOfWeek.THURSDAY;
+            case "FR": return DayOfWeek.FRIDAY;
+            case "SA": return DayOfWeek.SATURDAY;
+            case "SU": return DayOfWeek.SUNDAY;
+            default: throw new RuntimeException("Weekday '" + name + "' is not recognized");
         }
     }
     /** {@code unit.toUpperCase()} with one trailing {@code S} removed — the plural strip without a

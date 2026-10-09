@@ -20,11 +20,11 @@ import dev.frostlake.BuildInfo;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
@@ -963,7 +963,7 @@ public class ConsoleClient {
      * unterminated string or $$ body at the tail) and its last token is a semicolon.
      */
     private boolean endsAtStatementBoundary(final String sqlSoFar) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sqlSoFar));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sqlSoFar));
         final boolean[] lexError = new boolean[1];
         lexer.removeErrorListeners();
         lexer.addErrorListener(new BaseErrorListener() {

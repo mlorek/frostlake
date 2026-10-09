@@ -22,6 +22,8 @@ import tools.jackson.databind.node.ArrayNode;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -119,6 +121,31 @@ public class JavaFunctionCompiler {
         }
     }
 
+    /**
+     * Compiles Java source code and hands back every class it produced, for a caller that keeps the classes
+     * rather than running them.
+     *
+     * @param sourceCode the Java source code
+     * @param className the class the source declares
+     * @return the classes' bytes by binary name, in name order
+     */
+    public Map<String, byte[]> compileClasses(final String sourceCode, final String className) {
+        final JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null) {
+            throw new RuntimeException("Java compiler not available. Make sure you are running with JDK, not JRE.");
+        }
+        final InMemoryJavaFileManager fileManager = new InMemoryJavaFileManager(
+            compiler.getStandardFileManager(null, null, null));
+        final DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
+        final JavaFileObject javaFile = new InMemoryJavaFile(className, sourceCode);
+        final JavaCompiler.CompilationTask task = compiler.getTask(null, fileManager, diagnostics, null, null,
+            Arrays.asList(javaFile));
+        if (!task.call()) {
+            throw new RuntimeException("Error while compiling source: " + describe(diagnostics));
+        }
+        return fileManager.getAllClassBytes();
+    }
+
     /** The compiler's own complaints, one per line, as the raised error will quote them. */
     private static String describe(final DiagnosticCollector<JavaFileObject> diagnostics) {
         final StringBuilder text = new StringBuilder();
@@ -186,9 +213,48 @@ public class JavaFunctionCompiler {
                     adapted = args.clone();
                 }
                 adapted[i] = jsonArrayToStringArray((String) args[i]);
+            } else if (args[i] instanceof Number && isNumeric(paramTypes[i])) {
+                if (adapted == args) {
+                    adapted = args.clone();
+                }
+                adapted[i] = toNumber((Number) args[i], paramTypes[i]);
             }
         }
         return adapted;
+    }
+
+    /** Whether a parameter takes a number: a numeric primitive, its box, or an arbitrary-precision number. */
+    private static boolean isNumeric(final Class<?> type) {
+        return type == int.class || type == Integer.class || type == long.class || type == Long.class
+            || type == short.class || type == Short.class || type == byte.class || type == Byte.class
+            || type == double.class || type == Double.class || type == float.class || type == Float.class
+            || type == BigDecimal.class || type == BigInteger.class;
+    }
+
+    /** A SQL number as the Java number a handler's parameter takes: a NUMBER is an int, a long or a BigDecimal alike. */
+    private static Object toNumber(final Number value, final Class<?> type) {
+        if (type == int.class || type == Integer.class) {
+            return Integer.valueOf(value.intValue());
+        }
+        if (type == long.class || type == Long.class) {
+            return Long.valueOf(value.longValue());
+        }
+        if (type == short.class || type == Short.class) {
+            return Short.valueOf(value.shortValue());
+        }
+        if (type == byte.class || type == Byte.class) {
+            return Byte.valueOf(value.byteValue());
+        }
+        if (type == double.class || type == Double.class) {
+            return Double.valueOf(value.doubleValue());
+        }
+        if (type == float.class || type == Float.class) {
+            return Float.valueOf(value.floatValue());
+        }
+        if (type == BigDecimal.class) {
+            return value instanceof BigDecimal ? value : new BigDecimal(value.toString());
+        }
+        return value instanceof BigInteger ? value : new BigDecimal(value.toString()).toBigInteger();
     }
 
     /** Parse a JSON array text into its element strings (textual elements unquoted, others as JSON text). */
@@ -240,6 +306,10 @@ public class JavaFunctionCompiler {
             return !paramType.isPrimitive();
         }
         if (paramType.isAssignableFrom(argType)) {
+            return true;
+        }
+        // A SQL number is handed to whichever Java number the handler declares - see adaptArgs.
+        if (Number.class.isAssignableFrom(argType) && isNumeric(paramType)) {
             return true;
         }
         // A SQL ARRAY value (JSON text) is adaptable to a String[] parameter — see adaptArgs.

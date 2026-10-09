@@ -17,7 +17,9 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.model.Task;
 import dev.frostlake.security.SessionContext;
+import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -32,6 +34,11 @@ public class CurrentUser extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A task's run is the system's, or the user's the task is declared to execute as (live-verified).
+        final Task running = TaskScheduler.currentTask();
+        if (running != null) {
+            return running.getExecuteAsUser() != null ? running.getExecuteAsUser() : "SYSTEM";
+        }
         return sessionContext.getDisplayUser();
     }
 

@@ -369,6 +369,8 @@ public class AlterStatementTest extends BaseDatabaseTest {
         Assumptions.assumeFalse(isLiveSnowflake(),
             "USE ROLE of a just-created role needs a grant to the session user on a live account");
         engine.execute("CREATE ROLE data_owner");
+        // A role creates a table only where it holds CREATE TABLE on the schema.
+        engine.execute("GRANT CREATE TABLE ON SCHEMA test_schema TO ROLE data_owner");
         engine.execute("USE ROLE data_owner");
         engine.execute("CREATE TABLE owned_tbl (id INTEGER)");
         // SHOW TABLES surfaces the creating role as owner (no longer a hard-coded SYSADMIN).

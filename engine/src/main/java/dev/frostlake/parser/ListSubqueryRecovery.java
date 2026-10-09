@@ -20,7 +20,6 @@ import dev.frostlake.executor.LeadingCommentOffset;
 import java.util.ArrayList;
 import java.util.List;
 import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
@@ -194,7 +193,7 @@ final class ListSubqueryRecovery {
     /** The character index of the token the first syntax error of a parse of {@code text} names, or -1 when none. */
     private static int firstRefusedStart(final String text) {
         final int[] first = {-1};
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
         parser.removeErrorListeners();

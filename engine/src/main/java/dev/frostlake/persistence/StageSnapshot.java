@@ -44,6 +44,15 @@ public class StageSnapshot implements Serializable {
     // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
     public String encryptionType;
     public boolean directoryEnabled;
+    /** False on snapshots that predate the field, where an enabled directory table still counts as declared. */
+    public boolean directoryDeclared;
+    public boolean directoryAutoRefresh;
+    /** Null on snapshots that predate the field: the stage is given an id at its next refresh. */
+    public String directoryId;
+    public boolean temporary;
+    public boolean credentials;
+    public boolean encryptionKey;
+    public Instant directoryRefreshed;
     public HashMap<String, String> fileFormatOptions;
     public HashMap<String, String> copyOptions;
     /** The files the directory table has registered, by stage-relative path, each with its directory row. */

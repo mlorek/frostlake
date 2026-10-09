@@ -73,6 +73,7 @@ public final class JavaScriptExecutor {
 
         final ZoneId zone = SessionZone.current();
         final ScriptEngine engine = threadEngine(zone);
+        final String source = JavaScriptHandler.source(function.getName(), parameters, function.getBody(), false);
         try {
             if (logger.isDebugEnabled()) {
                 for (int i = 0; i < parameters.size(); i++) {
@@ -83,7 +84,6 @@ public final class JavaScriptExecutor {
                         argVal == null ? "-" : argVal.getClass().getName());
                 }
             }
-            final String source = JavaScriptHandler.source(function.getName(), parameters, function.getBody(), false);
             final Object result = JavaScriptHandler.invoke(engine, invoker(engine, zone.getId(), source), null,
                 parameters, arguments);
             logger.debug("JavaScript function {} executed successfully", function.getName());
@@ -91,8 +91,8 @@ public final class JavaScriptExecutor {
         } catch (final ScriptException e) {
             logger.error("Error executing JavaScript function: {}", function.getName(), e);
             throw new RuntimeException(JavaScriptErrorText.of(e, function.getName(), function.getBody(),
-                JavaScriptHandler.BODY_FIRST_LINE, "Error executing JavaScript function " + function.getName() + ": "
-                    + e.getMessage()), e);
+                JavaScriptHandler.BODY_FIRST_LINE, source, GraalJsEngine.hostOf(engine),
+                "Error executing JavaScript function " + function.getName() + ": " + e.getMessage()), e);
         } catch (final NoSuchMethodException e) {
             throw new RuntimeException("Error executing JavaScript function " + function.getName() + ": "
                 + e.getMessage(), e);

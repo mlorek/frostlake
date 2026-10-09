@@ -59,6 +59,22 @@ public final class SqlTypeNames {
     }
 
     /**
+     * The canonical name a TABLE's own column prints: the width it was declared with, however wide. A table keeps
+     * what its statement wrote — {@code VARCHAR(134217728)} and {@code VARCHAR(16777217)} read back as written —
+     * where a view's column stops at 16777216 (see {@link #columnMetadata}) and a table created from a query never
+     * held more (live-verified).
+     *
+     * @param type the column's declared type
+     * @return the canonical name
+     */
+    public static String tableColumnMetadata(final DataType type) {
+        if (type instanceof LengthlessStringType) {
+            return canonical(new StringType(type.getName(), ((StringType) type).getMaxLength()));
+        }
+        return canonical(type);
+    }
+
+    /**
      * The canonical name a COLUMN's metadata prints, which stops a string at the width a column can
      * declare. An EXPRESSION may be wider — live reports {@code t || t} over two 16MB columns as
      * VARCHAR(33554432) and {@code CAST(i AS VARCHAR)} as VARCHAR(134217728) when selected, through a
@@ -78,6 +94,44 @@ public final class SqlTypeNames {
             return canonical(new StringType(type.getName(), ((StringType) type).getMaxLength()));
         }
         return canonical(type);
+    }
+
+    /** The width INFORMATION_SCHEMA spells for a routine returning text of no declared width. */
+    public static final int ROUTINE_TEXT_MAXIMUM = 134217728;
+
+    /**
+     * A routine's return type as INFORMATION_SCHEMA.FUNCTIONS and PROCEDURES spell it in {@code data_type}: the
+     * canonical name with every parameter, a text or binary of no declared width at the widest a value can be —
+     * {@code VARCHAR(134217728)}, {@code BINARY(67108864)} — where DESCRIBE and SHOW print such a type bare
+     * (live-verified).
+     *
+     * @param type the declared return type
+     * @return the spelling
+     */
+    public static String routineDataType(final DataType type) {
+        if (type instanceof StringType && !(type instanceof LengthlessStringType)
+                && ((StringType) type).getMaxLength() != DESCRIBED_STRING_MAXIMUM) {
+            return canonical(type);
+        }
+        if (type instanceof StringType) {
+            return "VARCHAR(" + ROUTINE_TEXT_MAXIMUM + ")";
+        }
+        return refusalSpelling(type);
+    }
+
+    /**
+     * The length INFORMATION_SCHEMA reports beside a routine's text return type; null for every other type.
+     *
+     * @param type the declared return type
+     * @return the length in characters, or null
+     */
+    public static Integer routineTextLength(final DataType type) {
+        if (!(type instanceof StringType)) {
+            return null;
+        }
+        final int declared = ((StringType) type).getMaxLength();
+        return Integer.valueOf(type instanceof LengthlessStringType || declared == DESCRIBED_STRING_MAXIMUM
+            ? ROUTINE_TEXT_MAXIMUM : declared);
     }
 
     /**
@@ -104,6 +158,26 @@ public final class SqlTypeNames {
      */
     public static String routineType(final DataType type) {
         if (type instanceof StringType && !(type instanceof LengthlessStringType)
+                && ((StringType) type).getMaxLength() == DESCRIBED_STRING_MAXIMUM) {
+            return "VARCHAR";
+        }
+        return canonical(type);
+    }
+
+    /**
+     * A policy's RETURNS type as its description and its DDL spell it: the type as declared, so a string or a
+     * binary written without a width reads bare where one written with its width keeps it — VARCHAR beside
+     * VARCHAR(16777216) — and everything else reads as {@link #canonical} spells it (live-verified).
+     *
+     * @param type  the declared type
+     * @param sized whether the declaration carried type parameters
+     * @return the spelling
+     */
+    public static String declaredSpelling(final DataType type, final boolean sized) {
+        if (!sized && type instanceof BinaryType) {
+            return "BINARY";
+        }
+        if (!sized && type instanceof StringType
                 && ((StringType) type).getMaxLength() == DESCRIBED_STRING_MAXIMUM) {
             return "VARCHAR";
         }

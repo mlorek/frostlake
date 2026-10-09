@@ -329,7 +329,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         final ResultSet history = engine.executeQuery("""
             SELECT error_message
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
-            WHERE execution_status = 'FAILED'
+            WHERE execution_status = 'FAILED_WITH_ERROR'
             AND error_message IS NOT NULL
             """);
 

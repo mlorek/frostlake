@@ -73,7 +73,8 @@ public final class JavaProcedureExecutor {
         try {
             final Class<?> compiledClass;
             if (!procedure.getImports().isEmpty()) {
-                compiledClass = JarHandlerLoader.load(procedure.getImports(), className,
+                compiledClass = JarHandlerLoader.load(engine != null
+                        ? engine.localImports(procedure.getImports()) : procedure.getImports(), className,
                     engine != null ? engine.getCatalog() : null,
                     engine != null ? engine.getS3PathResolver() : null);
             } else {

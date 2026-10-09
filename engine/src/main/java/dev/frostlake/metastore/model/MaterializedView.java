@@ -20,7 +20,6 @@ import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.SqlObject;
 
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,16 +32,23 @@ public class MaterializedView extends SqlObject {
     private List<TableColumn> resolvedColumns;
     private String warehouse;
     private boolean suspended;
+    private String invalidReason;
+    private boolean resumedWhileInvalid;
     private boolean secure = false;
-    private LocalDateTime lastRefreshedTime;
     /** The source table's last data change this view has materialized, or null for none — see {@link #getMaterializedAsOf}. */
     private Instant materializedAsOf;
+    /** The rows the view materialized when it was created, which is what a listing counts. */
+    private long materializedRows;
     /** The database the view reads from, as the catalog names it — see {@link #setSource}. */
     private String sourceDatabase;
     private String sourceSchema;
     private String sourceTable;
     /** The CREATE statement as SHOW MATERIALIZED VIEWS spells it, or null — see {@link #getListedText}. */
     private String listedText;
+    /** The clustering key's expressions as written, none for an unclustered view. */
+    private final List<String> clusterKeys = new ArrayList<>();
+    /** Whether automatic reclustering is paused; it only shows on a view that has a key. */
+    private boolean reclusterSuspended;
 
     public MaterializedView(final String name, final String definition) {
         this(name, null, definition, StatementClock.instant());
@@ -81,9 +87,11 @@ public class MaterializedView extends SqlObject {
         copy.resolvedColumns = resolvedColumns != null ? new ArrayList<>(resolvedColumns) : null;
         copy.warehouse = warehouse;
         copy.suspended = suspended;
+        copy.invalidReason = invalidReason;
+        copy.resumedWhileInvalid = resumedWhileInvalid;
         copy.secure = secure;
-        copy.lastRefreshedTime = lastRefreshedTime;
         copy.materializedAsOf = materializedAsOf;
+        copy.materializedRows = materializedRows;
         copy.sourceDatabase = sourceDatabase;
         copy.sourceSchema = sourceSchema;
         copy.sourceTable = sourceTable;
@@ -98,6 +106,30 @@ public class MaterializedView extends SqlObject {
     }
 
     /**
+     * The clustering key: each expression as the statement that set it wrote it, in order.
+     *
+     * @return the key's expressions, empty for an unclustered view
+     */
+    public List<String> getClusterKeys() {
+        return new ArrayList<>(clusterKeys);
+    }
+
+    public void setClusterKeys(final List<String> keys) {
+        clusterKeys.clear();
+        if (keys != null) {
+            clusterKeys.addAll(keys);
+        }
+    }
+
+    public boolean isReclusterSuspended() {
+        return reclusterSuspended;
+    }
+
+    public void setReclusterSuspended(final boolean reclusterSuspended) {
+        this.reclusterSuspended = reclusterSuspended;
+    }
+
+    /**
      * Replace the query the view is read through, for a clone that refers to the clone's copy of its base table
      * (see {@code CloneReferences}). The texts it is listed and described with stay as written.
      *
@@ -106,7 +138,6 @@ public class MaterializedView extends SqlObject {
     public void setDefinition(final String definition) {
         this.definition = definition;
     }
-
     public List<String> getColumnNames() {
         return columnNames;
     }
@@ -154,12 +185,28 @@ public class MaterializedView extends SqlObject {
         this.suspended = suspended;
     }
 
-    public LocalDateTime getLastRefreshedTime() {
-        return lastRefreshedTime;
+    /**
+     * Why the view can no longer be read — its base table's shape was altered under it, or the table was
+     * dropped — in the account's own words, or null while the view is valid. A suspended view is invalid by
+     * hand, which {@link #isSuspended()} tells.
+     */
+    public String getInvalidReason() {
+        return invalidReason;
     }
 
-    public void setLastRefreshedTime(final LocalDateTime lastRefreshedTime) {
-        this.lastRefreshedTime = lastRefreshedTime;
+    /** Records why the view can no longer be read; null makes it valid again. */
+    public void setInvalidReason(final String invalidReason) {
+        this.invalidReason = invalidReason;
+    }
+
+    /** Whether a RESUME was accepted while the view was invalid, which changes how a read is refused. */
+    public boolean isResumedWhileInvalid() {
+        return resumedWhileInvalid;
+    }
+
+    /** Records that a RESUME was accepted while the view was invalid. */
+    public void setResumedWhileInvalid(final boolean resumedWhileInvalid) {
+        this.resumedWhileInvalid = resumedWhileInvalid;
     }
 
     /**
@@ -173,6 +220,16 @@ public class MaterializedView extends SqlObject {
 
     public void setMaterializedAsOf(final Instant materializedAsOf) {
         this.materializedAsOf = materializedAsOf;
+    }
+
+    /** The rows the view materialized. */
+    public long getMaterializedRows() {
+        return materializedRows;
+    }
+
+    /** Records the rows the view materialized. */
+    public void setMaterializedRows(final long materializedRows) {
+        this.materializedRows = materializedRows;
     }
 
     public boolean isSecure() { return secure; }

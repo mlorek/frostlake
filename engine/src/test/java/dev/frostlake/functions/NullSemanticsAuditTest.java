@@ -56,7 +56,6 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         "ZEROIFNULL",                   // 0 by definition
         "DIV0NULL",                     // 0 when the divisor is NULL by definition
         "HASH",                         // hashes NULL to a number; never returns NULL
-        "GROUPING", "GROUPING_ID",      // engine-special super-group markers
         "LAST_QUERY_ID", "RANDOM", "NORMAL", "UUID_STRING",  // context / generators
         // Context functions with an OPTIONAL precision argument: the argument never gates the
         // result, so a NULL precision still yields the current value (Snowflake signature
@@ -73,6 +72,9 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
     /** Functions allowed to THROW on a NULL argument (a required identifier/name argument). */
     private static final Set<String> THROW_WHITELIST = new HashSet<>(Arrays.asList(
         "NEXTVAL", "CURRVAL",
+        // The super-group markers answer for a GROUP BY's keys: called in a query that groups by nothing they
+        // are refused, "GROUPING function without a GROUP BY." (measured).
+        "GROUPING", "GROUPING_ID",
         // Catalog-only entry: the call shape TRY_CAST(x, ...) is a live syntax error (only
         // TRY_CAST(expr AS type) exists, and it parses as a cast expression), so the registered
         // function exists solely for SHOW FUNCTIONS and refuses direct evaluation.
@@ -125,6 +127,10 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         // statement compiles, "invalid argument for function [IS_DATABASE_ROLE_IN_SESSION] unexpected
         // argument [NULL] at position 0," (measured).
         "IS_DATABASE_ROLE_IN_SESSION",
+        // An account role's name likewise: live refuses IS_ROLE_IN_SESSION(NULL) while the statement compiles,
+        // "invalid argument for function [IS_ROLE_IN_SESSION] unexpected argument [NULL] at position 0,"
+        // (measured).
+        "IS_ROLE_IN_SESSION",
         // A seed cannot be NULL: live refuses RANDOM(NULL) when the row reads it, "Invalid parameter value:
         // NULL. Reason: seed must not be NULL" (measured).
         "RANDOM",

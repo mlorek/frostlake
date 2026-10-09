@@ -20,7 +20,7 @@ import dev.frostlake.http.rest.RestCall;
 import dev.frostlake.http.rest.RestException;
 import dev.frostlake.http.rest.RestIdentifier;
 import dev.frostlake.parser.FrostlakeLexer;
-import org.antlr.v4.runtime.CharStreams;
+import dev.frostlake.parser.SqlCharStream;
 import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
@@ -104,7 +104,7 @@ final class RelationNames {
         if (createText == null || createText.isEmpty()) {
             return null;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(createText));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(createText));
         lexer.removeErrorListeners();
         int depth = 0;
         for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
@@ -126,7 +126,7 @@ final class RelationNames {
         if (createText == null || createText.isEmpty()) {
             return false;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(createText));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(createText));
         lexer.removeErrorListeners();
         for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
             if (token.getType() == keyword) {

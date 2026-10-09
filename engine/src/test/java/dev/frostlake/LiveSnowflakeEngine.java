@@ -90,11 +90,67 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         markDirtyIfSessionMutating(sql);
         final List<ResultSet> results = new ArrayList<ResultSet>();
         String queryId = null;
+        final List<String> script = scriptStatements(sql);
+        if (script != null) {
+            for (final String statementText : script) {
+                markIfAccountObjectStatement(statementText);
+                LiveAccountObjects.observe(statementText);
+            }
+            return new ExecutionResult(true, results, null, executeScript(sql, script.size(), results));
+        }
         for (final String statementText : splitStatements(sql)) {
             markIfAccountObjectStatement(statementText);
+            LiveAccountObjects.observe(statementText);
             queryId = executeOne(statementText, results);
         }
         return new ExecutionResult(true, results, null, queryId);
+    }
+
+    /**
+     * Runs a script of several statements as ONE submission, the way a client sends one: under a statement
+     * count that matches it. The account then runs it as a script — one statement's failure ends it, named in
+     * the account's own multi-statement sentence — which is what the embedded engine is measured against when a
+     * test hands it a script. Each child's result is recorded as the driver hands it over: a result set as it
+     * is, and a statement that has none as the count the driver reports for it.
+     */
+    private String executeScript(final String sql, final int statements, final List<ResultSet> results) {
+        try (final Statement statement = LiveSnowflake.shared().createStatement()) {
+            if (statement.isWrapperFor(SnowflakeStatement.class)) {
+                statement.unwrap(SnowflakeStatement.class).setParameter("MULTI_STATEMENT_COUNT", statements);
+            }
+            boolean answersRows = statement.execute(sql);
+            final String queryId = queryIdOf(statement);
+            for (int child = 0; child < statements; child++) {
+                if (child > 0) {
+                    answersRows = statement.getMoreResults();
+                }
+                // A statement that answers no rows — a BEGIN, a DDL — hands over no result set at all.
+                final java.sql.ResultSet rs = answersRows ? statement.getResultSet() : null;
+                if (rs != null) {
+                    try {
+                        results.add(convert(rs));
+                    } finally {
+                        rs.close();
+                    }
+                    continue;
+                }
+                final int count = statement.getUpdateCount();
+                if (count < 0) {
+                    continue;
+                }
+                final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
+                columns.add(new ResultSetColumn("number of rows affected", NumericType.NUMBER));
+                final List<Row> rows = new ArrayList<Row>();
+                final List<Object> values = new ArrayList<Object>();
+                values.add(Long.valueOf(count));
+                rows.add(new Row(values));
+                results.add(new ResultSet(columns, rows));
+            }
+            return queryId;
+        } catch (final SQLException e) {
+            LiveSnowflake.markSharedDirty();   // a failed script can abandon a transaction mid-flight
+            throw new RuntimeException(e.getMessage(), e);
+        }
     }
 
     /**
@@ -167,6 +223,54 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             // Query-id decoration only — never fail the statement over it.
         }
         return null;
+    }
+
+    /**
+     * The statements of a text that is a script: two or more statements, every one but the last ended by its
+     * own semicolon, as the engine's grammar reads them. Null for a single statement, for text that does not
+     * parse, and where the engine's parser finds two statements with nothing between them — that reading is
+     * the engine's own and may be exactly the divergence under test, so such text goes over as one statement.
+     */
+    private List<String> scriptStatements(final String sql) {
+        try {
+            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+            final CommonTokenStream tokens = new CommonTokenStream(lexer);
+            final FrostlakeParser parser = new FrostlakeParser(tokens);
+            final boolean[] failed = new boolean[1];
+            final BaseErrorListener silent = new BaseErrorListener() {
+                @Override
+                public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol,
+                        final int line, final int charPositionInLine, final String msg,
+                        final RecognitionException e) {
+                    failed[0] = true;
+                }
+            };
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(silent);
+            parser.removeErrorListeners();
+            parser.addErrorListener(silent);
+            final FrostlakeParser.SqlScriptContext script = parser.sqlScript();
+            if (failed[0] || script.flowChain().size() < 2) {
+                return null;
+            }
+            final List<String> statements = new ArrayList<String>();
+            for (int i = 0; i < script.flowChain().size(); i++) {
+                final FrostlakeParser.FlowChainContext chain = script.flowChain().get(i);
+                if (i > 0) {
+                    final FrostlakeParser.FlowChainContext before = script.flowChain().get(i - 1);
+                    final boolean ended = before.getStop().getType() == FrostlakeLexer.SEMI
+                        || sql.substring(before.getStop().getStopIndex() + 1,
+                            chain.getStart().getStartIndex()).indexOf(';') >= 0;
+                    if (!ended) {
+                        return null;
+                    }
+                }
+                statements.add(sql.substring(chain.getStart().getStartIndex(), chain.getStop().getStopIndex() + 1));
+            }
+            return statements;
+        } catch (final RuntimeException e) {
+            return null;
+        }
     }
 
     /**
@@ -309,7 +413,9 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
                 return;
             }
             final String text = token.getText().toUpperCase();
-            if (isAccountObjectKind(text)) {
+            // NETWORK opens the one account-level kind two words name; a network rule's statement is
+            // marked with it, which costs a listing and misses nothing.
+            if (isAccountObjectKind(text) || "NETWORK".equals(text)) {
                 LiveAccountObjects.markAccountObjectStatement();
                 return;
             }

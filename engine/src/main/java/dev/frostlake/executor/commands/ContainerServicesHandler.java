@@ -591,8 +591,8 @@ public final class ContainerServicesHandler {
         final String pool = scope != null && scope.POOL() != null ? SqlIdentifiers.canonical(scope.identifier())
             : null;
         final String startsWith = ctx.showTail() != null && ctx.showTail().STARTS() != null
-            && !ctx.showTail().STRING_LITERAL().isEmpty()
-            ? SqlStringLiterals.decode(ctx.showTail().STRING_LITERAL(0).getText()) : null;
+            && !ctx.showTail().stringText().isEmpty()
+            ? ParseTreeText.stringValue(ctx.showTail().stringText(0)) : null;
         for (final Schema schema : pool != null ? scope(null, true) : scope(scope)) {
             for (final ContainerService service : schema.getContainerObjects().getServices()) {
                 if (ctx.JOB() != null && !service.isJob() || ctx.JOBS() != null && service.isJob()
@@ -615,7 +615,7 @@ public final class ContainerServicesHandler {
         String from = null;
         if (tail.FROM() != null) {
             final int index = tail.STARTS() != null ? 1 : 0;
-            from = SqlStringLiterals.decode(tail.STRING_LITERAL(index).getText());
+            from = ParseTreeText.stringValue(tail.stringText(index));
         }
         final List<Row> kept = new ArrayList<>();
         for (final Row row : set.getRows()) {
@@ -644,7 +644,10 @@ public final class ContainerServicesHandler {
         if (name.endsWith("_on")) {
             return ShowResultHelpers.CREATED_ON;
         }
-        if (name.endsWith("_instances") || "auto_suspend_secs".equals(name)) {
+        if (name.endsWith("_instances")) {
+            return ShowResultHelpers.COUNT;
+        }
+        if ("auto_suspend_secs".equals(name)) {
             return NumericType.NUMBER;
         }
         return StringType.VARCHAR;
@@ -777,6 +780,7 @@ public final class ContainerServicesHandler {
             if (!"APPLICATION".equals(type) && !"PYPI".equals(type)) {
                 throw new RuntimeException(SqlCompilationError.of("invalid value [" + type + "] for parameter 'TYPE'"));
             }
+            new IntegrationReferences(catalog).requireArtifactIntegration(integration);
             final ArtifactRepository repository = new ArtifactRepository(name, type);
             repository.setApiIntegration(integration);
             repository.setComment(comment);
@@ -823,14 +827,14 @@ public final class ContainerServicesHandler {
     }
 
     private static List<ResultSetColumn> artifactColumns() {
-        return columns("created_on", "name", "database_name", "schema_name", "type", "api_integration", "owner",
-            "owner_role_type", "comment");
+        return columns("created_on", "name", "database_name", "schema_name", "api_integration", "type", "index_url",
+            "authentication_secret", "owner", "owner_role_type", "comment");
     }
 
     private Row artifactRow(final Schema schema, final ArtifactRepository repository) {
         return new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(repository.getCreatedOn()),
-            repository.getName(), databaseOf(schema), schema.getName(), repository.getType(),
-            repository.getApiIntegration(), repository.getOwner(),
+            repository.getName(), databaseOf(schema), schema.getName(), repository.getApiIntegration(),
+            repository.getType(), null, null, repository.getOwner(),
             ShowResultHelpers.ownerRoleType(repository.getOwner()), text(repository.getComment())));
     }
 
@@ -855,7 +859,7 @@ public final class ContainerServicesHandler {
     }
 
     private static String like(final FrostlakeParser.ContainerServicesStatementContext ctx) {
-        return ctx.LIKE() == null ? null : SqlStringLiterals.decode(ctx.STRING_LITERAL().getText());
+        return ctx.LIKE() == null ? null : ParseTreeText.stringValue(ctx.stringText());
     }
 
     private List<Schema> scope(final FrostlakeParser.ContainerShowScopeContext scope) {

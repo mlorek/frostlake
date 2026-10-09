@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -53,5 +54,16 @@ public class ArraySlice extends BuiltInFunction {
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {
         return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0) {
+            return ArrayArgumentKind.ARRAY;
+        }
+        if (position == 1 || position == 2) {
+            return ArrayArgumentKind.WHOLE_NUMBER;
+        }
+        return null;
     }
 }

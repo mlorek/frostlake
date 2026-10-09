@@ -46,6 +46,7 @@ public class RegexpCount extends TextArgumentFunction {
         final String pattern = args.get(1).toString();
         final int position = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
         final String parameters = args.size() > 3 && args.get(3) != null ? args.get(3).toString() : null;
+        RegexpHelper.requirePosition(position);
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);

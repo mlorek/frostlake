@@ -36,6 +36,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class InformationSchemaIsReadOnlyTest {
 
+    private static final String REFUSED =
+        "SQL access control error:\nInsufficient privileges to operate on schema 'INFORMATION_SCHEMA'.";
+
     private DatabaseEngine engine;
 
     @BeforeEach
@@ -69,33 +72,28 @@ public class InformationSchemaIsReadOnlyTest {
     @Test
     public void nothingIsCreatedInIt() {
         engine.execute("USE SCHEMA p.INFORMATION_SCHEMA");
-        assertEquals("Cannot create tables in INFORMATION_SCHEMA", refusal("CREATE TABLE t (a INT)"));
-        assertEquals("Cannot create views in INFORMATION_SCHEMA", refusal("CREATE VIEW v AS SELECT 1 x"));
-        assertEquals("Cannot create sequences in INFORMATION_SCHEMA", refusal("CREATE SEQUENCE sq"));
-        assertEquals("Cannot create functions in INFORMATION_SCHEMA", refusal("CREATE FUNCTION f() RETURNS INT AS '1'"));
-        assertEquals("Cannot create procedures in INFORMATION_SCHEMA",
-            refusal("CREATE PROCEDURE pr() RETURNS INT LANGUAGE SQL AS $$ BEGIN RETURN 1; END $$"));
-        assertEquals("Cannot create stages in INFORMATION_SCHEMA", refusal("CREATE STAGE stg"));
-        assertEquals("Cannot create tags in INFORMATION_SCHEMA", refusal("CREATE TAG tg"));
-        assertEquals("Cannot create masking policies in INFORMATION_SCHEMA",
-            refusal("CREATE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> v"));
-        assertEquals("Cannot create row access policies in INFORMATION_SCHEMA",
-            refusal("CREATE ROW ACCESS POLICY rap AS (v VARCHAR) RETURNS BOOLEAN -> TRUE"));
-        assertEquals("Cannot create file formats in INFORMATION_SCHEMA", refusal("CREATE FILE FORMAT ff TYPE = CSV"));
-        assertEquals("Cannot create streams in INFORMATION_SCHEMA", refusal("CREATE STREAM st ON TABLE p.PUBLIC.src"));
-        assertEquals("Cannot create tasks in INFORMATION_SCHEMA", refusal("CREATE TASK tk AS SELECT 1"));
-        assertEquals("Cannot create secrets in INFORMATION_SCHEMA",
-            refusal("CREATE SECRET sec TYPE = PASSWORD USERNAME = 'a' PASSWORD = 'b'"));
-        assertEquals("Cannot create notebooks in INFORMATION_SCHEMA", refusal("CREATE NOTEBOOK nb"));
-        assertEquals("Cannot create materialized views in INFORMATION_SCHEMA",
-            refusal("CREATE MATERIALIZED VIEW mv AS SELECT a FROM p.PUBLIC.src"));
+        assertEquals(REFUSED, refusal("CREATE TABLE t (a INT)"));
+        assertEquals(REFUSED, refusal("CREATE VIEW v AS SELECT 1 x"));
+        assertEquals(REFUSED, refusal("CREATE SEQUENCE sq"));
+        assertEquals(REFUSED, refusal("CREATE FUNCTION f() RETURNS INT AS '1'"));
+        assertEquals(REFUSED, refusal("CREATE PROCEDURE pr() RETURNS INT LANGUAGE SQL AS $$ BEGIN RETURN 1; END $$"));
+        assertEquals(REFUSED, refusal("CREATE STAGE stg"));
+        assertEquals(REFUSED, refusal("CREATE TAG tg"));
+        assertEquals(REFUSED, refusal("CREATE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> v"));
+        assertEquals(REFUSED, refusal("CREATE ROW ACCESS POLICY rap AS (v VARCHAR) RETURNS BOOLEAN -> TRUE"));
+        assertEquals(REFUSED, refusal("CREATE FILE FORMAT ff TYPE = CSV"));
+        assertEquals(REFUSED, refusal("CREATE STREAM st ON TABLE p.PUBLIC.src"));
+        assertEquals(REFUSED, refusal("CREATE TASK tk AS SELECT 1"));
+        assertEquals(REFUSED, refusal("CREATE SECRET sec TYPE = PASSWORD USERNAME = 'a' PASSWORD = 'b'"));
+        assertEquals(REFUSED, refusal("CREATE NOTEBOOK nb"));
+        assertEquals(REFUSED, refusal("CREATE MATERIALIZED VIEW mv AS SELECT a FROM p.PUBLIC.src"));
         assertEquals("0", scalar("SELECT COUNT(*) FROM p.INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = 'INFORMATION_SCHEMA'"
             + " AND TABLE_NAME IN ('V', 'MV')"));
     }
 
     @Test
     public void aSystemViewIsNotReplaced() {
-        assertEquals("Cannot create views in INFORMATION_SCHEMA",
+        assertEquals("SQL access control error:\nInsufficient privileges to operate on view 'TABLES'.",
             refusal("CREATE OR REPLACE VIEW p.INFORMATION_SCHEMA.TABLES AS SELECT 1 x"));
         assertEquals("1", scalar("SELECT COUNT(*) FROM p.INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'SRC'"));
     }
@@ -108,18 +106,13 @@ public class InformationSchemaIsReadOnlyTest {
         engine.execute("CREATE TAG tg");
         engine.execute("CREATE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> v");
         engine.execute("CREATE FILE FORMAT ff TYPE = CSV");
-        assertEquals("Cannot create tables in INFORMATION_SCHEMA",
-            refusal("ALTER TABLE src RENAME TO p.INFORMATION_SCHEMA.src"));
-        assertEquals("Cannot create views in INFORMATION_SCHEMA", refusal("ALTER VIEW v RENAME TO p.INFORMATION_SCHEMA.v"));
-        assertEquals("Cannot create sequences in INFORMATION_SCHEMA",
-            refusal("ALTER SEQUENCE sq RENAME TO p.INFORMATION_SCHEMA.sq"));
-        assertEquals("Cannot create functions in INFORMATION_SCHEMA",
-            refusal("ALTER FUNCTION f() RENAME TO p.INFORMATION_SCHEMA.f"));
-        assertEquals("Cannot create tags in INFORMATION_SCHEMA", refusal("ALTER TAG tg RENAME TO p.INFORMATION_SCHEMA.tg"));
-        assertEquals("Cannot create masking policies in INFORMATION_SCHEMA",
-            refusal("ALTER MASKING POLICY mp RENAME TO p.INFORMATION_SCHEMA.mp"));
-        assertEquals("Cannot create file formats in INFORMATION_SCHEMA",
-            refusal("ALTER FILE FORMAT ff RENAME TO p.INFORMATION_SCHEMA.ff"));
+        assertEquals(REFUSED, refusal("ALTER TABLE src RENAME TO p.INFORMATION_SCHEMA.src"));
+        assertEquals(REFUSED, refusal("ALTER VIEW v RENAME TO p.INFORMATION_SCHEMA.v"));
+        assertEquals(REFUSED, refusal("ALTER SEQUENCE sq RENAME TO p.INFORMATION_SCHEMA.sq"));
+        assertEquals(REFUSED, refusal("ALTER FUNCTION f() RENAME TO p.INFORMATION_SCHEMA.f"));
+        assertEquals(REFUSED, refusal("ALTER TAG tg RENAME TO p.INFORMATION_SCHEMA.tg"));
+        assertEquals(REFUSED, refusal("ALTER MASKING POLICY mp RENAME TO p.INFORMATION_SCHEMA.mp"));
+        assertEquals(REFUSED, refusal("ALTER FILE FORMAT ff RENAME TO p.INFORMATION_SCHEMA.ff"));
         // The table is still where it was, rows and all.
         assertEquals("2", scalar("SELECT COUNT(*) FROM p.PUBLIC.src"));
         assertEquals("1", scalar("SELECT x FROM p.PUBLIC.v"));

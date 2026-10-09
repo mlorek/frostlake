@@ -18,11 +18,14 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionCollation;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
+import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryMemo;
@@ -61,6 +64,8 @@ public class ExpressionEvaluator {
     private Set<String> whereAggregateAliases;
     private Map<String, String> whereWindowAliases;
     private Set<String> outputScopeNames;
+    private Set<String> enclosingQualifiers;
+    private Map<String, Table> groupedRelations;
     private Map<String, DataType> outputAliasTypes;
     private Map<String, Object> resultContext;
     private Map<String, Object> subqueryOuterRow;
@@ -211,6 +216,7 @@ public class ExpressionEvaluator {
         visitor.setSubqueryMemo(subqueryMemo);
         visitor.setScriptNameTypes(scriptNameTypes);
         visitor.setBindsAsParameters(bindsAsParameters);
+        visitor.setGroupedRelations(groupedRelations);
         return expression.accept(visitor);
     }
 
@@ -301,8 +307,18 @@ public class ExpressionEvaluator {
      * it: {@code ROW(NUMBER(1,0), VARCHAR(1))}; null for anything else.
      */
     public String multiColumnRowText(final Expression expression) {
+        if (expression instanceof RowExpression) {
+            // A ROW written as a parenthesized list is typed as the row of its values.
+            return preparedVisitor().argumentTypeText(expression);
+        }
         return expression instanceof SubqueryExpression
             ? preparedVisitor().multiColumnRowText((SubqueryExpression) expression) : null;
+    }
+
+    /** How many columns an expression that is a subquery selects; 0 for anything else or an unplannable one. */
+    public int subqueryWidth(final Expression expression) {
+        return expression instanceof SubqueryExpression
+            ? preparedVisitor().subqueryWidth((SubqueryExpression) expression) : 0;
     }
 
     /** The plan-time user-defined function argument check alone, over a parsed expression. */
@@ -376,6 +392,17 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * The collation an expression carries with the level it holds it at, which a projection stamps on the
+     * column it builds so the level travels with the relation.
+     *
+     * @param expression the expression
+     * @return its collation, never null
+     */
+    public ExpressionCollation heldCollation(final Expression expression) {
+        return preparedVisitor().collationOf(expression);
+    }
+
+    /**
      * The visitor that types names in this evaluator's scope, for naming that scope as the one AROUND a
      * relation planned inside it (see {@link SubqueryCompilation#beginScope}).
      *
@@ -396,6 +423,8 @@ public class ExpressionEvaluator {
         reusableVisitor.setScopeExemptNames(scopeExemptNames);
         reusableVisitor.setWhereAliasRefusals(whereAggregateAliases, whereWindowAliases);
         reusableVisitor.setOutputScopeNames(outputScopeNames);
+        reusableVisitor.setEnclosingQualifiers(enclosingQualifiers);
+        reusableVisitor.setGroupedRelations(groupedRelations);
         reusableVisitor.setOutputAliasTypes(outputAliasTypes);
         reusableVisitor.setScriptNameTypes(scriptNameTypes);
         reusableVisitor.setBindsAsParameters(bindsAsParameters);
@@ -431,6 +460,26 @@ public class ExpressionEvaluator {
      */
     public void setOutputScopeNames(final Set<String> names) {
         this.outputScopeNames = names;
+    }
+
+    /**
+     * The relations of the FROM a grouped query's HAVING stands over, by the names it reaches each by, for a
+     * subquery of the HAVING to read the statistics of.
+     *
+     * @param relations the FROM's relations, or null
+     */
+    public void setGroupedRelations(final Map<String, Table> relations) {
+        this.groupedRelations = relations;
+    }
+
+    /**
+     * The qualifiers the row around this evaluator's query offers, for a refusal's echo to spell a name read
+     * through one of them as the plan holds it: {@code CORRELATION(FZ.ID)}.
+     *
+     * @param qualifiers the enclosing row's qualifiers, upper-cased, or null
+     */
+    public void setEnclosingQualifiers(final Set<String> qualifiers) {
+        this.enclosingQualifiers = qualifiers;
     }
 
     /**
@@ -564,6 +613,28 @@ public class ExpressionEvaluator {
      * type instead of the VARCHAR placeholder. Never throws: an expression this evaluator cannot even
      * look at is simply undetermined.
      */
+    /**
+     * Whether an expression is a reference to a column that holds nothing but an untyped NULL in this table
+     * context (see {@code TableColumn#isUntypedNull}).
+     *
+     * @param expression the expression
+     * @return true for such a reference
+     */
+    public boolean readsUntypedNull(final Expression expression) {
+        if (!(expression instanceof ColumnReferenceExpression)) {
+            return false;
+        }
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        return reusableVisitor.readsUntypedNull((ColumnReferenceExpression) expression);
+    }
+
     public DataType inferStaticType(final Expression expression) {
         if (reusableVisitor == null) {
             reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);

@@ -45,6 +45,9 @@ public class RegexpSubstr extends TextArgumentFunction {
         final int occurrence = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 1;
         final String parameters = args.size() > 4 && args.get(4) != null ? args.get(4).toString() : null;
         final Integer groupNum = args.size() > 5 && args.get(5) != null ? ((Number) args.get(5)).intValue() : null;
+        RegexpHelper.requirePosition(position);
+        RegexpHelper.requireOccurrence(occurrence);
+        RegexpHelper.requireGroup(groupNum);
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);

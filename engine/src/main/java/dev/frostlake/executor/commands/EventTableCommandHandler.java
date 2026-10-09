@@ -114,7 +114,7 @@ final class EventTableCommandHandler {
             schema = catalog.getDatabase(databaseName).getSchema(parts[1]);
             tableName = parts[2];
         }
-        schema.requireCreatable(Privilege.CREATE_EVENT_TABLE);
+        queryExecutor.requireCreatePrivilege(Privilege.CREATE_EVENT_TABLE, schema);
         final String key = QualifiedName.key(databaseName, schema.getName(), tableName);
         if (schema.hasTable(tableName)) {
             if (ifNotExists) {

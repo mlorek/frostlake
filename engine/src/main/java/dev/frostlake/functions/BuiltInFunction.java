@@ -244,6 +244,18 @@ public abstract class BuiltInFunction {
     }
 
     /**
+     * What argument {@code position} of an array function is declared to take, which decides the statically
+     * typed arguments the statement's compilation refuses there (see {@link ArrayArgumentKind}). Undeclared for
+     * every other function, and for a position that takes any value.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the position's kind, or null when it constrains nothing
+     */
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        return null;
+    }
+
+    /**
      * The refusal this position gives a VECTOR argument.
      *
      * <p>A vector is not semi-structured and is not binary, so it needs its own declaration: the

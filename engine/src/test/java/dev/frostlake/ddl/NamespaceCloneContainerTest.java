@@ -154,6 +154,8 @@ public class NamespaceCloneContainerTest {
         engine.execute("CREATE SCHEMA o1.s2");
         engine.execute("CREATE STAGE o1.PUBLIC.ext URL = 's3://bucket/pipes'");
         engine.execute("CREATE PIPE o1.PUBLIC.p AS COPY INTO o1.PUBLIC.t FROM @o1.PUBLIC.ext");
+        // The cloning role makes a schema in a database another role owns, which takes CREATE SCHEMA on it.
+        engine.execute("GRANT CREATE SCHEMA ON DATABASE o1 TO ROLE SYSADMIN");
         engine.execute("USE ROLE SYSADMIN");
         engine.execute("CREATE DATABASE o2 CLONE o1");
         engine.execute("CREATE SCHEMA o1.s3 CLONE o1.s2");

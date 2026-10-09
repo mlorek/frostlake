@@ -27,6 +27,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
@@ -35,7 +36,6 @@ import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -913,7 +913,7 @@ final class SubqueryPlanPrint {
 
     /** One table of the FROM clause, {@code PUBLIC.RT AS R}, registered in the scope; null when not modelled. */
     private String relation(final FrostlakeParser.TableReferenceContext reference, final Catalog catalog) {
-        if (reference.pivotClause() != null || reference.unpivotClause() != null || reference.sampleClause() != null) {
+        if (reference.pivotClause() != null || reference.unpivotClause() != null || reference.matchRecognizeClause() != null || reference.sampleClause() != null) {
             return null;
         }
         final FrostlakeParser.TableSourceContext source = reference.tableSource();
@@ -1487,7 +1487,7 @@ final class SubqueryPlanPrint {
 
     /** The subquery's text as a SELECT statement, or null when it is not one whole statement. */
     private static FrostlakeParser.SelectStatementContext parsed(final String text) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
         parser.removeErrorListeners();

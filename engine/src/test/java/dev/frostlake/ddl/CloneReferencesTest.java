@@ -121,15 +121,15 @@ public class CloneReferencesTest {
     public void aSchemaCloneKeepsReferencesToWhatItLeftBehind() {
         engine.execute("CREATE SCHEMA d1.s2 CLONE d1.s");
         assertTrue(ddl("d1.s2.qualified").contains("DEFAULT D1.S2.SEQ.NEXTVAL"), ddl("d1.s2.qualified"));
-        assertTrue(ddl("d1.s2.child").contains("DEFAULT other.oseq.NEXTVAL"), "another schema's sequence stays");
+        assertTrue(ddl("d1.s2.child").contains("DEFAULT D1.OTHER.OSEQ.NEXTVAL"), "another schema's sequence stays");
 
         engine.execute("CREATE DATABASE d3");
         engine.execute("CREATE SCHEMA d3.sx CLONE d1.s");
         final String child = ddl("d3.sx.child");
-        assertTrue(child.contains("DEFAULT seq.NEXTVAL"), child);
+        assertTrue(child.contains("DEFAULT D3.SX.SEQ.NEXTVAL"), child);
         assertTrue(child.contains("DEFAULT D1.OTHER.OSEQ.NEXTVAL"), child);
-        assertTrue(child.contains("references PARENT (ID)"), child);
-        assertTrue(child.contains("references D1.OTHER.OPARENT (ID)"), child);
+        assertTrue(child.contains("references D3.SX.PARENT(ID)"), child);
+        assertTrue(child.contains("references D1.OTHER.OPARENT(ID)"), child);
         engine.execute("INSERT INTO d3.sx.child (p_id) VALUES (1)");
         assertEquals("100|500", rows("SELECT id, o_id FROM d3.sx.child"));
         assertEquals("501", rows("SELECT d1.other.oseq.NEXTVAL"), "the one sequence left behind was drawn from");
@@ -143,7 +143,7 @@ public class CloneReferencesTest {
         engine.execute("CREATE TABLE d1.other.cc CLONE d1.s.child");
         final String clone = ddl("d1.other.cc");
         assertTrue(clone.contains("DEFAULT D1.S.SEQ.NEXTVAL"), clone);
-        assertTrue(clone.contains("references D1.S.PARENT (ID)"), clone);
+        assertTrue(clone.contains("references D1.S.PARENT(ID)"), clone);
         engine.execute("INSERT INTO d1.other.cc (p_id) VALUES (1)");
         assertEquals("100", rows("SELECT id FROM d1.other.cc"), "the source's sequence, not other.seq");
     }

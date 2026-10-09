@@ -84,7 +84,7 @@ final class IntervalResultScan {
         }
         final FrostlakeParser.TableReferenceContext reference =
             (FrostlakeParser.TableReferenceContext) call.getParent().getParent();
-        if (reference.LATERAL() != null || reference.pivotClause() != null || reference.unpivotClause() != null
+        if (reference.LATERAL() != null || reference.pivotClause() != null || reference.unpivotClause() != null || reference.matchRecognizeClause() != null
                 || reference.sampleClause() != null
                 || !(reference.getParent() instanceof FrostlakeParser.TableExpressionContext)) {
             return false;

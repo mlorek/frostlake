@@ -332,7 +332,7 @@ public class ComputePoolTest extends BaseDatabaseTest {
             "name", "description", "vcpu", "memory_gib", "storage_gib", "gpu", "gpu_count",
             "gpu_memory_gib", "current_node_usage", "message"),
             columnNames(rs));
-        assertEquals(26, rs.getRowCount());
+        assertEquals(27, rs.getRowCount());
         // First row is the smallest family, not the alphabetical minimum — the order is the catalog's.
         assertEquals("CPU_X64_XS", cell(rs, 0, "name"));
         assertEquals(1L, cell(rs, 0, "vcpu"));
@@ -452,15 +452,15 @@ public class ComputePoolTest extends BaseDatabaseTest {
     /** SET TAG and UNSET TAG are their own actions — mixing TAG into a property SET is a syntax error. */
     @Test
     public void tagsAreTheirOwnAlterActions() {
-        // The tag values are read back through the engine's own catalog, which the live harness does
-        // not populate — and live refuses the pool itself on this account tier.
-        Assumptions.assumeFalse(isLiveSnowflake(), "reads compute-pool tags from the engine catalog");
+        // Live refuses the pool itself on this account tier.
+        Assumptions.assumeFalse(isLiveSnowflake(), "the account tier takes no compute pool");
+        final String tagOnPool = "SELECT TAG_VALUE FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('P1', 'COMPUTE POOL'))";
         engine.execute(CREATE_SUSPENDED);
         engine.execute("CREATE TAG pool_tag");
         engine.execute("ALTER COMPUTE POOL P1 SET TAG pool_tag = 'v1'");
-        assertEquals("v1", engine.getCatalog().getComputePool("P1").getTagValue("POOL_TAG"));
+        assertEquals("v1", engine.executeQuery(tagOnPool).getRows().get(0).getValue(0));
         engine.execute("ALTER COMPUTE POOL P1 UNSET TAG pool_tag");
-        assertNull(engine.getCatalog().getComputePool("P1").getTagValue("POOL_TAG"));
+        assertEquals(0, engine.executeQuery(tagOnPool).getRowCount());
 
         rejected("ALTER COMPUTE POOL P1 SET MAX_NODES = 3 TAG pool_tag = 'v2'", "syntax error");
     }

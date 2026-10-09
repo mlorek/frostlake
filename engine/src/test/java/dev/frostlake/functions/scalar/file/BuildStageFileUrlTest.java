@@ -156,10 +156,8 @@ public class BuildStageFileUrlTest extends BaseDatabaseTest {
             + " SINGLE = TRUE");
         engine.execute("COPY INTO @bsfu_dir/k/m.csv FROM (SELECT 2) FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)"
             + " SINGLE = TRUE");
-        if (isLiveSnowflake()) {
-            // The account lists a staged file once its directory is refreshed; this engine's listing is always current.
-            engine.execute("ALTER STAGE bsfu_dir REFRESH");
-        }
+        // A staged file is listed once its directory is refreshed.
+        engine.execute("ALTER STAGE bsfu_dir REFRESH");
         final List<Row> rows = engine.executeQuery("SELECT RELATIVE_PATH, FILE_URL,"
             + " BUILD_STAGE_FILE_URL(@bsfu_dir, RELATIVE_PATH) FROM DIRECTORY(@bsfu_dir) ORDER BY 1").getRows();
         assertEquals(2, rows.size());

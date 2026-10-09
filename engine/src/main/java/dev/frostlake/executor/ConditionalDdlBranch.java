@@ -26,5 +26,7 @@ public enum ConditionalDdlBranch {
     /** DROP … IF EXISTS found nothing and dropped nothing. */
     DROP_SKIPPED,
     /** CREATE OR ALTER TABLE found the table and altered it where it stands. */
-    ALTERED_IN_PLACE
+    ALTERED_IN_PLACE,
+    /** ALTER CORTEX SEARCH SERVICE IF EXISTS found no service and altered nothing. */
+    ALTER_SKIPPED
 }

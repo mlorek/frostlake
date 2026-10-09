@@ -29,8 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * evaluates a function call in an assignment, a condition or a RETURN by running a rebuilt
  * {@code SELECT f(args)}, which used to take a query ID of its own — so after
  * {@code CALL p(); a := ARRAY_APPEND(a, 'x');} RESULT_SCAN(LAST_QUERY_ID()) read the one-column answer of the
- * ARRAY_APPEND and refused "invalid identifier 'ROW_ID'". tds-asgard-data's export-queue tests rely on Snowflake
- * reading the CALL's table there.
+ * ARRAY_APPEND and refused "invalid identifier 'ROW_ID'". Snowflake reads the CALL's table there.
  */
 public class LastQueryIdAcrossExpressionsTest extends BaseDatabaseTest {
 

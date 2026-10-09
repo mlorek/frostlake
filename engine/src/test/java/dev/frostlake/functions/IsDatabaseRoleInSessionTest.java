@@ -18,6 +18,7 @@ package dev.frostlake.functions;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
@@ -27,9 +28,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 /**
- * IS_DATABASE_ROLE_IN_SESSION, which Frostlake did not know (live-verified): a name no database role in the session
- * carries is FALSE — every name, since Frostlake has no database roles — and it is typed BOOLEAN; the bare word
- * NULL and a number are refused while the statement compiles, and the arity is checked.
+ * IS_DATABASE_ROLE_IN_SESSION (live-verified): TRUE for a database role of the CURRENT database the session acts
+ * with — granted to its current role, directly or through other database roles. The name is one identifier: a name
+ * the statement writes is read as an identifier is, one a row carries is matched as it is spelled, and a name
+ * qualified by its database names nothing. It is typed BOOLEAN; the bare word NULL and a number are refused while
+ * the statement compiles, and the arity is checked.
  */
 public class IsDatabaseRoleInSessionTest extends BaseDatabaseTest {
 
@@ -64,16 +67,66 @@ public class IsDatabaseRoleInSessionTest extends BaseDatabaseTest {
         assertEquals(List.of("false"), row("SELECT IS_DATABASE_ROLE_IN_SESSION(a) FROM r"));
     }
 
-    @Test
-    public void aDatabaseRoleHeldThroughTheCurrentRoleIsTrue() {
+    private void holdThroughTheCurrentRole() {
         engine.execute("CREATE DATABASE ROLE test_db.held_dr");
         engine.execute("CREATE DATABASE ROLE test_db.nested_dr");
         engine.execute("CREATE DATABASE ROLE test_db.other_dr");
         engine.execute("GRANT DATABASE ROLE test_db.nested_dr TO DATABASE ROLE test_db.held_dr");
         engine.execute("GRANT DATABASE ROLE test_db.held_dr TO ROLE " + row("SELECT CURRENT_ROLE()").get(0));
-        assertEquals(List.of("true", "true", "true", "false"), row("""
-            SELECT IS_DATABASE_ROLE_IN_SESSION('test_db.held_dr'), IS_DATABASE_ROLE_IN_SESSION('held_dr'),
-                IS_DATABASE_ROLE_IN_SESSION('TEST_DB.NESTED_DR'), IS_DATABASE_ROLE_IN_SESSION('test_db.other_dr')"""));
+    }
+
+    @Test
+    public void aDatabaseRoleHeldThroughTheCurrentRoleIsTrue() {
+        holdThroughTheCurrentRole();
+        assertEquals(List.of("true", "true", "true", "true", "true", "false"), row("""
+            SELECT IS_DATABASE_ROLE_IN_SESSION('held_dr'), IS_DATABASE_ROLE_IN_SESSION('HELD_DR'),
+                IS_DATABASE_ROLE_IN_SESSION('Held_Dr'), IS_DATABASE_ROLE_IN_SESSION('"HELD_DR"'),
+                IS_DATABASE_ROLE_IN_SESSION('nested_dr'), IS_DATABASE_ROLE_IN_SESSION('other_dr')"""));
+        assertEquals(List.of("true", "true", "true"), row("""
+            SELECT IS_DATABASE_ROLE_IN_SESSION(UPPER('held_dr')), IS_DATABASE_ROLE_IN_SESSION('HELD' || '_DR'),
+                IS_DATABASE_ROLE_IN_SESSION(LOWER('HELD_DR'))"""), "a constant is a written name");
+        engine.execute("REVOKE DATABASE ROLE test_db.held_dr FROM ROLE " + row("SELECT CURRENT_ROLE()").get(0));
+        assertEquals(List.of("false", "false"),
+            row("SELECT IS_DATABASE_ROLE_IN_SESSION('HELD_DR'), IS_DATABASE_ROLE_IN_SESSION('NESTED_DR')"));
+        engine.execute("GRANT DATABASE ROLE test_db.nested_dr TO ROLE " + row("SELECT CURRENT_ROLE()").get(0));
+        assertEquals(List.of("false", "true"),
+            row("SELECT IS_DATABASE_ROLE_IN_SESSION('HELD_DR'), IS_DATABASE_ROLE_IN_SESSION('NESTED_DR')"),
+            "the role that held it is not held with it");
+    }
+
+    @Test
+    public void theNameIsOneIdentifierOfTheCurrentDatabase() {
+        holdThroughTheCurrentRole();
+        assertEquals(List.of("false", "false", "false", "false", "false"), row("""
+            SELECT IS_DATABASE_ROLE_IN_SESSION('test_db.held_dr'), IS_DATABASE_ROLE_IN_SESSION('TEST_DB.NESTED_DR'),
+                IS_DATABASE_ROLE_IN_SESSION(' HELD_DR'), IS_DATABASE_ROLE_IN_SESSION('HELD_DR '),
+                IS_DATABASE_ROLE_IN_SESSION('"held_dr"')"""));
+        engine.execute("CREATE OR REPLACE DATABASE idris_other");
+        try {
+            engine.execute("USE DATABASE idris_other");
+            assertEquals(List.of("false", "false"), row(
+                "SELECT IS_DATABASE_ROLE_IN_SESSION('HELD_DR'), IS_DATABASE_ROLE_IN_SESSION('TEST_DB.HELD_DR')"),
+                "a role of another database is not reached");
+        } finally {
+            engine.execute("USE SCHEMA test_db.test_schema");
+            engine.execute("DROP DATABASE IF EXISTS idris_other");
+        }
+    }
+
+    @Test
+    public void aNameARowCarriesIsMatchedAsItIsSpelled() {
+        holdThroughTheCurrentRole();
+        engine.execute("CREATE TABLE names (a VARCHAR)");
+        engine.execute("INSERT INTO names VALUES ('HELD_DR'), ('held_dr'), ('\"HELD_DR\"'), ('NESTED_DR'), ('OTHER_DR')");
+        final ResultSet rs = engine.executeQuery("SELECT a, IS_DATABASE_ROLE_IN_SESSION(a) FROM names ORDER BY a");
+        final List<String> cells = new ArrayList<>();
+        while (rs.next()) {
+            cells.add(rs.getValue(0) + "=" + rs.getValue(1));
+        }
+        assertEquals(List.of("\"HELD_DR\"=false", "HELD_DR=true", "NESTED_DR=true", "OTHER_DR=false", "held_dr=false"),
+            cells);
+        assertTrue(refusal("SELECT IS_DATABASE_ROLE_IN_SESSION(UPPER(a)) FROM names").contains("invalid identifier 'A'"),
+            "a column inside an expression is no name");
     }
 
     @Test

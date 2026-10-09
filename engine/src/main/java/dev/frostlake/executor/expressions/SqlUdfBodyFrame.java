@@ -18,9 +18,9 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -167,7 +167,7 @@ public final class SqlUdfBodyFrame {
 
     /** The text read as one parenthesised row, or null. */
     private static FrostlakeParser.ExprTupleContext rowTree(final String text) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
         parser.removeErrorListeners();
@@ -222,7 +222,7 @@ public final class SqlUdfBodyFrame {
 
     /** The text's spoken tokens: comments and whitespace dropped, end of input excluded. */
     private static List<Token> spokenTokens(final String text) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();

@@ -171,6 +171,10 @@ final class ValueRangeInferencer {
             return held != null ? ValueRange.of(held) : null;
         }
         if (expr instanceof ColumnReferenceExpression) {
+            if (visitor.readsUntypedNull((ColumnReferenceExpression) expr)) {
+                // Nothing but an untyped NULL: the empty interval, as the bare word is.
+                return ValueRange.EMPTY;
+            }
             final ValueRange declared = visitor.declaredColumnRange((ColumnReferenceExpression) expr);
             return declared == null && visitor.readsSequence((ColumnReferenceExpression) expr)
                 ? SequenceRead.range() : declared;
@@ -227,10 +231,12 @@ final class ValueRangeInferencer {
         return null;
     }
 
-    /** Whether an operand is the bare word NULL. */
-    private static boolean isBareNull(final Expression operand) {
+    /** Whether an operand is the bare word NULL, or a column that holds nothing but one. */
+    private boolean isBareNull(final Expression operand) {
         return operand instanceof LiteralExpression
-            && ((LiteralExpression) operand).getType() == LiteralType.NULL;
+            && ((LiteralExpression) operand).getType() == LiteralType.NULL
+            || operand instanceof ColumnReferenceExpression
+                && visitor.readsUntypedNull((ColumnReferenceExpression) operand);
     }
 
     /** The interval as one that may also answer NULL, or null when unknown. */

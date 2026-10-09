@@ -181,7 +181,7 @@ public final class FinishedPredicateSyntax {
         if (node instanceof FrostlakeParser.QuantifiedComparisonExprContext) {
             final FrostlakeParser.QuantifiedComparisonExprContext comparison =
                 (FrostlakeParser.QuantifiedComparisonExprContext) node;
-            return finished(comparison.expression(), true) ? comparison.op : null;
+            return finished(comparison.expression(0), true) ? comparison.op : null;
         }
         if (node instanceof FrostlakeParser.LikeExprContext) {
             final FrostlakeParser.LikeExprContext like = (FrostlakeParser.LikeExprContext) node;

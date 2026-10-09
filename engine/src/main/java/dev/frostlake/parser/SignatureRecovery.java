@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Locale;
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStream;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.RecognitionException;
@@ -149,7 +148,7 @@ final class SignatureRecovery {
         }
         final List<Integer> comments = new ArrayList<>();
         final List<Integer> unlexed = new ArrayList<>();
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         lexer.setInterpreter(commentMarking(lexer, comments));
         lexer.removeErrorListeners();
         lexer.addErrorListener(new BaseErrorListener() {

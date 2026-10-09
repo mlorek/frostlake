@@ -17,17 +17,21 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.GrantedObject;
+import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 
@@ -77,6 +81,15 @@ public class GrantRevokeHandler implements CommandHandler {
         return queryExecutor;
     }
 
+    /** No privilege is granted on, or revoked from, INFORMATION_SCHEMA or one of its views (live-verified). */
+    private void refuseSystemObject(final String writtenType, final String[] parts) {
+        if ("TABLE".equals(writtenType) || "VIEW".equals(writtenType)) {
+            InformationSchemaGuard.refuseWrite(catalog, parts);
+        } else if ("SCHEMA".equals(writtenType)) {
+            InformationSchemaGuard.refuseSchemaGrant(parts);
+        }
+    }
+
     public Object handleGrant(final FrostlakeParser.GrantStatementContext ctx) {
         try {
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
@@ -92,6 +105,9 @@ public class GrantRevokeHandler implements CommandHandler {
                     : "SCHEMA";
                 // The scope must exist before anything is granted in it (live-verified).
                 final String scopeName = AccessControlHandler.scopeName(catalog, scope);
+                if (scope.SCHEMA() != null) {
+                    InformationSchemaGuard.refuseSchemaGrant(ParseTreeText.qualifiedNameParts(scope.qualifiedName()));
+                }
                 if (!isFuture && "PIPE".equals(objectKind)) {
                     throw new RuntimeException(SqlCompilationError.of("Bulk grant on objects of type PIPE to "
                         + bulkGranteeKind(ctx.USER() != null, ctx.databaseRoleGrantee() != null) + " is restricted."));
@@ -199,23 +215,32 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.privilegeList() != null || ctx.OWNERSHIP() != null) {
                 // GRANT privileges/OWNERSHIP ON object TO USER/ROLE/DATABASE ROLE target_name
                 // identifiers: 0=target_name
-                final String writtenType = SecurableKinds.of(ctx.objectType());
-                final String objectName = visitor.getText(ctx.qualifiedName());
+                // An object named without its kind is a table or a view (live-verified).
+                final String writtenType = ctx.objectType() == null ? "TABLE" : SecurableKinds.of(ctx.objectType());
+                // A table or a view the current schema does not hold is looked for along the session's
+                // SEARCH_PATH, and the grant is recorded on the one found there (live-verified).
+                final boolean relation = "TABLE".equals(writtenType) || "VIEW".equals(writtenType);
+                final String writtenName = visitor.getText(ctx.qualifiedName());
+                final String objectName = relation ? queryExecutor.searchPathQualified(writtenName) : writtenName;
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
                     : visitor.getText(ctx.identifier(0));
                 final boolean isUser = ctx.USER() != null;
-                final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
+                final String[] parts = objectName.equals(writtenName)
+                    ? ParseTreeText.qualifiedNameParts(ctx.qualifiedName()) : QualifiedName.parse(objectName).parts();
                 final Integer arity = ctx.LPAREN() == null ? null
                     : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size());
+                requireArgumentTypes(writtenType, parts, ctx.LPAREN() != null);
+                requireTypeWords(writtenType, ctx.identifierList());
                 // The object is found first, then the grantee, and only then is the grant itself judged
                 // (live-verified).
                 queryExecutor.requireSecurable(writtenType, parts, arity);
+                refuseSystemObject(writtenType, parts);
                 final String objectType = grantedKind(writtenType, parts);
                 final List<String> writtenTypes = writtenArgumentTypes(ctx.LPAREN() != null, ctx.identifierList());
                 // A routine's privileges are each overload's own, under its signature (GrantNames.routine).
                 final List<String> recordedNames = isRoutine(objectType)
                     ? queryExecutor.routineGrantNames(objectType, parts, writtenTypes)
-                    : Collections.singletonList(objectName);
+                    : Collections.singletonList(recordedName(objectType, parts, arity, objectName));
                 if (databaseGrantee == null) {
                     requireGrantee(isUser, targetName);
                 }
@@ -373,21 +398,26 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.privilegeList() != null || ctx.OWNERSHIP() != null) {
                 // REVOKE privileges/OWNERSHIP ON object FROM USER/ROLE/DATABASE ROLE target_name
                 // identifiers: 0=target_name
-                final String writtenType = SecurableKinds.of(ctx.objectType());
+                // An object named without its kind is a table or a view (live-verified).
+                final String writtenType = ctx.objectType() == null ? "TABLE" : SecurableKinds.of(ctx.objectType());
                 final String objectName = visitor.getText(ctx.qualifiedName());
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
                     : visitor.getText(ctx.identifier(0));
                 final boolean isUser = ctx.USER() != null;
+                final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
+                final Integer arity = ctx.LPAREN() == null ? null
+                    : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size());
+                requireArgumentTypes(writtenType, parts, ctx.LPAREN() != null);
+                requireTypeWords(writtenType, ctx.identifierList());
                 // The object is found before the grantee or any authority is judged (live-verified).
-                queryExecutor.requireSecurable(writtenType, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()),
-                    ctx.LPAREN() == null ? null
-                        : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size()));
-                final String objectType = grantedKind(writtenType, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
+                queryExecutor.requireSecurable(writtenType, parts, arity);
+                refuseSystemObject(writtenType, parts);
+                final String objectType = grantedKind(writtenType, parts);
                 // A routine's privileges are each overload's own, under its signature (GrantNames.routine).
                 final List<String> recordedNames = isRoutine(objectType)
-                    ? queryExecutor.routineGrantNames(objectType, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()),
+                    ? queryExecutor.routineGrantNames(objectType, parts,
                         writtenArgumentTypes(ctx.LPAREN() != null, ctx.identifierList()))
-                    : Collections.singletonList(objectName);
+                    : Collections.singletonList(recordedName(objectType, parts, arity, objectName));
 
                 if (ctx.OWNERSHIP() != null || namesOwnership(ctx.privilegeList())) {
                     // An object always has an owner: live refuses to revoke it, once the grantee is found.
@@ -396,7 +426,9 @@ public class GrantRevokeHandler implements CommandHandler {
                     }
                     throw new RuntimeException("SQL execution error: OWNERSHIP can only be transferred.");
                 }
-                boolean revoked = false;
+                // A REVOKE naming its object counts every privilege it took back: two for SELECT, INSERT, and
+                // one for each privilege ALL stands for that the grantee held (live-verified).
+                int revoked = 0;
                 for (final String recorded : recordedNames) {
                     if (ctx.privilegeList().ALL() != null) {
                         // REVOKE ALL removes the expanded set (and a legacy stored ALL marker),
@@ -406,18 +438,22 @@ public class GrantRevokeHandler implements CommandHandler {
                             allToRevoke.add("ALL");
                         }
                         for (final String privilege : allToRevoke) {
-                            revoked |= revokeFrom(databaseGrantee, isUser, targetName, privilege, objectType, recorded,
-                                optionOnly);
+                            if (revokeFrom(databaseGrantee, isUser, targetName, privilege, objectType, recorded,
+                                    optionOnly)) {
+                                revoked++;
+                            }
                         }
                     } else {
                         for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
-                            revoked |= revokeFrom(databaseGrantee, isUser, targetName, privilegeName(privCtx),
-                                objectType, recorded, optionOnly);
+                            if (revokeFrom(databaseGrantee, isUser, targetName, privilegeName(privCtx),
+                                    objectType, recorded, optionOnly)) {
+                                revoked++;
+                            }
                         }
                     }
                 }
                 logger.trace("Revoked privileges on {} {} from {}", objectType, objectName, targetName);
-                return objectsAffected(revoked ? 1 : 0);
+                return objectsAffected(revoked);
             }
 
             return null;
@@ -427,6 +463,54 @@ public class GrantRevokeHandler implements CommandHandler {
             if (e instanceof ProceduralException) throw (ProceduralException) e;
             throw StatementErrors.propagate(e);
         }
+    }
+
+    /**
+     * A routine is named with its argument types wherever a privilege on it is granted, revoked or listed:
+     * routines overload, and the account refuses a bare name whether or not it has overloads, a procedure's in
+     * the same words as a function's (live-verified).
+     */
+    static void requireArgumentTypes(final String objectType, final String[] parts, final boolean listWritten) {
+        if (!listWritten && isRoutine(objectType)) {
+            throw new RuntimeException("Argument types of function '" + parts[parts.length - 1]
+                + "' must be specified.");
+        }
+    }
+
+    /**
+     * A routine's argument list names types. A plain word there is no type, and is refused as one before the
+     * routine is looked for, the first such word in the order written: {@code GRANT USAGE ON FUNCTION f1(x)} is
+     * {@code Unsupported data type 'X'.} (live-verified).
+     */
+    private static void requireTypeWords(final String objectType, final FrostlakeParser.IdentifierListContext types) {
+        if (types == null || !isRoutine(objectType)) {
+            return;
+        }
+        for (final FrostlakeParser.IdentifierContext type : types.identifier()) {
+            final int token = type.getStart().getType();
+            if (token == FrostlakeLexer.IDENTIFIER || token == FrostlakeLexer.QUOTED_IDENTIFIER) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Unsupported data type '" + SqlIdentifiers.canonical(type) + "'."));
+            }
+        }
+    }
+
+    /**
+     * The name a privilege on an object that is no routine is recorded under: the full name of the object the
+     * statement's name reaches, as the catalog holds it, so that every spelling of one object keeps one set of
+     * privileges. A kind with no object to look up keeps the name as written.
+     */
+    private String recordedName(final String objectType, final String[] parts, final Integer arity,
+                                final String written) {
+        try {
+            final GrantedObject granted = queryExecutor.grantedObject(objectType, parts, arity, null);
+            if (granted != null && granted.getName() != null) {
+                return granted.getName();
+            }
+        } catch (final RuntimeException unresolved) {
+            // The statement reports what it cannot find itself; the name stays as written until it does.
+        }
+        return written;
     }
 
     /** Whether privileges on this kind are an overload's own, recorded under its signature. */
@@ -506,8 +590,8 @@ public class GrantRevokeHandler implements CommandHandler {
 
     /**
      * The sentence of a GRANT or REVOKE that reaches objects by the count: {@code Statement executed successfully.
-     * N objects affected.} A bulk GRANT counts the objects in its scope; a REVOKE counts the objects it took a
-     * privilege, or a grant option, back from.
+     * N objects affected.} A bulk GRANT counts the objects in its scope, and a bulk REVOKE the objects it took a
+     * privilege, or a grant option, back from; a REVOKE that names its object counts the privileges it took back.
      */
     private static ResultSet objectsAffected(final int count) {
         return StatusResults.of(StatusResults.EXECUTED + " " + count + " objects affected.");

@@ -18,9 +18,9 @@ package dev.frostlake.parser;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -56,6 +56,9 @@ import org.antlr.v4.runtime.Token;
  */
 final class StarModifierLines {
 
+    /** What stands for a CAST's or a TRY_CAST's own parenthesis among the brackets a text leaves open. */
+    private static final int CAST_OPENER = -2;
+
     private StarModifierLines() {
     }
 
@@ -79,6 +82,9 @@ final class StarModifierLines {
             if (type == FrostlakeLexer.REPLACE || type == FrostlakeLexer.RENAME) {
                 star = starBefore(spoken, i);
                 keyword = star < 0 ? -1 : i;
+            } else if (isPlainWord(spoken.get(i)) && starBefore(spoken, i) >= 0) {
+                // A word that is no modifier at all stands before any keyword: it is read by its own rule.
+                return wordLines(sql, spoken, i, starBefore(spoken, i), firstOnly);
             }
         }
         if (keyword < 0) {
@@ -91,7 +97,7 @@ final class StarModifierLines {
         final FrostlakeParser.SqlScriptContext tree = treeBefore(sql, spoken, keyword);
         final StarModifierPlace place = tree == null ? null : StarModifierPlace.of(tree, spoken.get(star));
         if (place == null) {
-            return null;
+            return tree == null ? null : elsewhereLines(tree, spoken.get(star), firstOnly);
         }
         final Token refused = spoken.get(keyword);
         final Token next = spoken.get(keyword + 1);
@@ -122,6 +128,85 @@ final class StarModifierLines {
             lines.add(SyntaxErrorListener.sentence(next));
         }
         return lines;
+    }
+
+    /**
+     * The lines for a star's misplaced keyword where no select item or clause of the statement holds it but live's
+     * reading is known all the same (live-verified):
+     *
+     * <pre>
+     *   SELECT 1 FROM fz a JOIN fz b ON HASH(* REPLACE (1 AS id)) = 1    'ON' at 29, and nothing else
+     *   SELECT (SELECT HASH(* REPLACE x) FROM fz)                        'SELECT' at 8, '(' at 19
+     * </pre>
+     *
+     * A join's condition is refused at its ON whatever follows; a subquery that is a select item is refused at its
+     * SELECT, and the star's call at its opening parenthesis.
+     */
+    private static List<String> elsewhereLines(final FrostlakeParser.SqlScriptContext tree, final Token star,
+                                               final boolean firstOnly) {
+        final Token on = StarModifierPlace.joinOn(tree, star);
+        if (on != null) {
+            return new ArrayList<>(Collections.singletonList(SyntaxErrorListener.sentence(on)));
+        }
+        final Token[] subquery = StarModifierPlace.scalarSubqueryItem(tree, star);
+        if (subquery == null) {
+            return null;
+        }
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(subquery[0]));
+        if (!firstOnly) {
+            lines.add(SyntaxErrorListener.sentence(subquery[1]));
+        }
+        return lines;
+    }
+
+    /**
+     * The lines for a word or a number written after a call's star argument, where only a modifier may stand: the
+     * word is refused, and the statement is read on as if it were not written — a fault right after it is silent
+     * (live-verified):
+     *
+     * <pre>
+     *   SELECT 1 FROM fz WHERE HASH(* x) = 1             'x' at 30
+     *   SELECT 1 FROM fz WHERE HASH(* x y) = 1           'x' at 30
+     *   SELECT 1 FROM fz WHERE HASH(* x) = 1 AND a b     'x' at 30, 'b' at 43
+     *   SELECT 1 FROM fz a JOIN fz b ON HASH(* x) = 1    'ON' at 29
+     * </pre>
+     *
+     * The rule holds where the word is the statement's first fault and the star is a call's argument.
+     */
+    private static List<String> wordLines(final String sql, final List<Token> spoken, final int word, final int star,
+                                          final boolean firstOnly) {
+        final int opener = argumentOpener(spoken, star);
+        if (opener < 0 || spoken.get(opener).getType() != FrostlakeLexer.LPAREN) {
+            return null;
+        }
+        final FrostlakeParser.SqlScriptContext tree = treeBefore(sql, spoken, word);
+        if (tree == null) {
+            return null;
+        }
+        final Token on = StarModifierPlace.joinOn(tree, spoken.get(star));
+        final List<String> lines = new ArrayList<>();
+        if (on != null) {
+            lines.add(SyntaxErrorListener.sentence(on));
+            return lines;
+        }
+        final Token refused = spoken.get(word);
+        lines.add(SyntaxErrorListener.sentence(refused));
+        if (!firstOnly && spoken.get(word + 1).getType() != Token.EOF) {
+            lines.addAll(StarModifierResync.unlessRightAfter(linesAfterDeleting(sql, refused), spoken.get(word + 1)));
+        }
+        return lines;
+    }
+
+    /** Whether a token is a name or a number, and none of the words that may follow a star in a call. */
+    private static boolean isPlainWord(final Token token) {
+        final int type = token.getType();
+        if (type == FrostlakeLexer.EXCLUDE || type == FrostlakeLexer.ILIKE || type == FrostlakeLexer.REPLACE
+                || type == FrostlakeLexer.RENAME) {
+            return false;
+        }
+        return type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || StarModifierResync.isName(token);
     }
 
     /**
@@ -174,7 +259,8 @@ final class StarModifierLines {
         while (at > 0) {
             final int type = spoken.get(at).getType();
             final int before = spoken.get(at - 1).getType();
-            if (type == FrostlakeLexer.STRING_LITERAL && before == FrostlakeLexer.ILIKE
+            if ((type == FrostlakeLexer.STRING_LITERAL || type == FrostlakeLexer.DOLLAR_QUOTED_STRING)
+                    && before == FrostlakeLexer.ILIKE
                     || StarModifierResync.isName(spoken.get(at)) && before == FrostlakeLexer.EXCLUDE) {
                 at -= 2;
             } else if (type == FrostlakeLexer.RPAREN) {
@@ -261,13 +347,18 @@ final class StarModifierLines {
     /**
      * The tree of the text before the token at {@code at}, every bracket it leaves open closed, when that text parses
      * cleanly and holds no statement run into another; else null. A text that ends in a CTE's body is given a query
-     * after the WITH.
+     * after the WITH, one that ends in a MERGE's condition a WHEN clause, and a CAST left open its type.
      */
     static FrostlakeParser.SqlScriptContext treeBefore(final String sql, final List<Token> spoken, final int at) {
         String prefix = repairedPrefix(sql, spoken, at);
         FrostlakeParser.SqlScriptContext tree = prefix == null ? null : SyntaxErrorListener.cleanParse(prefix);
         if (tree == null && prefix != null && spoken.get(0).getType() == FrostlakeLexer.WITH) {
             prefix = prefix + " SELECT 1";
+            tree = SyntaxErrorListener.cleanParse(prefix);
+        }
+        if (tree == null && prefix != null && spoken.get(0).getType() == FrostlakeLexer.MERGE) {
+            // A MERGE that ends in its condition is given the one clause it cannot do without.
+            prefix = prefix + " WHEN MATCHED THEN DELETE";
             tree = SyntaxErrorListener.cleanParse(prefix);
         }
         return tree == null || !separated(tree, prefix) ? null : tree;
@@ -278,7 +369,12 @@ final class StarModifierLines {
         final Deque<Integer> open = new ArrayDeque<>();
         for (int i = 0; i < keyword; i++) {
             final int type = spoken.get(i).getType();
-            if (type == FrostlakeLexer.LPAREN || type == FrostlakeLexer.LBRACE || type == FrostlakeLexer.LBRACKET) {
+            if (type == FrostlakeLexer.LPAREN && i > 0 && (spoken.get(i - 1).getType() == FrostlakeLexer.CAST
+                    || spoken.get(i - 1).getType() == FrostlakeLexer.TRY_CAST)) {
+                // A cast left open is closed with a type, as it cannot be without one.
+                open.push(Integer.valueOf(CAST_OPENER));
+            } else if (type == FrostlakeLexer.LPAREN || type == FrostlakeLexer.LBRACE
+                    || type == FrostlakeLexer.LBRACKET) {
                 open.push(Integer.valueOf(type));
             } else if ((type == FrostlakeLexer.RPAREN || type == FrostlakeLexer.RBRACE
                     || type == FrostlakeLexer.RBRACKET) && !open.isEmpty()) {
@@ -288,14 +384,15 @@ final class StarModifierLines {
         final StringBuilder repaired = new StringBuilder(sql.substring(0, spoken.get(keyword).getStartIndex()));
         while (!open.isEmpty()) {
             final int type = open.pop().intValue();
-            repaired.append(type == FrostlakeLexer.LPAREN ? ')' : type == FrostlakeLexer.LBRACE ? '}' : ']');
+            repaired.append(type == CAST_OPENER ? " AS INT)" : type == FrostlakeLexer.LPAREN ? ")"
+                : type == FrostlakeLexer.LBRACE ? "}" : "]");
         }
         return repaired.toString().trim().isEmpty() ? null : repaired.toString();
     }
 
     /** Whether the repaired text before the keyword holds no statement run into another without its semicolon. */
     private static boolean separated(final FrostlakeParser.SqlScriptContext tree, final String prefix) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(prefix));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(prefix));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();

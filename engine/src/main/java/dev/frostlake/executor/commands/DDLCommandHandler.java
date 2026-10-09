@@ -16,9 +16,11 @@
 
 package dev.frostlake.executor.commands;
 
-import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.ClonePoint;
+import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
@@ -26,8 +28,10 @@ import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
 import dev.frostlake.metastore.FutureGrants;
-import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.MaterializedViewValidity;
+import dev.frostlake.metastore.NameTakenException;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.StreamSources;
@@ -39,6 +43,8 @@ import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
+import dev.frostlake.metastore.model.RelationKind;
+import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.metastore.model.ScalingPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
@@ -55,6 +61,8 @@ import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.metastore.model.WarehouseState;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
+import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
@@ -62,14 +70,17 @@ import dev.frostlake.storage.TableVersion;
 import dev.frostlake.stream.StreamManager;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
 import java.time.Instant;
-import java.time.LocalDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -185,6 +196,15 @@ public class DDLCommandHandler implements CommandHandler {
             // Live-verified Snowflake rejection, for every object type.
             throw new RuntimeException("options IF NOT EXISTS and OR REPLACE are incompatible.");
         }
+        // A table's properties are judged first of all: before its name, and before an Iceberg table's column types.
+        if (ctx.TABLE() != null && ctx.DYNAMIC() == null && ctx.EVENT() == null && ctx.STREAM() == null) {
+            CreatedObjectProperties.requireTableProperties(ctx);
+        }
+        // An Iceberg table's column types are judged before anything else the statement names (live-verified).
+        if (ctx.ICEBERG() != null && ctx.TABLE() != null) {
+            IcebergColumnTypes.validate(ctx.columnList(), columnParser);
+        }
+        requireExactContainer(ctx);
 
         try {
             if (ctx.ALERT() != null) {
@@ -255,31 +275,57 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     /**
-     * Creating an object requires the matching CREATE privilege on — or ownership of, or an
-     * administrative role over — its container: the schema for a schema-level object, or the
-     * database for CREATE SCHEMA. No-op when security is disabled or the session is the SYSTEM user
-     * (both handled inside {@link dev.frostlake.security.SecurityManager#checkPermission}). Shared by
-     * every create handler across the four DDL handler classes so the guard lives in one place.
+     * A schema-level object is created in the schema its name spells, each qualifier matched exactly: with a
+     * schema SS and no "ss", CREATE TABLE "ss".t names a schema that does not exist, and is refused for it before
+     * anything else of the statement is judged — whatever the kind, under OR REPLACE and IF NOT EXISTS alike, and
+     * a database qualifier likewise (live-verified kind by kind). A function and a procedure are left to their
+     * own handler, which judges what the statement says of itself before it looks for the schema.
      */
-    void checkCreatePrivilege(final Privilege createPrivilege, final ContainerType containerType, final String containerName) {
-        if (queryExecutor.getSecurityManager() != null) {
-            queryExecutor.getSecurityManager().checkPermission(createPrivilege, containerType.getCatalogName(), containerName);
+    private void requireExactContainer(final FrostlakeParser.CreateStatementContext ctx) {
+        final FrostlakeParser.QualifiedNameContext written;
+        if (ctx.objectName() != null) {
+            // A table or a view; a name given through IDENTIFIER() is resolved by its handler.
+            written = ctx.objectName().qualifiedName();
+        } else {
+            final boolean schemaLevel = ctx.STREAM() != null || ctx.TASK() != null || ctx.PIPE() != null
+                || ctx.SEQUENCE() != null || ctx.STAGE() != null || ctx.FILE() != null && ctx.FORMAT() != null
+                || ctx.TAG() != null
+                || ctx.MASKING() != null && ctx.POLICY() != null && ctx.ROW() == null
+                || ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null
+                || ctx.DYNAMIC() != null && ctx.TABLE() != null;
+            written = schemaLevel && ctx.DATABASE() == null && !ctx.qualifiedName().isEmpty()
+                ? ctx.qualifiedName(0) : null;
+        }
+        if (written == null) {
+            return;
+        }
+        final String[] parts = catalog.withoutAccount(ParseTreeText.qualifiedNameParts(written), 3);
+        if (parts.length == 2 || parts.length == 3) {
+            catalog.requireOwningSchema(QualifiedName.of(parts));
         }
     }
 
     /**
-     * {@link #checkCreatePrivilege(Privilege, ContainerType, String)} for an object created in {@code schema}. The
-     * privilege is asked of that schema by its full name: a bare schema name would be read in the session's database,
-     * so a CREATE into another database asked about the wrong schema.
+     * Creating a schema requires the CREATE SCHEMA privilege on, or ownership of, its database, held by the
+     * session's primary role (see {@link QueryExecutor#requireCreatePrivilege(Privilege, String, String[])}).
+     *
+     * @param createPrivilege the CREATE privilege the object needs
+     * @param containerType   the container's kind
+     * @param containerName   the container's own name: a database's
+     */
+    void checkCreatePrivilege(final Privilege createPrivilege, final ContainerType containerType, final String containerName) {
+        queryExecutor.requireCreatePrivilege(createPrivilege, containerType.getCatalogName(), new String[] {containerName});
+    }
+
+    /**
+     * Creating an object in {@code schema} requires the matching CREATE privilege on, or ownership of, the schema,
+     * held by the session's primary role. Shared by the create handlers so the guard lives in one place.
      *
      * @param createPrivilege the CREATE privilege the object needs
      * @param schema          the schema the object is created in
      */
     void checkCreatePrivilege(final Privilege createPrivilege, final Schema schema) {
-        // Nothing is created in INFORMATION_SCHEMA, whoever asks.
-        schema.requireCreatable(createPrivilege);
-        checkCreatePrivilege(createPrivilege, ContainerType.SCHEMA,
-            QualifiedName.join(schema.getDatabaseName(), schema.getName()));
+        queryExecutor.requireCreatePrivilege(createPrivilege, schema);
     }
 
     /**
@@ -319,7 +365,7 @@ public class DDLCommandHandler implements CommandHandler {
             schema.addStream(clone);
             logger.trace("Cloned stream {} from {}", streamName, sourceQualifiedName);
         } catch (final RuntimeException e) {
-            handleIfNotExists(ifNotExists, e, "object");
+            handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Stream already exists (IF NOT EXISTS): {}", streamName);
         }
         return null;
@@ -349,8 +395,11 @@ public class DDLCommandHandler implements CommandHandler {
             : kind.STAGE() != null ? StreamSourceType.STAGE
             : kind.DYNAMIC() != null ? StreamSourceType.DYNAMIC_TABLE : StreamSourceType.TABLE;
 
-        // Parse qualified source name
-        final String[] sourceParts = qualifiedNameParts(ctx.qualifiedName(1));
+        // Parse qualified source name; a table or a view the current schema does not hold is looked for along
+        // the session's SEARCH_PATH.
+        final String[] sourceParts = kind.STAGE() != null ? qualifiedNameParts(ctx.qualifiedName(1))
+            : QualifiedName.parse(queryExecutor.searchPathQualified(
+                QualifiedName.join(qualifiedNameParts(ctx.qualifiedName(1))))).parts();
         final Schema sourceSchema;
         final String sourceObjectName;
 
@@ -440,6 +489,13 @@ public class DDLCommandHandler implements CommandHandler {
             if (kind.EVENT() != null && !table.isEventTable()) {
                 throw new RuntimeException(SqlCompilationError.objectOfOtherType("TABLE", "EVENT_TABLE"));
             }
+            // A stream reads its table: SELECT on it is asked of the role that creates the stream.
+            queryExecutor.requirePrivilege(Privilege.SELECT, "TABLE",
+                new String[] {sourceSchema.getDatabaseName(), sourceSchema.getName(), table.getName()}, null);
+            if (!table.isChangeTracking()) {
+                queryExecutor.requireChangeTrackingAllowed(
+                    new String[] {sourceSchema.getDatabaseName(), sourceSchema.getName(), table.getName()});
+            }
             sourceTable = table;
         } else {
             // Check if view exists. Snowflake words this one specifically — live-verified on a real
@@ -507,7 +563,7 @@ public class DDLCommandHandler implements CommandHandler {
                 sourceTable.setChangeTracking(true);
                 start.forTable(stream, sourceTable, sourceQualified, ctx.streamPoint(), showInitialRows);
             } else if (sourceDynamicTable != null) {
-                start.forDynamicTable(stream, sourceDynamicTable, ctx.streamPoint(), showInitialRows);
+                start.forDynamicTable(stream, sourceSchema, sourceDynamicTable, ctx.streamPoint(), showInitialRows);
             } else if (sourceView != null) {
                 // A stream on a view turns change tracking on for the tables it reads (live-verified), each read
                 // where the view lives.
@@ -535,7 +591,7 @@ public class DDLCommandHandler implements CommandHandler {
 
             logger.trace("Created stream: {} on {} {}", streamName, sourceType, sourceName);
         } catch (final RuntimeException e) {
-            handleIfNotExists(ifNotExists, e, "object");
+            handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
             logger.debug("Stream already exists (IF NOT EXISTS): {}", streamName);
         }
         return null;
@@ -588,6 +644,9 @@ public class DDLCommandHandler implements CommandHandler {
             throw e;
         }
         final FrostlakeParser.RoutineAlterActionContext action = ctx.routineAlterAction();
+        if (action.RENAME() == null) {
+            queryExecutor.requireRoutinePrivilege(Privilege.MODIFY, schema, routine);
+        }
         if (action.RENAME() != null) {
             final String[] newParts = qualifiedNameParts(action.qualifiedName(0));
             final String newSimple = newParts[newParts.length - 1];
@@ -615,8 +674,14 @@ public class DDLCommandHandler implements CommandHandler {
             // The overload's privileges go with it, its signature unchanged (GrantNames).
             GrantNames.renamed(catalog, isFunction ? "FUNCTION" : "PROCEDURE", grantedBefore,
                 GrantNames.routine(destination, newSimple, parameters));
+        } else if (action.executeAsClause() != null) {
+            // A procedure's rights mode is changed in place; a function has none.
+            if (isFunction) {
+                throw new RuntimeException("Unsupported invocation type for function.");
+            }
+            ((Procedure) routine).setExecuteAs(CreateRoutineHandler.executeAsText(action.executeAsClause()));
         } else if (action.SECURE() != null) {
-            requireFunctionSecure(ctx, isFunction);
+            requireFunctionSecure(ctx, action, isFunction);
             ((Function) routine).setSecure(action.SET() != null);
         } else if (action.TAG() != null) {
             // A tag is set and unset on a routine as it is anywhere else, and changes nothing else
@@ -647,8 +712,8 @@ public class DDLCommandHandler implements CommandHandler {
             }
         }
         return isFunction
-            ? schema.getFunctionBySignature(name, argumentTypes)
-            : schema.getProcedureBySignature(name, argumentTypes);
+            ? schema.getFunctionByWrittenSignature(name, argumentTypes)
+            : schema.getProcedureByWrittenSignature(name, argumentTypes);
     }
 
     /**
@@ -696,13 +761,19 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     /**
-     * SECURE is a FUNCTION's property. A procedure's ALTER simply has no such action on the account, so
-     * it ends where the word does: the refusal is the syntax error the parser gives at the end of the
-     * statement, not a property refusal (live-verified).
+     * SECURE is a FUNCTION's property. A procedure's ALTER has no such action on the account: SET SECURE
+     * ends where the word does - the refusal is the syntax error the parser gives at the end of the
+     * statement - and UNSET SECURE names a property a procedure does not have (live-verified).
      */
-    private void requireFunctionSecure(final FrostlakeParser.AlterStatementContext ctx, final boolean isFunction) {
+    private void requireFunctionSecure(final FrostlakeParser.AlterStatementContext ctx,
+                                       final FrostlakeParser.RoutineAlterActionContext action,
+                                       final boolean isFunction) {
         if (isFunction) {
             return;
+        }
+        if (action.UNSET() != null) {
+            // Unsetting it reads as a property a procedure does not have (live-verified).
+            throw ParameterRegistry.invalidProperty("SECURE", "PROCEDURE");
         }
         final Token last = ctx.getStop();
         throw new RuntimeException(SqlCompilationError.of("syntax error line " + last.getLine()
@@ -718,7 +789,34 @@ public class DDLCommandHandler implements CommandHandler {
             routine.setComment(extractStringLiteral(property.STRING_LITERAL()));
             return;
         }
+        if (property.routineSecretList() != null) {
+            requireHandlerRoutine(routine, "SECRETS", isFunction);
+            environmentOf(routine, isFunction).setSecrets(
+                new RoutineEnvironments(catalog, queryExecutor).secrets(property.routineSecretList()));
+            return;
+        }
+        if (property.routineIntegrationList() != null) {
+            requireHandlerRoutine(routine, "EXTERNAL_ACCESS_INTEGRATIONS", isFunction);
+            environmentOf(routine, isFunction).setExternalAccessIntegrations(
+                new RoutineEnvironments(catalog, queryExecutor).integrations(property.routineIntegrationList()));
+            return;
+        }
         requireRoutineProperty(getText(property.identifier()).toUpperCase(), isFunction);
+    }
+
+    /** A SQL routine's secrets and integrations are no property an ALTER takes (live-verified). */
+    private static void requireHandlerRoutine(final SqlObject routine, final String property,
+                                              final boolean isFunction) {
+        final String language = isFunction ? ((Function) routine).getLanguage() : ((Procedure) routine).getLanguage();
+        if (language == null || "SQL".equalsIgnoreCase(language)) {
+            throw new RuntimeException(SqlCompilationError.invalidPropertyFor(property,
+                isFunction ? "FUNCTION" : "PROCEDURE"));
+        }
+    }
+
+    /** What a routine is given to run with, which an ALTER changes in place. */
+    private static RoutineEnvironment environmentOf(final SqlObject routine, final boolean isFunction) {
+        return isFunction ? ((Function) routine).getEnvironment() : ((Procedure) routine).getEnvironment();
     }
 
     /** The UNSET side of the same rule. */
@@ -727,6 +825,16 @@ public class DDLCommandHandler implements CommandHandler {
                                       final boolean isFunction) {
         if (property.COMMENT() != null) {
             routine.setComment(null);
+            return;
+        }
+        if (property.EXTERNAL_ACCESS_INTEGRATIONS() != null) {
+            requireHandlerRoutine(routine, "EXTERNAL_ACCESS_INTEGRATIONS", isFunction);
+            environmentOf(routine, isFunction).setExternalAccessIntegrations(null);
+            return;
+        }
+        if ("SECRETS".equals(getText(property.identifier()).toUpperCase())) {
+            // Taken, and the secrets stay as they were (live-verified).
+            requireHandlerRoutine(routine, "SECRETS", isFunction);
             return;
         }
         requireRoutineProperty(getText(property.identifier()).toUpperCase(), isFunction);
@@ -767,15 +875,32 @@ public class DDLCommandHandler implements CommandHandler {
         final MaterializedView mv = schema.getMaterializedView(mvName);
         final FrostlakeParser.MaterializedViewActionContext action = ctx.materializedViewAction();
 
-        if (action.SUSPEND() != null) {
+        if (action.RECLUSTER() != null) {
+            // Only a clustered view has reclustering to pause; the refusal is the table's own (live-verified).
+            if (mv.getClusterKeys().isEmpty()) {
+                throw new RuntimeException("Table '" + mv.getName().toUpperCase(Locale.ROOT) + "' is not clustered\n");
+            }
+            mv.setReclusterSuspended(action.SUSPEND() != null);
+        } else if (action.clusterByClause() != null) {
+            mv.setClusterKeys(MaterializedViewKeys.read(action.clusterByClause(), mv.getResolvedColumns(), this,
+                queryExecutor));
+            mv.setReclusterSuspended(false);
+        } else if (action.CLUSTERING() != null) {
+            // Dropping the key of a view that has none is no fault (live-verified).
+            mv.setClusterKeys(null);
+        } else if (action.SUSPEND() != null) {
             mv.setSuspended(true);
             logger.trace("Suspended materialized view: {}", qualifiedName);
         } else if (action.RESUME() != null) {
+            // A view resumes over the body it was created with: one that no longer compiles is refused as the
+            // body is, and stays as it was. Resuming lifts the mark a SUSPEND left and no other: a view its base
+            // table's DDL invalidated stays invalid (live-verified).
+            queryExecutor.compileMaterializedView(mv, qualifiedName);
             mv.setSuspended(false);
+            if (mv.getInvalidReason() != null) {
+                mv.setResumedWhileInvalid(true);
+            }
             logger.trace("Resumed materialized view: {}", qualifiedName);
-        } else if (action.REFRESH() != null) {
-            mv.setLastRefreshedTime(LocalDateTime.now());
-            logger.trace("Refreshed materialized view: {}", qualifiedName);
         } else if (action.RENAME() != null) {
             final String newName = getText(action.identifier());
             // Re-key the schema map (drop old, add under new name) — otherwise the MV stays
@@ -815,14 +940,84 @@ public class DDLCommandHandler implements CommandHandler {
         return dynamicTableSchema(parts).getDynamicTable(parts[parts.length - 1]);
     }
 
+    /**
+     * The dynamic table a name reaches, or null when its schema holds none of that name or is not there.
+     *
+     * @param parts the name's parts
+     * @return the dynamic table, or null
+     */
+    public DynamicTable findDynamicTable(final String[] parts) {
+        final Schema schema;
+        try {
+            schema = dynamicTableSchema(parts);
+        } catch (final RuntimeException missing) {
+            return null;
+        }
+        final String name = parts[parts.length - 1];
+        return schema != null && schema.hasDynamicTable(name) ? schema.getDynamicTable(name) : null;
+    }
+
+    /**
+     * ALTER DYNAMIC TABLE … RENAME TO: the table takes its new name where that name places it - the session's
+     * schema, a schema of the session's database, or one named in full - with what was granted on it and the
+     * streams that read it. Its query goes on reading the names it read where the table was defined. A name
+     * a table or a view holds there, the dynamic table's own included, is refused (live-verified).
+     *
+     * @param parts  the dynamic table's name
+     * @param target the new name's parts
+     */
+    public void renameDynamicTable(final String[] parts, final String[] target) {
+        final Schema schema = dynamicTableSchema(parts);
+        final DynamicTable dt = schema.getDynamicTable(parts[parts.length - 1]);
+        if (target.length < 3 && catalog.getCurrentDatabase() == null) {
+            throw NoCurrentDatabaseRefusal.naming("RENAME");
+        }
+        final String targetDatabase = target.length == 3 ? target[0] : catalog.getCurrentDatabase();
+        final String targetSchema = target.length == 3 ? target[1]
+            : target.length == 2 ? target[0] : catalog.getCurrentSchema();
+        final String newName = target[target.length - 1];
+        final Schema destination = catalog.getDatabase(targetDatabase).getSchema(targetSchema);
+        queryExecutor.requireCreatePrivilege(Privilege.CREATE_DYNAMIC_TABLE, "SCHEMA",
+            new String[] {targetDatabase, targetSchema});
+        if (destination.relationKindOf(newName) != null) {
+            throw namedAsWritten(new NameTakenException(SqlCompilationError.of(
+                "Object '" + SqlIdentifiers.spellCanonical(newName) + "' already exists.")), target);
+        }
+        final String was = schema.getDatabaseName() + "." + schema.getName() + "." + dt.getName();
+        final List<Stream> streams = queryExecutor.getStreamManager() == null ? new ArrayList<Stream>()
+            : queryExecutor.getStreamManager().streamsOver(schema.getDatabaseName(), StreamSourceType.DYNAMIC_TABLE,
+                was);
+        final String grantedBefore = schema.qualifiedName(dt.getName());
+        if (destination != schema) {
+            dt.keepDefinitionHome(schema.getDatabaseName(), schema.getName());
+        }
+        schema.dropDynamicTable(dt.getName());
+        dt.setName(newName);
+        destination.addDynamicTable(dt);
+        for (final Stream stream : streams) {
+            stream.setSourceTableName(destination.getDatabaseName() + "." + destination.getName() + "." + newName);
+        }
+        GrantNames.renamed(catalog, "DYNAMIC_TABLE", grantedBefore, destination.qualifiedName(newName));
+        dt.markDdl(catalog.currentUserForDdl());
+        logger.trace("Renamed dynamic table {} to {}", was, destination.qualifiedName(newName));
+    }
+
     private Object handleAlterDynamicTable(final FrostlakeParser.AlterStatementContext ctx) {
         final String qn = getText(ctx.qualifiedName());
         DynamicTableProperties.rejectUntakeable(ctx.dynamicTableAction());
         final String[] parts = qualifiedNameParts(ctx.qualifiedName());
         final Schema schema = dynamicTableSchema(parts);
         final String dtName = parts[parts.length - 1];
-        final DynamicTable dt = schema.getDynamicTable(dtName);
         final FrostlakeParser.DynamicTableActionContext action = ctx.dynamicTableAction();
+        if (action.RECLUSTER() != null && !schema.hasDynamicTable(dtName)) {
+            // A table that is not there is refused as a table here, as the ALTER TABLE form's is (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table", schema.qualifiedName(dtName)));
+        }
+        if (!schema.hasDynamicTable(dtName) && schema.relationKindOf(dtName) == RelationKind.TABLE) {
+            // A plain table under the name is told apart from no table at all (live-verified).
+            throw new RuntimeException(SqlCompilationError.objectOfOtherType("TABLE", "DYNAMIC_TABLE"));
+        }
+        final DynamicTable dt = schema.getDynamicTable(dtName);
 
         if (action.RECLUSTER() != null) {
             // Only a table with a clustering key reclusters, as for a plain table.
@@ -847,14 +1042,18 @@ public class DDLCommandHandler implements CommandHandler {
             logger.trace("Resumed dynamic table: {}", qn);
         } else if (action.REFRESH() != null) {
             dt.setLastRefreshedTime(StatementClock.instant());
+            // What the refresh holds is what a listing counts from now on, and what the next refresh compares.
+            final List<Row> refreshed = queryExecutor.dynamicTableRows(schema, dt);
+            final long[] changed = queryExecutor.recordDynamicTableRefresh(dt, refreshed);
             // A stream on the table records what the refresh changed.
             final String qualified = schema.getDatabaseName() + "." + schema.getName() + "." + dt.getName();
             if (queryExecutor.getStreamManager() != null && !queryExecutor.getStreamManager()
                     .streamsOver(schema.getDatabaseName(), StreamSourceType.DYNAMIC_TABLE, qualified).isEmpty()) {
                 queryExecutor.getStreamManager().trackDynamicTableRefresh(schema.getDatabaseName(), qualified,
-                    rowValues(queryExecutor.dynamicTableRows(dt)));
+                    rowValues(refreshed));
             }
             logger.trace("Refreshed dynamic table: {}", qn);
+            return refreshResult(schema.qualifiedName(dt.getName()), changed);
         } else if (action.SET() != null) {
             for (final FrostlakeParser.DynamicTableSettingContext setting : action.dynamicTableSetting()) {
                 applyDynamicTableSetting(dt, setting);
@@ -865,6 +1064,24 @@ public class DDLCommandHandler implements CommandHandler {
             }
         }
         return null;
+    }
+
+    /**
+     * What ALTER DYNAMIC TABLE … REFRESH answers: the table, what the refresh changed — {@code No new data}, or
+     * the rows it inserted, copied and deleted — whether it changed anything, and the moment its data is as of.
+     */
+    private static ResultSet refreshResult(final String name, final long[] changed) {
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("dt_name", StringType.VARCHAR),
+            new ResultSetColumn("statistics", StringType.VARCHAR),
+            new ResultSetColumn("refreshed_dt_count", new NumericType("NUMBER", 9, 0)),
+            new ResultSetColumn("data_timestamp", ShowResultHelpers.CREATED_ON));
+        final String statistics = changed == null ? "No new data" : "{\"insertedRows\":" + changed[0]
+            + ",\"copiedRows\":" + changed[1] + ",\"deletedRows\":" + changed[2] + "}";
+        final List<Row> rows = new ArrayList<>();
+        rows.add(new Row(Arrays.<Object>asList(name, statistics, changed == null ? 0L : 1L,
+            ShowResultHelpers.createdOn(StatementClock.instant()))));
+        return new ResultSet(columns, rows);
     }
 
     /**
@@ -965,19 +1182,79 @@ public class DDLCommandHandler implements CommandHandler {
             throw absent;
         }
         final FrostlakeParser.SequenceActionContext action = ctx.sequenceAction();
+        if (action.RENAME() == null) {
+            queryExecutor.requirePrivilege(Privilege.MODIFY, "SEQUENCE",
+                new String[] {schema.getDatabaseName(), schema.getName(), sequence.getName()}, null);
+        }
 
         if (action.RENAME() != null) {
             renameSequence(schema, sequence, qualifiedNameParts(action.qualifiedName()));
-        } else if (action.SET() != null && action.INCREMENT() != null) {
-            final long value = Long.parseLong(action.INTEGER_LITERAL().getText());
-            final long newIncrement = action.MINUS() != null ? -value : value;
-            sequence.setIncrement(newIncrement);
-            logger.trace("Set increment of sequence {} to {}", qualifiedName, newIncrement);
+        } else if (action.UNSET() != null) {
+            if (action.COMMENT().size() > 1) {
+                throw new RuntimeException(SqlCompilationError.of("duplicate property 'COMMENT';"));
+            }
+            sequence.setComment(null);
+        } else {
+            alterSequenceProperties(sequence, action.sequenceAlterOption());
+            logger.trace("Altered sequence {}", qualifiedName);
         }
         // Every ALTER is DDL on the sequence, a rename included: its LAST_ALTERED moves.
         sequence.markDdl();
 
         return null;
+    }
+
+    /**
+     * ALTER SEQUENCE's properties, judged whole before any is applied (live-verified). A step or a comment written
+     * twice is {@code duplicate property 'SEQUENCE_INCREMENT';} or {@code 'COMMENT';}. START is no property of an
+     * existing sequence, {@code invalid property 'SEQUENCE_START' for 'SEQUENCE'}; a step of zero is
+     * {@code invalid value '0' for property 'SEQUENCE_INCREMENT'}; and a sequence that serves its values out of
+     * order cannot be put back in order, {@code Invalid operation ALTER NOORDER SEQUENCE TO ORDER}. A comment set
+     * to NULL is no comment.
+     */
+    private void alterSequenceProperties(final Sequence sequence,
+                                         final List<FrostlakeParser.SequenceAlterOptionContext> options) {
+        boolean steps = false;
+        boolean comments = false;
+        for (final FrostlakeParser.SequenceAlterOptionContext option : options) {
+            if (option.INCREMENT() != null && steps) {
+                throw new RuntimeException(SqlCompilationError.of("duplicate property 'SEQUENCE_INCREMENT';"));
+            }
+            if (option.COMMENT() != null && comments) {
+                throw new RuntimeException(SqlCompilationError.of("duplicate property 'COMMENT';"));
+            }
+            steps = steps || option.INCREMENT() != null;
+            comments = comments || option.COMMENT() != null;
+        }
+        for (final FrostlakeParser.SequenceAlterOptionContext option : options) {
+            if (option.START() != null) {
+                throw new RuntimeException(SqlCompilationError.of("invalid property 'SEQUENCE_START' for 'SEQUENCE'"));
+            }
+            if (option.INCREMENT() != null && Long.parseLong(option.INTEGER_LITERAL().getText()) == 0) {
+                throw new RuntimeException(
+                    SqlCompilationError.of("invalid value '0' for property 'SEQUENCE_INCREMENT'"));
+            }
+            if (option.ORDER() != null && !sequence.isOrder()) {
+                throw new RuntimeException(SqlCompilationError.of("Invalid operation ALTER NOORDER SEQUENCE TO ORDER"));
+            }
+        }
+        for (final FrostlakeParser.SequenceAlterOptionContext option : options) {
+            if (option.INCREMENT() != null) {
+                final long value = Long.parseLong(option.INTEGER_LITERAL().getText());
+                sequence.setIncrement(option.MINUS() != null ? -value : value);
+            } else if (option.NOORDER() != null) {
+                sequence.setOrder(false);
+            } else if (option.COMMENT() != null) {
+                if (option.NULL() != null) {
+                    sequence.setComment(null);
+                } else if (option.DOLLAR_QUOTED_STRING() != null) {
+                    final String raw = option.DOLLAR_QUOTED_STRING().getText();
+                    sequence.setComment(raw.substring(2, raw.length() - 2));
+                } else {
+                    sequence.setComment(extractStringLiteral(option.STRING_LITERAL()));
+                }
+            }
+        }
     }
 
     /**
@@ -1010,7 +1287,8 @@ public class DDLCommandHandler implements CommandHandler {
         final String database = target.length == 3 ? target[0] : catalog.getCurrentDatabase();
         final String schemaName = target.length >= 2 ? target[target.length - 2] : catalog.getCurrentSchema();
         final Schema destination = catalog.databaseExact(database).schemaExact(schemaName);
-        destination.requireCreatable(Privilege.CREATE_SEQUENCE);
+        // A renamed sequence is created under its new name: its schema is asked for CREATE SEQUENCE (live-verified).
+        checkCreatePrivilege(Privilege.CREATE_SEQUENCE, destination);
         final String newName = target[target.length - 1];
         if (destination.hasSequenceExact(newName)) {
             final StringBuilder written = new StringBuilder();
@@ -1036,10 +1314,20 @@ public class DDLCommandHandler implements CommandHandler {
             // Parts come from the parse tree (or the IDENTIFIER() value per dotted level): a quoted
             // schema name containing a dot is ONE part, not a database.schema pair.
             final String[] parts = catalog.withoutAccount(queryExecutor.resolveObjectNameParts(ctx.objectName()), 2);
+            if (parts.length >= 2 || catalog.getCurrentDatabase() != null) {
+                // A schema is entered with USAGE on it, whoever asks.
+                queryExecutor.requirePrivilege(Privilege.USAGE, "SCHEMA", parts.length >= 2 ? parts
+                    : new String[] {catalog.getCurrentDatabase(), parts[0]}, null);
+            }
             catalog.useSchemaReference(parts.length >= 2 ? parts[0] : null, parts[parts.length >= 2 ? 1 : 0]);
             logger.trace("Using schema: {}", String.join(".", parts));
         } else if (ctx.WAREHOUSE() != null) {
             final String warehouseName = queryExecutor.resolveObjectName(ctx.objectName());
+            // A warehouse that is not there is refused without its name (live-verified).
+            if (!catalog.hasWarehouse(warehouseName)) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Object does not exist, or operation cannot be performed."));
+            }
             catalog.useWarehouse(warehouseName);
             logger.trace("Using warehouse: {}", warehouseName);
         } else if (ctx.SECONDARY() != null) {
@@ -1136,6 +1424,7 @@ public class DDLCommandHandler implements CommandHandler {
             queryExecutor.bringBackStages("TABLE:" + fqName, dropped);
             // UNDROP is a DDL: LAST_DDL and LAST_DDL_BY move to it, and LAST_ALTERED with them.
             table.markDdl(catalog.currentUserForDdl());
+            MaterializedViewValidity.baseTableRestored(catalog, databaseName, schema.getName(), table.getName());
             logger.trace("Undropped table: {}", name);
         } else if (ctx.SCHEMA() != null) {
             final String name = getText(ctx.qualifiedName());
@@ -1296,6 +1585,41 @@ public class DDLCommandHandler implements CommandHandler {
      * (live-verified). A column, primary-key or constraint sentence that happens to say "already
      * exists" is about the definition, not the object, and is re-thrown too.
      */
+    /**
+     * A create over a name that is taken names the object as the statement wrote it: by its path when it was
+     * written with one, {@code Object 'DB.S.T' already exists.}, each part quoted where it has to be,
+     * {@code Object 'DB.S."t"' already exists.} (live-verified for a table and a dynamic table).
+     *
+     * @param refusal the refusal the create raised
+     * @param parts the name's canonical parts as written
+     * @return the refusal to raise
+     */
+    static RuntimeException namedAsWritten(final RuntimeException refusal, final String[] parts) {
+        if (refusal instanceof NameTakenException && parts.length > 1) {
+            final StringBuilder written = new StringBuilder();
+            for (final String part : parts) {
+                written.append(written.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+            }
+            return new RuntimeException(SqlCompilationError.of("Object '" + written + "' already exists."));
+        }
+        return refusal;
+    }
+
+    /**
+     * {@link #handleIfNotExists(boolean, RuntimeException, String)} for a create that words a taken name as the
+     * statement wrote it (see {@link #namedAsWritten}).
+     *
+     * @param ifNotExists whether the statement forgives an object that is there
+     * @param e the refusal the create raised
+     * @param objectName the object, for the log
+     * @param written the name the statement creates
+     */
+    void handleIfNotExists(final boolean ifNotExists, final RuntimeException e, final String objectName,
+                           final FrostlakeParser.QualifiedNameContext written) {
+        handleIfNotExists(ifNotExists, namedAsWritten(e, catalog.withoutAccount(
+            ParseTreeText.qualifiedNameParts(written), 3)), objectName);
+    }
+
     void handleIfNotExists(final boolean ifNotExists, final RuntimeException e, final String objectName) {
         if (!ifNotExists) throw e;
         final String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
@@ -1539,20 +1863,21 @@ public class DDLCommandHandler implements CommandHandler {
         throw new RuntimeException(SqlCompilationError.invalidPropertyFor(written, "WAREHOUSE_TYPE"));
     }
 
-    /** The documented RESOURCE_CONSTRAINT values, in their documented spelling. */
+    /** The RESOURCE_CONSTRAINT values, spelled as a listing tells them: upper case throughout. */
     private static final String[] RESOURCE_CONSTRAINTS = {
-        "STANDARD_GEN_1", "STANDARD_GEN_2", "MEMORY_1X", "MEMORY_1X_x86", "MEMORY_16X", "MEMORY_16X_x86",
-        "MEMORY_64X", "MEMORY_64X_x86",
+        "STANDARD_GEN_1", "STANDARD_GEN_2", "MEMORY_1X", "MEMORY_1X_X86", "MEMORY_16X", "MEMORY_16X_X86",
+        "MEMORY_64X", "MEMORY_64X_X86",
     };
 
-    /** A RESOURCE_CONSTRAINT value in its documented spelling, matched ignoring case; else refused. */
+    /** A RESOURCE_CONSTRAINT value in its listed spelling, matched ignoring case; else refused in upper case. */
     private static String resourceConstraintValue(final String written) {
         for (final String constraint : RESOURCE_CONSTRAINTS) {
             if (constraint.equalsIgnoreCase(written)) {
                 return constraint;
             }
         }
-        throw new RuntimeException(SqlCompilationError.invalidValueForProperty(written, "RESOURCE_CONSTRAINT"));
+        throw new RuntimeException(SqlCompilationError.invalidValueForProperty(
+            written.toUpperCase(Locale.ROOT), "RESOURCE_CONSTRAINT"));
     }
 
     /**

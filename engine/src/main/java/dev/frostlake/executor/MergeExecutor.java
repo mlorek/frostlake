@@ -21,6 +21,7 @@ import dev.frostlake.executor.expressions.DefaultMarkerExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.operators.MemoizedRows;
 import dev.frostlake.executor.operators.StageOperator;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
@@ -109,10 +110,29 @@ final class MergeExecutor {
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
             final Map<String, ResultSet> cteResults = null;
             // Get target table
-            final String targetTableName = executor.getQualifiedName(ctx.qualifiedName());
+            final String targetTableName = executor.searchPathQualified(executor.getQualifiedName(ctx.qualifiedName()));
             // The target is looked up the way a FROM clause looks a table up: a missing one is a missing
             // Object, named as written (live-verified).
+            DmlTarget.requireTable(executor, targetTableName, "MERGE");
             final Table targetTable = executor.getCatalog().resolveTableAsWritten(targetTableName, "Object");
+            // An event table takes a MERGE that only deletes; one that inserts or updates writes rows into it.
+            for (final FrostlakeParser.MergeClauseContext clause : ctx.mergeClause()) {
+                if (clause.DELETE() == null) {
+                    DmlTarget.refuseEventTable(targetTable, "MERGE");
+                }
+            }
+            // A MERGE reads its target, then needs what its clauses do: INSERT, UPDATE and DELETE are asked in
+            // that order, whatever order the clauses stand in (live-verified).
+            executor.requirePrivilege(Privilege.SELECT, "TABLE", targetTableName);
+            for (final Privilege written : new Privilege[] {Privilege.INSERT, Privilege.UPDATE, Privilege.DELETE}) {
+                for (final FrostlakeParser.MergeClauseContext clause : ctx.mergeClause()) {
+                    final boolean does = written == Privilege.INSERT ? clause.INSERT() != null
+                        : written == Privilege.UPDATE ? clause.UPDATE() != null : clause.DELETE() != null;
+                    if (does) {
+                        executor.requirePrivilege(written, "TABLE", targetTableName);
+                    }
+                }
+            }
             // Get optional target and source aliases. Both are direct identifier children of the
             // merge rule and either may be absent, so index alone cannot tell them apart: an
             // identifier before the USING token is the target's alias, after it the source's.
@@ -153,7 +173,9 @@ final class MergeExecutor {
             } else if (mergeSource instanceof FrostlakeParser.MergeSourceTableContext) {
                 // USING table_name — or a STREAM, which is consumed on commit like INSERT ... SELECT FROM stream.
                 final FrostlakeParser.MergeSourceTableContext tableCtx = (FrostlakeParser.MergeSourceTableContext) mergeSource;
-                final String sourceTableName = executor.getQualifiedName(tableCtx.qualifiedName());
+                final String sourceTableName =
+                    executor.searchPathQualified(executor.getQualifiedName(tableCtx.qualifiedName()));
+                executor.requireSelect(sourceTableName);
                 final TableData streamSource = executor.resolveStreamTableData(sourceTableName, sourceAlias);
                 if (streamSource != null) {
                     sourceRows = streamSource.rows;
@@ -312,8 +334,8 @@ final class MergeExecutor {
             });
             // Snowflake refuses a merge-UPDATE whose target row joins MORE THAN ONE source row: the
             // update would be non-deterministic. Live-verified on a real account: a target
-            // (1,'x') joined by two sources fails "Duplicate row detected during DML action Row Values:
-            // [1, \"x\"]", while the same duplicate join with only WHEN MATCHED THEN DELETE, or with only
+            // (1,'x') joined by two sources fails with the duplicate-row refusal (see DuplicateRowRefusal),
+            // while the same duplicate join with only WHEN MATCHED THEN DELETE, or with only
             // WHEN NOT MATCHED THEN INSERT, succeeds — so the rule is UPDATE-specific. A WHEN MATCHED AND
             // <cond> that narrows the duplicates back to one is fine, so the count is taken over the source
             // rows whose clause actually resolves to an UPDATE. SHOW PARAMETERS reports
@@ -338,8 +360,7 @@ final class MergeExecutor {
                                 }
                             }
                             if (updatingSources > 1) {
-                                throw new RuntimeException("Duplicate row detected during DML action Row Values: "
-                                    + renderRowValues(targetRow));
+                                throw DuplicateRowRefusal.of(targetTable, targetRow);
                             }
                         }
                         return targets;
@@ -440,10 +461,13 @@ final class MergeExecutor {
                                 mergeWriteSet.removePendingInsert(fullyQualifiedTargetName, mergeTargetPendingIdx.get(rowIdx));
                             }
                         } else {
-                            executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).delete(rowIdx);
+                            final TableStorage written =
+                                executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName);
+                            final long deletedId = written.getRowId(rowIdx);
+                            written.delete(rowIdx);
                             // Track stream changes
                             if (executor.getStreamManager() != null) {
-                                executor.getStreamManager().trackDelete(fullyQualifiedTargetName, deletedRow);
+                                executor.getStreamManager().trackDelete(fullyQualifiedTargetName, deletedRow, deletedId);
                             }
                         }
                     }
@@ -544,9 +568,12 @@ final class MergeExecutor {
                                 if (executor.isDeferredApply()) {
                                     mergeWriteSet.recordInsert(fullyQualifiedTargetName, newRow);
                                 } else {
-                                    executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).insert(newRow);
+                                    final TableStorage written =
+                                        executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName);
+                                    written.insert(newRow);
                                     if (executor.getStreamManager() != null) {
-                                        executor.getStreamManager().trackInsert(fullyQualifiedTargetName, newRow);
+                                        executor.getStreamManager().trackInsert(fullyQualifiedTargetName, newRow,
+                                            written.getRowId(written.getRowCount() - 1));
                                     }
                                 }
                                 counts[0]++;
@@ -640,28 +667,6 @@ final class MergeExecutor {
             return clause.UPDATE() != null;
         }
         return false;
-    }
-
-    /**
-     * The offending target row as Snowflake prints it in the duplicate-row error: a bracketed list with
-     * strings double-quoted and everything else in its plain text form.
-     */
-    private String renderRowValues(final Row row) {
-        final StringBuilder text = new StringBuilder("[");
-        for (int i = 0; i < row.getValues().size(); i++) {
-            if (i > 0) {
-                text.append(", ");
-            }
-            final Object value = row.getValues().get(i);
-            if (value == null) {
-                text.append("NULL");
-            } else if (value instanceof Number || value instanceof Boolean) {
-                text.append(value);
-            } else {
-                text.append('"').append(value).append('"');
-            }
-        }
-        return text.append(']').toString();
     }
 
     private boolean evaluateMergeCondition(final String condition, final Row targetRow, final Row sourceRow,

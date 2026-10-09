@@ -19,7 +19,9 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.VectorElementType;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -36,6 +38,20 @@ public class ToArray extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         final Object v = args.get(0);
         if (v == null) return null;
+        if (v instanceof VectorValue) {
+            // A vector is read as the array of its elements: a FLOAT vector's are DOUBLEs, each the double its
+            // 32-bit element widens to, an INT vector's whole numbers (live-verified).
+            final VectorValue vector = (VectorValue) v;
+            final ArrayNode elements = ArrayFunctionHelper.MAPPER.createArrayNode();
+            for (int i = 0; i < vector.dimension(); i++) {
+                if (vector.getElementType() == VectorElementType.INT) {
+                    elements.add((long) vector.element(i));
+                } else {
+                    elements.add(vector.element(i));
+                }
+            }
+            return VariantValue.ofNode(elements);
+        }
         final ArrayNode existing = ArrayFunctionHelper.parseArray(v);
         if (existing != null) return VariantValue.ofNode(existing);
         final JsonNode node = ArrayFunctionHelper.parseNode(v);

@@ -51,6 +51,8 @@ public class WarehouseSnapshot implements Serializable {
     public int statementQueuedTimeoutSeconds;
     public int statementTimeoutSeconds;
     public boolean enableQueryAcceleration;
+    /** ENABLE_QUERY_ACCELERATION as a statement set it; null while the type's default applies, and in older files. */
+    public Boolean enableQueryAccelerationSet;
     public int queryAccelerationMaxScaleFactor;
     public String generation;
     public String resourceConstraint;

@@ -68,6 +68,8 @@ public class TableSnapshot implements Serializable {
     public boolean shadowed;
     // CLUSTER BY keys and table-level FOREIGN KEY constraints. Null on old snapshots — restore null-guards.
     public List<String> clusterKeys;
+    // The key as its statement wrote it after CLUSTER BY; null on old snapshots and for a derived key.
+    public String clusterByText;
     public List<ForeignKeyConstraintSnapshot> foreignKeys;
     // ROW ACCESS POLICY binding (the policy definition itself is in SchemaSnapshot.rowAccessPolicies);
     // null on old snapshot files — restore null-guards.
@@ -90,6 +92,8 @@ public class TableSnapshot implements Serializable {
 
     // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
     public Integer dataRetentionTimeInDays;
+    public Integer maxDataExtensionTimeInDays;
+    public String defaultDdlCollation;
     public boolean eventTable;
     public IcebergMetadataSnapshot icebergMetadata;
     public boolean changeTracking;

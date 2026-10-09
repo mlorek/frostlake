@@ -156,10 +156,12 @@ public class ContainerServicesTest extends BaseDatabaseTest {
     @Test
     public void artifactRepositoriesAreCreatedAlteredListedAndDropped() {
         Assumptions.assumeFalse(isLiveSnowflake(), NO_CONTAINERS);
-        engine.execute("CREATE ARTIFACT REPOSITORY ar TYPE = PYPI API_INTEGRATION = 'pypi_int' COMMENT = 'x'");
+        engine.execute("CREATE OR REPLACE API INTEGRATION pypi_int API_PROVIDER = pypi ENABLED = TRUE");
+        engine.execute("CREATE ARTIFACT REPOSITORY ar TYPE = PYPI API_INTEGRATION = pypi_int COMMENT = 'x'");
         ResultSet rs = engine.executeQuery("SHOW ARTIFACT REPOSITORIES");
         assertEquals("AR", cell(rs, 0, "name"));
         assertEquals("PYPI", cell(rs, 0, "type"));
+        assertEquals("PYPI_INT", cell(rs, 0, "api_integration"));
         assertEquals("x", cell(rs, 0, "comment"));
         engine.execute("ALTER ARTIFACT REPOSITORY ar SET COMMENT = 'y'");
         rs = engine.executeQuery("DESCRIBE ARTIFACT REPOSITORY ar");

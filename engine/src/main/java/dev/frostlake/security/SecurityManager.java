@@ -18,6 +18,7 @@ package dev.frostlake.security;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.SecurableObjectType;
@@ -84,36 +85,10 @@ public class SecurityManager {
         // spelled it, so the name asked about is resolved the same way.
         final String recordedName = GrantNames.of(catalog, objectType, objectName);
 
-        // Check if any of the user's roles has the required privilege
-        for (final String roleName : effectiveRoles) {
-            try {
-                final Role role = catalog.getRole(roleName);
-
-                // Check for specific privilege
-                if (role.hasPrivilege(objectType, recordedName, requiredPrivilege)) {
-                    logger.debug("Permission granted: {} on {}:{} via role {}",
-                                requiredPrivilege, objectType, objectName, roleName);
-                    return;
-                }
-
-                // Check for ALL privilege
-                if (role.hasPrivilege(objectType, recordedName, Privilege.ALL)) {
-                    logger.debug("Permission granted: ALL (includes {}) on {}:{} via role {}",
-                                requiredPrivilege, objectType, objectName, roleName);
-                    return;
-                }
-
-                // Check for OWNERSHIP privilege (ownership grants all privileges)
-                if (role.hasPrivilege(objectType, recordedName, Privilege.OWNERSHIP)) {
-                    logger.debug("Permission granted: OWNERSHIP (includes {}) on {}:{} via role {}",
-                                requiredPrivilege, objectType, objectName, roleName);
-                    return;
-                }
-
-            } catch (final RuntimeException e) {
-                // Role doesn't exist, skip it
-                logger.debug("Role {} not found while checking permissions", roleName);
-            }
+        // Check if any of the user's roles, or a database role granted to one of them, has the required privilege
+        if (holds(holdersUnder(effectiveRoles), objectType, recordedName, requiredPrivilege)) {
+            logger.debug("Permission granted: {} on {}:{}", requiredPrivilege, objectType, objectName);
+            return;
         }
 
         // Permission denied
@@ -168,7 +143,8 @@ public class SecurityManager {
      * Whether the session may act as an object's owner: whether {@code owner} is the primary role, one of the
      * secondary roles, or a role any of those inherits, however many levels down. No administrative role
      * stands in for it — ACCOUNTADMIN does not own what another role owns unless that role is granted to it.
-     * An owner that is no longer a role passes, as does anything while security checks are off.
+     * Anything passes while security checks are off. An owner's name always names a role: a dropped role's
+     * objects pass to the role that dropped it, and a renamed role's follow its name (see RoleOwnership).
      *
      * @param owner the object's owner role; null when none is recorded, which passes
      */
@@ -176,11 +152,173 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
-        final String upper = owner.toUpperCase(Locale.ROOT);
-        if (!catalog.roleExists(upper)) {
+        return getEffectiveRoles().contains(owner.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Whether the session holds a privilege on an object: one of its roles — the primary role, a role granted to
+     * the user, a role any of those inherits, PUBLIC, or a database role granted to one of them — owns the
+     * object or was granted the privilege. No administrative role stands in for that: ACCOUNTADMIN reads, writes
+     * and alters only what it holds (live-verified). Inside a view's own query the view's owner is asked beside
+     * the session, since either's right to a relation lets the view read it. An object with no recorded owner
+     * passes, as does anything while security checks are off.
+     *
+     * @param privilege  the privilege the statement needs
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name in full
+     * @param owner      the role that owns the object, or null when none is recorded
+     * @return whether the statement may go on
+     */
+    public boolean holdsPrivilege(final Privilege privilege, final String objectType, final String objectName,
+                                  final String owner) {
+        if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
-        return getEffectiveRoles().contains(upper);
+        final Set<String> roles = askedRoles();
+        return roles.contains(owner.toUpperCase(Locale.ROOT)) || holdsExactly(holdersUnder(roles), objectType,
+            GrantNames.of(catalog, objectType, objectName), privilege);
+    }
+
+    /**
+     * Whether the session holds any privilege at all on an object, which is what a statement that only needs to
+     * see it asks: its owner, or the holder of whatever grant.
+     *
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name in full
+     * @param owner      the role that owns the object, or null when none is recorded
+     * @return whether the statement may go on
+     */
+    public boolean holdsAnyPrivilege(final String objectType, final String objectName, final String owner) {
+        if (!sessionContext.isSecurityEnabled() || owner == null) {
+            return true;
+        }
+        final Set<String> roles = askedRoles();
+        if (roles.contains(owner.toUpperCase(Locale.ROOT))) {
+            return true;
+        }
+        final String recorded = GrantNames.of(catalog, objectType, objectName);
+        for (final Role holder : holdersUnder(roles)) {
+            if (!holder.getPrivileges(objectType, recorded).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The roles a privilege is asked of: the session's, PUBLIC, and inside a view's query or a stored procedure
+     * that runs with owner's rights the owner's too.
+     */
+    private Set<String> askedRoles() {
+        final Set<String> roles = getEffectiveRoles();
+        roles.add("PUBLIC");
+        final String rightsOwner = ownerRights.get();
+        if (rightsOwner != null) {
+            roles.addAll(rolesUnder(rightsOwner));
+        }
+        final String executableOwner = sessionContext.getExecutableOwner();
+        if (executableOwner != null) {
+            roles.addAll(rolesUnder(executableOwner.toUpperCase(Locale.ROOT)));
+        }
+        return roles;
+    }
+
+    /**
+     * Whether one of {@code holders} was granted exactly this privilege, or OWNERSHIP. ALL is no privilege of
+     * its own here: a GRANT ALL records each privilege it stands for on that kind of object, and what it does
+     * not stand for — MODIFY on a table — it does not give.
+     */
+    private static boolean holdsExactly(final List<Role> holders, final String objectType, final String recordedName,
+                                        final Privilege privilege) {
+        for (final Role holder : holders) {
+            if (holder.hasPrivilege(objectType, recordedName, privilege)
+                    || holder.hasPrivilege(objectType, recordedName, Privilege.OWNERSHIP)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the session may create an object in a container. A CREATE is authorized by the primary role alone
+     * — a secondary role authorizes none — through the roles that one inherits, PUBLIC, which every role holds,
+     * and the database roles granted to any of them: one of them owns the container, or holds the CREATE
+     * privilege or ALL on it. No administrative role stands in for that, and no user is exempt. Inside a stored
+     * procedure that runs with owner's rights the procedure's owner is asked in the primary role's place, and
+     * inside a view's own query the view's owner. A container with no recorded owner, or one whose owner
+     * is no longer a role, passes, as does anything while security checks are off.
+     *
+     * @param createPrivilege the CREATE privilege the new object needs
+     * @param containerType   the container's kind as privileges record it, {@code SCHEMA} or {@code DATABASE}
+     * @param containerName   the container's name in full
+     * @param owner           the role that owns the container, or null when none is recorded
+     */
+    public boolean mayCreateIn(final Privilege createPrivilege, final String containerType, final String containerName,
+                               final String owner) {
+        if (!sessionContext.isSecurityEnabled() || owner == null) {
+            return true;
+        }
+        final String ownerRole = owner.toUpperCase(Locale.ROOT);
+        final String rightsOwner = ownerRights.get();
+        final String acting = rightsOwner != null ? rightsOwner : sessionContext.getCreatingRole();
+        if (acting == null || !catalog.roleExists(ownerRole)) {
+            return true;
+        }
+        final Set<String> roles = rolesUnder(acting.toUpperCase(Locale.ROOT));
+        roles.add("PUBLIC");
+        return roles.contains(ownerRole) || holds(holdersUnder(roles), containerType,
+            GrantNames.of(catalog, containerType, containerName), createPrivilege);
+    }
+
+    /** Whether one of {@code holders} holds a privilege on an object: the privilege itself, ALL or OWNERSHIP. */
+    private static boolean holds(final List<Role> holders, final String objectType, final String recordedName,
+                                 final Privilege privilege) {
+        for (final Role holder : holders) {
+            if (holder.hasPrivilege(objectType, recordedName, privilege)
+                    || holder.hasPrivilege(objectType, recordedName, Privilege.ALL)
+                    || holder.hasPrivilege(objectType, recordedName, Privilege.OWNERSHIP)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The roles a privilege is held through for a set of account roles: each of them that exists, and every
+     * database role granted to one of them or to another database role so held, however many levels down. A
+     * database role of a database that is gone holds nothing.
+     */
+    private List<Role> holdersUnder(final Set<String> accountRoles) {
+        final List<Role> holders = new ArrayList<>();
+        final List<String> pending = new ArrayList<>();
+        for (final String roleName : accountRoles) {
+            try {
+                final Role role = catalog.getRole(roleName);
+                holders.add(role);
+                pending.addAll(role.getDatabaseRoleGrants().keySet());
+            } catch (final RuntimeException unresolvable) {
+                logger.debug("Role {} not found while checking permissions", roleName);
+            }
+        }
+        final Set<String> seen = new HashSet<>();
+        while (!pending.isEmpty()) {
+            final String qualified = pending.remove(pending.size() - 1);
+            final int dot = qualified.lastIndexOf('.');
+            if (dot < 0 || !seen.add(qualified)) {
+                continue;
+            }
+            final DatabaseRole held;
+            try {
+                held = catalog.getDatabase(qualified.substring(0, dot)).getDatabaseRole(qualified.substring(dot + 1));
+            } catch (final RuntimeException dropped) {
+                continue;
+            }
+            if (held != null) {
+                holders.add(held);
+                pending.addAll(held.getDatabaseRoleGrants().keySet());
+            }
+        }
+        return holders;
     }
 
     /**

@@ -23,9 +23,19 @@ public class SubqueryExpression implements Expression {
     private final String subquery;  // SQL text of the subquery
     private SourcePosition position;
     private SourcePosition queryPosition;
+    private boolean existence;
 
     public SubqueryExpression(final String subquery) {
         this.subquery = subquery;
+    }
+
+    /** Whether the subquery is an EXISTS's body: its rows are counted and their values never read. */
+    public boolean isExistence() {
+        return existence;
+    }
+
+    public void setExistence(final boolean existence) {
+        this.existence = existence;
     }
 
     public String getSubquery() {

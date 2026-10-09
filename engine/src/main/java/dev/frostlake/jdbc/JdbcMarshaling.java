@@ -20,6 +20,7 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.SqlTokens;
 import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
@@ -48,7 +49,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -488,7 +488,7 @@ public final class JdbcMarshaling {
     /** Tokenize with the SQL lexer so that a {@code ?} inside a string literal is part of the
      *  STRING_LITERAL token (never a QUESTION token) — the grammar decides what is a placeholder. */
     private static CommonTokenStream lex(final String sql) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();

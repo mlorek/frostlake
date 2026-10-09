@@ -37,7 +37,7 @@ public abstract class SqlObject implements Taggable {
     private String lastDdlBy;
     /** When the last DDL after the CREATE ran, or null while the CREATE is the last; see {@link #getLastDdlTime}. */
     private Instant lastDdlTime;
-    /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -> value). */
+    /** Object tags applied via ALTER ... SET TAG (the assignment's key, see TagAssignments -> value). */
     private final Map<String, String> tags = new HashMap<>();
 
     /**

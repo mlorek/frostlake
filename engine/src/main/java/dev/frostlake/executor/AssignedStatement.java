@@ -19,9 +19,9 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.parser.SqlSyntaxException;
 
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -116,7 +116,7 @@ public final class AssignedStatement {
         }
         // A statement this parser reads as a relation — UNSET v, a table name and an alias — is refused at the word
         // after its first, which the account does not read in a parenthesized relation (live-verified).
-        final CommonTokenStream tokens = new CommonTokenStream(new FrostlakeLexer(CharStreams.fromString(query)));
+        final CommonTokenStream tokens = new CommonTokenStream(new FrostlakeLexer(SqlCharStream.of(query)));
         tokens.fill();
         Token second = null;
         int words = 0;

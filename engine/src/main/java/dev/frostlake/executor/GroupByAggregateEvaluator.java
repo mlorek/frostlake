@@ -1850,7 +1850,7 @@ final class GroupByAggregateEvaluator {
         final List<FrostlakeParser.ExpressionContext> outerCalls = new ArrayList<>();
         for (final FrostlakeParser.SelectStatementContext subquery : nested) {
             final List<FrostlakeParser.ExpressionContext> calls = new ArrayList<>();
-            collectAggregateCallsThrough(subquery, calls);
+            collectAggregateCallsThrough(subquery, subquery, calls);
             for (final FrostlakeParser.ExpressionContext call : calls) {
                 if (readsGroupedColumnsAlone(call, table, aliasToTable, allTables)) {
                     outerCalls.add(call);
@@ -1872,9 +1872,16 @@ final class GroupByAggregateEvaluator {
         }
     }
 
-    /** {@link #collectAggregateCalls} through the queries nested in {@code node} as well. */
-    private void collectAggregateCallsThrough(final ParseTree node,
+    /**
+     * {@link #collectAggregateCalls} over a subquery of the grouped query, the queries nested in that subquery
+     * left out: the grouped query's aggregate is the immediate subquery's to read, and one written a level
+     * further in is no value any query offers it (live refuses the statement).
+     */
+    private void collectAggregateCallsThrough(final ParseTree node, final ParseTree subquery,
                                               final List<FrostlakeParser.ExpressionContext> out) {
+        if (node != subquery && node instanceof FrostlakeParser.SelectStatementContext) {
+            return;
+        }
         if (node instanceof FrostlakeParser.FunctionCallStarExprContext
                 || node instanceof FrostlakeParser.FunctionCallExprContext) {
             final List<FrostlakeParser.ExpressionContext> own = new ArrayList<>();
@@ -1885,7 +1892,7 @@ final class GroupByAggregateEvaluator {
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            collectAggregateCallsThrough(node.getChild(i), out);
+            collectAggregateCallsThrough(node.getChild(i), subquery, out);
         }
     }
 
@@ -2085,7 +2092,7 @@ final class GroupByAggregateEvaluator {
             }
         } else if (hasTwoArgs && acc instanceof ListAggAccumulator) {
             // LISTAGG(<expr>, <delimiter>): the 2nd argument is a constant string delimiter.
-            ((ListAggAccumulator) acc).setDelimiter(unquoteDelimiter(args.get(1)));
+            ((ListAggAccumulator) acc).setDelimiter(constantDelimiter(args.get(1)));
             for (final Object v : aggArgValues(funcName, args.get(0), aggRows, table, aliasToTable, allTables)) {
                 acc.accumulate(v);
             }
@@ -2442,14 +2449,12 @@ final class GroupByAggregateEvaluator {
     }
 
     /**
-     * Strip the surrounding single quotes from a LISTAGG delimiter literal (e.g. {@code '|'} → {@code |},
-     * {@code ''} → empty), unescaping doubled quotes. A non-quoted token is returned trimmed as-is.
+     * The text a LISTAGG's delimiter argument spells. It is a constant - a literal, a session variable, a bind or
+     * a call over them, refused before this when it is none - so it is evaluated once, with no row: {@code '|'},
+     * {@code 'x' || 'y'}, {@code UPPER('x')}. A NULL delimiter joins the values with nothing between them.
      */
-    private String unquoteDelimiter(final String raw) {
-        final String trimmed = raw.trim();
-        if (trimmed.length() >= 2 && trimmed.charAt(0) == '\'' && trimmed.charAt(trimmed.length() - 1) == '\'') {
-            return SqlStringLiterals.decode(trimmed);
-        }
-        return trimmed;
+    private String constantDelimiter(final String written) {
+        final Object value = executor.evaluateExpression(written, null, (Table) null);
+        return value == null ? "" : String.valueOf(value);
     }
 }

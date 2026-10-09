@@ -24,6 +24,7 @@ import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
@@ -34,7 +35,6 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -222,7 +222,7 @@ final class MaskingPolicyApplier {
      * the argument, both of which the lexer handles for free.
      */
     private String rewriteTagFn(final String body, final String fnName, final String objectName, final String domain) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();

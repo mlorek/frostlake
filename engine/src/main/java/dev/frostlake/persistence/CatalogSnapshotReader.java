@@ -29,6 +29,7 @@ import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
@@ -47,6 +48,7 @@ import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SearchOptimizationExpression;
 import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.SequenceDefault;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageType;
 import dev.frostlake.metastore.model.State;
@@ -184,7 +186,7 @@ final class CatalogSnapshotReader {
             }
             wh.setResourceMonitor(whSnapshot.resourceMonitor);
             RestCatalogSnapshots.restoreWarehouse(whSnapshot, wh);
-            // Note: createdAt cannot be set (final field)
+            wh.restoreCreatedAt(whSnapshot.createdAt);
         }
 
         // Load users
@@ -238,7 +240,7 @@ final class CatalogSnapshotReader {
                 }
             }
             RestCatalogSnapshots.restoreUserGrants(userSnapshot, user);
-            // Note: createdAt cannot be set (final field)
+            user.restoreCreatedTime(userSnapshot.createdAt);
             // Roles will be granted after all roles are loaded
         }
 
@@ -251,7 +253,7 @@ final class CatalogSnapshotReader {
                 if (roleSnapshot.owner != null) {
                     role.setOwner(roleSnapshot.owner);
                 }
-                // Note: createdAt cannot be set (final field)
+                role.restoreCreatedTime(roleSnapshot.createdAt);
             }
         }
 
@@ -265,6 +267,7 @@ final class CatalogSnapshotReader {
                     logger.warn("Could not grant role {} to {}: {}", grantedRoleName, roleSnapshot.name, e.getMessage());
                 }
             }
+            RestCatalogSnapshots.restoreRoleGrantTimes(roleSnapshot, role);
         }
 
         // Grant privileges to roles
@@ -290,14 +293,16 @@ final class CatalogSnapshotReader {
                     logger.warn("Could not grant role {} to user {}: {}", roleName, userSnapshot.name, e.getMessage());
                 }
             }
+            RestCatalogSnapshots.restoreRoleGrantTimes(userSnapshot, user);
         }
+
+        rebindSequenceDefaults(catalog);
 
         // Privileges an older snapshot recorded under a partial name are recorded in full when it names one object.
         GrantNames.qualifyLegacy(catalog);
 
         // The dropped versions UNDROP can still restore, which a snapshot written before they were kept has none of.
         DroppedObjectSnapshots.restore(snapshot.droppedObjects, catalog, s3Resolver);
-
         // Restore current context
         if (snapshot.currentDatabase != null) {
             catalog.useDatabase(snapshot.currentDatabase);
@@ -325,6 +330,36 @@ final class CatalogSnapshotReader {
     }
 
     /** The trigger a recorded run names in TASK_HISTORY's scheduled_from; a schedule when none matches. */
+    /**
+     * Binds each restored column default that names a sequence's NEXTVAL in full — the text a bound default is
+     * snapshotted as — to the sequence it names, once every database is back (see {@link SequenceDefault}). A
+     * default naming no sequence stays the expression it was.
+     */
+    private static void rebindSequenceDefaults(final Catalog catalog) {
+        for (final Database database : catalog.getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                for (final Table table : schema.getTables()) {
+                    for (final TableColumn column : table.columnsView()) {
+                        final Object value = column.getDefaultValue();
+                        if (!(value instanceof DefaultValueExpression) || value instanceof SequenceDefault) {
+                            continue;
+                        }
+                        try {
+                            final String[] parts =
+                                QualifiedName.parse(((DefaultValueExpression) value).getExpressionText()).parts();
+                            if (parts.length == 4 && "NEXTVAL".equals(parts[3])) {
+                                column.setDefaultValue(new SequenceDefault(
+                                    catalog.getDatabase(parts[0]).getSchema(parts[1]).getSequence(parts[2])));
+                            }
+                        } catch (final RuntimeException notASequence) {
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private static TaskTrigger taskTrigger(final String scheduledFrom) {
         for (final TaskTrigger trigger : TaskTrigger.values()) {
             if (trigger.reported().equals(scheduledFrom)) {
@@ -388,6 +423,7 @@ final class CatalogSnapshotReader {
                         identityStart,
                         identityIncrement
                     );
+                    col.setIdentityOrdered(colSnapshot.autoIncrement && colSnapshot.identityOrdered);
                     col.setComment(colSnapshot.comment);
                     col.setMaskingPolicyName(colSnapshot.maskingPolicyName);
                     col.setMaskingPolicyArguments(colSnapshot.maskingPolicyArguments);
@@ -419,7 +455,7 @@ final class CatalogSnapshotReader {
                 table.restoreCreatedTime(tableSnapshot.createdAt);
                 table.restoreLastDdlTime(tableSnapshot.lastDdlAt);
                 if (tableSnapshot.clusterKeys != null) {
-                    table.setClusterKeys(tableSnapshot.clusterKeys);
+                    table.setClusterKeys(tableSnapshot.clusterKeys, tableSnapshot.clusterByText);
                 }
                 if (tableSnapshot.foreignKeys != null) {
                     for (final ForeignKeyConstraintSnapshot fkSnapshot : tableSnapshot.foreignKeys) {
@@ -580,6 +616,17 @@ final class CatalogSnapshotReader {
                     service.restoreCreatedTime(serviceSnapshot.createdAt);
                     service.setIndexingSuspended(serviceSnapshot.indexingSuspended);
                     service.setServingSuspended(serviceSnapshot.servingSuspended);
+                    if (serviceSnapshot.primaryKeyColumns != null) {
+                        service.setPrimaryKeyColumns(serviceSnapshot.primaryKeyColumns);
+                    }
+                    service.setFullIndexBuildIntervalDays(serviceSnapshot.fullIndexBuildIntervalDays);
+                    service.setRequestLogging(serviceSnapshot.requestLogging);
+                    service.setAutoSuspend(serviceSnapshot.autoSuspend);
+                    if (serviceSnapshot.tags != null) {
+                        for (final Map.Entry<String, String> tag : serviceSnapshot.tags.entrySet()) {
+                            service.setTag(tag.getKey(), tag.getValue());
+                        }
+                    }
                     schema.addCortexSearchService(service);
                 }
             }
@@ -675,6 +722,11 @@ final class CatalogSnapshotReader {
                     task.setSuccessIntegration(taskSnapshot.successIntegration);
                     task.setFinalizedRootTask(taskSnapshot.finalizedRootTask);
                     task.setExecuteAsUser(taskSnapshot.executeAsUser);
+                    if (taskSnapshot.contacts != null) {
+                        for (final Map.Entry<String, String> attached : taskSnapshot.contacts.entrySet()) {
+                            task.setContact(attached.getKey(), attached.getValue());
+                        }
+                    }
                     task.setServerlessTaskMinStatementSize(taskSnapshot.serverlessTaskMinStatementSize);
                     // The recorded runs, replayed through the task so its last run and failure count follow.
                     if (taskSnapshot.history != null) {
@@ -757,6 +809,7 @@ final class CatalogSnapshotReader {
                     final MaskingPolicy policy = new MaskingPolicy(policySnapshot.name, params,
                         policySnapshot.returnType, policySnapshot.body);
                     policy.setReturnDataType(policySnapshot.returnDataType);
+                    policy.setReturnSpelling(policySnapshot.returnSpelling);
                     policy.setComment(policySnapshot.comment);
                     if (policySnapshot.owner != null) {
                         policy.setOwner(policySnapshot.owner);
@@ -804,6 +857,7 @@ final class CatalogSnapshotReader {
                     fn.setSecure(fnSnapshot.secure);
                     fn.setMemoizable(fnSnapshot.memoizable);
                     fn.setImports(fnSnapshot.imports);
+                    fn.setEnvironment(fnSnapshot.environment == null ? null : fnSnapshot.environment.copy());
                     fn.setComment(fnSnapshot.comment);
                     if (fnSnapshot.owner != null) {
                         fn.setOwner(fnSnapshot.owner);
@@ -831,6 +885,7 @@ final class CatalogSnapshotReader {
                         proc.setExecuteAs(procSnapshot.executeAs);
                     }
                     proc.setImports(procSnapshot.imports);
+                    proc.setEnvironment(procSnapshot.environment == null ? null : procSnapshot.environment.copy());
                     proc.setComment(procSnapshot.comment);
                     proc.setReturnsTable(procSnapshot.returnsTable);
                     if (procSnapshot.returnColumns != null) {
@@ -842,6 +897,7 @@ final class CatalogSnapshotReader {
                     if (procSnapshot.volatility != null) {
                         proc.setVolatility(procSnapshot.volatility);
                     }
+                    proc.setSecure(procSnapshot.secure);
                     if (procSnapshot.owner != null) {
                         proc.setOwner(procSnapshot.owner);
                     }
@@ -891,6 +947,20 @@ final class CatalogSnapshotReader {
                     if (dtSnapshot.clusterKeys != null) {
                         dt.setClusterKeys(dtSnapshot.clusterKeys);
                     }
+                    if (dtSnapshot.refreshedRows != null) {
+                        dt.setRefreshedRows(dtSnapshot.refreshedRows.longValue());
+                    }
+                    if (dtSnapshot.resolvedColumns != null) {
+                        dt.setResolvedColumns(derivedColumns(dtSnapshot.resolvedColumns));
+                    }
+                    if (dtSnapshot.columnNames != null) {
+                        final List<DynamicTableColumn> declared = new ArrayList<>();
+                        for (int c = 0; c < dtSnapshot.columnNames.size(); c++) {
+                            declared.add(new DynamicTableColumn(dtSnapshot.columnNames.get(c),
+                                dtSnapshot.columnTypes.get(c), dtSnapshot.columnComments.get(c)));
+                        }
+                        dt.setDeclaredColumns(declared);
+                    }
                     dt.setTransient(dtSnapshot.transientTable);
                     // The settings the CREATE and ALTERs gave it, which it otherwise restored with their defaults:
                     // REFRESH_MODE AUTO, INITIALIZE ON_CREATE, running.
@@ -902,6 +972,9 @@ final class CatalogSnapshotReader {
                     }
                     if (dtSnapshot.state != null) {
                         dt.setState(State.valueOf(dtSnapshot.state));
+                    }
+                    if (dtSnapshot.definitionDatabase != null) {
+                        dt.keepDefinitionHome(dtSnapshot.definitionDatabase, dtSnapshot.definitionSchema);
                     }
                     if (dtSnapshot.createText != null) {
                         dt.setCreateText(dtSnapshot.createText);
@@ -942,10 +1015,12 @@ final class CatalogSnapshotReader {
                 for (final TagSnapshot tagSnapshot : schemaSnapshot.tags) {
                     final Tag tag = new Tag(tagSnapshot.name,
                         tagSnapshot.allowedValues, tagSnapshot.comment);
+                    tag.markAllowedValuesListed(tagSnapshot.allowedValuesListed);
                     if (tagSnapshot.owner != null) {
                         tag.setOwner(tagSnapshot.owner);
                     }
                     tag.restoreCreatedTime(tagSnapshot.createdAt);
+                    tag.restoreId(tagSnapshot.id);
                     tag.setPropagate(tagSnapshot.propagate);
                     tag.setOnConflict(tagSnapshot.onConflict);
                     schema.addTag(tag);

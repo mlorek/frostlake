@@ -52,6 +52,10 @@ public class RegexpInstr extends TextArgumentFunction {
         final int option = args.size() > 4 && args.get(4) != null ? ((Number) args.get(4)).intValue() : 0;
         final String parameters = args.size() > 5 && args.get(5) != null ? args.get(5).toString() : null;
         final Integer groupNum = args.size() > 6 && args.get(6) != null ? ((Number) args.get(6)).intValue() : null;
+        RegexpHelper.requirePosition(position);
+        RegexpHelper.requireOccurrence(occurrence);
+        RegexpHelper.requireReturnOption(option);
+        RegexpHelper.requireGroup(groupNum);
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);

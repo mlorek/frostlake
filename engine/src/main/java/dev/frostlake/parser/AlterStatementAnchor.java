@@ -39,6 +39,7 @@ import java.util.List;
  *                                                            row access policy names the RENAME
  *   ALTER SEQUENCE s1 RENAME TO;         'TO' at 25           a sequence's names the TO, and a fault after the
  *   ALTER SEQUENCE s1 RENAME TO x y      'TO', then 'y'       complete statement still speaks after it
+ *   ALTER DYNAMIC TABLE d RENAME TO x y  'TO' at 30           a dynamic table's names the TO too, and nothing after
  *   ALTER ROLE r RENAME                  'ROLE', then 'r'     any fault at all in a role's, a stream's or a file
  *   ALTER FILE FORMAT ff SET             'FILE', 'FORMAT'     format's statement names its kind, then the token
  *   ALTER STREAM st SET COMMENT = 'x' x  'STREAM', then 'st'  after it
@@ -120,11 +121,12 @@ public final class AlterStatementAnchor {
             lines.add(rename);
             return lines;
         }
-        if (alter.SEQUENCE() != null) {
+        final boolean dynamicTable = alter.DYNAMIC() != null && alter.TABLE() != null;
+        if (alter.SEQUENCE() != null || dynamicTable) {
             final Token to = nextSpoken(stream, rename.getTokenIndex());
             if (to != null && to.getType() == FrostlakeLexer.TO && to.getTokenIndex() < reported.getTokenIndex()) {
                 lines.add(to);
-                if (after) {
+                if (after && !dynamicTable) {
                     final Token opener = UnseparatedStatementOpener.refused(recognizer, reported, false);
                     lines.add(opener != null ? opener : reported);
                 }

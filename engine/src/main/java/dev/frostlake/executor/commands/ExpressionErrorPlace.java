@@ -136,8 +136,10 @@ final class ExpressionErrorPlace {
         if (node instanceof FrostlakeParser.QuantifiedComparisonExprContext) {
             final FrostlakeParser.QuantifiedComparisonExprContext quantified =
                 (FrostlakeParser.QuantifiedComparisonExprContext) node;
-            collectScalarSubqueries(quantified.expression(), queries);
-            queries.add(quantified.selectStatement());
+            collectScalarSubqueries(quantified.expression(0), queries);
+            if (quantified.selectStatement() != null) {
+                queries.add(quantified.selectStatement());
+            }
             return;
         }
         for (int i = 0; i < node.getChildCount(); i++) {

@@ -32,6 +32,7 @@ import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
@@ -88,15 +89,20 @@ final class UpdateDeleteExecutor {
             }
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
             final Map<String, ResultSet> cteResults = null;
-            final String tableName = ctx.objectName().qualifiedName() == null
+            final String tableName = executor.searchPathQualified(ctx.objectName().qualifiedName() == null
                 ? executor.resolveObjectName(ctx.objectName())
-                : executor.getQualifiedName(ctx.objectName().qualifiedName());
+                : executor.getQualifiedName(ctx.objectName().qualifiedName()));
+            DmlTarget.requireTable(executor, tableName, "UPDATE");
             final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
+            DmlTarget.refuseEventTable(table, "UPDATE");
             // The storage key the target reads under, recorded as a SELECT's resolution records it: a
             // correlated subquery in the statement asks how many rows the target holds.
             table.setQualifiedName(executor.getFullyQualifiedTableName(tableName));
             // Check UPDATE permission
             if (executor.getSecurityManager() != null) {
+                // An UPDATE reads the rows it changes: SELECT is asked first, then UPDATE (live-verified).
+                executor.requirePrivilege(Privilege.SELECT, "TABLE", tableName);
+                executor.requirePrivilege(Privilege.UPDATE, "TABLE", tableName);
                 executor.getSecurityManager().checkPermission(Privilege.UPDATE, SecurableObjectType.TABLE, tableName);
             }
             // Parse assignments
@@ -165,7 +171,10 @@ final class UpdateDeleteExecutor {
             }
             // LAST_ALTERED moves for the statement, whether or not it matched a row.
             table.markDmlRan(StatementClock.commitInstant());
-            return executor.updateCountResult(rowsUpdated, multiJoined[0]);
+            // Under ERROR_ON_NONDETERMINISTIC_UPDATE no row is multi-joined, and the grid has no column for them
+            // (live-verified).
+            return errorOnNondeterministicUpdate() ? executor.dmlCountResult("number of rows updated", rowsUpdated)
+                : executor.updateCountResult(rowsUpdated, multiJoined[0]);
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
         } catch (final Exception e) {
@@ -186,15 +195,19 @@ final class UpdateDeleteExecutor {
             }
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
             final Map<String, ResultSet> cteResults = null;
-            final String tableName = ctx.objectName().qualifiedName() == null
+            final String tableName = executor.searchPathQualified(ctx.objectName().qualifiedName() == null
                 ? executor.resolveObjectName(ctx.objectName())
-                : executor.getQualifiedName(ctx.objectName().qualifiedName());
+                : executor.getQualifiedName(ctx.objectName().qualifiedName()));
+            DmlTarget.requireTable(executor, tableName, "DELETE");
             final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
             // The storage key the target reads under, recorded as a SELECT's resolution records it: a
             // correlated subquery in the statement asks how many rows the target holds.
             table.setQualifiedName(executor.getFullyQualifiedTableName(tableName));
             // Check DELETE permission
             if (executor.getSecurityManager() != null) {
+                // A DELETE reads the rows it removes: SELECT is asked first, then DELETE (live-verified).
+                executor.requirePrivilege(Privilege.SELECT, "TABLE", tableName);
+                executor.requirePrivilege(Privilege.DELETE, "TABLE", tableName);
                 executor.getSecurityManager().checkPermission(Privilege.DELETE, SecurableObjectType.TABLE, tableName);
             }
             compileNames(ctx, table, ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null,
@@ -342,7 +355,8 @@ final class UpdateDeleteExecutor {
                         }
                         // Track stream changes with fully qualified name
                         if (executor.getStreamManager() != null) {
-                            executor.getStreamManager().trackUpdate(fullyQualifiedName, oldRow, updatedRow);
+                            executor.getStreamManager().trackUpdate(fullyQualifiedName, oldRow, updatedRow,
+                                updateStorage.getRowId(rowIndex));
                         }
                         written.add(updatedRow);
                     }
@@ -458,10 +472,13 @@ final class UpdateDeleteExecutor {
             protected List<Row> apply(final List<Row> rowsToDelete) {
                 // Collect indices to delete (in reverse order to avoid shifting)
                 final List<Integer> indicesToDelete = new ArrayList<>();
+                // Each row's identity, read while the row is still stored: a stream reports the DELETE under it.
+                final List<Long> idsToDelete = new ArrayList<>();
                 for (final Row row : rowsToDelete) {
                     final Integer rowIndex = deletePositions.get(row);
                     if (rowIndex != null) {
                         indicesToDelete.add(rowIndex);
+                        idsToDelete.add(storage.getRowId(rowIndex));
                     }
                 }
                 // Sort in reverse order; log each row first, then delete ALL in one compaction pass.
@@ -478,7 +495,8 @@ final class UpdateDeleteExecutor {
                 for (int deleteOrdinal = 0; deleteOrdinal < indicesToDelete.size(); deleteOrdinal++) {
                     // Track stream changes with fully qualified name
                     if (executor.getStreamManager() != null) {
-                        executor.getStreamManager().trackDelete(fullyQualifiedName, rowsToDelete.get(deleteOrdinal));
+                        executor.getStreamManager().trackDelete(fullyQualifiedName, rowsToDelete.get(deleteOrdinal),
+                            idsToDelete.get(deleteOrdinal));
                     }
                     deleted.add(rowsToDelete.get(deleteOrdinal));
                 }
@@ -631,6 +649,7 @@ final class UpdateDeleteExecutor {
             aliasToTable.put(targetAlias.toUpperCase(), target);
         }
         final RowsProvider sources = planSources(sourceRefs, joinClauses, cteResults, allTables, aliasToTable);
+        final boolean refuseMultiJoined = errorOnNondeterministicUpdate();
         Table combined = allTables.get(0);
         for (int i = 1; i < allTables.size(); i++) {
             combined = executor.mergeTableMetadata(combined, allTables.get(i));
@@ -693,8 +712,13 @@ final class UpdateDeleteExecutor {
                         targetOf.put(combinedRow, targetRow);
                         joined.add(combinedRow);
                         // A target row several source rows join is a multi-joined row, counted ONCE however
-                        // many joined it: three matches report 1, as two do.
+                        // many joined it: three matches report 1, as two do. Under
+                        // ERROR_ON_NONDETERMINISTIC_UPDATE the first such row refuses the statement, before
+                        // anything is written.
                         if (joinedCount(targetRow, sourceCombos, ev, wherePred, 2) > 1) {
+                            if (refuseMultiJoined) {
+                                throw DuplicateRowRefusal.of(target, targetRow);
+                            }
                             multiJoinedOut[0]++;
                         }
                     }
@@ -722,7 +746,8 @@ final class UpdateDeleteExecutor {
                                 .logUpdate(targetFqn, base.intValue(), oldRow, updatedRow);
                         }
                         if (executor.getStreamManager() != null) {
-                            executor.getStreamManager().trackUpdate(targetFqn, oldRow, updatedRow);
+                            executor.getStreamManager().trackUpdate(targetFqn, oldRow, updatedRow,
+                                baseIds.get(base.intValue()));
                         }
                     }
                     written.add(updatedRow);
@@ -827,7 +852,7 @@ final class UpdateDeleteExecutor {
                     tableStorage.deleteAll(immediateDeletes);
                     for (final int idx : immediateDeletes) {
                         if (executor.getStreamManager() != null) {
-                            executor.getStreamManager().trackDelete(targetFqn, baseRows.get(idx));
+                            executor.getStreamManager().trackDelete(targetFqn, baseRows.get(idx), baseIds.get(idx));
                         }
                         deleted.add(baseRows.get(idx));
                     }
@@ -978,6 +1003,20 @@ final class UpdateDeleteExecutor {
      *  wins); null when no source row joins this target row — UNLESS {@code outerJoin} (an Oracle {@code (+)}
      *  on the source), in which case the target row is combined with the source columns bound to NULL
      *  ({@code sourceWidth} NULLs), matching a target LEFT JOIN source. */
+    /**
+     * ERROR_ON_NONDETERMINISTIC_UPDATE, a session BOOLEAN whose default is FALSE: when TRUE, an UPDATE whose target
+     * row several source rows join is refused instead of taking one of them.
+     */
+    private boolean errorOnNondeterministicUpdate() {
+        final SecurityManager securityManager = executor.getSecurityManager();
+        final Object configured = securityManager == null ? null
+            : securityManager.getSessionContext().getSessionParameter("ERROR_ON_NONDETERMINISTIC_UPDATE");
+        if (configured instanceof Boolean) {
+            return ((Boolean) configured).booleanValue();
+        }
+        return configured != null && "TRUE".equalsIgnoreCase(String.valueOf(configured).trim());
+    }
+
     /** How many source rows join {@code targetRow}, counted no further than {@code enough}. */
     private int joinedCount(final Row targetRow, final List<List<Object>> sourceCombos,
             final ExpressionEvaluator ev, final Expression wherePred, final int enough) {
@@ -1165,6 +1204,17 @@ final class UpdateDeleteExecutor {
                     ExpressionSource.end(displaced);
                 }
             }
+        }
+        // A subquery holding the target's own aggregate may not stand in the WHERE or in a join's ON (see
+        // CorrelatedAggregatePlace).
+        final List<ParserRuleContext> filters = new ArrayList<>(onConditions);
+        if (where != null) {
+            filters.add(where.booleanExpr());
+        }
+        if (!filters.isEmpty()) {
+            new CorrelatedAggregatePlace(executor, new PlanEcho(scopeTable, aliasToTable, allTables,
+                executor.getFunctionRegistry(), executor.getCatalog()), scopeTable, aliasToTable, allTables)
+                .refuse(filters);
         }
         // Only a BOOLEAN is a predicate: the WHERE's own type is judged once every argument type has been, and ahead of
         // the SET values' match to their columns (live-verified).

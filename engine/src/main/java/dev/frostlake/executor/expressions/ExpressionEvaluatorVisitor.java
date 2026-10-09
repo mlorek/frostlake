@@ -19,14 +19,17 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.AmbiguousColumnException;
 import dev.frostlake.executor.ColumnLengthException;
 import dev.frostlake.executor.DeferredFault;
+import dev.frostlake.executor.DefinitionCompile;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.FromClauseRelations;
 import dev.frostlake.executor.FromlessDual;
 import dev.frostlake.executor.InvalidQualifierException;
+import dev.frostlake.executor.NamedArguments;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RelationShapeOnly;
+import dev.frostlake.executor.SearchPath;
 import dev.frostlake.executor.SetOperations;
 import dev.frostlake.executor.SignedStorageWidth;
 import dev.frostlake.executor.SqlCompilationError;
@@ -37,6 +40,7 @@ import dev.frostlake.executor.SystemTypeOfDescription;
 import dev.frostlake.executor.UndeclaredScriptVariableException;
 import dev.frostlake.functions.AggregateDistinctRefusals;
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.FunctionRegistry;
@@ -49,6 +53,8 @@ import dev.frostlake.functions.SystemFunctionArity;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.context.CarriedRoleName;
+import dev.frostlake.functions.scalar.context.GetDdl;
 import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.functions.scalar.datetime.DateDifferenceWidths;
 import dev.frostlake.functions.scalar.datetime.DateUnitVocabulary;
@@ -66,6 +72,7 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.JoinedRelations;
 import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.RelationSlot;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
@@ -209,6 +216,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private Set<String> whereAggregateAliases;
     private Map<String, String> whereWindowAliases;
     private Set<String> outputScopeNames;
+    private Set<String> enclosingQualifiers;
+    private Map<String, Table> groupedRelations;
     /** The static types of the query's SELECT output aliases, keyed by upper-cased name, or null. */
     private Map<String, DataType> outputAliasTypes;
     private boolean strictWalkInsideFunctionArgs;
@@ -697,6 +706,41 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         ROW_OPERATORS.put(BinaryOperator.DIVIDE, "/");
     }
 
+    /** The operators that refuse a ROW written as a parenthesized list, each under the name the account gives it. */
+    private static final Map<BinaryOperator, String> WRITTEN_ROW_OPERATORS = new EnumMap<>(BinaryOperator.class);
+
+    static {
+        WRITTEN_ROW_OPERATORS.putAll(ROW_OPERATORS);
+        WRITTEN_ROW_OPERATORS.put(BinaryOperator.MODULO, "%");
+        WRITTEN_ROW_OPERATORS.put(BinaryOperator.CONCAT, "||");
+        WRITTEN_ROW_OPERATORS.put(BinaryOperator.AND, "AND");
+        WRITTEN_ROW_OPERATORS.put(BinaryOperator.OR, "OR");
+        WRITTEN_ROW_OPERATORS.put(BinaryOperator.LIKE, "LIKE");
+        WRITTEN_ROW_OPERATORS.put(BinaryOperator.ILIKE, "ILIKE");
+        WRITTEN_ROW_OPERATORS.put(BinaryOperator.NOT_LIKE, "LIKE");
+        WRITTEN_ROW_OPERATORS.put(BinaryOperator.NOT_ILIKE, "ILIKE");
+    }
+
+    /** The place of a refusal the account places nowhere: a negated operator's, {@code error line 0 at position -1}. */
+    private static final SourcePosition NOWHERE = new SourcePosition(0, -1);
+
+    /** The functions that refuse a ROW as an argument type they do not support. */
+    private static final Set<String> ROW_UNSUPPORTING = new HashSet<>(Arrays.asList(
+        "ARRAY_CONSTRUCT", "ARRAY_CONSTRUCT_COMPACT", "OBJECT_CONSTRUCT", "MIN", "MAX", "MODE"));
+
+    /** The conversions that refuse a ROW as an invalid type, each with the parameter it names. */
+    private static final Map<String, String> ROW_CONVERSIONS = new HashMap<>();
+
+    static {
+        for (final String conversion : Arrays.asList("TO_VARCHAR", "TO_CHAR", "TO_ARRAY", "TO_VARIANT", "TO_NUMBER",
+                "TO_DATE", "TO_BOOLEAN", "TO_DOUBLE", "TO_OBJECT", "TO_BINARY", "TO_TIME", "TO_DECIMAL",
+                "TO_TIMESTAMP_NTZ")) {
+            ROW_CONVERSIONS.put(conversion, conversion);
+        }
+        ROW_CONVERSIONS.put("TO_TIMESTAMP", "TO_TIMESTAMP_NTZ");
+        ROW_CONVERSIONS.put("TRY_TO_NUMBER", "TO_NUMBER");
+    }
+
     /**
      * A subquery of more than one column where an operator or a function takes it is typed as the ROW of its
      * items, and refused there in the argument-type sentence (live-verified): {@code (SELECT 1, 2) = 5} is
@@ -757,13 +801,332 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         final SubqueryCollectWalk subqueries = new SubqueryCollectWalk();
         expression.accept(subqueries);
-        if (!subqueries.subqueries().isEmpty()) {
+        if (!subqueries.subqueries().isEmpty() || subqueries.holdsRow()) {
             expression.accept(new RowOperandWalk(this));
         }
     }
 
+    /**
+     * An operator over a ROW written as a parenthesized list is refused by its argument types, at the operator
+     * (live-verified): {@code (1, 2) + 1} is {@code Invalid argument types for function '+':
+     * (ROW(NUMBER(1,0), NUMBER(1,0)), NUMBER(1,0))}, whichever side the row stands on and with a row on both. The
+     * signs are 'NEGATE' and 'UNARY PLUS', a path or an index into it is 'GET', BETWEEN is the '>=' or the '<=' it
+     * is compared as, and a list IN holds one names 'IN' with every member. Two rows compare, and that is not this
+     * rule's business.
+     */
+    private void rejectWrittenRowOperation(final Expression operation) {
+        if (operation instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) operation;
+            final String name = WRITTEN_ROW_OPERATORS.get(binary.getOperator());
+            if (binary.isSimpleCaseTest() && binary.getRight() instanceof RowExpression
+                    && !(binary.getLeft() instanceof RowExpression) && strictArgTypeText(binary.getLeft()) != null) {
+                // CASE 1 WHEN (1, 2): the value converts to the operand's type, and a ROW does not.
+                throw rowConversion(binary.getRight(), strictArgTypeText(binary.getLeft()));
+            }
+            if (name != null) {
+                final boolean negated = binary.getOperator() == BinaryOperator.NOT_LIKE
+                    || binary.getOperator() == BinaryOperator.NOT_ILIKE;
+                rejectWrittenRows(name, Arrays.asList(binary.getLeft(), binary.getRight()),
+                    negated ? NOWHERE : binary.getPosition());
+            }
+        } else if (operation instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) operation;
+            final String name = unary.getOperator() == UnaryOperator.NEGATE ? "NEGATE"
+                : unary.getOperator() == UnaryOperator.PLUS ? "UNARY PLUS"
+                    : unary.getOperator() == UnaryOperator.NOT ? "NOT" : null;
+            if (name != null) {
+                rejectWrittenRows(name, Collections.singletonList(unary.getOperand()), unary.getPosition());
+            }
+        } else if (operation instanceof IsNullExpression) {
+            final IsNullExpression test = (IsNullExpression) operation;
+            rejectWrittenRows(test.isNot() ? "IS NOT NULL" : "IS NULL", Collections.singletonList(test.getOperand()),
+                test.getPosition());
+        } else if (operation instanceof InExpression && ((InExpression) operation).getValues() != null) {
+            final InExpression in = (InExpression) operation;
+            final List<Expression> operands = new ArrayList<>();
+            operands.add(in.getValue());
+            operands.addAll(in.getValues());
+            rejectWrittenRows("IN", operands, in.isNot() ? NOWHERE : in.getPosition());
+        } else if (operation instanceof BetweenExpression) {
+            final BetweenExpression between = (BetweenExpression) operation;
+            final SourcePosition at = between.isNot() ? NOWHERE : between.getPosition();
+            // A bound that is a row compares with a value that is one; the other bound speaks then.
+            if (!(between.getValue() instanceof RowExpression && between.getLower() instanceof RowExpression)) {
+                rejectWrittenRows(">=", Arrays.asList(between.getValue(), between.getLower()), at);
+            }
+            if (!(between.getValue() instanceof RowExpression && between.getUpper() instanceof RowExpression)) {
+                rejectWrittenRows("<=", Arrays.asList(between.getValue(), between.getUpper()), at);
+            }
+        } else if (operation instanceof ArrayAccessExpression) {
+            final ArrayAccessExpression access = (ArrayAccessExpression) operation;
+            rejectWrittenRows("GET", Arrays.asList(access.getArray(), access.getIndex()), access.getPosition());
+        } else if (operation instanceof ObjectAccessExpression
+                && ((ObjectAccessExpression) operation).getBase() instanceof RowExpression
+                && !((ObjectAccessExpression) operation).getPathParts().isEmpty()) {
+            final ObjectAccessExpression access = (ObjectAccessExpression) operation;
+            rejectWrittenRows("GET", Arrays.<Expression>asList(access.getBase(),
+                new LiteralExpression(access.getPathParts().get(0), LiteralType.STRING)), access.getPosition());
+        } else if (operation instanceof CastExpression
+                && ((CastExpression) operation).getExpression() instanceof RowExpression) {
+            throw new RuntimeException(castSourceRejectionMessage((CastExpression) operation));
+        } else if (operation instanceof CaseExpression) {
+            rejectWrittenRowBranches((CaseExpression) operation);
+        } else if (operation instanceof JsonArrayExpression) {
+            for (final Expression element : ((JsonArrayExpression) operation).getElements()) {
+                rejectWrittenRowMember("ARRAY_CONSTRUCT", element);
+            }
+        } else if (operation instanceof JsonObjectExpression) {
+            for (final Expression value : ((JsonObjectExpression) operation).getProperties().values()) {
+                rejectWrittenRowMember("OBJECT_CONSTRUCT", value);
+            }
+        } else if (operation instanceof QuantifiedComparisonExpression
+                && ((QuantifiedComparisonExpression) operation).getLeft() instanceof RowExpression
+                && ((QuantifiedComparisonExpression) operation).getSubquery() instanceof SubqueryExpression) {
+            // A row against a subquery of one column is compared with that column's type.
+            final QuantifiedComparisonExpression quantified = (QuantifiedComparisonExpression) operation;
+            final String name = ROW_OPERATORS.get(quantified.getOperator());
+            final String column = subqueryRowTypeText((SubqueryExpression) quantified.getSubquery());
+            final String row = strictArgTypeText(quantified.getLeft());
+            if (name != null && column != null && row != null && column.startsWith("ROW(")) {
+                // A query of another width converts to no row of this one's type.
+                TupleMembershipWidth.reject(this, TupleInExpression.ofSubquery(
+                    ((RowExpression) quantified.getLeft()).getArguments(),
+                    (SubqueryExpression) quantified.getSubquery(), quantified.getQuantifier() == Quantifier.ALL), row);
+            }
+            if (name != null && column != null && row != null && !column.startsWith("ROW(")) {
+                final String detail = "Invalid argument types for function '" + name + "': (" + row + ", " + column + ")";
+                final SourcePosition placed = ExpressionSource.resolve(quantified.getPosition());
+                throw new RuntimeException(placed != null
+                    ? SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(), detail)
+                    : SqlCompilationError.of(detail));
+            }
+        }
+    }
+
+    /** A member of an array or an object literal that is a ROW, refused as the constructor refuses it. */
+    private void rejectWrittenRowMember(final String constructor, final Expression member) {
+        if (member instanceof RowExpression && strictArgTypeText(member) != null) {
+            throw new RuntimeException(SqlCompilationError.of("Function " + constructor + " does not support "
+                + strictArgTypeText(member) + " argument type"));
+        }
+    }
+
+    /**
+     * A CASE takes no ROW but as the two sides of a simple CASE's comparison (live-verified): a searched WHEN that
+     * is one converts to no BOOLEAN, and a result that is one converts to no type — ANY when it is the first
+     * result, the first result's type otherwise — as {@code Can not convert parameter 'ROW(1, 2)' of type
+     * [ROW(NUMBER(1,0), NUMBER(1,0))] into expected type [ANY]}.
+     */
+    private void rejectWrittenRowBranches(final CaseExpression chosen) {
+        final List<Expression> results = new ArrayList<>();
+        for (final WhenClause when : chosen.getWhenClauses()) {
+            if (when.getCondition() instanceof RowExpression) {
+                throw rowConversion(when.getCondition(), "BOOLEAN");
+            }
+            results.add(when.getResult());
+        }
+        if (chosen.getElseExpression() != null) {
+            results.add(chosen.getElseExpression());
+        }
+        rejectRowResults(results);
+    }
+
+    private RuntimeException rowConversion(final Expression row, final String expected) {
+        return new RuntimeException(SqlCompilationError.of("Can not convert parameter '" + strictText(row)
+            + "' of type [" + strictArgTypeText(row) + "] into expected type [" + expected + "]"));
+    }
+
+    /** Refuses operands of which one is a ROW written as a list, in the argument-type sentence at a place. */
+    private void rejectWrittenRows(final String name, final List<Expression> operands, final SourcePosition at) {
+        boolean row = false;
+        for (final Expression operand : operands) {
+            row = row || operand instanceof RowExpression;
+        }
+        if (!row) {
+            return;
+        }
+        final StringBuilder types = new StringBuilder();
+        for (int i = 0; i < operands.size(); i++) {
+            final String text = strictArgTypeText(operands.get(i));
+            if (text == null) {
+                return;
+            }
+            types.append(i > 0 ? ", " : "").append(text);
+        }
+        final String detail = "Invalid argument types for function '" + name + "': (" + types + ")";
+        if (at == NOWHERE) {
+            throw new RuntimeException(SqlCompilationError.at(0, -1, detail));
+        }
+        final SourcePosition placed = ExpressionSource.resolve(at);
+        throw new RuntimeException(placed != null
+            ? SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(), detail)
+            : SqlCompilationError.of(detail));
+    }
+
+    /**
+     * A function given a ROW written as a parenthesized list refuses it by type once its argument count has passed
+     * (live-verified), as {@code Invalid argument types for function 'ABS': (ROW(NUMBER(1,0), NUMBER(1,0)))} at the
+     * call, a user-defined function by its bare name. COALESCE is named as the IFNULL of its first two arguments,
+     * AVG as the SUM it is planned as, and CONCAT_WS as the CONCAT of its values with the separator between them;
+     * the constructors, MIN, MAX and MODE say {@code Function ARRAY_CONSTRUCT does not support ROW(…) argument
+     * type}, an object's key {@code … for keys}; a conversion says {@code invalid type [TO_VARCHAR(ROW(1, 2))] for
+     * parameter 'TO_VARCHAR'}; ANY_VALUE refuses it as a select item of several columns, and NVL2 as the IS NOT
+     * NULL it tests, placed nowhere. A call written as a negated operator is placed nowhere too.
+     *
+     * <p>EQUAL_NULL compares two rows of as many values, DECODE a row with rows, and SEARCH reads a row of columns
+     * as its first argument; SYSTEM$TYPEOF types one. A row beside a value there is refused in EQUAL_NULL's name, a
+     * row of another width as a conversion to the first row's type, a result that is a row as CASE refuses one, and
+     * a row SEARCH is to look for as an argument that is no constant.
+     */
+    private void rejectWrittenRowArguments(final String funcName, final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        int first = -1;
+        for (int i = 0; i < arguments.size() && first < 0; i++) {
+            if (arguments.get(i) instanceof RowExpression) {
+                first = i;
+            }
+        }
+        if (first < 0 || call instanceof RowExpression || "SYSTEM$TYPEOF".equals(funcName)
+                || DateTimeUnitSlot.positionIn(funcName) >= 0) {
+            // A function that takes a date part names itself as it is planned.
+            return;
+        }
+        final String row = strictArgTypeText(arguments.get(first));
+        if (row == null) {
+            return;
+        }
+        String named = funcName;
+        if (!resolvesBuiltIn(funcName)) {
+            // A name nothing resolves is refused as unknown; a user-defined function is named bare.
+            final List<String> parts = udfNameParts(call);
+            if (udfCandidatesForValidation(parts, arguments.size()).isEmpty()) {
+                return;
+            }
+            named = parts.get(parts.size() - 1).toUpperCase(Locale.ROOT);
+        }
+        if ("SEARCH".equals(funcName)) {
+            for (int i = 1; i < arguments.size(); i++) {
+                if (arguments.get(i) instanceof RowExpression) {
+                    throw new RuntimeException(SqlCompilationError.of("argument " + i
+                        + " to function SEARCH needs to be constant, found '" + strictText(arguments.get(i)) + "'"));
+                }
+            }
+            return;
+        }
+        if ("EQUAL_NULL".equals(funcName) && arguments.size() == 2) {
+            rejectUnequalRows(call, arguments.get(0), arguments.get(1));
+            return;
+        }
+        if ("DECODE".equals(funcName) && arguments.size() >= 3) {
+            rejectDecodedRows(call);
+            return;
+        }
+        if ("CONCAT_WS".equals(funcName)) {
+            if (arguments.size() < 3) {
+                return;
+            }
+            final List<Expression> joined = new ArrayList<>();
+            for (int i = 1; i < arguments.size(); i++) {
+                if (i > 1) {
+                    joined.add(arguments.get(0));
+                }
+                joined.add(arguments.get(i));
+            }
+            throw rowArgumentTypes(call, "CONCAT", joined);
+        }
+        if (ROW_UNSUPPORTING.contains(funcName)) {
+            throw new RuntimeException(SqlCompilationError.of("Function " + funcName + " does not support " + row
+                + " argument type" + ("OBJECT_CONSTRUCT".equals(funcName) && first % 2 == 0 ? " for keys" : "")));
+        }
+        if (ROW_CONVERSIONS.containsKey(funcName)) {
+            throw new RuntimeException(SqlCompilationError.of("invalid type [" + strictText(call)
+                + "] for parameter '" + ROW_CONVERSIONS.get(funcName) + "'"));
+        }
+        if ("ANY_VALUE".equals(funcName)) {
+            throw new RuntimeException(positionedArgumentTypes(call,
+                "Unsupported: SELECT list element with multiple columns."));
+        }
+        if ("NVL2".equals(funcName) && first == 0) {
+            throw new RuntimeException(SqlCompilationError.at(0, -1,
+                "Invalid argument types for function 'IS NOT NULL': (" + row + ")"));
+        }
+        if ("COLLATE".equals(funcName) && first == 0) {
+            throw new RuntimeException(SqlCompilationError.of("argument needs to be a string: '"
+                + strictText(arguments.get(0)) + "'"));
+        }
+        final boolean coalesce = "COALESCE".equals(funcName) && arguments.size() >= 2;
+        throw rowArgumentTypes(call, coalesce ? "IFNULL" : "AVG".equals(funcName) ? "SUM"
+            : call.getOperatorSpelling() != null ? call.getOperatorSpelling() : named,
+            coalesce ? arguments.subList(0, 2) : arguments);
+    }
+
+    /** The argument-type refusal of a call that holds a ROW, at the call — or nowhere for a negated operator's. */
+    private RuntimeException rowArgumentTypes(final FunctionCallExpression call, final String named,
+                                              final List<Expression> typed) {
+        final StringBuilder types = new StringBuilder();
+        for (int i = 0; i < typed.size(); i++) {
+            types.append(i > 0 ? ", " : "").append(String.valueOf(strictArgTypeText(typed.get(i))));
+        }
+        final String detail = "Invalid argument types for function '" + named + "': (" + types + ")";
+        return new RuntimeException(call.isOperatorNegated() || call.getPosition() == null
+            ? SqlCompilationError.at(0, -1, detail) : positionedArgumentTypes(call, detail));
+    }
+
+    /**
+     * EQUAL_NULL over a ROW: two rows of as many values compare, a row of another width converts to no row of the
+     * first's type, and a row beside a value is refused by the two types.
+     */
+    private void rejectUnequalRows(final FunctionCallExpression call, final Expression left, final Expression right) {
+        if (left instanceof RowExpression && right instanceof RowExpression) {
+            if (((RowExpression) left).getArguments().size() != ((RowExpression) right).getArguments().size()) {
+                throw rowConversion(right, strictArgTypeText(left));
+            }
+            return;
+        }
+        throw rowArgumentTypes(call, "EQUAL_NULL", Arrays.asList(left, right));
+    }
+
+    /** DECODE over a ROW: its value against each search as EQUAL_NULL takes them, and no result that is a row. */
+    private void rejectDecodedRows(final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        final Expression value = arguments.get(0);
+        final List<Expression> results = new ArrayList<>();
+        for (int i = 1; i < arguments.size(); i += 2) {
+            if (i + 1 >= arguments.size()) {
+                results.add(arguments.get(i));
+                break;
+            }
+            final Expression search = arguments.get(i);
+            if (value instanceof RowExpression) {
+                rejectUnequalRows(call, value, search);
+            } else if (search instanceof RowExpression) {
+                throw rowConversion(search, String.valueOf(strictArgTypeText(value)));
+            }
+            results.add(arguments.get(i + 1));
+        }
+        rejectRowResults(results);
+    }
+
+    /** A result that is a ROW converts to no type: to ANY for the first result, to the first result's otherwise. */
+    private void rejectRowResults(final List<Expression> results) {
+        for (int i = 0; i < results.size(); i++) {
+            if (results.get(i) instanceof RowExpression) {
+                final String expected = i == 0 ? null : strictArgTypeText(results.get(0));
+                throw rowConversion(results.get(i), expected == null ? "ANY" : expected);
+            }
+        }
+    }
+
+    /** Whether a name is a built-in function's: a scalar, an aggregate, a window function or one of the SYSTEM$ family. */
+    private boolean resolvesBuiltIn(final String upper) {
+        return functionRegistry.hasFunction(upper) || functionRegistry.hasAggregateFunction(upper)
+            || upper.startsWith("SYSTEM$") || WindowFunctionNames.handles(upper)
+            || HigherOrderFunctionNames.contains(upper);
+    }
+
     /** One operator's ROW rule: see {@link #rejectRowOperations}. */
     void rejectRowOperation(final Expression operation) {
+        rejectWrittenRowOperation(operation);
         if (operation instanceof BinaryOperationExpression) {
             final BinaryOperationExpression binary = (BinaryOperationExpression) operation;
             final String name = ROW_OPERATORS.get(binary.getOperator());
@@ -781,7 +1144,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 && ((QuantifiedComparisonExpression) operation).getSubquery() instanceof SubqueryExpression) {
             final QuantifiedComparisonExpression quantified = (QuantifiedComparisonExpression) operation;
             final String name = ROW_OPERATORS.get(quantified.getOperator());
-            if (name != null) {
+            if (name != null && !(quantified.getLeft() instanceof RowExpression)) {
                 rejectRowOperands(name, Arrays.asList(quantified.getLeft(), quantified.getSubquery()),
                     quantified.getPosition());
             }
@@ -899,6 +1262,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     public String multiColumnRowText(final SubqueryExpression subquery) {
         final String text = subqueryRowTypeText(subquery);
         return text != null && text.startsWith("ROW(") ? text : null;
+    }
+
+    /** How many columns a subquery selects, read from its planned shape; 0 when it cannot be planned on its own. */
+    public int subqueryWidth(final SubqueryExpression subquery) {
+        final List<DataType> types = subqueryColumnTypes(subquery);
+        return types == null ? 0 : types.size();
     }
 
     /**
@@ -1458,6 +1827,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         try {
             final String[] parts = QualifiedName.parse(name).parts();
             if (parts.length == 1) {
+                // An unqualified sequence is looked for along the session's SEARCH_PATH.
+                if (queryExecutor != null) {
+                    for (final Schema schema : queryExecutor.searchPathSchemas()) {
+                        if (schema.hasSequenceExact(parts[0])) {
+                            return schema.getSequence(parts[0]);
+                        }
+                    }
+                }
                 return cat.getDatabase(cat.getCurrentDatabase()).getSchema(cat.getCurrentSchema()).getSequence(parts[0]);
             } else if (parts.length == 2) {
                 return cat.getDatabase(cat.getCurrentDatabase()).getSchema(parts[0]).getSequence(parts[1]);
@@ -2379,6 +2756,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     @Override
     public Object visitFunctionCall(final FunctionCallExpression written) {
+        if (written instanceof RowExpression && !(written instanceof ArgumentRowExpression)) {
+            // A ROW value reaches evaluation only where a function reads its values one by one, as an array.
+            return new FunctionCallExpression("ARRAY_CONSTRUCT", written.getArguments()).accept(this);
+        }
         // A star written beside other arguments is its column list, spliced in place before any rule,
         // echo or evaluation reads the call.
         rejectCallShape(written);
@@ -2614,6 +2995,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return visitColumnReference(named);
         }
 
+        if (("IS_ROLE_IN_SESSION".equals(funcName) || "IS_DATABASE_ROLE_IN_SESSION".equals(funcName))
+                && argValues.size() == 1) {
+            argValues.set(0, roleNameArgument(funcName, expr.getArguments().get(0), argValues.get(0)));
+        }
+
         // Look up and execute built-in function
         final BuiltInFunction func = functionRegistry.getFunction(funcName);
         if (func != null) {
@@ -2727,6 +3113,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     + strictText(expr) + "] expected " + systemMaximum
                     + ", got " + argValues.size(), expr);
             }
+            // A session is named by a number or its digits, never by a boolean (live-verified).
+            if ("SYSTEM$ABORT_SESSION".equals(funcName) && argValues.get(0) instanceof Boolean) {
+                throw arityMismatch("Invalid argument types for function 'SYSTEM$ABORT_SESSION': (BOOLEAN)", expr);
+            }
             try {
                 return queryExecutor.evaluateSystemFunction(funcName, argValues);
             } catch (final RuntimeException e) {
@@ -2741,6 +3131,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // Check for user-defined function. An unqualified name written with a quantifier or a WITHIN GROUP names
         // none: SELECT f(DISTINCT 1) is "Unknown function F." where f is a user's function (live-verified).
         if (catalog != null && mayCallUserFunction(expr)) {
+            Schema udfHome = null;
             Function udf = null;
             try {
                 final String dbName = catalog.getCurrentDatabase();
@@ -2773,15 +3164,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                         targetSchema = catalog.getDatabase(parts.get(0)).getSchema(parts.get(1));
                         simpleName = parts.get(2);
                     } else {
-                        // unqualified — search current schema
-                        final String schemaName = catalog.getCurrentSchema();
-                        targetSchema = schemaName != null
-                            ? catalog.getDatabase(dbName).getSchema(schemaName) : null;
+                        // unqualified — the first schema of the session's search path that holds one
                         simpleName = parts.size() == 1 ? parts.get(0) : funcName;
+                        targetSchema = unqualifiedFunctionSchema(simpleName);
                     }
 
                     if (targetSchema != null) {
                         udf = resolveOverloadedFunction(targetSchema, simpleName, argValues, expr);
+                        udfHome = udf == null ? null : targetSchema;
                     }
 
                     // If not found in resolved schema and unqualified, also try current schema
@@ -2790,6 +3180,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                         if (schemaName != null) {
                             final Schema currentSchema = catalog.getDatabase(dbName).getSchema(schemaName);
                             udf = resolveOverloadedFunction(currentSchema, simpleName, argValues, expr);
+                            udfHome = udf == null ? null : currentSchema;
                         }
                     }
                 }
@@ -2797,6 +3188,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 // Function not found in catalog, udf remains null
             }
 
+            if (udf != null && udfHome != null && queryExecutor != null) {
+                // Calling another role's function asks for USAGE on it.
+                queryExecutor.requireRoutinePrivilege(Privilege.USAGE, udfHome, udf);
+            }
             if (udf != null) {
                 rejectStructuredUdfArgument(udf, funcName, expr.getArguments(), expr.getArgumentNames());
                 final List<Object> callArgs = expr.getArgumentNames() != null
@@ -2875,6 +3270,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (parts == null || parts.isEmpty()) {
             return SqlIdentifiers.spellCanonicalPath(SqlIdentifiers.canonicalText(call.getFunctionName()));
         }
+        if (call.getMethodName() != null) {
+            // A class instance's method: the instance, a '!', the method.
+            return spelledParts(parts) + "!" + SqlIdentifiers.spellCanonical(call.getMethodName());
+        }
         return spelledParts(parts);
     }
 
@@ -2917,8 +3316,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * @return whether some path could resolve this name
      */
     public boolean resolvesToAFunction(final FunctionCallExpression call) {
-        if (call.getNameExpression() != null || call instanceof ArgumentRowExpression) {
-            // IDENTIFIER(expr): the target is a runtime string; a named argument's list is no call.
+        if (call.getNameExpression() != null || call instanceof RowExpression) {
+            // IDENTIFIER(expr): the target is a runtime string; a parenthesized list is no call.
             return true;
         }
         final String funcName = call.getFunctionName();
@@ -3144,7 +3543,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * live types it: SYSTEM$TYPEOF over a RETURNS NUMBER(10,2) whose body is 1.5 reads NUMBER(2,1), and
      * over a VARCHAR(5) whose body is 'abc' VARCHAR(3) (live-verified). So every family rule that reads
      * an argument's type sees what the body produces — TO_VARCHAR over a function returning a VECTOR is
-     * refused as it is over the vector itself. Any other function answers its declared RETURNS type.
+     * refused as it is over the vector itself. A body that is a QUERY is typed the same way, by what it is
+     * inlined as: its one item where it reads no relation ({@code SELECT a + 1} as {@code a + 1}), and
+     * otherwise the scalar subquery it is ({@code SELECT MAX(x) FROM t} is typed as the column's MAX). Any
+     * other function answers its declared RETURNS type.
      * Overloads are told apart by argument count alone; a count two of them accept stays untyped.
      *
      * @param call the call
@@ -3159,14 +3561,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return null;
         }
         final DataType declared = udf.getReturnType();
-        if (!inlinesExpressionBody(udf) || !enterUdfTyping()) {
+        final String body = inlinedBodyText(udf);
+        if (body == null || !enterUdfTyping()) {
             return declared;
         }
         try {
             // A text constant is folded into the body, so txt_add('5') over a body a + 1 is typed as '5' + 1 is.
-            final Expression folded = textConstantInlined(udf, call);
+            final Expression folded = textConstantInlined(udf, call, body);
             final DataType bodyType = folded != null ? inferStaticType(folded) : inlinedBodyScope(udf, call, false)
-                .inferStaticType(ExpressionEvaluator.parse(sqlBodyText(udf)));
+                .inferStaticType(ExpressionEvaluator.parse(body));
             return bodyType != null ? bodyType : declared;
         } catch (final RuntimeException untypable) {
             return declared;
@@ -3191,13 +3594,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return null;
         }
         final Function udf = staticallyResolvedUdf(call);
-        if (udf == null || udf.isTableFunction() || !inlinesExpressionBody(udf) || !enterUdfTyping()) {
+        final String body = udf == null || udf.isTableFunction() ? null : inlinedBodyText(udf);
+        if (body == null || !enterUdfTyping()) {
             return null;
         }
         try {
-            final Expression folded = textConstantInlined(udf, call);
+            final Expression folded = textConstantInlined(udf, call, body);
             return folded != null ? inferStaticRange(folded)
-                : inlinedBodyScope(udf, call, true).inferStaticRange(ExpressionEvaluator.parse(sqlBodyText(udf)));
+                : inlinedBodyScope(udf, call, true).inferStaticRange(ExpressionEvaluator.parse(body));
         } catch (final RuntimeException undetermined) {
             return null;
         } finally {
@@ -3213,8 +3617,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * {@code txt_p(NULL)} is a NULL's [SB1] and {@code txt_p('123456')} [SB4], where
      * {@code txt_p(n::VARCHAR)} keeps the declared width (live-verified).
      */
-    private Expression textConstantInlined(final Function udf, final FunctionCallExpression call) {
-        if (call.getArguments().size() != udf.getParameters().size()) {
+    private Expression textConstantInlined(final Function udf, final FunctionCallExpression call,
+                                           final String body) {
+        final Expression parsed = ExpressionEvaluator.parse(body);
+        if (call.getArguments().size() != udf.getParameters().size() || parsed instanceof SubqueryExpression) {
+            // A query is read where it stands: nothing is substituted into it.
             return null;
         }
         final Map<String, Expression> arguments = new HashMap<>();
@@ -3226,12 +3633,34 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 && (UntypedNullFold.isUntypedNull(argument) || valueRangeInferencer.foldsAsConstant(argument));
             arguments.put(parameter.getName().toUpperCase(Locale.ROOT), argument);
         }
-        return foldsText ? substitutedBody(ExpressionEvaluator.parse(sqlBodyText(udf)), arguments) : null;
+        return foldsText ? substitutedBody(parsed, arguments) : null;
     }
 
     /** The text a call of a SQL function runs, trimmed: what its frame holds when it ends at a semicolon. */
     private static String sqlBodyText(final Function udf) {
         return udf.getBody() == null ? "" : SqlUdfBodyFrame.executableBody(udf.getBody()).trim();
+    }
+
+    /**
+     * The expression a call of a SQL function is typed by, as text: an expression body itself, a query body's one
+     * item where the query reads no relation, and any other query in the parentheses of the scalar subquery it is
+     * inlined as. Null for a body in another language, an empty one and a scripting block, which are typed by
+     * their RETURNS clause.
+     */
+    private String inlinedBodyText(final Function udf) {
+        final String body = udf.getUdfLanguage() == UdfLanguage.SQL ? sqlBodyText(udf) : "";
+        if (body.isEmpty() || queryExecutor == null || queryExecutor.isProceduralBlock(body)) {
+            return null;
+        }
+        if (!queryExecutor.isQueryStatement(body)) {
+            return body;
+        }
+        final String item = queryExecutor.fromlessSingleItem(body);
+        if (item != null) {
+            return item;
+        }
+        final String query = body.endsWith(";") ? body.substring(0, body.length() - 1).trim() : body;
+        return "(" + query + ")";
     }
 
     /** Whether a function's body is a SQL expression, which a call is typed by as if it were inlined. */
@@ -3302,6 +3731,29 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             effective, CastFieldsModifier.NONE));
     }
 
+    /**
+     * The schema an unqualified function name is found in: the first schema of the session's SEARCH_PATH that
+     * holds a function of that name, or the current schema when none does (see {@link SearchPath}).
+     *
+     * @param name the function's canonical name
+     * @return the schema, or null without a current database or schema
+     */
+    private Schema unqualifiedFunctionSchema(final String name) {
+        final String databaseName = catalog.getCurrentDatabase();
+        final String schemaName = catalog.getCurrentSchema();
+        if (databaseName == null || schemaName == null) {
+            return null;
+        }
+        if (queryExecutor != null) {
+            for (final Schema schema : queryExecutor.searchPathSchemas()) {
+                if (!schema.getFunctionOverloads(name).isEmpty()) {
+                    return schema;
+                }
+            }
+        }
+        return catalog.getDatabase(databaseName).getSchema(schemaName);
+    }
+
     /** The function a call names, resolved as the evaluator resolves it, by argument count alone. */
     private Function staticallyResolvedUdf(final FunctionCallExpression call) {
         final String dbName = catalog.getCurrentDatabase();
@@ -3320,9 +3772,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 schema = catalog.getDatabase(dbName).getSchema(parts.get(0));
                 name = parts.get(1);
             } else {
-                final String schemaName = catalog.getCurrentSchema();
-                schema = schemaName == null ? null : catalog.getDatabase(dbName).getSchema(schemaName);
                 name = parts.get(0);
+                schema = unqualifiedFunctionSchema(name);
             }
         } catch (final RuntimeException unresolved) {
             return null;
@@ -3447,16 +3898,19 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * {@link UdfArgumentTypes}'): "Invalid argument types for function 'F': (ARRAY, NUMBER(1,0))", every
      * argument's type listed. With overloads it is refused only when EVERY one of that arity refuses;
      * which of several accepting overloads runs stays the runtime's choice. A TIME into a TIMESTAMP
-     * parameter is "incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]", unanchored. An all-named call
-     * that does not fit is "named arguments [P] do not match any signature for function F". Inside a
-     * running block the check stands aside: a :bind reaches the statement already substituted as a
-     * literal there, so its declared type is lost.
+     * parameter is "incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]", unanchored. A call with named
+     * arguments that fits no overload is "named arguments [P] do not match any signature for function F" (see
+     * {@link #rejectMisnamedUdfArguments}). Inside a running block an argument is judged where it still carries
+     * its declared type — a bind kept as one, and a bind substituted as a cast, which a NULL and a number are — and
+     * the check stands aside for any other: a :bind substituted as a plain literal has lost its declared type.
+     * A variable's declared type is what the account judges, whatever it holds: a NUMBER(10,2) handed to a DATE
+     * parameter is refused holding 1.5 and holding NULL alike (live-verified).
      */
     private void rejectUncoercibleUdfArguments(final String funcName, final FunctionCallExpression call) {
-        if (queryExecutor != null && queryExecutor.getProceduralExecutor() != null
-                && queryExecutor.getProceduralExecutor().isExecutingBlock()) {
-            return;
-        }
+        rejectUdfArgumentCount(call);
+        rejectMisnamedUdfArguments(call);
+        final boolean inBlock = queryExecutor != null && queryExecutor.getProceduralExecutor() != null
+            && queryExecutor.getProceduralExecutor().isExecutingBlock();
         final List<Expression> args = call.getArguments();
         final List<DataType> types = new ArrayList<>();
         for (final Expression arg : args) {
@@ -3466,6 +3920,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (arg instanceof LiteralExpression && ((LiteralExpression) arg).getValue() == null) {
                 types.add(null);   // an untyped NULL binds to anything
                 continue;
+            }
+            if (inBlock && !(arg instanceof CastExpression) && !(arg instanceof BindVariableExpression)) {
+                // A :bind substituted as a plain literal has lost its declared type, and refuses nothing.
+                return;
             }
             final DataType type = typeInferencer.infer(arg);
             if (type == null) {
@@ -3518,14 +3976,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * A call one of whose named arguments is a parenthesized list, a ROW no scalar parameter takes, refused at the
      * call before anything is evaluated (live-verified, over an empty table too): a built-in as
      * {@code function UPPER does not support named arguments}, a user-defined function as
-     * {@code named arguments [X, Y] do not match any signature for function FXY} — the named parameters in
-     * declaration order, then any name no parameter has. A name nothing resolves is the unknown-function
-     * refusal, which names that call and not the list.
+     * {@code named arguments [X, Y] do not match any signature for function FXY} — every name the call writes
+     * (see {@link NamedArguments}). A name nothing resolves is the unknown-function refusal, which names that
+     * call and not the list.
      *
      * @param call the call
      */
     private void rejectArgumentRows(final FunctionCallExpression call) {
-        if (call.getArgumentNames() == null || call instanceof ArgumentRowExpression || call.getNameExpression() != null
+        if (call.getArgumentNames() == null || call instanceof RowExpression || call.getNameExpression() != null
                 || call.getFunctionName() == null) {
             return;
         }
@@ -3550,46 +4008,136 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             throw new RuntimeException(SqlCompilationError.of(unknownFunctionSentence(call)));
         }
         final List<String> written = call.getArgumentNames();
-        final List<String> named = new ArrayList<>();
-        if (!candidates.isEmpty()) {
-            for (final Parameter param : candidates.get(0).getParameters()) {
-                for (final String argumentName : written) {
-                    if (argumentName != null && argumentName.equalsIgnoreCase(param.getName())) {
-                        named.add(param.getName().toUpperCase(Locale.ROOT));
-                    }
-                }
-            }
-        }
-        for (final String argumentName : written) {
-            if (argumentName != null && !named.contains(argumentName.toUpperCase(Locale.ROOT))) {
-                named.add(argumentName.toUpperCase(Locale.ROOT));
-            }
-        }
-        throw new RuntimeException(positionedArgumentTypes(call, "named arguments [" + String.join(", ", named)
-            + "] do not match any signature for function " + name));
+        throw new RuntimeException(positionedArgumentTypes(call, "named arguments ["
+            + NamedArguments.listed(candidates.isEmpty() ? new ArrayList<Parameter>() : candidates.get(0).getParameters(),
+                written) + "] do not match any signature for function " + name));
     }
 
-    /** An all-named call against a single candidate: refused when a named argument's type does not fit. */
+    /**
+     * A call to a user-defined function whose named arguments fit none of its overloads, refused while the query
+     * compiles, at the call and over an empty table too (live-verified): "named arguments [A, Z] do not match any
+     * signature for function F", every name the call writes listed (see {@link NamedArguments}). A name no
+     * parameter has, a quoted name of another case and a call that leaves a required parameter out are all
+     * refused so. A name written twice is refused before that, at the second value: "duplicate named argument A
+     * for function F".
+     */
+    private void rejectMisnamedUdfArguments(final FunctionCallExpression call) {
+        final List<String> written = call.getArgumentNames();
+        if (written == null || call.getArguments().size() != written.size()) {
+            return;
+        }
+        final List<String> parts = udfNameParts(call);
+        final List<Function> overloads = udfOverloadsForValidation(parts);
+        if (overloads.isEmpty()) {
+            return;
+        }
+        final String name = parts.get(parts.size() - 1);
+        final List<String> seen = new ArrayList<>();
+        for (int i = 0; i < written.size(); i++) {
+            if (written.get(i) == null) {
+                continue;
+            }
+            final String argumentName = SqlIdentifiers.canonicalText(written.get(i));
+            if (seen.contains(argumentName)) {
+                final SourcePosition at = call.getArgumentPositions() == null ? null : call.getArgumentPositions().get(i);
+                throw new RuntimeException(positionedAt(at != null ? at : call.getPosition(),
+                    "duplicate named argument " + argumentName + " for function " + name));
+            }
+            seen.add(argumentName);
+        }
+        List<Parameter> widest = overloads.get(0).getParameters();
+        for (final Function overload : overloads) {
+            if (NamedArguments.fit(overload.getParameters(), written)) {
+                return;
+            }
+            if (overload.getParameters().size() > widest.size()) {
+                widest = overload.getParameters();
+            }
+        }
+        throw arityMismatch("named arguments [" + NamedArguments.listed(widest, written)
+            + "] do not match any signature for function " + name, call);
+    }
+
+    /**
+     * A call to a user-defined function with a number of arguments none of its overloads takes, refused while the
+     * query compiles, at the call and over an empty table too (live-verified). More arguments than the widest
+     * overload declares is "too many arguments for function [G(1, 2)] expected 1, got 2", the call echoed under
+     * its bare name with its arguments as the plan prints them; any other count is "Invalid argument types for
+     * function 'G': ()", every argument's type listed — a count between two overloads' as well as one too few.
+     */
+    private void rejectUdfArgumentCount(final FunctionCallExpression call) {
+        final List<Expression> args = call.getArguments();
+        for (final Expression arg : args) {
+            if (arg instanceof SpreadExpression) {
+                return;   // a spread splices values: the count is the runtime's to judge
+            }
+        }
+        if (call.getQuantifier() != null) {
+            return;   // a quantifier no user-defined function takes is refused for itself
+        }
+        final List<String> parts = udfNameParts(call);
+        final List<Function> overloads = udfOverloadsForValidation(parts);
+        if (overloads.isEmpty()) {
+            return;
+        }
+        int widest = 0;
+        for (final Function overload : overloads) {
+            final int declared = overload.getParameters().size();
+            if (args.size() >= requiredArgumentCount(overload) && args.size() <= declared) {
+                return;
+            }
+            widest = Math.max(widest, declared);
+        }
+        if (args.size() <= widest && call.getArgumentNames() != null) {
+            return;   // too few arguments written by name: the names are what no signature matches
+        }
+        final String name = parts.get(parts.size() - 1);
+        if (args.size() > widest) {
+            final StringBuilder echo = new StringBuilder(name).append('(');
+            for (int i = 0; i < args.size(); i++) {
+                echo.append(i == 0 ? "" : ", ").append(strictText(args.get(i)));
+            }
+            throw arityMismatch("too many arguments for function [" + echo.append(')') + "] expected " + widest
+                + ", got " + args.size(), call);
+        }
+        throw arityMismatch("Invalid argument types for function '" + name + "': (" + strictArgTypeList(args) + ")",
+            call);
+    }
+
+    /** How many of a function's parameters a call must fill: those without a default. */
+    private static int requiredArgumentCount(final Function function) {
+        int required = 0;
+        for (final Parameter param : function.getParameters()) {
+            if (!param.hasDefault()) {
+                required++;
+            }
+        }
+        return required;
+    }
+
+    /**
+     * A call with named arguments against a single candidate its names fit: refused when a named argument's type
+     * does not, under the sentence a name that fits nothing gets (see {@link #rejectMisnamedUdfArguments}).
+     */
     private void rejectUnmatchedNamedUdfArguments(final String name, final List<Function> candidates,
             final List<String> argumentNames, final List<DataType> types, final FunctionCallExpression call) {
         if (candidates.size() != 1) {
             return;
         }
-        final List<Parameter> params = candidates.get(0).getParameters();
-        final List<String> named = new ArrayList<>();
         boolean refused = false;
-        for (final Parameter param : params) {
+        for (final Parameter param : candidates.get(0).getParameters()) {
             for (int i = 0; i < argumentNames.size() && i < types.size(); i++) {
-                if (argumentNames.get(i) == null || !argumentNames.get(i).equalsIgnoreCase(param.getName())) {
+                if (argumentNames.get(i) == null
+                        || !SqlIdentifiers.canonicalText(argumentNames.get(i)).equals(param.getName())) {
                     continue;
                 }
-                named.add(param.getName().toUpperCase(Locale.ROOT));
                 refused |= types.get(i) != null && (UdfArgumentTypes.refuses(param.getDataType(), types.get(i))
                     || UdfArgumentTypes.timeIntoTimestamp(param.getDataType(), types.get(i)));
             }
         }
         if (refused) {
-            throw arityMismatch("named arguments [" + String.join(", ", named)
+            throw arityMismatch("named arguments ["
+                + NamedArguments.listed(candidates.get(0).getParameters(), argumentNames)
                 + "] do not match any signature for function " + name, call);
         }
     }
@@ -3610,13 +4158,26 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     private List<Function> udfCandidatesForValidation(final List<String> parts, final int argCount) {
         final List<Function> candidates = new ArrayList<>();
+        for (final Function candidate : udfOverloadsForValidation(parts)) {
+            if (argCount >= requiredArgumentCount(candidate) && argCount <= candidate.getParameters().size()) {
+                candidates.add(candidate);
+            }
+        }
+        return candidates;
+    }
+
+    /**
+     * Every overload of the user-defined function the name {@code parts} names, whatever its argument count, or
+     * none when the name cannot be resolved here.
+     */
+    private List<Function> udfOverloadsForValidation(final List<String> parts) {
         if (catalog == null) {
-            return candidates;
+            return new ArrayList<>();
         }
         try {
             final String currentDatabase = catalog.getCurrentDatabase();
             if (currentDatabase == null) {
-                return candidates;
+                return new ArrayList<>();
             }
             final Schema schema;
             if (parts.size() == 2) {
@@ -3624,24 +4185,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             } else if (parts.size() == 3) {
                 schema = catalog.getDatabase(parts.get(0)).getSchema(parts.get(1));
             } else {
-                final String schemaName = catalog.getCurrentSchema();
-                schema = schemaName != null ? catalog.getDatabase(currentDatabase).getSchema(schemaName) : null;
+                schema = unqualifiedFunctionSchema(parts.get(parts.size() - 1));
             }
             if (schema == null) {
-                return candidates;
+                return new ArrayList<>();
             }
-            for (final Function candidate : schema.getFunctionOverloads(parts.get(parts.size() - 1))) {
-                int required = 0;
-                for (final Parameter param : candidate.getParameters()) {
-                    if (!param.hasDefault()) {
-                        required++;
-                    }
-                }
-                if (argCount >= required && argCount <= candidate.getParameters().size()) {
-                    candidates.add(candidate);
-                }
-            }
-            return candidates;
+            return new ArrayList<>(schema.getFunctionOverloads(parts.get(parts.size() - 1)));
         } catch (final RuntimeException unresolvable) {
             return new ArrayList<>();
         }
@@ -3667,9 +4216,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             } else if (parts.size() == 3) {
                 schema = catalog.getDatabase(parts.get(0)).getSchema(parts.get(1));
             } else {
-                final String schemaName = catalog.getCurrentSchema();
-                schema = schemaName != null
-                    ? catalog.getDatabase(currentDatabase).getSchema(schemaName) : null;
+                schema = unqualifiedFunctionSchema(parts.get(parts.size() - 1));
             }
             if (schema == null) {
                 return null;
@@ -4719,6 +5266,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         TEMPORAL_STRICT_ARGS.put("EXTRACT", new int[]{1});
         TEMPORAL_STRICT_ARGS.put("DATE_PART", new int[]{1});
         TEMPORAL_STRICT_ARGS.put("LAST_DAY", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("TIME_SLICE", new int[]{0});
         TEMPORAL_STRICT_ARGS.put("MONTHS_BETWEEN", new int[]{0, 1});
         // DAYNAME / MONTHNAME / NEXT_DAY / PREVIOUS_DAY are NOT compile-strict in Snowflake
         // (live-verified: each compiles over a VARCHAR column and evaluates per row).
@@ -4762,15 +5310,23 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // DATE_TRUNC does not support VARIANT argument type", the EXTRACT family named EXTRACT (live-verified).
             if (inferred instanceof VariantType) {
                 throw new RuntimeException(SqlCompilationError.of("Function "
-                    + (funcName.equals("DATE_TRUNC") || funcName.equals("LAST_DAY") ? funcName : "EXTRACT")
-                    + " does not support VARIANT argument type"));
+                    + DatePartOperands.refusedAs(funcName) + " does not support VARIANT argument type"));
+            }
+            // A value of a family that is never a date, a time or a timestamp is refused the same way, by its
+            // type as an argument-type sentence spells it — see DatePartOperands. MONTHS_BETWEEN names the
+            // difference it is planned as instead, and DATE_TRUNC judges a unit it does not know first.
+            if (DatePartOperands.isNeverTemporal(inferred) && !"MONTHS_BETWEEN".equals(funcName)
+                    && !("DATE_TRUNC".equals(funcName) && hasUnknownTruncationUnit(args))
+                    || "TIME_SLICE".equals(funcName) && DatePartOperands.isUnslicedTemporal(inferred)) {
+                throw new RuntimeException(SqlCompilationError.of("Function "
+                    + DatePartOperands.refusedAs(funcName) + " does not support " + strictArgTypeText(arg)
+                    + " argument type"));
             }
             if (inferred instanceof StringType) {
                 // Live-verified message shape: the whole EXTRACT family (EXTRACT, DATE_PART, the
                 // part extractors like DAYOFYEAR, and MONTHS_BETWEEN) reports "Function EXTRACT ...";
                 // DATE_TRUNC and LAST_DAY report their own names; the VARCHAR carries its length.
-                final String reportedName =
-                    funcName.equals("DATE_TRUNC") || funcName.equals("LAST_DAY") ? funcName : "EXTRACT";
+                final String reportedName = DatePartOperands.refusedAs(funcName);
                 int maxLength = ((StringType) inferred).getMaxLength();
                 if (arg instanceof LiteralExpression && ((LiteralExpression) arg).getValue() != null) {
                     maxLength = CodePointText.length(String.valueOf(((LiteralExpression) arg).getValue()));
@@ -4778,6 +5334,109 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 throw new RuntimeException(SqlCompilationError.of("Function " + reportedName + " does not support VARCHAR("
                     + (maxLength > 0 ? maxLength : 16777216) + ") argument type"));
             }
+        }
+    }
+
+    /** Whether a DATE_TRUNC names a unit outside its vocabulary, which is refused ahead of its operand. */
+    private static boolean hasUnknownTruncationUnit(final List<Expression> args) {
+        final String word = args.isEmpty() ? null : DateTimeUnitSlot.unitTextOf(args.get(0));
+        return word != null && DateUnitVocabulary.intervalUnit(word) == null;
+    }
+
+    /**
+     * A part the operand's kind does not have — a year of a TIME, an hour of a DATE — refused while the statement
+     * compiles, the function naming itself and EXTRACT and DATE_PART echoing the part as their unknown parts are
+     * echoed (see {@link DatePartOperands}).
+     *
+     * @param funcName the call's name, upper-cased
+     * @param args     its arguments
+     */
+    private void rejectPartTheOperandLacks(final String funcName, final List<Expression> args) {
+        if (!DatePartOperands.readsPart(funcName)) {
+            return;
+        }
+        final boolean named = DatePartOperands.isOnePart(funcName);
+        final int valueAt = named ? 0 : 1;
+        if (args.size() != valueAt + 1) {
+            return;
+        }
+        final String word = named ? funcName : datePartWord(args.get(0));
+        if (word == null || !named && !SharedFunctionHelpers.isDatePartUnit(word)) {
+            return;
+        }
+        if (DatePartOperands.lacksPart(word, typeInferencer.infer(args.get(valueAt)))) {
+            throw SharedFunctionHelpers.invalidDatePart(word, funcName);
+        }
+    }
+
+    /**
+     * The value a day's or a month's name is read from, or a weekday is looked for after: a NUMBER, a FLOAT, a
+     * BOOLEAN, an ARRAY, an OBJECT, a BINARY and a TIME are refused while the statement compiles, every argument
+     * listed and the call pointed at — "Invalid argument types for function 'NEXT_DAY': (NUMBER(1,0), VARCHAR(2))".
+     * A text and a VARIANT compile and are converted per row (live-verified).
+     *
+     * @param funcName the call's name, upper-cased
+     * @param call     the call
+     */
+    private void rejectDayNameOperand(final String funcName, final FunctionCallExpression call) {
+        final boolean named = "DAYNAME".equals(funcName) || "MONTHNAME".equals(funcName);
+        final boolean sought = "NEXT_DAY".equals(funcName) || "PREVIOUS_DAY".equals(funcName);
+        final List<Expression> args = call.getArguments();
+        if (!named && !sought || args.size() != (named ? 1 : 2)) {
+            return;
+        }
+        final DataType operand = typeInferencer.infer(args.get(0));
+        if (DatePartOperands.isNeverTemporal(operand) || DatePartOperands.isTime(operand)) {
+            throw new RuntimeException(positionedArgumentTypes(call, "Invalid argument types for function '"
+                + funcName + "': (" + strictArgTypeList(args) + ")"));
+        }
+    }
+
+    /**
+     * MONTHS_BETWEEN's two values, judged as the month difference the call is planned as — its second value
+     * first: {@code MONTHS_BETWEEN(a, d)} over a NUMBER is "Invalid argument types for function
+     * 'DATE_DIFFDATEINMONTHS': (DATE, NUMBER(38,0))", and a TIME beside anything else "'DATEDIFF': (VARCHAR(5),
+     * DATE, TIME(9))" (live-verified; see {@link IntervalCallArguments}).
+     *
+     * @param funcName the call's name, upper-cased
+     * @param call     the call
+     */
+    private void rejectMonthsBetweenOperands(final String funcName, final FunctionCallExpression call) {
+        final List<Expression> args = call.getArguments();
+        if (!"MONTHS_BETWEEN".equals(funcName) || args.size() != 2
+                || DateTimeUnitSlot.isNullLiteral(args.get(0)) || DateTimeUnitSlot.isNullLiteral(args.get(1))) {
+            return;
+        }
+        final String refusal = IntervalCallArguments.differenceRefusal("DATEDIFF", "month", IntervalUnit.MONTH,
+            typeInferencer.infer(args.get(1)), strictArgTypeText(args.get(1)),
+            typeInferencer.infer(args.get(0)), strictArgTypeText(args.get(0)));
+        if (refusal != null) {
+            throw new RuntimeException(positionedArgumentTypes(call, refusal));
+        }
+    }
+
+    /**
+     * ADD_MONTHS's target, judged as the shift the call is planned as: a value that is never a date or a timestamp
+     * is "Invalid argument types for function 'DATE_ADDMONTHSEOMTOTIMESTAMP': (NUMBER(1,0), NUMBER(38,0))", the
+     * amount listed first, and a TIME "incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]" (live-verified).
+     *
+     * @param funcName the call's name, upper-cased
+     * @param call     the call
+     */
+    private void rejectAddMonthsTarget(final String funcName, final FunctionCallExpression call) {
+        final List<Expression> args = call.getArguments();
+        if (!"ADD_MONTHS".equals(funcName) || args.size() != 2 || DateTimeUnitSlot.isNullLiteral(args.get(1))) {
+            return;
+        }
+        final DataType target = typeInferencer.infer(args.get(0));
+        if (DatePartOperands.isTime(target)) {
+            throw new RuntimeException(SqlCompilationError.of("incompatible types: ["
+                + strictArgTypeText(args.get(0)) + "] and [TIMESTAMP_NTZ(9)]"));
+        }
+        if (DatePartOperands.isNeverTemporal(target)) {
+            throw new RuntimeException(positionedArgumentTypes(call, "Invalid argument types for function "
+                + "'DATE_ADDMONTHSEOMTOTIMESTAMP': (" + strictArgTypeText(args.get(1)) + ", "
+                + strictArgTypeText(args.get(0)) + ")"));
         }
     }
 
@@ -4949,6 +5608,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             validateColumnReferenceScope((ColumnReferenceExpression) expr);
             return;
         }
+        if (expr instanceof WindowFunctionExpression && ((WindowFunctionExpression) expr).getFunctionName() != null
+                && ((WindowFunctionExpression) expr).getArguments() != null) {
+            // A window function takes a ROW no more than the plain call does.
+            final WindowFunctionExpression windowed = (WindowFunctionExpression) expr;
+            final FunctionCallExpression plain =
+                new FunctionCallExpression(windowed.getFunctionName(), windowed.getArguments());
+            plain.setPosition(windowed.getPosition());
+            rejectWrittenRowArguments(windowed.getFunctionName().toUpperCase(Locale.ROOT), plain);
+        }
         if (expr instanceof WindowFunctionExpression) {
             // ★ A WINDOWED AGGREGATE IS HELD TO THE SAME DECLARED ARITY AS THE PLAIN ONE — live's
             // sentence for SUM(a, b) OVER () is the plain SUM sentence, same echo, same position at
@@ -5090,6 +5758,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 // arguments … expected 1, got 2", LOG(TRUE) "not enough arguments" (live-verified).
                 rejectVarcharColumnInTemporalFunction(funcName, call.getArguments(),
                     new ArrayList<Object>(call.getArguments()));
+                rejectPartTheOperandLacks(funcName, call.getArguments());
+                rejectDayNameOperand(funcName, call);
+                rejectMonthsBetweenOperands(funcName, call);
+                rejectAddMonthsTarget(funcName, call);
                 rejectNonVariantArgumentInStrictFunction(funcName, call.getArguments(), call);
                 rejectNonBooleanArgumentInStrictFunction(funcName, call.getArguments(), call);
                 rejectStrictArgumentFamilies(funcName, call.getArguments(), call);
@@ -5101,6 +5773,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 rejectInStringIntervalTypeOf(funcName, call.getArguments());
                 rejectWholeDayUnitOverTime(funcName, call.getArguments());
                 rejectIntervalCallArguments(funcName, call);
+                rejectWrittenRowArguments(funcName, call);
                 // ★ A STAR EXPANDS FIRST AND ONE ARITY RULE JUDGES THE EXPANDED LIST (live):
                 // ARRAY_AGG(*) over three columns is "too many arguments for function
                 // [ARRAY_AGG(SA.A, SA.B, SA.C)] expected 1, got 3" — the very sentence the
@@ -5727,6 +6400,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     public void validatePredicateType(final Expression predicate) {
+        if (predicate instanceof RowExpression && strictArgTypeText(predicate) != null) {
+            // A ROW is no condition: WHERE (a, b) is refused by its type (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Invalid data type ["
+                + strictArgTypeText(predicate) + "] for predicate ["
+                + predicateDisplayText(predicate) + "]"));
+        }
         DataType inferred = typeInferencer.infer(predicate);
         if (inferred == null) {
             // A condition naming a column of the query AROUND this subquery has no type in HERE, and
@@ -5778,6 +6457,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // unit, and a unit that is not a string literal is the date-part sentence whatever its
         // family — TRUNC(d, d) is "Date/time component [TO_CHAR(TT.D) ]…", not "(DATE, DATE)".
         rejectNonLiteralTruncUnit(funcName, args);
+        rejectArrayFunctionArgument(funcName, args, call);
         rejectSemiStructuredArgument(funcName, args, call);
         rejectNullIfZeroFamilies(funcName, args, call);
         rejectNonTextObjectKey(funcName, args, call);
@@ -5787,8 +6467,38 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         rejectIllegalBase64Arguments(funcName, args, call);
         rejectIllegalRoundMode(funcName, args, call);
         rejectNonConstantGeneratorArgument(funcName, args);
+        rejectNonConstantDelimiter(funcName, args);
         rejectNonConstantVariableName(funcName, args, call);
         rejectNonConstantQueryIndex(funcName, args);
+    }
+
+    /**
+     * An array function's argument whose static type its position does not take (see {@link ArrayArgumentKind},
+     * declared per function): {@code ARRAY_SIZE('abc')} is {@code Invalid argument types for function 'ARRAY_SIZE':
+     * (VARCHAR(3))} and {@code ARRAY_CAT(CURRENT_DATE(), [1])} {@code … 'ARRAY_CAT': (DATE, ARRAY)}, at the call,
+     * over any number of rows.
+     *
+     * @param funcName the call's name, upper-cased
+     * @param args     its arguments
+     * @param call     the call
+     */
+    private void rejectArrayFunctionArgument(final String funcName, final List<Expression> args,
+                                             final Expression call) {
+        final BuiltInFunction function = registeredFunction(funcName);
+        if (function == null) {
+            return;
+        }
+        for (int position = 0; position < args.size(); position++) {
+            final ArrayArgumentKind kind = function.arrayArgumentKind(position);
+            if (kind == null) {
+                continue;
+            }
+            final DataType type = typeInferencer.infer(args.get(position));
+            if (kind.refuses(type)) {
+                throw new RuntimeException(semiStructuredRejectionMessage(SemiStructuredRejection.ARGUMENT_TYPES,
+                    funcName, args, position, type, call));
+            }
+        }
     }
 
     /**
@@ -5832,55 +6542,78 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * function '1'. Last, a third argument that does not fold to a boolean is refused — {@code Invalid value
      * [CAST('abc' AS BOOLEAN)] for function '2', parameter IMPORT_DDL: constant arguments expected}, a BOOLEAN column
      * echoed bare — only once the object it names is found: a missing object, or a type GET_DDL cannot recreate, is
-     * refused first, and a NULL type or name answers NULL. A numeric name is left to the call.
+     * refused first, and a NULL type or name answers NULL. The object is looked up here whatever the third argument
+     * is, so a call that is never computed — under SYSTEM$TYPEOF, behind a FALSE condition, over no row — refuses a
+     * missing object all the same; a definition compiled to be kept ({@link DefinitionCompile}) judges none of this.
+     * A name written as a whole number names no object ({@link GetDdl#numberedObject}).
      *
      * @param funcName the call's name, upper-cased
      * @param call     the call
      */
     private void rejectGetDdlArguments(final String funcName, final FunctionCallExpression call) {
         final List<Expression> args = call.getArguments();
-        if (!"GET_DDL".equals(funcName) || args.size() < 2 || args.size() > 3) {
+        if (!"GET_DDL".equals(funcName) || args.size() < 2 || args.size() > 3 || DefinitionCompile.isActive()) {
             return;
         }
         if (args.size() == 3 && GetDdlArguments.isRefusedFlagType(typeInferencer.infer(args.get(2)))) {
             throw arityMismatch("Invalid argument types for function 'IMPORT_DDL': (VARCHAR(134217728), "
                 + strictArgTypeText(args.get(2)) + ")", call);
         }
+        final boolean numberedName = GetDdlArguments.isWholeNumber(args.get(1));
         for (int i = 0; i < 2; i++) {
             final Expression arg = args.get(i);
-            final boolean numericName = i == 1 && arg instanceof LiteralExpression
-                && (((LiteralExpression) arg).getType() == LiteralType.INTEGER
-                    || ((LiteralExpression) arg).getType() == LiteralType.DECIMAL);
-            if (!numericName && !GetDdlArguments.isConstantText(arg, this)) {
-                final DataType type = typeInferencer.infer(arg);
-                final String echo = type == null || type instanceof StringType ? strictPlanText(arg)
-                    : "CAST(" + strictPlanText(arg) + " AS VARCHAR(134217728))";
-                throw new RuntimeException(SqlCompilationError.of("Invalid value [" + echo + "] for function '"
-                    + (i + 1) + "', parameter EXPORT_DDL: constant arguments expected"));
+            if (i == 1 && numberedName || GetDdlArguments.isConstantText(arg, this)) {
+                continue;
             }
+            final DataType type = typeInferencer.infer(arg);
+            final String echo;
+            if (type == null || type instanceof StringType) {
+                echo = strictPlanText(arg);
+            } else if (i == 1 && type instanceof NumericType && "NUMBER".equals(type.getName())) {
+                // A number is read as the whole number that would name an object by its number.
+                echo = ((NumericType) type).getScale() == 0 ? strictPlanText(arg)
+                    : "CAST(" + strictPlanText(arg) + " AS NUMBER(18,0))";
+            } else {
+                echo = "CAST(" + strictPlanText(arg) + " AS VARCHAR(134217728))";
+            }
+            throw new RuntimeException(SqlCompilationError.of("Invalid value [" + echo + "] for function '"
+                + (i + 1) + "', parameter EXPORT_DDL: constant arguments expected"));
         }
-        if (args.size() < 3 || GetDdlArguments.foldsToBoolean(args.get(2), this)) {
-            return;
+        RuntimeException refused = null;
+        if (args.size() == 3 && !GetDdlArguments.foldsToBoolean(args.get(2), this)) {
+            final Expression flag = args.get(2);
+            final String echo = flag instanceof ColumnReferenceExpression
+                && typeInferencer.infer(flag) instanceof BooleanType
+                ? strictPlanText(flag) : "CAST(" + strictPlanText(flag) + " AS BOOLEAN)";
+            refused = new RuntimeException(SqlCompilationError.of("Invalid value [" + echo
+                + "] for function '2', parameter IMPORT_DDL: constant arguments expected"));
         }
-        final Expression flag = args.get(2);
-        final String echo = flag instanceof ColumnReferenceExpression && typeInferencer.infer(flag) instanceof BooleanType
-            ? strictPlanText(flag) : "CAST(" + strictPlanText(flag) + " AS BOOLEAN)";
-        final RuntimeException refused = new RuntimeException(SqlCompilationError.of("Invalid value [" + echo
-            + "] for function '2', parameter IMPORT_DDL: constant arguments expected"));
         final Object type;
         final Object name;
         try {
             type = args.get(0).accept(this);
-            name = args.get(1).accept(this);
+            name = numberedName ? null : args.get(1).accept(this);
         } catch (final RuntimeException notFolded) {
-            throw refused;
+            if (refused != null) {
+                throw refused;
+            }
+            return;
         }
-        if (type == null || name == null) {
+        final BuiltInFunction getDdl = functionRegistry.getFunction("GET_DDL");
+        if (type == null || !(getDdl instanceof GetDdl)) {
+            return;
+        }
+        if (numberedName) {
+            throw ((GetDdl) getDdl).numberedObject(type);
+        }
+        if (name == null) {
             return;
         }
         // The export step runs first: it refuses a missing object, or a type it cannot recreate, in its own words.
-        functionRegistry.getFunction("GET_DDL").evaluate(Arrays.asList(type, name));
-        throw refused;
+        ((GetDdl) getDdl).requireObject(type, name);
+        if (refused != null) {
+            throw refused;
+        }
     }
 
     /**
@@ -8325,17 +9058,19 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
-     * IS_DATABASE_ROLE_IN_SESSION takes a role NAME: the bare word NULL or a number there is refused while the
-     * statement compiles, in live's own words — the role-name sentence stands where a line number would, and the
-     * argument is echoed with a trailing comma: "SQL compilation error: error line Invalid database role name at
-     * position 0" then "invalid argument for function [IS_DATABASE_ROLE_IN_SESSION] unexpected argument [NULL] at
-     * position 0," (live-verified). A text or a column is read as the row arrives.
+     * IS_DATABASE_ROLE_IN_SESSION and IS_ROLE_IN_SESSION take a role NAME: the bare word NULL or a number there is
+     * refused while the statement compiles, in live's own words — a sentence of the function's own stands where a
+     * line number would, and the argument is echoed with a trailing comma: "SQL compilation error: error line
+     * Invalid database role name at position 0" then "invalid argument for function [IS_DATABASE_ROLE_IN_SESSION]
+     * unexpected argument [NULL] at position 0," — "error line Check Arg at position 0" for IS_ROLE_IN_SESSION
+     * (live-verified). A text or a column is read as the row arrives.
      *
      * @param funcName the call's name, upper-cased
      * @param args     its arguments
      */
     private static void rejectDatabaseRoleNameLiteral(final String funcName, final List<Expression> args) {
-        if (!"IS_DATABASE_ROLE_IN_SESSION".equals(funcName) || args.size() != 1
+        final boolean databaseRole = "IS_DATABASE_ROLE_IN_SESSION".equals(funcName);
+        if (!databaseRole && !"IS_ROLE_IN_SESSION".equals(funcName) || args.size() != 1
                 || !(args.get(0) instanceof LiteralExpression)) {
             return;
         }
@@ -8344,13 +9079,41 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (literal.getType() == LiteralType.NULL) {
             echoed = "NULL";
         } else if (literal.getValue() instanceof Number) {
-            echoed = String.valueOf(literal.getValue());
+            // An account role's number is echoed inside the conversion the plan reads it through.
+            echoed = databaseRole ? String.valueOf(literal.getValue()) : "TO_CHAR(" + literal.getValue() + ")";
         } else {
             return;
         }
-        throw new RuntimeException("SQL compilation error: error line Invalid database role name at position 0\n"
-            + "invalid argument for function [IS_DATABASE_ROLE_IN_SESSION] unexpected argument [" + echoed
+        throw new RuntimeException("SQL compilation error: error line "
+            + (databaseRole ? "Invalid database role name" : "Check Arg") + " at position 0\n"
+            + "invalid argument for function [" + funcName + "] unexpected argument [" + echoed
             + "] at position 0,");
+    }
+
+    /**
+     * IS_ROLE_IN_SESSION and IS_DATABASE_ROLE_IN_SESSION read a name the statement writes as an identifier is
+     * read, and one a row carries as it is spelled (live-verified), so the value is handed on saying which it
+     * was. A database role's name is a text or a column itself: a column inside an expression is no name there,
+     * and is refused as an identifier nothing answers to.
+     *
+     * @param funcName the call's name, upper-cased
+     * @param argument the argument as written
+     * @param value    its value
+     * @return the value, marked as carried by a row when no constant wrote it
+     */
+    private Object roleNameArgument(final String funcName, final Expression argument, final Object value) {
+        if (ConstantArgumentWalk.isConstant(argument, functionRegistry)) {
+            return value;
+        }
+        if ("IS_DATABASE_ROLE_IN_SESSION".equals(funcName) && !(argument instanceof ColumnReferenceExpression)) {
+            final ColumnReferenceCollectWalk walk = new ColumnReferenceCollectWalk();
+            argument.accept(walk);
+            if (!walk.references().isEmpty()) {
+                final ColumnReferenceExpression column = walk.references().get(0);
+                throw invalidIdentifier(String.valueOf(column), column.getPosition());
+            }
+        }
+        return new CarriedRoleName(value == null ? null : value.toString());
     }
 
     /**
@@ -8382,6 +9145,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * @param args     its arguments
      */
     private void rejectNonObjectConversionSource(final String funcName, final List<Expression> args) {
+        if ("TO_ARRAY".equals(funcName) && args.size() == 1
+                && typeInferencer.infer(args.get(0)) instanceof UuidType) {
+            // A UUID converts to no ARRAY, where TO_VARIANT and ARRAY_CONSTRUCT take one (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("invalid type [" + conversionCallEcho(funcName, args)
+                + "] for parameter 'TO_ARRAY'"));
+        }
         if (!"TO_OBJECT".equals(funcName) || args.size() != 1
                 || !isRefusedObjectSource(typeInferencer.infer(args.get(0)))) {
             return;
@@ -8407,6 +9176,23 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 throw new RuntimeException(SqlCompilationError.of("argument " + (position + 1) + " to function "
                     + funcName + " needs to be constant, found '" + strictPlanText(args.get(position)) + "'"));
             }
+        }
+    }
+
+    /**
+     * LISTAGG's delimiter must be a constant, as a generator's seed must ({@link ConstantArgumentWalk}): a column,
+     * an expression over one, a subquery, RANDOM or a call that reads the session is refused while the statement
+     * compiles, echoed from the plan - "argument 2 to function LISTAGG needs to be constant, found 'RT.G'"
+     * (live-verified, over an empty table, under OVER and WITHIN GROUP too).
+     *
+     * @param funcName the call's name, upper-cased
+     * @param args     its arguments
+     */
+    private void rejectNonConstantDelimiter(final String funcName, final List<Expression> args) {
+        if ("LISTAGG".equals(funcName) && args.size() == 2
+                && !ConstantArgumentWalk.isConstant(args.get(1), functionRegistry)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "argument 2 to function LISTAGG needs to be constant, found '" + strictPlanText(args.get(1)) + "'"));
         }
     }
 
@@ -8766,11 +9552,35 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             default:
                 return null;
         }
+        if (expr.getOperator() == BinaryOperator.CONCAT) {
+            // A chain of || is one call over all its operands, however it is parenthesized: 'x' || (1 = 1) || 'y'
+            // is refused once, over (VARCHAR(1), BOOLEAN, VARCHAR(1)), at the operator the chain's tree hangs
+            // from. The walk is top down, so the whole chain is judged here before any part of it (live-verified).
+            final List<Expression> operands = new ArrayList<>();
+            concatOperands(expr, operands);
+            for (final Expression operand : operands) {
+                if (PredicateExpressions.isPredicate(operand)) {
+                    return "Invalid argument types for function '||': (" + strictArgTypeList(operands) + ")";
+                }
+            }
+            return null;
+        }
         if (!PredicateExpressions.isPredicate(expr.getLeft()) && !PredicateExpressions.isPredicate(expr.getRight())) {
             return null;
         }
         return "Invalid argument types for function '" + name + "': (" + strictArgTypeText(expr.getLeft()) + ", "
             + strictArgTypeText(expr.getRight()) + ")";
+    }
+
+    /** The operands of a chain of {@code ||}, in written order, each nested chain opened into its own. */
+    private static void concatOperands(final Expression expr, final List<Expression> operands) {
+        if (expr instanceof BinaryOperationExpression
+                && ((BinaryOperationExpression) expr).getOperator() == BinaryOperator.CONCAT) {
+            concatOperands(((BinaryOperationExpression) expr).getLeft(), operands);
+            concatOperands(((BinaryOperationExpression) expr).getRight(), operands);
+            return;
+        }
+        operands.add(expr);
     }
 
     private void rejectSemiStructuredArithmeticOperand(final BinaryOperationExpression expr) {
@@ -10747,6 +11557,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     private String strictArgTypeText(final Expression arg) {
+        if (arg instanceof RowExpression) {
+            // A parenthesized list is typed as the ROW of its values, a NULL among them spelled NULL.
+            return rowTypeText(((RowExpression) arg).getArguments());
+        }
         if (isInStringInterval(arg)) {
             // The quoted-unit literal INTERVAL '1 hour' has no type of its own: live lists it as INTERVAL.
             return "INTERVAL";
@@ -10922,6 +11736,50 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         final Table owner = resolveDeclaredOwner(ref);
         return owner == null ? null : owner.getColumn(ref.getColumnName());
+    }
+
+    /**
+     * Whether a column reference reads a column that holds nothing but an untyped NULL — DUAL's COLUMN1, a VALUES
+     * column written as NULL in every row, a derived column over the bare word — which every type rule reads as
+     * the bare word NULL itself (live-verified). The column is found as a declared one is, whether or not its
+     * relation's types are trusted: such a column has none to trust.
+     *
+     * @param ref the reference
+     * @return true when the column it reaches is one
+     */
+    public boolean readsUntypedNull(final ColumnReferenceExpression ref) {
+        if (ref.getPositionalOrdinal() > 0) {
+            final boolean single = multiTableAllTables == null || multiTableAllTables.size() <= 1;
+            if (!single || table == null) {
+                return false;
+            }
+            final RelationSlot own = RelationSlot.at(table, ref.getPositionalOrdinal());
+            return own != null && !own.isPastFields() && table.getColumns().get(own.getColumn()).isUntypedNull();
+        }
+        final String columnName = ref.getColumnName();
+        if (columnName == null) {
+            return false;
+        }
+        if (ref.getTableName() != null) {
+            final String qualifier = typedQualifier(ref.getTableName(), table, multiTableAliasToTable);
+            final Table qualified = tableForAlias(qualifier, multiTableAliasToTable);
+            if (qualified != null && qualified.hasColumn(columnName)) {
+                return qualified.getColumn(columnName).isUntypedNull();
+            }
+            return table != null && table.getName().equalsIgnoreCase(qualifier) && table.hasColumn(columnName)
+                && table.getColumn(columnName).isUntypedNull();
+        }
+        if (table != null && table.hasColumn(columnName) && table.getColumn(columnName).isUntypedNull()) {
+            return true;
+        }
+        if (multiTableAllTables != null) {
+            for (final Table candidate : multiTableAllTables) {
+                if (candidate.hasColumn(columnName)) {
+                    return candidate.getColumn(columnName).isUntypedNull();
+                }
+            }
+        }
+        return false;
     }
 
     /** The relation {@link #resolveDeclaredColumn} answers from, or null when the reference stays
@@ -11192,6 +12050,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         if (table != null && table.getName() != null) {
             relations.put(table.getName(), table);
+        }
+        // A grouped query's HAVING is evaluated over its grouped rows, whose relation is no table of the FROM:
+        // the relations behind it are the ones a subquery of the HAVING reads the statistics of.
+        if (groupedRelations != null) {
+            relations.putAll(groupedRelations);
         }
         return relations;
     }
@@ -11577,6 +12440,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             return;
         }
+        // A bare name ONE relation carries twice — a derived table or a common table expression whose query
+        // projects two columns of one name — is ambiguous too, whichever clause reads it (live-verified).
+        if (carriedTwiceByOneRelation(columnName)) {
+            throw new AmbiguousColumnException(columnName);
+        }
         // A bare name two NAME SCOPES carry is ambiguous; a USING or NATURAL join merges its relations into
         // one scope, where the left-most copy answers (see RelationScopes).
         if (table != null && multiTableAllTables != null && multiTableAllTables.size() > 1
@@ -11664,6 +12532,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         final Table qualified = qualifiedRelationFor(relationPart);
         if (qualified == null || qualified.getColumns() == null || qualified.getColumns().isEmpty()) {
             return;
+        }
+        // A relation that carries the name twice cannot say which column is meant, qualified or not.
+        if (qualified.getJoinedRelations() == null && carriesTwice(qualified, columnName)) {
+            throw new AmbiguousColumnException(columnName);
         }
         // The column part must match EXACTLY, quoted or not, as the bare reference must: an unquoted part
         // arrives upper-cased, so t1.c names the column C and never a quoted "c" (live refuses it as
@@ -11826,6 +12698,32 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      *  aliases / output column names, which the non-SELECT clauses may legally reference. */
     public void setOutputScopeNames(final Set<String> names) {
         this.outputScopeNames = names;
+    }
+
+    /**
+     * The qualifiers the row around this query offers, upper-cased: a refusal's echo spells a name read through
+     * one of them as the plan holds it, {@code CORRELATION(FZ.ID)}.
+     *
+     * @param qualifiers the enclosing row's qualifiers, or null
+     */
+    public void setEnclosingQualifiers(final Set<String> qualifiers) {
+        this.enclosingQualifiers = qualifiers;
+    }
+
+    /**
+     * The relations of the FROM a grouped query's HAVING stands over, by the names it reaches each by: what a
+     * subquery of the HAVING reads the statistics of (see {@link #scopeRelations}).
+     *
+     * @param relations the FROM's relations, or null
+     */
+    public void setGroupedRelations(final Map<String, Table> relations) {
+        this.groupedRelations = relations;
+    }
+
+    /** Whether a written qualifier is one the row around this query offers (see {@link #setEnclosingQualifiers}). */
+    boolean isEnclosingQualifier(final String qualifier) {
+        return enclosingQualifiers != null && qualifier != null
+            && enclosingQualifiers.contains(qualifier.toUpperCase(Locale.ROOT));
     }
 
     public void setOutputAliasTypes(final Map<String, DataType> types) {
@@ -12003,6 +12901,39 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
         }
         return count;
+    }
+
+    /**
+     * Whether one relation in scope carries two columns of exactly this name. A join's merged relation holds
+     * every joined column by design, so only the relations as the FROM clause names them are asked.
+     */
+    private boolean carriedTwiceByOneRelation(final String name) {
+        if (multiTableAllTables != null && multiTableAllTables.size() > 1) {
+            for (final Table candidate : multiTableAllTables) {
+                if (candidate != null && candidate.getJoinedRelations() == null && carriesTwice(candidate, name)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return table != null && table.getJoinedRelations() == null && carriesTwice(table, name);
+    }
+
+    private static boolean carriesTwice(final Table relation, final String name) {
+        if (relation.isNamedByAliasList()) {
+            // An alias list that gives one name twice is read by the first column of the name.
+            return false;
+        }
+        int carried = 0;
+        for (int i = 0; i < relation.columnCount(); i++) {
+            if (relation.columnAt(i).getName().equals(name)) {
+                carried++;
+                if (carried > 1) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -12204,9 +13135,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         throw new RuntimeException("Window function not available in this context: " + expr.getCallText());
     }
 
+    /** Whether a row of values equals a row a query answered: a NULL on either side matches nothing. */
     private boolean tupleMatches(final List<Object> left, final Row subRow) {
         for (int i = 0; i < left.size(); i++) {
-            if (!equals(left.get(i), DeferredFault.read(subRow.getValue(i)))) {
+            final Object right = DeferredFault.read(subRow.getValue(i));
+            if (left.get(i) == null || right == null || !equals(left.get(i), right)) {
                 return false;
             }
         }
@@ -12424,9 +13357,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // the pattern list) — 'a' LIKE ALL ('a', NULL) is TRUE, 'a' LIKE ANY ('b', NULL) is FALSE —
         // and only an all-NULL pattern list yields NULL.
         final boolean collated = rules != null && subject instanceof String;
+        final List<Object> patternValues = likeAnyAllPatternValues(expr);
+        if (patternValues == null) {
+            // A query that answers no row leaves LIKE ANY nothing to match: FALSE (live-verified).
+            return Boolean.FALSE;
+        }
         final List<String> patterns = new ArrayList<>();
-        for (final Expression patternExpr : expr.getPatterns()) {
-            final Object pattern = patternExpr.accept(this);
+        for (final Object pattern : patternValues) {
             if (pattern == null) {
                 patterns.add(null);
             } else {
@@ -12436,6 +13373,33 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         return LikeMatcher.evaluateLikeAnyAll(collated ? rules.likeOperand((String) subject) : LikeMatcher.likeText(subject),
             patterns, expr.isCaseInsensitive(), expr.isAll(), escape);
+    }
+
+    /**
+     * The patterns a LIKE ANY, LIKE ALL or ILIKE ANY matches against. A query written as LIKE ANY's one pattern
+     * gives a pattern per row it answers, where LIKE ALL reads it as the single value any other pattern is
+     * (live-verified: {@code 'a' LIKE ANY (SELECT column1 FROM VALUES ('b'), ('a'))} is TRUE, and the same LIKE ALL
+     * is "Single-row subquery returns more than one row").
+     *
+     * @return the patterns, or null for a query that answers no row
+     */
+    private List<Object> likeAnyAllPatternValues(final LikeAnyAllExpression expr) {
+        final List<Object> values = new ArrayList<>();
+        if (!expr.isAll() && expr.getPatterns().size() == 1 && expr.getPatterns().get(0) instanceof SubqueryExpression
+                && queryExecutor != null) {
+            final List<ResultSet> results =
+                subqueryEvaluator.executeSubquery((SubqueryExpression) expr.getPatterns().get(0));
+            if (!results.isEmpty() && results.get(0).getColumnCount() == 1) {
+                for (final Row row : results.get(0).getRows()) {
+                    values.add(DeferredFault.read(row.getValue(0)));
+                }
+                return values.isEmpty() ? null : values;
+            }
+        }
+        for (final Expression pattern : expr.getPatterns()) {
+            values.add(pattern.accept(this));
+        }
+        return values;
     }
 
     @Override
@@ -12586,6 +13550,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     @Override
     public Object visitQuantifiedComparison(final QuantifiedComparisonExpression expr) {
+        if (expr.getLeft() instanceof RowExpression && expr.getSubquery() instanceof SubqueryExpression
+                && queryExecutor != null) {
+            return quantifiedOverRows(expr);
+        }
         final Object leftValue = expr.getLeft().accept(this);
         // The subject's collation drives the comparison against every row the subquery answers, the
         // way it drives the comparison against a literal list.
@@ -12601,6 +13569,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
         final List<ResultSet> results = subqueryEvaluator.executeSubquery((SubqueryExpression) expr.getSubquery());
 
+        // A NULL operand that reads no column is folded with its comparison, which is UNKNOWN whatever the
+        // query answers, no row included (live-verified).
+        if (leftValue == null && subqueryEvaluator.readsNoColumn(expr.getLeft())) {
+            return null;
+        }
         if (results.isEmpty() || results.get(0).getRowCount() == 0) {
             // Empty result set: ALL returns true, ANY/SOME returns false
             return expr.getQuantifier() == Quantifier.ALL;
@@ -12625,7 +13598,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return anyUnknown ? null : Boolean.TRUE;
         } else {
             // ANY / SOME (three-valued): TRUE if the comparison holds for any row (dominates); else
-            // UNKNOWN if it is UNKNOWN for any row; else FALSE.
+            // UNKNOWN if it is UNKNOWN for any row; else FALSE. A query that reads the row around it is
+            // matched row against row, and answers FALSE where no row matches (live-verified).
             boolean anyUnknown = false;
             for (final Row subRow : resultSet.getRows()) {
                 final Boolean cmp = compareWithOperator(leftValue, DeferredFault.read(subRow.getValue(0)), operator,
@@ -12636,7 +13610,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     return true;
                 }
             }
-            return anyUnknown ? null : Boolean.FALSE;
+            return anyUnknown && !subqueryEvaluator.readsOuterRow((SubqueryExpression) expr.getSubquery())
+                ? null : Boolean.FALSE;
         }
     }
 
@@ -12736,7 +13711,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     public ExpressionCollation collationOf(final Expression expr) {
         if (expr instanceof ColumnReferenceExpression) {
-            return ExpressionCollation.column(declaredCollation((ColumnReferenceExpression) expr));
+            // A derived relation's column keeps the level it was projected at: a collation a COLLATE named
+            // below still outranks a column's declared one here (live-verified).
+            final TableColumn column = collatedColumn((ColumnReferenceExpression) expr);
+            if (column == null || column.getCollation() == null) {
+                return ExpressionCollation.NONE;
+            }
+            return column.isCollationExplicit() ? ExpressionCollation.explicit(column.getCollation())
+                : ExpressionCollation.column(column.getCollation());
         }
         if (expr instanceof BinaryOperationExpression) {
             final BinaryOperationExpression binary = (BinaryOperationExpression) expr;
@@ -12925,7 +13907,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * compare as the qualifier's table says, not as the joined relation's copy — a bare one through
      * this evaluator's relation and then the joined ones, and the static channel's relation last.
      */
-    private String declaredCollation(final ColumnReferenceExpression ref) {
+    private TableColumn collatedColumn(final ColumnReferenceExpression ref) {
         final String colName = ref.getColumnName();
         if (colName == null) {
             return null;
@@ -12933,28 +13915,28 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (ref.getTableName() != null && multiTableAliasToTable != null) {
             for (final Map.Entry<String, Table> aliased : multiTableAliasToTable.entrySet()) {
                 if (aliased.getKey().equalsIgnoreCase(ref.getTableName())) {
-                    return collationIn(aliased.getValue(), colName);
+                    return columnIn(aliased.getValue(), colName);
                 }
             }
         }
         if (table != null && table.hasColumn(colName)) {
-            return collationIn(table, colName);
+            return columnIn(table, colName);
         }
         if (multiTableAllTables != null) {
             for (final Table joined : multiTableAllTables) {
                 if (joined != null && joined.hasColumn(colName)) {
-                    return collationIn(joined, colName);
+                    return columnIn(joined, colName);
                 }
             }
         }
         final Table declared = resolveDeclaredOwner(ref);
-        return declared == null ? null : collationIn(declared, colName);
+        return declared == null ? null : columnIn(declared, colName);
     }
 
-    private static String collationIn(final Table owner, final String colName) {
+    private static TableColumn columnIn(final Table owner, final String colName) {
         for (final TableColumn col : owner.getColumns()) {
             if (col.getName().equals(colName)) {
-                return col.getCollation();
+                return col;
             }
         }
         return null;
@@ -13413,6 +14395,62 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return ExpressionArithmetic.compareWithOperator(left, right, operator);
     }
 
+    /**
+     * A ROW compared with every row a query answers (live-verified): each pair of rows compares as two rows written
+     * out do — equal as a whole, ordered from the left — but for a NULL in either, which makes the pair FALSE; ANY
+     * and ALL fold the answers.
+     */
+    private Object quantifiedOverRows(final QuantifiedComparisonExpression expr) {
+        final List<Object> row = new ArrayList<>();
+        for (final Expression element : ((RowExpression) expr.getLeft()).getArguments()) {
+            row.add(element.accept(this));
+        }
+        final List<ResultSet> results = subqueryEvaluator.executeSubquery((SubqueryExpression) expr.getSubquery());
+        final boolean all = expr.getQuantifier() == Quantifier.ALL;
+        if (results.isEmpty() || results.get(0).getRowCount() == 0) {
+            return all;
+        }
+        boolean anyUnknown = false;
+        for (final Row answered : results.get(0).getRows()) {
+            final List<Object> other = new ArrayList<>();
+            for (int i = 0; i < row.size() && i < results.get(0).getColumnCount(); i++) {
+                other.add(DeferredFault.read(answered.getValue(i)));
+            }
+            // A NULL on either side leaves the pair of rows not compared: it answers FALSE, whatever the operator.
+            final Boolean compared = row.contains(null) || other.contains(null) ? Boolean.FALSE
+                : compareRows(row, other, expr.getOperator());
+            if (compared == null) {
+                anyUnknown = true;
+            } else if (compared.booleanValue() != all) {
+                return !all;
+            }
+        }
+        return anyUnknown ? null : Boolean.valueOf(all);
+    }
+
+    /** Two rows of values compared as {@link #visitRowComparison} compares two rows of expressions. */
+    private Boolean compareRows(final List<Object> left, final List<Object> right, final BinaryOperator operator) {
+        final boolean equality = operator == BinaryOperator.EQUAL || operator == BinaryOperator.NOT_EQUAL;
+        boolean anyUnknown = false;
+        for (int i = 0; i < left.size() && i < right.size(); i++) {
+            final Boolean same = compareWithOperator(left.get(i), right.get(i), BinaryOperator.EQUAL);
+            if (same == null) {
+                if (!equality) {
+                    return null;
+                }
+                anyUnknown = true;
+            } else if (!same.booleanValue()) {
+                return equality ? Boolean.valueOf(operator == BinaryOperator.NOT_EQUAL)
+                    : compareWithOperator(left.get(i), right.get(i), operator);
+            }
+        }
+        if (anyUnknown) {
+            return null;
+        }
+        return equality ? operator == BinaryOperator.EQUAL
+            : operator == BinaryOperator.LESS_THAN_OR_EQUAL || operator == BinaryOperator.GREATER_THAN_OR_EQUAL;
+    }
+
     /** The same comparison, ordered by a collation when one is settled and both sides are text. */
     private Boolean compareWithOperator(final Object left, final Object right,
                                         final BinaryOperator operator, final CollationSpec collation) {
@@ -13656,8 +14694,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (unit == null) {
             return;
         }
-        final DataType first = typeInferencer.infer(args.get(1));
-        final DataType second = typeInferencer.infer(args.get(2));
+        // A ROW is no amount and no date: it is refused as an array is, and named as the ROW it is.
+        final DataType first = args.get(1) instanceof RowExpression ? new ArrayType(null)
+            : typeInferencer.infer(args.get(1));
+        final DataType second = args.get(2) instanceof RowExpression ? new ArrayType(null)
+            : typeInferencer.infer(args.get(2));
         final String refusal = shift
             ? IntervalCallArguments.shiftRefusal(unit, first, strictArgTypeText(args.get(1)), second,
                 strictArgTypeText(args.get(2)))

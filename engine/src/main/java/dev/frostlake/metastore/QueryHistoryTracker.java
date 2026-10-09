@@ -27,6 +27,8 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  */
 public class QueryHistoryTracker {
     private final ConcurrentLinkedQueue<QueryHistory> queryHistory;
+    /** The statements that have begun and not ended, in the order they began. */
+    private final ConcurrentLinkedQueue<QueryHistory> running = new ConcurrentLinkedQueue<>();
     private final int maxHistorySize;
     private static final int DEFAULT_MAX_HISTORY_SIZE = 10000;
 
@@ -40,9 +42,37 @@ public class QueryHistoryTracker {
     }
 
     /**
+     * Note a statement that has begun: it is listed as RUNNING until it ends.
+     *
+     * @param query the statement's row
+     */
+    public void begin(final QueryHistory query) {
+        running.add(query);
+    }
+
+    /**
+     * Note a statement that is over, whether or not it joined the history.
+     *
+     * @param query the statement's row
+     */
+    public void end(final QueryHistory query) {
+        running.remove(query);
+    }
+
+    /**
+     * The statements running now, oldest first.
+     *
+     * @return their rows
+     */
+    public List<QueryHistory> getRunning() {
+        return new ArrayList<>(running);
+    }
+
+    /**
      * Add a query to history
      */
     public void addQuery(final QueryHistory query) {
+        running.remove(query);
         queryHistory.add(query);
 
         // Maintain max size by removing oldest entries

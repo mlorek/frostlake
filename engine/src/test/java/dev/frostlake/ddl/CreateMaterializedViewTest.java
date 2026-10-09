@@ -22,10 +22,11 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CreateMaterializedViewTest extends BaseDatabaseTest {
@@ -115,16 +116,26 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         assertFalse(mv.isSuspended());
     }
 
+    /** A materialized view has no REFRESH: the word is refused where it stands, the view there or not. */
     @Test
-    public void testAlterMaterializedViewRefresh() {
+    public void testAlterMaterializedViewRefreshIsNoAction() {
         engine.execute("CREATE TABLE data (id INTEGER, value VARCHAR)");
         engine.execute("CREATE MATERIALIZED VIEW mv_data AS SELECT * FROM data");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), NO_SUSPENSION_SURFACE);
-        final MaterializedView mv = getCurrentSchema().getMaterializedView("MV_DATA");
+        final String refusal = "SQL compilation error:\nsyntax error line 1 at position ";
+        assertEquals(refusal + "32 unexpected 'REFRESH'.", refusalOf("ALTER MATERIALIZED VIEW mv_data REFRESH"));
+        assertEquals(refusal + "34 unexpected 'REFRESH'.", refusalOf("ALTER MATERIALIZED VIEW nosuch_mv REFRESH"));
+        assertEquals(refusal + "44 unexpected 'REFRESH'.",
+            refusalOf("ALTER MATERIALIZED VIEW IF EXISTS nosuch_mv REFRESH"));
+    }
 
-        engine.execute("ALTER MATERIALIZED VIEW mv_data REFRESH");
-        assertNotNull(mv.getLastRefreshedTime());
+    private String refusalOf(final String sql) {
+        return assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute(sql);
+            }
+        }).getMessage();
     }
 
     @Test

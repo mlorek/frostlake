@@ -17,6 +17,7 @@
 package dev.frostlake.task;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.TaskRunWait;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -46,8 +47,12 @@ public class TaskRootOnlyRetryAndTagsTest extends BaseDatabaseTest {
         engine.execute("CREATE TASK r_c AS SELECT 1");
         assertEquals("R_A,R_B,R_C", names(engine.executeQuery("SHOW TASKS LIKE 'R_%'")));
         assertEquals("R_A,R_C", names(engine.executeQuery("SHOW TASKS LIKE 'R_%' ROOT ONLY")));
+        assertEquals("R_A", names(engine.executeQuery("SHOW TASKS IN SCHEMA test_db.test_schema STARTS WITH 'R_'"
+            + " ROOT ONLY LIMIT 1 FROM 'R_A'")), "a task listing's page starts at the name itself");
         assertEquals("R_C", names(engine.executeQuery("SHOW TASKS IN SCHEMA test_db.test_schema STARTS WITH 'R_'"
-            + " ROOT ONLY LIMIT 1 FROM 'R_A'")));
+            + " ROOT ONLY LIMIT 1 FROM 'R_B'")), "at the first root named at or after it");
+        assertEquals("R_B,R_C", names(engine.executeQuery("SHOW TASKS IN SCHEMA test_db.test_schema STARTS WITH 'R_'"
+            + " LIMIT 2 FROM 'R_B'")));
         assertEquals("R_A", names(engine.executeQuery("SHOW TERSE TASKS LIKE 'R_A' ROOT ONLY")));
     }
 
@@ -68,26 +73,34 @@ public class TaskRootOnlyRetryAndTagsTest extends BaseDatabaseTest {
 
     @Test
     public void retryLastRerunsTheFailedPartOfTheLastGraphRun() {
+        // The run history outlives the database by the task's name, so the tasks are named apart from any other
+        // run's.
+        final String suffix = Long.toString(System.nanoTime() % 100000000L);
+        final String root = "RT_ROOT_" + suffix;
+        final String child = "RT_CHILD_" + suffix;
         engine.execute("CREATE TABLE retry_log (n INT)");
-        engine.execute("CREATE TASK rt_root AS INSERT INTO retry_log VALUES (1)");
-        engine.execute("CREATE TASK rt_child AFTER rt_root AS SELECT 1/0");
-        engine.execute("ALTER TASK rt_child RESUME");
+        engine.execute("CREATE TASK " + root + " AS INSERT INTO retry_log VALUES (1)");
+        engine.execute("CREATE TASK " + child + " AFTER " + root + " AS SELECT 1/0");
+        engine.execute("ALTER TASK " + child + " RESUME");
         final RuntimeException neverRun = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.execute("EXECUTE TASK rt_root RETRY LAST");
+                engine.execute("EXECUTE TASK " + root + " RETRY LAST");
             }
         });
-        assertEquals("Cannot perform retry: no suitable run of graph with root task RT_ROOT to retry.",
+        assertEquals("Cannot perform retry: no suitable run of graph with root task " + root + " to retry.",
             neverRun.getMessage());
-        engine.execute("EXECUTE TASK rt_root");
-        engine.execute("EXECUTE TASK rt_root RETRY LAST");
+        final String runsOfChild = "SELECT name, scheduled_from FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY("
+            + "TASK_NAME => '" + child + "')) WHERE state = 'FAILED'";
+        engine.execute("EXECUTE TASK " + root);
+        TaskRunWait.untilRows(engine, runsOfChild, 1);
+        engine.execute("EXECUTE TASK " + root + " RETRY LAST");
+        TaskRunWait.untilRows(engine, runsOfChild, 2);
         assertEquals(1L, ((Number) engine.executeQuery("SELECT COUNT(*) FROM retry_log").getRows().get(0)
             .getValue(0)).longValue(), "the root succeeded, so only the failed child runs again");
-        final ResultSet history = engine.executeQuery("SELECT name, scheduled_from FROM TABLE("
-            + "INFORMATION_SCHEMA.TASK_HISTORY()) WHERE scheduled_from = 'MANUAL RETRY'");
+        final ResultSet history = engine.executeQuery(runsOfChild + " AND scheduled_from = 'MANUAL RETRY'");
         assertEquals(1, history.getRowCount());
-        assertEquals("RT_CHILD", history.getRows().get(0).getValue(0));
+        assertEquals(child, history.getRows().get(0).getValue(0));
     }
 
     @Test

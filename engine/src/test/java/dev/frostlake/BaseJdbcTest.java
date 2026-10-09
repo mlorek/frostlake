@@ -60,7 +60,8 @@ public abstract class BaseJdbcTest {
     public void setupConnection() throws SQLException {
         // A direct JDBC connection to the shared engine — or, with SF_LIVE=1, a fresh session on a
         // real Snowflake account, so the same java.sql-level tests validate both backends.
-        connection = LiveSnowflake.enabled() ? LiveSnowflake.open() : new DirectConnection(sharedEngine);
+        connection = LiveSnowflake.enabled() ? LiveAccountObjects.observing(LiveSnowflake.open())
+            : new DirectConnection(sharedEngine);
         statement = connection.createStatement();
 
         if (LiveSnowflake.enabled()) {
@@ -95,8 +96,8 @@ public abstract class BaseJdbcTest {
         }
 
         // Roles, users, warehouses and sibling databases live OUTSIDE test_db, so dropping it leaves
-        // them on the account to collide with the next test that creates the same name. Nothing here
-        // observes the raw java.sql statements these tests run, so the diff is unconditional.
+        // them on the account to collide with the next test that creates the same name. The connection is
+        // observed, so the ones this test created are known by name.
         if (LiveSnowflake.enabled()) {
             LiveAccountObjects.dropNewAccountObjects(connection);
         }

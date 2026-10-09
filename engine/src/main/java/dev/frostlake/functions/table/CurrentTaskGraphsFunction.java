@@ -44,7 +44,7 @@ public class CurrentTaskGraphsFunction extends TableFunction {
 
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
-        final int limit = TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), "CURRENT_TASK_GRAPHS");
+        final int limit = TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), TaskGraphRuns.DEFAULT_LIMIT);
         final String rootTaskName = TaskGraphRuns.text(namedArgs.get("ROOT_TASK_NAME"));
         return new ResultSet(TaskGraphRuns.columns(false), TaskGraphRuns.current(catalog, rootTaskName, limit));
     }

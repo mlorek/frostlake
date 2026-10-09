@@ -42,6 +42,11 @@ public final class ConditionalDdlOutcome {
         TAKEN.set(ConditionalDdlBranch.ALTERED_IN_PLACE);
     }
 
+    /** Record that ALTER CORTEX SEARCH SERVICE IF EXISTS found no service to alter. */
+    public static void alterSkipped() {
+        TAKEN.set(ConditionalDdlBranch.ALTER_SKIPPED);
+    }
+
     /** Record that DROP … IF EXISTS found nothing to drop. */
     public static void dropSkipped() {
         TAKEN.set(ConditionalDdlBranch.DROP_SKIPPED);

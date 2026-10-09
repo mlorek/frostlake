@@ -33,11 +33,13 @@ public class Procedure extends SqlObject {
     private final List<String> packages;
     private ExecuteAs executeAs = ExecuteAs.OWNER;
     private List<String> imports = new ArrayList<>();
+    private RoutineEnvironment environment = new RoutineEnvironment();
     // Declared RETURNS TABLE(col TYPE, ...) columns — name the result of a CALL / TABLE(proc()) source.
     private List<Parameter> returnColumns = new ArrayList<>();
     // RETURNS TABLE, with or without columns: RETURNS TABLE () declares a table of whatever the body returns.
     private boolean returnsTable = false;
     private boolean temporary = false;
+    private boolean secure = false;
     private NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
     private Volatility volatility = Volatility.VOLATILE;
 
@@ -50,6 +52,11 @@ public class Procedure extends SqlObject {
     public boolean isTemporary() { return temporary; }
 
     public void setTemporary(final boolean temporary) { this.temporary = temporary; }
+
+    /** Whether the procedure was created SECURE, which nothing but replacing it changes. */
+    public boolean isSecure() { return secure; }
+
+    public void setSecure(final boolean secure) { this.secure = secure; }
 
     public Procedure(final String name, final List<Parameter> parameters,
                     final DataType returnType, final String body) {
@@ -125,11 +132,24 @@ public class Procedure extends SqlObject {
         return new ArrayList<>(packages);
     }
 
+    /** What the routine is given to run with: repository, target path, integrations and secrets. */
+    public RoutineEnvironment getEnvironment() { return environment; }
+
+    /** Records what the routine is given to run with. */
+    public void setEnvironment(final RoutineEnvironment environment) {
+        this.environment = environment == null ? new RoutineEnvironment() : environment;
+    }
+
     public List<String> getImports() { return new ArrayList<>(imports); }
     public void setImports(final List<String> imports) { this.imports = imports != null ? new ArrayList<>(imports) : new ArrayList<>(); }
 
     public String getExecuteAs() {
-        return executeAs.name();
+        return executeAs.sqlText();
+    }
+
+    /** Whether the procedure runs with its caller's privileges: EXECUTE AS CALLER or RESTRICTED CALLER. */
+    public boolean runsWithCallersRights() {
+        return executeAs.isCallersRights();
     }
 
     /**

@@ -428,6 +428,8 @@ final class RestCatalogSnapshots {
     /** Records a table's retention, event-table and Iceberg settings, data metrics and table-stage options. */
     static void saveTable(final Table table, final TableSnapshot snapshot) {
         snapshot.dataRetentionTimeInDays = table.getDataRetentionTimeInDays();
+        snapshot.maxDataExtensionTimeInDays = table.getMaxDataExtensionTimeInDays();
+        snapshot.defaultDdlCollation = table.getDefaultDdlCollation();
         snapshot.eventTable = table.isEventTable();
         snapshot.changeTracking = table.isChangeTracking();
         snapshot.schemaEvolution = table.isSchemaEvolution();
@@ -464,6 +466,8 @@ final class RestCatalogSnapshots {
         if (snapshot.dataRetentionTimeInDays != null) {
             table.setDataRetentionTimeInDays(snapshot.dataRetentionTimeInDays);
         }
+        table.setMaxDataExtensionTimeInDays(snapshot.maxDataExtensionTimeInDays);
+        table.setDefaultDdlCollation(snapshot.defaultDdlCollation);
         if (snapshot.eventTable) {
             table.setEventTable(true);
         }
@@ -517,6 +521,7 @@ final class RestCatalogSnapshots {
         snapshot.statementQueuedTimeoutSeconds = wh.getStatementQueuedTimeoutSeconds();
         snapshot.statementTimeoutSeconds = wh.getStatementTimeoutSeconds();
         snapshot.enableQueryAcceleration = wh.isEnableQueryAcceleration();
+        snapshot.enableQueryAccelerationSet = wh.getEnableQueryAccelerationSetting();
         snapshot.queryAccelerationMaxScaleFactor = wh.getQueryAccelerationMaxScaleFactor();
         snapshot.generation = wh.getGeneration();
         snapshot.resourceConstraint = wh.getResourceConstraintSetting();
@@ -534,7 +539,12 @@ final class RestCatalogSnapshots {
         wh.setMaxConcurrencyLevel(snapshot.maxConcurrencyLevel);
         wh.setStatementQueuedTimeoutSeconds(snapshot.statementQueuedTimeoutSeconds);
         wh.setStatementTimeoutSeconds(snapshot.statementTimeoutSeconds);
-        wh.setEnableQueryAcceleration(snapshot.enableQueryAcceleration);
+        // An older file told the effective value alone: TRUE there was set, FALSE was the default of its day.
+        if (snapshot.enableQueryAccelerationSet != null) {
+            wh.setEnableQueryAcceleration(snapshot.enableQueryAccelerationSet.booleanValue());
+        } else if (snapshot.enableQueryAcceleration) {
+            wh.setEnableQueryAcceleration(true);
+        }
         wh.setQueryAccelerationMaxScaleFactor(snapshot.queryAccelerationMaxScaleFactor);
         wh.setGeneration(snapshot.generation);
         wh.setResourceConstraint(snapshot.resourceConstraint);
@@ -555,6 +565,13 @@ final class RestCatalogSnapshots {
     static void saveStage(final Stage stage, final StageSnapshot snapshot) {
         snapshot.encryptionType = stage.getEncryptionType();
         snapshot.directoryEnabled = stage.isDirectoryEnabled();
+        snapshot.directoryDeclared = stage.isDirectoryDeclared();
+        snapshot.directoryAutoRefresh = stage.isDirectoryAutoRefresh();
+        snapshot.directoryId = stage.getDirectoryId();
+        snapshot.temporary = stage.isTemporary();
+        snapshot.credentials = stage.hasCredentials();
+        snapshot.encryptionKey = stage.hasEncryptionKey();
+        snapshot.directoryRefreshed = stage.getDirectoryRefreshed();
         snapshot.fileFormatOptions = new HashMap<>(stage.getFileFormatOptions());
         snapshot.copyOptions = new HashMap<>(stage.getCopyOptions());
         snapshot.directoryRegistry = new LinkedHashMap<>();
@@ -571,6 +588,13 @@ final class RestCatalogSnapshots {
         if (snapshot.directoryEnabled) {
             stage.setDirectoryEnabled(true);
         }
+        stage.setDirectoryDeclared(snapshot.directoryDeclared || snapshot.directoryEnabled);
+        stage.setDirectoryAutoRefresh(snapshot.directoryAutoRefresh);
+        stage.setDirectoryId(snapshot.directoryId);
+        stage.setTemporary(snapshot.temporary);
+        stage.setCredentials(snapshot.credentials);
+        stage.setEncryptionKey(snapshot.encryptionKey);
+        stage.setDirectoryRefreshed(snapshot.directoryRefreshed);
         if (snapshot.fileFormatOptions != null) {
             stage.getFileFormatOptions().putAll(snapshot.fileFormatOptions);
         }
@@ -612,12 +636,17 @@ final class RestCatalogSnapshots {
             privilege.grantedOn = role.getPrivilegeGrantTime(privilege.objectType, privilege.objectName, granted);
         }
         saved.roleGrantors = new HashMap<>();
+        saved.roleGrantTimes = new HashMap<>();
         for (final String granted : role.getGrantedRoles()) {
             final String grantor = role.getRoleGrantor(granted);
             if (grantor != null) {
                 saved.roleGrantors.put(granted, grantor);
             }
+            if (role.getRoleGrantTime(granted) != null) {
+                saved.roleGrantTimes.put(granted, role.getRoleGrantTime(granted));
+            }
         }
+        saved.createdAt = role.getCreatedTime();
         saved.futureGrants = new ArrayList<>();
         for (final FutureGrant grant : role.getFutureGrants()) {
             final FutureGrantSnapshot future = new FutureGrantSnapshot();
@@ -649,10 +678,14 @@ final class RestCatalogSnapshots {
             }
         }
         saved.roleGrantors = new HashMap<>();
+        saved.roleGrantTimes = new HashMap<>();
         for (final String granted : user.getGrantedRoles()) {
             final String grantor = user.getRoleGrantor(granted);
             if (grantor != null) {
                 saved.roleGrantors.put(granted, grantor);
+            }
+            if (user.getRoleGrantTime(granted) != null) {
+                saved.roleGrantTimes.put(granted, user.getRoleGrantTime(granted));
             }
         }
         saved.databaseRoleGrants = new HashMap<>(user.getDatabaseRoleGrants());
@@ -698,6 +731,20 @@ final class RestCatalogSnapshots {
             role.grantRole(granted, grantor);
         } else {
             role.grantRole(granted);
+        }
+    }
+
+    /** Puts back when each of a role's role grants was made, where the snapshot recorded it. */
+    static void restoreRoleGrantTimes(final RoleSnapshot saved, final Role role) {
+        for (final String granted : saved.grantedRoles) {
+            role.restoreRoleGrantTime(granted, saved.roleGrantTimes == null ? null : saved.roleGrantTimes.get(granted));
+        }
+    }
+
+    /** Puts back when each of a user's role grants was made, where the snapshot recorded it. */
+    static void restoreRoleGrantTimes(final UserSnapshot saved, final User user) {
+        for (final String granted : saved.grantedRoles) {
+            user.restoreRoleGrantTime(granted, saved.roleGrantTimes == null ? null : saved.roleGrantTimes.get(granted));
         }
     }
 
@@ -901,6 +948,8 @@ final class RestCatalogSnapshots {
         saved.comment = view.getComment();
         saved.warehouse = view.getWarehouse();
         saved.suspended = view.isSuspended();
+        saved.invalidReason = view.getInvalidReason();
+        saved.resumedWhileInvalid = view.isResumedWhileInvalid();
         saved.secure = view.isSecure();
         saved.sourceDatabase = view.getSourceDatabase();
         saved.sourceSchema = view.getSourceSchema();
@@ -908,6 +957,9 @@ final class RestCatalogSnapshots {
         saved.listedText = view.getListedText();
         saved.originalDdl = view.getOriginalDdl();
         saved.materializedAsOf = view.getMaterializedAsOf();
+        saved.materializedRows = Long.valueOf(view.getMaterializedRows());
+        saved.clusterKeys = new ArrayList<>(view.getClusterKeys());
+        saved.reclusterSuspended = view.isReclusterSuspended();
         saved.tags = new HashMap<>(view.getTagValues());
         saved.createdOn = view.getCreatedTime();
         saved.lastDdlAt = view.getLastDdlTime();
@@ -924,6 +976,8 @@ final class RestCatalogSnapshots {
         }
         view.setWarehouse(saved.warehouse);
         view.setSuspended(saved.suspended);
+        view.setInvalidReason(saved.invalidReason);
+        view.setResumedWhileInvalid(saved.resumedWhileInvalid);
         view.setSecure(saved.secure);
         if (saved.sourceTable != null) {
             view.setSource(saved.sourceDatabase, saved.sourceSchema, saved.sourceTable);
@@ -931,6 +985,11 @@ final class RestCatalogSnapshots {
         view.setListedText(saved.listedText);
         view.setOriginalDdl(saved.originalDdl);
         view.setMaterializedAsOf(saved.materializedAsOf);
+        if (saved.materializedRows != null) {
+            view.setMaterializedRows(saved.materializedRows.longValue());
+        }
+        view.setClusterKeys(saved.clusterKeys);
+        view.setReclusterSuspended(saved.reclusterSuspended);
         restoreOwnership(view, saved.owner, saved.comment, saved.tags);
         view.restoreLastDdlTime(saved.lastDdlAt);
         if (saved.lastDdlBy != null) {

@@ -342,7 +342,7 @@ final class UnreadColumnPruning {
     }
 
     /** As the window evaluator decides it: an aggregate call not under OVER, outside any subquery. */
-    private static boolean containsAggregate(final ParseTree node, final FunctionRegistry functions) {
+    static boolean containsAggregate(final ParseTree node, final FunctionRegistry functions) {
         if (node instanceof FrostlakeParser.SelectStatementContext || node instanceof FrostlakeParser.OverClauseContext) {
             return false;
         }
@@ -402,6 +402,9 @@ final class UnreadColumnPruning {
         }
         if (expr.identifier() != null) {
             return ParseTreeText.getIdentifier(expr.identifier());
+        }
+        if (expr.bareAliasWord() != null) {
+            return ParseTreeText.getIdentifier(expr.bareAliasWord());
         }
         final List<TerminalNode> tokens = new ArrayList<TerminalNode>();
         terminals(expr.booleanExpr(), tokens);

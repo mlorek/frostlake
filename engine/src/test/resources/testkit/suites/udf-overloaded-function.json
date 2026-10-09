@@ -22,7 +22,7 @@
       {"sql": "CREATE FUNCTION calculate(x INTEGER, y INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Calculator.dual'\nAS $$\nclass Calculator {\n  public static int dual(int x, int y) {\n    return x + y;\n  }\n}\n$$"},
       {"sql": "DROP FUNCTION calculate(INTEGER)"},
       {"sql": "SELECT calculate(10, 20)", "expect": {"value": 30}},
-      {"sql": "SELECT calculate(5)", "expect": {"error": {"messageContains": "Unknown function CALCULATE."}}}
+      {"sql": "SELECT calculate(5)", "expect": {"error": {"messageContains": "Invalid argument types for function 'CALCULATE': (NUMBER(1,0))"}}}
     ]},
     {"name": "every-overload-must-be-dropped-individually", "steps": [
       {"sql": "CREATE FUNCTION sum_val(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Adder.add1'\nAS $$\nclass Adder {\n  public static int add1(int x) {\n    return x + 1;\n  }\n}\n$$"},
@@ -64,8 +64,8 @@
     ]},
     {"name": "a-call-with-a-count-no-overload-declares-is-refused", "steps": [
       {"sql": "CREATE FUNCTION limited(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Limited.method'\nAS $$\nclass Limited {\n  public static int method(int x) {\n    return x;\n  }\n}\n$$"},
-      {"sql": "SELECT limited()", "expect": {"error": {"messageContains": "Unknown function LIMITED."}}},
-      {"sql": "SELECT limited(1, 2)", "expect": {"error": {"messageContains": "Unknown function LIMITED."}}}
+      {"sql": "SELECT limited()", "expect": {"error": {"messageContains": "Invalid argument types for function 'LIMITED': ()"}}},
+      {"sql": "SELECT limited(1, 2)", "expect": {"error": {"messageContains": "too many arguments for function [LIMITED(1, 2)] expected 1, got 2"}}}
     ]}
   ]
 }

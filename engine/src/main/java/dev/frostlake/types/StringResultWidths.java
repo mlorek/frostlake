@@ -68,7 +68,7 @@ public final class StringResultWidths {
         "REPLACE", "TO_VARCHAR", "TO_CHAR", "TO_JSON", "ARRAY_TO_STRING", "TYPEOF", "COLLATION", "LAST_QUERY_ID",
         "CURRENT_DATABASE", "CURRENT_SCHEMA", "CURRENT_USER", "CURRENT_ROLE", "CURRENT_WAREHOUSE", "CURRENT_VERSION",
         "CURRENT_REGION", "CURRENT_ACCOUNT", "CURRENT_STATEMENT", "CURRENT_SESSION", "GETVARIABLE",
-        "CURRENT_TRANSACTION", "LAST_TRANSACTION",
+        "CURRENT_TRANSACTION", "LAST_TRANSACTION", "GET_DDL",
         // A replacement can be any length, so the account bounds it at nothing at all — a widthless
         // VARCHAR, not the 128MB one, at every arity and over a column as well as a literal.
         "REGEXP_REPLACE"));

@@ -71,8 +71,10 @@ public class QueryHistoryTimesTest {
         }
         assertEquals("TIMESTAMP_LTZ(3)[SB8]", first("SELECT SYSTEM$TYPEOF(start_time)"
             + " FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION()) LIMIT 1"));
+        // The statement reading the history is listed too, still running and so without an end.
         assertEquals("true", first("SELECT COUNT_IF(start_time <= CURRENT_TIMESTAMP() AND end_time >= start_time)"
-            + " = COUNT(*) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION())"));
+            + " = COUNT(*) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION())"
+            + " WHERE execution_status <> 'RUNNING'"));
         assertEquals("true", first("SELECT start_time <= $t1"
             + " FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION()) WHERE query_text = 'SELECT ''first'''"));
     }
@@ -82,7 +84,8 @@ public class QueryHistoryTimesTest {
     public void aSetIsOneRow() {
         final List<String> texts = new ArrayList<>();
         for (final Row row : engine.executeQuery("SELECT query_text"
-                + " FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION())").getRows()) {
+                + " FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION())"
+                + " WHERE execution_status <> 'RUNNING'").getRows()) {
             texts.add(String.valueOf(row.getValue(0)));
         }
         assertEquals("[SELECT 'third', SET t1 = CURRENT_TIMESTAMP(), SELECT 'first',"

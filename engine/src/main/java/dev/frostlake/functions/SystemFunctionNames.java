@@ -60,6 +60,7 @@ public final class SystemFunctionNames {
             "SYSTEM$GET_PREDECESSOR_RETURN_VALUE",
             "SYSTEM$GET_SNOWFLAKE_PLATFORM_INFO",
             "SYSTEM$GET_TAG",
+            "SYSTEM$GET_TAG_ALLOWED_VALUES",
             "SYSTEM$GET_TAG_ON_CURRENT_COLUMN",
             "SYSTEM$GET_TAG_ON_CURRENT_TABLE",
             "SYSTEM$GET_TASK_GRAPH_CONFIG",

@@ -33,11 +33,13 @@ import dev.frostlake.parser.EndOfInput;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.LimitValueSyntax;
+import dev.frostlake.parser.OperandRefusal;
+import dev.frostlake.parser.OperandRefusals;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.types.DataType;
 
 import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.LexerNoViableAltException;
 import org.antlr.v4.runtime.RecognitionException;
@@ -131,8 +133,13 @@ final class RoutineBodyCompiler {
      */
     static void compileProcedureBody(final QueryExecutor queryExecutor, final UdfLanguage language,
                                      final String body, final Set<String> parameters) {
-        if (queryExecutor == null || language != UdfLanguage.SQL || body == null || body.trim().isEmpty()) {
+        if (queryExecutor == null || language != UdfLanguage.SQL || body == null) {
             return;
+        }
+        if (body.trim().isEmpty()) {
+            // A SQL procedure's body holds a statement: an empty one, or one of spaces alone, is refused
+            // (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Empty SQL statement."));
         }
         // A bare stage where none is taken is refused at CREATE, in the body's own frame (see StageArgumentSyntax).
         StageArgumentSyntax.requirePlacement(queryExecutor.routineBodyScript(body), body);
@@ -170,10 +177,11 @@ final class RoutineBodyCompiler {
             throw new RuntimeException(SqlCompilationError.of("syntax error " + describe(strayOpener) + "."));
         }
         // A statement inside the block that ends without its semicolon is positively known bad: the engine
-        // read that statement whole, and the account refuses the body at CREATE (live-verified).
-        final String missingTerminator = queryExecutor.missingTerminatorRefusal(body);
-        if (missingTerminator != null) {
-            throw new RuntimeException(missingTerminator);
+        // read that statement whole, and the account refuses the body at CREATE. So is a RETURN TABLE(…) given
+        // anything but a name or a call over a name: what it takes is known in full (both live-verified).
+        final String knownFault = queryExecutor.knownBodyFaultRefusal(body);
+        if (knownFault != null) {
+            throw new RuntimeException(knownFault);
         }
         // Everything else the engine cannot read whole is left alone — Frostlake's grammar is a
         // SUBSET of Snowflake's, so a body it cannot fully read (a long deployment block with a
@@ -200,7 +208,7 @@ final class RoutineBodyCompiler {
 
     /** The scripting keyword a block-less body opens with, or null when it opens any other way. */
     private static Token strayScriptingOpener(final String body) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();
@@ -219,7 +227,7 @@ final class RoutineBodyCompiler {
 
     /** Whether the body's last spoken token is its terminating semicolon. */
     private static boolean endsWithSemicolon(final String body) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();
@@ -368,7 +376,10 @@ final class RoutineBodyCompiler {
             rejectIntoClauses(queryBody);
             rejectUnknownTypedLiteral(queryBody);
             validator.rejectScriptingUdfCalls(queryBody);
-            resolveQueryBodyNames(queryExecutor, trimmed, declared, scopeDatabase, scopeSchema);
+            // A body's names are compiled where the SESSION is, whatever schema the function is created in; a
+            // call then looks for them where the function lives (live-verified).
+            resolveQueryBodyNames(queryExecutor, trimmed, declared, queryExecutor.getCatalog().getCurrentDatabase(),
+                queryExecutor.getCatalog().getCurrentSchema());
             SqlUdfBodyCalls.reject(queryExecutor, queryBody, trimmed, routineName, scopeDatabase, scopeSchema);
             return;
         }
@@ -437,6 +448,7 @@ final class RoutineBodyCompiler {
         if (body.indexOf('@') >= 0) {
             StageArgumentSyntax.requireFramedPlacement(AntlrExpressionParser.parseTree(body));
         }
+        rejectOperands(expression);
         rejectIntoClauses(expression);
         rejectUnknownTypedLiteral(expression);
         validator.rejectScriptingUdfCalls(expression);
@@ -651,8 +663,7 @@ final class RoutineBodyCompiler {
                 final String query = SqlUdfQueryBodyRefusal.describe(framed, framedTokens, stop, unclosed);
                 if (query != null) {
                     // A query this grammar stops reading before its end may hold a construct only the account's
-                    // grammar has, ORDER BY ALL or MATCH_RECOGNIZE, and stays FAIL-OPEN; one that runs out of text
-                    // is refused.
+                    // grammar has, ORDER BY ALL, and stays FAIL-OPEN; one that runs out of text is refused.
                     return stop == null || SqlUdfQueryBodyRefusal.runsOut(framed) ? query : null;
                 }
             }
@@ -911,11 +922,24 @@ final class RoutineBodyCompiler {
             throw new RuntimeException("Compilation of SQL UDF failed: " + SqlCompilationError.of(
                 describeFramedStatement(framed, framedTokens, semicolon)));
         }
+        rejectOperands(expression);
         rejectIntoClauses(expression, true);
         rejectUnknownTypedLiteral(expression);
         validator.rejectScriptingUdfCalls(expression);
         SqlUdfBodyNames.rejectUnknownNames(expression, declared, 0);
         SqlUdfBodyCalls.reject(queryExecutor, expression, statement, routineName, scopeDatabase, scopeSchema);
+    }
+
+    /**
+     * A value after a quantifier and OVER after what is no call are refused before any name of the body is looked
+     * for: a value's refusal as the compilation's own failure, a function kind's as the statement's (live-verified).
+     */
+    private static void rejectOperands(final ParseTree expression) {
+        final OperandRefusal operand = OperandRefusals.first(expression);
+        if (operand != null) {
+            throw new RuntimeException((operand.isOfValue() ? "Compilation of SQL UDF failed: " : "")
+                + SqlCompilationError.of(operand.message()));
+        }
     }
 
     /**
@@ -1047,7 +1071,7 @@ final class RoutineBodyCompiler {
 
     /** Where the lexer first fails to read {@code text}, as a character index into it, or -1 when it reads it all. */
     private static int firstLexerFault(final String text) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final int[] fault = {-1};
         lexer.addErrorListener(new BaseErrorListener() {
@@ -1165,7 +1189,7 @@ final class RoutineBodyCompiler {
 
     /** The body's spoken tokens — comments and whitespace dropped, end of input excluded. */
     private static List<Token> spokenTokens(final String body) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(body));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();

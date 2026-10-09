@@ -162,6 +162,21 @@ public class Catalog {
         return SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(canonicalName) + "' already exists.");
     }
 
+    /**
+     * The refusal of a rename onto a name that is taken, the object's own included: the new name as the
+     * statement wrote it, path and all, {@code Object 'DB.S."t"' already exists.} (live-verified).
+     *
+     * @param writtenName the new name as written, canonical
+     * @return the refusal
+     */
+    private static RuntimeException renamedOntoTaken(final String writtenName) {
+        final StringBuilder written = new StringBuilder();
+        for (final String part : QualifiedName.parse(writtenName).parts()) {
+            written.append(written.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+        }
+        return new RuntimeException(SqlCompilationError.of("Object '" + written + "' already exists."));
+    }
+
     public void dropDatabase(final String name, final boolean cascade) {
         final String key = NameKeys.keyFor(databases, name);
         if (!databases.containsKey(key)) {
@@ -239,22 +254,23 @@ public class Catalog {
 
     /**
      * ALTER SCHEMA … RENAME TO: a schema renamed in its database, or moved to another one with every member.
-     * The target database must exist and hold no schema of the new name, both checked before anything changes
-     * (live: {@code Database 'NOSUCH_DB' does not exist or not authorized.},
-     * {@code Object 'DB.EXISTING' already exists.}).
+     * The target database must exist and hold no schema of the new name, the schema's own name included, both
+     * checked before anything changes (live: {@code Database 'NOSUCH_DB' does not exist or not authorized.},
+     * {@code Object 'DB.EXISTING' already exists.}, the taken name worded as the statement wrote it).
      *
      * @param schema         the schema
      * @param targetDatabase the database it is to be in, canonical
-     * @param newName        its new name, canonical
+     * @param written        its new name as the statement wrote it, canonical: the name, or database and name
      */
-    public void moveSchema(final Schema schema, final String targetDatabase, final String newName) {
+    public void moveSchema(final Schema schema, final String targetDatabase, final String[] written) {
+        final String newName = written[written.length - 1];
         final Database target = databaseExact(targetDatabase);
         final Database source = databaseExact(schema.getDatabaseName());
-        if (target.hasSchemaExact(newName) && !(target == source && schema.getName().equals(newName))) {
+        if (target.hasSchemaExact(newName)) {
             // A schema whose name differs only in case is another schema, so SS may become "ss" beside
-            // nothing, and never beside an "ss" (live-verified).
-            throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(target.getName())
-                + "." + SqlIdentifiers.spellCanonical(newName) + "' already exists."));
+            // nothing, and never beside an "ss"; a schema renamed to its own name finds it taken too
+            // (live-verified).
+            throw renamedOntoTaken(QualifiedName.of(written).toString());
         }
         final String[] from = {source.getName(), schema.getName()};
         StreamSources.bindAll(this);
@@ -342,7 +358,20 @@ public class Catalog {
      * brackets every statement with begin/clear so sessions cannot see each other's context.
      */
     public void beginSessionScope(final String database, final String schema) {
-        sessionScope.set(new String[] {storedDatabaseName(database), storedSchemaName(database, schema)});
+        beginSessionScope(database, schema, currentWarehouseName());
+    }
+
+    /**
+     * Begin a per-thread session scope that also carries the session's current warehouse; the two-argument form
+     * keeps the warehouse of the scope it nests in.
+     *
+     * @param database the session's current database, or null
+     * @param schema the session's current schema, or null
+     * @param warehouse the session's current warehouse, or null for none
+     */
+    public void beginSessionScope(final String database, final String schema, final String warehouse) {
+        sessionScope.set(new String[] {storedDatabaseName(database), storedSchemaName(database, schema),
+            warehouse == null ? null : warehouse.toUpperCase()});
     }
 
     /**
@@ -524,6 +553,11 @@ public class Catalog {
         this.accountLocator = locator == null ? null : locator.toUpperCase();
     }
 
+    /** The account locator CURRENT_ACCOUNT() answers with, upper-cased; null when none was set. */
+    public String getAccountLocator() {
+        return accountLocator;
+    }
+
     /**
      * An object name without the account locator it may lead with. A fully qualified name has up to
      * {@code objectParts} parts (three for a table or view, two for a schema); live accepts one more in
@@ -703,6 +737,21 @@ public class Catalog {
     }
 
     /**
+     * The service a statement names, by the canonical parts of its name: a quoted name is the service of exactly
+     * that spelling, so {@code "svc"} does not reach {@code SVC}.
+     *
+     * @param parts the name's parts off the parse tree
+     */
+    public CortexSearchService resolveCortexSearchService(final String[] parts) {
+        return schemaOwning(QualifiedName.of(parts)).getCortexSearchServiceExact(parts[parts.length - 1]);
+    }
+
+    /** Whether the service a statement names by those parts exists; its schema must. */
+    public boolean hasCortexSearchService(final String[] parts) {
+        return schemaOwning(QualifiedName.of(parts)).hasCortexSearchServiceExact(parts[parts.length - 1]);
+    }
+
+    /**
      * The schema an object name passes through, which must exist even where the object itself need not:
      * DROP … IF EXISTS and TRUNCATE … IF EXISTS forgive only the object's own absence (live-verified). A
      * name the session cannot place is refused naming the statement.
@@ -774,6 +823,7 @@ public class Catalog {
             throw new RuntimeException("Cannot drop default warehouse");
         }
         warehouses.remove(upperName);
+        forgetCurrentWarehouse(upperName);
     }
 
     // Compute pools (account-level, like warehouses)
@@ -838,18 +888,43 @@ public class Catalog {
 
     public void useWarehouse(final String name) {
         getWarehouse(name); // Validates existence
-        this.currentWarehouse = name.toUpperCase();
+        setCurrentWarehouseName(name.toUpperCase());
     }
 
+    /**
+     * The session's current warehouse, or null when it has none: a warehouse dropped or renamed since it was
+     * made current is current no longer (live-verified).
+     */
     public String getCurrentWarehouse() {
-        return currentWarehouse;
+        final String name = currentWarehouseName();
+        return name != null && warehouses.containsKey(name) ? name : null;
     }
 
     public Warehouse getCurrentWarehouseObject() {
-        if (currentWarehouse == null) {
-            return null;
+        final String name = getCurrentWarehouse();
+        return name == null ? null : getWarehouse(name);
+    }
+
+    /** The warehouse name the session scope carries, or the engine's own outside one; not checked to exist. */
+    private String currentWarehouseName() {
+        final String[] scope = sessionScope.get();
+        return scope != null ? scope[2] : currentWarehouse;
+    }
+
+    private void setCurrentWarehouseName(final String name) {
+        final String[] scope = sessionScope.get();
+        if (scope != null) {
+            scope[2] = name;
+        } else {
+            this.currentWarehouse = name;
         }
-        return getWarehouse(currentWarehouse);
+    }
+
+    /** The session that held the warehouse as its current one holds none now. */
+    private void forgetCurrentWarehouse(final String name) {
+        if (name.equalsIgnoreCase(currentWarehouseName())) {
+            setCurrentWarehouseName(null);
+        }
     }
 
     // Stage Management — stages now live in Schema
@@ -891,10 +966,13 @@ public class Catalog {
         this.sessionContext = sessionContext;
     }
 
-    /** The role to record as owner on newly-created objects: the session's current role, else SYSADMIN. */
+    /**
+     * The role to record as owner on newly-created objects: the session's current role — inside a stored procedure
+     * running with owner's rights, the procedure's owner — else SYSADMIN.
+     */
     public String currentRoleForOwner() {
-        return sessionContext != null && sessionContext.getCurrentRole() != null
-            ? sessionContext.getCurrentRole() : "SYSADMIN";
+        return sessionContext != null && sessionContext.getCreatingRole() != null
+            ? sessionContext.getCreatingRole() : "SYSADMIN";
     }
 
     /**
@@ -971,15 +1049,23 @@ public class Catalog {
             return;
         }
         if ("ALL".equalsIgnoreCase(spec)) {
-            for (final String r : roles.keySet()) {
-                sessionContext.addActiveRole(r);
+            // ALL is every role granted to the session's USER, not every role of the account: a role nobody
+            // was granted stays out of reach (live-verified).
+            sessionContext.setSecondaryRolesInUse(true);
+            final User user = users.get(String.valueOf(sessionContext.getCurrentUser()).toUpperCase(Locale.ROOT));
+            if (user != null) {
+                for (final String granted : user.getGrantedRoles()) {
+                    sessionContext.addActiveRole(granted);
+                }
             }
         } else if ("NONE".equalsIgnoreCase(spec)) {
+            sessionContext.setSecondaryRolesInUse(false);
             sessionContext.clearActiveRoles();
             if (sessionContext.getCurrentRole() != null) {
                 sessionContext.addActiveRole(sessionContext.getCurrentRole());
             }
         } else if (spec != null) {
+            sessionContext.setSecondaryRolesInUse(true);
             sessionContext.addActiveRole(spec);
         }
     }
@@ -1118,60 +1204,11 @@ public class Catalog {
         databases.put(database.getName(), database);
     }
 
-    /** Read the value of a tag set on an object (SYSTEM$GET_TAG); null if the object or tag is absent. */
-    public String getObjectTagValue(final String tagName, final String objectName, final String domain) {
-        final Taggable target = resolveTaggable(objectName, domain);
-        return target == null ? null : target.getTagValue(tagName);
-    }
-
-    /** Resolve a tag-bearing object by name and Snowflake object domain (TABLE, COLUMN, SCHEMA, DATABASE, WAREHOUSE, ALERT). */
-    private Taggable resolveTaggable(final String objectName, final String domain) {
-        final String d = domain == null ? "TABLE" : domain.toUpperCase();
-        // Live accepts only TABLE for every table-like object: naming the specific kind is
-        // refused outright (live-verified wording), and a TABLE lookup finds views too.
-        if ("VIEW".equals(d) || "MATERIALIZED_VIEW".equals(d) || "MATERIALIZED VIEW".equals(d)
-                || "DYNAMIC_TABLE".equals(d) || "DYNAMIC TABLE".equals(d)
-                || "EXTERNAL_TABLE".equals(d) || "EXTERNAL TABLE".equals(d)) {
-            throw new RuntimeException(SqlCompilationError.of("Invalid value " + domain
-                + " for argument OBJECT_TYPE. Please use object type TABLE for all kinds of"
-                + " table-like objects."));
-        }
-        try {
-            switch (d) {
-                case "DATABASE": return getDatabase(objectName);
-                case "SCHEMA": return resolveSchema(objectName);
-                case "TABLE": {
-                    try {
-                        return resolveTable(objectName);
-                    } catch (final RuntimeException notATable) {
-                        return resolveView(objectName);
-                    }
-                }
-                case "WAREHOUSE": return getWarehouse(objectName);
-                case "ALERT": return resolveSchemaForObject(objectName).getAlert(objectName(objectName));
-                case "STREAM": return resolveSchemaForObject(objectName).getStream(objectName(objectName));
-                case "TASK": return resolveSchemaForObject(objectName).getTask(objectName(objectName));
-                case "PIPE": return resolveSchemaForObject(objectName).getPipe(objectName(objectName));
-                case "COLUMN": {
-                    final int dot = objectName.lastIndexOf('.');
-                    if (dot < 0) {
-                        return null;
-                    }
-                    final Table table = resolveTable(objectName.substring(0, dot));
-                    return table == null ? null : table.getColumn(objectName.substring(dot + 1));
-                }
-                default: return null;
-            }
-        } catch (final RuntimeException e) {
-            return null;
-        }
-    }
-
     public void createStage(final String name, final StageType type, final String url) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
         if (schema.hasStageExact(objName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
+            throw new NameTakenException(alreadyExists(objName));
         }
         final Stage stage = new Stage(objName, type, url, "CSV", false, null, s3PathResolver);
         stage.setOwner(FutureGrants.ownerOfNew(this, "STAGE", schema, objName));
@@ -1183,7 +1220,7 @@ public class Catalog {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
         if (schema.hasStageExact(objName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
+            throw new NameTakenException(alreadyExists(objName));
         }
         final Stage stage = new Stage(objName, type, url, fileFormat, encryption, comment, s3PathResolver);
         stage.setOwner(FutureGrants.ownerOfNew(this, "STAGE", schema, objName));
@@ -1197,16 +1234,18 @@ public class Catalog {
     /** ALTER STAGE … RENAME TO — rekey the schema's map and rename the object itself. */
     public void renameStage(final String name, final String newName) {
         final Schema schema = resolveSchemaForObject(name);
+        // A new name written with a path places the stage in the schema it names.
+        final Schema target = QualifiedName.parse(newName).size() == 1 ? schema : resolveSchemaForObject(newName);
         final Stage stage = schema.getStage(objectName(name));
         // The new name is taken: refused before the old one is given up.
-        if (schema.hasStageExact(objectName(newName))) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + objectName(newName) + "' already exists."));
+        if (target.hasStageExact(objectName(newName))) {
+            throw renamedOntoTaken(newName);
         }
         final String grantedBefore = schema.qualifiedName(stage.getName());
         schema.dropStage(objectName(name));
-        stage.setName(newName);
-        schema.addStage(stage);
-        GrantNames.renamed(this, "STAGE", grantedBefore, schema.qualifiedName(stage.getName()));
+        stage.setName(objectName(newName));
+        target.addStage(stage);
+        GrantNames.renamed(this, "STAGE", grantedBefore, target.qualifiedName(stage.getName()));
     }
 
     public Stage getStage(final String name) {
@@ -1262,8 +1301,8 @@ public class Catalog {
     public void createTag(final String name) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
-        if (schema.hasTag(objName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
+        if (schema.hasTagExact(objName)) {
+            throw new NameTakenException(alreadyExists(objName));
         }
         final Tag tag = new Tag(objName);
         tag.setOwner(currentRoleForOwner());
@@ -1273,8 +1312,8 @@ public class Catalog {
     public void createTag(final String name, final List<String> allowedValues, final String comment) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
-        if (schema.hasTag(objName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + objName + "' already exists."));
+        if (schema.hasTagExact(objName)) {
+            throw new NameTakenException(alreadyExists(objName));
         }
         final Tag tag = new Tag(objName, allowedValues, comment);
         tag.setOwner(currentRoleForOwner());
@@ -1311,14 +1350,14 @@ public class Catalog {
         target.requireCreatable(Privilege.CREATE_TAG);
         final Tag renamed = source.getTag(objectName(oldName));
         final String grantedBefore = renamed != null ? source.qualifiedName(renamed.getName()) : null;
+        if (target.hasTagExact(objectName(newName))) {
+            // The name that is taken is echoed as the statement wrote it (live-verified).
+            throw renamedOntoTaken(newName);
+        }
         if (target == source) {
             source.renameTag(objectName(oldName), objectName(newName));
         } else {
             final Tag tag = source.getTag(objectName(oldName));
-            if (target.hasTag(objectName(newName))) {
-                throw new RuntimeException(SqlCompilationError.of("Object '" + objectName(newName)
-                    + "' already exists."));
-            }
             source.dropTag(objectName(oldName));
             tag.setName(objectName(newName));
             target.addTag(tag);
@@ -1334,6 +1373,9 @@ public class Catalog {
         to.requireCreatable(Privilege.CREATE_MASKING_POLICY);
         final MaskingPolicy policy = from.getMaskingPolicy(objectName(oldName));
         final String was = policy != null ? policy.getName() : null;
+        if (to.hasMaskingPolicy(objectName(newName))) {
+            throw renamedOntoTaken(newName);
+        }
         from.renameMaskingPolicy(objectName(oldName), objectName(newName));
         if (from != to) {
             // A qualified target naming ANOTHER schema moves the policy there (live-verified).
@@ -1398,6 +1440,9 @@ public class Catalog {
         to.requireCreatable(Privilege.CREATE_ROW_ACCESS_POLICY);
         final RowAccessPolicy policy = from.getRowAccessPolicy(objectName(oldName));
         final String was = policy != null ? policy.getName() : null;
+        if (to.hasRowAccessPolicy(objectName(newName))) {
+            throw renamedOntoTaken(newName);
+        }
         from.renameRowAccessPolicy(objectName(oldName), objectName(newName));
         if (from != to) {
             // A qualified target naming ANOTHER schema moves the policy there (live-verified).
@@ -1661,7 +1706,10 @@ public class Catalog {
         if (isSystemRole(upperName)) {
             throw new RuntimeException("Cannot drop system role: " + name);
         }
+        final String heldAs = roles.get(upperName).getName();
         roles.remove(upperName);
+        // What the role owned is the dropping role's from now on (see RoleOwnership).
+        RoleOwnership.handOver(this, heldAs, currentRoleForOwner());
     }
 
     /**
@@ -1873,8 +1921,7 @@ public class Catalog {
         // and refuses with the account's own object-exists sentence, which a rename gives PLAIN:
         // the "already exists as KIND" form belongs to a create (live-verified).
         if (schema.relationKindOf(newName) != null) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + newName.toUpperCase() + "' already exists."));
+            throw new NameTakenException(alreadyExists(newName));
         }
         // Its streams stay on it (StreamSources): bound while their recorded names still find it, re-spelled after.
         StreamSources.bindAll(this);
@@ -1932,7 +1979,7 @@ public class Catalog {
         target.requireCreatable(Privilege.CREATE_TABLE);
         if (target.relationKindOf(newName) != null) {
             // The account's own object-exists sentence, naming the new name as written (live-verified).
-            throw new RuntimeException(SqlCompilationError.of("Object '" + newName.toUpperCase() + "' already exists."));
+            throw new NameTakenException(alreadyExists(newName));
         }
         StreamSources.bindAll(this);
         final String was = source.qualifiedName(table.getName());
@@ -1996,9 +2043,12 @@ public class Catalog {
         if (roles.containsKey(newName.toUpperCase())) {
             throw new RuntimeException("Role already exists: " + newName);
         }
+        final String heldAs = role.getName();
         roles.remove(oldName.toUpperCase());
         role.rename(newName);
         roles.put(newName.toUpperCase(), role);
+        // The role goes on owning its objects under its new name.
+        RoleOwnership.handOver(this, heldAs, role.getName());
     }
 
     public void renameWarehouse(final String oldName, final String newName) {
@@ -2010,6 +2060,8 @@ public class Catalog {
         warehouses.remove(oldName.toUpperCase());
         warehouse.rename(newName);
         warehouses.put(newName.toUpperCase(), warehouse);
+        // A renamed warehouse is not followed: the session that had it as current has none (live-verified).
+        forgetCurrentWarehouse(oldName);
         GrantNames.renamed(this, "WAREHOUSE", grantedBefore, warehouse.getName());
     }
 

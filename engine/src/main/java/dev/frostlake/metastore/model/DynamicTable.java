@@ -43,12 +43,23 @@ public class DynamicTable extends SqlObject {
     private long firstRefreshedMillis;
     private Instant lastSuspendedOn;
     private final List<String> clusterKeys = new ArrayList<>();
+    /** The columns the table declares in its own column list, in order; empty when it has none. */
+    private final List<DynamicTableColumn> declaredColumns = new ArrayList<>();
+    /** The table's columns as its query and its column list resolved them when it was created; null before. */
+    private List<TableColumn> resolvedColumns;
+    /** The rows the table's last refresh held, which is what a listing counts. */
+    private long refreshedRows;
+    /** The rows of the last refresh this engine ran, each as its values; null when it has run none. */
+    private List<List<Object>> refreshImage;
     private boolean transientTable;
     private String schedulingState;    // descriptive status returned by SHOW
     private String createText;
     private String bodyText;
     private boolean reclusterSuspended;
     private boolean clone;
+    /** The database and schema the query's bare names are read in once the table has moved; null where it lives. */
+    private String definitionDatabase;
+    private String definitionSchema;
 
     public DynamicTable(final String name, final String query, final String targetLag,
                         final String warehouse) {
@@ -116,6 +127,35 @@ public class DynamicTable extends SqlObject {
     }
 
     /** Whether the table was created TRANSIENT. */
+    /** The columns the table declares in its own column list, in order; empty when it has none. */
+    public List<DynamicTableColumn> getDeclaredColumns() { return new ArrayList<>(declaredColumns); }
+
+    /** Replaces the declared column list. */
+    public void setDeclaredColumns(final List<DynamicTableColumn> columns) {
+        declaredColumns.clear();
+        if (columns != null) {
+            declaredColumns.addAll(columns);
+        }
+    }
+
+    /** The table's columns as they resolved when it was created, or null when none were kept. */
+    public List<TableColumn> getResolvedColumns() { return resolvedColumns; }
+
+    /** Keeps the table's columns as they resolved. */
+    public void setResolvedColumns(final List<TableColumn> columns) { this.resolvedColumns = columns; }
+
+    /** The rows the table's last refresh held. */
+    public long getRefreshedRows() { return refreshedRows; }
+
+    /** Records the rows a refresh held. */
+    public void setRefreshedRows(final long rows) { this.refreshedRows = rows; }
+
+    /** The rows of the last refresh this engine ran, or null when it has run none. */
+    public List<List<Object>> getRefreshImage() { return refreshImage; }
+
+    /** Keeps the rows a refresh read, for the next refresh to tell what changed. */
+    public void setRefreshImage(final List<List<Object>> image) { this.refreshImage = image; }
+
     public boolean isTransient() { return transientTable; }
     public void setTransient(final boolean transientTable) { this.transientTable = transientTable; }
     public String getSchedulingState() { return schedulingState; }
@@ -154,6 +194,9 @@ public class DynamicTable extends SqlObject {
         copy.dataRetentionDays = dataRetentionDays;
         copy.maxDataExtensionDays = maxDataExtensionDays;
         copy.clusterKeys.addAll(clusterKeys);
+        copy.declaredColumns.addAll(declaredColumns);
+        copy.resolvedColumns = resolvedColumns;
+        copy.refreshedRows = refreshedRows;
         copy.transientTable = transientTable;
         copy.createText = createText;
         copy.bodyText = bodyText;
@@ -166,6 +209,26 @@ public class DynamicTable extends SqlObject {
 
     @Override
     public void rename(final String newName) { throw new UnsupportedOperationException("Dynamic tables cannot be renamed directly"); }
+
+    /**
+     * Records where the table's query reads its bare names, before the table moves to another schema: the
+     * schema it was defined in, which a later move does not change.
+     *
+     * @param database the database the table is leaving
+     * @param schema   the schema the table is leaving
+     */
+    public void keepDefinitionHome(final String database, final String schema) {
+        if (definitionDatabase == null) {
+            definitionDatabase = database;
+            definitionSchema = schema;
+        }
+    }
+
+    /** The database the query's bare names are read in, or null for the one the table lives in. */
+    public String getDefinitionDatabase() { return definitionDatabase; }
+
+    /** The schema the query's bare names are read in, or null for the one the table lives in. */
+    public String getDefinitionSchema() { return definitionSchema; }
 
     @Override
     public String getObjectType() { return "DYNAMIC TABLE"; }

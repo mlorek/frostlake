@@ -20,6 +20,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Stage;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -54,6 +55,44 @@ public final class RoutineImports {
         for (final String entry : imports) {
             validateOne(entry, catalog);
         }
+    }
+
+    /**
+     * The imports as a routine keeps and tells them: a named stage spelled in full, upper case where it was
+     * written without quotes - {@code @stg/a.jar} is {@code @DB.SCHEMA.STG/a.jar} - and the path beneath it as
+     * written (live-verified). A user's or a table's stage, and a path that is no stage, stay as written.
+     *
+     * @param imports the imports as written, already judged by {@link #validate}
+     * @param catalog the catalog the stages resolve in
+     * @return the imports, in written order
+     */
+    public static List<String> canonical(final List<String> imports, final Catalog catalog) {
+        final List<String> kept = new ArrayList<>();
+        if (imports == null) {
+            return kept;
+        }
+        for (final String entry : imports) {
+            kept.add(canonicalOne(entry, catalog));
+        }
+        return kept;
+    }
+
+    private static String canonicalOne(final String entry, final Catalog catalog) {
+        final String trimmed = entry == null ? "" : entry.trim();
+        if (catalog == null || !trimmed.startsWith("@")) {
+            return entry;
+        }
+        final int slash = trimmed.indexOf('/');
+        final String stageName = slash >= 0 ? trimmed.substring(1, slash) : trimmed.substring(1);
+        if (stageName.isEmpty() || stageName.startsWith("~") || stageName.startsWith("%")) {
+            return entry;
+        }
+        final Stage stage = resolveStage(stageName, catalog);
+        if (stage == null) {
+            return entry;
+        }
+        return "@" + catalog.resolveOwningSchema(stageName).qualifiedName(stage.getName())
+            + (slash >= 0 ? trimmed.substring(slash) : "");
     }
 
     private static void validateOne(final String entry, final Catalog catalog) {

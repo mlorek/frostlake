@@ -547,7 +547,7 @@ public class TaskScheduler {
                 public void run() {
                     runTaskOnceInScope(qualifiedTaskName, task, visited, trigger);
                 }
-            });
+            }, task.getSessionParameters());
         } finally {
             catalog.restoreSessionScope(priorScope);
         }

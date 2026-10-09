@@ -16,6 +16,8 @@
 
 package dev.frostlake.system;
 
+import dev.frostlake.executor.ClusteringKeySpelling;
+import dev.frostlake.executor.JsonTextList;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -30,6 +32,7 @@ import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
@@ -50,8 +53,10 @@ import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
+import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.UuidType;
+import dev.frostlake.values.ValueRange;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -201,13 +206,19 @@ public class SystemViews {
                         QualifiedName.key(db.getName(), schema.getName(), table.getName()), i >= visible);
                     result.addRow(new Row(
                         db.getName(), schema.getName(), table.getName(), table.getOwner(),
-                        type, yesNo(table.isTransient()),
-                        table.getClusterKeys().isEmpty() ? null : String.join(", ", table.getClusterKeys()),
-                        // The retention SHOW TABLES reports: the table's own, else its container's.
-                        rowCount, 0L, Long.valueOf(RetentionChain.effectiveDays(db, schema, table)),
+                        // A temporary table is neither transient nor not, and keeps no history (live-verified).
+                        type, table.isTemporary() ? null : yesNo(table.isTransient()),
+                        // The key reads as SHOW TABLES spells it (live-verified).
+                        ClusteringKeySpelling.listed(table.getClusterByText()),
+                        // The retention SHOW TABLES reports: the table's own, else its container's; a temporary
+                        // table keeps no history.
+                        rowCount, 0L, table.isTemporary() ? Long.valueOf(0L)
+                            : Long.valueOf(RetentionChain.effectiveDays(db, schema, table)),
                         null, null, null, null, null, YES_NO_TRUE, YES_NO_TRUE, null,
                         table.getCreatedTime(), table.getLastAlteredTime(), table.getLastDdlTime(),
-                        table.getLastDdlBy(), YES_NO_FALSE, table.getComment(),
+                        // A table with a clustering key is reclustered unless that was suspended.
+                        table.getLastDdlBy(), yesNo(!table.getClusterKeys().isEmpty()
+                            && !table.isReclusterSuspended()), table.getComment(),
                         yesNo(table.isTemporary()), YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE,
                         yesNo(table.isHybrid()), YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE
                     ));
@@ -217,14 +228,16 @@ public class SystemViews {
                         "VIEW", systemViewTime(schema, view), systemViewDdlTime(schema, view), view.getComment(), null));
                 }
                 for (final MaterializedView view : schema.getMaterializedViews()) {
-                    result.addRow(viewRow(db, schema, view.getName(), view.getOwner(), view.getLastDdlBy(),
-                        "MATERIALIZED VIEW", view.getCreatedTime(), view.getLastDdlTime(), view.getComment(),
-                        Long.valueOf(RetentionChain.effectiveDays(db, schema, null))));
+                    // A clustered materialized view lists its key and whether it is reclustered (live-verified).
+                    final boolean keyed = !view.getClusterKeys().isEmpty();
+                    result.addRow(shapedRow(db, schema, view.getName(), view.getOwner(), view.getLastDdlBy(),
+                        "MATERIALIZED VIEW", view.getCreatedTime(), view.getLastDdlTime(), view.getComment(), null,
+                        Long.valueOf(RetentionChain.effectiveDays(db, schema, null)),
+                        keyed ? "LINEAR(" + String.join(", ", view.getClusterKeys()) + ")" : null,
+                        keyed && !view.isReclusterSuspended() ? YES_NO_TRUE : YES_NO_FALSE));
                 }
                 for (final DynamicTable dynamicTable : schema.getDynamicTables()) {
-                    result.addRow(tableShapedRow(db, schema, dynamicTable.getName(), dynamicTable.getOwner(),
-                        dynamicTable.getLastDdlBy(), "BASE TABLE", dynamicTable.getCreatedTime(),
-                        dynamicTable.getLastDdlTime(), dynamicTable.getComment(), dynamicTable.isTransient(),
+                    result.addRow(dynamicTableRow(db, schema, dynamicTable,
                         Long.valueOf(RetentionChain.effectiveDays(db, schema, null))));
                 }
             }
@@ -240,33 +253,40 @@ public class SystemViews {
     private Row viewRow(final Database db, final Schema schema, final String name, final String owner,
                         final String lastDdlBy, final String type, final Instant created, final Instant lastDdl,
                         final String comment, final Long retention) {
-        return shapedRow(db, schema, name, owner, lastDdlBy, type, created, lastDdl, comment, null, retention);
+        return shapedRow(db, schema, name, owner, lastDdlBy, type, created, lastDdl, comment, null, retention, null,
+            YES_NO_FALSE);
     }
 
     /**
-     * A dynamic table's TABLES row: listed as a BASE TABLE, TRANSIENT as it was declared, retained what SHOW TABLES
-     * reports for it.
+     * A dynamic table's TABLES row: listed as a BASE TABLE that IS_DYNAMIC, TRANSIENT as it was declared, retained
+     * what SHOW TABLES reports for it, and counting the rows its last refresh held.
      */
-    private Row tableShapedRow(final Database db, final Schema schema, final String name,
-                               final String owner, final String lastDdlBy, final String type, final Instant created,
-                               final Instant lastDdl, final String comment, final boolean transientRelation,
-                               final Long retention) {
-        return shapedRow(db, schema, name, owner, lastDdlBy, type, created, lastDdl, comment,
-            transientRelation ? YES_NO_TRUE : YES_NO_FALSE, retention);
+    private Row dynamicTableRow(final Database db, final Schema schema, final DynamicTable table,
+                                final Long retention) {
+        return new Row(
+            db.getName(), schema.getName(), table.getName(), table.getOwner(), "BASE TABLE",
+            table.isTransient() ? YES_NO_TRUE : YES_NO_FALSE, null, Long.valueOf(table.getRefreshedRows()), 0L,
+            retention, null, null, null, null, null, YES_NO_TRUE, YES_NO_TRUE, null,
+            table.getCreatedTime(), table.getLastDdlTime(), table.getLastDdlTime(), table.getLastDdlBy(),
+            YES_NO_FALSE, table.getComment(),
+            YES_NO_FALSE, YES_NO_FALSE, YES_NO_TRUE,
+            YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE
+        );
     }
 
     /**
-     * A relation with no stored rows of its own in the TABLES row shape: no clustering key, no sizes. Only DDL moves
-     * such a relation, so its LAST_ALTERED is its LAST_DDL.
+     * A relation with no stored rows of its own in the TABLES row shape: no sizes, a clustering key if it has one.
+     * Only DDL moves such a relation, so its LAST_ALTERED is its LAST_DDL.
      */
     private Row shapedRow(final Database db, final Schema schema, final String name, final String owner,
                           final String lastDdlBy, final String type, final Instant created, final Instant lastDdl,
-                          final String comment, final String transience, final Long retention) {
+                          final String comment, final String transience, final Long retention,
+                          final String clusteringKey, final String autoClustering) {
         return new Row(
             db.getName(), schema.getName(), name, owner, type,
-            transience, null, null, null, retention,
+            transience, clusteringKey, null, null, retention,
             null, null, null, null, null, YES_NO_TRUE, YES_NO_TRUE, null,
-            created, lastDdl, lastDdl, lastDdlBy, YES_NO_FALSE, comment,
+            created, lastDdl, lastDdl, lastDdlBy, autoClustering, comment,
             YES_NO_FALSE, YES_NO_FALSE, "DYNAMIC TABLE".equals(type) ? YES_NO_TRUE : YES_NO_FALSE,
             YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE, YES_NO_FALSE
         );
@@ -319,7 +339,7 @@ public class SystemViews {
             colText("COLUMN_DEFAULT", 134217728), colYesNo("IS_NULLABLE"),
             col("DATA_TYPE"), colInt("CHARACTER_MAXIMUM_LENGTH"), colInt("CHARACTER_OCTET_LENGTH"),
             colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX", 2), colInt("NUMERIC_SCALE"),
-            colInt("DATETIME_PRECISION"), colNull("INTERVAL_TYPE"), colLong("INTERVAL_PRECISION"),
+            colInt("DATETIME_PRECISION"), colNull("INTERVAL_TYPE"), colNullNumber("INTERVAL_PRECISION"),
             colNull("CHARACTER_SET_CATALOG"), colNull("CHARACTER_SET_SCHEMA"), colNull("CHARACTER_SET_NAME"),
             colNull("COLLATION_CATALOG"), colNull("COLLATION_SCHEMA"), col("COLLATION_NAME"),
             colNull("DOMAIN_CATALOG"), colNull("DOMAIN_SCHEMA"), colNull("DOMAIN_NAME"),
@@ -353,6 +373,13 @@ public class SystemViews {
                 for (final MaterializedView view : schema.getMaterializedViews()) {
                     if (matchesName(view.getName(), tableName)) {
                         addDerivedColumnRows(result, db, schema, view.getName(), view.getResolvedColumns());
+                    }
+                }
+                // A dynamic table's columns are listed as they resolved when it was created.
+                for (final DynamicTable dynamicTable : schema.getDynamicTables()) {
+                    if (matchesName(dynamicTable.getName(), tableName) && dynamicTable.getResolvedColumns() != null) {
+                        addDerivedColumnRows(result, db, schema, dynamicTable.getName(),
+                            dynamicTable.getResolvedColumns());
                     }
                 }
             }
@@ -414,13 +441,17 @@ public class SystemViews {
         // and its octet length is four bytes a character, uncapped: VARCHAR(5) reads 20 and the
         // 16MB maximum 67108864 (live-verified).
         // A UUID reports neither length, as a BINARY does not (live-verified).
+        // A table's own column keeps the length it was declared with, and the octets stop at the widest a value
+        // can be: VARCHAR(134217728) reads 134217728 in both and VARCHAR(16777217) 67108868 octets (live-verified).
         final Integer charLen = dataType instanceof StringType && !(dataType instanceof UuidType)
-            ? Integer.valueOf((int) Math.min(((StringType) dataType).getMaxLength(),
-                SqlTypeNames.DESCRIBED_STRING_MAXIMUM)) : null;
+            ? Integer.valueOf(fromBaseTable ? ((StringType) dataType).getMaxLength()
+                : (int) Math.min(((StringType) dataType).getMaxLength(), SqlTypeNames.DESCRIBED_STRING_MAXIMUM))
+            : null;
         // A BINARY column reports NEITHER length, declared width or not — live leaves both NULL for a
         // table column, a view column and a CTAS column alike; its size reaches JDBC through SHOW
         // COLUMNS instead (live-verified).
-        final Integer octetLen = charLen == null ? null : Integer.valueOf(charLen.intValue() * 4);
+        final Integer octetLen = charLen == null ? null
+            : Integer.valueOf((int) Math.min(charLen.longValue() * 4, StringResultWidths.UNBOUNDED));
         // Live reports precision/scale only for the exact-numeric family: a FLOAT column
         // leaves both NULL, and every non-numeric type leaves both NULL too.
         Integer numPrec = null;
@@ -457,7 +488,9 @@ public class SystemViews {
             identity ? Long.valueOf(col.getIdentityStart()) : null,
             identity ? Long.valueOf(col.getIdentityIncrement()) : null,
             null, null,
-            identity ? YES_NO_FALSE : null, identity ? YES_NO_FALSE : null,
+            identity ? YES_NO_FALSE : null,
+            // An identity declared ORDER hands its numbers out in order; NOORDER is the default (live-verified).
+            identity ? yesNo(col.isIdentityOrdered()) : null,
             null, dataType.getName(), fromBaseTable ? col.getComment() : null,
             null, null
         );
@@ -685,20 +718,26 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Procedure proc : schema.getProcedures()) {
+                    // A table procedure's DATA_TYPE reads "TABLE (COL TYPE, …)", as a table function's does.
                     final DataType returns = proc.getReturnType();
-                    final boolean exactNumeric = returns instanceof NumericType
+                    final boolean exactNumeric = !proc.returnsTable() && returns instanceof NumericType
                         && !"FLOAT".equals(returns.getName().toUpperCase());
                     result.addRow(new Row(
                         db.getName(), schema.getName(), proc.getName(), proc.getOwner(),
-                        buildArgSignature(proc.getParameters()), returns.getName(),
-                        null, null,
+                        buildArgSignature(proc.getParameters()),
+                        proc.returnsTable() ? "TABLE (" + columnSignature(proc.getReturnColumns()) + ")"
+                            : SqlTypeNames.routineDataType(returns),
+                        proc.returnsTable() ? null : SqlTypeNames.routineTextLength(returns), null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getPrecision()) : null,
                         exactNumeric ? Integer.valueOf(10) : null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getScale()) : null,
                         proc.getLanguage(), proc.getBody(),
                         proc.getCreatedTime(), proc.getLastDdlTime(), proc.getComment(),
-                        null, null,
-                        proc.getRuntimeVersion(), listOrNull(proc.getPackages()), null, null
+                        listOrNull(proc.getEnvironment().getExternalAccessIntegrations()),
+                        textOrNull(proc.getEnvironment().secretsText(db.getName(), schema.getName())),
+                        proc.getRuntimeVersion(), listOrNull(proc.getPackages()),
+                        installedPackages(proc.getLanguage()),
+                        artifactRepository(proc.getLanguage(), proc.getEnvironment(), proc.getPackages())
                     ));
                 }
             }
@@ -732,13 +771,13 @@ public class SystemViews {
                     final DataType returns = func.getReturnType();
                     final String dataType = func.isTableFunction()
                         ? "TABLE (" + columnSignature(func.getReturnColumns()) + ")"
-                        : returns.getName();
+                        : SqlTypeNames.routineDataType(returns);
                     final boolean exactNumeric = !func.isTableFunction()
                         && returns instanceof NumericType && !"FLOAT".equals(returns.getName().toUpperCase());
                     result.addRow(new Row(
                         db.getName(), schema.getName(), func.getName(), func.getOwner(),
                         buildArgSignature(func.getParameters()), dataType,
-                        null, null,
+                        func.isTableFunction() ? null : SqlTypeNames.routineTextLength(returns), null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getPrecision()) : null,
                         exactNumeric ? Integer.valueOf(10) : null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getScale()) : null,
@@ -747,10 +786,16 @@ public class SystemViews {
                         yesNo(func.isSecure()),
                         func.getCreatedTime(), func.getLastDdlTime(), func.getComment(),
                         YES_NO_FALSE, null, null, null, null, null,
-                        null, listOrNull(func.getImports()), func.getHandler(), null,
-                        func.getRuntimeVersion(), null, null,
-                        yesNo(func.isMemoizable()), null, null,
-                        YES_NO_FALSE, YES_NO_FALSE, null
+                        null, listOrNull(func.getImports()), func.getHandler(),
+                        func.getEnvironment().getTargetPath(),
+                        func.getRuntimeVersion(), listOrNull(func.getEnvironment().getPackages()),
+                        installedPackages(func.getLanguage()),
+                        yesNo(func.isMemoizable()),
+                        listOrNull(func.getEnvironment().getExternalAccessIntegrations()),
+                        textOrNull(func.getEnvironment().secretsText(db.getName(), schema.getName())),
+                        YES_NO_FALSE, YES_NO_FALSE,
+                        artifactRepository(func.getLanguage(), func.getEnvironment(),
+                            func.getEnvironment().getPackages())
                     ));
                 }
             }
@@ -801,30 +846,26 @@ public class SystemViews {
             col("COMMENT"), colLtz("CREATED"), colLtz("LAST_ALTERED"),
             col("ENDPOINT"), colBool("DIRECTORY_ENABLED")
         ));
-        try {
-            final String dbN = databaseName != null ? databaseName : catalog.getCurrentDatabase();
-            final String scN = schemaName != null ? schemaName : catalog.getCurrentSchema();
-            if (dbN != null && scN != null) {
-                for (final Stage stage : catalog.getDatabase(dbN).getSchema(scN).getStages()) {
+        for (final Database db : databases(databaseName)) {
+            for (final Schema schema : schemas(db, schemaName)) {
+                for (final Stage stage : schema.getStages()) {
                     final String url = stage.getUrl();
                     // Live's stage-type vocabulary is "External Named" / "Internal Named";
                     // an internal stage reports a null URL and null region.
                     final boolean external = url != null && (url.startsWith("s3://")
                         || url.startsWith("azure://") || url.startsWith("gcs://"));
                     result.addRow(new Row(
-                        dbN, scN, stage.getName().toUpperCase(),
+                        db.getName(), schema.getName(), stage.getName().toUpperCase(),
                         external ? url : null, null,
                         external ? "External Named" : "Internal Named", stage.getOwner(),
                         stage.getComment(), stage.getCreatedAt(), stage.getLastDdlTime(),
-                        // A stage declared without DIRECTORY reports NULL here, one with it enabled TRUE (live-verified).
-                        null, stage.isDirectoryEnabled() ? Boolean.TRUE : null
+                        // A stage never given a DIRECTORY property list reports NULL here; one that was reports
+                        // whether its directory table is on, FALSE included (live-verified).
+                        null, stage.isDirectoryDeclared() || stage.isDirectoryEnabled()
+                            ? Boolean.valueOf(stage.isDirectoryEnabled()) : null
                     ));
                 }
             }
-        } catch (final Exception e) {
-            // Skip a row that failed to build rather than failing the whole system view, but log at
-            // debug so the underlying error stays diagnosable.
-            logger.debug("Skipping a system-view row that could not be built: {}", e.getMessage(), e);
         }
         return inSessionZone(result);
     }
@@ -879,35 +920,43 @@ public class SystemViews {
 
     // ── TABLE_PRIVILEGES ──────────────────────────────────────────────────────
 
-    public ResultSet queryTablePrivileges(final String databaseName, final String schemaName) {
+    public ResultSet queryTablePrivileges(final List<Row> privileges) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("TABLE_CATALOG"),
             col("TABLE_SCHEMA"), col("TABLE_NAME"),
             col("PRIVILEGE_TYPE"), colText("IS_GRANTABLE", 134217728), colText("WITH_HIERARCHY", 2), colLtz("CREATED")
         ));
-        // Privileges are not fully tracked yet; return empty result set
+        for (final Row privilege : privileges) {
+            result.addRow(privilege);
+        }
         return inSessionZone(result);
     }
 
     // ── OBJECT_PRIVILEGES ─────────────────────────────────────────────────────
 
-    public ResultSet queryObjectPrivileges() {
+    public ResultSet queryObjectPrivileges(final List<Row> privileges) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("OBJECT_CATALOG"),
             col("OBJECT_SCHEMA"), col("OBJECT_NAME"), colText("OBJECT_TYPE", 134217728),
             col("PRIVILEGE_TYPE"), colText("IS_GRANTABLE", 134217728), colLtz("CREATED")
         ));
+        for (final Row privilege : privileges) {
+            result.addRow(privilege);
+        }
         return inSessionZone(result);
     }
 
     // ── USAGE_PRIVILEGES ──────────────────────────────────────────────────────
 
-    public ResultSet queryUsagePrivileges() {
+    public ResultSet queryUsagePrivileges(final List<Row> privileges) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTOR"), col("GRANTEE"), colText("GRANTED_TO", 134217728), col("OBJECT_CATALOG"),
             col("OBJECT_SCHEMA"), col("OBJECT_NAME"), colText("OBJECT_TYPE", 30),
             colText("PRIVILEGE_TYPE", 5), colText("IS_GRANTABLE", 134217728), colLtz("CREATED")
         ));
+        for (final Row privilege : privileges) {
+            result.addRow(privilege);
+        }
         return inSessionZone(result);
     }
 
@@ -1100,6 +1149,15 @@ public class SystemViews {
         return new ResultSetColumn(name, NumericType.BIGINT, null, new NumericType("NUMBER", 38, 0));
     }
 
+    /**
+     * A NUMBER(38,0) cell the account's view fills with NULL in every row (COLUMNS.INTERVAL_PRECISION): it holds
+     * no value, so it is stored in the narrowest width, where a cell that counts something takes the widest.
+     */
+    private ResultSetColumn colNullNumber(final String name) {
+        return new ResultSetColumn(name, NumericType.BIGINT, null, new NumericType("NUMBER", 38, 0), true, false,
+            ValueRange.EMPTY);
+    }
+
     /** A whole-number cell the account declares narrower — NUMBER(2,0) for SEQUENCES.NUMERIC_PRECISION. */
     private ResultSetColumn colNumber(final String name, final int precision) {
         return new ResultSetColumn(name, NumericType.BIGINT, null, new NumericType("NUMBER", precision, 0));
@@ -1129,9 +1187,30 @@ public class SystemViews {
         return new ResultSetColumn(name, ShowResultHelpers.CREATED_ON, null, ShowResultHelpers.CREATED_ON);
     }
 
-    /** A list rendered as live renders IMPORTS / PACKAGES, or null when it holds nothing. */
+    /** A list as the JSON array live tells IMPORTS, PACKAGES and the like by, or null when it holds nothing. */
     private String listOrNull(final List<String> values) {
-        return values == null || values.isEmpty() ? null : "[" + String.join(", ", values) + "]";
+        return values == null || values.isEmpty() ? null : JsonTextList.of(values);
+    }
+
+    /** A cell that is NULL where a listing leaves it empty. */
+    private static String textOrNull(final String text) {
+        return text == null || text.isEmpty() ? null : text;
+    }
+
+    /** What an account installed for a Python routine: nothing here, where the engine installs nothing. */
+    private static String installedPackages(final String language) {
+        return "PYTHON".equalsIgnoreCase(language) ? "[]" : null;
+    }
+
+    /** The artifact repository a Python routine's packages come from, as its description tells it. */
+    private static String artifactRepository(final String language, final RoutineEnvironment environment,
+                                             final List<String> packages) {
+        if (!"PYTHON".equalsIgnoreCase(language)) {
+            return null;
+        }
+        final RoutineEnvironment described = environment.copy();
+        described.setPackages(packages);
+        return described.describedArtifactRepository();
     }
 
     /** A table function's returned columns as {@code NAME TYPE, …}, the body of live's

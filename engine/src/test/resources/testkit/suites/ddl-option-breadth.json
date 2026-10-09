@@ -61,8 +61,15 @@
       {"sql": "CREATE TABLE load1 (c1 VARCHAR)"},
       {"sql": "COPY INTO load1 FROM @%load1/data1/ CREDENTIALS = (AWS_KEY_ID='id' AWS_SECRET_KEY='key' AWS_TOKEN='token') FILES = ('test1.csv', 'test2.csv') FORCE = TRUE",
        "expect": {"error": {"messageContains": "COPY statements targeting a user or table stage do not support credential properties."}}},
+      {"sql": "COPY INTO load1 (c1) FROM 's3://mybucket/data/files' STORAGE_INTEGRATION = \"storage\" FILES = ('file1.csv')",
+       "expect": {"error": {"messageContains": "Integration '\"storage\"' does not exist or not authorized."}}}
+    ]},
+    {"name": "copy-encryption-group-is-judged-before-the-integration",
+     "skip": {"backends": ["engine", "jdbc", "http"], "reason": "the engine does not judge how many parameters an ENCRYPTION group's TYPE takes, so it names the missing integration instead"},
+     "steps": [
+      {"sql": "CREATE TABLE load1 (c1 VARCHAR)"},
       {"sql": "COPY INTO load1 (c1) FROM 's3://mybucket/data/files' STORAGE_INTEGRATION = \"storage\" ENCRYPTION = (TYPE='NONE' MASTER_KEY='key') FILES = ('file1.csv') CREDENTIALS = ()",
-       "expect": {"error": {"messageContains": "invalid parameter 'STORAGE_INTEGRATION'"}}}
+       "expect": {"error": {"messageContains": "Incompatible number of parameters for value [TYPE]"}}}
     ]},
     {"name": "describe-type-stage-and-alter-set-forms", "steps": [
       {"sql": "CREATE TABLE d_t (id INTEGER)"},

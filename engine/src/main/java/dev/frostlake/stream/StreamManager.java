@@ -55,9 +55,15 @@ public class StreamManager {
     }
 
     /**
-     * Track an INSERT operation
+     * Track an INSERT operation.
+     *
+     * @param qualifiedTableName the table written, DB.SCHEMA.NAME
+     * @param row                the row inserted
+     * @param rowId              the row's identity in the table's storage, which is its METADATA$ROW_ID: an
+     *                           UPDATE keeps it and a DELETE reports it, so a change is told from the row it
+     *                           happened to (live-verified)
      */
-    public void trackInsert(final String qualifiedTableName, final Row row) {
+    public void trackInsert(final String qualifiedTableName, final Row row, final long rowId) {
         final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
@@ -67,8 +73,6 @@ public class StreamManager {
 
         try {
             final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
-
-            final long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
                 final StreamRecord record = new StreamRecord(
@@ -104,27 +108,26 @@ public class StreamManager {
         }
     }
 
-    /** {@link #trackInsert(String, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
-    public void trackInsert(final List<Stream> capturing, final String qualifiedTableName, final Row row) {
+    /** {@link #trackInsert(String, Row, long)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    public void trackInsert(final List<Stream> capturing, final String qualifiedTableName, final Row row,
+                            final long rowId) {
         if (capturing.isEmpty()) {
             return;
         }
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
-        final long rowId = getNextRowId(qualifiedTableName);
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(row.getValues(), ChangeType.INSERT, false, rowId,
                 tableName.toUpperCase()));
         }
     }
 
-    /** {@link #trackUpdate(String, Row, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    /** {@link #trackUpdate(String, Row, Row, long)} over a PRE-RESOLVED capture list (bulk commit apply). */
     public void trackUpdate(final List<Stream> capturing, final String qualifiedTableName,
-                            final Row oldRow, final Row newRow) {
+                            final Row oldRow, final Row newRow, final long rowId) {
         if (capturing.isEmpty()) {
             return;
         }
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
-        final long rowId = getNextRowId(qualifiedTableName);
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(oldRow.getValues(), ChangeType.DELETE, true, rowId,
                 tableName.toUpperCase()));
@@ -133,13 +136,13 @@ public class StreamManager {
         }
     }
 
-    /** {@link #trackDelete(String, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
-    public void trackDelete(final List<Stream> capturing, final String qualifiedTableName, final Row row) {
+    /** {@link #trackDelete(String, Row, long)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    public void trackDelete(final List<Stream> capturing, final String qualifiedTableName, final Row row,
+                            final long rowId) {
         if (capturing.isEmpty()) {
             return;
         }
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
-        final long rowId = getNextRowId(qualifiedTableName);
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(row.getValues(), ChangeType.DELETE, false, rowId,
                 tableName.toUpperCase()));
@@ -187,9 +190,14 @@ public class StreamManager {
     }
 
     /**
-     * Track an UPDATE operation
+     * Track an UPDATE operation: the row's old image leaves and its new image arrives, both under the row's id.
+     *
+     * @param qualifiedTableName the table written, DB.SCHEMA.NAME
+     * @param oldRow             the row as it was
+     * @param newRow             the row as it is
+     * @param rowId              the row's identity in the table's storage, unchanged by the update
      */
-    public void trackUpdate(final String qualifiedTableName, final Row oldRow, final Row newRow) {
+    public void trackUpdate(final String qualifiedTableName, final Row oldRow, final Row newRow, final long rowId) {
         final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
@@ -199,8 +207,6 @@ public class StreamManager {
 
         try {
             final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
-
-            final long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
                 // For updates, streams track both DELETE and INSERT
@@ -230,9 +236,13 @@ public class StreamManager {
     }
 
     /**
-     * Track a DELETE operation
+     * Track a DELETE operation.
+     *
+     * @param qualifiedTableName the table written, DB.SCHEMA.NAME
+     * @param row                the row removed
+     * @param rowId              the identity the row had in the table's storage
      */
-    public void trackDelete(final String qualifiedTableName, final Row row) {
+    public void trackDelete(final String qualifiedTableName, final Row row, final long rowId) {
         final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
@@ -242,8 +252,6 @@ public class StreamManager {
 
         try {
             final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
-
-            final long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
                 final StreamRecord record = new StreamRecord(
@@ -409,9 +417,9 @@ public class StreamManager {
     }
 
     /**
-     * Forget a table's change-tracking row-id counter when the table is dropped, so {@link #rowIdCounters}
-     * does not grow without bound as tables are created and dropped over the engine's lifetime. Keyed by
-     * the fully-qualified name, normalized to upper case to match the write path ({@link #getNextRowId}).
+     * Forget the row-id counters kept under a dropped source's name, so {@link #rowIdCounters} does not grow
+     * without bound as objects are created and dropped over the engine's lifetime. Keyed by the fully-qualified
+     * name, normalized to upper case to match the write path ({@link #getNextRowId}).
      */
     public void onTableDropped(final String qualifiedTableName) {
         if (qualifiedTableName != null) {
@@ -442,15 +450,14 @@ public class StreamManager {
         }
     }
 
-    private long getNextRowId(final String qualifiedTableName) {
-        // A table's row ids are the table's own, so a rename continues them (Table#nextStreamRowId).
-        final Table table = StreamSources.tableNamed(catalog, qualifiedTableName);
-        if (table != null) {
-            return table.nextStreamRowId();
-        }
+    /**
+     * The next row id of a source no DML writes, a stage's directory table or a dynamic table, counted per stream
+     * over it. A table's rows carry their own identity instead, which the write paths hand to the track methods.
+     */
+    private long getNextRowId(final String sourceAndStream) {
         // putIfAbsent rather than get/put: two threads racing here must end up sharing ONE counter,
         // or the same row id would be handed out twice.
-        final String key = qualifiedTableName.toUpperCase();
+        final String key = sourceAndStream.toUpperCase();
         AtomicLong counter = rowIdCounters.get(key);
         if (counter == null) {
             counter = new AtomicLong(1);

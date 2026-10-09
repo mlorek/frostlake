@@ -42,7 +42,7 @@ public class Warehouse implements Taggable {
     private int maxClusterCount;
     private Integer autoSuspendSeconds;
     private boolean autoResume;
-    private final LocalDateTime createdAt;
+    private LocalDateTime createdAt;
     private LocalDateTime lastStateChange;
     private final List<QueryExecution> queryHistory;
     private long totalQueriesExecuted;
@@ -57,7 +57,8 @@ public class Warehouse implements Taggable {
     private int statementTimeoutSeconds = 172800;
     /** Parameter names this warehouse set explicitly, which SHOW PARAMETERS reports at WAREHOUSE level. */
     private final Set<String> explicitParameters = new LinkedHashSet<>();
-    private boolean enableQueryAcceleration = false;
+    /** ENABLE_QUERY_ACCELERATION as a statement set it, or null while the warehouse keeps its type's default. */
+    private Boolean enableQueryAcceleration;
     private int queryAccelerationMaxScaleFactor = 8;
     /** The compute generation a warehouse runs on; live defaults a new warehouse to 2. */
     private String generation = "2";
@@ -234,6 +235,17 @@ public class Warehouse implements Taggable {
         return createdAt;
     }
 
+    /**
+     * Put back the time a restored warehouse was created at.
+     *
+     * @param created the recorded creation time, or null to keep the one it has
+     */
+    public void restoreCreatedAt(final LocalDateTime created) {
+        if (created != null) {
+            this.createdAt = created;
+        }
+    }
+
     public LocalDateTime getLastStateChange() {
         return lastStateChange;
     }
@@ -291,8 +303,22 @@ public class Warehouse implements Taggable {
     public int getStatementTimeoutSeconds() { return statementTimeoutSeconds; }
     public void setStatementTimeoutSeconds(final int s) { this.statementTimeoutSeconds = s; }
 
-    public boolean isEnableQueryAcceleration() { return enableQueryAcceleration; }
-    public void setEnableQueryAcceleration(final boolean v) { this.enableQueryAcceleration = v; }
+    /**
+     * Whether queries may be accelerated: what a statement set, or the type's default — on for a standard
+     * warehouse, off for the others (live-verified).
+     */
+    public boolean isEnableQueryAcceleration() {
+        return enableQueryAcceleration != null ? enableQueryAcceleration.booleanValue()
+            : "STANDARD".equals(warehouseType);
+    }
+
+    public void setEnableQueryAcceleration(final boolean v) { this.enableQueryAcceleration = Boolean.valueOf(v); }
+
+    /** ENABLE_QUERY_ACCELERATION as a statement set it, or null while the type's default applies. */
+    public Boolean getEnableQueryAccelerationSetting() { return enableQueryAcceleration; }
+
+    /** Puts ENABLE_QUERY_ACCELERATION back on the type's default. */
+    public void unsetEnableQueryAcceleration() { this.enableQueryAcceleration = null; }
 
     public int getQueryAccelerationMaxScaleFactor() { return queryAccelerationMaxScaleFactor; }
     public void setQueryAccelerationMaxScaleFactor(final int v) { this.queryAccelerationMaxScaleFactor = v; }

@@ -109,7 +109,7 @@ public class StatementClockTest extends BaseDatabaseTest {
 
     /**
      * The clock reads milliseconds, as the account's does: a CURRENT_TIMESTAMP() stored in a TIMESTAMP_NTZ(3)
-     * column equals the variable it was read into, which tds-asgard-data's APA export tests compare.
+     * column equals the variable it was read into, which a procedure may compare.
      */
     @Test
     public void theClockReadsMilliseconds() {

@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
@@ -44,4 +45,12 @@ public class ArrayCat extends BuiltInFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        if (position == 0 || position == 1) {
+            return ArrayArgumentKind.VALUE;
+        }
+        return null;
+    }
 }

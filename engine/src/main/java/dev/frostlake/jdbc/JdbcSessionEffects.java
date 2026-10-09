@@ -18,8 +18,8 @@ package dev.frostlake.jdbc;
 
 import dev.frostlake.executor.SqlTokens;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.SqlCharStream;
 
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
@@ -67,7 +67,7 @@ final class JdbcSessionEffects {
         }
         List<Token> current = new ArrayList<>();
         try {
-            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
             lexer.removeErrorListeners();
             for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
                 if (token.getChannel() != Token.DEFAULT_CHANNEL) {

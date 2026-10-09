@@ -20,6 +20,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -33,9 +34,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class SecretTest extends BaseDatabaseTest {
 
-    /** A secret of these types names an INTEGRATION, which this account does not carry. */
-    private static final String NO_INTEGRATION = "a secret of this type names an API or notification"
-        + " integration, and the account has none to name";
+    /** A secret of these types names a security INTEGRATION, which the test makes on the embedded engine only. */
+    private static final String NO_INTEGRATION = "a secret of this type names a security integration,"
+        + " an account object the test would leave behind";
+
+    /** The security integrations the secrets below authenticate through. */
+    @BeforeEach
+    public void createIntegrations() {
+        if (isLiveSnowflake()) {
+            return;
+        }
+        engine.execute("CREATE SECURITY INTEGRATION my_int TYPE = API_AUTHENTICATION AUTH_TYPE = OAUTH2"
+            + " OAUTH_CLIENT_ID = 'cid' OAUTH_CLIENT_SECRET = 'cs' OAUTH_ALLOWED_SCOPES = ('useraccount')"
+            + " ENABLED = TRUE");
+        engine.execute("CREATE SECURITY INTEGRATION i TYPE = API_AUTHENTICATION AUTH_TYPE = OAUTH2"
+            + " OAUTH_CLIENT_ID = 'cid' OAUTH_CLIENT_SECRET = 'cs' OAUTH_ALLOWED_SCOPES = ('a', 'b') ENABLED = TRUE");
+        engine.execute("CREATE SECURITY INTEGRATION aws_int TYPE = API_AUTHENTICATION AUTH_TYPE = AWS_IAM"
+            + " AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/my_role' ENABLED = TRUE");
+    }
 
     /** Runs a statement that must be refused and answers the refusal's message. */
     private String refusal(final String sql) {
@@ -67,7 +83,7 @@ public class SecretTest extends BaseDatabaseTest {
         engine.execute("CREATE SECRET s_oa TYPE = OAUTH2 API_AUTHENTICATION = my_int OAUTH_SCOPES = ('useraccount')");
         engine.execute("CREATE SECRET s_oc TYPE = OAUTH2 OAUTH_REFRESH_TOKEN = 'refresh-xyz' "
             + "OAUTH_REFRESH_TOKEN_EXPIRY_TIME = '2030-01-01 00:00:00' API_AUTHENTICATION = my_int");
-        engine.execute("CREATE SECRET s_cp TYPE = CLOUD_PROVIDER_TOKEN API_AUTHENTICATION = aws_int ENABLED = TRUE");
+        engine.execute("CREATE SECRET s_cp TYPE = CLOUD_PROVIDER_TOKEN API_AUTHENTICATION = aws_int");
         engine.execute("CREATE SECRET s_sk TYPE = SYMMETRIC_KEY ALGORITHM = GENERIC");
         engine.execute("CREATE SECRET s_wi TYPE = WORKLOAD_IDENTITY_FEDERATION");
         final ResultSet listed = engine.executeQuery("SHOW SECRETS LIKE 'S%'");
@@ -155,7 +171,9 @@ public class SecretTest extends BaseDatabaseTest {
         engine.execute("DROP SECRET IF EXISTS s_m");
         assertTrue(refusal("DROP SECRET s_m").contains(
             "Secret 'TEST_DB.TEST_SCHEMA.S_M' does not exist or not authorized."));
-        listed = engine.executeQuery("SHOW SECRETS LIKE 'S_M'");
+        assertEquals(0, engine.executeQuery("SHOW SECRETS LIKE 'S_M'").getRows().size(),
+            "with no scope the current schema is listed");
+        listed = engine.executeQuery("SHOW SECRETS LIKE 'S_M' IN DATABASE");
         assertEquals("S_OTHER", cell(listed, soleRowWhere(listed, "name", "S_M"), "schema_name"));
     }
 }

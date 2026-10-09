@@ -26,6 +26,7 @@ import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
@@ -257,6 +258,7 @@ final class CatalogSnapshotWriter {
             tableSnapshot.hybrid = table.isHybrid();
             tableSnapshot.clusterKeys = table.getClusterKeys() != null && !table.getClusterKeys().isEmpty()
                 ? new ArrayList<>(table.getClusterKeys()) : null;
+            tableSnapshot.clusterByText = table.getClusterByText();
 
             for (final TableColumn col : table.getColumns()) {
                 final ColumnSnapshot colSnapshot = new ColumnSnapshot();
@@ -288,6 +290,7 @@ final class CatalogSnapshotWriter {
                 colSnapshot.autoIncrement = col.isAutoIncrement();
                 colSnapshot.identityStart = col.getIdentityStart();
                 colSnapshot.identityIncrement = col.getIdentityIncrement();
+                colSnapshot.identityOrdered = col.isIdentityOrdered();
                 colSnapshot.collation = col.getCollation();
                 colSnapshot.ordinalPosition = col.getOrdinalPosition();
                 colSnapshot.tags = SnapshotTags.of(col);
@@ -453,6 +456,11 @@ final class CatalogSnapshotWriter {
             serviceSnapshot.createdAt = service.getCreatedOn();
             serviceSnapshot.indexingSuspended = service.isIndexingSuspended();
             serviceSnapshot.servingSuspended = service.isServingSuspended();
+            serviceSnapshot.primaryKeyColumns = new ArrayList<>(service.getPrimaryKeyColumns());
+            serviceSnapshot.fullIndexBuildIntervalDays = service.getFullIndexBuildIntervalDays();
+            serviceSnapshot.requestLogging = service.isRequestLogging();
+            serviceSnapshot.autoSuspend = service.getAutoSuspend();
+            serviceSnapshot.tags = new LinkedHashMap<>(service.getTagValues());
             schemaSnapshot.cortexSearchServices.add(serviceSnapshot);
         }
 
@@ -526,6 +534,7 @@ final class CatalogSnapshotWriter {
             taskSnapshot.successIntegration = task.getSuccessIntegration();
             taskSnapshot.finalizedRootTask = task.getFinalizedRootTask();
             taskSnapshot.executeAsUser = task.getExecuteAsUser();
+            taskSnapshot.contacts = new LinkedHashMap<>(task.getContacts());
             taskSnapshot.serverlessTaskMinStatementSize = task.getServerlessTaskMinStatementSize();
             taskSnapshot.history = new ArrayList<>();
             for (final TaskExecution execution : task.getExecutionHistory()) {
@@ -595,6 +604,7 @@ final class CatalogSnapshotWriter {
             policySnapshot.name = policy.getName();
             policySnapshot.returnType = policy.getReturnType();
             policySnapshot.returnDataType = policy.getReturnDataType();
+            policySnapshot.returnSpelling = policy.getReturnSpelling();
             policySnapshot.body = policy.getBody();
             policySnapshot.comment = policy.getComment();
             policySnapshot.owner = policy.getOwner();
@@ -642,6 +652,7 @@ final class CatalogSnapshotWriter {
             fnSnapshot.secure = fn.isSecure();
             fnSnapshot.memoizable = fn.isMemoizable();
             fnSnapshot.imports = new ArrayList<>(fn.getImports());
+            fnSnapshot.environment = fn.getEnvironment().copy();
             fnSnapshot.comment = fn.getComment();
             fnSnapshot.owner = fn.getOwner();
             fnSnapshot.createdAt = fn.getCreatedTime();
@@ -667,6 +678,7 @@ final class CatalogSnapshotWriter {
             procSnapshot.packages = new ArrayList<>(proc.getPackages());
             procSnapshot.executeAs = proc.getExecuteAs();
             procSnapshot.imports = new ArrayList<>(proc.getImports());
+            procSnapshot.environment = proc.getEnvironment().copy();
             procSnapshot.comment = proc.getComment();
             procSnapshot.owner = proc.getOwner();
             procSnapshot.createdAt = proc.getCreatedTime();
@@ -675,6 +687,7 @@ final class CatalogSnapshotWriter {
             procSnapshot.returnColumns = snapshotParameters(proc.getReturnColumns());
             procSnapshot.nullHandling = proc.getNullHandling();
             procSnapshot.volatility = proc.getVolatility();
+            procSnapshot.secure = proc.isSecure();
             schemaSnapshot.procedures.add(procSnapshot);
         }
 
@@ -716,9 +729,25 @@ final class CatalogSnapshotWriter {
             dtSnapshot.lastDdlAt = dt.getLastDdlTime();
             dtSnapshot.lastDdlBy = dt.getLastDdlBy();
             dtSnapshot.clusterKeys = dt.getClusterKeys();
+            dtSnapshot.refreshedRows = Long.valueOf(dt.getRefreshedRows());
+            if (dt.getResolvedColumns() != null) {
+                dtSnapshot.resolvedColumns = derivedColumnSnapshots(dt.getResolvedColumns());
+            }
+            if (!dt.getDeclaredColumns().isEmpty()) {
+                dtSnapshot.columnNames = new ArrayList<>();
+                dtSnapshot.columnTypes = new ArrayList<>();
+                dtSnapshot.columnComments = new ArrayList<>();
+                for (final DynamicTableColumn column : dt.getDeclaredColumns()) {
+                    dtSnapshot.columnNames.add(column.getName());
+                    dtSnapshot.columnTypes.add(column.getType());
+                    dtSnapshot.columnComments.add(column.getComment());
+                }
+            }
             dtSnapshot.transientTable = dt.isTransient();
             dtSnapshot.createText = dt.getCreateText();
             dtSnapshot.bodyText = dt.getBodyText();
+            dtSnapshot.definitionDatabase = dt.getDefinitionDatabase();
+            dtSnapshot.definitionSchema = dt.getDefinitionSchema();
             dtSnapshot.schedulingState = dt.getSchedulingState();
             dtSnapshot.lastSuspendedOn = dt.getLastSuspendedOn();
             dtSnapshot.dataRetentionDays = dt.getDataRetentionDays();
@@ -744,7 +773,9 @@ final class CatalogSnapshotWriter {
         for (final Tag tag : schema.getTags()) {
             final TagSnapshot tagSnapshot = new TagSnapshot();
             tagSnapshot.name = tag.getName();
+            tagSnapshot.id = tag.getId();
             tagSnapshot.allowedValues = new ArrayList<>(tag.getAllowedValues());
+            tagSnapshot.allowedValuesListed = tag.hasAllowedValues();
             tagSnapshot.comment = tag.getComment();
             tagSnapshot.owner = tag.getOwner();
             tagSnapshot.createdAt = tag.getCreatedTime();

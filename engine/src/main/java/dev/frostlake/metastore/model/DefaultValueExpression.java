@@ -27,7 +27,7 @@ package dev.frostlake.metastore.model;
  * value; only expression defaults are wrapped. {@link #toString()} returns the expression text so metadata
  * views (SHOW COLUMNS, INFORMATION_SCHEMA, snapshots) render the original expression.
  */
-public final class DefaultValueExpression {
+public class DefaultValueExpression {
 
     private final String expressionText;
 

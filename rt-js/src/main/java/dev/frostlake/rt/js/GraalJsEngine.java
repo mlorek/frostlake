@@ -25,9 +25,16 @@ import org.graalvm.polyglot.HostAccess;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.ref.WeakReference;
+import java.nio.charset.StandardCharsets;
 import java.time.ZoneId;
-import java.time.ZoneOffset;
+import java.util.Collections;
+import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.function.Predicate;
+import javax.script.Invocable;
 import javax.script.ScriptEngine;
 import javax.script.ScriptException;
 
@@ -44,48 +51,29 @@ public final class GraalJsEngine {
     private static final Engine SHARED_ENGINE = buildEngine();
 
     /**
-     * Run once in every fresh context. The {@code Java} global survives the options above, so it is removed
-     * here, as are the {@code context}, {@code engine} and {@code arguments} globals the script-engine bridge
-     * adds, which a handler on the account never sees. {@code eval} and the {@code Function} constructor refuse
-     * in the account's own words; the engine-level {@code js.disable-eval} still stands behind every other
-     * route to dynamic code. The {@code Function} wrapper keeps its prototype, so {@code f instanceof Function}
-     * holds.
+     * Run once in every fresh context, with the context's {@link JavaScriptHost}. The {@code Java} global
+     * survives the options below, so it is removed there, as are the {@code context}, {@code engine} and
+     * {@code arguments} globals the script-engine bridge adds, which a handler on the account never sees.
+     * {@code eval} and the {@code Function} constructor refuse in the account's own words; the engine-level
+     * {@code js.disable-eval} still stands behind every other route to dynamic code.
      *
      * <p>The account's own globals are declared as it declares them for a function and a procedure alike: the
      * {@code Snowflake} and {@code SnowflakeLogger} constructors, the {@code snowflakeLogger} and
-     * {@code _c_snowflake_logger} objects, and {@code snowflake}, an object with no properties of its own whose
-     * prototype logs: {@code snowflake.log('info', …)} runs in a function too (live-verified). A procedure's
-     * handler adds the statement methods to that prototype (see {@link JavaScriptHandler}).
+     * {@code _c_snowflake_logger} objects with their members, and {@code snowflake}, an object with no properties
+     * of its own whose prototype logs, builds a user exception and refuses to read an account parameter
+     * (live-verified). A procedure's handler adds the statement methods to that prototype (see
+     * {@link JavaScriptHandler}). A date names its zone in full, and {@code JSON.parse} refuses a text in the
+     * account's words.
      */
-    private static final String SANDBOX_PRELUDE = """
-        (function () {
-            delete globalThis.Java;
-            delete globalThis.context;
-            delete globalThis.engine;
-            delete globalThis.arguments;
-            var Snowflake = function Snowflake() {
-            };
-            var levels = ['log', 'log_trace', 'log_debug', 'log_info', 'log_warn', 'log_error', 'log_fatal'];
-            for (var i = 0; i < levels.length; i++) {
-                Snowflake.prototype[levels[i]] = function () {
-                };
-            }
-            var SnowflakeLogger = function SnowflakeLogger() {
-            };
-            globalThis.Snowflake = Snowflake;
-            globalThis.SnowflakeLogger = SnowflakeLogger;
-            globalThis.snowflake = new Snowflake();
-            globalThis.snowflakeLogger = new SnowflakeLogger();
-            globalThis._c_snowflake_logger = {};
-            var refuse = function () {
-                throw new EvalError('Dynamic code evaluation disallowed');
-            };
-            globalThis.eval = function eval() {
-                return refuse();
-            };
-            globalThis.Function = new Proxy(globalThis.Function, { apply: refuse, construct: refuse });
-        })();
-        """;
+    private static final String SANDBOX_PRELUDE = prelude();
+
+    /**
+     * The host object of each engine made here, for the sentence an uncaught error reaches SQL with. The host is
+     * kept by the world it serves, whose own functions call it, and held weakly here: it knows that world, so a
+     * strong hold would keep every engine ever made.
+     */
+    private static final Map<ScriptEngine, WeakReference<JavaScriptHost>> HOSTS =
+        Collections.synchronizedMap(new WeakHashMap<ScriptEngine, WeakReference<JavaScriptHost>>());
 
     private GraalJsEngine() {
     }
@@ -137,11 +125,19 @@ public final class GraalJsEngine {
                 .option("js.load", "false")
                 .option("js.disable-eval", "true")
                 .option("js.stack-trace-api", "true")
-                .option("js.timezone", timeZoneOption(zone));
+                // The account's engine speaks US English whatever the host's locale is, reads a date written
+                // without a zone in the session's, and has the builtins this engine still stages.
+                .option("js.locale", "en-US")
+                .option("js.allow-narrow-spaces-in-date-format", "false")
+                .option("js.use-utc-for-legacy-dates", "false")
+                .option("js.ecmascript-version", "staging")
+                .option("js.timezone", JavaScriptZones.option(zone));
             final ScriptEngine engine = GraalJSScriptEngine.create(SHARED_ENGINE, contextConfig);
-            engine.eval(SANDBOX_PRELUDE);
+            final JavaScriptHost host = new JavaScriptHost(zone);
+            ((Invocable) engine).invokeMethod(engine.eval(SANDBOX_PRELUDE), "call", null, host);
+            HOSTS.put(engine, new WeakReference<JavaScriptHost>(host));
             return engine;
-        } catch (final ScriptException e) {
+        } catch (final ScriptException | NoSuchMethodException e) {
             throw new IllegalStateException("the JavaScript sandbox prelude failed", e);
         } catch (final RuntimeException | NoClassDefFoundError e) {
             logger.debug("Graal JS unavailable: {}", e.getMessage());
@@ -150,18 +146,24 @@ public final class GraalJsEngine {
     }
 
     /**
-     * The zone as the JavaScript engine names one: a region by its own name, a whole-hour offset as its
-     * {@code Etc/GMT} zone (whose sign runs the other way), and anything else as UTC.
+     * The host object of an engine made here.
+     *
+     * @param engine the engine
+     * @return its host, or null for an engine made elsewhere
      */
-    static String timeZoneOption(final ZoneId zone) {
-        if (!(zone instanceof ZoneOffset)) {
-            return zone.getId();
+    static JavaScriptHost hostOf(final ScriptEngine engine) {
+        final WeakReference<JavaScriptHost> held = HOSTS.get(engine);
+        return held == null ? null : held.get();
+    }
+
+    private static String prelude() {
+        try (InputStream in = GraalJsEngine.class.getResourceAsStream("prelude.js")) {
+            if (in == null) {
+                throw new IllegalStateException("the JavaScript sandbox prelude is missing");
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (final IOException e) {
+            throw new IllegalStateException("the JavaScript sandbox prelude cannot be read", e);
         }
-        final int seconds = ((ZoneOffset) zone).getTotalSeconds();
-        if (seconds == 0 || seconds % 3600 != 0) {
-            return "UTC";
-        }
-        final int hours = seconds / 3600;
-        return "Etc/GMT" + (hours > 0 ? "-" + hours : "+" + (-hours));
     }
 }

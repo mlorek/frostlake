@@ -18,10 +18,10 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import java.math.BigDecimal;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
-import java.math.BigDecimal;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;

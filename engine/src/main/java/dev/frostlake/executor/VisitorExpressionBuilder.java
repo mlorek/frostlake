@@ -30,6 +30,7 @@ import dev.frostlake.executor.procedural.SubqueryExpression;
 import dev.frostlake.executor.procedural.UnaryExpression;
 import dev.frostlake.executor.procedural.VariableExpression;
 import dev.frostlake.functions.SystemFunctionNames;
+import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Task;
@@ -758,7 +759,7 @@ public class VisitorExpressionBuilder {
 
             // ── Session / transaction ──────────────────────────────────────────
             case "SYSTEM$ABORT_SESSION":
-                return "Session aborted.";
+                return queryExecutor.evaluateSystemFunction(rawName, args);
 
             case "SYSTEM$ABORT_TRANSACTION":
                 try { queryExecutor.getTransactionManager().rollback(); } catch (final Exception ignored) {}
@@ -781,15 +782,10 @@ public class VisitorExpressionBuilder {
                 return 1.0;
 
             // ── Tags ───────────────────────────────────────────────────────────
-            case "SYSTEM$GET_TAG": {
-                if (args.size() >= 3 && args.get(0) != null && args.get(1) != null) {
-                    final String tagName = args.get(0).toString().replaceAll("^'|'$", "");
-                    final String objectName = args.get(1).toString().replaceAll("^'|'$", "");
-                    final String domain = args.get(2) == null ? null : args.get(2).toString().replaceAll("^'|'$", "");
-                    return queryExecutor.getCatalog().getObjectTagValue(tagName, objectName, domain);
-                }
-                return null;
-            }
+            case "SYSTEM$GET_TAG":
+                return TagReferencesFunction.systemGetTag(queryExecutor.getCatalog(), args);
+            case "SYSTEM$GET_TAG_ALLOWED_VALUES":
+                return TagReferencesFunction.systemGetTagAllowedValues(queryExecutor.getCatalog(), args);
             case "SYSTEM$GET_TAG_ON_CURRENT_COLUMN":
             case "SYSTEM$GET_TAG_ON_CURRENT_TABLE":
                 return null;

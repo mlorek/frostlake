@@ -13,30 +13,55 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Role;
 import dev.frostlake.security.SessionContext;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
 
-/** IS_ROLE_IN_SESSION(name) — TRUE when the named role is the session's current role. */
+/**
+ * IS_ROLE_IN_SESSION(name) — TRUE when the session acts with the named role: its current role, a role granted to
+ * that one directly or through another, or PUBLIC. The name is read as {@link RoleNameText} reads it; one that
+ * names no role is FALSE, and a NULL from a row answers NULL. The bare word NULL and a number are refused while the
+ * statement compiles (see the visitor's argument rules).
+ */
 public class IsRoleInSession extends BuiltInFunction {
 
+    private final Catalog catalog;
     private final SessionContext sessionContext;
 
-    public IsRoleInSession(final SessionContext sessionContext) {
+    /**
+     * @param catalog the catalog holding the roles
+     * @param sessionContext the session whose roles are asked about
+     */
+    public IsRoleInSession(final Catalog catalog, final SessionContext sessionContext) {
         super("IS_ROLE_IN_SESSION", BooleanType.BOOLEAN);
+        this.catalog = catalog;
         this.sessionContext = sessionContext;
     }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        final String current = sessionContext == null ? "SYSADMIN" : sessionContext.getCurrentRole();
-        return args.get(0).toString().equalsIgnoreCase(current);
+        if (RoleNameText.isNull(args.get(0))) {
+            return null;
+        }
+        final String name = RoleNameText.of(args.get(0));
+        if (name == null) {
+            return Boolean.FALSE;
+        }
+        if ("PUBLIC".equals(name) || name.equals(SessionRoles.current(sessionContext))) {
+            return Boolean.TRUE;
+        }
+        for (final Role held : SessionRoles.held(catalog, sessionContext)) {
+            if (held.getName().equals(name)) {
+                return Boolean.TRUE;
+            }
+        }
+        return Boolean.FALSE;
     }
 
     @Override

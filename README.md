@@ -11,7 +11,7 @@ and console clients.
 ## What it is
 
 Frostlake runs Snowflake-compatible SQL — DDL/DML, CTEs, window functions, PIVOT/UNPIVOT,
-Snowflake Scripting procedures, JS/Python/Scala UDFs, streams, tasks, and role-based
+MATCH_RECOGNIZE, Snowflake Scripting procedures, JS/Python/Scala UDFs, streams, tasks, and role-based
 security — against a lightweight in-memory engine, so you can develop and test Snowflake
 SQL locally without a Snowflake account or credits.
 

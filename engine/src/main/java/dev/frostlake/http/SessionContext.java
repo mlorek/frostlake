@@ -35,6 +35,9 @@ public class SessionContext {
 
     private volatile String currentDatabase;
     private volatile String currentSchema;
+    // The session's current warehouse, once one of its statements has run; before that the engine's applies.
+    private volatile String currentWarehouse;
+    private volatile boolean warehouseSettled;
     private volatile boolean autoCommit;
     // The autocommit mode the session's client last declared on a request, or null before one did.
     private Boolean clientAutoCommit;
@@ -111,6 +114,22 @@ public class SessionContext {
 
     public void setCurrentSchema(final String currentSchema) {
         this.currentSchema = currentSchema;
+    }
+
+    /** The session's current warehouse, or null for none; meaningful once {@link #isWarehouseSettled()}. */
+    public String getCurrentWarehouse() {
+        return currentWarehouse;
+    }
+
+    /** Whether a statement of this session has run, so that the warehouse it left current is the session's own. */
+    public boolean isWarehouseSettled() {
+        return warehouseSettled;
+    }
+
+    /** Records the warehouse a statement of this session left current; null for none. */
+    public void setCurrentWarehouse(final String currentWarehouse) {
+        this.currentWarehouse = currentWarehouse;
+        this.warehouseSettled = true;
     }
 
     /** How many statements a request may hold when it declares no count of its own; 0 means any. */

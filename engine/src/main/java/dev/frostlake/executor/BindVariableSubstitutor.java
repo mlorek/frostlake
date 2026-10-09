@@ -20,11 +20,11 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
@@ -77,7 +77,7 @@ public class BindVariableSubstitutor {
             return sql;
         }
 
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         lexer.removeErrorListeners();
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();
@@ -240,8 +240,13 @@ public class BindVariableSubstitutor {
         final DataType declared = declarations == null ? null : declarations.getDeclaredVariableType(name);
         if (value == null) {
             // A NULL keeps its declared type where live binds it so (TypedNullBind) and a cast may stand.
-            return literalOnlySlot || isIdentifierArgument(toks, colonIndex) ? literal
-                : TypedNullBind.spell(declared, NullBindSlot.at(toks, colonIndex));
+            if (literalOnlySlot || isIdentifierArgument(toks, colonIndex)) {
+                return literal;
+            }
+            final NullBindSlot slot = NullBindSlot.at(toks, colonIndex);
+            final String call = slot.wholeArgumentOf();
+            return TypedNullBind.spell(declared, slot, call != null && declarations != null
+                && declarations.isUserFunctionName(call));
         }
         if (literalOnlySlot || !(declared instanceof NumericType)
                 || (value instanceof Double && !Double.isFinite((Double) value))) {

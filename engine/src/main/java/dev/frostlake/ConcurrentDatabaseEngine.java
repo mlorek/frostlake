@@ -21,12 +21,13 @@ import dev.frostlake.functions.scalar.file.NamedStage;
 import dev.frostlake.http.ExpiredSessionListener;
 import dev.frostlake.http.SessionContext;
 import dev.frostlake.http.SessionManager;
+import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSet;
 
 import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
@@ -53,6 +54,11 @@ public class ConcurrentDatabaseEngine {
 
     // Track per-session state
     private final ConcurrentHashMap<String, SessionState> sessionStates;
+
+    // Each session's entry in the engine's directory of abortable sessions, by session id. The directory holds an
+    // entry weakly, so this map is what keeps it for as long as the session lives.
+    private final ConcurrentHashMap<String, AbortableHttpSession> abortable =
+        new ConcurrentHashMap<String, AbortableHttpSession>();
 
     public ConcurrentDatabaseEngine() {
         this(new DatabaseEngine());
@@ -108,7 +114,31 @@ public class ConcurrentDatabaseEngine {
         if (session == null) {
             throw new IllegalArgumentException("Session context is required");
         }
+        registerForAbort(session);
+        try {
+            return executeInSession(sql, session, clientAutoCommit);
+        } finally {
+            // A session this request aborted — its own included — ends now that the request holds no lock.
+            engine.getSessionDirectory().endAborted();
+        }
+    }
 
+    /**
+     * Make a session abortable by SYSTEM$ABORT_SESSION under the number CURRENT_SESSION() answers in it. An
+     * aborted session ends as a released one does, so its next request names no live session.
+     */
+    private void registerForAbort(final SessionContext session) {
+        if (abortable.containsKey(session.getSessionId())) {
+            return;
+        }
+        final AbortableHttpSession entry = new AbortableHttpSession(this, session);
+        if (abortable.putIfAbsent(session.getSessionId(), entry) == null) {
+            engine.getSessionDirectory().register(entry.sessionNumber(), entry);
+        }
+    }
+
+    private ExecutionResult executeInSession(final String sql, final SessionContext session,
+                                             final Boolean clientAutoCommit) {
         session.touch();
 
         // Synchronize on session to prevent concurrent modifications to same session
@@ -212,7 +242,7 @@ public class ConcurrentDatabaseEngine {
      */
     private boolean isReadOnlyQuery(final String sql) {
         try {
-            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
             final CommonTokenStream tokens = new CommonTokenStream(lexer);
             final FrostlakeParser parser = new FrostlakeParser(tokens);
             final boolean[] failed = new boolean[1];
@@ -271,7 +301,12 @@ public class ConcurrentDatabaseEngine {
             // leaked into another, and captureSessionContext then wrote the WRONG database back into
             // the session (which is how a session ended up pointed at another test's dropped clone).
             // The scopes are cleared in execute()'s finally.
-            engine.getCatalog().beginSessionScope(session.getCurrentDatabase(), session.getCurrentSchema());
+            // The current warehouse is the session's own too: a USE WAREHOUSE in one session moved every
+            // session's CURRENT_WAREHOUSE() while the engine kept a single one. A session that has run no
+            // statement yet starts from the engine's.
+            final Catalog catalog = engine.getCatalog();
+            catalog.beginSessionScope(session.getCurrentDatabase(), session.getCurrentSchema(),
+                session.isWarehouseSettled() ? session.getCurrentWarehouse() : catalog.getCurrentWarehouse());
             engine.getTransactionManager().beginSessionAutoCommit(session.isAutoCommit());
             // LAST_QUERY_ID must follow the SESSION, not the pool thread that happens to serve this
             // statement: consecutive requests of one session land on different threads, and a
@@ -314,6 +349,7 @@ public class ConcurrentDatabaseEngine {
         try {
             session.setCurrentDatabase(engine.getCurrentDatabase());
             session.setCurrentSchema(engine.getCurrentSchema());
+            session.setCurrentWarehouse(engine.getCatalog().getCurrentWarehouse());
             session.setAutoCommit(engine.isAutoCommit());
             session.setInTransaction(engine.getTransactionManager().hasActiveTransaction());
             session.setTransactionId(engine.getTransactionManager().getCurrentTransactionId());
@@ -329,14 +365,21 @@ public class ConcurrentDatabaseEngine {
     }
 
     public SessionContext getOrCreateSession(final String sessionId) {
+        engine.getSessionDirectory().endAborted();
         return sessionManager.getOrCreateSession(sessionId);
     }
 
+    /** A live session, or null: a session SYSTEM$ABORT_SESSION ended is none. */
     public SessionContext getSession(final String sessionId) {
+        engine.getSessionDirectory().endAborted();
         return sessionManager.getSession(sessionId);
     }
 
     public void removeSession(final String sessionId) {
+        final AbortableHttpSession entry = abortable.remove(sessionId);
+        if (entry != null) {
+            engine.getSessionDirectory().unregister(entry.sessionNumber());
+        }
         sessionStates.remove(sessionId);
         engine.getQueryResultCache().forgetSession(sessionId);
         sessionManager.removeSession(sessionId);

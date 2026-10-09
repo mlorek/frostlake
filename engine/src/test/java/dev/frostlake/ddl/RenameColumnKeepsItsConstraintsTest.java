@@ -33,9 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Everything that names a column follows ALTER TABLE ... RENAME COLUMN: the primary key in its order, UNIQUE and
- * FOREIGN KEY constraints, a foreign key in another table that references the column, CHECK constraints, the
- * clustering key, search optimization and data metric functions. The rename moved the primary key's column to the
- * end of the key and left every other reference naming a column the table no longer had.
+ * FOREIGN KEY constraints, a foreign key in another table that references the column, CHECK constraints, search
+ * optimization and data metric functions. The rename moved the primary key's column to the end of the key and left
+ * every other reference naming a column the table no longer had. A clustering key's column is the exception: it
+ * keeps its name while the key stands.
  */
 public class RenameColumnKeepsItsConstraintsTest {
 
@@ -134,16 +135,17 @@ public class RenameColumnKeepsItsConstraintsTest {
     }
 
     @Test
-    public void theClusteringKeySearchOptimizationAndDataMetricsFollowTheRename() {
-        engine.execute("CREATE TABLE t (k INT, q VARCHAR, v INT) CLUSTER BY (k, UPPER(q))");
+    public void searchOptimizationAndDataMetricsFollowTheRenameAndAClusteringKeyRefusesIt() {
+        engine.execute("CREATE TABLE t (k INT, q VARCHAR, v INT) CLUSTER BY (k)");
         engine.execute("ALTER TABLE t ADD SEARCH OPTIMIZATION ON EQUALITY(q)");
         engine.execute("ALTER TABLE t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (v)");
 
-        engine.execute("ALTER TABLE t RENAME COLUMN k TO kk");
+        assertEquals("Cannot rename column 'K' which belongs to a clustering key\n",
+            refusal("ALTER TABLE t RENAME COLUMN k TO kk"));
         engine.execute("ALTER TABLE t RENAME COLUMN q TO qq");
         engine.execute("ALTER TABLE t RENAME COLUMN v TO vv");
 
-        assertEquals("LINEAR(KK, UPPER(QQ))", column("SHOW TABLES LIKE 'T'", "cluster_by"));
+        assertEquals("LINEAR(k)", column("SHOW TABLES LIKE 'T'", "cluster_by"));
         assertEquals("QQ", column("DESCRIBE SEARCH OPTIMIZATION ON t", "target"));
         assertEquals("[{\"domain\":\"COLUMN\",\"name\":\"VV\"}]", column("SELECT * FROM TABLE("
             + "INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(REF_ENTITY_NAME => 't', REF_ENTITY_DOMAIN =>"

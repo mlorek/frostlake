@@ -21,10 +21,15 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.NameKeys;
+import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.Taggable;
+import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredObjectType;
 
@@ -50,6 +55,9 @@ public class Schema extends SqlObject {
         this.dataRetentionTimeInDays = dataRetentionTimeInDays;
     }
 
+
+    /** The fractional-second digits a TIME or a TIMESTAMP written bare carries. */
+    private static final int DEFAULT_FRACTION_DIGITS = 9;
 
     private final Map<String, Table> tables;
     /**
@@ -175,14 +183,15 @@ public class Schema extends SqlObject {
 
     /**
      * Refuses a new object in this schema when nothing may be created in it: a database's INFORMATION_SCHEMA is
-     * read-only, so a CREATE there, and a RENAME that would move an object there, refuses as CREATE TABLE always
-     * has, before anything changes.
+     * read-only, so a CREATE there, and a RENAME that would move an object there, refuses before anything changes,
+     * whatever the object's kind: {@code Insufficient privileges to operate on schema 'INFORMATION_SCHEMA'.}
+     * (live-verified).
      *
-     * @param kinds the kind of object, plural and in lower case, as the sentence names it ({@code "views"})
+     * @param kinds the kind of object, plural and in lower case ({@code "views"})
      */
     public void requireCreatable(final String kinds) {
         if ("INFORMATION_SCHEMA".equals(getName())) {
-            throw new RuntimeException("Cannot create " + kinds + " in INFORMATION_SCHEMA");
+            throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("schema", getName()));
         }
     }
 
@@ -204,8 +213,8 @@ public class Schema extends SqlObject {
         rejectNameHeldByOtherKind(table.getName(), RelationKind.TABLE, table.isTemporary());
         final String upperName = table.getName();
         if (tables.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + table.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of(
+                "Object '" + SqlIdentifiers.spellCanonical(table.getName()) + "' already exists."));
         }
         register(table);
     }
@@ -323,8 +332,8 @@ public class Schema extends SqlObject {
         rejectNameHeldByOtherKind(view.getName(), RelationKind.VIEW, view.isTemporary());
         final String upperName = view.getName();
         if (views.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + view.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of(
+                "Object '" + SqlIdentifiers.spellCanonical(view.getName()) + "' already exists."));
         }
         views.put(upperName, view);
     }
@@ -365,8 +374,8 @@ public class Schema extends SqlObject {
         rejectNameHeldByOtherKind(materializedView.getName(), RelationKind.MATERIALIZED_VIEW, false);
         final String upperName = materializedView.getName();
         if (materializedViews.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + materializedView.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of(
+                "Object '" + SqlIdentifiers.spellCanonical(materializedView.getName()) + "' already exists."));
         }
         materializedViews.put(upperName, materializedView);
     }
@@ -400,7 +409,8 @@ public class Schema extends SqlObject {
         rejectNameHeldByOtherKind(dt.getName(), RelationKind.DYNAMIC_TABLE, false);
         final String upperName = dt.getName();
         if (dynamicTables.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + dt.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(dt.getName())
+                + "' already exists."));
         }
         dynamicTables.put(upperName, dt);
     }
@@ -623,6 +633,35 @@ public class Schema extends SqlObject {
         throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
     }
 
+    /**
+     * The overload a statement names by the signature it writes: its parameters match by type family, and a type
+     * written with a length, a precision or a scale matches only a parameter declared with the same (see
+     * {@link #matchesWrittenSignature}).
+     *
+     * @param name          the procedure's exact canonical name
+     * @param argumentTypes the signature written after it, each type with the parameters written on it
+     * @return the overload
+     */
+    public Procedure getProcedureByWrittenSignature(final String name, final List<DataType> argumentTypes) {
+        for (final Procedure proc : getProcedureOverloads(name)) {
+            if (matchesWrittenSignature(proc.getParameters(), argumentTypes)) {
+                return proc;
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
+    }
+
+    /**
+     * Drops the overload a statement names by the signature it writes (see
+     * {@link #getProcedureByWrittenSignature}).
+     *
+     * @param name          the procedure's exact canonical name
+     * @param argumentTypes the signature written after it
+     */
+    public void dropProcedureByWrittenSignature(final String name, final List<DataType> argumentTypes) {
+        removeProcedure(getProcedureByWrittenSignature(name, argumentTypes));
+    }
+
     public List<Procedure> getProcedures() {
         final List<Procedure> allProcedures = new ArrayList<>();
         for (final List<Procedure> overloads : procedures.values()) {
@@ -659,6 +698,7 @@ public class Schema extends SqlObject {
         }
 
         overloads.add(function);
+        function.setHome(this);
     }
 
     /**
@@ -681,6 +721,9 @@ public class Schema extends SqlObject {
         for (int i = 0; i < overloads.size(); i++) {
             if (overloads.get(i) == function) {
                 overloads.remove(i);
+                if (function.getHome() == this) {
+                    function.setHome(null);
+                }
                 break;
             }
         }
@@ -718,6 +761,35 @@ public class Schema extends SqlObject {
             }
         }
         throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
+    }
+
+    /**
+     * The overload a statement names by the signature it writes: its parameters match by type family, and a type
+     * written with a length, a precision or a scale matches only a parameter declared with the same (see
+     * {@link #matchesWrittenSignature}).
+     *
+     * @param name          the function's exact canonical name
+     * @param argumentTypes the signature written after it, each type with the parameters written on it
+     * @return the overload
+     */
+    public Function getFunctionByWrittenSignature(final String name, final List<DataType> argumentTypes) {
+        for (final Function func : getFunctionOverloads(name)) {
+            if (matchesWrittenSignature(func.getParameters(), argumentTypes)) {
+                return func;
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
+    }
+
+    /**
+     * Drops the overload a statement names by the signature it writes (see
+     * {@link #getFunctionByWrittenSignature}).
+     *
+     * @param name          the function's exact canonical name
+     * @param argumentTypes the signature written after it
+     */
+    public void dropFunctionByWrittenSignature(final String name, final List<DataType> argumentTypes) {
+        removeFunction(getFunctionByWrittenSignature(name, argumentTypes));
     }
 
     public List<Function> getFunctions() {
@@ -795,18 +867,90 @@ public class Schema extends SqlObject {
     }
 
     /**
+     * Re-points the sequence defaults of this schema's tables from the sequences of one schema to the sequences
+     * of the same names in its clone (see {@link SequenceDefault}). A default bound to a sequence of any other
+     * schema, or to one the clone does not carry, is left as it is.
+     *
+     * @param source the schema that was cloned
+     * @param clone  its clone
+     */
+    public void rebindSequenceDefaults(final Schema source, final Schema clone) {
+        for (final Table table : tables.values()) {
+            for (final TableColumn column : table.columnsView()) {
+                if (!(column.getDefaultValue() instanceof SequenceDefault)) {
+                    continue;
+                }
+                final Sequence bound = ((SequenceDefault) column.getDefaultValue()).getSequence();
+                final Sequence cloned = bound.getHome() == source ? clone.sequences.get(bound.getName()) : null;
+                if (cloned != null) {
+                    column.setDefaultValue(new SequenceDefault(cloned));
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether a signature a statement WRITES names these parameters. The family decides first (see
+     * {@link #signatureFamily}); then a type written with a length, a precision or a scale names only a parameter
+     * declared with the same, while one written bare names any of its family (live-verified):
+     *
+     * <pre>
+     *   f(code CHAR(2))      VARCHAR, STRING, TEXT, CHAR(2), VARCHAR(2)     not CHAR, CHARACTER, NCHAR, VARCHAR(3)
+     *   f(code VARCHAR(1))   CHAR — a bare CHAR is a text of length 1
+     *   f(code VARCHAR)      VARCHAR                                        not CHAR, VARCHAR(5)
+     *   f(n NUMBER(5,2))     NUMBER, INT                                    not NUMBER(10,0)
+     *   f(b BINARY(4))       BINARY                                         not BINARY(5)
+     *   f(t TIMESTAMP_NTZ(3)) TIMESTAMP_NTZ                                 not TIMESTAMP_NTZ(6)
+     * </pre>
+     *
+     * <p>A type written with its family's own default — NUMBER(38,0), TIMESTAMP_NTZ(9) — reads as written bare.
+     */
+    private boolean matchesWrittenSignature(final List<Parameter> params, final List<DataType> argumentTypes) {
+        if (!matchesSignature(params, argumentTypes)) {
+            return false;
+        }
+        for (int i = 0; i < params.size(); i++) {
+            if (!namesDeclaredWidth(params.get(i).getDataType(), argumentTypes.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Whether a written type's length, precision and scale are its family's default or the declared type's own. */
+    private static boolean namesDeclaredWidth(final DataType declared, final DataType written) {
+        if (written instanceof StringType && declared instanceof StringType) {
+            final int length = ((StringType) written).getMaxLength();
+            return length >= StringType.VARCHAR.getMaxLength() || length == ((StringType) declared).getMaxLength();
+        }
+        if (written instanceof BinaryType && declared instanceof BinaryType) {
+            final int length = ((BinaryType) written).getMaxLength();
+            return length >= BinaryType.BINARY.getMaxLength() || length == ((BinaryType) declared).getMaxLength();
+        }
+        if (written instanceof NumericType && declared instanceof NumericType
+                && "NUMBER".equals(signatureFamily(written))) {
+            final NumericType asWritten = (NumericType) written;
+            final NumericType asDeclared = (NumericType) declared;
+            return asWritten.getPrecision() == NumericType.NUMBER.getPrecision() && asWritten.getScale() == 0
+                || asWritten.getPrecision() == asDeclared.getPrecision()
+                    && asWritten.getScale() == asDeclared.getScale();
+        }
+        if (written instanceof DateTimeType && declared instanceof DateTimeType) {
+            final int precision = ((DateTimeType) written).getPrecision();
+            return precision == DEFAULT_FRACTION_DIGITS || precision == ((DateTimeType) declared).getPrecision();
+        }
+        return true;
+    }
+
+    /**
      * The CANONICAL type family a routine's signature is stored under: Snowflake normalizes a
      * parameter's declared alias away, so a DROP / DESCRIBE names the FAMILY. Live-verified on a real
      * account, each spelling re-creating the routine between attempts: an
      * {@code x INTEGER} parameter is dropped by INTEGER, INT, BIGINT and NUMBER alike; a
      * {@code x DECIMAL(10,2)} parameter by DECIMAL and by NUMBER; a {@code x DOUBLE} parameter by
-     * DOUBLE; and a {@code x CHAR(5)} parameter by STRING and by VARCHAR. Length is not compared —
-     * bare {@code VARCHAR} matches a {@code CHAR(10)} parameter.
-     *
-     * <p>ONE probed spelling is deliberately not emulated: {@code DROP FUNCTION f(CHAR)} against a
-     * {@code CHAR(5)} parameter fails on Snowflake even though STRING and VARCHAR succeed — an
-     * inconsistency in its own alias handling (bare CHAR appears to mean CHAR(1)). Frostlake accepts
-     * that spelling too rather than encoding the quirk.
+     * DOUBLE; and a {@code x CHAR(5)} parameter by STRING and by VARCHAR. Two overloads are the same
+     * signature by family alone, whatever their lengths: {@code f(CHAR(3))} beside {@code f(CHAR(2))}
+     * already exists.
      */
     private static String signatureFamily(final DataType type) {
         // A structured OBJECT or ARRAY is another signature than the plain type of its name, as CREATE already
@@ -868,7 +1012,10 @@ public class Schema extends SqlObject {
     public static String signatureText(final List<Parameter> parameters) {
         final StringBuilder text = new StringBuilder("(");
         for (int i = 0; i < parameters.size(); i++) {
-            text.append(i > 0 ? ", " : "").append(signatureFamily(parameters.get(i).getDataType()));
+            // A parameter with a default is marked, as SHOW GRANTS names it: D(NUMBER, DEFAULT VARCHAR)
+            // (live-verified).
+            text.append(i > 0 ? ", " : "").append(parameters.get(i).hasDefault() ? "DEFAULT " : "")
+                .append(signatureFamily(parameters.get(i).getDataType()));
         }
         return text.append(')').toString();
     }
@@ -894,7 +1041,8 @@ public class Schema extends SqlObject {
         rejectNameHeldByOtherKind(stream.getName(), RelationKind.STREAM, false);
         final String upperName = stream.getName();
         if (streams.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + stream.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of("Object '"
+                + SqlIdentifiers.spellCanonical(stream.getName()) + "' already exists."));
         }
         streams.put(upperName, stream);
     }
@@ -930,7 +1078,8 @@ public class Schema extends SqlObject {
     public void addTask(final Task task) {
         final String upperName = task.getName();
         if (tasks.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + task.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of("Object '"
+                + SqlIdentifiers.spellCanonical(task.getName()) + "' already exists."));
         }
         tasks.put(upperName, task);
     }
@@ -962,7 +1111,8 @@ public class Schema extends SqlObject {
     /** Adds an alert; a name already taken by an alert is refused. */
     public void addAlert(final Alert alert) {
         if (alerts.containsKey(alert.getName())) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + alert.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of("Object '"
+                + SqlIdentifiers.spellCanonical(alert.getName()) + "' already exists."));
         }
         alerts.put(alert.getName(), alert);
     }
@@ -997,7 +1147,8 @@ public class Schema extends SqlObject {
     public void addPipe(final Pipe pipe) {
         final String upperName = pipe.getName();
         if (pipes.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + pipe.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of("Object '"
+                + SqlIdentifiers.spellCanonical(pipe.getName()) + "' already exists."));
         }
         pipes.put(upperName, pipe);
     }
@@ -1026,9 +1177,11 @@ public class Schema extends SqlObject {
     public void addSequence(final Sequence sequence) {
         final String upperName = sequence.getName();
         if (sequences.containsKey(upperName)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + sequence.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of("Object '"
+                + SqlIdentifiers.spellCanonical(sequence.getName()) + "' already exists."));
         }
         sequences.put(upperName, sequence);
+        sequence.setHome(this);
     }
 
     public void dropSequence(final String name) {
@@ -1036,7 +1189,10 @@ public class Schema extends SqlObject {
         if (!sequences.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
         }
-        sequences.remove(upperName);
+        final Sequence dropped = sequences.remove(upperName);
+        if (dropped != null && dropped.getHome() == this) {
+            dropped.setHome(null);
+        }
     }
 
     public Sequence getSequence(final String name) {
@@ -1124,10 +1280,12 @@ public class Schema extends SqlObject {
             }
         }
 
-        // Tags are cloned with their schema, and the clone's assignments name them by their simple names,
-        // so an assignment in the clone reads the clone's tag (documented).
+        // Tags are cloned with their schema, and what is cloned with them is mapped to the clones afterwards
+        // (TagAssignments.mapToClones), so an assignment in the clone reads the clone's tag (documented).
         for (final Tag tag : tags.values()) {
             final Tag clonedTag = new Tag(tag.getName(), tag.getAllowedValues(), tag.getComment());
+            clonedTag.markAllowedValuesListed(tag.hasAllowedValues());
+            clonedTag.setClonedFromId(tag.getId());
             clonedTag.setPropagate(tag.getPropagate());
             clonedTag.setOnConflict(tag.getOnConflict());
             clonedTag.setOwner(tag.getOwner());
@@ -1186,6 +1344,7 @@ public class Schema extends SqlObject {
                 );
                 clonedProc.setComment(proc.getComment());
                 clonedProc.setImports(proc.getImports());
+                clonedProc.setEnvironment(proc.getEnvironment().copy());
                 clonedProc.setReturnsTable(proc.returnsTable());
                 clonedProc.setReturnColumns(proc.getReturnColumns());
                 clonedProc.setExecuteAs(proc.getExecuteAs());
@@ -1225,6 +1384,8 @@ public class Schema extends SqlObject {
                 clonedFunc.setVolatility(func.getVolatility());
                 clonedFunc.setSecure(func.isSecure());
                 clonedFunc.setImports(func.getImports());
+                clonedFunc.setEnvironment(func.getEnvironment().copy());
+                clonedFunc.setHome(clonedSchema);
                 clonedFunc.setMemoizable(func.isMemoizable());
                 if (func.isServiceFunction()) {
                     clonedFunc.setService(func.getServiceName(), func.getServiceEndpoint(), func.getMaxBatchRows());
@@ -1311,7 +1472,10 @@ public class Schema extends SqlObject {
             clonedSequence.setCurrentValue(sequence.getCurrentValueRaw());
             clonedSequence.setOwner(sequence.getOwner());
             clonedSchema.sequences.put(sequence.getName(), clonedSequence);
+            clonedSequence.setHome(clonedSchema);
         }
+        // A cloned table that drew from one of this schema's sequences draws from that sequence's clone.
+        clonedSchema.rebindSequenceDefaults(this, clonedSchema);
 
         // Clone the policy OBJECTS too — a policy attached to a cloned table/view must still resolve
         // inside the clone (fresh instances: a later rename of the original must not affect the clone).
@@ -1339,6 +1503,7 @@ public class Schema extends SqlObject {
             final MaskingPolicy clonedPolicy = new MaskingPolicy(policy.getName(), policy.getParameters(),
                 policy.getReturnType(), policy.getBody());
             clonedPolicy.setReturnDataType(policy.getReturnDataType());
+            clonedPolicy.setReturnSpelling(policy.getReturnSpelling());
             clonedSchema.maskingPolicies.put(policy.getName().toUpperCase(), withPolicyDetails(policy, clonedPolicy));
         }
         for (final RowAccessPolicy policy : rowAccessPolicies.values()) {
@@ -1407,7 +1572,8 @@ public class Schema extends SqlObject {
     public void addStage(final Stage stage) {
         final String key = stage.getName();
         if (stages.containsKey(key)) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + stage.getName() + "' already exists."));
+            throw new NameTakenException(SqlCompilationError.of("Object '"
+                + SqlIdentifiers.spellCanonical(stage.getName()) + "' already exists."));
         }
         stages.put(key, stage);
     }
@@ -1471,6 +1637,29 @@ public class Schema extends SqlObject {
         return new ArrayList<>(cortexSearchServices.values());
     }
 
+    /**
+     * The service of exactly that canonical name, as a statement names one: a quoted name keeps its case, so
+     * {@code "svc"} and {@code SVC} are two services.
+     */
+    public CortexSearchService getCortexSearchServiceExact(final String name) {
+        final CortexSearchService service = cortexSearchServices.get(name);
+        if (service == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", qualified(name)));
+        }
+        return service;
+    }
+
+    /** Whether a service of exactly that canonical name exists. */
+    public boolean hasCortexSearchServiceExact(final String name) {
+        return cortexSearchServices.containsKey(name);
+    }
+
+    /** Drops the service of exactly that canonical name; a missing one is refused as {@link #getCortexSearchServiceExact} refuses it. */
+    public void dropCortexSearchServiceExact(final String name) {
+        getCortexSearchServiceExact(name);
+        cortexSearchServices.remove(name);
+    }
+
     /** The schema's notebooks and Streamlit apps, live and dropped. */
     public AppObjectStore getAppObjects() {
         return appObjects;
@@ -1497,18 +1686,27 @@ public class Schema extends SqlObject {
         return tags.containsKey(keyFor(tags, name));
     }
 
+    /**
+     * Whether a tag of EXACTLY this name is here - the check a create or a rename makes, where a name that
+     * differs only in case is a different tag (live-verified).
+     */
+    public boolean hasTagExact(final String name) {
+        return tags.containsKey(name);
+    }
+
     public List<Tag> getTags() {
         return new ArrayList<>(tags.values());
     }
 
     public void renameTag(final String oldName, final String newName) {
         final Tag tag = getTag(oldName);
-        if (tags.containsKey(keyFor(tags, newName))) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + newName.toUpperCase() + "' already exists."));
+        if (tags.containsKey(newName)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(newName)
+                + "' already exists."));
         }
         tags.remove(keyFor(tags, oldName));
         tag.rename(newName);
-        tags.put(newName.toUpperCase(), tag);
+        tags.put(newName, tag);
     }
 
     /**

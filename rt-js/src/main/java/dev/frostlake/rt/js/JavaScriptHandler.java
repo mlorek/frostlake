@@ -93,9 +93,13 @@ final class JavaScriptHandler {
             .append(arguments).append(") {\n")
             .append(converted);
         if (procedure) {
+            // executeAsync answers the result set too: the engine runs the statement before it returns.
             source.append("Snowflake.prototype.createStatement = function createStatement(options) {")
                 .append(" return api.createStatement(options); };\n")
-                .append("Snowflake.prototype.execute = function execute(options) { return api.execute(options); };\n");
+                .append("Snowflake.prototype.execute = function execute(options, context) {")
+                .append(" return api.execute(options); };\n")
+                .append("Snowflake.prototype.executeAsync = function executeAsync(options, context) {")
+                .append(" return api.execute(options); };\n");
         }
         if (named) {
             source.append("var had = Object.prototype.hasOwnProperty.call(globalThis, ").append(global)

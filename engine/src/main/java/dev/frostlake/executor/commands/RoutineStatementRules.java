@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.IntoClausePlacement;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.Token;
@@ -31,7 +32,10 @@ import java.util.Set;
 
 /**
  * The rules a CREATE FUNCTION or CREATE PROCEDURE statement is judged by from its own text alone, before any name
- * in it resolves (live-verified): the order of its options, a syntax rule (see {@link RoutineOptionOrder}); then the
+ * in it resolves (live-verified): the order of its options, a syntax rule (see {@link RoutineOptionOrder}); then
+ * the order of its arguments, a required one after an optional one being {@code required argument Y cannot follow
+ * optional argument X} at the required one's name, ahead of a repeated argument name, an unknown type and a
+ * missing schema; then the
  * types it declares, a width out of range first ({@code CREATE FUNCTION f(a VARCHAR(0)) ... LANGUAGE COBOL} is
  * {@code Invalid character length: 0.}, ahead of a missing schema too); then a LANGUAGE the account does not know,
  * {@code Unknown function language: COBOL.}, "function" for a procedure too; then, for a function, EXECUTE AS,
@@ -58,13 +62,76 @@ final class RoutineStatementRules {
      */
     static void judge(final FrostlakeParser.CreateStatementContext statement) {
         RoutineOptionOrder.requireOrder(statement);
+        final FrostlakeParser.ParameterDefContext misplaced = requiredAfterOptional(statement);
         for (int i = 0; i < statement.getChildCount(); i++) {
             if (!(statement.getChild(i) instanceof FrostlakeParser.BodyDefinitionContext)) {
-                ScriptTypeCompiler.validateDeclaredTypes(statement.getChild(i));
+                judgeInWrittenOrder(statement.getChild(i), statement, misplaced);
             }
         }
         rejectUnknownLanguage(statement);
         rejectInvocationType(statement);
+    }
+
+    /**
+     * Judge a routine statement's literals and types where they are written, and a required argument written after
+     * an optional one at its name, whichever comes first in the text: a default too wide to read is refused before
+     * the argument after it, and that argument before its own type (live-verified).
+     */
+    private static void judgeInWrittenOrder(final ParseTree node, final FrostlakeParser.CreateStatementContext statement,
+                                            final FrostlakeParser.ParameterDefContext misplaced) {
+        final boolean leaf = node instanceof TerminalNode || node instanceof FrostlakeParser.DataTypeNameContext;
+        if (leaf && misplaced != null) {
+            final Token starts = node instanceof TerminalNode ? ((TerminalNode) node).getSymbol()
+                : ((FrostlakeParser.DataTypeNameContext) node).getStart();
+            if (starts.getTokenIndex() >= misplaced.identifier().getStart().getTokenIndex()) {
+                throw requiredAfterOptionalRefusal(statement, misplaced);
+            }
+        }
+        if (leaf) {
+            ScriptTypeCompiler.validateDeclaredTypes(node);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            judgeInWrittenOrder(node.getChild(i), statement, misplaced);
+        }
+    }
+
+    /** The first required argument written after an optional one, or null when the arguments are in order. */
+    private static FrostlakeParser.ParameterDefContext requiredAfterOptional(
+            final FrostlakeParser.CreateStatementContext statement) {
+        if (statement.parameterList() == null) {
+            return null;
+        }
+        boolean optional = false;
+        for (final FrostlakeParser.ParameterDefContext parameter : statement.parameterList().parameterDef()) {
+            if (parameter.DEFAULT() != null || parameter.COLON_EQ() != null) {
+                optional = true;
+            } else if (optional) {
+                return parameter;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The refusal of a required argument written after an optional one, at the required one's name. The optional
+     * one named is the nearest before it.
+     */
+    private static RuntimeException requiredAfterOptionalRefusal(final FrostlakeParser.CreateStatementContext statement,
+                                                                 final FrostlakeParser.ParameterDefContext required) {
+        String optional = null;
+        for (final FrostlakeParser.ParameterDefContext parameter : statement.parameterList().parameterDef()) {
+            if (parameter == required) {
+                break;
+            }
+            if (parameter.DEFAULT() != null || parameter.COLON_EQ() != null) {
+                optional = SqlIdentifiers.canonical(parameter.identifier());
+            }
+        }
+        final Token at = required.identifier().getStart();
+        return new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+            "required argument " + SqlIdentifiers.canonical(required.identifier())
+                + " cannot follow optional argument " + optional));
     }
 
     /** Refuse a block holding a routine statement whose options are out of order. */

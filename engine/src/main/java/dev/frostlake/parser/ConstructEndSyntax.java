@@ -421,7 +421,9 @@ public final class ConstructEndSyntax {
             return FrostlakeLexer.LOOP;
         }
         if (owner instanceof FrostlakeParser.ForStatementContext) {
-            return FrostlakeLexer.FOR;
+            // A FOR opened with LOOP closes with END LOOP, as a WHILE does.
+            final Token opener = previousSpoken(stream, body.getStart().getTokenIndex());
+            return opener != null && opener.getType() == FrostlakeLexer.LOOP ? FrostlakeLexer.LOOP : FrostlakeLexer.FOR;
         }
         if (owner instanceof FrostlakeParser.RepeatStatementContext) {
             return FrostlakeLexer.REPEAT;

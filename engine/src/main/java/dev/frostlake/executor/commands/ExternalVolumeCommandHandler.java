@@ -272,11 +272,14 @@ public final class ExternalVolumeCommandHandler {
         }
         rows.add(new Row(Arrays.asList((Object) "", "ALLOW_WRITES", "Boolean",
             volume.isAllowWrites() ? "true" : "false", "true")));
+        // One external ID is generated for the volume: every location that wrote none shows it (live-verified).
+        final String generatedId = GeneratedCloudIdentity.externalId(catalog.getAccountLocator(), "EXTERNAL VOLUME",
+            name);
         int index = 0;
         for (final Map<String, PropertyValue> location : volume.getStorageLocations()) {
             index++;
             rows.add(new Row(Arrays.asList((Object) "STORAGE_LOCATIONS", "STORAGE_LOCATION_" + index, "String",
-                locationJson(location), "")));
+                locationJson(location, generatedId), "")));
         }
         // The active location is chosen when the volume is first used, which never happens here.
         rows.add(new Row(Arrays.asList((Object) "STORAGE_LOCATIONS", "ACTIVE", "String", "", "")));
@@ -286,9 +289,12 @@ public final class ExternalVolumeCommandHandler {
     /**
      * A location as DESCRIBE shows it: NAME, STORAGE_PROVIDER, STORAGE_BASE_URL, the STORAGE_ALLOWED_LOCATIONS the
      * base URL opens, the provider's own properties, and — but for Azure — the encryption flattened to
-     * ENCRYPTION_TYPE and ENCRYPTION_KMS_KEY_ID. Credentials never show.
+     * ENCRYPTION_TYPE and ENCRYPTION_KMS_KEY_ID. A role the location assumes is followed by the IAM user the
+     * account assumes it as and by the external ID, the one written or else the one generated, and a Google Cloud
+     * location names the service account that reads it (live-verified).
+     * Credentials never show.
      */
-    private static String locationJson(final Map<String, PropertyValue> location) {
+    private static String locationJson(final Map<String, PropertyValue> location, final String generatedId) {
         final Map<String, PropertyValue> shown = new LinkedHashMap<>();
         final String baseUrl = location.get("STORAGE_BASE_URL").getText();
         shown.put("NAME", location.get("NAME"));
@@ -297,10 +303,18 @@ public final class ExternalVolumeCommandHandler {
         final List<PropertyValue> allowed = new ArrayList<>();
         allowed.add(PropertyValue.text(baseUrl + "*"));
         shown.put("STORAGE_ALLOWED_LOCATIONS", PropertyValue.list(allowed));
+        if ("GCS".equals(location.get("STORAGE_PROVIDER").getText())) {
+            shown.put("STORAGE_GCP_SERVICE_ACCOUNT", PropertyValue.text(GeneratedCloudIdentity.SERVICE_ACCOUNT));
+        }
         for (final Map.Entry<String, PropertyValue> entry : location.entrySet()) {
             if (!shown.containsKey(entry.getKey()) && !"CREDENTIALS".equals(entry.getKey())
                     && !"ENCRYPTION".equals(entry.getKey())) {
                 shown.put(entry.getKey(), entry.getValue());
+            }
+            if ("STORAGE_AWS_ROLE_ARN".equals(entry.getKey())) {
+                final PropertyValue written = location.get("STORAGE_AWS_EXTERNAL_ID");
+                shown.put("STORAGE_AWS_IAM_USER_ARN", PropertyValue.text(GeneratedCloudIdentity.USER_ARN));
+                shown.put("STORAGE_AWS_EXTERNAL_ID", written != null ? written : PropertyValue.text(generatedId));
             }
         }
         if (!"AZURE".equals(location.get("STORAGE_PROVIDER").getText())) {

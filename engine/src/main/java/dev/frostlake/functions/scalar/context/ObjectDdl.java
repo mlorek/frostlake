@@ -47,6 +47,7 @@ import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * GET_DDL's text for the schema objects that are neither relations nor routines: tags, file formats, streams,
@@ -75,8 +76,9 @@ final class ObjectDdl {
     static String tag(final Tag tag, final String name) {
         final StringBuilder sb = new StringBuilder("create or replace tag ").append(name).append(' ');
         if (tag.hasAllowedValues()) {
-            sb.append(" allowed_values  ");
+            // A list that holds no value is still written: " allowed_values " and nothing after it.
             final List<String> values = tag.getAllowedValues();
+            sb.append(values.isEmpty() ? " allowed_values" : " allowed_values  ");
             for (int i = 0; i < values.size(); i++) {
                 sb.append(i > 0 ? " , " : "").append(quoted(values.get(i)));
             }
@@ -276,13 +278,26 @@ final class ObjectDdl {
     // ─────────────────────────── TASK ───────────────────────────
 
     /**
-     * {@code create or replace task T}, then one tab-indented line each for the warehouse, the schedule, the
+     * {@code create or replace task T}, its tags and its contacts each on a line of their own, then one
+     * tab-indented line each for the
+     * warehouse, the schedule, the
      * CONFIG (its text as written, a backslash and a single quote each doubled), the task parameters set on the
      * task, the COMMENT, overlapping execution, the predecessors (always fully qualified), the WHEN condition, and
      * last {@code as} and the body.
      */
-    static String task(final Task task, final Schema schema, final String name) {
+    static String task(final Task task, final Schema schema, final String name, final String tags) {
         final StringBuilder sb = new StringBuilder("create or replace task ").append(name).append('\n');
+        if (!tags.isEmpty()) {
+            sb.append(" WITH TAG (").append(tags).append(")\n");
+        }
+        if (!task.getContacts().isEmpty()) {
+            final StringBuilder contacts = new StringBuilder();
+            for (final Map.Entry<String, String> contact : task.getContacts().entrySet()) {
+                contacts.append(contacts.length() > 0 ? ", " : "").append(contact.getKey()).append('=')
+                    .append(contact.getValue());
+            }
+            sb.append(" WITH CONTACT (").append(contacts).append(")\n");
+        }
         if (task.getWarehouse() != null) {
             sb.append("\twarehouse=").append(task.getWarehouse()).append('\n');
         }
@@ -363,8 +378,9 @@ final class ObjectDdl {
 
     /** {@code create or replace masking policy P as (V VARCHAR) \nreturns VARCHAR ->\nbody\n;}. */
     static String maskingPolicy(final MaskingPolicy policy, final String name) {
-        final String returns = policy.getReturnDataType() != null
-            ? SqlTypeNames.routineType(policy.getReturnDataType()) : policyTypeName(policy.getReturnType());
+        final String returns = policy.getReturnSpelling() != null ? policy.getReturnSpelling()
+            : policy.getReturnDataType() != null ? SqlTypeNames.routineType(policy.getReturnDataType())
+            : policyTypeName(policy.getReturnType());
         return policyDdl("masking policy", name, policySignature(policy.getParameters()), returns,
             policy.getBody(), policy.getComment());
     }

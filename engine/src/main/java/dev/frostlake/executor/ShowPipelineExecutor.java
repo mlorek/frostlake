@@ -23,6 +23,7 @@ import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.RefreshMode;
 import dev.frostlake.metastore.model.Schema;
@@ -507,8 +508,8 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("next_value", NumericType.BIGINT),
-            new ResultSetColumn("interval", NumericType.BIGINT),
+            new ResultSetColumn("next_value", NumericType.NUMBER),
+            new ResultSetColumn("interval", NumericType.NUMBER),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
@@ -521,13 +522,24 @@ final class ShowPipelineExecutor {
      * DESCRIBE STREAM returns the stream's SHOW STREAMS row, as the documentation gives the two commands one set of
      * columns, stale_after's timestamp included.
      */
-    public ResultSet describeStream(final String streamName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+    public ResultSet describeStream(final SchemaObjectName written) {
+        final Schema schema = written.schema();
+        final String streamName = written.name();
+        if (!schema.hasStreamExact(streamName)) {
+            if (schema.hasTable(streamName) || schema.hasView(streamName) || schema.hasMaterializedView(streamName)
+                    || schema.hasDynamicTable(streamName)) {
+                // A schema's relations and its streams share one namespace, so the name reaches an object, of
+                // another kind (live-verified).
+                throw new RuntimeException(SqlCompilationError.of("Invalid object type: 'STREAM'"));
+            }
+            // A missing stream is named as the statement wrote it, bare or in full, where a task, a pipe and a
+            // sequence are always named in full (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream",
+                written.isQualified() ? written.fullName() : streamName));
+        }
         final Stream stream = schema.getStream(streamName);
 
-        final ResultSet listed = showStreams(dbName, scName);
+        final ResultSet listed = showStreams(written.database().getName(), schema.getName());
         final List<Row> rows = new ArrayList<>();
         for (final Row row : listed.getRows()) {
             if (stream.getName().equals(row.getValue(1))) {
@@ -538,26 +550,20 @@ final class ShowPipelineExecutor {
     }
 
     /** DESCRIBE TASK returns the task's SHOW TASKS row — live gives the two commands one shape. */
-    public ResultSet describeTask(final String taskName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-        final Task task = schema.getTask(taskName);
-        if (task == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", taskName));
-        }
+    public ResultSet describeTask(final SchemaObjectName written) {
+        final Schema schema = written.schema();
+        final Task task = schema.getTask(written.name());
         final List<Row> rows = new ArrayList<>();
-        rows.add(taskRow(task, dbName, scName));
+        rows.add(taskRow(task, written.database().getName(), schema.getName()));
         return new ResultSet(taskColumns(), rows);
     }
 
     /** DESCRIBE PIPE returns the pipe's SHOW PIPES row — live gives the two commands one shape. */
-    public ResultSet describePipe(final String pipeName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+    public ResultSet describePipe(final SchemaObjectName written) {
+        final String pipeName = written.name();
+        final Schema schema = written.schema();
         final List<Row> rows = new ArrayList<>();
-        appendPipeRows(dbName, schema, null, rows);
+        appendPipeRows(written.database().getName(), schema, null, rows);
         final List<Row> matching = new ArrayList<>();
         for (final Row row : rows) {
             if (pipeName.equalsIgnoreCase(String.valueOf(row.getValue(1)))) {
@@ -565,19 +571,19 @@ final class ShowPipelineExecutor {
             }
         }
         if (matching.isEmpty()) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", pipeName));
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", written.fullName()));
         }
         return new ResultSet(pipeColumns(), matching);
     }
 
-    public ResultSet describeSequence(final String sequenceName) {
+    public ResultSet describeSequence(final SchemaObjectName written) {
         // Snowflake DESC SEQUENCE returns a single columnar row, not property/value rows (live-verified).
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("next_value", NumericType.BIGINT),
-            new ResultSetColumn("interval", NumericType.BIGINT),
+            new ResultSetColumn("next_value", NumericType.NUMBER),
+            new ResultSetColumn("interval", NumericType.NUMBER),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
@@ -585,10 +591,9 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("ordered", StringType.VARCHAR)
         );
 
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = catalog.getCurrentSchema();
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-        final Sequence sequence = schema.getSequence(sequenceName);
+        final String dbName = written.database().getName();
+        final String scName = written.schema().getName();
+        final Sequence sequence = written.schema().getSequence(written.name());
 
         final List<Row> rows = new ArrayList<>();
         // The same ten cells SHOW SEQUENCES prints for the one sequence — the creation instant and
@@ -660,8 +665,8 @@ final class ShowPipelineExecutor {
     }
 
     /** DESCRIBE CORTEX SEARCH SERVICE — the one service, in the SHOW shape. */
-    public ResultSet describeCortexSearchService(final String serviceName) {
-        final CortexSearchService service = catalog.resolveCortexSearchService(serviceName);
+    public ResultSet describeCortexSearchService(final String[] serviceParts) {
+        final CortexSearchService service = catalog.resolveCortexSearchService(serviceParts);
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(cortexSearchServiceRow(service)));
         return new ResultSet(cortexSearchServiceColumns(), rows);
@@ -693,9 +698,9 @@ final class ShowPipelineExecutor {
             service.isIndexingSuspended() ? "SUSPENDED" : "ACTIVE",
             service.isServingSuspended() ? "SUSPENDED" : "RUNNING",
             Long.valueOf(0L),
-            nameArrayText(new ArrayList<String>()),
+            nameArrayText(service.getPrimaryKeyColumns()),
             Long.valueOf(0L),
-            null,
+            service.getAutoSuspend() == null ? null : Long.valueOf(service.getAutoSuspend().longValue()),
             "AUTO",
             nameArrayText(new ArrayList<String>())
         );
@@ -732,10 +737,10 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("embedding_model", StringType.VARCHAR),
             new ResultSetColumn("indexing_state", StringType.VARCHAR),
             new ResultSetColumn("serving_state", StringType.VARCHAR),
-            new ResultSetColumn("source_data_num_rows", NumericType.BIGINT),
+            new ResultSetColumn("source_data_num_rows", NumericType.NUMBER),
             new ResultSetColumn("primary_key_columns", StringType.VARCHAR),
-            new ResultSetColumn("scoring_profile_count", NumericType.BIGINT),
-            new ResultSetColumn("auto_suspend", StringType.VARCHAR),
+            new ResultSetColumn("scoring_profile_count", ShowResultHelpers.COUNT),
+            new ResultSetColumn("auto_suspend", ShowResultHelpers.COUNT),
             new ResultSetColumn("refresh_mode", StringType.VARCHAR),
             new ResultSetColumn("vector_indexes", StringType.VARCHAR)
         );
@@ -779,7 +784,8 @@ final class ShowPipelineExecutor {
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(dt.getCreatedTime()),
                 dt.getName(), dbName, scName,
-                clusterKeys.isEmpty() ? "" : "LINEAR(" + String.join(", ", clusterKeys) + ")", 0L, 0L,
+                clusterKeys.isEmpty() ? "" : "LINEAR(" + String.join(", ", clusterKeys) + ")",
+                dt.getRefreshedRows(), 0L,
                 dt.getOwner(),
                 dt.getTargetLag(),
                 resolvedRefreshMode(dt),
@@ -831,8 +837,8 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("cluster_by", StringType.VARCHAR),
-            new ResultSetColumn("rows", NumericType.BIGINT),
-            new ResultSetColumn("bytes", NumericType.BIGINT),
+            new ResultSetColumn("rows", NumericType.NUMBER),
+            new ResultSetColumn("bytes", NumericType.NUMBER),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("target_lag", StringType.VARCHAR),
             new ResultSetColumn("refresh_mode", StringType.VARCHAR),
@@ -871,19 +877,24 @@ final class ShowPipelineExecutor {
         final String[] parts = QualifiedName.parse(tableName).parts();
         final String dbName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
         final String scName = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema();
-        catalog.getDatabase(dbName).getSchema(scName).getDynamicTable(parts[parts.length - 1]);
+        final List<DynamicTableColumn> declared = catalog.getDatabase(dbName).getSchema(scName)
+            .getDynamicTable(parts[parts.length - 1]).getDeclaredColumns();
 
         final List<ResultSetColumn> columns = ShowRelationalExecutor.describeColumns();
         final List<Row> rows = new ArrayList<>();
-        for (final ResultSetColumn column : projection.getResultSet().getColumns()) {
+        final List<ResultSetColumn> projected = projection.getResultSet().getColumns();
+        for (int i = 0; i < projected.size(); i++) {
+            final ResultSetColumn column = projected.get(i);
             final DataType type = column.getStaticType() != null ? column.getStaticType() : column.getDataType();
+            // A column the table declares keeps the name and the comment it was declared with.
+            final DynamicTableColumn own = i < declared.size() ? declared.get(i) : null;
             rows.add(new Row(Arrays.asList(
-                column.getName().toUpperCase(),
+                own != null ? own.getName() : column.getName().toUpperCase(),
                 SqlTypeNames.columnMetadata(type),
                 "COLUMN",
                 "Y",
                 null, "N", "N",
-                null, null, null, null, null, null
+                null, null, own != null ? own.getComment() : null, null, null, null
             )));
         }
         return new ResultSet(columns, rows);

@@ -124,6 +124,10 @@ public class NotebookStreamlitTest extends BaseDatabaseTest {
 
     @Test
     public void aStreamlitKeepsItsVersions() {
+        // An app created FROM a location copies its files, so the stage holds the main file first.
+        engine.execute("CREATE OR REPLACE STAGE stg");
+        engine.execute("COPY INTO @stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
+            + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE");
         assertEquals("Streamlit APP successfully created.", engine.executeQuery("CREATE STREAMLIT app FROM "
             + "'@stg/app' MAIN_FILE = 'streamlit_app.py' TITLE = 'My app' QUERY_WAREHOUSE = fl_app_wh1 "
             + "IMPORTS = ('@stg/lib.py') EXTERNAL_ACCESS_INTEGRATIONS = (ext1)").getRows().get(0).getValue(0));

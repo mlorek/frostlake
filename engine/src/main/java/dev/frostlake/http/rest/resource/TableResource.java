@@ -315,7 +315,7 @@ public final class TableResource implements RestResource {
     private static RestResponse usingTemplate(final RestCall call, final RestIdentifier name) {
         final RestCreateMode mode = call.createMode();
         return call.sql().action("CREATE" + mode.orReplace() + " TABLE" + mode.ifNotExists() + " "
-            + call.qualifiedSql(name) + copyGrants(call) + " USING TEMPLATE " + requiredQuery(call));
+            + call.qualifiedSql(name) + copyGrants(call) + " USING TEMPLATE (" + requiredQuery(call) + ")");
     }
 
     /** {@code :create-like}: an empty table shaped like the path's table, in the same schema. */

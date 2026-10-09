@@ -123,7 +123,16 @@ enum ShowListing {
         ShowScopeAnswer.CANNOT_SHOW, true, true),
     VARIABLES(null, null, ShowTailGrammar.NONE, false, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW,
         ShowScopeAnswer.CANNOT_SHOW, false, true),
-    /** GRANTS and PARAMETERS, which take none of these scopes and modifiers here. */
+    /** SHOW GRANTS with nothing after it but its modifiers: a LIMIT and its count, a STARTS WITH stacking its prefix. */
+    GRANTS(null, null, ShowTailGrammar.LIMIT_COUNT, false, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW,
+        ShowScopeAnswer.CANNOT_SHOW, false, true),
+    /** SHOW GRANTS ON, TO or OF something: a LIMIT and its count. */
+    GRANTS_OF(null, null, ShowTailGrammar.LIMIT_COUNT, false, ShowScopeAnswer.CANNOT_SHOW,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    /** PARAMETERS reads none of the modifiers, and a scope of its own (see ShowCommandHandler). */
+    PARAMETERS(null, null, ShowTailGrammar.NONE, false, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW,
+        ShowScopeAnswer.CANNOT_SHOW, false, true),
+    /** A listing that takes none of these scopes and modifiers. */
     OTHER(null, null, ShowTailGrammar.NONE, false, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW,
         ShowScopeAnswer.CANNOT_SHOW, false, false);
 
@@ -408,6 +417,12 @@ enum ShowListing {
         }
         if (ctx.TRANSACTIONS() != null) {
             return TRANSACTIONS;
+        }
+        if (ctx.GRANTS() != null) {
+            return ctx.ON() == null && ctx.TO() == null && ctx.OF() == null ? GRANTS : GRANTS_OF;
+        }
+        if (ctx.PARAMETERS() != null) {
+            return PARAMETERS;
         }
         return ctx.VARIABLES() != null ? VARIABLES : OTHER;
     }

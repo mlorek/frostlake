@@ -29,10 +29,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * CALL ... INTO :variable, which Snowflake Scripting uses to assign the value a stored procedure returns to a variable.
- * It was a syntax error, so a procedure whose body used it could not even be created (tds-asgard-data's
- * EXPORT_ENRICHMENT_QUEUE_TEST_RUN, asgard #3537). The call runs as a bare CALL does, statement or nested in a loop or
- * an IF, and the variable takes the returned value as an assignment would. Outside a block the clause stays the syntax
- * error it was.
+ * It was a syntax error, so a procedure whose body used it could not even be created. The call runs as a bare CALL
+ * does, statement or nested in a loop or an IF, and the variable takes the returned value as an assignment would.
+ * Outside a block the clause stays the syntax error it was.
  */
 public class CallIntoTest {
 

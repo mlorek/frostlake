@@ -28,6 +28,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -63,8 +64,8 @@ import java.util.Set;
  */
 final class TableFunctionCorrelationRule {
 
-    /** The default names {@code planTableReference} gives an unaliased table-function source. */
-    private static final String FLATTEN_DEFAULT_ALIAS = "flatten";
+    /** The names an unaliased table-function source answers to: its function's, or this one for a table literal. */
+    private static final String FLATTEN_DEFAULT_ALIAS = "FLATTEN";
     private static final String TABLE_FUNCTION_DEFAULT_ALIAS = "table_function";
 
     private final FunctionRegistry functions;
@@ -141,7 +142,24 @@ final class TableFunctionCorrelationRule {
             return FLATTEN_DEFAULT_ALIAS;
         }
         if (source.TABLE() != null && source.expression() != null) {
-            return TABLE_FUNCTION_DEFAULT_ALIAS;
+            final FrostlakeParser.FunctionNameContext called = calledName(source.expression());
+            final String[] parts = called == null ? null : ParseTreeText.functionNameParts(called);
+            return parts == null || parts.length == 0 ? TABLE_FUNCTION_DEFAULT_ALIAS
+                : parts[parts.length - 1].toUpperCase(Locale.ROOT);
+        }
+        return null;
+    }
+
+    /** The name of the function a TABLE( … ) operand calls, or null when the operand is no call. */
+    private static FrostlakeParser.FunctionNameContext calledName(final FrostlakeParser.ExpressionContext operand) {
+        if (operand instanceof FrostlakeParser.FunctionCallExprContext) {
+            return ((FrostlakeParser.FunctionCallExprContext) operand).functionName();
+        }
+        if (operand instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallNamedArgsExprContext) operand).functionName();
+        }
+        if (operand instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallMixedArgsExprContext) operand).functionName();
         }
         return null;
     }

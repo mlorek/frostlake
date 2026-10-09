@@ -23,6 +23,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.IntegrationRegistry;
+import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.IntegrationKind;
 import dev.frostlake.metastore.model.PropertyValue;
@@ -38,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -79,6 +81,7 @@ public final class IntegrationCommandHandler {
                 }
                 throw missing(name);
             }
+            refuseWhileReferenced(integration);
             registry().remove(name);
             return StatusResults.dropped(name);
         }
@@ -120,15 +123,18 @@ public final class IntegrationCommandHandler {
                 final Tag tag = catalog.getTag(ParseTreeText.getQualifiedName(assign.qualifiedName()));
                 final String value = TagValues.text(assign.qualifiedName(), assign.tagValue(), queryExecutor);
                 TagValues.requireAllowed(tag, value);
-                integration.setTag(tag.getName(), value);
+                TagAssignments.set(integration, tag, value);
             }
         } else if (action.tagUnset() != null) {
             for (final FrostlakeParser.QualifiedNameContext tagName : action.tagUnset().qualifiedName()) {
-                integration.unsetTag(catalog.getTag(ParseTreeText.getQualifiedName(tagName)).getName());
+                TagAssignments.unset(integration, catalog.getTag(ParseTreeText.getQualifiedName(tagName)));
             }
         } else if (action.SET() != null) {
             final Map<String, PropertyValue> properties = ObjectProperties.read(action.objectProperty());
             IntegrationRules.checkSet(integration, properties);
+            if (properties.containsKey("ENABLED") && !ObjectProperties.flag("ENABLED", properties.get("ENABLED"))) {
+                refuseWhileReferenced(integration);
+            }
             final Map<String, PropertyValue> merged = new LinkedHashMap<>();
             for (final Map.Entry<String, PropertyValue> entry : properties.entrySet()) {
                 final PropertyValue standing = integration.property(entry.getKey());
@@ -159,6 +165,18 @@ public final class IntegrationCommandHandler {
                     integration.getProperties().remove(key);
                 }
             }
+        }
+    }
+
+    /** A security integration a secret authenticates through can be neither dropped nor disabled (live-verified). */
+    private void refuseWhileReferenced(final Integration integration) {
+        if (integration.getKind() != IntegrationKind.SECURITY) {
+            return;
+        }
+        final List<String> secrets = new IntegrationReferences(catalog).secretsNaming(integration);
+        if (!secrets.isEmpty()) {
+            throw new RuntimeException("Cannot drop or disable integration that is referenced by the secrets "
+                + String.join(",", secrets) + ".");
         }
     }
 
@@ -242,6 +260,10 @@ public final class IntegrationCommandHandler {
         final List<Row> rows = new ArrayList<>();
         final List<String> shown = new ArrayList<>();
         shown.add("TYPE");
+        if (integration.getKind() == IntegrationKind.SECURITY) {
+            // The client's secret is never told, masked or not.
+            shown.add("OAUTH_CLIENT_SECRET");
+        }
         for (final String[] row : layout(integration)) {
             shown.add(row[0]);
             rows.add(new Row(Arrays.asList((Object) row[0], row[1], value(integration, row[0]), row[2])));
@@ -264,8 +286,13 @@ public final class IntegrationCommandHandler {
     private static String[][] layout(final Integration integration) {
         final String[] enabled = {"ENABLED", "Boolean", "true"};
         switch (integration.getKind()) {
+            case SECURITY:
+                return securityLayout(integration, enabled);
             case API:
                 final String provider = String.valueOf(integration.text("API_PROVIDER"));
+                if ("PYPI".equals(provider)) {
+                    return new String[][] {enabled, {"API_PROVIDER", "String", ""}};
+                }
                 if ("GIT_HTTPS_API".equals(provider)) {
                     return new String[][] {enabled, {"USE_PRIVATELINK_ENDPOINT", "Boolean", "false"},
                         {"API_PROVIDER", "String", ""}, {"API_ALLOWED_PREFIXES", "List", "[]"},
@@ -274,8 +301,10 @@ public final class IntegrationCommandHandler {
                 final String[][] head = {enabled, {"API_KEY", "String", ""}, {"API_PROVIDER", "String", ""}};
                 final String[][] own = provider.startsWith("AZURE_")
                     ? new String[][] {{"AZURE_TENANT_ID", "String", ""}, {"AZURE_AD_APPLICATION_ID", "String", ""}}
-                    : provider.startsWith("GOOGLE_") ? new String[][] {{"GOOGLE_AUDIENCE", "String", ""}}
-                    : new String[][] {{"API_AWS_ROLE_ARN", "String", ""}};
+                    : provider.startsWith("GOOGLE_") ? new String[][] {{"API_GCP_SERVICE_ACCOUNT", "String", ""},
+                        {"GOOGLE_AUDIENCE", "String", ""}}
+                    : new String[][] {{"API_AWS_IAM_USER_ARN", "String", ""}, {"API_AWS_ROLE_ARN", "String", ""},
+                        {"API_AWS_EXTERNAL_ID", "String", ""}};
                 return concat(concat(head, own), new String[][] {{"API_ALLOWED_PREFIXES", "List", "[]"},
                     {"API_BLOCKED_PREFIXES", "List", "[]"}});
             case CATALOG:
@@ -289,13 +318,30 @@ public final class IntegrationCommandHandler {
                     {"CATALOG_NAMESPACE", "String", ""}, {"TABLE_FORMAT", "String", ""}, refresh};
                 if ("GLUE".equals(source)) {
                     return concat(common, new String[][] {{"GLUE_AWS_ROLE_ARN", "String", ""},
-                        {"GLUE_CATALOG_ID", "String", ""}, {"GLUE_REGION", "String", ""}});
+                        {"GLUE_CATALOG_ID", "String", ""}, {"GLUE_REGION", "String", ""},
+                        {"GLUE_AWS_IAM_USER_ARN", "String", ""}, {"GLUE_AWS_EXTERNAL_ID", "String", ""}});
                 }
                 return concat(common, new String[][] {{"REST_CONFIG", "Object", ""},
                     {"REST_AUTHENTICATION", "Object", ""}});
             default:
                 return notificationLayout(integration, enabled);
         }
+    }
+
+    /** A security integration's rows: an AWS role's, or an OAuth client's. */
+    private static String[][] securityLayout(final Integration integration, final String[] enabled) {
+        if ("AWS_IAM".equals(integration.text("AUTH_TYPE"))) {
+            return new String[][] {enabled, {"PARENT_INTEGRATION", "String", ""},
+                {"API_AWS_IAM_USER_ARN", "String", ""}, {"API_AWS_EXTERNAL_ID", "String", ""},
+                {"AUTH_TYPE", "String", ""}, {"AWS_ROLE_ARN", "String", ""}};
+        }
+        return new String[][] {enabled, {"OAUTH_ACCESS_TOKEN_VALIDITY", "Long", ""},
+            {"OAUTH_REFRESH_TOKEN_VALIDITY", "Long", "7776000"}, {"OAUTH_CLIENT_ID", "String", ""},
+            {"OAUTH_CLIENT_AUTH_METHOD", "String", "CLIENT_SECRET_BASIC"},
+            {"OAUTH_AUTHORIZATION_ENDPOINT", "String", ""}, {"OAUTH_TOKEN_ENDPOINT", "String", ""},
+            {"OAUTH_ALLOWED_SCOPES", "List", "[]"}, {"OAUTH_GRANT", "String", ""}, {"OAUTH_USERNAME", "String", ""},
+            {"OAUTH_RESOURCE_URL", "String", ""}, {"PARENT_INTEGRATION", "String", ""},
+            {"AUTH_TYPE", "String", ""}, {"OAUTH_ASSERTION_ISSUER", "String", ""}};
     }
 
     private static String[][] notificationLayout(final Integration integration, final String[] enabled) {
@@ -314,7 +360,8 @@ public final class IntegrationCommandHandler {
         final String[][] head = {enabled, {"NOTIFICATION_PROVIDER", "String", ""}, direction};
         if ("AWS_SNS".equals(provider)) {
             return concat(head, new String[][] {{"AWS_SNS_TOPIC_ARN", "String", ""},
-                {"AWS_SNS_ROLE_ARN", "String", ""}});
+                {"AWS_SNS_ROLE_ARN", "String", ""}, {"SF_AWS_IAM_USER_ARN", "String", ""},
+                {"SF_AWS_EXTERNAL_ID", "String", ""}});
         }
         if ("AZURE_EVENT_GRID".equals(provider)) {
             return concat(head, new String[][] {{"AZURE_EVENT_GRID_TOPIC_ENDPOINT", "String", ""},
@@ -345,12 +392,27 @@ public final class IntegrationCommandHandler {
     }
 
     /** The DESCRIBE value of one property: secrets masked, lists comma-joined, a header map as {k=v}. */
-    private static String value(final Integration integration, final String key) {
+    private String value(final Integration integration, final String key) {
         if ("ENABLED".equals(key)) {
             return integration.isEnabled() ? "true" : "false";
         }
         final PropertyValue value = integration.property(key);
+        if (integration.getKind() == IntegrationKind.SECURITY) {
+            return securityValue(integration, key, value);
+        }
         if (value == null) {
+            if (key.endsWith("_AWS_IAM_USER_ARN")) {
+                return GeneratedCloudIdentity.USER_ARN;
+            }
+            if (key.endsWith("_AWS_EXTERNAL_ID")) {
+                return externalId(integration);
+            }
+            if ("API_GCP_SERVICE_ACCOUNT".equals(key)) {
+                return GeneratedCloudIdentity.SERVICE_ACCOUNT;
+            }
+            if ("GLUE_REGION".equals(key)) {
+                return accountRegion();
+            }
             if ("DIRECTION".equals(key)) {
                 return direction(integration);
             }
@@ -373,6 +435,49 @@ public final class IntegrationCommandHandler {
             return out.append('}').toString();
         }
         return masked(key, value).describe();
+    }
+
+    /**
+     * A security integration's DESCRIBE value: a validity left out reads 0, the allowed scopes read as a bracketed
+     * list, and the identity the account generates for an AWS role is derived from the integration's name.
+     */
+    private String securityValue(final Integration integration, final String key, final PropertyValue value) {
+        if (value == null) {
+            if (key.endsWith("_VALIDITY")) {
+                return "0";
+            }
+            if ("API_AWS_IAM_USER_ARN".equals(key)) {
+                return GeneratedCloudIdentity.USER_ARN;
+            }
+            if ("API_AWS_EXTERNAL_ID".equals(key)) {
+                return externalId(integration);
+            }
+            return "";
+        }
+        if ("OAUTH_ALLOWED_SCOPES".equals(key)) {
+            final List<String> scopes = new ArrayList<>();
+            for (final PropertyValue scope : value.getItems()) {
+                scopes.add(scope.getText());
+            }
+            return scopes.toString();
+        }
+        return value.describe();
+    }
+
+    /** The external ID the account generates for an integration that assumes a cloud role. */
+    private String externalId(final Integration integration) {
+        return GeneratedCloudIdentity.externalId(catalog.getAccountLocator(),
+            integration.getKind().getWords() + " INTEGRATION", integration.getName());
+    }
+
+    /**
+     * The cloud region of the account as a cloud names it, which a Glue catalog written without a region is read
+     * in: {@code eu-west-1} for an account in AWS_EU_WEST_1 (live-verified); empty for an account of another cloud.
+     */
+    private String accountRegion() {
+        final String region = queryExecutor.getEngineConfig().getRegion().toUpperCase(Locale.ROOT);
+        return region.startsWith("AWS_") ? region.substring("AWS_".length()).toLowerCase(Locale.ROOT).replace('_', '-')
+            : "";
     }
 
     /** The value with every secret it holds, at any depth, masked. */
@@ -410,6 +515,9 @@ public final class IntegrationCommandHandler {
     private static IntegrationKind createdKind(final FrostlakeParser.CreatedIntegrationKindContext ctx) {
         if (ctx.API() != null) {
             return IntegrationKind.API;
+        }
+        if (ctx.SECURITY() != null) {
+            return IntegrationKind.SECURITY;
         }
         return ctx.CATALOG() != null ? IntegrationKind.CATALOG : IntegrationKind.NOTIFICATION;
     }

@@ -391,10 +391,12 @@ import dev.frostlake.functions.table.CurrentTaskGraphsFunction;
 import dev.frostlake.functions.table.DataMetricReferencesFunction;
 import dev.frostlake.functions.table.Flatten;
 import dev.frostlake.functions.table.Generator;
+import dev.frostlake.functions.table.GetContactsFunction;
 import dev.frostlake.functions.table.PolicyReferencesFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.functions.table.SplitToTable;
 import dev.frostlake.functions.table.StrtokSplitToTable;
+import dev.frostlake.functions.table.TagReferencesAllColumnsFunction;
 import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.functions.table.TaskDependentsFunction;
 import dev.frostlake.functions.table.TaskHistoryFunction;
@@ -1017,7 +1019,7 @@ public class FunctionRegistry {
         register(new LastTransaction(sessionContext));
         register(new CurrentSchemas(catalog));
         register(new InvokerRole(sessionContext));
-        register(new IsRoleInSession(sessionContext));
+        register(new IsRoleInSession(catalog, sessionContext));
         register(new IsDatabaseRoleInSession(catalog, sessionContext));
         // Snowflake-name aliases over existing implementations.
         functions.put("AS_CHAR", new AsVarchar());
@@ -1076,8 +1078,10 @@ public class FunctionRegistry {
         registerTableFunction(new Flatten());
         registerTableFunction(new TaskHistoryFunction(catalog));
         registerTableFunction(new TagReferencesFunction(catalog));
+        registerTableFunction(new TagReferencesAllColumnsFunction(catalog));
         registerTableFunction(new AlertHistoryFunction(catalog));
         registerTableFunction(new TaskDependentsFunction(catalog));
+        registerTableFunction(new GetContactsFunction(catalog));
         registerTableFunction(new CurrentTaskGraphsFunction(catalog));
         registerTableFunction(new CompleteTaskGraphsFunction(catalog));
         registerTableFunction(new PolicyReferencesFunction(catalog));

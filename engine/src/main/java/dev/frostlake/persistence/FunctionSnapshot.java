@@ -16,10 +16,11 @@
 
 package dev.frostlake.persistence;
 
-import java.time.Instant;
+import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.types.DataType;
 
 import java.io.Serializable;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +45,8 @@ public class FunctionSnapshot implements Serializable {
     public boolean secure;
     public boolean memoizable;
     public List<String> imports = new ArrayList<>();
+    /** Packages, artifact repository, target path, integrations and secrets; null on older snapshots. */
+    public RoutineEnvironment environment;
     public String comment;
     public String owner;
 

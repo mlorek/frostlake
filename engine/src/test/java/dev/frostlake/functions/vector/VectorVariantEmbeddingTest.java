@@ -22,18 +22,16 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * A VECTOR inside a VARIANT — an ARRAY of its elements, at a width that is neither of the other two.
+ * A VECTOR inside a VARIANT — an ARRAY of its elements, each a full-width DOUBLE.
  *
- * <p>★ THE SAME ELEMENT HAS THREE SPELLINGS, and each surface owns one:
+ * <p>★ THE SAME ELEMENT HAS TWO SPELLINGS, and each surface owns one:
  * <ul>
- *   <li>DISPLAY pads to six decimals — {@code 0.123457};</li>
- *   <li>the VARIANT embedding writes SIXTEEN significant digits — {@code 0.1234567016363144} — which
- *       is the float32 widened to float64 and printed one digit shorter than Java's shortest
- *       round-tripping form;</li>
- *   <li>TO_JSON writes the fifteen-decimal scientific form — {@code 1.234567016363144e-01}.</li>
+ *   <li>the vector's own display pads to six decimals — {@code 0.123457};</li>
+ *   <li>inside a VARIANT, and through TO_JSON, it is the fifteen-decimal scientific form every variant DOUBLE
+ *       takes — {@code 1.234567016363144e-01}, the float32 widened to float64.</li>
  * </ul>
- * Sharing one renderer between any two of them makes one wrong, which is why the cells below pin all
- * three against each other rather than each on its own.
+ * Sharing one renderer between the two makes one wrong, which is why the cells below pin them against each
+ * other rather than each on its own.
  *
  * <p>★ IT IS AN ARRAY THAT IS NOT AN ARRAY. The member prints with brackets, TYPEOF calls it VECTOR
  * rather than ARRAY, and every semi-structured accessor answers NULL over it — element access, a path
@@ -42,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 public class VectorVariantEmbeddingTest extends BaseDatabaseTest {
 
-    /** The element that separates the three spellings: 0.1234567f is not exact in either width. */
+    /** The element that separates the two spellings: 0.1234567f is not exact in either width. */
     @Override
     protected void setupTest() {
         engine.execute("CREATE OR REPLACE TABLE vv (v VECTOR(FLOAT, 3), i VECTOR(INT, 2))");
@@ -63,12 +61,12 @@ public class VectorVariantEmbeddingTest extends BaseDatabaseTest {
     /** ★ The embedding: an array of full-precision numbers, through all three constructors. */
     @Test
     public void theembeddingIsAnArrayOfFullPrecisionNumbers() {
-        assertEquals("[1.0,0.1234567016363144,3.5]", answer("SELECT TO_VARIANT(v) FROM vv"),
-            "sixteen significant digits — not the six-decimal display form, and not a quoted string");
-        assertEquals("{\"k\":[1.0,0.1234567016363144,3.5]}",
-            answer("SELECT OBJECT_CONSTRUCT('k', v) FROM vv"));
-        assertEquals("[[1.0,0.1234567016363144,3.5]]", answer("SELECT ARRAY_CONSTRUCT(v) FROM vv"));
-        assertEquals("[1.0,0.1234567016363144,3.5]", answer("SELECT v::VARIANT FROM vv"),
+        final String elements = "[1.000000000000000e+00,1.234567016363144e-01,3.500000000000000e+00]";
+        assertEquals(elements, answer("SELECT TO_VARIANT(v) FROM vv"),
+            "the fifteen-decimal form of a variant DOUBLE — not the six-decimal display form, and not a quoted string");
+        assertEquals("{\"k\":" + elements + "}", answer("SELECT OBJECT_CONSTRUCT('k', v) FROM vv"));
+        assertEquals("[" + elements + "]", answer("SELECT ARRAY_CONSTRUCT(v) FROM vv"));
+        assertEquals(elements, answer("SELECT v::VARIANT FROM vv"),
             "★ the cast spelling of the conversion must agree with the function spelling");
     }
 
@@ -100,7 +98,7 @@ public class VectorVariantEmbeddingTest extends BaseDatabaseTest {
         assertEquals("null", answer("SELECT ARRAY_SIZE(TO_VARIANT(v)) FROM vv"));
     }
 
-    /** ★ TO_JSON's own spelling — the third one, and the reason a shared renderer breaks something. */
+    /** ★ TO_JSON spells the elements as the VARIANT itself displays them. */
     @Test
     public void tojsonWritesTheScientificForm() {
         assertEquals("[1.000000000000000e+00,1.234567016363144e-01,3.500000000000000e+00]",

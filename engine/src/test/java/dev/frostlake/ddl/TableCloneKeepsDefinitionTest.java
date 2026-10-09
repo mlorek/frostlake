@@ -100,7 +100,7 @@ public class TableCloneKeepsDefinitionTest {
         assertTrue(ddl.contains("autoincrement start 10 increment 3"), ddl);
         assertTrue(ddl.contains("WITH MASKING POLICY TC_DB.PUBLIC.MP"), ddl);
         assertTrue(ddl.contains("ROW ACCESS POLICY TC_DB.PUBLIC.RAP ON (R)"), ddl);
-        assertTrue(ddl.contains("foreign key (P_ID) references PARENT (ID)"), ddl);
+        assertTrue(ddl.contains("foreign key (P_ID) references TC_DB.PUBLIC.PARENT(ID)"), ddl);
         assertTrue(ddl.contains("constraint CK check (p_id > 0)"), ddl);
         assertTrue(ddl.contains("T_PII='yes'"), ddl);
         assertTrue(refusal("INSERT INTO t1c (p_id, secret, r) VALUES (-1, 'x', 'x')").contains("CHECK constraint CK"));
@@ -117,7 +117,7 @@ public class TableCloneKeepsDefinitionTest {
         assertEquals("10|1|s3|r2", rows("SELECT * FROM t1l"), "no masking, no row access, IDENTITY from START");
         final String ddl = rows("SELECT GET_DDL('TABLE', 't1l')");
         assertTrue(ddl.contains("autoincrement start 10 increment 3"), ddl);
-        assertTrue(ddl.contains("foreign key (P_ID) references PARENT (ID)"), ddl);
+        assertTrue(ddl.contains("foreign key (P_ID) references TC_DB.PUBLIC.PARENT(ID)"), ddl);
         assertTrue(ddl.contains("constraint CK check (p_id > 0)"), ddl);
         assertTrue(ddl.contains("T_PII='yes'"), ddl);
         assertFalse(ddl.contains("POLICY"), ddl);

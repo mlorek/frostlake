@@ -22,6 +22,8 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StagePrefix;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
@@ -53,6 +55,9 @@ public class AppObjectCommandHandler {
     /** Why a notebook cannot run: it names no query warehouse. */
     private static final String NO_QUERY_WAREHOUSE =
         "To execute the notebook, set the Query warehouse and the Notebook warehouse / Compute pool.";
+
+    /** The main file a Streamlit app runs when its statement names none. */
+    private static final String DEFAULT_MAIN_FILE = "streamlit_app.py";
 
     private final Catalog catalog;
     private final QueryExecutor queryExecutor;
@@ -181,6 +186,15 @@ public class AppObjectCommandHandler {
                     actions.checkSecrets(option.appSecretList(), true);
                 }
             }
+            if (ctx.FROM() != null) {
+                String mainFile = DEFAULT_MAIN_FILE;
+                for (final FrostlakeParser.StreamlitOptionContext option : ctx.streamlitOption()) {
+                    if (option.MAIN_FILE() != null) {
+                        mainFile = literal(option.STRING_LITERAL(0));
+                    }
+                }
+                requireStreamlitSource(literal(ctx.STRING_LITERAL()), mainFile);
+            }
             final AppObject object = startCreate(kind, nameCtx, ctx.or_replace() != null,
                 ctx.if_not_exists() != null);
             if (object == null) {
@@ -239,6 +253,53 @@ public class AppObjectCommandHandler {
         return null;
     }
 
+    /**
+     * Judge the location a Streamlit app is created FROM. The app copies the location's files as it is created, so
+     * the location names a stage, a named one that exists, and the app's main file is among the files under it;
+     * a ROOT_LOCATION is taken as written and never looked at (live-verified).
+     *
+     * @param from     the location as written
+     * @param mainFile the app's main file, relative to the location
+     */
+    private void requireStreamlitSource(final String from, final String mainFile) {
+        if (StatementClock.isReplay()) {
+            // A replayed statement was judged when it first ran, against the files the stage held then.
+            return;
+        }
+        if (!from.startsWith("@")) {
+            throw new RuntimeException(SqlCompilationError.of("invalid URL prefix found in: '" + from + "'"));
+        }
+        final String reference = from.substring(1);
+        final int slash = reference.indexOf('/');
+        final String stage = slash >= 0 ? reference.substring(0, slash) : reference;
+        if (stage.startsWith("~")) {
+            throw new RuntimeException(SqlCompilationError.inline(
+                "Copy files not support stage kind: 'USER' for stage '~'."));
+        }
+        if (stage.startsWith("%")) {
+            throw new RuntimeException(SqlCompilationError.inline("Copy files not support stage kind: 'TABLE' for stage '"
+                + SqlIdentifiers.canonicalText(QualifiedName.parse(stage.substring(1)).last()) + "'."));
+        }
+        final String stageName = SqlIdentifiers.canonicalText(QualifiedName.parse(stage).last());
+        final Schema schema = catalog.resolveOwningSchema(stage);
+        if (schema == null || !schema.hasStageExact(stageName)) {
+            throw new RuntimeException("The specified stage " + stageName + " does not exist or the current role"
+                + " does not have access. Owner of the Streamlit must have at least READ on the specified stage.");
+        }
+        // The stage is read by its name as the catalog holds it, whichever way the location spells it.
+        final int nameStart = stage.length() - QualifiedName.parse(stage).last().length();
+        final StagePrefix files = queryExecutor.resolveStagePrefix(stageName.equals(stageName.toUpperCase())
+            ? "@" + stage.substring(0, nameStart) + stageName + (slash >= 0 ? reference.substring(slash) : "") : from);
+        if (files == null || files.getRoot() == null) {
+            return;
+        }
+        final String path = slash >= 0 ? reference.substring(slash + 1) : "";
+        final String folder = path.isEmpty() || path.endsWith("/") ? path : path + "/";
+        if (!files.occupied(folder + mainFile)) {
+            throw new RuntimeException(SqlCompilationError.of("Missing MAIN_FILE."));
+        }
+    }
+
     private void applyNotebookOption(final AppObject object, final FrostlakeParser.NotebookOptionContext option) {
         if (option.MAIN_FILE() != null) {
             object.setMainFile(literal(option.STRING_LITERAL()));
@@ -295,7 +356,7 @@ public class AppObjectCommandHandler {
                                   final boolean orReplace, final boolean ifNotExists) {
         final String name = nameOf(nameCtx);
         final Schema schema = schemaOf(nameCtx);
-        schema.requireCreatable(Privilege.valueOf("CREATE_" + kind.name()));
+        queryExecutor.requireCreatePrivilege(Privilege.valueOf("CREATE_" + kind.name()), schema);
         final AppObjectStore store = schema.getAppObjects();
         if (store.get(kind, name) != null) {
             if (ifNotExists) {

@@ -68,6 +68,11 @@ public final class ParseTreeText {
             : ctx.getText().toUpperCase();
     }
 
+    /** The canonical text of an alias word written bare: a keyword, unquoted by construction. */
+    public static String getIdentifier(final FrostlakeParser.BareAliasWordContext ctx) {
+        return ctx.getText().toUpperCase();
+    }
+
     public static String getQualifiedName(final FrostlakeParser.QualifiedNameContext ctx) {
         return QualifiedName.join(qualifiedNameParts(ctx));
     }
@@ -251,5 +256,29 @@ public final class ParseTreeText {
             return null;
         }
         return null;
+    }
+
+    /**
+     * The text between a written string's delimiters, with nothing in it decoded: what stands between the quotes
+     * or between the dollar signs.
+     *
+     * @param written a string as a statement writes it
+     * @return its body
+     */
+    public static String stringBody(final FrostlakeParser.StringTextContext written) {
+        final String text = written.getText();
+        final int delimiter = written.DOLLAR_QUOTED_STRING() != null ? 2 : 1;
+        return text.substring(delimiter, text.length() - delimiter);
+    }
+
+    /**
+     * The value a written string spells: a quoted one decoded, a dollar-quoted one exactly as it stands.
+     *
+     * @param written a string as a statement writes it
+     * @return its value
+     */
+    public static String stringValue(final FrostlakeParser.StringTextContext written) {
+        return written.DOLLAR_QUOTED_STRING() != null ? stringBody(written)
+            : SqlStringLiterals.decode(written.getText());
     }
 }

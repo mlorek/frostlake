@@ -116,6 +116,9 @@ public class DirectStatement implements Statement {
      */
     private List<ResultSet> run(final String sql) throws SQLException {
         checkClosed();
+        if (connection instanceof DirectConnection) {
+            ((DirectConnection) connection).requireSession();
+        }
         applyMultiStatementGate(sql);
         final ExecutionResult result;
         final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount());

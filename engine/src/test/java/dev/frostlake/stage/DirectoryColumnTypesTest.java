@@ -19,7 +19,6 @@ package dev.frostlake.stage;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.Row;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -71,11 +70,10 @@ public class DirectoryColumnTypesTest extends BaseDatabaseTest {
 
     @Test
     public void eachColumnCarriesItsTypeIntoTheQuery() {
-        // Live lists a staged file only after ALTER STAGE ... REFRESH, a statement this engine does not parse, so the
-        // cells over a listed row are the engine's alone; they are the ones the account answers for its own file.
-        Assumptions.assumeFalse(isLiveSnowflake(), "needs a listed file, which live lists only after a REFRESH");
         engine.execute("COPY INTO @ds/u.csv FROM (SELECT 1 AS n) FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)"
             + " SINGLE = TRUE");
+        // A staged file is listed once its directory is refreshed.
+        engine.execute("ALTER STAGE ds REFRESH");
         engine.execute("ALTER SESSION SET TIMEZONE = 'Asia/Tokyo'");
         assertEquals("VARCHAR(134217728)[LOB] NUMBER(38,0)[SB16] TIMESTAMP_TZ(3)[SB8] VARCHAR[LOB] VARCHAR[LOB]"
                 + " VARCHAR[LOB]",

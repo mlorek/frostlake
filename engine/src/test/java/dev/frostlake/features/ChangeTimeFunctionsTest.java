@@ -89,10 +89,22 @@ public class ChangeTimeFunctionsTest {
         assertNotEquals(before, number("SELECT SYSTEM$LAST_CHANGE_COMMIT_TIME('v')"), "a table the view reads");
     }
 
+    /** Returns once the wall clock has moved on to another millisecond. */
+    private static void awaitNextMillisecond() {
+        final long now = System.currentTimeMillis();
+        while (System.currentTimeMillis() == now) {
+            Thread.onSpinWait();
+        }
+    }
+
     @Test
     public void theStreamsTableTimestampMovesWhenItIsConsumed() {
         engine.execute("CREATE STREAM s1 ON TABLE t1");
         final long offset = number("SELECT SYSTEM$STREAM_GET_TABLE_TIMESTAMP('s1')");
+        // The stamp is that of the table's version at the stream's offset and counts milliseconds, and a warm
+        // engine runs these statements within one: the version the stream moves on to is made in a later
+        // millisecond than the one it starts at.
+        awaitNextMillisecond();
         engine.execute("INSERT INTO t1 VALUES (1)");
         assertEquals(offset, number("SELECT SYSTEM$STREAM_GET_TABLE_TIMESTAMP('s1')"), "unconsumed");
         engine.execute("CREATE TABLE sink (a INT)");

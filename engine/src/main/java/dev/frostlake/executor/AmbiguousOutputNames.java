@@ -32,7 +32,9 @@ import java.util.Set;
  *
  * <ul>
  *   <li>ORDER BY reads the output columns first, so any two of one name make it ambiguous there — {@code SELECT a,
- *       a … ORDER BY a} included;</li>
+ *       a … ORDER BY a} included, and the columns a star projects count as written ones do: {@code SELECT *,
+ *       id * -1 AS id … ORDER BY id}, {@code SELECT *, * … ORDER BY id}, and a non-key column both sides of a
+ *       USING join carry, which {@code SELECT *} projects twice;</li>
  *   <li>WHERE, GROUP BY, HAVING and QUALIFY reach an output name only through an alias, so there the name is
  *       ambiguous when one of its columns is an alias — {@code SELECT a AS a2, a2 …} and {@code SELECT a AS x,
  *       n AS x …} — while {@code SELECT a, a … WHERE a > 1} runs;</li>
@@ -57,11 +59,16 @@ final class AmbiguousOutputNames {
      * @param select    the select clause
      * @param statement the statement holding it, for its ORDER BY; null when the ORDER BY belongs elsewhere
      * @param relations the relations the query reads
+     * @param starNames the names the select list's stars project, or null when the ORDER BY belongs elsewhere
      */
     static void reject(final FrostlakeParser.SelectClauseContext select,
-                       final FrostlakeParser.SelectStatementContext statement, final List<Table> relations) {
+                       final FrostlakeParser.SelectStatementContext statement, final List<Table> relations,
+                       final List<String> starNames) {
         if (select == null || select.selectList() == null) {
             return;
+        }
+        if (statement != null && starNames != null && !starNames.isEmpty()) {
+            refuseReferences(statement.orderByClause(), repeatedWithStars(select, starNames));
         }
         final Map<String, Integer> counts = new HashMap<>();
         final Set<String> aliased = new HashSet<>();
@@ -106,6 +113,31 @@ final class AmbiguousOutputNames {
         if (statement != null) {
             refuseReferences(statement.orderByClause(), repeated);
         }
+    }
+
+    /** The names two output columns carry once the columns the stars project are counted beside the written items. */
+    private static Set<String> repeatedWithStars(final FrostlakeParser.SelectClauseContext select,
+                                                 final List<String> starNames) {
+        final Map<String, Integer> counts = new HashMap<>();
+        for (final String name : starNames) {
+            final Integer seen = counts.get(name);
+            counts.put(name, seen == null ? 1 : seen + 1);
+        }
+        for (final FrostlakeParser.SelectItemContext item : select.selectList().selectItem()) {
+            final String alias = SelectItemAccessors.getItemAlias(item);
+            final String name = alias != null ? alias : bareName(item);
+            if (name != null) {
+                final Integer seen = counts.get(name);
+                counts.put(name, seen == null ? 1 : seen + 1);
+            }
+        }
+        final Set<String> repeated = new HashSet<>();
+        for (final Map.Entry<String, Integer> entry : counts.entrySet()) {
+            if (entry.getValue() > 1) {
+                repeated.add(entry.getKey());
+            }
+        }
+        return repeated;
     }
 
     /**
@@ -162,7 +194,7 @@ final class AmbiguousOutputNames {
     }
 
     /** Refuse the first bare one-part name in {@code node} that is ambiguous, leaving nested queries alone. */
-    private static void refuseReferences(final ParseTree node, final Set<String> ambiguous) {
+    static void refuseReferences(final ParseTree node, final Set<String> ambiguous) {
         if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
             return;
         }

@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class StorageEngine {
 
@@ -37,10 +38,21 @@ public class StorageEngine {
     // package rather than a nested one.
     boolean enforcePrimaryKey = false;
     boolean enforceUniqueKey = false;
+    /**
+     * The identity of the next row stored, whichever table it goes to. One sequence serves the whole engine, so a
+     * row's id is never another row's: a stream holds it as METADATA$ROW_ID, and two tables swapped or a table
+     * recreated under an old name must not hand its streams an id they already hold.
+     */
+    private final AtomicLong rowIds = new AtomicLong();
 
     public StorageEngine() {
         this.tables = new ConcurrentHashMap<>();
         this.shadowed = new ConcurrentHashMap<>();
+    }
+
+    /** The identity for a row about to be stored; see {@link #rowIds}. */
+    long nextRowId() {
+        return rowIds.getAndIncrement();
     }
 
     public void setEnforcePrimaryKey(final boolean enforce) { this.enforcePrimaryKey = enforce; }

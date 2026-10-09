@@ -331,13 +331,59 @@ public class CortexSearchServiceTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void alterSetsAndUnsetsTheComment() {
+    public void alterSetsTheCommentAndHasNoUnsetForIt() {
         engine.execute(CREATE_S1);
         engine.execute("ALTER CORTEX SEARCH SERVICE s1 SET COMMENT = 'now commented'");
         assertEquals("now commented",
             cell(engine.executeQuery("SHOW CORTEX SEARCH SERVICES"), "comment"));
-        engine.execute("ALTER CORTEX SEARCH SERVICE s1 UNSET COMMENT");
-        assertNull(cell(engine.executeQuery("SHOW CORTEX SEARCH SERVICES"), "comment"));
+        // UNSET takes PRIMARY KEY and ATTRIBUTES alone (live-verified): the comment is set again, never unset.
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER CORTEX SEARCH SERVICE s1 UNSET COMMENT");
+            }
+        });
+        assertTrue(refused.getMessage().contains("unexpected 'COMMENT'"), refused.getMessage());
+        assertEquals("now commented",
+            cell(engine.executeQuery("SHOW CORTEX SEARCH SERVICES"), "comment"));
+    }
+
+    @Test
+    public void alterSetsWhatTheListingShows() {
+        engine.execute(CREATE_S1);
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 SET TARGET_LAG = '2 days' COMMENT = 'both'");
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 SET PRIMARY KEY = (id)");
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 SET AUTO_SUSPEND = 1800");
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 SET FULL_INDEX_BUILD_INTERVAL_DAYS = 7");
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 SET REQUEST_LOGGING = TRUE");
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 UNSET ATTRIBUTES");
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 REFRESH");
+        ResultSet shown = engine.executeQuery("SHOW CORTEX SEARCH SERVICES");
+        assertEquals("2 days", cell(shown, "target_lag"));
+        assertEquals("both", cell(shown, "comment"));
+        assertEquals("[\"ID\"]", cell(shown, "primary_key_columns"));
+        assertEquals("1800", cell(shown, "auto_suspend"));
+        assertEquals("[]", cell(shown, "attribute_columns"));
+
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 UNSET PRIMARY KEY");
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 SET AUTO_SUSPEND = NULL");
+        engine.execute("ALTER CORTEX SEARCH SERVICE s1 SET ATTRIBUTES (cat)");
+        shown = engine.executeQuery("SHOW CORTEX SEARCH SERVICES");
+        assertEquals("[]", cell(shown, "primary_key_columns"));
+        assertNull(cell(shown, "auto_suspend"));
+        assertEquals("[\"CAT\"]", cell(shown, "attribute_columns"));
+    }
+
+    @Test
+    public void aQuotedNameIsAServiceOfItsOwn() {
+        engine.execute(CREATE_S1);
+        engine.execute(CREATE_S1.replace("SERVICE s1", "SERVICE \"s1\""));
+        assertEquals(2, engine.executeQuery("SHOW CORTEX SEARCH SERVICES").getRowCount());
+        engine.execute("ALTER CORTEX SEARCH SERVICE \"s1\" SET COMMENT = 'the quoted one'");
+        assertEquals("the quoted one", cell(engine.executeQuery("DESCRIBE CORTEX SEARCH SERVICE \"s1\""), "comment"));
+        assertNull(cell(engine.executeQuery("DESCRIBE CORTEX SEARCH SERVICE s1"), "comment"));
+        engine.execute("DROP CORTEX SEARCH SERVICE \"s1\"");
+        assertEquals("S1", cell(engine.executeQuery("SHOW CORTEX SEARCH SERVICES"), "name"));
     }
 
     @Test

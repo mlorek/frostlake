@@ -30,7 +30,6 @@ import java.util.Locale;
 import java.util.Set;
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStream;
-import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
@@ -411,7 +410,7 @@ public final class StageArgumentSyntax {
             lines.add(wordLine);
             return lines;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(
             source.getText(Interval.of(0, source.size() - 1))));
         final int[] lexerErrors = new int[1];
         lexer.removeErrorListeners();
@@ -649,7 +648,7 @@ public final class StageArgumentSyntax {
     /** The line the frame's closing parenthesis earns: it stands where the body's text ends. */
     private static String endOfFrame(final FrostlakeParser.StageReferenceExprContext stage) {
         final CharStream source = stage.getStart().getInputStream();
-        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(
             source.getText(Interval.of(0, source.size() - 1))));
         lexer.removeErrorListeners();
         Token next = lexer.nextToken();

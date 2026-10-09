@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore;
 
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.GrantRemap;
@@ -114,6 +115,104 @@ public final class GrantNames {
     }
 
     /**
+     * A recorded name as SHOW GRANTS spells it: each part quoted where it has to be, {@code DB.S."t"} for a table
+     * created as {@code "t"}, and a routine's signature kept as it is after its name, {@code DB.S."a"()}
+     * (live-verified).
+     *
+     * @param objectType the object's kind, as grants record it
+     * @param recorded   the name the grant is recorded under
+     * @return the name as a listing shows it
+     */
+    public static String spelled(final String objectType, final String recorded) {
+        if (recorded == null || objectType == null) {
+            return recorded;
+        }
+        final String kind = kindOf(objectType);
+        final int signature = "FUNCTION".equals(kind) || "PROCEDURE".equals(kind) ? signatureStart(recorded) : -1;
+        return signature < 0 ? SqlIdentifiers.spellAlreadyCanonicalPath(recorded)
+            : SqlIdentifiers.spellAlreadyCanonicalPath(recorded.substring(0, signature)) + recorded.substring(signature);
+    }
+
+    /**
+     * Whether an object of the kind carries the recorded name now. A dropped object's privileges stay recorded, for
+     * an UNDROP to find them and for {@link #created} to take back, and are not listed meanwhile: SHOW GRANTS TO
+     * names no table, sequence, schema or routine that is gone (live-verified). A kind this cannot look up is
+     * taken to be there.
+     *
+     * @param catalog    the catalog
+     * @param objectType the object's kind, as grants record it
+     * @param recorded   the name the grant is recorded under
+     * @return whether the object is there
+     */
+    public static boolean present(final Catalog catalog, final String objectType, final String recorded) {
+        final String kind = kindOf(objectType);
+        final boolean routine = "FUNCTION".equals(kind) || "PROCEDURE".equals(kind);
+        if (!routine && !RELATIONS.contains(kind) && !"SEQUENCE".equals(kind) && !"SCHEMA".equals(kind)
+                && !"DATABASE".equals(kind)) {
+            return true;
+        }
+        final int signature = routine ? signatureStart(recorded) : -1;
+        if (routine && signature < 0) {
+            return true;
+        }
+        final String[] name = parts(routine ? recorded.substring(0, signature) : recorded);
+        final Database database = catalog.findDatabase(name[0]);
+        if ("DATABASE".equals(kind)) {
+            return name.length != 1 || database != null;
+        }
+        if (name.length != ("SCHEMA".equals(kind) ? 2 : 3)) {
+            return true;
+        }
+        if (database == null || !database.hasSchemaExact(name[1])) {
+            return false;
+        }
+        if ("SCHEMA".equals(kind)) {
+            return true;
+        }
+        final Schema schema = database.getSchema(name[1]);
+        final String object = name[2];
+        if ("SEQUENCE".equals(kind)) {
+            return schema.hasSequenceExact(object);
+        }
+        if ("FUNCTION".equals(kind)) {
+            for (final Function overload : schema.getFunctionOverloads(object)) {
+                if (routine(schema, overload.getName(), overload.getParameters()).equals(recorded)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if ("PROCEDURE".equals(kind)) {
+            for (final Procedure overload : schema.getProcedureOverloads(object)) {
+                if (routine(schema, overload.getName(), overload.getParameters()).equals(recorded)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return schema.hasTable(object) && schema.getTable(object).getName().equals(object)
+            || schema.hasView(object) && schema.getView(object).getName().equals(object)
+            || schema.hasMaterializedView(object) || schema.hasDynamicTable(object);
+    }
+
+    /** Where a recorded routine name's signature opens, at the parenthesis its last one closes; -1 for none. */
+    private static int signatureStart(final String recorded) {
+        if (!recorded.endsWith(")")) {
+            return -1;
+        }
+        int depth = 0;
+        for (int i = recorded.length() - 1; i > 0; i--) {
+            final char c = recorded.charAt(i);
+            if (c == ')') {
+                depth++;
+            } else if (c == '(' && --depth == 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
      * The name privileges on one routine overload are recorded under: its full name followed by its argument types'
      * families, {@code DB.SCHEMA.NAME(NUMBER, VARCHAR)}, which is how SHOW GRANTS names the overload.
      *
@@ -195,7 +294,9 @@ public final class GrantNames {
 
     /**
      * A new object takes a name: the privileges still recorded under it, a dropped object's, are taken back. A new
-     * table or view clears both relation kinds, since a check on either reads them alike. A routine is named here
+     * table or view clears both relation kinds, since a check on either reads them alike. A new database also takes
+     * back every grant of the dropped database's roles: they stay recorded while it is gone, so UNDROP brings them
+     * back, and none of them is a role of the database that now has the name (live-verified). A routine is named here
      * with its signature ({@link #routine}), so a new overload clears only what a dropped overload of the same
      * signature held; a routine named without one is left alone.
      *
@@ -209,14 +310,30 @@ public final class GrantNames {
             return;
         }
         final Set<String> kinds = RELATIONS.contains(kind) ? RELATIONS : Collections.singleton(kind);
+        final String heldUnder = "DATABASE".equals(kind) ? full + "." : null;
         for (final Role role : roles(catalog)) {
             for (final String purged : kinds) {
                 role.purgeGrants(purged, full, false);
+            }
+            if (heldUnder != null) {
+                // A dropped database's roles went with it: the new database's are not granted to who held those.
+                for (final String databaseRole : role.getDatabaseRoleGrants().keySet()) {
+                    if (databaseRole.startsWith(heldUnder)) {
+                        role.revokeDatabaseRole(databaseRole);
+                    }
+                }
             }
         }
         for (final User user : catalog.getAllUsers()) {
             for (final String purged : kinds) {
                 user.purgeGrants(purged, full, false);
+            }
+            if (heldUnder != null) {
+                for (final String databaseRole : user.getDatabaseRoleGrants().keySet()) {
+                    if (databaseRole.startsWith(heldUnder)) {
+                        user.revokeDatabaseRole(databaseRole);
+                    }
+                }
             }
         }
     }

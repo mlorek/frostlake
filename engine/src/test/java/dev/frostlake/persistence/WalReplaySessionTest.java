@@ -95,7 +95,8 @@ public class WalReplaySessionTest {
         final DatabaseEngine recovered = new DatabaseEngine(walConfig());
         try {
             assertEquals("0", rows(recovered,
-                "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())").replaceAll("[\\[\\]]", ""),
+                "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())"
+                    + " WHERE execution_status <> 'RUNNING'").replaceAll("[\\[\\]]", ""),
                 "no replayed statement is in the history");
             assertEquals("[true]", rows(recovered, "SELECT LAST_QUERY_ID(-2) IS NULL AND LAST_QUERY_ID(2) IS NULL"
                 + " AND LAST_QUERY_ID(1) = LAST_QUERY_ID()"), "the only query ID is the count's above");

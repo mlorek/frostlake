@@ -568,6 +568,16 @@ final class ScriptingNameValidator {
                 at.getCharPositionInLine() - intoClauseWidthBefore(into, at),
                 invalidIdentifier(text(bind.identifier()), false)));
         }
+        if (node instanceof FrostlakeParser.IdentifierArgumentContext) {
+            final FrostlakeParser.IdentifierArgumentContext argument = (FrostlakeParser.IdentifierArgumentContext) node;
+            if (argument.COLON() == null || argument.identifier() == null
+                    || scope.contains(canonical(text(argument.identifier())))) {
+                return;
+            }
+            final int[] place = identifierBindPlace(into, argument.getStart());
+            throw new RuntimeException(SqlCompilationError.at(place[0], place[1],
+                invalidIdentifier(text(argument.identifier()), false)));
+        }
         for (int i = 0; i < node.getChildCount(); i++) {
             checkIntoStatementBinds(into, node.getChild(i), scope);
         }
@@ -587,6 +597,15 @@ final class ScriptingNameValidator {
             final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) node;
             if (bind.identifier() != null) {
                 requireName(text(bind.identifier()), bind, scope, false);
+            }
+            return;
+        }
+        if (node instanceof FrostlakeParser.IdentifierArgumentContext) {
+            // The argument of an IDENTIFIER() reference is a bind like any other: FROM IDENTIFIER(:nosuch)
+            // names 'NOSUCH' at the colon (live-verified).
+            final FrostlakeParser.IdentifierArgumentContext argument = (FrostlakeParser.IdentifierArgumentContext) node;
+            if (argument.COLON() != null && argument.identifier() != null) {
+                requireName(text(argument.identifier()), argument, scope, false);
             }
             return;
         }
@@ -719,6 +738,46 @@ final class ScriptingNameValidator {
             throw new RuntimeException(SqlCompilationError.at(assign.getLine(), assign.getCharPositionInLine(),
                 " Assignment to variable '" + canonical(text(target)) + "' is not permitted."));
         }
+    }
+
+    /**
+     * Where the bind of an IDENTIFIER() reference in a SELECT … INTO is placed. Live reads the statement's query as
+     * a text of its own — the INTO clause cut out with the one character before it, a line break included — and
+     * offsets the place it finds there by the statement's column on every line (live-verified: with the clause on
+     * a line of its own start, the lines join and the bind is placed on the first).
+     *
+     * @param into the statement
+     * @param at the bind's colon
+     * @return the line and the position
+     */
+    private static int[] identifierBindPlace(final FrostlakeParser.SelectIntoStatementContext into, final Token at) {
+        final Token first = into.getStart();
+        final Token intoWord = into.INTO().getSymbol();
+        final Token lastTarget = into.intoTargetList().getStop();
+        final StringBuilder before = new StringBuilder();
+        if (at.getStartIndex() > lastTarget.getStopIndex()) {
+            final int cutFrom = Math.max(first.getStartIndex(), intoWord.getStartIndex() - 1);
+            if (cutFrom > first.getStartIndex()) {
+                before.append(at.getInputStream().getText(Interval.of(first.getStartIndex(), cutFrom - 1)));
+            }
+            if (at.getStartIndex() > lastTarget.getStopIndex() + 1) {
+                before.append(at.getInputStream().getText(
+                    Interval.of(lastTarget.getStopIndex() + 1, at.getStartIndex() - 1)));
+            }
+        } else if (at.getStartIndex() > first.getStartIndex()) {
+            before.append(at.getInputStream().getText(Interval.of(first.getStartIndex(), at.getStartIndex() - 1)));
+        }
+        int lines = 0;
+        int column = 0;
+        for (int i = 0; i < before.length(); i++) {
+            if (before.charAt(i) == '\n') {
+                lines++;
+                column = 0;
+            } else {
+                column++;
+            }
+        }
+        return new int[] {first.getLine() + lines, column + first.getCharPositionInLine()};
     }
 
     /**
