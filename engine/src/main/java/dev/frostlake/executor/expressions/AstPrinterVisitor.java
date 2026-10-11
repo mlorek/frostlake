@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -50,7 +51,10 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
                 // Rendered UPPER in refusal brackets — live spells [IFF(TRUE)].
                 return String.valueOf(expr.getValue()).toUpperCase(java.util.Locale.ROOT);
             default:
-                return String.valueOf(expr.getValue());
+                // A decimal is echoed with its digits in place: 0.0000001, never the 1E-7 its Java text turns to
+                // below a millionth (live-verified).
+                return expr.getValue() instanceof BigDecimal ? ((BigDecimal) expr.getValue()).toPlainString()
+                    : String.valueOf(expr.getValue());
         }
     }
 

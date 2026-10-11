@@ -27,6 +27,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -106,7 +107,7 @@ public class PreparedStatementGapsTest extends BaseJdbcTest {
             ps.setInt(1, -5);
             try (final ResultSet rs = ps.executeQuery()) {
                 rs.next();
-                assertEquals("R", rs.getMetaData().getColumnLabel(1).toUpperCase());
+                assertEquals("R", rs.getMetaData().getColumnLabel(1).toUpperCase(Locale.ROOT));
                 assertEquals("8", rs.getString(1));
             }
             ps.setBigDecimal(1, new BigDecimal("-1.5"));

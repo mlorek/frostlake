@@ -17,7 +17,6 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.GrantedObject;
-import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -108,24 +107,21 @@ final class OwnershipTransfer {
      * <p>SCHEMAS is the one kind whose objects are the schemas themselves, so it is scoped to a database and moves
      * each of them — INFORMATION_SCHEMA excepted, which carries no owner on any account.
      *
-     * @param bulkType the kinds the statement names, plural
-     * @param scope    the schema or database they live in
-     * @param roleName the role that is to own them
+     * @param bulkType    the kinds the statement names, plural
+     * @param schemaScope whether they live in a schema, where otherwise in a database
+     * @param scopeParts  that schema's or database's canonical name parts
+     * @param roleName    the role that is to own them
      * @param tail     COPY or REVOKE CURRENT GRANTS, or null
      * @return false for a kind or scope whose owners are not moved here, whose grant stays recorded as a privilege
      */
-    boolean transferAll(final String bulkType, final FrostlakeParser.BulkScopeContext scope, final String roleName,
-                        final FrostlakeParser.CurrentGrantsContext tail) {
-        if (scope.qualifiedName() == null) {
-            return false;
-        }
+    boolean transferAll(final String bulkType, final boolean schemaScope, final String[] scopeParts,
+                        final String roleName, final FrostlakeParser.CurrentGrantsContext tail) {
         final String kind = bulkType.endsWith("S") ? bulkType.substring(0, bulkType.length() - 1) : bulkType;
-        final String[] scopeParts = ParseTreeText.qualifiedNameParts(scope.qualifiedName());
         if ("SCHEMA".equals(kind)) {
-            return transferSchemas(scope, scopeParts, roleName, tail);
+            return transferSchemas(schemaScope, scopeParts, roleName, tail);
         }
         final List<Schema> schemas = new ArrayList<>();
-        if (scope.SCHEMA() != null) {
+        if (schemaScope) {
             schemas.add(catalog.resolveSchema(QualifiedName.of(scopeParts)));
         } else {
             schemas.addAll(catalog.databaseExact(scopeParts[0]).getAllSchemas());
@@ -145,9 +141,9 @@ final class OwnershipTransfer {
     }
 
     /** Move every schema of a database, in name order; INFORMATION_SCHEMA has no owner to move. */
-    private boolean transferSchemas(final FrostlakeParser.BulkScopeContext scope, final String[] scopeParts,
+    private boolean transferSchemas(final boolean schemaScope, final String[] scopeParts,
                                     final String roleName, final FrostlakeParser.CurrentGrantsContext tail) {
-        if (scope.DATABASE() == null) {
+        if (schemaScope) {
             return false;
         }
         final String database = catalog.databaseExact(scopeParts[0]).getName();

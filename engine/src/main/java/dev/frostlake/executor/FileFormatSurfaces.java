@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -123,11 +124,11 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
     }
 
     public static boolean isKnownType(final String type) {
-        return type != null && TREES.containsKey(type.toUpperCase());
+        return type != null && TREES.containsKey(type.toUpperCase(Locale.ROOT));
     }
 
     public static List<FormatProperty> tree(final String type) {
-        final List<FormatProperty> tree = TREES.get(type == null ? "CSV" : type.toUpperCase());
+        final List<FormatProperty> tree = TREES.get(type == null ? "CSV" : type.toUpperCase(Locale.ROOT));
         return tree != null ? tree : TREES.get("CSV");
     }
 
@@ -188,7 +189,7 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
         if (value == null) {
             return;
         }
-        final String upper = name.toUpperCase();
+        final String upper = name.toUpperCase(Locale.ROOT);
         if ("TYPE".equals(upper) && !isKnownType(value)) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter 'TYPE'"));
@@ -203,7 +204,7 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
                 // A non-numeric SKIP_HEADER never parses this far.
             }
         }
-        if ("COMPRESSION".equals(upper) && !COMPRESSION_VALUES.contains(value.toUpperCase())) {
+        if ("COMPRESSION".equals(upper) && !COMPRESSION_VALUES.contains(value.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter 'COMPRESSION'"));
         }
@@ -215,7 +216,7 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter '" + upper + "'"));
         }
-        if ("FIELD_OPTIONALLY_ENCLOSED_BY".equals(upper) && !ENCLOSERS.contains(value.toUpperCase())) {
+        if ("FIELD_OPTIONALLY_ENCLOSED_BY".equals(upper) && !ENCLOSERS.contains(value.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter 'FIELD_OPTIONALLY_ENCLOSED_BY'"));
         }

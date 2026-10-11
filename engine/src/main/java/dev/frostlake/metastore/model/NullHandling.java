@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore.model;
 
+import java.util.Locale;
+
 /**
  * A UDF's NULL-handling behavior: {@link #CALLED_ON_NULL_INPUT} (the default — the body runs even for NULL
  * arguments) or {@link #RETURNS_NULL_ON_NULL_INPUT} (short-circuits to NULL; {@code STRICT} is its synonym).
@@ -39,7 +41,7 @@ public enum NullHandling {
     /** Parse a clause value case-insensitively ({@code STRICT} is a synonym); null/unrecognized → the default. */
     public static NullHandling fromString(final String value) {
         if (value != null) {
-            final String v = value.trim().toUpperCase();
+            final String v = value.trim().toUpperCase(Locale.ROOT);
             if (v.equals("RETURNS NULL ON NULL INPUT") || v.equals("STRICT")) {
                 return RETURNS_NULL_ON_NULL_INPUT;
             }

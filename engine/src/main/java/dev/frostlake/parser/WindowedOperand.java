@@ -20,6 +20,7 @@ import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SqlIdentifiers;
 import java.math.BigDecimal;
+import java.util.Locale;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -165,7 +166,7 @@ public final class WindowedOperand {
             return "null";
         }
         if (literal.TRUE() != null || literal.FALSE() != null) {
-            return text.toUpperCase();
+            return text.toUpperCase(Locale.ROOT);
         }
         if (literal.DOLLAR_QUOTED_STRING() != null) {
             return "'" + text.substring(2, text.length() - 2).replace("'", "''") + "'";
@@ -235,7 +236,7 @@ public final class WindowedOperand {
         }
         if (value instanceof FrostlakeParser.TypedDateTimeLiteralExprContext) {
             return "TO_" + ((FrostlakeParser.TypedDateTimeLiteralExprContext) value).dateTimeLiteralType().getText()
-                .toUpperCase();
+                .toUpperCase(Locale.ROOT);
         }
         if (value instanceof FrostlakeParser.IntervalExprContext
                 || value instanceof FrostlakeParser.IntervalStringExprContext) {
@@ -250,7 +251,7 @@ public final class WindowedOperand {
             return operator;
         }
         // A call by its function, a CASE and a niladic function by their word.
-        return ((ParserRuleContext) value).getStart().getText().toUpperCase();
+        return ((ParserRuleContext) value).getStart().getText().toUpperCase(Locale.ROOT);
     }
 
     /** The name the account gives an operator applied in parentheses, or null for what is none. */

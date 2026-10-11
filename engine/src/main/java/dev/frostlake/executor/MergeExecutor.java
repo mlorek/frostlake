@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -218,7 +219,7 @@ final class MergeExecutor {
             if (ctx.identifierList() != null && sourceTable != null) {
                 final List<String> aliases = new ArrayList<>();
                 for (final FrostlakeParser.IdentifierContext idCtx : ctx.identifierList().identifier()) {
-                    aliases.add(executor.getIdentifier(idCtx).toUpperCase());
+                    aliases.add(executor.getIdentifier(idCtx).toUpperCase(Locale.ROOT));
                 }
                 sourceTable = executor.applyColumnAliases(sourceTable, aliases);
             }
@@ -516,7 +517,7 @@ final class MergeExecutor {
                                             // column it feeds, live-verified — the target as the MERGE wrote it.
                                             throw DmlWriteTarget.isRowTimeFailure(failed)
                                                 ? DmlWriteTarget.failedOnColumn(targetTableName,
-                                                    mergeInsertColumnName(notMatchedClause, targetTable, v).toUpperCase(),
+                                                    mergeInsertColumnName(notMatchedClause, targetTable, v).toUpperCase(Locale.ROOT),
                                                     failed)
                                                 : failed;
                                         }
@@ -753,12 +754,12 @@ final class MergeExecutor {
                                             final List<FrostlakeParser.MergeClauseContext> notMatchedClauses) {
         final Map<String, Table> aliasToTable = new HashMap<>();
         final List<Table> allTables = new ArrayList<>();
-        aliasToTable.put((targetAlias != null ? targetAlias : targetTable.getName()).toUpperCase(), targetTable);
+        aliasToTable.put((targetAlias != null ? targetAlias : targetTable.getName()).toUpperCase(Locale.ROOT), targetTable);
         allTables.add(targetTable);
         if (sourceTable != null) {
             // A table merged into itself is still read through its source alias: MERGE INTO t USING t s … SET a = s.b
             // types s.b as t's column.
-            aliasToTable.put((sourceAlias != null ? sourceAlias : sourceTable.getName()).toUpperCase(), sourceTable);
+            aliasToTable.put((sourceAlias != null ? sourceAlias : sourceTable.getName()).toUpperCase(Locale.ROOT), sourceTable);
             if (sourceTable != targetTable) {
                 allTables.add(sourceTable);
             }
@@ -807,10 +808,10 @@ final class MergeExecutor {
                                               final List<FrostlakeParser.MergeClauseContext> notMatchedClauses) {
         final Map<String, Table> aliasToTable = new HashMap<>();
         final List<Table> allTables = new ArrayList<>();
-        aliasToTable.put((targetAlias != null ? targetAlias : targetTable.getName()).toUpperCase(), targetTable);
+        aliasToTable.put((targetAlias != null ? targetAlias : targetTable.getName()).toUpperCase(Locale.ROOT), targetTable);
         allTables.add(targetTable);
         if (sourceTable != null) {
-            aliasToTable.put((sourceAlias != null ? sourceAlias : sourceTable.getName()).toUpperCase(), sourceTable);
+            aliasToTable.put((sourceAlias != null ? sourceAlias : sourceTable.getName()).toUpperCase(Locale.ROOT), sourceTable);
             if (sourceTable != targetTable) {
                 allTables.add(sourceTable);
             }

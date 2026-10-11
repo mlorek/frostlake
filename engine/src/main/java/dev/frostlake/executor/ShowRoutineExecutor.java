@@ -20,6 +20,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.OperatorFunctionNames;
 import dev.frostlake.functions.UnlistedFunctionNames;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -56,6 +57,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -66,10 +68,14 @@ final class ShowRoutineExecutor {
 
     private final Catalog catalog;
     private final FunctionRegistry functionRegistry;
+    /** Says whether the session may act as a routine's owner, who alone reads all of its body. */
+    private final DefinitionOwnership ownership;
 
-    ShowRoutineExecutor(final Catalog catalog, final FunctionRegistry functionRegistry) {
+    ShowRoutineExecutor(final Catalog catalog, final FunctionRegistry functionRegistry,
+                        final DefinitionOwnership ownership) {
         this.catalog = catalog;
         this.functionRegistry = functionRegistry;
+        this.ownership = ownership;
     }
 
     public ResultSet showProcedures(final String schemaName, final boolean userOnly) {
@@ -664,27 +670,6 @@ final class ShowRoutineExecutor {
         );
     }
 
-    public ResultSet describeTag(final String tagName) {
-        final List<Row> rows = new ArrayList<>();
-        final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("property", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
-        );
-
-        final Tag tag = catalog.getTag(tagName);
-        rows.add(new Row(Arrays.asList("name", tag.getName())));
-
-        if (tag.hasAllowedValues()) {
-            rows.add(new Row(Arrays.asList("allowed_values", allowedValuesText(tag))));
-        }
-
-        if (tag.getComment() != null) {
-            rows.add(new Row(Arrays.asList("comment", tag.getComment())));
-        }
-
-        return new ResultSet(columns, rows);
-    }
-
     /**
      * DESCRIBE FUNCTION: the overload the written signature picks, by the function's exact canonical name.
      *
@@ -710,7 +695,9 @@ final class ShowRoutineExecutor {
         // A SQL function written without a body describes one all the same, as NULL (live-verified).
         if (fn.getBody() != null || RoutineDescriptionRows.isHandlerLanguage(fn.getLanguage())
                 || isSqlLanguage(fn.getLanguage()) && !fn.isServiceFunction()) {
-            rows.add(new Row(Arrays.asList("body", fn.getBody())));
+            // A SECURE function describes its body to its owner alone: any other role reads NULL (live-verified).
+            rows.add(new Row(Arrays.asList("body",
+                fn.isSecure() && !ownership.actsAsOwner(fn.getOwner()) ? null : fn.getBody())));
         }
         RoutineDescriptionRows.add(rows, fn.getLanguage(), fn.getHandler(), fn.getRuntimeVersion(), fn.getImports(),
             fn.getEnvironment(), true);
@@ -752,7 +739,10 @@ final class ShowRoutineExecutor {
             rows.add(new Row(Arrays.asList("execute as", proc.getExecuteAs())));
         }
         if (proc.getBody() != null || RoutineDescriptionRows.isHandlerLanguage(proc.getLanguage())) {
-            rows.add(new Row(Arrays.asList("body", proc.getBody())));
+            // A procedure's body is its owner's: to any other role a SECURE one describes NULL and a plain
+            // one the empty string (live-verified).
+            rows.add(new Row(Arrays.asList("body", ownership.actsAsOwner(proc.getOwner()) ? proc.getBody()
+                : proc.isSecure() ? null : "")));
         }
         final RoutineEnvironment environment = proc.getEnvironment().copy();
         environment.setPackages(proc.getPackages());
@@ -762,9 +752,10 @@ final class ShowRoutineExecutor {
     }
 
     public ResultSet describeMaskingPolicy(final String name) {
-        final MaskingPolicy policy = resolveDescribeSchema().getMaskingPolicy(lastSegment(name));
+        final Schema home = describedSchema(name);
+        final MaskingPolicy policy = home.getMaskingPolicy(lastSegment(name));
         if (policy == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", name));
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", fullPath(home, name)));
         }
         // The return type reads as declared, in the account's own spelling: a DOUBLE reads FLOAT, an INT
         // NUMBER(38,0), and a string or a binary keeps the width it was written with (live-verified).
@@ -776,9 +767,10 @@ final class ShowRoutineExecutor {
     }
 
     public ResultSet describeRowAccessPolicy(final String name) {
-        final RowAccessPolicy policy = resolveDescribeSchema().getRowAccessPolicy(lastSegment(name));
+        final Schema home = describedSchema(name);
+        final RowAccessPolicy policy = home.getRowAccessPolicy(lastSegment(name));
         if (policy == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", name));
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", fullPath(home, name)));
         }
         return policyDescribeResult(policy.getName(), routineSignature(policy.getParameters()),
             "BOOLEAN", policy.getBody());
@@ -806,7 +798,7 @@ final class ShowRoutineExecutor {
         if (typeName == null) {
             return null;
         }
-        final String upper = typeName.toUpperCase();
+        final String upper = typeName.toUpperCase(Locale.ROOT);
         if (upper.equals("STRING") || upper.equals("TEXT")) {
             return "VARCHAR";
         }
@@ -819,9 +811,10 @@ final class ShowRoutineExecutor {
      * SHOW FILE FORMATS instead (live-verified).
      */
     public ResultSet describeFileFormat(final String name) {
-        final FileFormat ff = resolveDescribeSchema().getFileFormat(lastSegment(name));
+        final Schema home = describedSchema(name);
+        final FileFormat ff = home.getFileFormat(lastSegment(name));
         if (ff == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", name));
+            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", fullPath(home, name)));
         }
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("property", StringType.VARCHAR),
@@ -869,7 +862,8 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(fileFormatColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : ShowResultHelpers.scopeDatabaseReportedGenerically(catalog, dbName)
+                .getAllSchemas()) {
             appendFileFormatRows(schema, dbName, rows);
         }
         return new ResultSet(fileFormatColumns(), rows);
@@ -1410,6 +1404,19 @@ final class ShowRoutineExecutor {
     /** Current database.schema for describe lookups. */
     private Schema resolveDescribeSchema() {
         return ShowResultHelpers.resolveDescribeSchema(catalog);
+    }
+
+    /**
+     * The schema a described policy or file format lives in: the one its name gives, which is refused as a
+     * schema when it is missing, else the session's.
+     */
+    private Schema describedSchema(final String name) {
+        return QualifiedName.parse(name).size() > 1 ? catalog.resolveOwningSchema(name) : resolveDescribeSchema();
+    }
+
+    /** A described object's full path, which a missing one is refused by whatever way its name was written. */
+    private String fullPath(final Schema home, final String name) {
+        return QualifiedName.join(home.getDatabaseName(), home.getName(), lastSegment(name));
     }
 
     /** Build a two-column (property, value) describe result. */

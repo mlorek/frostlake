@@ -113,8 +113,7 @@ public final class UserDefinedFunctionResource implements RestResource {
         final List<RestRow> shows = call.sql().showNamed(show(call, RestShow.likeName(signature.name())),
             signature.name());
         if (shows.isEmpty()) {
-            throw RestException.notFound("Function '"
-                + qualified(call, signature.name()) + "' does not exist or not authorized.");
+            throw RestException.missing("Function", qualified(call, signature.name()));
         }
         final List<String> types = signature.hasArguments() ? signature.types()
             : RoutineSupport.showArgumentTypes(shows.get(0));

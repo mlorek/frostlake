@@ -169,15 +169,10 @@ final class CallShapeRules {
             return;
         }
         final int slot = name == null ? -1 : DateTimeUnitSlot.positionIn(name);
-        final boolean enclosing = context.beginFunctionArgumentScope();
-        try {
-            for (int i = 0; i < arguments.size(); i++) {
-                if (i != slot) {
-                    arguments.get(i).accept(walk);
-                }
+        for (int i = 0; i < arguments.size(); i++) {
+            if (i != slot) {
+                arguments.get(i).accept(walk);
             }
-        } finally {
-            context.endFunctionArgumentScope(enclosing);
         }
     }
 

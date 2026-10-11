@@ -372,12 +372,12 @@ public class NonOwnerPrivilegeTest extends MeasuredCellsTestSupport {
             engine.execute("USE SECONDARY ROLES ALL");
             assertAnswer(
                 "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role ACCOUNTADMIN or one of your secondary roles must have SELECT granted on TABLE "
+                + "primary role <ROLE> or one of your secondary roles must have SELECT granted on TABLE "
                 + "TEST_DB.TEST_SCHEMA.T1.",
                 "SELECT * FROM t1");
             assertAnswer(
                 "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role ACCOUNTADMIN or one of your secondary roles must have INSERT granted on TABLE "
+                + "primary role <ROLE> or one of your secondary roles must have INSERT granted on TABLE "
                 + "TEST_DB.TEST_SCHEMA.T1.",
                 "INSERT INTO t1 VALUES (3, 4)");
             engine.execute("USE SECONDARY ROLES NONE");

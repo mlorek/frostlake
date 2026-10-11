@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -306,7 +307,7 @@ public class JoinOperator implements Operator {
             if (numeric != null) {
                 return numeric;
             }
-            return ((String) value).toUpperCase();
+            return ((String) value).toUpperCase(Locale.ROOT);
         }
         if (value instanceof Number) {
             return ((Number) value).doubleValue();

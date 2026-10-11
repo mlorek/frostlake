@@ -19,6 +19,8 @@ package dev.frostlake.expressions;
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -41,7 +43,7 @@ public class ProjectedColumnTypeTest extends BaseDatabaseTest {
     private String declaredType(final String table) {
         return String.valueOf(engine.executeQuery(
             "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = '"
-                + table.toUpperCase() + "'").getRows().get(0).getValue(0));
+                + table.toUpperCase(Locale.ROOT) + "'").getRows().get(0).getValue(0));
     }
 
     private void ctas(final String table, final String projection) {

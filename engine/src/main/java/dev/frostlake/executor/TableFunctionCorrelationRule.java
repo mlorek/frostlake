@@ -124,10 +124,10 @@ final class TableFunctionCorrelationRule {
             if (produced0 == null) {
                 continue;
             }
-            final String qualifier = aliasOf(reference, defaultAlias).toUpperCase();
+            final String qualifier = aliasOf(reference, defaultAlias).toUpperCase(Locale.ROOT);
             for (final TableColumn column : produced0.getColumns()) {
-                produced.add(column.getName().toUpperCase());
-                produced.add(qualifier + "." + column.getName().toUpperCase());
+                produced.add(column.getName().toUpperCase(Locale.ROOT));
+                produced.add(qualifier + "." + column.getName().toUpperCase(Locale.ROOT));
             }
         }
         return produced;
@@ -166,10 +166,10 @@ final class TableFunctionCorrelationRule {
 
     private String aliasOf(final FrostlakeParser.TableReferenceContext reference, final String fallback) {
         if (reference.aliasName() != null) {
-            return ParseTreeText.getIdentifier(reference.aliasName()).toUpperCase();
+            return ParseTreeText.getIdentifier(reference.aliasName()).toUpperCase(Locale.ROOT);
         }
         if (reference.nonJoinKeywordIdentifier() != null) {
-            return reference.nonJoinKeywordIdentifier().getText().toUpperCase();
+            return reference.nonJoinKeywordIdentifier().getText().toUpperCase(Locale.ROOT);
         }
         return fallback;
     }
@@ -195,7 +195,7 @@ final class TableFunctionCorrelationRule {
         final List<FrostlakeParser.FunctionNameContext> names = new ArrayList<>();
         collectFunctionNames(selectList, names);
         for (final FrostlakeParser.FunctionNameContext name : names) {
-            if (functions.hasAggregateFunction(name.getText().toUpperCase())) {
+            if (functions.hasAggregateFunction(name.getText().toUpperCase(Locale.ROOT))) {
                 return true;
             }
         }
@@ -226,7 +226,7 @@ final class TableFunctionCorrelationRule {
         final List<FrostlakeParser.QualifiedNameExprContext> references = new ArrayList<>();
         collectQualifiedNames(subquery, references);
         for (final FrostlakeParser.QualifiedNameExprContext reference : references) {
-            final String name = reference.qualifiedName().getText().toUpperCase();
+            final String name = reference.qualifiedName().getText().toUpperCase(Locale.ROOT);
             if (produced.contains(name) && !shadowed.contains(name)) {
                 return true;
             }
@@ -258,7 +258,7 @@ final class TableFunctionCorrelationRule {
                 continue;
             }
             for (final TableColumn column : inner.getColumns()) {
-                names.add(column.getName().toUpperCase());
+                names.add(column.getName().toUpperCase(Locale.ROOT));
             }
         }
         return names;

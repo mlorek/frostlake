@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * SHOW / DESCRIBE handlers for the data-pipeline object family: streams, tasks, pipes, sequences and
@@ -85,16 +86,12 @@ final class ShowPipelineExecutor {
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> allRows = new ArrayList<>();
         List<ResultSetColumn> columns = null;
-        try {
-            final Database db = catalog.getDatabase(dbName);
-            for (final Schema schema : db.getAllSchemas()) {
-                if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
-                final ResultSet rs = showStreams(dbName, schema.getName());
-                if (columns == null) columns = rs.getColumns();
-                allRows.addAll(rs.getRows());
-            }
-        } catch (final Exception e) {
-            throw new RuntimeException("Failed to show streams in database " + dbName + ": " + e.getMessage(), e);
+        final Database db = catalog.getDatabase(dbName);
+        for (final Schema schema : db.getAllSchemas()) {
+            if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
+            final ResultSet rs = showStreams(dbName, schema.getName());
+            if (columns == null) columns = rs.getColumns();
+            allRows.addAll(rs.getRows());
         }
         if (columns == null) {
             columns = showStreams(null, null).getColumns();
@@ -223,7 +220,7 @@ final class ShowPipelineExecutor {
             // The predecessors column lists them by name; task_relations keeps them as they were added.
             VariantValue.of(predecessorsJson(task, dbName, scName, true)),
             // Live spells the task state in lower case: started / suspended.
-            task.getState() != null ? task.getState().toString().toLowerCase() : null,
+            task.getState() != null ? task.getState().toString().toLowerCase(Locale.ROOT) : null,
             task.getSqlStatement(),
             task.getCondition(),
             // A child task carries no overlap setting of its own; live prints the text "null" there.
@@ -303,16 +300,12 @@ final class ShowPipelineExecutor {
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> allRows = new ArrayList<>();
         List<ResultSetColumn> columns = null;
-        try {
-            final Database db = catalog.getDatabase(dbName);
-            for (final Schema schema : db.getAllSchemas()) {
-                if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
-                final ResultSet rs = showTasks(dbName, schema.getName());
-                if (columns == null) columns = rs.getColumns();
-                allRows.addAll(rs.getRows());
-            }
-        } catch (final Exception e) {
-            throw new RuntimeException("Failed to show tasks in database " + dbName + ": " + e.getMessage(), e);
+        final Database db = catalog.getDatabase(dbName);
+        for (final Schema schema : db.getAllSchemas()) {
+            if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
+            final ResultSet rs = showTasks(dbName, schema.getName());
+            if (columns == null) columns = rs.getColumns();
+            allRows.addAll(rs.getRows());
         }
         if (columns == null) {
             final ResultSet empty = showTasks(null);
@@ -430,7 +423,7 @@ final class ShowPipelineExecutor {
             return "Dynamic Table";
         }
         final String name = stream.getSourceType().name();
-        return name.charAt(0) + name.substring(1).toLowerCase();
+        return name.charAt(0) + name.substring(1).toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -771,7 +764,8 @@ final class ShowPipelineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : ShowResultHelpers.scopeDatabaseReportedGenerically(catalog, dbName)
+                .getAllSchemas()) {
             appendDynamicTableRows(dbName, schema, rows);
         }
         return new ResultSet(dynamicTableColumns(), rows);
@@ -889,7 +883,7 @@ final class ShowPipelineExecutor {
             // A column the table declares keeps the name and the comment it was declared with.
             final DynamicTableColumn own = i < declared.size() ? declared.get(i) : null;
             rows.add(new Row(Arrays.asList(
-                own != null ? own.getName() : column.getName().toUpperCase(),
+                own != null ? own.getName() : column.getName().toUpperCase(Locale.ROOT),
                 SqlTypeNames.columnMetadata(type),
                 "COLUMN",
                 "Y",

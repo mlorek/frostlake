@@ -818,7 +818,7 @@ final class GroupByAggregateEvaluator {
     private static String groupingKeyOf(final String text) {
         final String trimmed = text.trim();
         return SqlIdentifiers.isIdentifierReference(trimmed)
-            ? SqlIdentifiers.canonicalText(trimmed) : trimmed.toUpperCase();
+            ? SqlIdentifiers.canonicalText(trimmed) : trimmed.toUpperCase(Locale.ROOT);
     }
 
     /**
@@ -1073,7 +1073,7 @@ final class GroupByAggregateEvaluator {
         // defining item may be an aggregate (SELECT COUNT(1) AS c, c AS again), which no single group row can
         // produce. A real column of the same name still wins, matching the WHERE-clause alias rule.
         if (lateralAliases != null && !lateralAliases.isEmpty()) {
-            final String bare = itemText.trim().toUpperCase();
+            final String bare = itemText.trim().toUpperCase(Locale.ROOT);
             if (lateralAliases.containsKey(bare) && (table == null || !table.hasColumn(bare))) {
                 return lateralAliases.get(bare);
             }
@@ -1286,9 +1286,9 @@ final class GroupByAggregateEvaluator {
             if (i > 0) {
                 echo.append(", ");
             }
-            echo.append(args.get(i).toUpperCase());
+            echo.append(args.get(i).toUpperCase(Locale.ROOT));
         }
-        final String echoedCall = starCall.functionName().getText().toUpperCase() + "("
+        final String echoedCall = starCall.functionName().getText().toUpperCase(Locale.ROOT) + "("
             + (starCall.DISTINCT() != null ? "DISTINCT " : "") + echo + ")";
         // A star that expands to NOTHING — every column excluded, an ILIKE matching none — is the
         // too-few sentence over the empty list: "not enough arguments for function [COUNT()],
@@ -1328,8 +1328,18 @@ final class GroupByAggregateEvaluator {
                 if (arg.booleanExpr() == null) {
                     continue;
                 }
-                args.add(substituteSiblingAliasesInAggArg(ParseTreeText.getOriginalText(arg.booleanExpr()),
-                    funcCtx, table, allTables));
+                final String written = ParseTreeText.getOriginalText(arg.booleanExpr());
+                final String text = substituteSiblingAliasesInAggArg(written, funcCtx, table, allTables);
+                // An argument evaluated from its own text keeps where that text begins, so a refusal raised
+                // inside it is placed in the statement; a rewritten one has no place of its own.
+                final AggFactKey origin = new AggFactKey("org", table, null, null, text);
+                if (text.equals(written)) {
+                    genericAggFactsMap().put(origin, new SourcePosition(arg.booleanExpr().getStart().getLine(),
+                        arg.booleanExpr().getStart().getCharPositionInLine()));
+                } else {
+                    genericAggFactsMap().remove(origin);
+                }
+                args.add(text);
             }
         }
         return args;
@@ -1771,7 +1781,7 @@ final class GroupByAggregateEvaluator {
             return;
         }
         if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
-            final String name = ((FrostlakeParser.FunctionCallStarExprContext) node).functionName().getText().toUpperCase();
+            final String name = ((FrostlakeParser.FunctionCallStarExprContext) node).functionName().getText().toUpperCase(Locale.ROOT);
             if (executor.getFunctionRegistry().hasAggregateFunction(name)) {
                 out.add((FrostlakeParser.ExpressionContext) node);
                 return;
@@ -1780,7 +1790,7 @@ final class GroupByAggregateEvaluator {
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext fc = (FrostlakeParser.FunctionCallExprContext) node;
             if (fc.overClause() == null
-                    && executor.getFunctionRegistry().hasAggregateFunction(fc.functionName().getText().toUpperCase())) {
+                    && executor.getFunctionRegistry().hasAggregateFunction(fc.functionName().getText().toUpperCase(Locale.ROOT))) {
                 out.add(fc);
                 return;
             }
@@ -2295,17 +2305,27 @@ final class GroupByAggregateEvaluator {
             ev.setMultiTableContext(aliasToTable, allTables);
         }
         final Expression parsed = ExpressionEvaluator.parse(arg);
-        for (int rowIndex = 0; rowIndex < groupRows.size(); rowIndex++) {
-            // Number the group's rows so an aggregated SEQ1/2/4/8 counts them. With no GROUP BY the
-            // group IS the whole input in scan order, which is what live counts: SUM(SEQ4()) over
-            // five rows is 0+1+2+3+4. Under a real GROUP BY, live numbers by the SCAN and Frostlake
-            // numbers within the group, so the two disagree — see the note in SeqFn.
-            final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
-            try {
-                // A value that cannot be computed fails the query; it used to become a NULL input.
-                values.add(ev.evaluate(parsed, groupRows.get(rowIndex)));
-            } finally {
-                RowOrdinal.end(displacedOrdinal);
+        // The statement's own aggregate only: inside a subquery the refusal is placed by the subquery's origin.
+        final Object origin = facts.get(new AggFactKey("org", table, null, null, arg));
+        final boolean placed = origin instanceof SourcePosition && !ExpressionSource.hasOrigin();
+        final SourcePosition displacedOrigin = placed ? ExpressionSource.beginNested((SourcePosition) origin) : null;
+        try {
+            for (int rowIndex = 0; rowIndex < groupRows.size(); rowIndex++) {
+                // Number the group's rows so an aggregated SEQ1/2/4/8 counts them. With no GROUP BY the
+                // group IS the whole input in scan order, which is what live counts: SUM(SEQ4()) over
+                // five rows is 0+1+2+3+4. Under a real GROUP BY, live numbers by the SCAN and Frostlake
+                // numbers within the group, so the two disagree — see the note in SeqFn.
+                final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
+                try {
+                    // A value that cannot be computed fails the query; it used to become a NULL input.
+                    values.add(ev.evaluate(parsed, groupRows.get(rowIndex)));
+                } finally {
+                    RowOrdinal.end(displacedOrdinal);
+                }
+            }
+        } finally {
+            if (placed) {
+                ExpressionSource.end(displacedOrigin);
             }
         }
         return values;

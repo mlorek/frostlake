@@ -43,6 +43,10 @@ public class HexEncode extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) return null;
         final char[] digits = args.size() > 1 && args.get(1) != null
             ? digitsFor(args.get(1)) : HEX_UPPER;

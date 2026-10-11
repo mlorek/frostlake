@@ -27,6 +27,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -88,7 +89,7 @@ final class OverCallRules {
      */
     void rejectKinds(final List<ParseTree> clauses) {
         for (final ParserRuleContext call : calls(clauses)) {
-            final String canonical = functionName(call).getText().toUpperCase();
+            final String canonical = functionName(call).getText().toUpperCase(Locale.ROOT);
             if (!WindowFunctionNames.handles(canonical) && functionRegistry.getAggregateFunction(canonical) == null) {
                 throw new RuntimeException(SqlCompilationError.of("Invalid function type ["
                     + spelledName(functionName(call)) + "] for window function."));
@@ -113,7 +114,7 @@ final class OverCallRules {
     void rejectNamed(final List<ParseTree> clauses, final FrostlakeParser.SelectListContext selectList,
                      final ExpressionEvaluator itemWalk) {
         for (final ParserRuleContext call : calls(clauses)) {
-            final String kind = functionName(call).getText().toUpperCase();
+            final String kind = functionName(call).getText().toUpperCase(Locale.ROOT);
             // A call of the wrong kind is refused for its kind, whatever its arguments look like.
             if (call instanceof FrostlakeParser.FunctionCallExprContext
                     || !WindowFunctionNames.handles(kind) && functionRegistry.getAggregateFunction(kind) == null) {
@@ -241,16 +242,26 @@ final class OverCallRules {
     }
 
     /** Every call written with OVER under {@code node}, outside a nested query, in written order. */
+    /**
+     * Whether a node is the call a TABLE( … ) source wraps: a table function's, whose OVER names the partitions
+     * it reads its input by and is no window call (live-verified).
+     */
+    static boolean isTableFunctionCall(final ParseTree node) {
+        return node instanceof ParserRuleContext
+            && ((ParserRuleContext) node).getParent() instanceof FrostlakeParser.TableSourceContext
+            && ((FrostlakeParser.TableSourceContext) ((ParserRuleContext) node).getParent()).TABLE() != null;
+    }
+
     private static void collect(final ParseTree node, final List<ParserRuleContext> out) {
         if (node instanceof FrostlakeParser.SelectClauseContext) {
             return;
         }
-        if (node instanceof FrostlakeParser.FunctionCallExprContext
+        if (!isTableFunctionCall(node) && (node instanceof FrostlakeParser.FunctionCallExprContext
                 && ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null
                 || node instanceof FrostlakeParser.FunctionCallNamedArgsExprContext
                 && ((FrostlakeParser.FunctionCallNamedArgsExprContext) node).overClause() != null
                 || node instanceof FrostlakeParser.FunctionCallMixedArgsExprContext
-                && ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).overClause() != null) {
+                && ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).overClause() != null)) {
             out.add((ParserRuleContext) node);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -348,7 +359,7 @@ final class OverCallRules {
     private static String spelledName(final FrostlakeParser.FunctionNameContext name) {
         final List<FrostlakeParser.IdentifierContext> parts = name.identifier();
         if (parts == null || parts.isEmpty()) {
-            return name.getText().toUpperCase();
+            return name.getText().toUpperCase(Locale.ROOT);
         }
         final StringBuilder spelled = new StringBuilder();
         for (final FrostlakeParser.IdentifierContext part : parts) {

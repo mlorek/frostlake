@@ -27,6 +27,8 @@ import dev.frostlake.types.StringType;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -65,9 +67,9 @@ public class InformationSchemaResultTypesTest extends BaseDatabaseTest {
             return "NUMBER(" + ((NumericType) type).getPrecision() + "," + ((NumericType) type).getScale() + ")";
         }
         if (type instanceof DateTimeType) {
-            return type.getName().toUpperCase() + "(" + ((DateTimeType) type).getPrecision() + ")";
+            return type.getName().toUpperCase(Locale.ROOT) + "(" + ((DateTimeType) type).getPrecision() + ")";
         }
-        return type.getName().toUpperCase();
+        return type.getName().toUpperCase(Locale.ROOT);
     }
 
     private String row(final String sql) {

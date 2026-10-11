@@ -31,4 +31,11 @@
     <suppress checks="IllegalImport"
               files="[\\/]rt[\\/]js[\\/]GraalJsEngine\.java$"/>
 
+    <!-- These files hold JavaScript or Java SOURCE TEXT inside string literals: the body of a handler a
+         test creates, and the script a JavaScript routine's world is built from. toUpperCase() and
+         toLowerCase() there are the other language's own calls - JavaScript's take no locale at all - and
+         a line pattern cannot tell a string from code. -->
+    <suppress id="LocaleFreeCaseFold"
+              files="[\\/](rt[\\/]js[\\/]JavaScriptHandler|udf[\\/]JavaInlineClassesTest|scripting[\\/](JavaScriptUDFPracticalTest|JavaScriptNoHostObjectTest|JavaScriptUDFTest))\.java$"/>
+
 </suppressions>

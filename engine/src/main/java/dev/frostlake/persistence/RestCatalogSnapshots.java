@@ -85,6 +85,7 @@ final class RestCatalogSnapshots {
 
     /** Records the account-level objects: accounts, integrations, external volumes and compute pools. */
     static void saveCatalog(final Catalog catalog, final CatalogSnapshot snapshot) {
+        snapshot.accountParameters = new HashMap<>(catalog.getAccountParameters().entries());
         for (final Integration integration : catalog.getIntegrations().all()) {
             final IntegrationSnapshot saved = new IntegrationSnapshot();
             saved.name = integration.getName();
@@ -155,6 +156,7 @@ final class RestCatalogSnapshots {
 
     /** Puts the account-level objects of a snapshot back. */
     static void restoreCatalog(final CatalogSnapshot snapshot, final Catalog catalog) {
+        restoreParameters(snapshot.accountParameters, catalog.getAccountParameters());
         if (snapshot.integrations != null) {
             for (final IntegrationSnapshot saved : snapshot.integrations) {
                 final Integration integration = new Integration(saved.name, IntegrationKind.valueOf(saved.kind),
@@ -295,6 +297,7 @@ final class RestCatalogSnapshots {
             saved.comment = repository.getComment();
             saved.encryption = repository.getEncryption();
             saved.createdOn = repository.getCreatedOn();
+            saved.tags = SnapshotTags.of(repository);
             snapshot.imageRepositories.add(saved);
         }
         for (final ContainerService service : containers.getServices()) {
@@ -376,6 +379,7 @@ final class RestCatalogSnapshots {
                 if (saved.encryption != null) {
                     repository.setEncryption(saved.encryption);
                 }
+                SnapshotTags.restore(repository, saved.tags);
                 containers.putImageRepository(repository);
             }
         }
@@ -671,6 +675,7 @@ final class RestCatalogSnapshots {
 
     /** Adds what the older user snapshot left out: privilege and role grantors, database roles, tags. */
     static void saveUserGrants(final User user, final UserSnapshot saved) {
+        saved.parameters = new HashMap<>(user.getParameters().entries());
         for (final PrivilegeSnapshot privilege : saved.privileges) {
             if (privilege.column == null) {
                 privilege.grantor = user.getPrivilegeGrantor(privilege.objectType, privilege.objectName,
@@ -785,6 +790,7 @@ final class RestCatalogSnapshots {
 
     /** Puts a user's database-role grants and tags back. */
     static void restoreUserGrants(final UserSnapshot saved, final User user) {
+        restoreParameters(saved.parameters, user.getParameters());
         if (saved.databaseRoleGrants != null) {
             for (final Map.Entry<String, String> grant : saved.databaseRoleGrants.entrySet()) {
                 user.grantDatabaseRole(grant.getKey(), grant.getValue());
@@ -907,6 +913,7 @@ final class RestCatalogSnapshots {
         saved.updatedOn = service.getUpdatedOn();
         saved.resumedOn = service.getResumedOn();
         saved.suspendedOn = service.getSuspendedOn();
+        saved.tags = SnapshotTags.of(service);
         return saved;
     }
 
@@ -934,6 +941,7 @@ final class RestCatalogSnapshots {
         if (saved.createdOn != null) {
             service.restoreTimes(saved.updatedOn, saved.resumedOn, saved.suspendedOn);
         }
+        SnapshotTags.restore(service, saved.tags);
         return service;
     }
 

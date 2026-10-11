@@ -122,7 +122,7 @@ final class SessionParameterSettings {
     }
 
     /** The value the session will hold for a value of the parameter's kind; null for NULL. */
-    private static Object ofKind(final SessionParameterSetting setting) {
+    static Object ofKind(final SessionParameterSetting setting) {
         final SessionParameterValue value = setting.value();
         if (value.kind() == SessionValueKind.NULL) {
             return null;
@@ -136,6 +136,11 @@ final class SessionParameterSettings {
             if (value.kind() == SessionValueKind.TEXT) {
                 return value.text();
             }
+        } else if ("FLOAT".equals(setting.type())) {
+            // Only parameters of the account are of this kind; a number of either form is one.
+            if (value.kind() == SessionValueKind.INTEGER || value.kind() == SessionValueKind.DECIMAL) {
+                return value.written();
+            }
         } else if (value.kind() == SessionValueKind.BOOLEAN) {
             return Boolean.valueOf(value.flag());
         }
@@ -143,7 +148,7 @@ final class SessionParameterSettings {
     }
 
     /** Refuses a value of the right kind that the parameter does not take. */
-    private static void requireTaken(final SessionParameterSetting setting, final Catalog catalog) {
+    static void requireTaken(final SessionParameterSetting setting, final Catalog catalog) {
         final String key = setting.key();
         if ("NUMBER".equals(setting.type())) {
             TaskParameterValues.requireNumber(key, ((Long) setting.stored()).longValue());

@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -130,7 +132,7 @@ public class NullStatementTest extends BaseDatabaseTest {
                 engine.execute("NULL;");
             }
         });
-        assertTrue(e.getMessage().toLowerCase().contains("syntax error"),
+        assertTrue(e.getMessage().toLowerCase(Locale.ROOT).contains("syntax error"),
             "unexpected message: " + e.getMessage());
     }
 

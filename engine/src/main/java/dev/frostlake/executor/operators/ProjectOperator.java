@@ -32,6 +32,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -187,8 +188,8 @@ public class ProjectOperator implements Operator {
                 // when no FROM-source column has that name: the real column takes precedence over a
                 // same-named sibling alias (what makes a swap projection `SELECT t AS s, s AS t` read
                 // both values from the input row instead of collapsing to t, t).
-                } else if (rowAliasValues.containsKey(expr.toUpperCase()) && !isInputColumn(expr, context)) {
-                    value = rowAliasValues.get(expr.toUpperCase());
+                } else if (rowAliasValues.containsKey(expr.toUpperCase(Locale.ROOT)) && !isInputColumn(expr, context)) {
+                    value = rowAliasValues.get(expr.toUpperCase(Locale.ROOT));
                 } else {
                     // Note where this item began in the statement, so a message about an unresolvable
                     // column inside it can carry the position live always reports. A star-expanded
@@ -213,7 +214,7 @@ public class ProjectOperator implements Operator {
                 }
                 projectedValues.add(value);
                 if (columnAliases != null && columnAliases.get(i) != null) {
-                    rowAliasValues.put(columnAliases.get(i).toUpperCase(), value);
+                    rowAliasValues.put(columnAliases.get(i).toUpperCase(Locale.ROOT), value);
                 }
             }
 

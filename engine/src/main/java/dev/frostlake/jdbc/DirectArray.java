@@ -21,6 +21,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -62,7 +63,7 @@ public class DirectArray implements Array {
         if (typeName == null) {
             return Types.OTHER;
         }
-        switch (typeName.toUpperCase()) {
+        switch (typeName.toUpperCase(Locale.ROOT)) {
             case "INTEGER":
             case "INT":
                 return Types.INTEGER;

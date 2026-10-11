@@ -31,6 +31,7 @@ import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * JDBC Statement implementation for Frostlake SQL Engine
@@ -93,7 +94,7 @@ public class DatabaseStatement implements Statement {
         if (desired == 0) {
             return;
         }
-        final int actual = JdbcMultiStatement.countStatements(sql);
+        final int actual = JdbcMultiStatement.countTokens(sql);
         if (actual != desired) {
             throw JdbcMultiStatement.countMismatch(sql, actual, desired);
         }
@@ -244,7 +245,7 @@ public class DatabaseStatement implements Statement {
             }
             for (int i = 0; i < data.getColumns().size(); i++) {
                 final String name = data.getColumns().get(i).getName();
-                if (name != null && name.toLowerCase().startsWith("number of rows")) {
+                if (name != null && name.toLowerCase(Locale.ROOT).startsWith("number of rows")) {
                     final Object value = data.getRows().get(0).get(i);
                     if (value instanceof Number) {
                         total += ((Number) value).longValue();

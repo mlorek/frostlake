@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -52,7 +53,7 @@ public final class DynamicTableProperties {
         }
         named.addAll(action.dynamicTableProperty());
         for (final FrostlakeParser.DynamicTablePropertyContext property : named) {
-            final String name = property.getText().toUpperCase();
+            final String name = property.getText().toUpperCase(Locale.ROOT);
             if (!TAKEN.contains(name)) {
                 throw new RuntimeException(
                     SqlCompilationError.of("invalid property '" + name + "' for 'DYNAMIC_TABLE'"));

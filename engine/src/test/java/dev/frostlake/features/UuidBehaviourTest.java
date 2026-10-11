@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -47,7 +49,7 @@ public class UuidBehaviourTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SELECT " + select + " FROM uuid_row");
         assertEquals(1, rs.getRowCount(), select);
         final Object value = rs.getRows().get(0).getValue(0);
-        return value == null ? "NULL" : value.toString().toUpperCase();
+        return value == null ? "NULL" : value.toString().toUpperCase(Locale.ROOT);
     }
 
     /** Asserts a statement is refused with a message carrying {@code fragment}. */
@@ -105,15 +107,15 @@ public class UuidBehaviourTest extends BaseDatabaseTest {
         assertRefused("SELECT MODE(u) FROM uuid_row", "Function MODE does not support UUID argument type");
         assertEquals("1", scalar("COUNT(u)"));
         assertEquals("1", scalar("COUNT(DISTINCT u)"));
-        assertEquals(LOWER.toUpperCase(), scalar("ANY_VALUE(u)"));
-        assertEquals(LOWER.toUpperCase(), scalar("LISTAGG(u, ',')"));
+        assertEquals(LOWER.toUpperCase(Locale.ROOT), scalar("ANY_VALUE(u)"));
+        assertEquals(LOWER.toUpperCase(Locale.ROOT), scalar("LISTAGG(u, ',')"));
     }
 
     /** A cast to VARCHAR keeps the whole text; a cast to BINARY is refused. */
     @Test
     public void theCastsFollowTheUuidRules() {
         createUuidRow();
-        assertEquals(LOWER.toUpperCase(), scalar("CAST(u AS VARCHAR(10))"));
+        assertEquals(LOWER.toUpperCase(Locale.ROOT), scalar("CAST(u AS VARCHAR(10))"));
         assertRefused("SELECT u::BINARY FROM uuid_row", "for parameter 'TO_BINARY'");
         assertEquals("36", scalar("LENGTH(u)"));
         assertEquals(UPPER, scalar("UPPER(u)"));

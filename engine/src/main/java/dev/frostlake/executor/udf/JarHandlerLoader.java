@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -74,11 +75,14 @@ public final class JarHandlerLoader {
     private static final Map<String, Class<?>> HANDLER_CACHE = new ConcurrentHashMap<>();
 
     /** Load {@code className} (trying the Scala {@code object} singleton {@code className$} first) from the IMPORTS jar(s). */
-    public static Class<?> load(final List<String> imports, final String className,
+    public static Class<?> load(final List<String> written, final String className,
                                 final Catalog catalog, final S3PathResolver s3Resolver) {
-        if (imports == null || imports.isEmpty()) {
+        if (written == null || written.isEmpty()) {
             throw new RuntimeException("No IMPORTS jar specified for handler class " + className);
         }
+        // A file an internal named stage keeps is read from the engine's own directory behind the stage.
+        final ImportLocalizer localizer = LOCALIZER.get();
+        final List<String> imports = localizer != null ? localizer.localImports(written) : written;
         final List<String> localPaths = new ArrayList<>();
         final Set<String> seen = new HashSet<>();
         final List<File> stageDirs = new ArrayList<>();
@@ -102,7 +106,7 @@ public final class JarHandlerLoader {
             }
             final List<File> siblings = new ArrayList<>();
             for (final File f : entries) {
-                if (f.isFile() && f.getName().toLowerCase().endsWith(".jar")) {
+                if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".jar")) {
                     siblings.add(f);
                 }
             }
@@ -221,6 +225,32 @@ public final class JarHandlerLoader {
             return null;
         }
         return relative.isEmpty() ? base.toString() : base.resolve(relative).toString();
+    }
+
+    /** What turns the imports of the routine running on this thread into local paths, or none. */
+    private static final ThreadLocal<ImportLocalizer> LOCALIZER = new ThreadLocal<ImportLocalizer>();
+
+    /**
+     * The engine running a handler on this thread says how its imports are found.
+     *
+     * @param localizer the engine's localizer
+     * @return the localizer in force until now, to hand to {@link #restore}
+     */
+    public static ImportLocalizer localizeWith(final ImportLocalizer localizer) {
+        final ImportLocalizer outer = LOCALIZER.get();
+        LOCALIZER.set(localizer);
+        return outer;
+    }
+
+    /**
+     * @param outer what {@link #localizeWith} answered
+     */
+    public static void restore(final ImportLocalizer outer) {
+        if (outer == null) {
+            LOCALIZER.remove();
+        } else {
+            LOCALIZER.set(outer);
+        }
     }
 
     private JarHandlerLoader() {

@@ -18,42 +18,101 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.procedural.Cursor;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Owns the named-cursor registry for {@link ProceduralExecutor}: declaration, lookup, and the
- * save/restore of cursor names around nested blocks. Cursor execution (open/fetch/close) stays in
- * ProceduralExecutor, which orchestrates the query executor and scope variables.
+ * Owns the named-cursor registry for {@link ProceduralExecutor}: declaration and lookup. Cursor execution
+ * (open/fetch/close) stays in ProceduralExecutor, which orchestrates the query executor and scope variables.
+ *
+ * <p>A cursor's name belongs to the block that declares it (live-verified): the registry keeps one map for each
+ * running block of the body that is running, the innermost block's first. A block nested in another may declare
+ * the name again for itself — the outer cursor is hidden while the inner block runs and keeps its position — and
+ * a body run from a block, a called procedure's or a dynamic text's, starts with none of its caller's cursors:
+ * the caller's are set aside until it ends.
  */
 public class CursorManager {
 
-    private final Map<String, Cursor> cursors = new HashMap<>();
+    private final Deque<Map<String, Cursor>> scopes = new ArrayDeque<>();
 
-    /** Live cursor map — for raw (already-cased) lookups by name during execution. */
-    public Map<String, Cursor> cursors() {
-        return cursors;
-    }
-
+    /** The cursor a name stands for where the running block is: its own, else the nearest enclosing block's. */
     public Cursor getCursor(final String name) {
-        return cursors.get(name.toUpperCase());
+        final String canonical = name.toUpperCase(Locale.ROOT);
+        for (final Map<String, Cursor> scope : scopes) {
+            final Cursor cursor = scope.get(canonical);
+            if (cursor != null) {
+                return cursor;
+            }
+        }
+        return null;
     }
 
+    /** Declares a cursor in the running block, in place of one this block declared under the name before. */
     public void registerCursor(final String name, final Cursor cursor) {
-        cursors.put(name.toUpperCase(), cursor);
+        if (scopes.isEmpty()) {
+            scopes.push(new HashMap<String, Cursor>());
+        }
+        scopes.peek().put(name.toUpperCase(Locale.ROOT), cursor);
     }
 
-    /** Save the current set of cursor names so they can be restored after a nested block. */
+    /** A block starts: the cursors it declares are its own. */
+    public void enterBlock() {
+        scopes.push(new HashMap<String, Cursor>());
+    }
+
+    /** The innermost block ends, and its cursors with it. */
+    public void exitBlock() {
+        if (!scopes.isEmpty()) {
+            scopes.pop();
+        }
+    }
+
+    /**
+     * Sets every cursor aside for a body that runs as a frame of its own, which sees none of them.
+     *
+     * @return the cursors set aside, to be handed back to {@link #restore}
+     */
+    public List<Map<String, Cursor>> setAside() {
+        final List<Map<String, Cursor>> caller = new ArrayList<>(scopes);
+        scopes.clear();
+        return caller;
+    }
+
+    /**
+     * Puts back the cursors {@link #setAside()} set aside.
+     *
+     * @param caller the value that call returned
+     */
+    public void restore(final List<Map<String, Cursor>> caller) {
+        scopes.clear();
+        for (final Map<String, Cursor> scope : caller) {
+            scopes.addLast(scope);
+        }
+    }
+
+    /** The names of the cursors in sight of the running block. */
     public Set<String> saveCursorNames() {
-        return new HashSet<>(cursors.keySet());
+        final Set<String> names = new HashSet<>();
+        for (final Map<String, Cursor> scope : scopes) {
+            names.addAll(scope.keySet());
+        }
+        return names;
     }
 
-    /** Remove any cursors that were not present before the block entered. */
+    /** Removes from the running block the cursors it declared since {@code savedNames} was taken. */
     public void restoreCursors(final Set<String> savedNames) {
-        final Iterator<String> it = cursors.keySet().iterator();
+        if (scopes.isEmpty()) {
+            return;
+        }
+        final Iterator<String> it = scopes.peek().keySet().iterator();
         while (it.hasNext()) {
             if (!savedNames.contains(it.next())) {
                 it.remove();
@@ -62,6 +121,6 @@ public class CursorManager {
     }
 
     public void clear() {
-        cursors.clear();
+        scopes.clear();
     }
 }

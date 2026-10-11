@@ -58,6 +58,14 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- The engine's test base reroutes to a real account under SF_LIVE=1 through this driver, which a
+             test-scoped dependency of the engine does not pass on. -->
+        <dependency>
+            <groupId>net.snowflake</groupId>
+            <artifactId>snowflake-jdbc</artifactId>
+            <version>4.3.2</version>
+            <scope>test</scope>
+        </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -74,7 +82,9 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.6</version>
                 <configuration>
-                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
+                    <!-- The add-opens is for the driver of the live-account test mode, whose Arrow results read
+                         java.nio buffers; the embedded runs do not need it. -->
+                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false --add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
                     <excludedGroups>${perf.excludedGroups}</excludedGroups>
                 </configuration>
             </plugin>

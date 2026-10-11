@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.AccountParameters;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
@@ -23,11 +24,13 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.ExternalVolume;
 import dev.frostlake.metastore.model.IcebergTableMetadata;
 import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.IntegrationKind;
 import dev.frostlake.metastore.model.PropertyValue;
+import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
@@ -66,22 +69,45 @@ final class IcebergTables {
     private IcebergTables() {
     }
 
+    /** The parameter a table without an EXTERNAL_VOLUME option takes its volume from. */
+    private static final String VOLUME_PARAMETER = "EXTERNAL_VOLUME";
+
+    /**
+     * The volume the nearest container sets — the schema, its database, then the account — or null. A parameter
+     * set to the empty text names none.
+     */
+    private static String inheritedVolume(final Schema schema, final Database database, final Catalog catalog) {
+        final String ofSchema = schema.getParameters().get(VOLUME_PARAMETER);
+        if (ofSchema != null && !ofSchema.isEmpty()) {
+            return ofSchema;
+        }
+        final String ofDatabase = database == null ? null : database.getParameters().get(VOLUME_PARAMETER);
+        if (ofDatabase != null && !ofDatabase.isEmpty()) {
+            return ofDatabase;
+        }
+        final String ofAccount = AccountParameters.value(catalog, VOLUME_PARAMETER);
+        return ofAccount == null || ofAccount.isEmpty() ? null : ofAccount;
+    }
+
     /**
      * Makes a table created with CREATE ICEBERG TABLE an Iceberg table: its metadata comes from the table
-     * options, a clone or a copy starting from its Iceberg source's. The external volume must be named and
-     * exist, and the catalog must be SNOWFLAKE.
+     * options, a clone or a copy starting from its Iceberg source's. A table that names no external volume takes
+     * the EXTERNAL_VOLUME parameter of its schema, else its database's, else the account's; the volume must exist,
+     * and the catalog must be SNOWFLAKE.
      *
      * @param ctx the CREATE statement
      * @param table the table being created
      * @param source the CLONE or LIKE source, or null
      * @param catalog the catalog
-     * @param schemaPath the table's database and schema, as the default base location starts with them
+     * @param databaseName the table's database
+     * @param schema the table's schema
      */
     static void applyAtCreate(final FrostlakeParser.CreateStatementContext ctx, final Table table, final Table source,
-                              final Catalog catalog, final String schemaPath) {
+                              final Catalog catalog, final String databaseName, final Schema schema) {
         if (ctx.ICEBERG() == null) {
             return;
         }
+        final String schemaPath = databaseName + "/" + schema.getName();
         final IcebergTableMetadata metadata = source != null && source.getIcebergMetadata() != null
             ? source.getIcebergMetadata().copy() : new IcebergTableMetadata();
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
@@ -101,6 +127,9 @@ final class IcebergTables {
             } else if ("STORAGE_SERIALIZATION_POLICY".equals(key)) {
                 metadata.setStorageSerializationPolicy(policy(value));
             }
+        }
+        if (metadata.getExternalVolume() == null) {
+            metadata.setExternalVolume(inheritedVolume(schema, catalog.getDatabase(databaseName), catalog));
         }
         if (metadata.getExternalVolume() == null && !IcebergTableMetadata.SNOWFLAKE_CATALOG.equalsIgnoreCase(
                 metadata.getCatalog())) {

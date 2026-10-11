@@ -141,8 +141,7 @@ public final class DynamicTableResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW DYNAMIC TABLES" + RestShow.likeName(name)
             + " IN SCHEMA " + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Dynamic table '"
-                + RelationNames.qualifiedDisplay(call, name) + "' does not exist or not authorized.");
+            throw RestException.missing("Dynamic table", RelationNames.qualifiedDisplay(call, name));
         }
         final ObjectNode table = toJson(rows.get(0));
         table.set("columns", columns(call, name));

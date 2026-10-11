@@ -39,10 +39,10 @@ public final class SessionZone {
 
     /**
      * The zone names the account knows that the JDK's zone list leaves out, each beside the zone it means: the
-     * three fixed-offset abbreviations and the old name of Asia/Taipei.
+     * three fixed-offset abbreviations, the old name of Asia/Taipei and the zone database's placeholder.
      */
     private static final String[][] LEGACY_ZONES = {{"EST", "-05:00"}, {"MST", "-07:00"}, {"HST", "-10:00"},
-        {"ROC", "Asia/Taipei"}};
+        {"ROC", "Asia/Taipei"}, {"Factory", "UTC"}};
     /** A family of names the JDK keeps that the account does not. */
     private static final String UNKNOWN_FAMILY = "SystemV/";
 
@@ -94,6 +94,24 @@ public final class SessionZone {
             }
         }
         return !name.startsWith(UNKNOWN_FAMILY) && ZoneId.getAvailableZoneIds().contains(name);
+    }
+
+    /**
+     * The zone the account knows by this name.
+     *
+     * @param name a zone's name, matched exactly as {@link #knows} matches it
+     * @return the zone, or null when the account knows none by that name
+     */
+    public static ZoneId named(final String name) {
+        if (!knows(name)) {
+            return null;
+        }
+        for (final String[] legacy : LEGACY_ZONES) {
+            if (legacy[0].equals(name)) {
+                return ZoneId.of(legacy[1]);
+            }
+        }
+        return ZoneId.of(name);
     }
 
     private static ZoneId resolve(final Object zoneName) {

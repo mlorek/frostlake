@@ -25,6 +25,7 @@ import dev.frostlake.storage.Row;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -65,26 +66,26 @@ public final class MergeRowShape {
         final List<Boolean> fromSource = new ArrayList<>();
         final List<Integer> indexes = new ArrayList<>();
 
-        final String sAlias = sourceAlias != null ? sourceAlias.toUpperCase()
-            : (sourceTable != null ? sourceTable.getName().toUpperCase() : "S");
+        final String sAlias = sourceAlias != null ? sourceAlias.toUpperCase(Locale.ROOT)
+            : (sourceTable != null ? sourceTable.getName().toUpperCase(Locale.ROOT) : "S");
         if (sourceTable != null) {
             final List<TableColumn> sourceCols = sourceTable.getColumns();
-            final String srcTableName = sourceTable.getName().toUpperCase();
+            final String srcTableName = sourceTable.getName().toUpperCase(Locale.ROOT);
             for (int i = 0; i < sourceCols.size(); i++) {
                 final TableColumn col = sourceCols.get(i);
-                mergedCols.add(new TableColumn(sAlias + "." + col.getName().toUpperCase(),
+                mergedCols.add(new TableColumn(sAlias + "." + col.getName().toUpperCase(Locale.ROOT),
                     col.getDataType(), true, null, false, false, false));
                 fromSource.add(Boolean.TRUE);
                 indexes.add(Integer.valueOf(i));
                 if (!srcTableName.equals(sAlias)) {
-                    mergedCols.add(new TableColumn(srcTableName + "." + col.getName().toUpperCase(),
+                    mergedCols.add(new TableColumn(srcTableName + "." + col.getName().toUpperCase(Locale.ROOT),
                         col.getDataType(), true, null, false, false, false));
                     fromSource.add(Boolean.TRUE);
                     indexes.add(Integer.valueOf(i));
                 }
                 if (valueMode) {
                     // bare source column (lower priority than target bare)
-                    mergedCols.add(new TableColumn("__S__" + col.getName().toUpperCase(),
+                    mergedCols.add(new TableColumn("__S__" + col.getName().toUpperCase(Locale.ROOT),
                         col.getDataType(), true, null, false, false, false));
                     fromSource.add(Boolean.TRUE);
                     indexes.add(Integer.valueOf(i));
@@ -92,23 +93,23 @@ public final class MergeRowShape {
             }
         }
 
-        final String tAlias = targetAlias != null ? targetAlias.toUpperCase() : targetTable.getName().toUpperCase();
-        final String tTableName = targetTable.getName().toUpperCase();
+        final String tAlias = targetAlias != null ? targetAlias.toUpperCase(Locale.ROOT) : targetTable.getName().toUpperCase(Locale.ROOT);
+        final String tTableName = targetTable.getName().toUpperCase(Locale.ROOT);
         final List<TableColumn> targetCols = targetTable.getColumns();
         for (int i = 0; i < targetCols.size(); i++) {
             final TableColumn col = targetCols.get(i);
-            mergedCols.add(new TableColumn(tAlias + "." + col.getName().toUpperCase(),
+            mergedCols.add(new TableColumn(tAlias + "." + col.getName().toUpperCase(Locale.ROOT),
                 col.getDataType(), true, null, false, false, false));
             fromSource.add(Boolean.FALSE);
             indexes.add(Integer.valueOf(i));
             if (!tTableName.equals(tAlias)) {
-                mergedCols.add(new TableColumn(tTableName + "." + col.getName().toUpperCase(),
+                mergedCols.add(new TableColumn(tTableName + "." + col.getName().toUpperCase(Locale.ROOT),
                     col.getDataType(), true, null, false, false, false));
                 fromSource.add(Boolean.FALSE);
                 indexes.add(Integer.valueOf(i));
             }
             // bare COL — for unqualified references (resolve to target)
-            mergedCols.add(new TableColumn(col.getName().toUpperCase(),
+            mergedCols.add(new TableColumn(col.getName().toUpperCase(Locale.ROOT),
                 col.getDataType(), true, null, false, false, false));
             fromSource.add(Boolean.FALSE);
             indexes.add(Integer.valueOf(i));
@@ -120,7 +121,7 @@ public final class MergeRowShape {
             final List<TableColumn> sourceCols = sourceTable.getColumns();
             for (int i = 0; i < sourceCols.size(); i++) {
                 final TableColumn col = sourceCols.get(i);
-                mergedCols.add(new TableColumn(col.getName().toUpperCase(),
+                mergedCols.add(new TableColumn(col.getName().toUpperCase(Locale.ROOT),
                     col.getDataType(), true, null, false, false, false));
                 fromSource.add(Boolean.TRUE);
                 indexes.add(Integer.valueOf(i));
@@ -144,7 +145,7 @@ public final class MergeRowShape {
         aliasToTable.put(tAlias, targetTable);
         relations.add(targetTable);
         if (sourceTable != null && sourceAlias != null) {
-            aliasToTable.put(sourceAlias.toUpperCase(), sourceTable);
+            aliasToTable.put(sourceAlias.toUpperCase(Locale.ROOT), sourceTable);
             relations.add(sourceTable);
         }
         evaluator.setDeclaredTypeBase(targetTable, aliasToTable, relations);

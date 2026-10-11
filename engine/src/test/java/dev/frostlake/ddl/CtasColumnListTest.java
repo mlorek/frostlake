@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -49,8 +51,8 @@ public class CtasColumnListTest extends BaseDatabaseTest {
     public void ctasColumnNamesReflectedInSchema() {
         engine.execute("CREATE TABLE t2 (x, y) AS SELECT name, amount1 FROM src");
         final ResultSet rs = engine.executeQuery("SELECT * FROM t2");
-        assertEquals("X", rs.getColumns().get(0).getName().toUpperCase());
-        assertEquals("Y", rs.getColumns().get(1).getName().toUpperCase());
+        assertEquals("X", rs.getColumns().get(0).getName().toUpperCase(Locale.ROOT));
+        assertEquals("Y", rs.getColumns().get(1).getName().toUpperCase(Locale.ROOT));
     }
 
     @Test

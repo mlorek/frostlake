@@ -93,8 +93,10 @@ public final class GraalJsEngine {
      * of being toggled per call site via the {@code polyglot.js.*} magic bindings. It is the account's
      * locked-down handler sandbox: no class lookup and none of the JVM-flavoured globals ({@code Java},
      * {@code Packages}, {@code java}, {@code Graal}, {@code print}, {@code load}), and no dynamic code —
-     * {@code eval} and {@code new Function} throw, as they do on the account (live-verified). Host access
-     * stays, since the handler's arguments and the procedure's {@code snowflake} object are host values.
+     * {@code eval} and {@code new Function} throw, as they do on the account (live-verified). Host access is
+     * explicit: only the members the engine's own objects export can be called, by the script the engine wraps a
+     * handler in, and no host object is handed to the handler itself — its arguments are JavaScript values and
+     * the procedure API's objects are made in its own world.
      */
     public static ScriptEngine newScriptEngine() {
         return newScriptEngine(SessionZone.current());
@@ -111,7 +113,7 @@ public final class GraalJsEngine {
     public static ScriptEngine newScriptEngine(final ZoneId zone) {
         try {
             final Context.Builder contextConfig = Context.newBuilder("js")
-                .allowHostAccess(HostAccess.ALL)
+                .allowHostAccess(HostAccess.EXPLICIT)
                 .allowHostClassLookup(new Predicate<String>() {
                     @Override
                     public boolean test(final String className) {

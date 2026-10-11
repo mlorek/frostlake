@@ -19,6 +19,8 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.parser.FrostlakeParser;
 
+import java.util.Locale;
+
 /**
  * The kind of object a GRANT, a REVOKE or a SHOW GRANTS ON names, spelled as grants record it and SHOW GRANTS reports
  * it: {@code FILE FORMAT} is {@code FILE_FORMAT}, {@code ROW ACCESS POLICY} is {@code ROW_ACCESS_POLICY}. Live reads a
@@ -41,7 +43,7 @@ final class SecurableKinds {
             if (i > 0) {
                 name.append('_');
             }
-            name.append(kind.getChild(i).getText().toUpperCase());
+            name.append(kind.getChild(i).getText().toUpperCase(Locale.ROOT));
         }
         return name.toString();
     }
@@ -57,7 +59,7 @@ final class SecurableKinds {
     static String of(final FrostlakeParser.ObjectTypeContext type) {
         if (type.securableKind() == null) {
             throw new RuntimeException(SqlCompilationError.inline("Object type or Class '"
-                + type.getText().toUpperCase() + "' does not exist or not authorized."));
+                + type.getText().toUpperCase(Locale.ROOT) + "' does not exist or not authorized."));
         }
         return of(type.securableKind());
     }

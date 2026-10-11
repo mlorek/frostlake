@@ -24,6 +24,7 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
 import java.util.List;
+import java.util.Locale;
 
 public class LastDay extends BuiltInFunction {
     public LastDay() { super("LAST_DAY", DateTimeType.DATE); }
@@ -60,7 +61,7 @@ public class LastDay extends BuiltInFunction {
      * @return the part's name, or null
      */
     public static String partOf(final String word) {
-        switch (word.trim().toUpperCase()) {
+        switch (word.trim().toUpperCase(Locale.ROOT)) {
             case "YEAR": case "Y": case "YY": case "YYY": case "YYYY": case "YR": case "YRS": case "YEARS":
                 return "YEAR";
             case "QUARTER": case "Q": case "QTR": case "QTRS": case "QUARTERS":

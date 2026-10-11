@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -64,7 +66,7 @@ public class SessionVariablesTest extends BaseDatabaseTest {
         boolean foundY = false;
         boolean foundZ = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
-            final String name = rs.getRows().get(i).getValue(rs.getColumnIndex("name")).toString().toUpperCase();
+            final String name = rs.getRows().get(i).getValue(rs.getColumnIndex("name")).toString().toUpperCase(Locale.ROOT);
             final String val = rs.getRows().get(i).getValue(rs.getColumnIndex("value")) != null ? rs.getRows().get(i).getValue(rs.getColumnIndex("value")).toString() : null;
             if ("X".equals(name)) {
                 foundX = true;
@@ -102,7 +104,7 @@ public class SessionVariablesTest extends BaseDatabaseTest {
         boolean foundB = false;
         boolean foundC = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
-            final String name = rs.getRows().get(i).getValue(rs.getColumnIndex("name")).toString().toUpperCase();
+            final String name = rs.getRows().get(i).getValue(rs.getColumnIndex("name")).toString().toUpperCase(Locale.ROOT);
             if ("A".equals(name)) foundA = true;
             if ("B".equals(name)) foundB = true;
             if ("C".equals(name)) foundC = true;

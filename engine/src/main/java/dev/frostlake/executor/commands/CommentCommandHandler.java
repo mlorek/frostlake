@@ -58,6 +58,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Handles {@code COMMENT ON <object-type> …} statements, extracted verbatim from
@@ -425,16 +426,16 @@ public class CommentCommandHandler implements CommandHandler {
                 try {
                     if (parts.length == 1) {
                         schema = visitor.resolveCurrentSchema();
-                        strmName = parts[0].toUpperCase();
+                        strmName = parts[0].toUpperCase(Locale.ROOT);
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
                             throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        strmName = parts[1].toUpperCase();
+                        strmName = parts[1].toUpperCase(Locale.ROOT);
                     } else if (parts.length == 3) {
                         schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        strmName = parts[2].toUpperCase();
+                        strmName = parts[2].toUpperCase(Locale.ROOT);
                     } else {
                         throw new RuntimeException("Invalid stream name: " + streamName);
                     }
@@ -457,7 +458,7 @@ public class CommentCommandHandler implements CommandHandler {
                     // Fully qualified, like the other schema-object shapes (live-verified).
                     throw new RuntimeException(SqlCompilationError.doesNotExist("Stream",
                         ((parts.length == 3 ? parts[0] : catalog.getCurrentDatabase()) + "."
-                            + schema.getName() + "." + strmName).toUpperCase()));
+                            + schema.getName() + "." + strmName).toUpperCase(Locale.ROOT)));
                 }
                 stream.setComment(comment);
                 logger.trace("Set comment on stream: {}", streamName);
@@ -472,16 +473,16 @@ public class CommentCommandHandler implements CommandHandler {
                 try {
                     if (parts.length == 1) {
                         schema = visitor.resolveCurrentSchema();
-                        tskName = parts[0].toUpperCase();
+                        tskName = parts[0].toUpperCase(Locale.ROOT);
                     } else if (parts.length == 2) {
                         if (catalog.getCurrentDatabase() == null) {
                             throw NoCurrentDatabaseRefusal.forStatement();
                         }
                         schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
-                        tskName = parts[1].toUpperCase();
+                        tskName = parts[1].toUpperCase(Locale.ROOT);
                     } else if (parts.length == 3) {
                         schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                        tskName = parts[2].toUpperCase();
+                        tskName = parts[2].toUpperCase(Locale.ROOT);
                     } else {
                         throw new RuntimeException("Invalid task name: " + taskName);
                     }

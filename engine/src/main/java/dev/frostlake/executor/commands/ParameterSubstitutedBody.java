@@ -16,7 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
-import dev.frostlake.executor.SqlIdentifierSubstitution;
+import dev.frostlake.executor.ParameterReferences;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.functions.FunctionRegistry;
@@ -29,7 +29,6 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.SqlTypeNames;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -81,16 +80,17 @@ final class ParameterSubstitutedBody {
      * @return the substituted body
      */
     static ParameterSubstitutedBody typed(final String body, final List<Parameter> parameters) {
-        final Map<String, String> placeholders = new HashMap<>();
+        final List<String> names = new ArrayList<>();
+        final List<String> placeholders = new ArrayList<>();
         if (parameters != null) {
             for (final Parameter parameter : parameters) {
                 if (parameter.getDataType() != null) {
-                    placeholders.put(parameter.getName().toUpperCase(Locale.ROOT),
-                        "CAST(NULL AS " + typeText(parameter.getDataType()) + ")");
+                    names.add(parameter.getName());
+                    placeholders.add("CAST(NULL AS " + typeText(parameter.getDataType()) + ")");
                 }
             }
         }
-        return of(body, placeholders);
+        return of(body, names, placeholders);
     }
 
     /**
@@ -102,22 +102,23 @@ final class ParameterSubstitutedBody {
      * @return the substituted body
      */
     static ParameterSubstitutedBody untyped(final String body, final Set<String> names) {
-        final Map<String, String> placeholders = new HashMap<>();
-        for (final String name : names) {
-            placeholders.put(name.toUpperCase(Locale.ROOT), "CAST(NULL AS VARIANT)");
+        final List<String> placeholders = new ArrayList<>();
+        for (int i = 0; i < names.size(); i++) {
+            placeholders.add("CAST(NULL AS VARIANT)");
         }
-        return of(body, placeholders);
+        return of(body, new ArrayList<>(names), placeholders);
     }
 
-    private static ParameterSubstitutedBody of(final String body, final Map<String, String> placeholders) {
+    /** The body with each reference to a parameter replaced by its stand-in, where the body reads a value. */
+    private static ParameterSubstitutedBody of(final String body, final List<String> names,
+                                               final List<String> placeholders) {
         final List<int[]> replaced = new ArrayList<>();
-        final String text = placeholders.isEmpty() ? body
-            : SqlIdentifierSubstitution.substituteAll(body, placeholders, replaced);
+        final String text = ParameterReferences.bound(body, names, placeholders, replaced);
         // Each stand-in used, with the one parameter it stands for, or an empty name when it stands for several.
         final Map<String, String> standIns = new LinkedHashMap<>();
         for (final int[] replacement : replaced) {
-            final String name = body.substring(replacement[0], replacement[1]).toUpperCase(Locale.ROOT);
-            final String standIn = placeholders.get(name);
+            final String name = names.get(replacement[3]).toUpperCase(Locale.ROOT);
+            final String standIn = placeholders.get(replacement[3]);
             final String known = standIns.get(standIn);
             standIns.put(standIn, known == null || known.equals(name) ? name : "");
         }

@@ -43,6 +43,7 @@ import java.security.GeneralSecurityException;
 import java.security.KeyPairGenerator;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -340,7 +341,7 @@ public class PersistenceFieldFidelityTest {
 
         final DatabaseEngine engine2 = reopenEngine();
         // The key keeps its parent by the parent's full name, whatever the statement wrote.
-        assertTrue(schema(engine2).getTable("child").getColumn("pid").getReferencedTable().toLowerCase()
+        assertTrue(schema(engine2).getTable("child").getColumn("pid").getReferencedTable().toLowerCase(Locale.ROOT)
             .endsWith(".parent"), "column-level REFERENCES target must survive");
         engine2.shutdown();
     }

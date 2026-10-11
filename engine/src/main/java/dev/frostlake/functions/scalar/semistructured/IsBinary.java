@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.values.BinaryValue;
 import java.util.List;
 
 /** IS_BINARY(v) — TRUE when the value is BINARY (never true for variant members in this engine's model). */
-public class IsBinary extends StructuredArgumentFunction {
+public class IsBinary extends VariantArgumentFunction {
     public IsBinary() { super("IS_BINARY", BooleanType.BOOLEAN); }
 
     @Override

@@ -123,6 +123,36 @@ final class DeclarationLookup {
     }
 
     /**
+     * The EXCEPTION a name stands for where {@code at} is written: the declaration of the nearest block around it
+     * that declares an exception of that name. A block nested in that one may declare the name for itself, and a
+     * body run from here — a called procedure's, a dynamic text's — declares for itself alone: neither is in
+     * sight (live-verified).
+     *
+     * @param at   a node of the block, a handler's condition for one
+     * @param name the canonical name
+     * @return the EXCEPTION item, or null when no block around {@code at} declares one
+     */
+    static FrostlakeParser.DeclarationItemContext exceptionSeenFrom(final ParserRuleContext at, final String name) {
+        for (ParserRuleContext up = at.getParent(); up != null; up = up.getParent()) {
+            if (!(up instanceof FrostlakeParser.BeginEndBlockContext)) {
+                continue;
+            }
+            final FrostlakeParser.DeclareSectionContext section =
+                ((FrostlakeParser.BeginEndBlockContext) up).declareSection();
+            if (section == null) {
+                continue;
+            }
+            for (final FrostlakeParser.DeclarationItemContext item : section.declarationItem()) {
+                if (item.EXCEPTION() != null && item.identifier() != null
+                        && name.equals(ScriptingNameValidator.canonical(item.identifier().getText()))) {
+                    return item;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Whether {@code at} stands in an exception handler's statements, where the handler's SQLSTATE and SQLERRM are
      * in scope.
      *

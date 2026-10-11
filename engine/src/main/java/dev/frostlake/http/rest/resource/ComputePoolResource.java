@@ -111,11 +111,11 @@ public final class ComputePoolResource implements RestResource {
     /** The pool as the {@code ComputePool} schema describes it, or {@code 404}. */
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         if (call.sql().showNamed("SHOW COMPUTE POOLS" + RestShow.likeName(name), name).isEmpty()) {
-            throw RestException.notFound("Compute pool '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Compute pool", name);
         }
         final List<RestRow> rows = call.sql().show("DESCRIBE COMPUTE POOL " + name.sql());
         if (rows.isEmpty()) {
-            throw RestException.notFound("Compute pool '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Compute pool", name);
         }
         return toJson(rows.get(0));
     }

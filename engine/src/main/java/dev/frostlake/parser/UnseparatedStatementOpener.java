@@ -115,14 +115,23 @@ public final class UnseparatedStatementOpener {
      * adding or dropping a column) it refuses the word itself (live-verified).
      */
     private static boolean readsWordAsProperty(final FrostlakeParser.StatementContext statement) {
-        final int leading = statement.getStart().getType();
+        // A statement that ends in a task's body or an alert's action is read on as that body is.
+        ParserRuleContext read = statement;
+        for (ParseTree node = statement; node != null && node.getChildCount() > 0;
+                node = node.getChild(node.getChildCount() - 1)) {
+            if (node instanceof FrostlakeParser.TaskBodyContext) {
+                read = (ParserRuleContext) node;
+                break;
+            }
+        }
+        final int leading = read.getStart().getType();
         if (leading == FrostlakeLexer.DESCRIBE || leading == FrostlakeLexer.DESC || leading == FrostlakeLexer.COPY) {
             return true;
         }
         if (leading == FrostlakeLexer.CREATE) {
-            return !endsInQuery(statement);
+            return !endsInQuery(read);
         }
-        return leading == FrostlakeLexer.ALTER && endsInAssignment(statement);
+        return leading == FrostlakeLexer.ALTER && endsInAssignment(read);
     }
 
     /**

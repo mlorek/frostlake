@@ -182,8 +182,12 @@ public class SnapshotKeepsDefinitionsTest {
         on.execute("CREATE ROW ACCESS POLICY rap AS (k STRING) RETURNS BOOLEAN -> TRUE");
     }
 
-    /** Each object's name, owner and creation time, as the listings report them. */
+    /**
+     * Each object's name, owner and creation time, as the listings report them - read as the role that owns the
+     * objects, since INFORMATION_SCHEMA lists a role only what it reaches and a copy starts as the default role.
+     */
     private static List<String> stamps(final DatabaseEngine on) {
+        on.execute("USE ROLE ACCOUNTADMIN");
         final List<String> out = new ArrayList<>();
         final String[] owned = {"name", "owner", "created_on"};
         out.addAll(rows(on, "SHOW DATABASES LIKE 'O1'", owned));

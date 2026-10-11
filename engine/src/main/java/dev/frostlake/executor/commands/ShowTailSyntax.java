@@ -36,7 +36,11 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  *   SHOW TABLES WITH x                         unexpected 'x' at 17
  *   SHOW PRIMARY KEYS LIMIT 1                  unexpected 'LIMIT' at 18   the listing reads no LIMIT
  *   SHOW LOCKS STARTS WITH 'A'                 unexpected 'STARTS' at 11, then ''A'' at 23
+ *   SHOW VARIABLES LIKE 'a' STARTS WITH 'A'    unexpected 'STARTS' at 24, and no second line
+ *   SHOW PARAMETERS IN SESSION STARTS WITH 'A' unexpected 'STARTS' at 27, then ''A'' at 39
  *   SHOW TASKS WITH PRIVILEGES USAGE           unexpected 'PRIVILEGES' at 16
+ *   SHOW REPLICATION GROUPS WITH PRIVILEGES x  unexpected 'PRIVILEGES' at 29, said twice
+ *   SHOW GRANTS ON ACCOUNT STARTS WITH 'x'     unexpected ''x'' at 35   STARTS is read as the account's name
  * </pre>
  *
  * <p>A modifier the listing's grammar reads and leaves unfinished is refused at the token after the word written
@@ -75,6 +79,16 @@ final class ShowTailSyntax {
                 throw refused(lineAfter(ctx, tail, isToken(terminal(tail, 1), FrostlakeLexer.WITH) ? 1 : 0));
             }
         }
+        if (UnmodelledListings.accountNamedByModifier(ctx) != null) {
+            // The one word after IN ACCOUNT is the account's name, looked up when the statement runs.
+            return;
+        }
+        if (ctx.GRANTS() != null && ctx.showGrantsTarget() != null && isAccountAlone(ctx.showGrantsTarget())
+                && isToken(terminal(tail, 0), FrostlakeLexer.STARTS) && tail.getChildCount() > 1) {
+            // The account's grants name an account after ON ACCOUNT as well, and a STARTS written there is read
+            // as that name.
+            throw refused(lineAfter(ctx, tail, isToken(terminal(tail, 1), FrostlakeLexer.WITH) ? 1 : 0));
+        }
         if (listing.isAccountLevel() && grammar == ShowTailGrammar.NONE && ctx.ACCOUNT() != null
                 && ctx.objectName() == null && tail.getChildCount() > 1) {
             // LOCKS and TRANSACTIONS name an account after IN ACCOUNT, and live reads a LIMIT or STARTS written
@@ -91,7 +105,7 @@ final class ShowTailSyntax {
             }
             if (word.getType() == FrostlakeLexer.STARTS) {
                 if (!grammar.readsStartsWith()) {
-                    throw refused(startsWithRefusal(tail, i, listing));
+                    throw refused(startsWithRefusal(ctx, tail, i, listing));
                 }
                 if (!isToken(terminal(tail, i + 1), FrostlakeLexer.WITH)) {
                     throw refused(lineAfter(ctx, tail, i));
@@ -117,6 +131,10 @@ final class ShowTailSyntax {
                     throw refused(lineAt(terminal(tail, i + 2)));
                 }
             } else if (word.getType() == FrostlakeLexer.WITH) {
+                if (listing.isReplication() && isToken(terminal(tail, i + 1), FrostlakeLexer.PRIVILEGES)) {
+                    // The replication listings report the word after the WITH twice.
+                    throw refused(lineAfter(ctx, tail, i) + "\n" + lineAfter(ctx, tail, i));
+                }
                 if (!grammar.readsPrivileges() || !isToken(terminal(tail, i + 1), FrostlakeLexer.PRIVILEGES)) {
                     throw refused(lineAfter(ctx, tail, i));
                 }
@@ -206,13 +224,28 @@ final class ShowTailSyntax {
         throw new RuntimeException("Unsupported feature 'SHOW " + named + " ... WITH PRIVILEGES <>'.");
     }
 
-    /** A STARTS the listing does not read: its own line, and a second at the prefix where live stacks one. */
-    private static String startsWithRefusal(final FrostlakeParser.ShowTailContext tail, final int index,
+    /** Whether SHOW GRANTS ON names the account by the word ACCOUNT alone. */
+    private static boolean isAccountAlone(final FrostlakeParser.ShowGrantsTargetContext target) {
+        return target.securableKind() == null && target.ACCOUNT() == null && target.qualifiedName() != null
+            && target.qualifiedName().getStart() == target.qualifiedName().getStop()
+            && target.qualifiedName().getStart().getType() == FrostlakeLexer.ACCOUNT;
+    }
+
+    /**
+     * A STARTS the listing does not read: its own line, and a second at the prefix where live stacks one — straight
+     * after the listing's own words, and not once a LIKE or a scope stands between them, but for the one scope
+     * that takes no name, a parameter listing's SESSION.
+     */
+    private static String startsWithRefusal(final FrostlakeParser.ShowStatementContext ctx,
+                                            final FrostlakeParser.ShowTailContext tail, final int index,
                                             final ShowListing listing) {
         final String first = lineAt(terminal(tail, index));
         final Token prefix = terminal(tail, index + 2);
-        if (listing.startsWithStacksItsPrefix() && isToken(terminal(tail, index + 1), FrostlakeLexer.WITH)
-                && isString(prefix)) {
+        final FrostlakeParser.ShowParametersScopeContext parameters = ctx.showParametersScope();
+        final boolean unscoped = ctx.IN() == null && ctx.FOR() == null
+            || parameters != null && parameters.SESSION() != null;
+        if (listing.startsWithStacksItsPrefix() && ctx.LIKE() == null && unscoped
+                && isToken(terminal(tail, index + 1), FrostlakeLexer.WITH) && isString(prefix)) {
             return first + "\n" + lineAt(prefix);
         }
         return first;
@@ -227,6 +260,11 @@ final class ShowTailSyntax {
         final int at = ctx.children.indexOf(tail);
         if (at >= 0 && at + 1 < ctx.getChildCount()) {
             return lineAt(startOf(ctx.getChild(at + 1)));
+        }
+        // A listing written in parentheses, as a RESULTSET's is, ends at the one that closes it.
+        final Token closing = SyntaxAfter.following(ctx);
+        if (closing != null && closing.getType() == FrostlakeLexer.RPAREN) {
+            return lineAt(closing);
         }
         final Token last = ctx.getStop();
         final int[] shown = LeadingCommentOffset.rebase(last.getLine(),

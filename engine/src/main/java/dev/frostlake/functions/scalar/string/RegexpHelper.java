@@ -107,6 +107,23 @@ public final class RegexpHelper {
         return compiled;
     }
 
+    /**
+     * Whether a pattern matches nothing at all. The empty pattern is the one that does not: it is no match
+     * of the empty text at every place, so a count is 0, a position 0, a substring NULL and a replacement
+     * the subject as it was. Its parameter letters are judged first, as any pattern's are (live-verified).
+     *
+     * @param pattern    the pattern, as written
+     * @param parameters the parameter letters, or null
+     * @return true for the empty pattern
+     */
+    public static boolean matchesNothing(final String pattern, final String parameters) {
+        if (!pattern.isEmpty()) {
+            return false;
+        }
+        requireKnownParameters(parameters);
+        return true;
+    }
+
     /** The parameter letters the account knows: case, multi-line, extract and dot-matches-newline. */
     private static void requireKnownParameters(final String parameters) {
         if (parameters == null) {

@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.ExtractionPath;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.VectorValue;
 import tools.jackson.databind.JsonNode;
@@ -26,7 +27,11 @@ import java.util.List;
 
 /**
  * GET(object_or_array, field_or_index) — extracts a value by key (object) or index (array).
- * GET_PATH(object, path_string) — navigates a dot/bracket path like 'a.b[0].c'.
+ * GET_PATH(object, path_string) — follows an {@link ExtractionPath} such as {@code a.b[0]["c d"]}.
+ *
+ * <p>A path GET_PATH cannot read is refused when the row is read — {@code Bad compound object's field path
+ * name 'a.' in GET_PATH}, the empty path included (live-verified). A path written as a literal is judged
+ * before that, by the stricter {@link dev.frostlake.functions.scalar.ExtractionPathSyntax}.
  */
 public class GetPath extends VariantAccessorFunction {
     private final boolean pathMode;
@@ -59,17 +64,12 @@ public class GetPath extends VariantAccessorFunction {
         return ArrayFunctionHelper.fromNodeKeepingJsonNull(result);
     }
 
-    private JsonNode navigatePath(JsonNode node, final String path) {
-        // Support paths like: a.b.c or a[0].b
-        final String[] parts = path.split("(?<=\\])|(?=[\\[.])");
-        for (String part : parts) {
-            if (node == null) return null;
-            part = part.replaceAll("^[\\[.]|\\]$", "").trim();
-            if (part.isEmpty()) continue;
-            try { node = node.get(Integer.parseInt(part)); }
-            catch (final NumberFormatException e) { node = node.get(part); }
+    private JsonNode navigatePath(final JsonNode node, final String text) {
+        final ExtractionPath path = ExtractionPath.read(text);
+        if (path == null) {
+            throw new RuntimeException(ExtractionPath.malformed(text, getName()));
         }
-        return node;
+        return path.in(node);
     }
 
     @Override

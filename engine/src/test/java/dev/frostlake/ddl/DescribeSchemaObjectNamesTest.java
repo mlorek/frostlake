@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -78,14 +80,14 @@ public class DescribeSchemaObjectNamesTest extends BaseDatabaseTest {
     public void aQualifiedNameIsReadWhereItSays() {
         for (final String[] kind : new String[][] {
             {"STREAM", "qst", "ost"}, {"TASK", "qtask", "otask"}, {"SEQUENCE", "qseq", "oseq"}}) {
-            final String own = "TEST_SCHEMA." + kind[1].toUpperCase();
+            final String own = "TEST_SCHEMA." + kind[1].toUpperCase(Locale.ROOT);
             assertEquals(own, described("DESCRIBE " + kind[0] + " " + kind[1]));
             assertEquals(own, described("DESCRIBE " + kind[0] + " test_schema." + kind[1]));
             assertEquals(own, described("DESC " + kind[0] + " test_db.test_schema." + kind[1]));
             assertEquals(own, described("DESCRIBE " + kind[0] + " \"TEST_DB\".\"TEST_SCHEMA\".\""
-                + kind[1].toUpperCase() + "\""));
+                + kind[1].toUpperCase(Locale.ROOT) + "\""));
             assertEquals(own, described("DESCRIBE " + kind[0] + " IDENTIFIER('test_db.test_schema." + kind[1] + "')"));
-            assertEquals("OTHER_SCHEMA." + kind[2].toUpperCase(),
+            assertEquals("OTHER_SCHEMA." + kind[2].toUpperCase(Locale.ROOT),
                 described("DESCRIBE " + kind[0] + " other_schema." + kind[2]));
         }
         assertEquals("TEST_SCHEMA.QPIPE", described("DESCRIBE PIPE qpipe"));
@@ -97,7 +99,7 @@ public class DescribeSchemaObjectNamesTest extends BaseDatabaseTest {
     @Test
     public void aMissingObjectIsNamedInFullAndAStreamAsItWasWritten() {
         for (final String kind : new String[] {"Task", "Pipe", "Sequence"}) {
-            final String keyword = kind.toUpperCase();
+            final String keyword = kind.toUpperCase(Locale.ROOT);
             final String full = "SQL compilation error: " + kind
                 + " 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized.";
             assertEquals(full, refusal("DESCRIBE " + keyword + " nosuch"));

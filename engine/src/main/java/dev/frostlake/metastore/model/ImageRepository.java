@@ -17,15 +17,19 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.Taggable;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * An image repository: a schema object that would hold container images. Frostlake keeps its metadata only; no
  * image is ever pushed to it, so it always lists no images.
  */
-public final class ImageRepository {
+public final class ImageRepository implements Taggable {
 
+    private final Map<String, String> tags = new LinkedHashMap<String, String>();
     private String name;
     private final Instant createdOn;
     private String owner;
@@ -91,5 +95,25 @@ public final class ImageRepository {
     /** Sets the encryption type. */
     public void setEncryption(final String encryption) {
         this.encryption = encryption;
+    }
+
+    @Override
+    public void setTag(final String tagName, final String value) {
+        tags.put(tagName, value);
+    }
+
+    @Override
+    public void unsetTag(final String tagName) {
+        tags.remove(tagName);
+    }
+
+    @Override
+    public String getTagValue(final String tagName) {
+        return tags.get(tagName);
+    }
+
+    @Override
+    public Map<String, String> getTagValues() {
+        return new LinkedHashMap<String, String>(tags);
     }
 }

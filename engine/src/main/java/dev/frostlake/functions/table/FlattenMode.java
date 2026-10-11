@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.table;
 
+import java.util.Locale;
+
 /**
  * The {@code MODE} argument of the FLATTEN table function: expand object fields ({@link #OBJECT}), array
  * elements ({@link #ARRAY}), or both ({@link #BOTH}, the default).
@@ -29,7 +31,7 @@ enum FlattenMode {
             return null;
         }
         try {
-            return valueOf(value.trim().toUpperCase());
+            return valueOf(value.trim().toUpperCase(Locale.ROOT));
         } catch (final IllegalArgumentException e) {
             return null;
         }

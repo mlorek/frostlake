@@ -17,7 +17,15 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.ImpliedTextNumber;
 import dev.frostlake.types.DataType;
+import dev.frostlake.values.VariantValue;
+
+import tools.jackson.databind.JsonNode;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.util.List;
 
 public abstract class BuiltInFunction {
@@ -36,6 +44,76 @@ public abstract class BuiltInFunction {
 
     public DataType getReturnType() {
         return returnType;
+    }
+
+    /**
+     * Whether a call holds a SQL NULL among its arguments. A function that answers NULL over a NULL in any place —
+     * its count, its position, its pattern, its filler as much as its subject — asks this before it reads them.
+     *
+     * @param args the argument values, in call order
+     * @return whether one of them is NULL
+     */
+    protected static boolean anyNull(final List<Object> args) {
+        for (final Object arg : args) {
+            if (arg == null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The whole number a position, a length or a count argument gives. A text is read as the number it spells, and
+     * refused on the row where it spells none; a fraction goes to the nearest whole number, a half away from zero:
+     * {@code SUBSTR('abcdef', 1.6)} starts at the second character, {@code LEFT('abcdef', '1.6')} is {@code ab} and
+     * {@code SUBSTR('abcdef', -1.5)} the last two characters (live-verified).
+     *
+     * @param value the argument's value, a number or a text
+     * @return the whole number, held to the range of an int
+     */
+    protected static int wholeNumber(final Object value) {
+        return wholeNumber(decimalOf(value));
+    }
+
+    /**
+     * @param value a number
+     * @return the nearest whole number, a half away from zero, held to the range of an int
+     */
+    protected static int wholeNumber(final BigDecimal value) {
+        final BigInteger rounded = value.setScale(0, RoundingMode.HALF_UP).toBigInteger();
+        if (rounded.bitLength() > Integer.SIZE - 1) {
+            return rounded.signum() < 0 ? Integer.MIN_VALUE : Integer.MAX_VALUE;
+        }
+        return rounded.intValue();
+    }
+
+    /**
+     * The number a position, a length or a count argument gives, before it is rounded (see {@link #wholeNumber}).
+     *
+     * @param value the argument's value, a number or a text
+     * @return the number
+     */
+    protected static BigDecimal decimalOf(final Object value) {
+        if (value instanceof CharSequence) {
+            return ImpliedTextNumber.read((CharSequence) value);
+        }
+        if (value instanceof VariantValue) {
+            // A VARIANT gives the number it holds, or the one its text spells.
+            final JsonNode held = ((VariantValue) value).node();
+            return held.isNumber() ? held.decimalValue() : ImpliedTextNumber.read(held.asText());
+        }
+        if (value instanceof BigDecimal) {
+            return (BigDecimal) value;
+        }
+        if (value instanceof BigInteger) {
+            return new BigDecimal((BigInteger) value);
+        }
+        if (value instanceof Double || value instanceof Float) {
+            final double approximate = ((Number) value).doubleValue();
+            return Double.isNaN(approximate) || Double.isInfinite(approximate) ? BigDecimal.ZERO
+                : BigDecimal.valueOf(approximate);
+        }
+        return BigDecimal.valueOf(((Number) value).longValue());
     }
 
     /**
@@ -365,6 +443,30 @@ public abstract class BuiltInFunction {
      * @return true when the refusal lists the argument types; false by default
      */
     public boolean refusesMissingArgumentsByType() {
+        return false;
+    }
+
+    /**
+     * Whether a call with exactly {@code count} arguments — a count within the function's bounds — is
+     * refused by its argument types all the same. One function's middle count belongs to no signature:
+     * live counts {@code NORMAL(0)} against two arguments and refuses {@code NORMAL(0, 1)} as "Invalid
+     * argument types for function 'NORMAL': (NUMBER(1,0), NUMBER(1,0))".
+     *
+     * @param count how many arguments the call carries
+     * @return true when that count is refused by the argument types; false by default
+     */
+    public boolean refusesArgumentCountByType(final int count) {
+        return false;
+    }
+
+    /**
+     * Whether the function's first argument must be a VARIANT and nothing that merely converts to one: live
+     * refuses any other declared type there — a number, a text, an OBJECT, the bare word NULL — as "invalid
+     * type [NUMBER(1,0)] for parameter 'AS_INTEGER(variantValue...)'".
+     *
+     * @return true for the casts of a VARIANT that take nothing else; false by default
+     */
+    public boolean takesVariantOnly() {
         return false;
     }
 

@@ -19,6 +19,7 @@ package dev.frostlake.rt.py;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.udf.TablePartitionRows;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
@@ -55,6 +56,11 @@ public final class PythonLanguageRuntime implements UdfLanguageRuntime {
     @Override
     public ResultSet executeTableFunction(final Function function, final List<Object> arguments) {
         return PythonTableFunctionExecutor.executePythonTableFunction(function, arguments);
+    }
+
+    @Override
+    public TablePartitionRows executeTablePartition(final Function function, final List<List<Object>> rows) {
+        return PythonTableFunctionExecutor.executePartition(function, rows);
     }
 
     /**

@@ -16,15 +16,27 @@
 
 package dev.frostlake.rt.py;
 
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.udf.TruffleLogBridge;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.TypeCategory;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantText;
+import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -305,9 +317,10 @@ public final class PythonRuntime {
     public static boolean bindJson(final String name, final Object value) {
         if (value instanceof VariantValue) {
             final String variantHolder = "__json_text_" + name;
-            // The CANONICAL JSON, not the display form: a variant STRING displays its content unquoted
-            // and an XML variant displays as XML, and json.loads can read neither.
-            bind(variantHolder, ((VariantValue) value).text());
+            // The JSON of the value, not the display form: a variant STRING displays its content unquoted
+            // and an XML variant displays as XML, and json.loads can read neither — nor the bare token an
+            // array's SQL NULL element is written as, which arrives as None (live-verified).
+            bind(variantHolder, VariantText.standard(VariantUndefined.withNulls(((VariantValue) value).node())));
             eval("import json\n" + name + " = json.loads(" + variantHolder + ")\n");
             return true;
         }
@@ -336,6 +349,75 @@ public final class PythonRuntime {
         eval(name + " = bytes.fromhex(" + holder + ")\n");
         return true;
     }
+
+    /**
+     * Bind a procedure's argument as the Python value its handler receives for the parameter's type
+     * (live-verified): a whole NUMBER an {@code int} of any width and a NUMBER with a scale a
+     * {@code decimal.Decimal} at that scale, a DATE a {@code datetime.date}, a TIME a {@code datetime.time} and a
+     * TIMESTAMP a {@code datetime.datetime} — without a zone for NTZ, at the session's wall clock for LTZ and with
+     * its own offset for TZ, to the microsecond —, a semi-structured value a dict, a list or the scalar it holds,
+     * and a BINARY {@code bytes}. A BOOLEAN, a FLOAT and a text bind as they are.
+     *
+     * @param name  the parameter's name
+     * @param value the argument, converted to the parameter's SQL type
+     * @param type  the parameter's declared type
+     */
+    public static void bindArgument(final String name, final Object value, final DataType type) {
+        if (value == null) {
+            bind(name, null);
+            return;
+        }
+        final boolean semiStructured = type != null && type.getCategory() == TypeCategory.SEMI_STRUCTURED;
+        if ((value instanceof VariantValue || semiStructured && value instanceof CharSequence)
+                && bindJson(name, value)) {
+            return;
+        }
+        if (value instanceof BinaryValue) {
+            bindBytes(name, ((BinaryValue) value).toHex());
+            return;
+        }
+        final String holder = "__arg_text_" + name;
+        if (value instanceof BigDecimal) {
+            final BigDecimal number = (BigDecimal) value;
+            bind(holder, number.toPlainString());
+            eval(number.scale() > 0 ? "import decimal\n" + name + " = decimal.Decimal(" + holder + ")\n"
+                : name + " = int(" + holder + ")\n");
+            return;
+        }
+        if (value instanceof LocalDate) {
+            bind(holder, value.toString());
+            eval("import datetime\n" + name + " = datetime.date.fromisoformat(" + holder + ")\n");
+            return;
+        }
+        if (value instanceof LocalTime) {
+            bind(holder, ((LocalTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_TIME));
+            eval("import datetime\n" + name + " = datetime.time.fromisoformat(" + holder + ")\n");
+            return;
+        }
+        if (value instanceof LocalDateTime) {
+            bind(holder, ((LocalDateTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_DATE_TIME));
+            eval("import datetime\n" + name + " = datetime.datetime.fromisoformat(" + holder + ")\n");
+            return;
+        }
+        if (value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
+            final OffsetDateTime zoned = (value instanceof OffsetDateTime ? (OffsetDateTime) value
+                : ((ZonedDateTime) value).toOffsetDateTime()).truncatedTo(ChronoUnit.MICROS);
+            final boolean keepsItsZone = type != null && type.getName() != null
+                && type.getName().toUpperCase(Locale.ROOT).endsWith("_TZ");
+            // A TIMESTAMP_TZ keeps its offset; a TIMESTAMP_LTZ is the session's wall clock at that instant.
+            bind(holder, keepsItsZone ? zoned.format(PYTHON_ZONED)
+                : zoned.atZoneSameInstant(SessionZone.current()).toLocalDateTime().format(PYTHON_DATE_TIME));
+            eval("import datetime\n" + name + " = datetime.datetime.fromisoformat(" + holder + ")\n");
+            return;
+        }
+        bind(name, value);
+    }
+
+    private static final DateTimeFormatter PYTHON_TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");
+    private static final DateTimeFormatter PYTHON_DATE_TIME =
+        DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSSSS");
+    private static final DateTimeFormatter PYTHON_ZONED =
+        DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSSSSxxx");
 
     /**
      * A Python return value as the plain Java value the engine stores. Scalars map to their Java

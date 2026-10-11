@@ -106,7 +106,13 @@ public class RestProcedureTest extends BaseRestTest {
         ok(post(PROCS, procedure("proc_tagged", "t")));
         ok(post(PROCS + "/proc_tagged(NUMBER):set-tags",
             "[{\"tag_database\":\"proc_db\",\"tag_schema\":\"s\",\"tag_name\":\"proc_tag\",\"tag_value\":\"v\"}]"));
+        final JsonNode tags = ok(get(PROCS + "/proc_tagged(NUMBER):get-tags"));
+        assertEquals(1, tags.size(), tags.toString());
+        assertEquals("PROC_TAG", tags.get(0).path("tag_name").asString());
+        assertEquals("v", tags.get(0).path("tag_value").asString());
+        assertEquals("PROCEDURE", tags.get(0).path("level").asString());
         ok(post(PROCS + "/proc_tagged(NUMBER):unset-tags",
             "[{\"tag_database\":\"proc_db\",\"tag_schema\":\"s\",\"tag_name\":\"proc_tag\"}]"));
+        assertEquals(0, ok(get(PROCS + "/proc_tagged(NUMBER):get-tags")).size());
     }
 }

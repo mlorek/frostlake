@@ -18,29 +18,12 @@ package dev.frostlake.executor.udf;
 
 import com.snowflake.snowpark_java.Session;
 import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.net.URL;
-import java.net.URLClassLoader;
-import java.nio.file.DirectoryStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
-import javax.tools.DiagnosticCollector;
-import javax.tools.JavaCompiler;
-import javax.tools.JavaFileObject;
-import javax.tools.ToolProvider;
 
 /**
  * Executes inline Java stored procedures by compiling them at runtime.
@@ -53,7 +36,7 @@ public final class JavaProcedureExecutor {
     private JavaProcedureExecutor() {
     }
 
-    private static final Logger logger = LoggerFactory.getLogger(JavaProcedureExecutor.class);
+    private static final JavaFunctionCompiler COMPILER = new JavaFunctionCompiler();
 
     public static Object executeJavaProcedure(final Procedure procedure, final List<Object> arguments,
                                               final DatabaseEngine engine) {
@@ -69,7 +52,6 @@ public final class JavaProcedureExecutor {
 
         final String body = procedure.getBody();
 
-        Path tempDir = null;
         try {
             final Class<?> compiledClass;
             if (!procedure.getImports().isEmpty()) {
@@ -78,65 +60,23 @@ public final class JavaProcedureExecutor {
                     engine != null ? engine.getCatalog() : null,
                     engine != null ? engine.getS3PathResolver() : null);
             } else {
-                tempDir = Files.createTempDirectory("java_proc_");
-                compiledClass = compileAndLoad(body, className, tempDir);
+                // The body is compiled once - creating the procedure did it - and every CALL loads the classes
+                // anew, so what a class's static fields hold is the CALL's own (live-verified).
+                compiledClass = COMPILER.load(body, className, Thread.currentThread().getContextClassLoader(),
+                    JavaRuntimeLevel.of(procedure.getRuntimeVersion()),
+                    " in function " + procedure.getName() + " with handler " + handler);
             }
-            return invokeHandler(compiledClass, methodName, arguments, procedure.getParameters(), engine,
+            return invokeHandler(compiledClass, methodName, arguments, procedure, engine,
                 "OWNER".equalsIgnoreCase(procedure.getExecuteAs()));
         } catch (final RuntimeException e) {
             throw e;
         } catch (final Exception e) {
             throw new RuntimeException("Failed to execute Java procedure " + procedure.getName() + ": " + e.getMessage(), e);
-        } finally {
-            if (tempDir != null) {
-                deleteTempDir(tempDir);
-            }
         }
-    }
-
-    private static Class<?> compileAndLoad(final String sourceCode, final String className,
-                                           final Path tempDir) throws Exception {
-        final JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
-        if (compiler == null) {
-            throw new RuntimeException(
-                "Java compiler not available. Make sure you are running on a JDK (not JRE).");
-        }
-
-        // Write source file
-        final String simpleClassName = className.contains(".") ? className.substring(className.lastIndexOf('.') + 1) : className;
-        final Path sourceFile = tempDir.resolve(simpleClassName + ".java");
-        Files.writeString(sourceFile, sourceCode);
-
-        // Build classpath from current classloader
-        final String classpath = buildClasspath();
-
-        final DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
-        final List<String> options = Arrays.asList("-classpath", classpath, "-d", tempDir.toString());
-
-        try (var fileManager = compiler.getStandardFileManager(diagnostics, null, null)) {
-            final var compilationUnits = fileManager.getJavaFileObjects(sourceFile.toFile());
-            final JavaCompiler.CompilationTask task = compiler.getTask(null, fileManager, diagnostics, options,
-                null, compilationUnits);
-
-            if (!task.call()) {
-                final StringBuilder errors = new StringBuilder("Compilation failed:\n");
-                for (final var d : diagnostics.getDiagnostics()) {
-                    errors.append(d.toString()).append("\n");
-                }
-                throw new RuntimeException(errors.toString());
-            }
-        }
-
-        // Load compiled class
-        final URLClassLoader classLoader = new URLClassLoader(
-            new URL[]{tempDir.toUri().toURL()},
-            Thread.currentThread().getContextClassLoader()
-        );
-        return classLoader.loadClass(className);
     }
 
     private static Object invokeHandler(final Class<?> clazz, final String methodName,
-                                        final List<Object> arguments, final List<Parameter> parameters,
+                                        final List<Object> arguments, final Procedure procedure,
                                         final DatabaseEngine engine, final boolean ownersRights) throws Exception {
         final Session session = new Session(engine, ownersRights);
 
@@ -157,9 +97,13 @@ public final class JavaProcedureExecutor {
         constructor.setAccessible(true);
         final Object instance = constructor.newInstance();
         target.setAccessible(true);
+        // Each argument as the class the handler declares for it; one the class cannot hold is refused before
+        // the handler runs.
+        final Object[] adapted = HandlerArguments.adapt(target.getParameterTypes(), args, procedure.getName(),
+            procedure.getHandler());
         UdfConsoleCapture.enter();
         try {
-            return target.invoke(instance, args);
+            return target.invoke(instance, adapted);
         } catch (final InvocationTargetException e) {
             final Throwable cause = e.getCause();
             if (cause instanceof RuntimeException re) {
@@ -182,46 +126,5 @@ public final class JavaProcedureExecutor {
         }
         throw new RuntimeException("Method " + methodName + " with " + argCount
             + " parameters not found in class " + clazz.getName());
-    }
-
-    private static String buildClasspath() {
-        final ClassLoader cl = Thread.currentThread().getContextClassLoader();
-        final StringBuilder cp = new StringBuilder(System.getProperty("java.class.path", ""));
-
-        if (cl instanceof URLClassLoader urlCl) {
-            for (final URL url : urlCl.getURLs()) {
-                cp.append(File.pathSeparator).append(url.getPath());
-            }
-        }
-        return cp.toString();
-    }
-
-    private static void deleteTempDir(final Path dir) {
-        try {
-            // Deepest paths first, so a directory is only removed once it is empty.
-            final List<Path> paths = new ArrayList<>();
-            collectPaths(dir, paths);
-            Collections.sort(paths, Collections.reverseOrder());
-            for (final Path p : paths) {
-                try {
-                    Files.deleteIfExists(p);
-                } catch (final Exception ignored) {
-                }
-            }
-        } catch (final Exception ignored) {
-        }
-    }
-
-    /** Every path under {@code dir}, the directory itself included, in no particular order. */
-    private static void collectPaths(final Path dir, final List<Path> out) throws IOException {
-        out.add(dir);
-        if (!Files.isDirectory(dir)) {
-            return;
-        }
-        try (DirectoryStream<Path> children = Files.newDirectoryStream(dir)) {
-            for (final Path child : children) {
-                collectPaths(child, out);
-            }
-        }
     }
 }

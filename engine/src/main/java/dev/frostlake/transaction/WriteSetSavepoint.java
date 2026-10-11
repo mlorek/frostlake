@@ -50,6 +50,9 @@ public final class WriteSetSavepoint {
     /** Where the statement falls among the transaction's statements, from 1. */
     private final long ordinal;
 
+    /** Whether a statement began a savepoint of its own while this one's was running. */
+    private boolean superseded;
+
     WriteSetSavepoint(final Map<String, TableLock> lockSnapshot, final long ordinal) {
         this.locksBefore = lockSnapshot;
         this.ordinal = ordinal;
@@ -57,6 +60,19 @@ public final class WriteSetSavepoint {
 
     long ordinal() {
         return ordinal;
+    }
+
+    /**
+     * Whether the statement ran statements with savepoints of their own — a block's, a procedure's, a handler's.
+     * Each of those undid itself when it failed and keeps its changes when it did not, so the statement that ran
+     * them has nothing left to undo.
+     */
+    public boolean isSuperseded() {
+        return superseded;
+    }
+
+    void markSuperseded() {
+        superseded = true;
     }
 
     /** How many rows and row ids the pre-images hold: what keeping this savepoint costs. */

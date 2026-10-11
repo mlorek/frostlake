@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -59,9 +61,9 @@ public class GetAbsolutePathTest extends BaseDatabaseTest {
     public void anInternalStageAppendsToItsOwnLocation() {
         engine.execute("CREATE STAGE gap_int");
         assertEquals("true", value("SELECT GET_ABSOLUTE_PATH(@gap_int, 'a') = GET_STAGE_LOCATION(@gap_int) || 'a'")
-            .toLowerCase());
+            .toLowerCase(Locale.ROOT));
         assertEquals("true", value("SELECT GET_ABSOLUTE_PATH(@gap_int, p) = GET_STAGE_LOCATION(@gap_int) || p"
-            + " FROM (SELECT 'd/f.csv' p)").toLowerCase());
+            + " FROM (SELECT 'd/f.csv' p)").toLowerCase(Locale.ROOT));
     }
 
     /** The declared width is the location's and the path's together; an empty path counts one character. */

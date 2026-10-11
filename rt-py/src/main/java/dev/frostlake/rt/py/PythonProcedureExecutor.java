@@ -78,9 +78,11 @@ public final class PythonProcedureExecutor {
                 parameters.size() + " arguments but got " + arguments.size());
         }
 
+        RuntimeException typedFailure = null;
         try {
             for (int i = 0; i < parameters.size(); i++) {
-                PythonRuntime.bind(parameters.get(i).getName(), arguments.get(i));
+                PythonRuntime.bindArgument(parameters.get(i).getName(), arguments.get(i),
+                    parameters.get(i).getDataType());
             }
 
             // Measured live: an owner's rights PYTHON procedure is refused a temporary object exactly as
@@ -128,6 +130,32 @@ public final class PythonProcedureExecutor {
 
             PythonRuntime.eval(pythonCode);
 
+            // A procedure that answers a value answers it as its declared RETURNS type, converted as Python
+            // converts and judged as the account judges it (see PythonReturn).
+            final String kind = procedure.returnsTable() ? null : PythonReturn.kindOf(procedure.getReturnType());
+            if (kind != null) {
+                PythonRuntime.eval(PythonReturn.CONVERT);
+                PythonRuntime.eval("try:\n    __fl_outcome, __fl_text = __fl_convert(__result, '" + kind + "', "
+                    + PythonReturn.scaleOf(procedure.getReturnType()) + ")\n"
+                    + "except Exception as __fl_error:\n"
+                    + "    __fl_outcome, __fl_text = 'raise', type(__fl_error).__name__ + ': ' + str(__fl_error)\n");
+                final String outcome = PythonRuntime.global("__fl_outcome").asString();
+                final String text = PythonRuntime.global("__fl_text").asString();
+                if ("raise".equals(outcome)) {
+                    typedFailure = new RuntimeException("Python Interpreter Error:\n" + text + " in function "
+                        + procedure.getName() + " with handler " + procedure.getHandler());
+                    throw typedFailure;
+                }
+                if (!"pass".equals(outcome)) {
+                    try {
+                        return PythonReturn.toSql(outcome, text, procedure);
+                    } catch (final RuntimeException refused) {
+                        typedFailure = refused;
+                        throw refused;
+                    }
+                }
+            }
+
             final Object javaResult = PythonRuntime.toJava(PythonRuntime.global("__result"));
 
             logger.debug("Python procedure {} executed successfully", procedure.getName());
@@ -149,6 +177,11 @@ public final class PythonProcedureExecutor {
             return javaResult;
 
         } catch (final Exception e) {
+            if (e == typedFailure) {
+                // The handler ran; what it handed back does not fit the declared type. The refusal is worded
+                // already, and the interpreter is as sound as it was.
+                throw typedFailure;
+            }
             PythonRuntime.discardContext();
             logger.error("Error executing Python procedure: {}", procedure.getName(), e);
             throw new RuntimeException(PythonRuntimeDiagnostics.describeFailure(

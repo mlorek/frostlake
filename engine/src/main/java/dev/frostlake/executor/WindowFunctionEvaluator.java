@@ -33,6 +33,7 @@ import dev.frostlake.executor.expressions.IsNullExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.ObjectAccessExpression;
+import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
@@ -119,6 +120,11 @@ final class WindowFunctionEvaluator {
     // as their defining expressions; per relation, since a relation's own column outranks an alias.
     private Map<Table, Map<String, String>> windowKeysReadThroughAliases = new IdentityHashMap<>();
 
+    // The rows the window computation currently running was handed, each by its place among them: what a
+    // SEQ call in a window's argument or key reads for the row, so it agrees with the same call in the select
+    // list. Empty outside a window computation and over grouped rows, whose group stage numbers them.
+    private Map<Row, Long> windowRowOrdinals = new IdentityHashMap<>();
+
     // Canonical AST print of each SELECT item -> projected column index, for the window computation
     // currently running over ALREADY-PROJECTED (grouped) rows; empty otherwise. Lets a PARTITION BY /
     // ORDER BY key that IS a select item — OVER (ORDER BY SUM(amount) DESC) — read the computed value.
@@ -161,7 +167,7 @@ final class WindowFunctionEvaluator {
         if (!intoSubqueries && node instanceof FrostlakeParser.SelectStatementContext) {
             return;
         }
-        if (node instanceof FrostlakeParser.FunctionCallExprContext
+        if (node instanceof FrostlakeParser.FunctionCallExprContext && !OverCallRules.isTableFunctionCall(node)
                 && ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null) {
             out.add((FrostlakeParser.FunctionCallExprContext) node);
             return;
@@ -212,7 +218,7 @@ final class WindowFunctionEvaluator {
 
     private void collectWindowFunctionCallsEverywhere(final ParseTree node,
                                                       final List<FrostlakeParser.FunctionCallExprContext> out) {
-        if (node instanceof FrostlakeParser.FunctionCallExprContext
+        if (node instanceof FrostlakeParser.FunctionCallExprContext && !OverCallRules.isTableFunctionCall(node)
                 && ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null) {
             out.add((FrostlakeParser.FunctionCallExprContext) node);
             return;
@@ -495,6 +501,13 @@ final class WindowFunctionEvaluator {
         }
         if (node instanceof FrostlakeParser.OverClauseContext) {
             final FrostlakeParser.OverClauseContext over = (FrostlakeParser.OverClauseContext) node;
+            if (over.windowFrame() != null && OverCallRules.isTableFunctionCall(over.getParent())) {
+                // A table function's OVER names partitions and an order: a frame there is no part of the
+                // clause, a syntax error at its first word (live-verified).
+                final Token word = over.windowFrame().getStart();
+                throw new RuntimeException(SqlCompilationError.of("syntax error line " + word.getLine()
+                    + " at position " + word.getCharPositionInLine() + " unexpected '" + word.getText() + "'."));
+            }
             if (over.windowFrame() != null && over.orderByClause() == null) {
                 throw new RuntimeException(SqlCompilationError.at(over.getStart().getLine(),
                     over.getStart().getCharPositionInLine(),
@@ -550,6 +563,15 @@ final class WindowFunctionEvaluator {
                     anchor.getStart().getCharPositionInLine(),
                     WindowFrameShape.kindWord(over.windowFrame())
                         + " window frame unsupported for function " + name));
+            }
+            // The ranking and navigation functions stand beside no frame but the two that restate
+            // the partition (see RankingFrameRules); theirs outranks the call's own count and types.
+            final String rankingFrame = over == null ? null : RankingFrameRules.refusal(name, over.windowFrame());
+            if (rankingFrame != null) {
+                final ParserRuleContext anchor = RankingFrameRules.pointsAtOver(name, over.windowFrame())
+                    ? over : over.windowFrame();
+                throw new RuntimeException(SqlCompilationError.at(anchor.getStart().getLine(),
+                    anchor.getStart().getCharPositionInLine(), rankingFrame));
             }
             // ★ DISTINCT CANNOT BE ORDERED OR FRAMED — except under COUNT, which answers every frame,
             // and except the whole-partition ROWS frame, which re-states the partition (both
@@ -685,6 +707,13 @@ final class WindowFunctionEvaluator {
         // Expose this query's SELECT aliases so a PARTITION BY / window ORDER BY can reference one; saved and
         // restored so a nested subquery's window computation doesn't leak its aliases back out.
         final Map<String, String> savedAliases = beginWindowAliasScope(ctx, rowsAreProjected);
+        final Map<Row, Long> savedOrdinals = windowRowOrdinals;
+        windowRowOrdinals = new IdentityHashMap<>();
+        if (!rowsAreProjected) {
+            for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
+                windowRowOrdinals.put(rows.get(rowIdx), Long.valueOf(rowIdx));
+            }
+        }
         try {
 
         // Plan-time: a FILE argument to a window aggregate is rejected before any row is computed.
@@ -732,10 +761,19 @@ final class WindowFunctionEvaluator {
         // For each row, compute window function values
         for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
             final Map<Integer, Object> rowResults = new HashMap<>();
-            for (int itemIdx = 0; itemIdx < windowItemExprs.length; itemIdx++) {
-                if (windowItemExprs[itemIdx] != null) {
-                    final Object value = evaluateWindowFunction(windowItemExprs[itemIdx], rows, rowIdx, ctx, table, overCache);
-                    rowResults.put(itemIdx, value);
+            // What stands beside a window call in its item - ROW_NUMBER() OVER (...) - SEQ4() - is the row's own.
+            final Long displacedOrdinal = rowsAreProjected ? null : RowOrdinal.begin(rowIdx);
+            try {
+                for (int itemIdx = 0; itemIdx < windowItemExprs.length; itemIdx++) {
+                    if (windowItemExprs[itemIdx] != null) {
+                        final Object value = evaluateWindowFunction(windowItemExprs[itemIdx], rows, rowIdx, ctx,
+                            table, overCache);
+                        rowResults.put(itemIdx, value);
+                    }
+                }
+            } finally {
+                if (!rowsAreProjected) {
+                    RowOrdinal.end(displacedOrdinal);
                 }
             }
 
@@ -744,7 +782,25 @@ final class WindowFunctionEvaluator {
 
         return results;
         } finally {
+            windowRowOrdinals = savedOrdinals;
             endWindowAliasScope(savedAliases);
+        }
+    }
+
+    /**
+     * An expression over one of the rows the window stage was handed, evaluated as that row: a SEQ call in it
+     * reads the row's place among them, as the projection's does (live-verified).
+     */
+    private Object evaluateAsItsRow(final String text, final Row row, final Table table) {
+        final Long ordinal = row == null ? null : windowRowOrdinals.get(row);
+        if (ordinal == null) {
+            return executor.evaluateExpression(text, row, table);
+        }
+        final Long displaced = RowOrdinal.begin(ordinal.longValue());
+        try {
+            return executor.evaluateExpression(text, row, table);
+        } finally {
+            RowOrdinal.end(displaced);
         }
     }
 
@@ -852,7 +908,7 @@ final class WindowFunctionEvaluator {
         if (grouped != GroupedExpressionValues.UNRESOLVED) {
             return grouped;
         }
-        return executor.evaluateExpression(argExpr, row, table);
+        return evaluateAsItsRow(argExpr, row, table);
     }
 
     /** Restore the alias scope saved by {@link #beginWindowAliasScope}. */
@@ -951,7 +1007,7 @@ final class WindowFunctionEvaluator {
             if (overGroup != GroupedExpressionValues.UNRESOLVED) {
                 return overGroup;
             }
-            return executor.evaluateExpression(keyText, originalRow, table);
+            return evaluateAsItsRow(keyText, originalRow, table);
         }
         final Map<String, Object> windowValues = new HashMap<>();
         for (final FrostlakeParser.FunctionCallExprContext call : windowCalls) {
@@ -1026,7 +1082,7 @@ final class WindowFunctionEvaluator {
                 }
                 final Object value;
                 final String exprText = ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item));
-                final String bare = exprText.trim().toUpperCase();
+                final String bare = exprText.trim().toUpperCase(Locale.ROOT);
                 if (hasWindowFunctionInExpression(SelectItemAccessors.getItemValueExpr(item))) {
                     final Map<Integer, Object> rowWindowResults = windowFunctionResults.get(rowIdx);
                     value = rowWindowResults != null && rowWindowResults.containsKey(selectItemIdx)
@@ -1047,12 +1103,18 @@ final class WindowFunctionEvaluator {
                     // defining item was a window function. A real column of the same name still wins.
                     value = lateralAliases.get(bare);
                 } else {
-                    value = executor.evaluateExpression(exprText, originalRow, table, lateralAliases);
+                    // The projection numbers the rows it is handed: a SEQ call reads this row's place.
+                    final Long displacedOrdinal = RowOrdinal.begin(rowIdx);
+                    try {
+                        value = executor.evaluateExpression(exprText, originalRow, table, lateralAliases);
+                    } finally {
+                        RowOrdinal.end(displacedOrdinal);
+                    }
                 }
                 values.add(value);
                 final String alias = SelectItemAccessors.getItemAlias(item);
                 if (alias != null) {
-                    lateralAliases.put(alias.toUpperCase(), value);
+                    lateralAliases.put(alias.toUpperCase(Locale.ROOT), value);
                 }
                 selectItemIdx++;
             }
@@ -1088,7 +1150,7 @@ final class WindowFunctionEvaluator {
         }
 
         final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) expr;
-        final String functionName = funcCtx.functionName().getText().toUpperCase();
+        final String functionName = funcCtx.functionName().getText().toUpperCase(Locale.ROOT);
         final FrostlakeParser.OverClauseContext overClause = funcCtx.overClause();
 
         if (overClause == null) {
@@ -1159,7 +1221,7 @@ final class WindowFunctionEvaluator {
                     allRows, position);
             }
             case "NTILE":
-                return computeNtile(funcCtx, sortedPartition, position);
+                return computeNtile(funcCtx, sortedPartition, position, allRows.get(currentRowIndex), table);
             case "PERCENT_RANK":
                 return computePercentRank(sortedPartition, position, overClause, table);
             case "CUME_DIST":
@@ -2176,7 +2238,7 @@ final class WindowFunctionEvaluator {
         if (table == null) {
             return constantArgValue(argText);
         }
-        return executor.evaluateExpression(argText, currentRow, table);
+        return evaluateAsItsRow(argText, currentRow, table);
     }
 
     /**
@@ -2199,13 +2261,43 @@ final class WindowFunctionEvaluator {
     }
 
     private Long computeNtile(final FrostlakeParser.FunctionCallExprContext funcCtx,
-                               final List<Row> sortedPartition, final int position) {
-        int buckets = 1;
-        if (!windowArgs(funcCtx).isEmpty()) {
-            try { buckets = Integer.parseInt(ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0))); }
-            catch (final NumberFormatException ignored) {}
+                               final List<Row> sortedPartition, final int position, final Row currentRow,
+                               final Table table) {
+        return WindowFunctionHelper.ntile(sortedPartition.size(), position, ntileBuckets(funcCtx, currentRow, table));
+    }
+
+    /**
+     * How many buckets an NTILE call asks for. The argument is a number, or a text or a VARIANT that
+     * spells one, rounded half away from zero — {@code NTILE(1.5)} is two buckets, {@code NTILE('2')}
+     * two — and must come out at least 1: anything less, a NULL included, fails the query as "Invalid
+     * parameter value: 0. Reason: NTILE argument must be at least 1", the rounded value echoed, and a
+     * text that spells no number as "Numeric value 'x' is not recognized". Both are the row's to raise,
+     * so a query over no rows answers nothing (live-verified).
+     */
+    private int ntileBuckets(final FrostlakeParser.FunctionCallExprContext funcCtx, final Row currentRow,
+                             final Table table) {
+        final List<FrostlakeParser.BooleanExprContext> written = windowArgs(funcCtx);
+        if (written.isEmpty()) {
+            return 1;
         }
-        return WindowFunctionHelper.ntile(sortedPartition.size(), position, buckets);
+        final Object asked = defaultArgValue(ParseTreeText.getOriginalText(written.get(0)), currentRow, table);
+        final BigDecimal buckets;
+        if (asked == null) {
+            buckets = BigDecimal.ZERO;
+        } else if (asked instanceof Number) {
+            buckets = new BigDecimal(asked.toString()).setScale(0, RoundingMode.HALF_UP);
+        } else {
+            try {
+                buckets = new BigDecimal(asked.toString().trim()).setScale(0, RoundingMode.HALF_UP);
+            } catch (final NumberFormatException noNumber) {
+                throw new RuntimeException("Numeric value '" + asked + "' is not recognized");
+            }
+        }
+        if (buckets.signum() <= 0) {
+            throw new RuntimeException("Invalid parameter value: " + buckets.toPlainString()
+                + ". Reason: NTILE argument must be at least 1");
+        }
+        return buckets.min(BigDecimal.valueOf(Integer.MAX_VALUE)).intValue();
     }
 
     /**
@@ -2465,6 +2557,10 @@ final class WindowFunctionEvaluator {
     private int rangeBoundIndex(final List<Row> partition, final int pos, final FrostlakeParser.FrameBoundContext bound,
                                 final FrostlakeParser.OverClauseContext overClause, final Table table, final boolean isStart) {
         final Object curVal = getOrderByValue(partition.get(pos), overClause.orderByClause(), table);
+        if (curVal == null) {
+            // A NULL key is no distance from anything: the row's frame is the rows that share it.
+            return isStart ? firstPeer(partition, pos, overClause, table) : lastPeer(partition, pos, overClause, table);
+        }
         if (!(curVal instanceof Number)) {
             throw new RuntimeException("RANGE frame with a numeric offset requires a single numeric ORDER BY column");
         }
@@ -3268,7 +3364,7 @@ final class WindowFunctionEvaluator {
             toEvaluate = readThroughAliases(trimmed, table);
         }
         try {
-            return executor.evaluateExpression(toEvaluate, row, table);
+            return evaluateAsItsRow(toEvaluate, row, table);
         } catch (final RuntimeException e) {
             // A key over a cell a relation deferred reads that cell, so its fault is raised, not a NULL key.
             if (DeferredFault.isHeld(e)) {
@@ -3379,7 +3475,7 @@ final class WindowFunctionEvaluator {
         if (t.length() >= 2 && t.charAt(0) == '"' && t.charAt(t.length() - 1) == '"') {
             return t.substring(1, t.length() - 1);
         }
-        return t.toUpperCase();
+        return t.toUpperCase(Locale.ROOT);
     }
 
     /** All ORDER BY key values for a row, in order — used for peer/tie detection across EVERY key. */

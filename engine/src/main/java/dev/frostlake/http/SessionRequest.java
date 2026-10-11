@@ -24,6 +24,7 @@ package dev.frostlake.http;
 public class SessionRequest {
     private String database;
     private String schema;
+    private Boolean readOnly;
 
     public String getDatabase() {
         return database;
@@ -39,5 +40,14 @@ public class SessionRequest {
 
     public void setSchema(final String schema) {
         this.schema = schema;
+    }
+
+    /** Whether the session is opened read-only: every request in it must only read. */
+    public Boolean getReadOnly() {
+        return readOnly;
+    }
+
+    public void setReadOnly(final Boolean readOnly) {
+        this.readOnly = readOnly;
     }
 }

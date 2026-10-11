@@ -79,6 +79,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -332,7 +333,7 @@ public final class CopyCommandExecutor {
                         if (option.TYPE() != null) {
                             FileFormatSurfaces.requireLegalValue("TYPE",
                                 copyOptValue(option.copyOptionValue()), option.copyOptionValue().getText());
-                            fileFormat = copyOptValue(option.copyOptionValue()).toUpperCase();
+                            fileFormat = copyOptValue(option.copyOptionValue()).toUpperCase(Locale.ROOT);
                         } else if (option.FIELD_DELIMITER() != null) {
                             fieldDelimiter = copyOptValue(option.copyOptionValue());
                         } else if (option.SKIP_HEADER() != null) {
@@ -412,7 +413,7 @@ public final class CopyCommandExecutor {
             } else if (clause.VALIDATION_MODE() != null) {
                 requireDistinctCopyOption(seenCopyOptions, "VALIDATION_MODE");
                 validationMode = copyOptValue(clause.copyOptionValue());
-                if (!validationMode.toUpperCase().matches("RETURN_\\d+_ROWS|RETURN_ERRORS|RETURN_ALL_ERRORS")) {
+                if (!validationMode.toUpperCase(Locale.ROOT).matches("RETURN_\\d+_ROWS|RETURN_ERRORS|RETURN_ALL_ERRORS")) {
                     throw invalidCopyOptionValue("VALIDATION_MODE", clause.copyOptionValue());
                 }
             } else if (clause.ON_ERROR() != null) {
@@ -441,7 +442,7 @@ public final class CopyCommandExecutor {
             } else if (clause.MATCH_BY_COLUMN_NAME() != null) {
                 requireDistinctCopyOption(seenCopyOptions, "MATCH_BY_COLUMN_NAME");
                 matchByColumnName = copyOptValue(clause.copyOptionValue());
-                final String matchMode = matchByColumnName.toUpperCase();
+                final String matchMode = matchByColumnName.toUpperCase(Locale.ROOT);
                 if (!"CASE_SENSITIVE".equals(matchMode) && !"CASE_INSENSITIVE".equals(matchMode)
                         && !"NONE".equals(matchMode)) {
                     throw invalidCopyOptionValue("MATCH_BY_COLUMN_NAME", clause.copyOptionValue());
@@ -456,7 +457,7 @@ public final class CopyCommandExecutor {
                 // The generic key=value options: ENFORCE_LENGTH / TRUNCATECOLUMNS /
                 // RETURN_FAILED_ONLY / LOAD_UNCERTAIN_FILES / INCLUDE_METADATA — an unknown NAME
                 // refuses as an invalid parameter, live-verified.
-                final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase();
+                final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase(Locale.ROOT);
                 if (StorageIntegrationReference.PROPERTY.equals(optionName)) {
                     // Judged before the table was looked for (see requireStorageIntegration).
                     continue;
@@ -571,7 +572,7 @@ public final class CopyCommandExecutor {
         // nothing reads as a completed load. Avro/Parquet/ORC ship in the optional frostlake-formats
         // module (a StageFileReader SPI), so their absence gets a pointer rather than a bare rejection.
         if (fileFormat != null && !csv && recordReader == null) {
-            final String upperType = fileFormat.toUpperCase();
+            final String upperType = fileFormat.toUpperCase(Locale.ROOT);
             final boolean optionalFormat = upperType.equals("AVRO") || upperType.equals("PARQUET")
                 || upperType.equals("ORC");
             final String hint = optionalFormat
@@ -908,7 +909,7 @@ public final class CopyCommandExecutor {
             final boolean trimSpace, final List<String> nullIf, final boolean emptyFieldAsNull,
             final boolean checkColumnCount, final boolean skipBlankLines,
             final String fromLocation, final List<String> missingFiles) {
-        final String mode = validationMode.toUpperCase().replace("'", "").trim();
+        final String mode = validationMode.toUpperCase(Locale.ROOT).replace("'", "").trim();
         final Matcher nRowsMatcher = RETURN_N_ROWS_MODE.matcher(mode);
         final int returnRows = nRowsMatcher.matches() ? Integer.parseInt(nRowsMatcher.group(1)) : -1;
 
@@ -1167,7 +1168,7 @@ public final class CopyCommandExecutor {
     private String requireValidOnError(final FrostlakeParser.CopyOptionValueContext valueCtx) {
         final String value = copyOptValue(valueCtx);
         if (value != null) {
-            final String upper = value.toUpperCase();
+            final String upper = value.toUpperCase(Locale.ROOT);
             if (upper.equals("ABORT_STATEMENT") || upper.equals("CONTINUE")
                     || SKIP_FILE_ON_ERROR.matcher(upper).matches()) {
                 return upper;
@@ -1616,7 +1617,7 @@ public final class CopyCommandExecutor {
             final List<FrostlakeParser.CopyFormatOptionContext> options) {
         final Set<String> seen = new HashSet<>();
         for (final FrostlakeParser.CopyFormatOptionContext option : options) {
-            final String name = option.getStart().getText().toUpperCase();
+            final String name = option.getStart().getText().toUpperCase(Locale.ROOT);
             if (!seen.add(name)) {
                 throw new RuntimeException(SqlCompilationError.conflictingFileFormatParameter(name));
             }
@@ -1630,7 +1631,7 @@ public final class CopyCommandExecutor {
     private static RuntimeException invalidCopyOptionValue(final String name,
             final FrostlakeParser.CopyOptionValueContext value) {
         final String raw = value.getText();
-        final String rendered = value.STRING_LITERAL() != null ? raw : raw.toUpperCase();
+        final String rendered = value.STRING_LITERAL() != null ? raw : raw.toUpperCase(Locale.ROOT);
         return new RuntimeException(SqlCompilationError.invalidValueForParameter(rendered, name));
     }
 
@@ -1678,7 +1679,7 @@ public final class CopyCommandExecutor {
     private String firstDisallowedTransformCall(final Expression expr) {
         if (expr instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) expr;
-            final String name = call.getFunctionName().toUpperCase();
+            final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
             if (!TRANSFORM_FUNCTION_ALLOWLIST.contains(name)
                     && !name.startsWith("TO_") && !name.startsWith("TRY_TO_")) {
                 return call.getFunctionName();
@@ -1803,7 +1804,7 @@ public final class CopyCommandExecutor {
 
     /** Whether a VALIDATION_MODE value is the error-listing family rather than RETURN_&lt;n&gt;_ROWS. */
     private static boolean isReturnErrorsMode(final String validationMode) {
-        return !RETURN_N_ROWS_MODE.matcher(validationMode.toUpperCase().replace("'", "").trim()).matches();
+        return !RETURN_N_ROWS_MODE.matcher(validationMode.toUpperCase(Locale.ROOT).replace("'", "").trim()).matches();
     }
 
     /**
@@ -1898,7 +1899,7 @@ public final class CopyCommandExecutor {
                 || transformation != null) {
             return;
         }
-        final String type = fileFormat.toUpperCase();
+        final String type = fileFormat.toUpperCase(Locale.ROOT);
         if (!SEMI_STRUCTURED_LOAD_FORMATS.contains(type)) {
             return;
         }
@@ -2312,10 +2313,10 @@ public final class CopyCommandExecutor {
         }
         JsonNode value = record.get(columnName);
         if (value == null) {
-            value = record.get(columnName.toLowerCase());
+            value = record.get(columnName.toLowerCase(Locale.ROOT));
         }
         if (value == null) {
-            value = record.get(columnName.toUpperCase());
+            value = record.get(columnName.toUpperCase(Locale.ROOT));
         }
         return value;
     }
@@ -2429,9 +2430,9 @@ public final class CopyCommandExecutor {
                     if (opt.TYPE() != null) {
                         FileFormatSurfaces.requireLegalValue("TYPE",
                             copyOptValue(opt.copyOptionValue()), opt.copyOptionValue().getText());
-                        fileFormat = copyOptValue(opt.copyOptionValue()).toUpperCase();
+                        fileFormat = copyOptValue(opt.copyOptionValue()).toUpperCase(Locale.ROOT);
                     } else if (opt.COMPRESSION() != null) {
-                        compression = copyOptValue(opt.copyOptionValue()).toUpperCase();
+                        compression = copyOptValue(opt.copyOptionValue()).toUpperCase(Locale.ROOT);
                     } else if (opt.identifier() != null && opt.copyOptionValue() != null
                             && "FILE_EXTENSION".equalsIgnoreCase(ParseTreeText.getIdentifier(opt.identifier()))) {
                         fileExtension = copyOptValue(opt.copyOptionValue());
@@ -2467,7 +2468,7 @@ public final class CopyCommandExecutor {
                 throw invalidCopyOptionValue("VALIDATION_MODE", clause.copyOptionValue());
             } else if (clause.identifier() != null && clause.copyOptionValue() != null) {
                 sawOptionClause = true;
-                final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase();
+                final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase(Locale.ROOT);
                 if ("DETAILED_OUTPUT".equals(optionName)) {
                     detailedOutput = requireBareBoolean("DETAILED_OUTPUT", clause.copyOptionValue());
                 } else if ("INCLUDE_QUERY_ID".equals(optionName)) {

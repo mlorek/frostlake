@@ -18,9 +18,9 @@ package dev.frostlake.rt.scala;
 
 import com.snowflake.snowpark_java.Session;
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.executor.udf.HandlerArguments;
 import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.UdfConsoleCapture;
-import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,11 +62,13 @@ public final class ScalaProcedureExecutor {
         try {
             // Inline bodies compile ONCE (cached); jar handlers load from IMPORTS. Avoids per-row recompiles.
             final Class<?> compiled = procedure.getImports().isEmpty()
-                ? ScalaCompiler.compileCached(procedure.getBody(), className)
-                : JarHandlerLoader.load(procedure.getImports(), className,
+                ? ScalaCompiler.compileCached(procedure.getBody(), className,
+                    " in function " + procedure.getName() + " with handler " + handler)
+                : JarHandlerLoader.load(engine != null ? engine.localImports(procedure.getImports())
+                        : procedure.getImports(), className,
                     engine != null ? engine.getCatalog() : null,
                     engine != null ? engine.getS3PathResolver() : null);
-            return invokeHandler(compiled, methodName, arguments, procedure.getParameters(), engine,
+            return invokeHandler(compiled, methodName, arguments, procedure, engine,
                 "OWNER".equalsIgnoreCase(procedure.getExecuteAs()));
         } catch (final RuntimeException e) {
             throw e;
@@ -78,7 +80,7 @@ public final class ScalaProcedureExecutor {
 
     private static Object invokeHandler(final Class<?> clazz, final String methodName,
                                          final List<Object> arguments,
-                                         final List<Parameter> parameters,
+                                         final Procedure procedure,
                                          final DatabaseEngine engine, final boolean ownersRights) throws Exception {
         final Session session = new Session(engine, ownersRights);
 
@@ -96,9 +98,12 @@ public final class ScalaProcedureExecutor {
         }
 
         final Method target = findMethod(clazz, methodName, args.length);
+        // Each argument as the class the handler declares for it, as a Java handler's are.
+        final Object[] adapted = HandlerArguments.adapt(target.getParameterTypes(), args, procedure.getName(),
+            procedure.getHandler());
         UdfConsoleCapture.enter();
         try {
-            return target.invoke(instance, args);
+            return target.invoke(instance, adapted);
         } catch (final InvocationTargetException e) {
             final Throwable cause = e.getCause();
             if (cause instanceof RuntimeException re) {

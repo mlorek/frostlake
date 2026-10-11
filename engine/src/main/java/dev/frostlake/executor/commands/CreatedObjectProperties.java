@@ -240,6 +240,16 @@ final class CreatedObjectProperties {
         }
     }
 
+    /**
+     * The kind of value a parameter the account lists takes — BOOLEAN, NUMBER, FLOAT or STRING.
+     *
+     * @param name the parameter's name, upper case
+     * @return the kind, or null when the account lists no parameter of that name
+     */
+    static String accountParameterType(final String name) {
+        return PARAMETER_TYPES.get(name);
+    }
+
     /** A parameter a table is created with: the ones listed for a table, but for the event level it only reads. */
     private static boolean takenByTable(final String key) {
         return ParameterRegistry.isTableParameter(key) && !"LOG_EVENT_LEVEL".equals(key);

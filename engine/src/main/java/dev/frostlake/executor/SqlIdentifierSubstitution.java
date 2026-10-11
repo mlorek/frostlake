@@ -21,15 +21,14 @@ import dev.frostlake.parser.SqlCharStream;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 /**
  * Binds a named parameter into a SQL body by substituting each occurrence of the parameter's bare name
- * with a replacement string — for UDF / stored-procedure bodies and masking-policy bodies, where the
- * parameter is written as an ordinary identifier.
+ * with a replacement string — for masking-policy bodies and alias expansion, where the name is written as an
+ * ordinary identifier, and for a routine's body the grammar does not read (see {@link ParameterReferences}).
  *
  * <p>The substitution is driven by the SQL <em>lexer</em>, not a {@code \b}-anchored regex: the body is
  * tokenized, and only tokens whose text matches the parameter name (case-insensitively) are replaced —
@@ -81,29 +80,16 @@ public final class SqlIdentifierSubstitution {
     }
 
     /**
-     * {@link #substitute} for a policy's parameter, which a body may also write quoted: {@code "V"} names the parameter
-     * declared {@code v} as {@code v} and {@code V} do, the parameter's name being {@code V}. A quoted spelling in another
-     * case, {@code "v"}, is another name and stays as it is. Binding only the bare spellings left a quoted reference to
-     * the parameter unbound, so a masking or row access body read the column of that name, if the table had one,
-     * instead of the value the policy was given.
+     * {@link #substitute} for a policy's parameters, which a body may also write quoted: {@code "V"} names the
+     * parameter declared {@code v} as {@code v} and {@code V} do, the parameter's name being {@code V}. A quoted
+     * spelling in another case, {@code "v"}, is another name and stays as it is. Binding only the bare spellings
+     * left a quoted reference to the parameter unbound, so a masking or row access body read the column of that
+     * name, if the table had one, instead of the value the policy was given.
      *
-     * @param body          the policy body
-     * @param parameterName the parameter's canonical name, as the policy declares it
-     * @param replacement   what the parameter is bound to
-     * @return the body with every reference to the parameter bound
-     */
-    public static String substituteParameter(final String body, final String parameterName, final String replacement) {
-        final List<String> names = new ArrayList<>();
-        final List<String> replacements = new ArrayList<>();
-        names.add(parameterName);
-        replacements.add(replacement);
-        return substituteParameters(body, names, replacements);
-    }
-
-    /**
-     * {@link #substituteParameter} for every parameter of a signature in ONE pass, so the text bound to one parameter
-     * is never read again for the next: a masked column {@code S} bound to the first parameter stays {@code S} when the
-     * second is named {@code s}.
+     * <p>Every parameter of a signature is bound in ONE pass, so the text bound to one parameter is never read
+     * again for the next: a masked column {@code S} bound to the first parameter stays {@code S} when the second
+     * is named {@code s}. A routine's body is bound by its parse tree instead (see {@link ParameterReferences}),
+     * and comes here only when the grammar does not read it.
      *
      * @param body         the policy body
      * @param names        the parameters' canonical names, in signature order
@@ -194,6 +180,9 @@ public final class SqlIdentifierSubstitution {
      *  (semi-structured path segment / bind-variable name — neither binds a parameter) other than the one
      *  separating an object constant's key from its value. */
     private static boolean structuralNamePosition(final List<Token> all, final int i) {
+        if (declaresLambdaParameter(all, i)) {
+            return true;
+        }
         for (int p = i - 1; p >= 0; p--) {
             final Token t = all.get(p);
             if (t.getChannel() != Token.DEFAULT_CHANNEL) {
@@ -219,6 +208,77 @@ public final class SqlIdentifierSubstitution {
             break;
         }
         return false;
+    }
+
+    /**
+     * Whether the token at index {@code i} is a parameter a lambda declares — {@code x} in {@code x -> …}, in
+     * {@code x INT -> …} and in {@code (acc, x) -> …}. The declaration is the lambda's own name and stays; inside
+     * the lambda's body a routine's parameter of that name is bound as anywhere else (live-verified).
+     */
+    private static boolean declaresLambdaParameter(final List<Token> all, final int i) {
+        int depth = 0;
+        boolean pastAComma = false;
+        for (int n = i + 1; n < all.size(); n++) {
+            final Token t = all.get(n);
+            if (t.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            final int type = t.getType();
+            if (type == FrostlakeLexer.THIN_ARROW) {
+                // The name, perhaps its type, and the arrow: a list of several stands in parentheses.
+                return depth == 0 && !pastAComma;
+            }
+            if (type == FrostlakeLexer.RPAREN && depth == 0) {
+                // The end of a parenthesized list: the arrow follows it, and nothing but names stands before.
+                final int after = nextDefault(all, n);
+                return after >= 0 && all.get(after).getType() == FrostlakeLexer.THIN_ARROW && opensAParameterList(all, i);
+            }
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN) {
+                depth--;
+            } else if (type == FrostlakeLexer.COMMA) {
+                pastAComma |= depth == 0;
+            } else if (type != FrostlakeLexer.INTEGER_LITERAL && !SqlTokens.isWord(t)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** Whether only names, their types and commas stand between the token at {@code i} and the {@code (} before it. */
+    private static boolean opensAParameterList(final List<Token> all, final int i) {
+        int depth = 0;
+        for (int p = i - 1; p >= 0; p--) {
+            final Token t = all.get(p);
+            if (t.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            final int type = t.getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                if (depth == 0) {
+                    return true;
+                }
+                depth--;
+            } else if (type == FrostlakeLexer.RPAREN) {
+                depth++;
+            } else if (type != FrostlakeLexer.COMMA && type != FrostlakeLexer.INTEGER_LITERAL && !SqlTokens.isWord(t)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static int nextDefault(final List<Token> all, final int i) {
+        for (int n = i + 1; n < all.size(); n++) {
+            if (all.get(n).getType() == Token.EOF) {
+                return -1;
+            }
+            if (all.get(n).getChannel() == Token.DEFAULT_CHANNEL) {
+                return n;
+            }
+        }
+        return -1;
     }
 
     // The ':' of {'key': value}: its key is a string literal opening the constant or following a comma, and

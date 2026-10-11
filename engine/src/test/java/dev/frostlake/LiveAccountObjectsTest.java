@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -94,6 +95,18 @@ public class LiveAccountObjectsTest {
         assertTrue(created("CREATE DATABASE IDENTIFIER('x')").isEmpty());
         assertTrue(created("CREATE NETWORK RULE test_db.test_schema.r TYPE = IPV4 MODE = INGRESS"
             + " VALUE_LIST = ('1.2.3.4')").isEmpty());
+    }
+
+    @Test
+    public void theHarnessOwnDatabaseIsNeitherRecordedNorCounted() {
+        LiveAccountObjects.beginTest();
+        LiveAccountObjects.observe("CREATE OR REPLACE DATABASE test_db");
+        assertTrue(LiveAccountObjects.recorded("DATABASE").isEmpty());
+        assertFalse(LiveAccountObjects.sawAccountObjectStatement());
+        LiveAccountObjects.observe("CREATE DATABASE de_db1");
+        assertEquals(names("DE_DB1"), LiveAccountObjects.recorded("DATABASE"));
+        assertTrue(LiveAccountObjects.sawAccountObjectStatement());
+        LiveAccountObjects.beginTest();
     }
 
     @Test

@@ -98,6 +98,33 @@ final class ValueRangeInferencer {
         this.visitor = visitor;
     }
 
+    /**
+     * The functions whose result is tagged as the empty interval when an argument is always NULL
+     * (live-verified, each one): the date parts, MONTHS_BETWEEN, the character codes and the byte and bit lengths,
+     * the two string distances, MOD, TRUNC and the bitwise functions. DATEDIFF, POSITION, CHARINDEX, REGEXP_COUNT,
+     * REGEXP_INSTR, ARRAY_SIZE, ARRAY_POSITION, FACTORIAL and HASH keep their declared width there.
+     */
+    private static final Set<String> EMPTY_OVER_NULL = new HashSet<>(Arrays.asList(
+        "YEAR", "QUARTER", "MONTH", "WEEK", "WEEKOFYEAR", "WEEKISO", "DAY", "DAYOFMONTH", "DAYOFWEEK", "DAYOFWEEKISO",
+        "DAYOFYEAR", "HOUR", "MINUTE", "SECOND", "YEAROFWEEK", "YEAROFWEEKISO", "EXTRACT", "DATE_PART",
+        "MONTHS_BETWEEN", "ASCII", "UNICODE", "OCTET_LENGTH", "BIT_LENGTH", "LENGTH", "LEN", "EDITDISTANCE",
+        "JAROWINKLER_SIMILARITY", "MOD", "TRUNC", "TRUNCATE", "BITAND", "BITOR", "BITXOR", "BITNOT", "BITSHIFTLEFT",
+        "BITSHIFTRIGHT"));
+
+    /**
+     * The calls that answer NULL over a NULL argument and are read through when a value is judged always NULL
+     * (live-verified, each one). REPLACE, REGEXP_SUBSTR, REGEXP_REPLACE and DATE_FROM_PARTS are not read through:
+     * a date part or a character code over one of them keeps its declared width.
+     */
+    private static final Set<String> PASSES_NULL_ON = new HashSet<>(Arrays.asList(
+        "UPPER", "LOWER", "DATEADD", "TIMEADD", "TIMESTAMPADD", "LTRIM", "RTRIM", "TRIM", "LEFT", "RIGHT", "LPAD",
+        "REVERSE", "INITCAP", "SUBSTR", "SUBSTRING", "CONCAT", "CONCAT_WS", "SPLIT_PART", "TRANSLATE", "REPEAT",
+        "TO_CHAR", "TO_VARCHAR", "TO_DATE", "TRY_TO_DATE", "TO_TIMESTAMP", "TO_TIMESTAMP_NTZ", "ADD_MONTHS",
+        "DATE_TRUNC", "TIME_SLICE", "NEXT_DAY", "PREVIOUS_DAY", "CONVERT_TIMEZONE", "LAST_DAY", "GREATEST"));
+
+    /** The aggregates that answer NULL over nothing but NULLs, read through the same way (live-verified). */
+    private static final Set<String> NULL_OVER_NULLS = new HashSet<>(Arrays.asList("MIN", "MAX", "ANY_VALUE"));
+
     /** The interval of {@code expr}, or null when none can be known. Never throws. */
     ValueRange infer(final Expression expr) {
         try {
@@ -120,6 +147,10 @@ final class ValueRangeInferencer {
         if (expr == null) {
             return null;
         }
+        final BigDecimal folded = foldedTextNumber(expr);
+        if (folded != null) {
+            return ValueRange.of(folded);
+        }
         if (expr instanceof LiteralExpression) {
             final LiteralExpression literal = (LiteralExpression) expr;
             switch (literal.getType()) {
@@ -131,9 +162,8 @@ final class ValueRangeInferencer {
                     // A text literal in arithmetic folds to the number it spells, and the tag follows
                     // that value: '5' + 1 is NUMBER(19,0)[SB1] and '5' / 2 NUMBER(24,6)[SB4] on the
                     // account, where a text COLUMN read as a number carries no interval at all.
-                    final NumericType spelled = ImpliedTextNumber.literalReading(String.valueOf(literal.getValue()));
-                    return spelled == null ? null
-                        : ValueRange.of(new BigDecimal(String.valueOf(literal.getValue()).trim()));
+                    final BigDecimal read = PlanTextNumber.value(String.valueOf(literal.getValue()));
+                    return read == null ? null : ValueRange.of(read);
                 case NULL:
                     return ValueRange.EMPTY;
                 default:
@@ -316,9 +346,27 @@ final class ValueRangeInferencer {
         return over.union(under);
     }
 
+    /**
+     * The number a text the plan folds while compiling reads as — a join or a case mapping of text literals,
+     * {@code ('1.' || '50')}, {@code UPPER('1.50')} — which tags what is computed from it as the literal's does:
+     * {@code ('1.' || '50') * 1} is NUMBER(19,5)[SB4]. Null for any other operand and for a text with no number.
+     */
+    private BigDecimal foldedTextNumber(final Expression operand) {
+        if (operand instanceof LiteralExpression || operand instanceof SessionVarExpression
+                || !ConstantTextArgument.isConstant(operand, visitor)) {
+            return null;
+        }
+        try {
+            final Object folded = operand.accept(visitor);
+            return folded instanceof CharSequence ? ImpliedTextNumber.read((CharSequence) folded) : null;
+        } catch (final RuntimeException unreadable) {
+            return null;
+        }
+    }
+
     /** Whether an operand is a text (not a literal) or a VARIANT, whose numeric reading has no interval. */
     private boolean readsWithoutInterval(final Expression operand) {
-        if (ImpliedTextNumber.isTextLiteral(operand)) {
+        if (ImpliedTextNumber.isTextLiteral(operand) || foldedTextNumber(operand) != null) {
             return false;
         }
         final DataType type = visitor.inferStaticType(operand);
@@ -499,13 +547,22 @@ final class ValueRangeInferencer {
         if (call.getNameExpression() != null) {
             return null;
         }
-        final String name = call.getFunctionName().toUpperCase();
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
         final List<Expression> args = call.getArguments();
         if ((name.equals("MOD") || name.equals("DIV0") || name.equals("DIV0NULL"))
                 && !args.isEmpty() && (isBareNull(args.get(0)) || (args.size() > 1 && isBareNull(args.get(1))))) {
             // The function forms of the operators tag a bare NULL argument as the operators do — an
             // empty interval: MOD(n10_2, NULL) is [SB1] on the account.
             return ValueRange.EMPTY;
+        }
+        if (EMPTY_OVER_NULL.contains(name) && anyAlwaysNull(args)) {
+            // A value read from an argument that is always NULL is always NULL, the empty interval: YEAR(NULL::DATE)
+            // is NUMBER(4,0)[SB1] where YEAR over a date is [SB2] — see EMPTY_OVER_NULL.
+            return ValueRange.EMPTY;
+        }
+        final ValueRange foldedPart = foldedDatePart(call, name, args);
+        if (foldedPart != null) {
+            return foldedPart;
         }
         final Expression componentRead = IntervalFunctions.componentSource(name, args);
         if (componentRead != null && IntervalCasts.isIntervalType(visitor.inferStaticType(componentRead))) {
@@ -614,13 +671,17 @@ final class ValueRangeInferencer {
             case "AVG":
                 return aggregated(accumulated(args.isEmpty() ? null : computedFrom(args.get(0))), false);
             case "MIN":
+                // One end of the argument's interval is the answer only where the statistics give it: under a
+                // grouping key or a filter each MIN may be any value the interval holds.
                 final ValueRange least = firstArgument(args);
                 return least == null ? null : least.isEmpty() ? least
-                    : aggregated(ValueRange.of(least.getMin()).withConditionOpacityOf(least), false);
+                    : aggregated(visitor.readsWithinStatistics()
+                        ? ValueRange.of(least.getMin()).withConditionOpacityOf(least) : least, false);
             case "MAX":
                 final ValueRange greatest = firstArgument(args);
                 return greatest == null ? null : greatest.isEmpty() ? greatest
-                    : aggregated(ValueRange.of(greatest.getMax()).withConditionOpacityOf(greatest), false);
+                    : aggregated(visitor.readsWithinStatistics()
+                        ? ValueRange.of(greatest.getMax()).withConditionOpacityOf(greatest) : greatest, false);
             case "COUNT":
                 // Bounded by the row count only where the statistics answer it — over a star, a constant or
                 // a stored column: COUNT(c + 1) is tagged by its declared width on the account.
@@ -666,6 +727,126 @@ final class ValueRangeInferencer {
                 // A SQL function's body is read as if the call were inlined — see udfCallRange.
                 return visitor.getFunctionRegistry().getFunction(name) == null ? visitor.udfCallRange(call) : null;
         }
+    }
+
+    /** Whether an argument of a call is always NULL ({@link #alwaysNull}). */
+    private boolean anyAlwaysNull(final List<Expression> args) {
+        for (final Expression arg : args) {
+            if (alwaysNull(arg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a value is NULL on every row the statement can read: the bare word, a cast of one, a variable
+     * holding NULL, a column whose statistics hold nothing but NULLs — a text or a date column as much as a number
+     * — a call that passes its NULL argument on (see {@link #PASSES_NULL_ON}), and a COALESCE of nothing else.
+     */
+    private boolean alwaysNull(final Expression value) {
+        if (value instanceof CastExpression) {
+            return alwaysNull(((CastExpression) value).getExpression());
+        }
+        if (value instanceof ColumnReferenceExpression) {
+            final ValueRange read = infer(value);
+            return read != null ? read.isEmpty() : visitor.readsOnlyNulls((ColumnReferenceExpression) value);
+        }
+        if (value instanceof FunctionCallExpression && ((FunctionCallExpression) value).getNameExpression() == null) {
+            final FunctionCallExpression call = (FunctionCallExpression) value;
+            final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+            if (name.equals("COALESCE") || name.equals("NVL") || name.equals("IFNULL")) {
+                for (final Expression branch : call.getArguments()) {
+                    if (!alwaysNull(branch)) {
+                        return false;
+                    }
+                }
+                return !call.getArguments().isEmpty();
+            }
+            if (name.equals("NULLIF")) {
+                return !call.getArguments().isEmpty() && alwaysNull(call.getArguments().get(0));
+            }
+            if (NULL_OVER_NULLS.contains(name)) {
+                return call.getArguments().size() == 1 && alwaysNull(call.getArguments().get(0));
+            }
+            if (PASSES_NULL_ON.contains(name)) {
+                // A unit slot holds a word, never a value: DATE_TRUNC(month, d) reads no column named month.
+                final int unitSlot = DateTimeUnitSlot.positionIn(name);
+                for (int i = 0; i < call.getArguments().size(); i++) {
+                    if (i != unitSlot && alwaysNull(call.getArguments().get(i))) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        final ValueRange range = infer(value);
+        return range != null && range.isEmpty();
+    }
+
+    /**
+     * The interval of a calendar part read from a constant date, which the plan folds to the one value it is:
+     * DAYOFYEAR over the 6th of May is 127 and tagged [SB1], where over a column it keeps its four digits' [SB2].
+     * The part is one a function names — DAYOFYEAR, MONTH — or one EXTRACT or DATE_PART is asked for, and the
+     * constant a cast of a literal, a TO_DATE over literals or a DATE_TRUNC of one:
+     * {@code EXTRACT(dayofyear FROM TO_DATE('2024-05-06'))} and {@code DAYOFYEAR(DATE_TRUNC(month,
+     * '2024-05-06'::DATE))} are [SB1]. An epoch part is not folded: {@code EXTRACT(epoch_second FROM
+     * '2024-05-06'::DATE)} keeps its [SB8] (all live-verified). Null for any other call.
+     */
+    private ValueRange foldedDatePart(final FunctionCallExpression call, final String name,
+                                      final List<Expression> args) {
+        final Expression read;
+        if (DatePartOperands.isOnePart(name) && args.size() == 1) {
+            read = args.get(0);
+        } else if ((name.equals("EXTRACT") || name.equals("DATE_PART")) && args.size() == 2) {
+            read = args.get(1);
+            final DataType declared = visitor.inferStaticType(call);
+            // Only a calendar part folds, which declares two digits or four.
+            if (!(declared instanceof NumericType) || ((NumericType) declared).getPrecision() > 4) {
+                return null;
+            }
+        } else {
+            return null;
+        }
+        if (!isConstantDate(read)) {
+            return null;
+        }
+        final Object part;
+        try {
+            part = call.accept(visitor);
+        } catch (final RuntimeException unread) {
+            return null;
+        }
+        final BigDecimal exact = ValueRange.exactOf(part);
+        return exact == null ? null : ValueRange.of(exact);
+    }
+
+    /** Whether a value is a date the plan holds as a constant: see {@link #foldedDatePart}. */
+    private boolean isConstantDate(final Expression value) {
+        if (value instanceof CastExpression) {
+            final Expression converted = ((CastExpression) value).getExpression();
+            return converted instanceof LiteralExpression && !isBareNull(converted) || isConstantDate(converted);
+        }
+        if (!(value instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) value;
+        if (call.getNameExpression() != null) {
+            return false;
+        }
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        if (name.equals("DATE_TRUNC")) {
+            return call.getArguments().size() == 2 && isConstantDate(call.getArguments().get(1));
+        }
+        if (!name.equals("TO_DATE") || call.getArguments().isEmpty()) {
+            return false;
+        }
+        for (final Expression argument : call.getArguments()) {
+            if (!(argument instanceof LiteralExpression) || isBareNull(argument)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -890,7 +1071,7 @@ final class ValueRangeInferencer {
     }
 
     private ValueRange windowRange(final WindowFunctionExpression window) {
-        final String name = window.getFunctionName() == null ? "" : window.getFunctionName().toUpperCase();
+        final String name = window.getFunctionName() == null ? "" : window.getFunctionName().toUpperCase(Locale.ROOT);
         final List<Expression> args = window.getArguments();
         switch (name) {
             case "SUM":

@@ -29,6 +29,8 @@ public class BinaryOperationExpression implements Expression {
     private SourcePosition position;
     /** Whether this is the equality a simple CASE builds from its subject and one WHEN value. */
     private boolean simpleCaseTest;
+    /** Whether an inequality was written {@code !=} rather than {@code <>}. */
+    private boolean bangSpelled;
 
     public BinaryOperationExpression(final Expression left, final BinaryOperator operator, final Expression right) {
         this(left, operator, right, null);
@@ -73,6 +75,21 @@ public class BinaryOperationExpression implements Expression {
     /** Mark this equality as a simple CASE's WHEN test — see {@link #isSimpleCaseTest()}. */
     public void markSimpleCaseTest() {
         this.simpleCaseTest = true;
+    }
+
+    /**
+     * Whether this inequality was written {@code !=} rather than {@code <>}. The two are one operator, and a
+     * message that echoes the tree as parsed still keeps the spelling (live-verified).
+     *
+     * @return true for an inequality written with the exclamation mark
+     */
+    public boolean isBangSpelled() {
+        return bangSpelled;
+    }
+
+    /** Mark this inequality as written {@code !=} — see {@link #isBangSpelled()}. */
+    public void markBangSpelled() {
+        this.bangSpelled = true;
     }
 
     public Expression getLeft() {

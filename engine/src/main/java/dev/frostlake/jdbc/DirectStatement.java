@@ -32,6 +32,7 @@ import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Direct Statement implementation for embedded DatabaseEngine
@@ -193,7 +194,7 @@ public class DirectStatement implements Statement {
             throw JdbcResultWalk.notAnUpdate(sql);
         }
         // If this is an INSERT and generated keys are requested, create a synthetic key
-        if (returnGeneratedKeys && sql.trim().toUpperCase().startsWith("INSERT")) {
+        if (returnGeneratedKeys && sql.trim().toUpperCase(Locale.ROOT).startsWith("INSERT")) {
             // Generate a simple sequential key (in real implementation, would get from auto-increment column)
             generatedKeys.add(++keySequence);
         }
@@ -507,7 +508,7 @@ public class DirectStatement implements Statement {
         final boolean hasResultSet = execute(sql);
 
         // If this is an INSERT and generated keys are requested, create a synthetic key
-        if (returnGeneratedKeys && sql.trim().toUpperCase().startsWith("INSERT")) {
+        if (returnGeneratedKeys && sql.trim().toUpperCase(Locale.ROOT).startsWith("INSERT")) {
             generatedKeys.add(++keySequence);
         }
 

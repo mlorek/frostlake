@@ -17,6 +17,8 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AggregateResultTypes;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.operators.Operator;
 import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Table;
@@ -30,6 +32,9 @@ import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+
+import org.antlr.v4.runtime.Token;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -37,6 +42,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -73,7 +79,7 @@ final class PivotUnpivotExecutor {
         // The aggregate is one registered aggregate over one column of the relation (see PivotAggregateCall).
         final String aggColumn = PivotAggregateCall.column(pivotCtx.aggregateFunction(), table,
             executor.getFunctionRegistry());
-        final String aggFuncName = pivotCtx.aggregateFunction().functionName().getText().toUpperCase();
+        final String aggFuncName = pivotCtx.aggregateFunction().functionName().getText().toUpperCase(Locale.ROOT);
         final String aggregateText = ParseTreeText.getOriginalText(pivotCtx.aggregateFunction());
         final FrostlakeParser.ExpressionContext aggregateCall = executor.parsedExpression(aggregateText);
         final String pivotColumn = ParseTreeText.getIdentifier(pivotCtx.identifier());
@@ -85,6 +91,14 @@ final class PivotUnpivotExecutor {
         final FrostlakeParser.PivotInListContext inList = pivotCtx.pivotInList();
         if (inList.pivotValueList() != null) {
             for (final FrostlakeParser.PivotValueContext pvCtx : inList.pivotValueList().pivotValue()) {
+                if (pvCtx.COLON() != null) {
+                    // A bind among the values is never bound there: it is one nothing sets, refused at its colon
+                    // whatever a block's variable of the name holds (live-verified).
+                    final Token colon = pvCtx.COLON().getSymbol();
+                    final SourcePosition at = ExpressionSource.place(colon.getLine(), colon.getCharPositionInLine());
+                    throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                        "Bind variable :" + pvCtx.identifier().getText() + " not set."));
+                }
                 // The value used to MATCH rows is the literal's value (q1), but the output column is NAMED after
                 // the literal AS WRITTEN — Snowflake keeps the quotes inside the identifier, so a string pivot
                 // value 'q1' produces a column called 'q1' that is referenced as "'q1'" (which is exactly how

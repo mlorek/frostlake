@@ -19,13 +19,18 @@ package dev.frostlake.rt.js;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.udf.TablePartitionRows;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.storage.Row;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** The GraalJS-backed {@link UdfLanguageRuntime} provider for LANGUAGE JAVASCRIPT. */
@@ -54,6 +59,20 @@ public final class JavaScriptRuntime implements UdfLanguageRuntime {
 
     @Override
     public ResultSet executeTableFunction(final Function function, final List<Object> arguments) {
-        throw new RuntimeException("JavaScript table functions are not supported");
+        final List<List<Object>> partition = new ArrayList<>();
+        partition.add(arguments);
+        final TablePartitionRows written = executeTablePartition(function, partition);
+        final List<Row> rows = new ArrayList<>(written.writtenFor(0));
+        rows.addAll(written.atEnd());
+        final List<ResultSetColumn> columns = new ArrayList<>();
+        for (final Parameter column : function.getReturnColumns()) {
+            columns.add(new ResultSetColumn(column.getName(), column.getDataType()));
+        }
+        return new ResultSet(columns, rows);
+    }
+
+    @Override
+    public TablePartitionRows executeTablePartition(final Function function, final List<List<Object>> rows) {
+        return JavaScriptTableFunction.run(function, rows);
     }
 }

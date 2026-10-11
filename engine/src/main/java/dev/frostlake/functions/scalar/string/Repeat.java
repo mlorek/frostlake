@@ -19,7 +19,9 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.CodePointText;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -35,9 +37,12 @@ public class Repeat extends TextArgumentFunction {
         // A NULL count answers NULL as a NULL string does (live: REPEAT('ab', NULL) is NULL).
         if (args.get(0) == null || args.get(1) == null) return null;
         final String s = args.get(0).toString();
-        final int n = ((Number) args.get(1)).intValue();
-        if (n <= 0) return "";
-        return s.repeat(n);
+        // The count multiplies the text's length, and the product is what rounds: REPEAT('ab', 2.5) is five
+        // characters, ababa, and REPEAT('ab', 0.25) one (live-verified). A text count is read as its number.
+        final int characters = wholeNumber(
+            decimalOf(args.get(1)).multiply(BigDecimal.valueOf(CodePointText.length(s))));
+        if (characters <= 0 || s.isEmpty()) return "";
+        return CodePointText.repeatTo(s, characters);
     }
 
     @Override

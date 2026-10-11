@@ -23,6 +23,7 @@ import dev.frostlake.values.ValueRange;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class TableColumn implements Taggable {
@@ -368,17 +369,17 @@ public class TableColumn implements Taggable {
 
     @Override
     public void setTag(final String tagName, final String value) {
-        tags.put(tagName.toUpperCase(), value);
+        tags.put(tagName.toUpperCase(Locale.ROOT), value);
     }
 
     @Override
     public void unsetTag(final String tagName) {
-        tags.remove(tagName.toUpperCase());
+        tags.remove(tagName.toUpperCase(Locale.ROOT));
     }
 
     @Override
     public String getTagValue(final String tagName) {
-        return tags.get(tagName.toUpperCase());
+        return tags.get(tagName.toUpperCase(Locale.ROOT));
     }
 
     @Override

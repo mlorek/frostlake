@@ -24,6 +24,7 @@ import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantValue;
 import java.io.IOException;
 import java.io.InputStream;
@@ -78,7 +79,7 @@ public final class JdbcMarshaling {
 
     /** As above, for a caller that has the type's NAME and SCALE rather than the type itself. */
     public static int toSqlType(final String typeName, final int scale) {
-        final String name = typeName == null ? "" : typeName.toUpperCase();
+        final String name = typeName == null ? "" : typeName.toUpperCase(Locale.ROOT);
         if (name.equals("NUMBER") || name.equals("NUMERIC") || name.equals("DECIMAL")) {
             return scale == 0 ? Types.BIGINT : Types.DECIMAL;
         }
@@ -90,7 +91,7 @@ public final class JdbcMarshaling {
         if (typeName == null) {
             return Types.OTHER;
         }
-        final String t = typeName.toUpperCase();
+        final String t = typeName.toUpperCase(Locale.ROOT);
         // An interval's codes are the driver's own, outside java.sql.Types; its name contains INT and,
         // for INTERVAL_DAY_TIME, TIME, so it is tested before either.
         if (t.startsWith("INTERVAL")) {
@@ -456,7 +457,26 @@ public final class JdbcMarshaling {
         for (int i = 0; i < values.size(); i++) {
             params.put(i + 1, values.get(i));
         }
-        return substitute(sql, params, unbound);
+        return substitute(sql, params, unbound, false);
+    }
+
+    /**
+     * Bind a USING list into a statement's text: each {@code ?} takes the next value, and each {@code :n} the n-th
+     * one, in any order and as often as it is written — {@code 'SELECT :2, :1, :1' USING (a, b)}. A number past the
+     * list, {@code :0} and a number written with a leading zero bind nothing and stay as written, as does each
+     * placeholder whose 1-based number {@code unbound} holds (live-verified).
+     *
+     * @param sql     the text
+     * @param values  the USING values, in order
+     * @param unbound the 1-based numbers that bind nothing
+     * @return the text with each bound placeholder written out
+     */
+    public static String bindUsing(final String sql, final List<Object> values, final Set<Integer> unbound) {
+        final Map<Integer, Object> params = new HashMap<>();
+        for (int i = 0; i < values.size(); i++) {
+            params.put(i + 1, values.get(i));
+        }
+        return substitute(sql, params, unbound, true);
     }
 
     /**
@@ -466,23 +486,43 @@ public final class JdbcMarshaling {
      * binding.)
      */
     public static String substitutePlaceholders(final String sql, final Map<Integer, Object> params) {
-        return substitute(sql, params, Collections.<Integer>emptySet());
+        return substitute(sql, params, Collections.<Integer>emptySet(), false);
     }
 
-    private static String substitute(final String sql, final Map<Integer, Object> params, final Set<Integer> unbound) {
-        final CommonTokenStream tokens = lex(sql);
+    private static String substitute(final String sql, final Map<Integer, Object> params, final Set<Integer> unbound,
+                                     final boolean numbered) {
+        final List<Token> tokens = lex(sql).getTokens();
         final StringBuilder out = new StringBuilder(sql.length() + 16);
         int param = 0;
         int cursor = 0;
-        for (final Token t : tokens.getTokens()) {
+        for (int i = 0; i < tokens.size(); i++) {
+            final Token t = tokens.get(i);
             if (t.getType() == FrostlakeLexer.QUESTION && !unbound.contains(++param)) {
                 out.append(sql, cursor, t.getStartIndex());
                 out.append(formatLiteral(params.get(param)));
                 cursor = t.getStopIndex() + 1;
+            } else if (numbered && t.getType() == FrostlakeLexer.COLON && i + 1 < tokens.size()
+                    && tokens.get(i + 1).getType() == FrostlakeLexer.INTEGER_LITERAL) {
+                final Token digits = tokens.get(i + 1);
+                final Integer number = bindNumber(digits.getText());
+                if (number != null && params.containsKey(number) && !unbound.contains(number)) {
+                    out.append(sql, cursor, t.getStartIndex());
+                    out.append(formatLiteral(params.get(number)));
+                    cursor = digits.getStopIndex() + 1;
+                    i++;
+                }
             }
         }
         out.append(sql, cursor, sql.length());
         return out.toString();
+    }
+
+    /** The number a {@code :n} bind is written with, or null for digits that name none: a leading zero, or too many. */
+    private static Integer bindNumber(final String digits) {
+        if (digits.startsWith("0") || digits.length() > 6) {
+            return null;
+        }
+        return Integer.valueOf(digits);
     }
 
     /** Tokenize with the SQL lexer so that a {@code ?} inside a string literal is part of the
@@ -528,7 +568,7 @@ public final class JdbcMarshaling {
             final Token name = toks.get(i + 1);
             if (t.getType() == FrostlakeLexer.COLON && SqlTokens.isWord(name)
                     && name.getStartIndex() == t.getStopIndex() + 1) {
-                names.add(name.getText().toUpperCase());
+                names.add(name.getText().toUpperCase(Locale.ROOT));
             }
         }
         return names;
@@ -542,6 +582,10 @@ public final class JdbcMarshaling {
     public static String formatLiteral(final Object value) {
         if (value == null) {
             return "NULL";
+        }
+        if (value instanceof Number && NonFiniteDoubles.isNonFinite((Number) value)) {
+            // NaN and the infinities have no literal: bound bare, the word would be read as a name.
+            return NonFiniteDoubles.castOfWord((Number) value);
         }
         if (value instanceof Number) {
             // A negative number is parenthesised: spliced bare after a minus — `3-?` bound to -5 — the text
@@ -642,7 +686,7 @@ public final class JdbcMarshaling {
         for (final byte b : bytes) {
             sb.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
         }
-        return sb.toString().toUpperCase();
+        return sb.toString().toUpperCase(Locale.ROOT);
     }
 
     private static LocalDateTime parseDateTime(final String s) {

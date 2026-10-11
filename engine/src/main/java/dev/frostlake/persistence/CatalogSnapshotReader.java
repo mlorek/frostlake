@@ -94,6 +94,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 final class CatalogSnapshotReader {
@@ -377,11 +378,12 @@ final class CatalogSnapshotReader {
             final Schema schema;
 
             // INFORMATION_SCHEMA is the database's own and is seeded, never restored. PUBLIC is restored like any
-            // other schema, into the PUBLIC every database starts with: its comment and tags come back too.
+            // other schema, into the PUBLIC every database starts with: its comment and tags come back too. So is a
+            // schema the SNOWFLAKE database starts with.
             if ("INFORMATION_SCHEMA".equals(schemaSnapshot.name)) {
                 schema = db.getSchema(schemaSnapshot.name);
-            } else if ("PUBLIC".equals(schemaSnapshot.name) && db.hasSchemaExact("PUBLIC")) {
-                schema = db.schemaExact("PUBLIC");
+            } else if (db.hasSchemaExact(schemaSnapshot.name)) {
+                schema = db.schemaExact(schemaSnapshot.name);
                 schema.setComment(schemaSnapshot.comment);
                 SnapshotTags.restore(schema, schemaSnapshot.tagValues);
             } else {
@@ -1170,7 +1172,7 @@ final class CatalogSnapshotReader {
             return StringType.VARCHAR; // default
         }
 
-        final String upper = typeName.toUpperCase();
+        final String upper = typeName.toUpperCase(Locale.ROOT);
         final DataType interval = IntervalTypes.forName(upper);
         if (interval != null) {
             return interval;

@@ -33,6 +33,7 @@ import dev.frostlake.storage.Row;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * The rows of INFORMATION_SCHEMA's three privilege views, read from the grants the engine keeps, as the account
@@ -221,7 +222,7 @@ final class PrivilegeViews {
     private static String arguments(final List<Parameter> parameters) {
         final StringBuilder spelled = new StringBuilder("(");
         for (int i = 0; i < parameters.size(); i++) {
-            spelled.append(i > 0 ? ", " : "").append(parameters.get(i).getName().toUpperCase())
+            spelled.append(i > 0 ? ", " : "").append(parameters.get(i).getName().toUpperCase(Locale.ROOT))
                 .append(' ').append(parameters.get(i).getDataType().getName());
         }
         return spelled.append(')').toString();

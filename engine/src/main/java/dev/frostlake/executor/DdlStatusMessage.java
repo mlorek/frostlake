@@ -57,6 +57,7 @@ public final class DdlStatusMessage {
     /** Words that may sit between CREATE/DROP and the object's kind, and are never part of it. */
     /** The kind phrase of a row access policy, whose created sentence is its own. */
     private static final String ROW_ACCESS_POLICY = "Row access policy";
+    private static final String PROJECTION_POLICY = "Projection policy";
 
     private static final Set<String> MODIFIERS = new HashSet<>();
 
@@ -170,8 +171,8 @@ public final class DdlStatusMessage {
             return name + " successfully dropped.";
         }
         final String kind = kindPhrase(statement);
-        if (ROW_ACCESS_POLICY.equals(kind)) {
-            // A row access policy alone quotes its name and "is" created (live-verified).
+        if (ROW_ACCESS_POLICY.equals(kind) || PROJECTION_POLICY.equals(kind)) {
+            // A row access policy and a projection policy quote their names and "are" created (live-verified).
             return kind + " '" + name + "' is successfully created.";
         }
         return kind == null ? EXECUTED : kind + " " + name + " successfully created.";

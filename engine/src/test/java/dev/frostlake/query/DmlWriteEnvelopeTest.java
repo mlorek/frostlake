@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -154,7 +156,7 @@ public class DmlWriteEnvelopeTest extends BaseDatabaseTest {
             outcome("INSERT INTO test_schema.two VALUES (1000)"));
         // An account-qualified four-part name resolves, and is echoed with all four parts.
         assertEquals(envelope(account() + ".TEST_DB.TEST_SCHEMA.TWO", "S", OUT_OF_RANGE_SB1),
-            outcome("INSERT INTO " + account().toLowerCase() + ".test_db.test_schema.two VALUES (1000)"));
+            outcome("INSERT INTO " + account().toLowerCase(Locale.ROOT) + ".test_db.test_schema.two VALUES (1000)"));
     }
 
     /** ★ A plain UPDATE envelopes a SET value it cannot compute and a value it cannot write. */
@@ -233,6 +235,6 @@ public class DmlWriteEnvelopeTest extends BaseDatabaseTest {
             outcome("CREATE OR REPLACE TABLE test_db.test_schema.vout" + body));
         // Already at the account: an account-qualified name is named as written, the locator once.
         assertEquals(envelope(account() + ".TEST_DB.TEST_SCHEMA.VOUT", "D", BAD_CAST),
-            outcome("CREATE OR REPLACE TABLE " + account().toLowerCase() + ".test_db.test_schema.vout" + body));
+            outcome("CREATE OR REPLACE TABLE " + account().toLowerCase(Locale.ROOT) + ".test_db.test_schema.vout" + body));
     }
 }

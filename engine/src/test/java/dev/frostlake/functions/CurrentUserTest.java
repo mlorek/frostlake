@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -40,7 +42,7 @@ public class CurrentUserTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(CurrentUserTest.class);
     // The default connected user is sourced from the OS login (upper-cased, as the engine stores users).
-    private static final String OS_USER = System.getProperty("user.name", "ADMIN").toUpperCase();
+    private static final String OS_USER = System.getProperty("user.name", "ADMIN").toUpperCase(Locale.ROOT);
 
     private String currentUser() {
         final ResultSet rs = engine.executeQuery("SELECT CURRENT_USER()");

@@ -26,6 +26,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -72,7 +73,7 @@ public class GroupedStarProjectionTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery(
             "SELECT *, COUNT(1) AS n FROM gstar_orders GROUP BY city, qty ORDER BY city, qty");
         assertEquals(3, rs.getColumns().size());
-        assertEquals("N", rs.getColumns().get(2).getName().toUpperCase());
+        assertEquals("N", rs.getColumns().get(2).getName().toUpperCase(Locale.ROOT));
         assertEquals(List.of("Berlin", "1", "1", "Berlin", "2", "1", "Oslo", "5", "1"), allCells(rs));
     }
 

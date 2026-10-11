@@ -28,6 +28,7 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -87,7 +88,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         int count = 0;
         while (rs.next()) {
             final String tableName = rs.getString("TABLE_NAME");
-            assertTrue(tableName.toUpperCase().startsWith("META_TEST"));
+            assertTrue(tableName.toUpperCase(Locale.ROOT).startsWith("META_TEST"));
             count++;
         }
         assertTrue(count >= 2);
@@ -106,7 +107,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         int count = 0;
         while (rs.next()) {
             final String tableName = rs.getString("TABLE_NAME");
-            assertTrue(tableName.toUpperCase().startsWith("PATTERN_TEST"));
+            assertTrue(tableName.toUpperCase(Locale.ROOT).startsWith("PATTERN_TEST"));
             count++;
         }
         assertEquals(2, count);
@@ -124,8 +125,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         while (rs.next()) {
             final String tableName = rs.getString("TABLE_NAME");
             final String columnName = rs.getString("COLUMN_NAME");
-            assertEquals("COL_TEST", tableName.toUpperCase());
-            final String upperColName = columnName.toUpperCase();
+            assertEquals("COL_TEST", tableName.toUpperCase(Locale.ROOT));
+            final String upperColName = columnName.toUpperCase(Locale.ROOT);
             assertTrue(upperColName.equals("ID") || upperColName.equals("NAME") || upperColName.equals("VALUE"));
             count++;
         }
@@ -143,7 +144,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         int count = 0;
         while (rs.next()) {
             final String columnName = rs.getString("COLUMN_NAME");
-            assertTrue(columnName.toUpperCase().startsWith("N"));
+            assertTrue(columnName.toUpperCase(Locale.ROOT).startsWith("N"));
             count++;
         }
         assertEquals(1, count);  // Only "NAME"
@@ -413,8 +414,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         try (ResultSet rs = metaData.getSchemas("TEST_DB", null)) {
             final ResultSetMetaData md = rs.getMetaData();
             assertEquals(2, md.getColumnCount());
-            assertEquals("TABLE_SCHEM", md.getColumnLabel(1).toUpperCase());
-            assertEquals("TABLE_CATALOG", md.getColumnLabel(2).toUpperCase());
+            assertEquals("TABLE_SCHEM", md.getColumnLabel(1).toUpperCase(Locale.ROOT));
+            assertEquals("TABLE_CATALOG", md.getColumnLabel(2).toUpperCase(Locale.ROOT));
         }
     }
 
@@ -559,7 +560,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         final Map<String, String> found = new TreeMap<>();
         try (ResultSet rs = metaData.getTables("TEST_DB", "PUBLIC", "FL162%", types)) {
             while (rs.next()) {
-                found.put(rs.getString("TABLE_NAME").toUpperCase(), rs.getString("TABLE_TYPE"));
+                found.put(rs.getString("TABLE_NAME").toUpperCase(Locale.ROOT), rs.getString("TABLE_TYPE"));
             }
         }
         return found;
@@ -666,8 +667,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL162_TYPES", "%")) {
             while (rs.next()) {
-                codes.put(rs.getString("COLUMN_NAME").toUpperCase(), rs.getInt("DATA_TYPE"));
-                names.put(rs.getString("COLUMN_NAME").toUpperCase(), rs.getString("TYPE_NAME"));
+                codes.put(rs.getString("COLUMN_NAME").toUpperCase(Locale.ROOT), rs.getInt("DATA_TYPE"));
+                names.put(rs.getString("COLUMN_NAME").toUpperCase(Locale.ROOT), rs.getString("TYPE_NAME"));
             }
         }
         // A NUMBER splits on its scale: scale 0 is a BIGINT whatever the precision, anything else
@@ -700,7 +701,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL162_SIZES", "%")) {
             while (rs.next()) {
-                final String column = rs.getString("COLUMN_NAME").toUpperCase();
+                final String column = rs.getString("COLUMN_NAME").toUpperCase(Locale.ROOT);
                 if ("C_NUMBER".equals(column)) {
                     assertEquals(10, rs.getInt("COLUMN_SIZE"), "precision is the size of a numeric");
                     assertEquals(2, rs.getInt("DECIMAL_DIGITS"));
@@ -731,7 +732,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         final Map<String, String> found = new LinkedHashMap<>();
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", table, "%")) {
             while (rs.next()) {
-                found.put(rs.getString("COLUMN_NAME").toUpperCase(), rs.getString("TYPE_NAME"));
+                found.put(rs.getString("COLUMN_NAME").toUpperCase(Locale.ROOT), rs.getString("TYPE_NAME"));
             }
         }
         return found;
@@ -763,7 +764,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         // Size, scale, position and the java.sql.Types code are the table's, not placeholders.
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL164_STAR", "%")) {
             while (rs.next()) {
-                final String column = rs.getString("COLUMN_NAME").toUpperCase();
+                final String column = rs.getString("COLUMN_NAME").toUpperCase(Locale.ROOT);
                 if ("LABEL".equals(column)) {
                     assertEquals(2, rs.getInt("ORDINAL_POSITION"));
                     assertEquals(30, rs.getInt("COLUMN_SIZE"));
@@ -991,7 +992,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         final ResultSetMetaData md = rs.getMetaData();
         final List<String> labels = new ArrayList<>();
         for (int i = 1; i <= md.getColumnCount(); i++) {
-            labels.add(md.getColumnLabel(i).toUpperCase());
+            labels.add(md.getColumnLabel(i).toUpperCase(Locale.ROOT));
         }
         return labels;
     }

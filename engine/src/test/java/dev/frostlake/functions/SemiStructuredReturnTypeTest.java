@@ -22,6 +22,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -256,7 +258,7 @@ public class SemiStructuredReturnTypeTest extends BaseDatabaseTest {
         final ResultSet described = engine.executeQuery("DESCRIBE TABLE " + tableName);
         assertEquals(1, described.getRows().size(), "one column expected in " + tableName);
         return String.valueOf(described.getRows().get(0).getValue(columnIndex(described, "type")))
-            .toUpperCase();
+            .toUpperCase(Locale.ROOT);
     }
 
     private int columnIndex(final ResultSet rs, final String name) {

@@ -28,6 +28,7 @@ import dev.frostlake.types.DataType;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -129,7 +130,7 @@ final class PolicyBodyCheck {
         if (parameters != null) {
             for (final Parameter parameter : parameters) {
                 if (parameter.getName() != null) {
-                    names.add(parameter.getName().toUpperCase());
+                    names.add(parameter.getName().toUpperCase(Locale.ROOT));
                 }
             }
         }

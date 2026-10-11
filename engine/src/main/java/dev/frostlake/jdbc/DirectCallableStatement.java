@@ -39,6 +39,7 @@ import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.Calendar;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -93,7 +94,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
 
     @Override
     public void registerOutParameter(final String parameterName, final int sqlType) throws SQLException {
-        final Integer index = namedParameters.get(parameterName.toUpperCase());
+        final Integer index = namedParameters.get(parameterName.toUpperCase(Locale.ROOT));
         if (index == null) {
             throw new SQLException("Parameter not found: " + parameterName);
         }
@@ -831,7 +832,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     // Helper method
 
     private Integer getParameterIndex(final String parameterName) throws SQLException {
-        final Integer index = namedParameters.get(parameterName.toUpperCase());
+        final Integer index = namedParameters.get(parameterName.toUpperCase(Locale.ROOT));
         if (index == null) {
             throw new SQLException("Parameter not found: " + parameterName);
         }

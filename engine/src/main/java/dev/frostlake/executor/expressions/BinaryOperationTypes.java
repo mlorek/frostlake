@@ -432,7 +432,23 @@ public final class BinaryOperationTypes {
                 || left instanceof NumericType && right instanceof VariantType) {
             return new StringType("VARCHAR", MAX_LENGTH);
         }
+        // Two operands that are no text are each converted to one: n || n over NUMBER columns and
+        // n52 || n are VARCHAR(134217728) (live-verified).
+        if (left instanceof NumericType && right instanceof NumericType) {
+            return new StringType("VARCHAR", MAX_LENGTH);
+        }
         return null;
+    }
+
+    /**
+     * Whether an operand of {@code ||} beside a bare NULL makes the pair a text: a text itself, or a family the
+     * operator converts to one.
+     *
+     * @param type the operand's static type, or null when it has none
+     * @return true for a text and for the families that convert
+     */
+    static boolean concatenatesAsText(final DataType type) {
+        return type instanceof StringType || convertsToFullWidthText(type);
     }
 
     /** The families measured to give a full-width VARCHAR when concatenated with a string. */

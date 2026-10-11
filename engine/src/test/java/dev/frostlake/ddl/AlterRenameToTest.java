@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -113,7 +115,7 @@ public class AlterRenameToTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE test_schema.mm RENAME TO no_such_schema.x");
             }
         });
-        assertTrue(ex.getMessage().toLowerCase().contains("schema"),
+        assertTrue(ex.getMessage().toLowerCase(Locale.ROOT).contains("schema"),
             "expected a missing-schema error: " + ex.getMessage());
     }
 
@@ -129,7 +131,7 @@ public class AlterRenameToTest extends BaseDatabaseTest {
                 engine.execute("ALTER TABLE test_schema.dup RENAME TO s2.dup");
             }
         });
-        assertTrue(ex.getMessage().toLowerCase().contains("already exists"),
+        assertTrue(ex.getMessage().toLowerCase(Locale.ROOT).contains("already exists"),
             "expected a name-collision error: " + ex.getMessage());
     }
 }

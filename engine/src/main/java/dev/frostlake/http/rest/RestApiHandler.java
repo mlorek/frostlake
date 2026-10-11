@@ -20,7 +20,9 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import dev.frostlake.ConcurrentDatabaseEngine;
+import dev.frostlake.executor.SessionRole;
 import dev.frostlake.http.SessionContext;
+import dev.frostlake.security.SecurityManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -145,11 +147,18 @@ public final class RestApiHandler implements HttpHandler {
         return context.results().submit(new Callable<RestResponse>() {
             @Override
             public RestResponse call() {
+                // A sentence a resource builds for a missing object ends as a statement's does, with the
+                // privilege the session's role would need: the role is pinned for the call as it is for a
+                // statement.
+                final SecurityManager security = engine.getEngine().getSecurityManager();
+                final SessionRole displaced = SessionRole.pin(security == null ? null : security.getSessionContext(),
+                    engine.getEngine().getCatalog().getAccountLocator());
                 try {
                     return route.resource().handle(call);
                 } catch (final RestException refusal) {
-                    return RestResponse.error(refusal);
+                    return RestResponse.error(MissingParent.refine(call, engine.getEngine().getCatalog(), refusal));
                 } finally {
+                    SessionRole.restore(displaced);
                     if (owned) {
                         engine.removeSession(session.getSessionId());
                     }

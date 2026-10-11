@@ -35,6 +35,7 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 
@@ -101,11 +102,11 @@ public class DatabaseDriver implements Driver {
             // Fall back to ?database=... query parameter or Properties if not in path
             if (database == null) {
                 final String dbParam = parseParameter(url, "database");
-                if (dbParam != null && !dbParam.isEmpty()) database = dbParam.toUpperCase();
+                if (dbParam != null && !dbParam.isEmpty()) database = dbParam.toUpperCase(Locale.ROOT);
             }
             if (database == null && info != null) {
                 final String dbProp = info.getProperty("database");
-                if (dbProp != null && !dbProp.isEmpty()) database = dbProp.toUpperCase();
+                if (dbProp != null && !dbProp.isEmpty()) database = dbProp.toUpperCase(Locale.ROOT);
             }
             final String schema = info != null ? info.getProperty("schema", parseParameter(url, "schema"))
                                          : parseParameter(url, "schema");
@@ -442,7 +443,7 @@ public class DatabaseDriver implements Driver {
         }
 
         // Database names are case-insensitive and stored in uppercase
-        return database != null && !database.isEmpty() ? database.toUpperCase() : null;
+        return database != null && !database.isEmpty() ? database.toUpperCase(Locale.ROOT) : null;
     }
 
     /**
@@ -462,8 +463,8 @@ public class DatabaseDriver implements Driver {
             final String[] keyValue = param.split("=", 2);
             if (keyValue.length == 2 && ("CLIENT_SESSION_KEEP_ALIVE".equalsIgnoreCase(keyValue[0])
                     || "CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY".equalsIgnoreCase(keyValue[0]))
-                    && merged.getProperty(keyValue[0].toUpperCase()) == null) {
-                merged.setProperty(keyValue[0].toUpperCase(), URLDecoder.decode(keyValue[1], StandardCharsets.UTF_8));
+                    && merged.getProperty(keyValue[0].toUpperCase(Locale.ROOT)) == null) {
+                merged.setProperty(keyValue[0].toUpperCase(Locale.ROOT), URLDecoder.decode(keyValue[1], StandardCharsets.UTF_8));
             }
         }
         return merged;

@@ -23,6 +23,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -57,7 +59,7 @@ public class ScriptingSubqueryNamePlaceTest extends BaseDatabaseTest {
                     cell[1] + " should be refused with [" + cell[2] + "] but read: " + refused.getMessage());
             } else {
                 final Row row = engine.executeQuery(cell[1]).getRows().get(0);
-                assertEquals(cell[2], String.valueOf(row.getValue(0)).toLowerCase(), cell[1]);
+                assertEquals(cell[2], String.valueOf(row.getValue(0)).toLowerCase(Locale.ROOT), cell[1]);
             }
         }
     }

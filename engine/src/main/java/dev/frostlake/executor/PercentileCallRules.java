@@ -26,6 +26,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -103,7 +104,7 @@ final class PercentileCallRules {
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call =
                 (FrostlakeParser.FunctionCallExprContext) node;
-            final String name = SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase();
+            final String name = SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase(Locale.ROOT);
             if (CONTINUOUS.equals(name) || DISCRETE.equals(name)) {
                 validateCall(call, name, table, aliasToTable, allTables);
             } else if (MEDIAN.equals(name)) {

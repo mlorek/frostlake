@@ -24,6 +24,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -36,6 +37,11 @@ import java.util.Set;
  *
  * <p>The targets are judged after the block's other names, so a statement that also reads an undeclared bind, or
  * names a target twice, answers with that fault.
+ *
+ * <p>A statement whose targets all stand is then held to one target for each value its select list writes: {@code
+ * SELECT id INTO :r, :s} is " Number of SELECT values (1) does not match the number of INTO variables (2)." where
+ * the statement begins, before the block runs and whatever handler it has (live-verified). A CALL … INTO hands
+ * back one value and is held to one target the same way.
  */
 final class IntoTargetDeclarations {
 
@@ -58,16 +64,47 @@ final class IntoTargetDeclarations {
             for (final FrostlakeParser.IntoTargetContext target : into.intoTargetList().intoTarget()) {
                 requireVariable(into, target, seeded);
             }
+            requireOneTargetPerValue(into);
             return;
         }
         if (block instanceof FrostlakeParser.CallIntoStatementContext) {
             // A CALL ... INTO assigns to its target as SELECT ... INTO does, so its target is judged the same way.
             final FrostlakeParser.CallIntoStatementContext into = (FrostlakeParser.CallIntoStatementContext) block;
-            requireVariable(into, into.intoTarget(), seeded);
+            final List<FrostlakeParser.IntoTargetContext> targets = into.intoTargetList().intoTarget();
+            for (final FrostlakeParser.IntoTargetContext target : targets) {
+                requireVariable(into, target, seeded);
+            }
+            if (targets.size() != 1) {
+                // A CALL hands back one value: CALL p() INTO :r, :q is refused where the statement begins.
+                final Token at = into.getStart();
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    " Number of SELECT values (1) does not match the number of INTO variables (" + targets.size()
+                        + ")."));
+            }
             return;
         }
         for (int i = 0; i < block.getChildCount(); i++) {
             requireDeclared(block.getChild(i), seeded);
+        }
+    }
+
+    /**
+     * Refuse a SELECT … INTO whose select list writes another number of values than it has targets, where the
+     * statement begins. A star's columns are counted when the statement runs.
+     */
+    private static void requireOneTargetPerValue(final FrostlakeParser.SelectIntoStatementContext into) {
+        for (final FrostlakeParser.SelectItemContext item : into.selectList().selectItem()) {
+            if (item instanceof FrostlakeParser.StarItemContext || item instanceof FrostlakeParser.QualifiedStarItemContext) {
+                return;
+            }
+        }
+        final int values = into.selectList().selectItem().size();
+        final int targets = into.intoTargetList().intoTarget().size();
+        if (values != targets) {
+            final Token at = into.getStart();
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                " Number of SELECT values (" + values + ") does not match the number of INTO variables (" + targets
+                    + ")."));
         }
     }
 

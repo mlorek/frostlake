@@ -43,8 +43,9 @@ public final class UntypedNullFold {
 
     private static final Set<String> FOLDING = new HashSet<>(Arrays.asList(
         "DATEADD", "TIMEADD", "TIMESTAMPADD", "DATEDIFF", "TIMEDIFF", "TIMESTAMPDIFF", "DATE_TRUNC", "ADD_MONTHS",
-        "YEAR", "MONTH", "DAY", "DAYOFMONTH", "HOUR", "MINUTE", "SECOND", "WEEK", "WEEKOFYEAR", "QUARTER",
-        "DAYOFWEEK", "DAYOFYEAR", "YEAROFWEEK", "EXTRACT", "DATE_PART", "LAST_DAY"));
+        "YEAR", "MONTH", "DAY", "DAYOFMONTH", "HOUR", "MINUTE", "SECOND", "WEEK", "WEEKOFYEAR", "WEEKISO", "QUARTER",
+        "DAYOFWEEK", "DAYOFWEEKISO", "DAYOFYEAR", "YEAROFWEEK", "YEAROFWEEKISO", "EXTRACT", "DATE_PART", "LAST_DAY",
+        "TIME_SLICE"));
 
     /** The conditionals that answer one of their value branches, and fold when every one is an untyped NULL. */
     private static final Set<String> PICKING = new HashSet<>(Arrays.asList(
@@ -97,6 +98,70 @@ public final class UntypedNullFold {
         }
         for (int i = 0; i < call.getArguments().size(); i++) {
             final Expression argument = call.getArguments().get(i);
+            if (argument instanceof LiteralExpression && ((LiteralExpression) argument).getType() == LiteralType.NULL) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The words a text type is written with, as a cast names its target. */
+    private static final Set<String> TEXT_TYPE_WORDS = new HashSet<>(Arrays.asList(
+        "VARCHAR", "CHAR", "CHARACTER", "STRING", "TEXT", "NCHAR", "NVARCHAR", "NVARCHAR2"));
+
+    /**
+     * Whether an expression is the word NULL cast to a text type, {@code NULL::VARCHAR(10)} or
+     * {@code CAST(NULL AS STRING)}. Standing alone it is the text type it names; meeting an exact number it is
+     * read as the bare word, and the number decides the type: {@code NULL::VARCHAR(10) + 1} is typed as
+     * {@code NULL + 1}, {@code COALESCE(NULL::VARCHAR(10), 5)} is NUMBER(1,0), and {@code SELECT NULL::VARCHAR(10)
+     * UNION ALL SELECT 5} a NUMBER(1,0) column — where a text value there reads as NUMBER(18,5). Beside a text, a
+     * FLOAT, a BOOLEAN or another NULL it keeps its own rule (live-verified).
+     *
+     * @param expr the expression
+     * @return whether it is a NULL of a text type
+     */
+    public static boolean isNullTextConstant(final Expression expr) {
+        if (!(expr instanceof CastExpression)) {
+            return false;
+        }
+        final CastExpression cast = (CastExpression) expr;
+        final Expression converted = cast.getExpression();
+        if (!(converted instanceof LiteralExpression) || ((LiteralExpression) converted).getType() != LiteralType.NULL
+                || cast.getTargetType() == null) {
+            return false;
+        }
+        final String target = cast.getTargetType().trim().toUpperCase(Locale.ROOT);
+        int end = 0;
+        while (end < target.length() && Character.isLetterOrDigit(target.charAt(end))) {
+            end++;
+        }
+        return TEXT_TYPE_WORDS.contains(target.substring(0, end));
+    }
+
+    /**
+     * @param call a call
+     * @return whether it is one of the date calls an untyped NULL argument folds
+     */
+    public static boolean isDateCall(final FunctionCallExpression call) {
+        return call.getFunctionName() != null && call.getNameExpression() == null
+            && FOLDING.contains(call.getFunctionName().toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Whether a call is one of the date calls with the bare word NULL among its arguments. Such a call is folded
+     * before anything else of it is judged: its unit and its other operands are never read, so
+     * {@code TIME_SLICE(CURRENT_TIMESTAMP, NULL, 'HOUR')}, {@code DATE_TRUNC('nosuch', NULL)} and
+     * {@code EXTRACT(nosuch FROM NULL)} answer NULL where the same call over a typed NULL is refused
+     * (live-verified). Only its argument count is held to the function's.
+     *
+     * @param call the call
+     * @return whether it folds over a NULL argument
+     */
+    public static boolean foldsOverNullArgument(final FunctionCallExpression call) {
+        if (!isDateCall(call)) {
+            return false;
+        }
+        for (final Expression argument : call.getArguments()) {
             if (argument instanceof LiteralExpression && ((LiteralExpression) argument).getType() == LiteralType.NULL) {
                 return true;
             }

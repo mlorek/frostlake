@@ -185,6 +185,17 @@ public class EngineConfigTest {
     }
 
     @Test
+    public void theWalFollowsThePersistenceDirectoryUnlessAFileIsNamed() {
+        final EngineConfig config = new EngineConfig();
+        config.setProperty(EngineConfig.PROP_PERSISTENCE_DIRECTORY, "/scratch/run/data");
+        assertEquals("/scratch/run/data/wal.log", config.getWalFile());
+        config.setProperty(EngineConfig.PROP_DURABILITY_WAL_FILE, "/logs/engine.wal");
+        assertEquals("/logs/engine.wal", config.getWalFile());
+        config.setProperty(EngineConfig.PROP_DURABILITY_WAL_FILE, "  ");
+        assertEquals("/scratch/run/data/wal.log", config.getWalFile());
+    }
+
+    @Test
     public void propertyNameConstantsMatchWireKeys() {
         assertEquals("http.port", EngineConfig.PROP_HTTP_PORT);
         assertEquals("http.host", EngineConfig.PROP_HTTP_HOST);

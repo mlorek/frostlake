@@ -22,6 +22,11 @@ import dev.frostlake.types.StringType;
 
 import java.util.List;
 
+/**
+ * CURRENT_ROLE() — the session's primary role, and inside a stored procedure running with owner's rights the role
+ * that owns the procedure, whoever called it; a caller's-rights procedure keeps the role it was called under
+ * (live-verified).
+ */
 public class CurrentRole extends BuiltInFunction {
     private final SessionContext sessionContext;
 
@@ -32,7 +37,7 @@ public class CurrentRole extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        return sessionContext.getCurrentRole();
+        return sessionContext.getCreatingRole();
     }
 
     @Override

@@ -54,6 +54,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * A {@link DatabaseEngine} whose SQL surface ({@code execute} / {@code executeQuery} /
@@ -211,7 +212,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
     private String leadingKeyword(final String sql) {
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
         final Token first = nextDefaultToken(lexer);
-        return first.getType() == Token.EOF ? "" : first.getText().toUpperCase();
+        return first.getType() == Token.EOF ? "" : first.getText().toUpperCase(Locale.ROOT);
     }
 
     private String queryIdOf(final Statement statement) {
@@ -343,7 +344,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         if (first.getType() == Token.EOF) {
             return;
         }
-        final String keyword = first.getText().toUpperCase();
+        final String keyword = first.getText().toUpperCase(Locale.ROOT);
         // SET and UNSET name a session VARIABLE, which outlives the test that set it just as a role or
         // a parameter does — and nothing in the parameter baseline reaches one.
         if (keyword.equals("SET") || keyword.equals("UNSET")) {
@@ -357,7 +358,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             while (second.getType() != Token.EOF && second.getChannel() != Token.DEFAULT_CHANNEL) {
                 second = lexer.nextToken();
             }
-            final String detail = second.getType() == Token.EOF ? "" : second.getText().toUpperCase();
+            final String detail = second.getType() == Token.EOF ? "" : second.getText().toUpperCase(Locale.ROOT);
             final boolean mutating;
             switch (keyword) {
                 case "BEGIN":
@@ -404,7 +405,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
     private void markIfAccountObjectStatement(final String sql) {
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
         final Token verb = nextDefaultToken(lexer);
-        if (verb.getType() == Token.EOF || !isObjectStatementVerb(verb.getText().toUpperCase())) {
+        if (verb.getType() == Token.EOF || !isObjectStatementVerb(verb.getText().toUpperCase(Locale.ROOT))) {
             return;
         }
         for (int i = 0; i < 6; i++) {
@@ -412,7 +413,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             if (token.getType() == Token.EOF) {
                 return;
             }
-            final String text = token.getText().toUpperCase();
+            final String text = token.getText().toUpperCase(Locale.ROOT);
             // NETWORK opens the one account-level kind two words name; a network rule's statement is
             // marked with it, which costs a listing and misses nothing.
             if (isAccountObjectKind(text) || "NETWORK".equals(text)) {
@@ -482,7 +483,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         final boolean[] interval = new boolean[columnCount];
         for (int i = 1; i <= columnCount; i++) {
             columns.add(new ResultSetColumn(metaData.getColumnLabel(i), declaredType(metaData, i)));
-            final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase();
+            final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase(Locale.ROOT);
             semiStructured[i - 1] = typeName.equals("VARIANT") || typeName.equals("OBJECT")
                 || typeName.equals("ARRAY");
             interval[i - 1] = typeName.startsWith("INTERVAL");
@@ -613,7 +614,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
      * account at all.
      */
     private DataType declaredType(final ResultSetMetaData metaData, final int index) throws SQLException {
-        final String typeName = String.valueOf(metaData.getColumnTypeName(index)).toUpperCase();
+        final String typeName = String.valueOf(metaData.getColumnTypeName(index)).toUpperCase(Locale.ROOT);
         final int precision = metaData.getPrecision(index);
         final int scale = metaData.getScale(index);
         switch (typeName) {

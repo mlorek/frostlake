@@ -77,7 +77,7 @@ public class SecurityManager {
 
         // The object's owner role has full control over the object (ownership confers all privileges).
         final String ownerRole = catalog.getObjectOwnerRole(objectType, objectName);
-        if (ownerRole != null && effectiveRoles.contains(ownerRole.toUpperCase())) {
+        if (ownerRole != null && effectiveRoles.contains(ownerRole.toUpperCase(Locale.ROOT))) {
             return;
         }
 
@@ -192,7 +192,35 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
-        final Set<String> roles = askedRoles();
+        return holdAny(askedRoles(), objectType, objectName, owner);
+    }
+
+    /**
+     * Whether the rights a statement runs with reach an object, which is what lists it in INFORMATION_SCHEMA:
+     * they own it, or hold whatever privilege on it. Inside a stored procedure that runs with owner's rights
+     * these are the owner's rights alone - what the caller holds lists nothing there (live-verified). An object
+     * with no recorded owner is reached, as is everything while security checks are off.
+     *
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name in full
+     * @param owner      the role that owns the object, or null when none is recorded
+     * @return whether the object is one the rights reach
+     */
+    public boolean reaches(final String objectType, final String objectName, final String owner) {
+        if (!sessionContext.isSecurityEnabled() || owner == null) {
+            return true;
+        }
+        final String executableOwner = sessionContext.getExecutableOwner();
+        if (executableOwner == null) {
+            return holdAny(askedRoles(), objectType, objectName, owner);
+        }
+        final Set<String> roles = rolesUnder(executableOwner.toUpperCase(Locale.ROOT));
+        roles.add("PUBLIC");
+        return holdAny(roles, objectType, objectName, owner);
+    }
+
+    private boolean holdAny(final Set<String> roles, final String objectType, final String objectName,
+                            final String owner) {
         if (roles.contains(owner.toUpperCase(Locale.ROOT))) {
             return true;
         }

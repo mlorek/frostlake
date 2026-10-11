@@ -23,6 +23,8 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -43,7 +45,7 @@ public class TransientTableTest extends BaseDatabaseTest {
         final String scope = table.contains(".")
             ? " IN SCHEMA " + table.substring(0, table.lastIndexOf('.')) : "";
         final ResultSet rs = engine.executeQuery("SHOW TABLES LIKE '" + bareName + "'" + scope);
-        return cell(rs, soleRowWhere(rs, "name", bareName.toUpperCase()), column);
+        return cell(rs, soleRowWhere(rs, "name", bareName.toUpperCase(Locale.ROOT)), column);
     }
 
     private String kind(final String table) {

@@ -42,6 +42,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -273,7 +274,7 @@ final class OrderByExecutor {
         for (final FrostlakeParser.SelectItemContext item : selectItems) {
             final String produced = producedColumnName(item);
             if (produced != null) {
-                outputNames.add(produced.toUpperCase());
+                outputNames.add(produced.toUpperCase(Locale.ROOT));
             }
         }
         // A refusal's echo prints a bare name as the OUTPUT column when it names one: an alias, an
@@ -281,21 +282,21 @@ final class OrderByExecutor {
         // SELECT i, SELECT eo.i or SELECT *, and ABS(EO.I, 1) beside SELECT i AS a (live-verified).
         final Set<String> echoedBare = new HashSet<>();
         for (final String alias : executor.selectItemAliasNames(firstClause)) {
-            echoedBare.add(alias.toUpperCase());
+            echoedBare.add(alias.toUpperCase(Locale.ROOT));
         }
         for (final FrostlakeParser.SelectItemContext item : selectItems) {
             final String produced = producedColumnName(item);
             if (produced != null && SelectItemAccessors.getItemAlias(item) == null) {
-                echoedBare.add(produced.toUpperCase());
+                echoedBare.add(produced.toUpperCase(Locale.ROOT));
             }
             if (SelectItemAccessors.isStarItem(item) || SelectItemAccessors.isQualifiedStarItem(item)) {
                 for (final StarColumn column : executor.starItemColumns(item, table, aliasToTable)) {
-                    echoedBare.add(column.getOutputName().toUpperCase());
+                    echoedBare.add(column.getOutputName().toUpperCase(Locale.ROOT));
                     if (column.isReplaced()) {
                         // A REPLACE'd column keeps the source column's name while carrying an
                         // expression of its own, so the name is an OUTPUT name here — even where the
                         // source column it shadows is ambiguous across the join.
-                        outputNames.add(column.getOutputName().toUpperCase());
+                        outputNames.add(column.getOutputName().toUpperCase(Locale.ROOT));
                     }
                 }
             }
@@ -311,7 +312,7 @@ final class OrderByExecutor {
             if (matchOrderItem(item.expression().getText(), selectItems, false) >= 0) {
                 continue;
             }
-            if (outputNames.contains(asWritten.toUpperCase())) {
+            if (outputNames.contains(asWritten.toUpperCase(Locale.ROOT))) {
                 continue;
             }
             if (namesOnly) {
@@ -653,7 +654,7 @@ final class OrderByExecutor {
                 final List<String> names = new ArrayList<String>();
                 try {
                     for (final StarColumn sc : executor.starItemColumns(si, table, aliasToTable)) {
-                        names.add(sc.getOutputName().toUpperCase());
+                        names.add(sc.getOutputName().toUpperCase(Locale.ROOT));
                     }
                 } catch (final RuntimeException unresolvable) {
                     // an unresolvable star leaves its columns unmatchable; the resolver may still serve
@@ -751,7 +752,7 @@ final class OrderByExecutor {
         for (final FrostlakeParser.SelectItemContext item : selectItems) {
             final String produced = producedColumnName(item);
             if (produced != null) {
-                outputNames.add(produced.toUpperCase());
+                outputNames.add(produced.toUpperCase(Locale.ROOT));
             }
         }
         final Set<String> groupKeyTexts = new HashSet<>();
@@ -766,8 +767,8 @@ final class OrderByExecutor {
                 continue;
             }
             final String asWritten = ParseTreeText.getOriginalText(item.expression()).trim();
-            if (outputNames.contains(asWritten.toUpperCase())
-                    || groupKeyTexts.contains(item.expression().getText().toUpperCase())) {
+            if (outputNames.contains(asWritten.toUpperCase(Locale.ROOT))
+                    || groupKeyTexts.contains(item.expression().getText().toUpperCase(Locale.ROOT))) {
                 continue;
             }
             executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames,
@@ -942,7 +943,7 @@ final class OrderByExecutor {
             }
             final String produced = producedColumnName(item);
             if (produced != null) {
-                outputNames.add(produced.toUpperCase());
+                outputNames.add(produced.toUpperCase(Locale.ROOT));
             }
         }
         for (final FrostlakeParser.OrderItemContext item : stmtCtx.orderByClause().orderItem()) {
@@ -953,7 +954,8 @@ final class OrderByExecutor {
             // answers "invalid identifier" for ORDER BY zz rather than calling it unselected.
             executor.validateClauseScope(ParseTreeText.getOriginalText(item.expression()).trim(),
                 table, aliasToTable, allTables, outputNames, item.expression());
-            rejectUnselectedDistinctKey(item.expression(), selectItems, outputNames, table, allTables);
+            rejectUnselectedDistinctKey(item.expression(), selectItems, outputNames, table, aliasToTable,
+                allTables);
         }
     }
 
@@ -965,6 +967,7 @@ final class OrderByExecutor {
     private void rejectUnselectedDistinctKey(final ParseTree node,
                                              final List<FrostlakeParser.SelectItemContext> selectItems,
                                              final Set<String> outputNames, final Table table,
+                                             final Map<String, Table> aliasToTable,
                                              final List<Table> allTables) {
         final String text = node.getText();
         if (text.isEmpty()) {
@@ -972,7 +975,7 @@ final class OrderByExecutor {
         }
         // Ordinals are a WHOLE-key spelling only — a bare 1 nested inside a + 1 is a literal.
         if (matchOrderItem(text, selectItems, false, false) >= 0
-                || outputNames.contains(text.toUpperCase())) {
+                || outputNames.contains(text.toUpperCase(Locale.ROOT))) {
             return;
         }
         final String asWritten = originalTextOf(node);
@@ -987,21 +990,29 @@ final class OrderByExecutor {
             if (!namesAColumn(ref, table, allTables)) {
                 return;
             }
-            if (!outputNames.contains(ref.getColumnName().toUpperCase())) {
+            if (!outputNames.contains(ref.getColumnName().toUpperCase(Locale.ROOT))) {
                 throw new RuntimeException(SqlCompilationError.of(
-                    "[" + ownerQualifier(ref, table, allTables) + "." + ref.getColumnName().toUpperCase()
+                    "[" + ownerQualifier(ref, table, allTables) + "." + ref.getColumnName().toUpperCase(Locale.ROOT)
                     + "] is not a valid order by expression"));
             }
             return;
         }
         if (parsed instanceof FunctionCallExpression
                 && executor.getFunctionRegistry().getAggregateFunction(
-                    ((FunctionCallExpression) parsed).getFunctionName().toUpperCase()) != null) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "[" + asWritten.trim() + "] is not a valid order by expression"));
+                    ((FunctionCallExpression) parsed).getFunctionName().toUpperCase(Locale.ROOT)) != null) {
+            // The aggregate is echoed as the plan holds it: a column qualified by its relation, [MAX(FZ.ID + 1)],
+            // and one the select list publishes by its bare name.
+            String echoed = asWritten.trim();
+            if (node instanceof ParserRuleContext) {
+                final PlanEcho echo = new PlanEcho(table, aliasToTable, allTables, executor.getFunctionRegistry(),
+                    executor.getCatalog());
+                echo.printInOutputScope(outputNames);
+                echoed = echo.printAggregateCall((ParserRuleContext) node);
+            }
+            throw new RuntimeException(SqlCompilationError.of("[" + echoed + "] is not a valid order by expression"));
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            rejectUnselectedDistinctKey(node.getChild(i), selectItems, outputNames, table, allTables);
+            rejectUnselectedDistinctKey(node.getChild(i), selectItems, outputNames, table, aliasToTable, allTables);
         }
     }
 
@@ -1047,12 +1058,12 @@ final class OrderByExecutor {
             }
         }
         for (final FrostlakeParser.ExpressionContext key : keys) {
-            keyTexts.add(key.getText().toUpperCase());
+            keyTexts.add(key.getText().toUpperCase(Locale.ROOT));
             groupedColumns.add(ParseTreeText.getOriginalText(key));
             try {
                 final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(key));
                 if (parsed instanceof ColumnReferenceExpression) {
-                    keyNames.add(((ColumnReferenceExpression) parsed).getColumnName().toUpperCase());
+                    keyNames.add(((ColumnReferenceExpression) parsed).getColumnName().toUpperCase(Locale.ROOT));
                 }
             } catch (final RuntimeException unparseableKey) {
                 // A key the expression parser cannot form contributes its text only.
@@ -1073,7 +1084,7 @@ final class OrderByExecutor {
                                                final GroupedKeyColumns groupedColumns) {
         if (expr instanceof ColumnReferenceExpression) {
             final ColumnReferenceExpression ref = (ColumnReferenceExpression) expr;
-            final String colName = ref.getColumnName().toUpperCase();
+            final String colName = ref.getColumnName().toUpperCase(Locale.ROOT);
             // A qualified reference is held to its own relation's key: ORDER BY b.x beside GROUP BY a.x is refused.
             final boolean grouped = ref.getTableName() == null ? groupKeyNames.contains(colName)
                 : groupKeyNames.contains(colName) && groupedColumns.grouped(ref.getTableName(), colName);
@@ -1086,7 +1097,7 @@ final class OrderByExecutor {
         }
         if (expr instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) expr;
-            if (executor.getFunctionRegistry().getAggregateFunction(call.getFunctionName().toUpperCase()) != null) {
+            if (executor.getFunctionRegistry().getAggregateFunction(call.getFunctionName().toUpperCase(Locale.ROOT)) != null) {
                 return;
             }
             for (final Expression arg : call.getArguments()) {
@@ -1140,18 +1151,18 @@ final class OrderByExecutor {
     private String ownerQualifier(final ColumnReferenceExpression ref, final Table table,
                                   final List<Table> allTables) {
         if (ref.isQualified()) {
-            return ref.getTableName().toUpperCase();
+            return ref.getTableName().toUpperCase(Locale.ROOT);
         }
         if (allTables != null) {
             for (final Table candidate : allTables) {
                 for (final TableColumn column : candidate.getColumns()) {
                     if (column.getName().equalsIgnoreCase(ref.getColumnName())) {
-                        return candidate.getName().toUpperCase();
+                        return candidate.getName().toUpperCase(Locale.ROOT);
                     }
                 }
             }
         }
-        return table != null ? table.getName().toUpperCase() : "";
+        return table != null ? table.getName().toUpperCase(Locale.ROOT) : "";
     }
 
     /** The canonical name a key written as one identifier spells, or null for any other key text. */
@@ -1241,7 +1252,7 @@ final class OrderByExecutor {
             // An expression key: only the output relation is in scope — the walk turns anything
             // else (a branch qualifier, a non-output name) into live's invalid-identifier.
             executor.validateClauseScope(asWritten, outputTable,
-                Map.of(outputTable.getName().toUpperCase(), outputTable), List.of(outputTable), outputNames,
+                Map.of(outputTable.getName().toUpperCase(Locale.ROOT), outputTable), List.of(outputTable), outputNames,
                 item.expression());
             // A subquery in the key compiles where the key stands, so what it refuses is placed in the statement.
             // It reads none of the output's names: they are no relation of its.
@@ -1331,7 +1342,7 @@ final class OrderByExecutor {
             return itemStartSlot[itemMatch];
         }
         final int dot = orderExpr.lastIndexOf('.');
-        final String bare = (dot >= 0 ? orderExpr.substring(dot + 1) : orderExpr).toUpperCase();
+        final String bare = (dot >= 0 ? orderExpr.substring(dot + 1) : orderExpr).toUpperCase(Locale.ROOT);
         for (int i = 0; i < selectItems.size(); i++) {
             final List<String> names = starNamesByItem.get(i);
             if (names == null) {

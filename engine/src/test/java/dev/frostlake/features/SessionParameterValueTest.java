@@ -367,7 +367,7 @@ public class SessionParameterValueTest extends BaseDatabaseTest {
         }
         assertInvalid("TIMEZONE = Nowhere", "NOWHERE", "TIMEZONE");
         assertInvalid("TIMEZONE = Europe.Warsaw", "Europe.Warsaw", "TIMEZONE");
-        for (final String known : new String[] {"'EST'", "'MST'", "'HST'", "'ROC'", "'Etc/GMT+2'", "'GMT'",
+        for (final String known : new String[] {"'EST'", "'MST'", "'HST'", "'ROC'", "'Factory'", "'Etc/GMT+2'", "'GMT'",
             "'US/Pacific'", "'Asia/Calcutta'", "'Zulu'", "'Europe/Kyiv'", "\"America/Chicago\"", "utc", "$$UTC$$"}) {
             engine.execute("ALTER SESSION SET TIMEZONE = " + known);
         }

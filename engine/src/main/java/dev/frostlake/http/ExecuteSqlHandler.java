@@ -22,6 +22,7 @@ import dev.frostlake.ConcurrentDatabaseEngine;
 import dev.frostlake.ExecutionResult;
 import dev.frostlake.executor.DynamicStatementCount;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.ReadOnlyRequest;
 import dev.frostlake.executor.StatementCount;
 import dev.frostlake.values.VariantJsonFormat;
 
@@ -93,10 +94,24 @@ final class ExecuteSqlHandler implements HttpHandler {
                 return;
             }
 
+            // A request that must only read is judged before anything runs, and what its statements reach while
+            // they run is held to the same rule.
+            final boolean readOnly = session.isReadOnly() || Boolean.TRUE.equals(request.getReadOnly());
+            final String writeRefusal = readOnly ? ReadOnlyRequest.refusal(request.getSql()) : null;
+            if (writeRefusal != null) {
+                final SqlResponse refused = SqlResponse.error(session.getSessionId(), writeRefusal);
+                refused.setNewSession(existing == null);
+                HttpResponses.send(exchange, 200, MAPPER.writeValueAsString(refused));
+                return;
+            }
+
             final long startTime = System.currentTimeMillis();
             SqlResponse response;
             // The count the request asked for gates the text of an EXECUTE IMMEDIATE among its statements too.
             final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount(request, session));
+            if (readOnly) {
+                ReadOnlyRequest.enter();
+            }
             try {
                 final ExecutionResult result = engine.execute(request.getSql(), session, request.getAutoCommit());
                 // The rows are rendered after the statement's own scope has closed, so the session's
@@ -119,6 +134,9 @@ final class ExecuteSqlHandler implements HttpHandler {
                     statementFailure.getMessage());
                 response = SqlResponse.error(session.getSessionId(), messageOf(statementFailure));
             } finally {
+                if (readOnly) {
+                    ReadOnlyRequest.exit();
+                }
                 DynamicStatementCount.endRequest(displacedCount);
             }
             response.setNewSession(existing == null);

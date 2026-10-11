@@ -43,6 +43,7 @@ import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * A {@link DatabaseEngine} whose SQL surface ({@code execute} / {@code executeQuery} /
@@ -220,7 +221,7 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
         final boolean[] semiStructured = new boolean[columnCount];
         final boolean[] interval = new boolean[columnCount];
         for (int i = 1; i <= columnCount; i++) {
-            final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase();
+            final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase(Locale.ROOT);
             semiStructured[i - 1] = typeName.startsWith("VARIANT") || typeName.startsWith("OBJECT")
                 || typeName.startsWith("ARRAY");
             interval[i - 1] = typeName.startsWith("INTERVAL");

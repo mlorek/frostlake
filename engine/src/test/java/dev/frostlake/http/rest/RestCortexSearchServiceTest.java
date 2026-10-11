@@ -71,6 +71,19 @@ public class RestCortexSearchServiceTest extends BaseRestTest {
     }
 
     @Test
+    public void theListingParametersNarrowTheListing() throws Exception {
+        ok(post(BASE, body("page_a1")));
+        ok(post(BASE, body("page_a2")));
+        ok(post(BASE, body("page_b1")));
+        assertEquals("PAGE_A1,PAGE_A2", names(ok(get(BASE + "?startsWith=PAGE_A"))));
+        assertEquals("PAGE_A1", names(ok(get(BASE + "?startsWith=PAGE_&showLimit=1"))));
+        assertEquals("PAGE_A2,PAGE_B1", names(ok(get(BASE + "?startsWith=PAGE_&showLimit=5&fromName=PAGE_A1"))));
+        ok(delete(BASE + "/page_a1"));
+        ok(delete(BASE + "/page_a2"));
+        ok(delete(BASE + "/page_b1"));
+    }
+
+    @Test
     public void createModesAndMissingProperties() throws Exception {
         ok(post(BASE, body("svc_modes")));
         error(409, post(BASE, body("svc_modes")));

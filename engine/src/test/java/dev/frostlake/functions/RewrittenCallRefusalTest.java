@@ -23,6 +23,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -49,7 +51,7 @@ public class RewrittenCallRefusalTest extends BaseDatabaseTest {
             if (answer.length() > 0) {
                 answer.append(" | ");
             }
-            answer.append(String.valueOf(row.getValue(0)).toLowerCase());
+            answer.append(String.valueOf(row.getValue(0)).toLowerCase(Locale.ROOT));
         }
         return answer.toString();
     }

@@ -15,25 +15,35 @@
  */
 package dev.frostlake.functions.table;
 
+import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.RoutineReferenceText;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.TagAssignment;
 import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.MaterializedView;
+import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.LengthlessStringType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
@@ -82,10 +92,46 @@ public class TagReferencesFunction extends TableFunction {
      */
     private static final Set<String> DOMAINS = new HashSet<String>(Arrays.asList(
         "ACCOUNT", "ALERT", "BACKUP POLICY", "BACKUP SET", "COLUMN", "COMPUTE POOL", "CORTEX AGENT",
-        "CORTEX SEARCH SERVICE", "DATABASE", "DATABASE ROLE", "FAILOVER GROUP", "FUNCTION", "INTEGRATION",
-        "INSTANCE", "NETWORK POLICY", "PIPE", "PROCEDURE", "REPLICATION GROUP", "ROLE", "SCHEMA", "SHARE",
-        "SNAPSHOT POLICY", "SNAPSHOT SET", "SNOWFLAKE INTELLIGENCE", "STAGE", "STREAM", "TABLE", "TASK", "USER",
-        "WAREHOUSE"));
+        "CORTEX SEARCH SERVICE", "DATABASE", "DATABASE ROLE", "FAILOVER GROUP", "FUNCTION", "IMAGE REPOSITORY",
+        "INTEGRATION", "INSTANCE", "NETWORK POLICY", "PIPE", "PROCEDURE", "REPLICATION GROUP", "ROLE", "SCHEMA",
+        "SERVICE", "SHARE", "SNAPSHOT POLICY", "SNAPSHOT SET", "SNOWFLAKE INTELLIGENCE", "STAGE", "STREAM", "TABLE",
+        "TASK", "USER", "WAREHOUSE"));
+
+    /** The domains {@link #rows} reads beside {@link #DOMAINS}: the objects of a schema it finds by kind. */
+    private static final Set<String> SCHEMA_OBJECT_DOMAINS = new HashSet<String>(Arrays.asList("PASSWORD POLICY"));
+
+    /** The domains that name one kind of table-like object, refused in favour of TABLE. */
+    private static final Set<String> TABLE_LIKE_DOMAINS = new HashSet<String>(Arrays.asList("VIEW", "MATERIALIZED VIEW"));
+
+    /** The kinds of table-like object TAG_REFERENCES refuses as a domain, beside the ones SYSTEM$GET_TAG refuses. */
+    private static final Set<String> REFUSED_TABLE_KINDS = new HashSet<String>(Arrays.asList("VIEW",
+        "MATERIALIZED VIEW", "EXTERNAL TABLE"));
+
+    /** The kinds of table it takes as a domain of their own, each looked up as a table-like object is. */
+    private static final Set<String> TABLE_KINDS = new HashSet<String>(Arrays.asList("DYNAMIC TABLE", "EVENT TABLE",
+        "ICEBERG TABLE"));
+
+    /** The schema objects a miss names by the full path, however the name was written. */
+    private static final Set<String> FULL_PATH_DOMAINS = new HashSet<String>(Arrays.asList("STAGE", "PIPE",
+        "PASSWORD POLICY", "SERVICE", "IMAGE REPOSITORY"));
+
+    /** The schema objects of the container services, whose rows spell the domain with an underscore (live-verified). */
+    private static final Set<String> CONTAINER_DOMAINS = new HashSet<String>(Arrays.asList("SERVICE",
+        "IMAGE REPOSITORY"));
+
+    /** The objects of the account, named by one part. */
+    private static final Set<String> ACCOUNT_OBJECT_DOMAINS = new HashSet<String>(Arrays.asList("WAREHOUSE",
+        "COMPUTE POOL", "USER", "ROLE", "NETWORK POLICY", "INTEGRATION"));
+
+    /** The objects of a schema this function looks up by kind. */
+    private static final Set<String> LOOKED_UP_SCHEMA_OBJECTS = new HashSet<String>(Arrays.asList("ALERT", "STAGE",
+        "STREAM", "TASK", "PIPE", "PASSWORD POLICY", "SERVICE", "IMAGE REPOSITORY"));
+
+    /** How many parts a role's name may have before the name itself is refused. */
+    private static final int ROLE_QUALIFIER_LIMIT = 4;
+
+    /** How many parts a schema object's full name has: database, schema, name. */
+    private static final int SCHEMA_OBJECT_PARTS = 3;
 
     private final Catalog catalog;
 
@@ -101,7 +147,11 @@ public class TagReferencesFunction extends TableFunction {
 
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
-        throw new RuntimeException("TAG_REFERENCES requires an object name and an object domain");
+        if (namedArgs == null || namedArgs.isEmpty()) {
+            // A call without an argument misses the first one.
+            TagReferencesFunction.requireArguments("TAG_REFERENCES", new ArrayList<Object>());
+        }
+        throw new RuntimeException("TAG_REFERENCES" + " requires an object name and an object domain");
     }
 
     @Override
@@ -118,10 +168,10 @@ public class TagReferencesFunction extends TableFunction {
      * @param positionalArgs the call's arguments
      */
     static void requireArguments(final String function, final List<Object> positionalArgs) {
-        if (positionalArgs == null || positionalArgs.isEmpty() || positionalArgs.size() > 2) {
+        if (positionalArgs == null || positionalArgs.size() > 2) {
             throw new RuntimeException(function + " requires an object name and an object domain");
         }
-        final String missing = positionalArgs.get(0) == null ? "OBJECT_NAME"
+        final String missing = positionalArgs.isEmpty() || positionalArgs.get(0) == null ? "OBJECT_NAME"
             : positionalArgs.size() < 2 || positionalArgs.get(1) == null ? "DOMAIN" : null;
         if (missing != null) {
             throw new RuntimeException(SqlCompilationError.PREFIX + " error line 1 at position 419\n"
@@ -133,7 +183,7 @@ public class TagReferencesFunction extends TableFunction {
     static List<ResultSetColumn> columns() {
         final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
         for (final String name : COLUMN_NAMES) {
-            columns.add(new ResultSetColumn(name, StringType.VARCHAR));
+            columns.add(new ResultSetColumn(name, StringType.VARCHAR, null, new LengthlessStringType()));
         }
         return columns;
     }
@@ -168,7 +218,12 @@ public class TagReferencesFunction extends TableFunction {
     }
 
     /**
-     * SYSTEM$GET_TAG(tag, object, domain): {@link #valueOf} of three arguments, none of them NULL (live-verified).
+     * SYSTEM$GET_TAG(tag, object, domain): {@link #valueOf} of three arguments, none of them NULL and each a text
+     * — a number is "argument needs to be a string: 'SYSTEM$GET_TAG'". The domain is judged first and as it is
+     * written, with no blank about it: {@code 'nosuch_domain'} is "Unknown domain: nosuch_domain." whatever tag
+     * is named, {@code 'TABLE '} is unknown too, and {@code 'tag'} is "Object tagging not supported for object
+     * type TAG." A name of more parts than its kind has is "Object does not exist, or operation cannot be
+     * performed." (all live-verified).
      *
      * @param catalog the catalog
      * @param args the call's arguments
@@ -184,8 +239,31 @@ public class TagReferencesFunction extends TableFunction {
         if (args.size() < 3) {
             return null;
         }
-        return new TagReferencesFunction(catalog).valueOf(unquoted(args.get(0)), unquoted(args.get(1)),
-            unquoted(args.get(2)));
+        for (int i = 0; i < 3; i++) {
+            if (!(args.get(i) instanceof String)) {
+                throw new RuntimeException(SqlCompilationError.of("argument needs to be a string: 'SYSTEM$GET_TAG'"));
+            }
+        }
+        final String domain = unquoted(args.get(2));
+        // An underscore stands for the blank between a domain's words, as TAG_REFERENCES reads it.
+        final String upper = domain.toUpperCase(Locale.ROOT);
+        final String kind = isDomain(upper.replace('_', ' ')) ? upper.replace('_', ' ') : upper;
+        if ("TAG".equals(kind)) {
+            throw new RuntimeException(SqlCompilationError.inline("Object tagging not supported for object type TAG."));
+        }
+        if (!isDomain(kind) && !TABLE_LIKE_DOMAINS.contains(kind)) {
+            throw new RuntimeException("Unknown domain: " + domain + ".");
+        }
+        final String tag = unquoted(args.get(0));
+        final String object = unquoted(args.get(1));
+        // A routine is named by its signature, and one of too many parts is refused as any that is not there.
+        final boolean routine = "FUNCTION".equals(kind) || "PROCEDURE".equals(kind);
+        if (SqlIdentifiers.canonicalTextParts(tag).length > SCHEMA_OBJECT_PARTS
+                || !routine && SqlIdentifiers.canonicalTextParts(object).length
+                    > ("COLUMN".equals(kind) ? SCHEMA_OBJECT_PARTS + 1 : SCHEMA_OBJECT_PARTS)) {
+            throw new RuntimeException(SqlCompilationError.of("Object does not exist, or operation cannot be performed."));
+        }
+        return new TagReferencesFunction(catalog).valueOf(tag, object, domain);
     }
 
     /**
@@ -229,45 +307,87 @@ public class TagReferencesFunction extends TableFunction {
 
     /** One row per tag reaching the object of that name and domain. */
     private List<Row> rows(final String writtenName, final String writtenDomain) {
-        final String domain = writtenDomain.trim().toUpperCase(Locale.ROOT);
+        final String domain = domainOf(writtenDomain);
+        final List<Row> rows = new ArrayList<Row>();
+        if ("FUNCTION".equals(domain) || "PROCEDURE".equals(domain)) {
+            addRoutineTags(domain, writtenName, rows);
+            return rows;
+        }
         final String[] parts = SqlIdentifiers.canonicalTextParts(writtenName);
         // A refusal names the object as resolved, each part quoted only where it has to be.
         final String objectName = QualifiedName.join(parts);
-        final List<Row> rows = new ArrayList<Row>();
+        requirePartCount(domain, parts, objectName);
         if ("COLUMN".equals(domain)) {
             addColumnTags(parts, objectName, rows);
         } else if ("TABLE".equals(domain)) {
             addTableTags(parts, objectName, rows);
+        } else if (TABLE_KINDS.contains(domain)) {
+            addTableKindTags(domain, parts, objectName, rows);
         } else if ("SCHEMA".equals(domain)) {
             addSchemaTags(parts, objectName, rows);
         } else if ("DATABASE".equals(domain)) {
             addDatabaseTags(parts, objectName, rows);
-        } else if ("ALERT".equals(domain) || "STAGE".equals(domain) || "STREAM".equals(domain)
-            || "TASK".equals(domain) || "PIPE".equals(domain) || "FUNCTION".equals(domain)
-            || "PROCEDURE".equals(domain) || "PASSWORD POLICY".equals(domain)) {
+        } else if (LOOKED_UP_SCHEMA_OBJECTS.contains(domain)) {
             addSchemaObjectTags(domain, parts, objectName, rows);
-        } else if ("WAREHOUSE".equals(domain) || "COMPUTE POOL".equals(domain) || "USER".equals(domain)
-            || "ROLE".equals(domain) || "NETWORK POLICY".equals(domain) || "INTEGRATION".equals(domain)) {
+        } else if ("TAG".equals(domain)) {
+            requireTag(parts, objectName);
+        } else if (ACCOUNT_OBJECT_DOMAINS.contains(domain)) {
             addAccountObjectTags(domain, parts, objectName, rows);
         } else if ("DATABASE ROLE".equals(domain)) {
             addDatabaseRoleTags(parts, objectName, rows);
-        } else if ("VIEW".equals(domain) || "MATERIALIZED VIEW".equals(domain)) {
-            throw new RuntimeException(tableLikeOnly(domain));
-        } else if (!DOMAINS.contains(domain)) {
-            throw new RuntimeException("Unknown domain: " + domain + ".");
         }
         return rows;
     }
 
+    /**
+     * The domain an argument names. It is matched whatever its case, an underscore standing for the blank between
+     * its words, and otherwise as it was written: a blank beside the word makes it a domain nobody knows, refused
+     * by the text as it stands. A view, a materialized view and an external table are refused in favour of TABLE
+     * (live-verified).
+     *
+     * @param written the argument's text
+     * @return the domain, upper-cased, its words a blank apart
+     */
+    static String domainOf(final String written) {
+        final String domain = written.toUpperCase(Locale.ROOT).replace('_', ' ');
+        if (REFUSED_TABLE_KINDS.contains(domain)) {
+            throw new RuntimeException(tableLikeOnly(domain));
+        }
+        if (!isDomain(domain)) {
+            throw new RuntimeException("Unknown domain: " + written + ".");
+        }
+        return domain;
+    }
+
     /** The refusal of a domain that names one kind of table-like object: TABLE stands for them all. */
     static String tableLikeOnly(final String domain) {
-        return SqlCompilationError.inline("Invalid value " + domain + " for argument OBJECT_TYPE. "
+        return SqlCompilationError.inline("Invalid value " + domain.replace(' ', '_') + " for argument OBJECT_TYPE. "
             + "Please use object type TABLE for all kinds of table-like objects.");
     }
 
     /** Whether the account knows the domain, resolved here or not. */
     static boolean isDomain(final String domain) {
-        return DOMAINS.contains(domain);
+        return DOMAINS.contains(domain) || SCHEMA_OBJECT_DOMAINS.contains(domain) || TABLE_KINDS.contains(domain)
+            || "TAG".equals(domain);
+    }
+
+    /**
+     * A name of more parts than its kind's full name has names nothing: "Object does not exist, or operation
+     * cannot be performed." A role's name of four parts is refused as an identifier instead (live-verified).
+     */
+    private static void requirePartCount(final String domain, final String[] parts, final String objectName) {
+        if ("ROLE".equals(domain) && parts.length >= ROLE_QUALIFIER_LIMIT) {
+            throw new RuntimeException(SqlCompilationError.inline("role identifier '" + objectName
+                + "' has too many qualifiers"));
+        }
+        final int limit = "COLUMN".equals(domain) ? SCHEMA_OBJECT_PARTS + 1
+            : "SCHEMA".equals(domain) || "DATABASE ROLE".equals(domain) ? 2
+            : "DATABASE".equals(domain) || ACCOUNT_OBJECT_DOMAINS.contains(domain) ? 1
+            : "TABLE".equals(domain) || "TAG".equals(domain) || TABLE_KINDS.contains(domain)
+                || LOOKED_UP_SCHEMA_OBJECTS.contains(domain) ? SCHEMA_OBJECT_PARTS : Integer.MAX_VALUE;
+        if (parts.length > limit) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
     }
 
     /** Tags on a table-like object, and those it inherits from its schema and database. */
@@ -277,6 +397,41 @@ public class TagReferencesFunction extends TableFunction {
         final Taggable table = requireTableLike(schema, name[2], written, objectName);
         addLineage(rows, new Taggable[] {table, schema, catalog.getDatabase(name[0])},
             new String[] {"TABLE", "SCHEMA", "DATABASE"}, name[0], name[1], name[2], "TABLE", null);
+    }
+
+    /**
+     * Tags on a table-like object asked for by one kind of table. Any table-like object answers; a miss is named
+     * by the kind and by the full path, however the name was written (live-verified).
+     */
+    private void addTableKindTags(final String domain, final String[] written, final String objectName,
+                                  final List<Row> rows) {
+        final String kind = nounOf(domain);
+        final String[] name = qualify(written, SCHEMA_OBJECT_PARTS, kind, objectName);
+        final Schema schema = resolveSchema(name[0], name[1], kind, objectName);
+        final Taggable table = tableLike(schema, name[2]);
+        if (table == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist(kind, schema.qualifiedName(name[2])));
+        }
+        addLineage(rows, new Taggable[] {table, schema, catalog.getDatabase(name[0])},
+            new String[] {"TABLE", "SCHEMA", "DATABASE"}, name[0], name[1], name[2], "TABLE", null);
+    }
+
+    /**
+     * The tag a TAG domain names, which has to exist and carries no tag of its own: a miss is refused by the name
+     * as written when it was written bare, and by the full name otherwise (live-verified).
+     */
+    private void requireTag(final String[] written, final String objectName) {
+        final String[] name = qualify(written, SCHEMA_OBJECT_PARTS, "Tag", objectName);
+        final Schema schema = resolveSchema(name[0], name[1], "Tag", objectName);
+        if (!schema.hasTagExact(name[2])) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", written.length == 1 ? objectName
+                : schema.qualifiedName(name[2])));
+        }
+    }
+
+    /** A domain as a refusal's first word spells it: Dynamic table, Password policy. */
+    private static String nounOf(final String domain) {
+        return domain.charAt(0) + domain.substring(1).toLowerCase(Locale.ROOT);
     }
 
     /** A table-like object's name completed to three parts from the session's database and schema. */
@@ -351,22 +506,103 @@ public class TagReferencesFunction extends TableFunction {
     /** Tags on an object that lives in a schema, and those it inherits from its schema and database. */
     private void addSchemaObjectTags(final String domain, final String[] written, final String objectName,
                                      final List<Row> rows) {
-        final String kind = domain.charAt(0) + domain.substring(1).toLowerCase(Locale.ROOT);
+        final String kind = nounOf(domain);
         final String[] name = qualify(written, 3, kind, objectName);
         final Schema schema = resolveSchema(name[0], name[1], kind, objectName);
         final Object found = schemaObject(schema, domain, name[2]);
         if (found == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
+            // A stage, a pipe and a password policy are named by the full path; a stream, a task and an alert as
+            // a table is, by the name as written when it was written bare (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist(kind,
+                written.length > 1 || FULL_PATH_DOMAINS.contains(domain) ? schema.qualifiedName(name[2])
+                    : objectName));
         }
         final Taggable object = found instanceof Taggable ? (Taggable) found : null;
+        final String cell = CONTAINER_DOMAINS.contains(domain) ? domain.replace(' ', '_') : domain;
         addLineage(rows, new Taggable[] {object, schema, catalog.getDatabase(name[0])},
-            new String[] {domain, "SCHEMA", "DATABASE"}, name[0], name[1], name[2], domain, null);
+            new String[] {cell, "SCHEMA", "DATABASE"}, name[0], name[1], name[2], cell, null);
+    }
+
+    /**
+     * Tags on a function or a procedure, which is named by its signature — {@code add(NUMBER, NUMBER)}, read as
+     * {@link RoutineReferenceText} reads one — whatever its number of arguments: a bare name names no routine,
+     * not even one that takes no argument. A type written with a width names only a parameter declared with it,
+     * as DROP FUNCTION's does. One that is not there is refused by the argument's own text, whatever part of its
+     * name is missing and however many parts it has, and without a privilege sentence. OBJECT_NAME spells the
+     * routine with its arguments and what it returns (live-verified).
+     */
+    private void addRoutineTags(final String domain, final String writtenName, final List<Row> rows) {
+        String[] name = null;
+        Schema schema = null;
+        SqlObject found = null;
+        try {
+            final FrostlakeParser.RoutineReferenceContext reference = RoutineReferenceText.parse(writtenName);
+            final List<DataType> types = reference == null ? null
+                : RoutineReferenceText.writtenTypes(reference.dataTypeList());
+            final String[] written = types == null ? null
+                : ParseTreeText.qualifiedNameParts(reference.qualifiedName());
+            if (written != null && written.length <= SCHEMA_OBJECT_PARTS) {
+                final String objectName = QualifiedName.join(written);
+                name = qualify(written, SCHEMA_OBJECT_PARTS, nounOf(domain), objectName);
+                schema = resolveSchema(name[0], name[1], nounOf(domain), objectName);
+                if ("FUNCTION".equals(domain)) {
+                    found = schema.getFunctionByWrittenSignature(name[2], types);
+                } else {
+                    found = schema.getProcedureByWrittenSignature(name[2], types);
+                }
+            }
+        } catch (final RuntimeException missing) {
+            found = null;
+        }
+        if (found == null) {
+            throw new RuntimeException(SqlCompilationError.of(nounOf(domain) + " '" + writtenName
+                + "' does not exist or not authorized."));
+        }
+        addLineage(rows, new Taggable[] {found, schema, catalog.getDatabase(name[0])},
+            new String[] {domain, "SCHEMA", "DATABASE"}, name[0], name[1], routineObjectName(found), domain, null);
+    }
+
+    /**
+     * A routine as OBJECT_NAME spells it: its name bare, each argument by its name and the family of its type,
+     * and after a colon what it returns — {@code ADD(A NUMBER, B NUMBER):NUMBER(38,0)}, and
+     * {@code PAIRS(A NUMBER):TABLE: (X NUMBER, Y VARCHAR)} for one that returns a table (live-verified).
+     */
+    private static String routineObjectName(final SqlObject routine) {
+        final List<Parameter> parameters;
+        final List<Parameter> columns;
+        final DataType returns;
+        final boolean table;
+        if (routine instanceof Function) {
+            final Function function = (Function) routine;
+            parameters = function.getParameters();
+            table = function.isTableFunction();
+            columns = function.getReturnColumns();
+            returns = function.getReturnType();
+        } else {
+            final Procedure procedure = (Procedure) routine;
+            parameters = procedure.getParameters();
+            table = procedure.returnsTable();
+            columns = procedure.getReturnColumns();
+            returns = procedure.getReturnType();
+        }
+        return routine.getName() + "(" + namedTypes(parameters) + "):"
+            + (table ? "TABLE: (" + namedTypes(columns) + ")" : SqlTypeNames.routineType(returns));
+    }
+
+    /** Arguments or returned columns, each by its name and the family of its type: {@code A NUMBER, B VARCHAR}. */
+    private static String namedTypes(final List<Parameter> items) {
+        final StringBuilder text = new StringBuilder();
+        for (int i = 0; items != null && i < items.size(); i++) {
+            text.append(i > 0 ? ", " : "").append(items.get(i).getName()).append(' ')
+                .append(items.get(i).getDataType().getName());
+        }
+        return text.toString();
     }
 
     /** Tags on an object that lives in the account, which inherits nothing Frostlake models. */
     private void addAccountObjectTags(final String domain, final String[] written, final String objectName,
                                       final List<Row> rows) {
-        final String kind = domain.charAt(0) + domain.substring(1).toLowerCase(Locale.ROOT);
+        final String kind = nounOf(domain);
         final String simpleName = written[written.length - 1];
         Object found = null;
         if (written.length == 1) {
@@ -389,9 +625,8 @@ public class TagReferencesFunction extends TableFunction {
             }
         }
         if (found == null) {
-            // A missing warehouse is refused as any warehouse is (live-verified); the other kinds are not measured.
-            throw new RuntimeException("WAREHOUSE".equals(domain) ? SqlCompilationError.doesNotExist(kind, objectName)
-                : SqlCompilationError.doesNotExistWithoutHint(kind, objectName));
+            // Each kind is refused as a statement over it refuses it, the privilege it asks for included.
+            throw new RuntimeException(SqlCompilationError.doesNotExist(kind, objectName));
         }
         final Taggable object = found instanceof Taggable ? (Taggable) found : null;
         addLineage(rows, new Taggable[] {object}, new String[] {domain}, null, null, simpleName, domain, null);
@@ -403,7 +638,9 @@ public class TagReferencesFunction extends TableFunction {
         final Database database = catalog.getDatabase(name[0]);
         final DatabaseRole role = database == null ? null : database.getDatabaseRole(name[1]);
         if (role == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Database role", objectName));
+            // Named with its database, however it was written (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Database role",
+                QualifiedName.join(name[0], name[1])));
         }
         // The DOMAIN cell spells it with an underscore, where the ARGUMENT that asked for it is the
         // two-word form: TAG_REFERENCES('db.role', 'DATABASE ROLE') answers DATABASE_ROLE.
@@ -461,9 +698,10 @@ public class TagReferencesFunction extends TableFunction {
             if ("PASSWORD POLICY".equals(domain)) {
                 return schema.getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY, name);
             }
-            final List<?> overloads = "FUNCTION".equals(domain) ? schema.getFunctionOverloads(name)
-                : schema.getProcedureOverloads(name);
-            return overloads == null || overloads.isEmpty() ? null : overloads.get(0);
+            if ("SERVICE".equals(domain)) {
+                return schema.getContainerObjects().getService(name);
+            }
+            return schema.getContainerObjects().getImageRepository(name);
         } catch (final RuntimeException missing) {
             return null;
         }

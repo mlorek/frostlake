@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -51,10 +53,10 @@ public class StreamOnUnionViewTest extends BaseDatabaseTest {
 
         final ResultSet rs = engine.executeQuery("SELECT * FROM st");
         assertEquals(4, rs.getColumns().size());
-        assertEquals("ID", rs.getColumns().get(0).getName().toUpperCase());
-        assertEquals("METADATA$ACTION", rs.getColumns().get(1).getName().toUpperCase());
-        assertEquals("METADATA$ISUPDATE", rs.getColumns().get(2).getName().toUpperCase());
-        assertEquals("METADATA$ROW_ID", rs.getColumns().get(3).getName().toUpperCase());
+        assertEquals("ID", rs.getColumns().get(0).getName().toUpperCase(Locale.ROOT));
+        assertEquals("METADATA$ACTION", rs.getColumns().get(1).getName().toUpperCase(Locale.ROOT));
+        assertEquals("METADATA$ISUPDATE", rs.getColumns().get(2).getName().toUpperCase(Locale.ROOT));
+        assertEquals("METADATA$ROW_ID", rs.getColumns().get(3).getName().toUpperCase(Locale.ROOT));
         // An explicit column list still resolves the metadata columns by name.
         final ResultSet explicit = engine.executeQuery("SELECT id, METADATA$ACTION FROM st");
         assertEquals(2, explicit.getColumns().size());

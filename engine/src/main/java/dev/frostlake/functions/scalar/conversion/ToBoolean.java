@@ -40,15 +40,11 @@ public class ToBoolean extends BuiltInFunction {
             return ((Number) arg).doubleValue() != 0.0;
         }
         // Text input: only the recognized truthy/falsy tokens (a bare numeric string like '2' errors).
-        final String v = arg.toString().trim().toUpperCase();
-        switch (v) {
-            case "TRUE": case "T": case "YES": case "Y": case "ON": case "1":
-                return true;
-            case "FALSE": case "F": case "NO": case "N": case "OFF": case "0":
-                return false;
-            default:
-                throw new RuntimeException("Boolean value '" + arg + "' is not recognized");
+        final Boolean read = BooleanWords.read(arg.toString());
+        if (read == null) {
+            throw new RuntimeException("Boolean value '" + arg + "' is not recognized");
         }
+        return read;
     }
 
     /** A VECTOR is refused as the conversion's own invalid type, as TO_CHAR refuses it. */

@@ -18,6 +18,8 @@ package dev.frostlake.functions.file;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -34,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class FlIsAudioTest extends FileFunctionTestSupport {
 
     private String isAudio(final String contentType) {
-        return scalar("SELECT FL_IS_AUDIO(" + fileOf(contentType) + ")").toUpperCase();
+        return scalar("SELECT FL_IS_AUDIO(" + fileOf(contentType) + ")").toUpperCase(Locale.ROOT);
     }
 
     /** Live: every content type measured TRUE, enumerated — including the {@code .avi} outlier. */
@@ -79,7 +81,7 @@ public class FlIsAudioTest extends FileFunctionTestSupport {
      */
     @Test
     public void nullFileIsFalseNotNull() {
-        assertEquals("FALSE", scalar("SELECT FL_IS_AUDIO(NULL)").toUpperCase());
-        assertEquals("FALSE", scalar("SELECT FL_IS_AUDIO(TO_FILE(NULL))").toUpperCase());
+        assertEquals("FALSE", scalar("SELECT FL_IS_AUDIO(NULL)").toUpperCase(Locale.ROOT));
+        assertEquals("FALSE", scalar("SELECT FL_IS_AUDIO(TO_FILE(NULL))").toUpperCase(Locale.ROOT));
     }
 }

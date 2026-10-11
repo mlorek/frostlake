@@ -19,6 +19,8 @@ package dev.frostlake.task;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Schema;
 
+import java.util.Locale;
+
 /**
  * The one implementation of {@code SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('task_name')}, shared
  * by the three surfaces that can reach it: the registered table function, and the two expression
@@ -58,7 +60,7 @@ public final class UserTaskCancellation {
         if (schema == null || !schema.hasTask(bareName)) {
             throw new RuntimeException(notFound(name));
         }
-        final String qualifiedName = (databaseName + "." + schemaName + "." + bareName).toUpperCase();
+        final String qualifiedName = (databaseName + "." + schemaName + "." + bareName).toUpperCase(Locale.ROOT);
         if (scheduler == null || !scheduler.hasRunningExecutions(qualifiedName)) {
             return "Task " + name + " has no currently running executions." + CANCEL_QUERY_HINT;
         }

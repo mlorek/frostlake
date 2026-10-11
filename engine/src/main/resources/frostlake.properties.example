@@ -7,6 +7,10 @@
 http.port=8080
 http.host=localhost
 http.maxConnections=100
+# Origins whose browser pages may call the API, a comma apart (CORS). None by default: the server takes no
+# credentials, so a request that names an Origin is refused (403) unless its origin is listed here, and the API
+# is never opened to every origin. A request without an Origin - a driver, curl - is not affected.
+# http.cors.allowedOrigins=https://localhost:18443,https://sheets.example.com
 # The Snowflake REST APIs under /api/v2: how long a request waits for its operation before it is answered
 # 202 Accepted with a result handle, and how long a handle stays fetchable at /api/v2/results/<handle>.
 http.rest.syncWaitMs=30000

@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -81,7 +83,7 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         assertNotNull(rs);
         final int keyIdx = rs.getColumnIndex("key");
         for (int i = 0; i < rs.getRowCount(); i++) {
-            final String key = rs.getRows().get(i).getValue(keyIdx).toString().toUpperCase();
+            final String key = rs.getRows().get(i).getValue(keyIdx).toString().toUpperCase(Locale.ROOT);
             assertTrue(key.startsWith("TIMEZONE"),
                 "LIKE filter should only return TIMEZONE* params, got: " + key);
         }

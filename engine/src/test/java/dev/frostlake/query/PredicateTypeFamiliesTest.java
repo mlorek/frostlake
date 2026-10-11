@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -60,7 +62,7 @@ public class PredicateTypeFamiliesTest extends BaseDatabaseTest {
             {"f", "FLOAT"}, {"bi", "BINARY(8388608)"}, {"a", "ARRAY"}, {"o", "OBJECT"}, {"t", "TIME(9)"},
             {"ts", "TIMESTAMP_NTZ(9)"}, {"tz", "TIMESTAMP_TZ(9)"}};
         for (final String[] column : columns) {
-            assertEquals(refused(column[1], "TT." + column[0].toUpperCase()),
+            assertEquals(refused(column[1], "TT." + column[0].toUpperCase(Locale.ROOT)),
                 refusalOf("SELECT n FROM tt WHERE " + column[0]));
         }
         assertEquals(1, engine.executeQuery("SELECT n FROM tt WHERE b").getRowCount());
@@ -70,7 +72,7 @@ public class PredicateTypeFamiliesTest extends BaseDatabaseTest {
     @Test
     public void havingQualifyAndOnAreHeldToTheSameRule() {
         for (final String[] column : new String[][] {{"d", "DATE"}, {"v", "VARIANT"}, {"f", "FLOAT"}, {"a", "ARRAY"}}) {
-            final String name = column[0].toUpperCase();
+            final String name = column[0].toUpperCase(Locale.ROOT);
             assertEquals(refused(column[1], "TT." + name),
                 refusalOf("SELECT n FROM tt GROUP BY n, " + column[0] + " HAVING " + column[0]));
             assertEquals(refused(column[1], "TT." + name),

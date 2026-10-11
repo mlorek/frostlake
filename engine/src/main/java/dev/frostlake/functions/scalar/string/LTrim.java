@@ -30,6 +30,10 @@ public class LTrim extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) return null;
         final String str = args.get(0).toString();
         // Snowflake LTRIM(expr [, chars]): trims every character in the set (default whitespace).

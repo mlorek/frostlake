@@ -47,6 +47,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Casting TO a STRUCTURED type — the legality rules and the value transformation for
@@ -492,7 +493,7 @@ public final class StructuredCast {
         }
         if (target instanceof NumericType) {
             final NumericType numeric = (NumericType) target;
-            final String name = numeric.getName().toUpperCase();
+            final String name = numeric.getName().toUpperCase(Locale.ROOT);
             if (name.equals("NUMBER") || name.equals("DECIMAL") || name.equals("NUMERIC")) {
                 return "NUMBER(" + numeric.getPrecision() + "," + numeric.getScale() + ")";
             }

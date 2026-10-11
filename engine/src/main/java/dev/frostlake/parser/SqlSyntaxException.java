@@ -27,6 +27,7 @@ public class SqlSyntaxException extends RuntimeException {
 
     private final List<String> syntaxErrors;
     private final String failedSql;
+    private boolean declareSectionEnd;
 
     public SqlSyntaxException(final String message, final List<String> syntaxErrors, final String failedSql) {
         super(message);
@@ -40,6 +41,21 @@ public class SqlSyntaxException extends RuntimeException {
 
     public String getFailedSql() {
         return failedSql;
+    }
+
+    /**
+     * Whether the text was refused at an END written where a DECLARE section's BEGIN belongs: a fault the text has
+     * for certain, whatever else in it this grammar could not read.
+     *
+     * @return true for that refusal
+     */
+    public boolean refusesDeclareSectionEnd() {
+        return declareSectionEnd;
+    }
+
+    /** Marks the refusal as one of an END written where a DECLARE section's BEGIN belongs. */
+    void markDeclareSectionEnd() {
+        declareSectionEnd = true;
     }
 
     @Override

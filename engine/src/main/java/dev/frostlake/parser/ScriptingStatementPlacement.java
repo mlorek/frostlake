@@ -68,8 +68,6 @@ public final class ScriptingStatementPlacement {
         final int[] parseFaultAt = parseFault == null ? null : SyntaxErrorListener.sentenceCoordinates(parseFault);
         if (parseFaultAt != null && (parseFaultAt[0] < wordAt[0]
                 || parseFaultAt[0] == wordAt[0] && parseFaultAt[1] < wordAt[1])) {
-            // A block statement refused after a keyword SHOW scope may name this word next (KeywordScopeLines).
-            listener.takesLaterRefusal(word);
             return;
         }
         throw refusal(word, sql);
@@ -86,6 +84,20 @@ public final class ScriptingStatementPlacement {
         if (word != null) {
             throw refusal(word, sql);
         }
+    }
+
+    /**
+     * The first word of a script's first scripting statement, as {@link #requireSqlStatementsBefore} finds it.
+     *
+     * @param script the parsed script
+     * @param tokens the token stream the script was parsed from
+     * @param faulty whether the parse met a fault, after which a stray opening keyword is read off the tokens
+     * @return the word, or null
+     */
+    static Token firstScriptingWord(final FrostlakeParser.SqlScriptContext script, final TokenStream tokens,
+                                    final boolean faulty) {
+        final Token word = firstScriptingStatement(script);
+        return word == null && faulty ? strayOpeningKeyword(tokens) : word;
     }
 
     private static SqlSyntaxException refusal(final Token word, final String sql) {

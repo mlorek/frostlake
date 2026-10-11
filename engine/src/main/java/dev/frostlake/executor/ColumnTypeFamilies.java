@@ -34,6 +34,8 @@ import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 
+import java.util.Locale;
+
 /**
  * Snowflake's compile-time type matching of a value against the column it is written to (live-verified
  * matrix). A source whose static type family cannot implicitly convert to the column's family is refused
@@ -151,7 +153,7 @@ public final class ColumnTypeFamilies {
             return "BOOLEAN";
         }
         if (type instanceof DateTimeType) {
-            final String name = type.getName().toUpperCase();
+            final String name = type.getName().toUpperCase(Locale.ROOT);
             if (name.equals("DATE")) {
                 return "DATE";
             }
@@ -240,7 +242,7 @@ public final class ColumnTypeFamilies {
         }
         if (type instanceof NumericType) {
             final NumericType numeric = (NumericType) type;
-            final String name = numeric.getName().toUpperCase();
+            final String name = numeric.getName().toUpperCase(Locale.ROOT);
             if (name.equals("FLOAT") || name.equals("DOUBLE")) {
                 return "FLOAT";
             }
@@ -255,7 +257,7 @@ public final class ColumnTypeFamilies {
             return "VARCHAR(" + (length > 0 ? length : 16777216) + ")";
         }
         if (type instanceof DateTimeType) {
-            final String name = type.getName().toUpperCase();
+            final String name = type.getName().toUpperCase(Locale.ROOT);
             if (name.equals("DATE")) {
                 return "DATE";
             }
@@ -272,7 +274,7 @@ public final class ColumnTypeFamilies {
             // A declared width is spelled as declared; an unsized binary (TO_BINARY's) at the 64MB maximum.
             return ((BinaryType) type).refusalText();
         }
-        return type.getName().toUpperCase();
+        return type.getName().toUpperCase(Locale.ROOT);
     }
 
     /**

@@ -33,6 +33,19 @@ public final class SqlAccessControlError {
     private SqlAccessControlError() {
     }
 
+    /**
+     * The refusal of a role the session's user may not activate: one that exists and was granted neither to the
+     * user nor to a role the user holds, however far down (live-verified, two spaces after the first sentence
+     * included).
+     *
+     * @param role the role named, in its canonical spelling
+     * @return the sentence
+     */
+    public static String roleNotAssigned(final String role) {
+        return PREFIX + "\nRequested role '" + role + "' is not assigned to the executing user.  Specify another"
+            + " role to activate.";
+    }
+
     /** The refusal for an operation the session may not perform on an object it can see. */
     public static String insufficientPrivileges(final String objectKind, final String objectName) {
         return PREFIX + "\nInsufficient privileges to operate on " + objectKind

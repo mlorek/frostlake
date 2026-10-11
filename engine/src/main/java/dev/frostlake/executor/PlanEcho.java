@@ -32,6 +32,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -171,7 +172,7 @@ final class PlanEcho {
      * @return its plan text
      */
     String printSpecificationlessCall(final FrostlakeParser.FunctionCallExprContext call) {
-        final String name = SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase();
+        final String name = SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase(Locale.ROOT);
         final List<FrostlakeParser.BooleanExprContext> args =
             ParseTreeText.functionBooleanArgs(call.functionArgList());
         if (!BooleanArgumentWindowFunctions.spellsOutABooleanArgument(name) || args.size() != 1) {

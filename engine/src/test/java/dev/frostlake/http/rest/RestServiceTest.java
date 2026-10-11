@@ -127,7 +127,14 @@ public class RestServiceTest extends BaseRestTest {
         ok(post(SERVICES, service("svc_tagged", "")));
         ok(post(SERVICES + "/svc_tagged:set-tags",
             "[{\"tag_database\":\"svc_db\",\"tag_schema\":\"s\",\"tag_name\":\"svc_tag\",\"tag_value\":\"v\"}]"));
+        final JsonNode tags = ok(get(SERVICES + "/svc_tagged:get-tags"));
+        assertEquals(1, tags.size(), tags.toString());
+        assertEquals("SVC_TAG", tags.get(0).path("tag_name").asString());
+        assertEquals("v", tags.get(0).path("tag_value").asString());
+        assertEquals("SERVICE", tags.get(0).path("level").asString());
         ok(post(SERVICES + "/svc_tagged:unset-tags",
             "[{\"tag_database\":\"svc_db\",\"tag_schema\":\"s\",\"tag_name\":\"svc_tag\"}]"));
+        assertEquals(0, ok(get(SERVICES + "/svc_tagged:get-tags")).size());
+        error(404, get(SERVICES + "/no_such_service:get-tags"));
     }
 }

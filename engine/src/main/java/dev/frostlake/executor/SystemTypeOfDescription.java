@@ -25,6 +25,8 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.values.ValueRange;
 
+import java.util.Locale;
+
 
 /**
  * What {@code SYSTEM$TYPEOF} answers: a DECLARED type name and a physical storage tag, and the two come
@@ -108,7 +110,7 @@ public final class SystemTypeOfDescription {
                 : SignedStorageWidth.tagOfPrecision(numeric.getPrecision());
         }
         if (declared instanceof DateTimeType) {
-            final String name = declared.getName().toUpperCase();
+            final String name = declared.getName().toUpperCase(Locale.ROOT);
             if (name.equals("DATE")) {
                 return "SB4";
             }

@@ -98,8 +98,8 @@ public final class TagResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW TAGS" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Tag '" + call.identifier("database") + "." + call.identifier("schema") + "."
-                + name + "' does not exist or not authorized.");
+            throw RestException.missing("Tag",
+                call.identifier("database") + "." + call.identifier("schema") + "." + name);
         }
         return toJson(rows.get(0));
     }

@@ -16,17 +16,17 @@
 
 package dev.frostlake.parser;
 
+import dev.frostlake.executor.LeadingCommentOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.LexerNoViableAltException;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.Token;
-import org.antlr.v4.runtime.atn.LexerATNSimulator;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -49,15 +49,29 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  * or VIEW is none, and d, t, ts, fn and oj are keywords), a type takes the parameters its kind takes, entered only when
  * the token after its '(' can begin them ({@code (VARCHAR((1)))} names the first '('), and a plain word takes
  * parameters or a dotted path but not both. A property's name is almost any word; its value is predicted whole, so a
- * word value that a number, a '-', a '?' or a stage reference follows is refused there and read again as the next
- * property's name ({@code x = y 1} names the 1 twice). A stage reference — one token to the account, see
- * {@link StageReferenceTokens} — is a property's value, never an item, an item of a value list or a property's name.
+ * word value that a number, a '-', a '?', a stage reference, a binary string or any token no rule reads follows is
+ * refused there and read again as the next property's name ({@code x = y 1} names the 1 twice, {@code x = y +} the
+ * '+'), and one that a '!' follows wants a word after it. A stage reference — one token to the account, see
+ * {@link SignatureTokens} — is a property's value, never an item, an item of a value list or a property's name. After
+ * a property list's ',' a token that names no property is named and skipped, and an '=' there is named as the name
+ * it lacks and read ({@code x = 1, = 2} is the '=' alone).
  * After the bare word IDENTIFIER the statement itself judges the signature's first token, so one it cannot open is named
  * alone (all live-verified).
  *
- * <p>A shape outside this reading — another statement after a ';', a structured type, an expression as a property
- * value, a text this lexer cannot read the way the account does (a character it has no token for, an unclosed quote
- * or comment) — makes it answer nothing, and the parse's own lines stand.
+ * <p>A structured type is a rule of its own. ARRAY and OBJECT take their parentheses unless a TABLE follows the '(',
+ * and judge the first token inside themselves, so {@code (ARRAY(1))} names the 1 and gives the ARRAY up — the ')' of
+ * the signature is then one too many — while a later field, a MAP's key and value, a VECTOR's element and dimension
+ * and a TABLE item's types are each read by a rule of their own: {@code (MAP(INT, 1))} names the 1 alone, the MAP
+ * closing as written. A field, an element and a MAP's value may end in NOT NULL. TABLE items stand alone in a
+ * signature, and a path inside one has three parts at most (all live-verified).
+ *
+ * <p>The text is read by the account's tokens (see {@link SignatureTokens}), and a text its lexer refuses adds that
+ * lexer's line where the reading first looks at the token behind the refusal — before the line of a token whose
+ * repair looked one token ahead: {@code DESCRIBE TABLE t1 ((a), b) /* x} is the '(', the first ')', the lexer's line
+ * and then the second ')' (live-verified).
+ *
+ * <p>A shape outside this reading — another statement after a ';', a DEFAULT as an item, an expression as a property
+ * value, a text the account's lexer refuses twice — makes it answer nothing, and the parse's own lines stand.
  */
 final class SignatureRecovery {
 
@@ -96,6 +110,9 @@ final class SignatureRecovery {
     private static final int CLAUSE_WORD = 32;
     private static final int WHEN = 33;
     private static final int STAGE = 34;
+    private static final int HEX = 35;
+    private static final int SESSION_VARIABLE = 36;
+    private static final int BANG = 37;
 
     private static final long EOR = bit(END_OF_RULE);
     private static final long TYPES = bit(BARE_TYPE) | bit(SCALE_TYPE) | bit(LENGTH_TYPE) | bit(PRECISION_TYPE);
@@ -109,26 +126,41 @@ final class SignatureRecovery {
     private static final long EQ_FOLLOW = LITERAL | WORD_VALUE | bit(LPAREN) | bit(MINUS) | bit(EXPRESSION) | bit(WHEN)
         | bit(COLON) | bit(STAGE);
     private static final long NUMBER = bit(INT) | bit(NUM);
-    private static final long REREAD_AFTER_WORD = NUMBER | bit(MINUS) | bit(QUESTION) | bit(STAGE);
+    private static final long REREAD_AFTER_WORD = NUMBER | bit(MINUS) | bit(QUESTION) | bit(STAGE) | bit(OTHER)
+        | bit(HEX);
     private static final long FIRST_ITEM_READ_ON = bit(INT) | bit(NUM) | bit(NULL_WORD) | bit(QUESTION) | bit(MINUS);
     private static final long LIST_END = bit(COMMA) | bit(RPAREN);
 
     private static final int[] CLASSES = classes();
 
     private final List<Token> tokens;
-    private final boolean lexed;
+    private final int lexerLineAt;
+    private final String lexerLine;
     private final boolean describe;
     private final boolean identifierName;
     private final List<Long> following = new ArrayList<>();
-    private final List<Token> reported = new ArrayList<>();
+    private final List<String> reported = new ArrayList<>();
+    private boolean lexerLineGiven;
+    private ParserRuleContext statement;
+    private boolean inBlock;
+    private boolean readsNoFurther;
+    private int pathLimit;
     private int at;
     private boolean recovering;
     private int lastErrorIndex = -1;
 
-    private SignatureRecovery(final List<Token> tokens, final boolean lexed, final boolean describe,
+    private SignatureRecovery(final SignatureTokens read, final List<Token> tokens, final boolean describe,
                               final boolean identifierName) {
         this.tokens = tokens;
-        this.lexed = lexed;
+        this.lexerLineAt = read.lexerLineAt();
+        if (read.lexerLineAt() < 0) {
+            this.lexerLine = null;
+        } else {
+            final int[] place = read.lexerLinePlace();
+            final int[] shown = LeadingCommentOffset.rebase(place[0], place[1]);
+            this.lexerLine = "parse error line " + shown[0] + " at position " + shown[1] + " near '"
+                + read.lexerLineNear() + "'.";
+        }
         this.describe = describe;
         this.identifierName = identifierName;
     }
@@ -146,54 +178,229 @@ final class SignatureRecovery {
         if (open < 0) {
             return null;
         }
-        final List<Integer> comments = new ArrayList<>();
-        final List<Integer> unlexed = new ArrayList<>();
+        final int[] firstUnlexed = {-1};
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
-        lexer.setInterpreter(commentMarking(lexer, comments));
         lexer.removeErrorListeners();
         lexer.addErrorListener(new BaseErrorListener() {
             @Override
             public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol, final int line,
                                     final int charPositionInLine, final String msg, final RecognitionException e) {
-                unlexed.add(charPositionInLine);
+                if (firstUnlexed[0] < 0) {
+                    firstUnlexed[0] = e instanceof LexerNoViableAltException
+                        ? ((LexerNoViableAltException) e).getStartIndex() : 0;
+                }
             }
         });
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();
-        final List<Token> region = new ArrayList<>();
-        for (final Token token : stream.getTokens()) {
-            if (token.getTokenIndex() >= open && token.getChannel() == Token.DEFAULT_CHANNEL) {
-                region.add(token);
-            }
+        final Token first = open < stream.size() ? stream.get(open) : null;
+        if (first == null || first.getType() != FrostlakeLexer.LPAREN
+                || firstUnlexed[0] >= 0 && firstUnlexed[0] < first.getStartIndex()) {
+            // No signature, or a text refused at the lexer before one.
+            return null;
         }
-        if (region.isEmpty() || region.get(0).getType() != FrostlakeLexer.LPAREN) {
+        final SignatureTokens read = SignatureTokens.read(sql, first.getStartIndex());
+        if (read == null) {
             return null;
         }
         final ParserRuleContext name = objectName(script.flowChain().get(0).statement().get(0));
         final boolean identifierName = name.getChildCount() == 1 && name.getChild(0) instanceof TerminalNode
             && ((TerminalNode) name.getChild(0)).getSymbol().getType() == FrostlakeParser.KW_IDENTIFIER_OPEN;
-        final List<Token> joined = unlexed.isEmpty() ? StageReferenceTokens.joined(region, comments) : null;
-        return new SignatureRecovery(joined == null ? region : joined, joined != null, isDescribe(script),
-            identifierName);
+        return new SignatureRecovery(read, read.tokens(), isDescribe(script), identifierName);
     }
 
     /**
-     * This lexer's own simulator, noting where each comment it skips starts: a stage reference takes in a comment
-     * written straight after it (see {@link StageReferenceTokens}).
+     * The readings of a script that is more than one statement: one for each DROP or DESCRIBE in it whose name a
+     * '(' follows — a statement of the script or of a block in it — each over its own statement alone, in the order
+     * written. Empty for a script of one statement that is no block, which {@link #of} reads.
+     *
+     * @param script the parsed script
+     * @param sql    the script's source text
+     * @return the readings, each with the statement it reads
      */
-    private static LexerATNSimulator commentMarking(final FrostlakeLexer lexer, final List<Integer> comments) {
-        return new LexerATNSimulator(lexer, FrostlakeLexer._ATN, FrostlakeLexer._decisionToDFA,
-                FrostlakeLexer._sharedContextCache) {
-            @Override
-            public int match(final CharStream input, final int mode) {
-                final int start = input.index();
-                final int type = super.match(input, mode);
-                if (type == FrostlakeLexer.LINE_COMMENT || type == FrostlakeLexer.BLOCK_COMMENT) {
-                    comments.add(start);
-                }
-                return type;
+    static List<SignatureRecovery> ofStatements(final FrostlakeParser.SqlScriptContext script, final String sql) {
+        final List<SignatureRecovery> readings = new ArrayList<>();
+        if (script == null || sql == null) {
+            return readings;
+        }
+        int written = 0;
+        boolean block = false;
+        for (final FrostlakeParser.FlowChainContext chain : script.flowChain()) {
+            for (final FrostlakeParser.StatementContext statement : chain.statement()) {
+                written++;
+                block = block || statement.proceduralStatement() != null;
             }
-        };
+        }
+        if (written < 2 && !block) {
+            return readings;
+        }
+        final List<FrostlakeParser.StatementContext> statements = new ArrayList<>();
+        collectStatements(script, statements);
+        List<Token> spoken = null;
+        for (final FrostlakeParser.StatementContext statement : statements) {
+            final ParserRuleContext name = objectName(statement);
+            if (name == null || name.getStop() == null) {
+                continue;
+            }
+            if (spoken == null) {
+                spoken = spokenTokens(sql);
+            }
+            if (spoken.isEmpty()) {
+                return new ArrayList<>();
+            }
+            Token open = null;
+            Token ends = null;
+            for (final Token token : spoken) {
+                if (token.getTokenIndex() <= name.getStop().getTokenIndex()) {
+                    continue;
+                }
+                if (open == null) {
+                    open = token;
+                }
+                if (token.getType() == Token.EOF || token.getType() == FrostlakeLexer.SEMI) {
+                    ends = token;
+                    break;
+                }
+            }
+            if (open == null || open.getType() != FrostlakeLexer.LPAREN) {
+                continue;
+            }
+            final SignatureTokens read = SignatureTokens.read(sql, open.getStartIndex());
+            if (read == null || read.lexerLineAt() >= 0) {
+                continue;
+            }
+            final List<Token> region = new ArrayList<>();
+            boolean stage = false;
+            for (final Token token : read.tokens()) {
+                if (token.getType() == Token.EOF) {
+                    break;
+                }
+                region.add(token);
+                stage = stage || token.getType() == FrostlakeLexer.AT;
+                if (token.getType() == FrostlakeLexer.SEMI) {
+                    break;
+                }
+            }
+            final Token last = region.get(region.size() - 1);
+            if (stage || ends == null || (last.getType() == FrostlakeLexer.SEMI) != (ends.getType() == FrostlakeLexer.SEMI)
+                    || last.getType() == FrostlakeLexer.SEMI && last.getStartIndex() != ends.getStartIndex()) {
+                // A stage reference, whose ';' the account reads otherwise, or a statement the account ends elsewhere
+                // than this parse does: left to the parse.
+                continue;
+            }
+            region.add(read.tokens().get(read.tokens().size() - 1));
+            final boolean identifierName = name.getChildCount() == 1 && name.getChild(0) instanceof TerminalNode
+                && ((TerminalNode) name.getChild(0)).getSymbol().getType() == FrostlakeParser.KW_IDENTIFIER_OPEN;
+            final SignatureRecovery reading = new SignatureRecovery(read, region,
+                statement.describeStatement() != null, identifierName);
+            reading.statement = statement;
+            for (ParserRuleContext up = statement.getParent(); up != null && !reading.inBlock; up = up.getParent()) {
+                reading.inBlock = up instanceof FrostlakeParser.BeginEndBlockContext;
+            }
+            readings.add(reading);
+        }
+        return readings;
+    }
+
+    private static void collectStatements(final ParseTree node, final List<FrostlakeParser.StatementContext> into) {
+        if (node instanceof FrostlakeParser.StatementContext) {
+            into.add((FrostlakeParser.StatementContext) node);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectStatements(node.getChild(i), into);
+        }
+    }
+
+    /** The text's tokens on the default channel, or none when this lexer cannot read it whole. */
+    private static List<Token> spokenTokens(final String sql) {
+        final boolean[] unlexed = new boolean[1];
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
+        lexer.removeErrorListeners();
+        lexer.addErrorListener(new BaseErrorListener() {
+            @Override
+            public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol, final int line,
+                                    final int charPositionInLine, final String msg, final RecognitionException e) {
+                unlexed[0] = true;
+            }
+        });
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        final List<Token> spoken = new ArrayList<>();
+        for (final Token token : stream.getTokens()) {
+            if (token.getChannel() == Token.DEFAULT_CHANNEL) {
+                spoken.add(token);
+            }
+        }
+        return unlexed[0] ? new ArrayList<Token>() : spoken;
+    }
+
+    /**
+     * The statement this reading reads, for one of a script of several.
+     *
+     * @return the statement, or null for a script's only one
+     */
+    ParserRuleContext ownStatement() {
+        return statement;
+    }
+
+    /**
+     * Whether the statement this reading reads is a block's.
+     *
+     * @return true for a statement inside a BEGIN … END
+     */
+    boolean readsABlockStatement() {
+        return inBlock;
+    }
+
+    /**
+     * Whether the statement's end was itself refused, so that nothing after the statement is read at all:
+     * {@code DROP TABLE t (INT) x; SELECT 1 x y} is the first x alone.
+     *
+     * @return true when the reading gave up at the statement's end
+     */
+    boolean readsNoFurther() {
+        return readsNoFurther;
+    }
+
+    /**
+     * Whether a text holds a statement: any token but a semicolon.
+     *
+     * @param text the text
+     * @return false for blanks, comments and semicolons alone
+     */
+    static boolean holdsAStatement(final String text) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        for (final Token token : stream.getTokens()) {
+            if (token.getChannel() == Token.DEFAULT_CHANNEL && token.getType() != Token.EOF
+                    && token.getType() != FrostlakeLexer.SEMI) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The last token of the statement this reading reads: its semicolon, or the token before the end of the text.
+     *
+     * @return the token
+     */
+    Token last() {
+        return tokens.get(Math.max(0, tokens.size() - 2));
+    }
+
+    /**
+     * Whether a word the grammar reads as a signature item is one the account takes as none: a keyword, TRUE or
+     * FALSE, NULL — any word that is no plain word, no type's word and not quoted.
+     *
+     * @param word the word's token
+     * @return true for a word that names no item
+     */
+    static boolean namesNoItem(final Token word) {
+        final int kind = classOf(word);
+        return kind != UNMODELLED && !in(kind, ITEM_START);
     }
 
     /**
@@ -206,13 +413,13 @@ final class SignatureRecovery {
     }
 
     /**
-     * The tokens the account names, in its order, from the signature on — none when it reads the rest whole — or null
-     * when the text holds a shape this reading does not model.
+     * The lines the account reports, in its order, from the signature on — none when it reads the rest whole — or
+     * null when the text holds a shape this reading does not model.
      *
-     * @return the named tokens, or null
+     * @return the lines, or null
      */
-    List<Token> faults() {
-        if (!lexed || !modelled(tokens)) {
+    List<String> lines() {
+        if (!modelled(tokens)) {
             return null;
         }
         try {
@@ -256,19 +463,25 @@ final class SignatureRecovery {
         return script.flowChain().get(0).statement().size() > 1 ? name.getStop().getTokenIndex() + 1 : -1;
     }
 
-    /** The object name a DROP or a DESCRIBE of a table or a view reads, or null for any other statement. */
+    /**
+     * The object name a DROP or a DESCRIBE reads when its kind is one whose signature this reading models — a table
+     * or a view of any kind, a stream, a task, a pipe or a sequence, and for a DROP a tag, a file format, a policy,
+     * an alert or a search service too — or null for any other statement.
+     */
     private static ParserRuleContext objectName(final FrostlakeParser.StatementContext statement) {
         final FrostlakeParser.DescribeStatementContext describe = statement.describeStatement();
         if (describe != null && describe.objectName() != null
-                && (describe.TABLE() != null && describe.DYNAMIC() == null
-                    || describe.VIEW() != null && describe.MATERIALIZED() == null)) {
+                && (describe.TABLE() != null || describe.VIEW() != null || describe.STREAM() != null
+                    || describe.TASK() != null || describe.PIPE() != null || describe.SEQUENCE() != null)) {
             return describe.objectName();
         }
         final FrostlakeParser.DdlStatementContext ddl = statement.ddlStatement();
         final FrostlakeParser.DropStatementContext drop = ddl == null ? null : ddl.dropStatement();
         if (drop != null && drop.objectName() != null
-                && (drop.TABLE() != null && drop.ICEBERG() == null && drop.DYNAMIC() == null
-                    || drop.VIEW() != null && drop.MATERIALIZED() == null)) {
+                && (drop.TABLE() != null || drop.VIEW() != null || drop.STREAM() != null || drop.TASK() != null
+                    || drop.PIPE() != null || drop.SEQUENCE() != null || drop.TAG() != null || drop.FORMAT() != null
+                    || drop.POLICY() != null && (drop.MASKING() != null || drop.ACCESS() != null)
+                    || drop.ALERT() != null || drop.CORTEX() != null)) {
             return drop.objectName();
         }
         return null;
@@ -286,8 +499,7 @@ final class SignatureRecovery {
 
     /**
      * Whether every token of the region is one this reading classifies and the region holds one statement: a ';'
-     * only as its last token, none of the spellings the account reads as one word where this lexer reads two, and no
-     * block comment left open, which the account refuses where this lexer reads a '/' and a '*'.
+     * only as its last token, and none of the spellings the account reads as one word where this lexer reads two.
      */
     private static boolean modelled(final List<Token> region) {
         for (int i = 0; i < region.size(); i++) {
@@ -306,11 +518,7 @@ final class SignatureRecovery {
                         && nextType == FrostlakeLexer.VARYING
                     || type == FrostlakeLexer.TIMESTAMP && nextType != FrostlakeLexer.LPAREN
                         && nextType != FrostlakeLexer.COMMA && nextType != FrostlakeLexer.RPAREN
-                    || type == FrostlakeLexer.FLOAT_LITERAL && next != null
-                        && (nextType == FrostlakeLexer.FLOAT_LITERAL || nextType == FrostlakeLexer.DOT)
-                        && next.getStartIndex() == token.getStopIndex() + 1
-                    || type == FrostlakeLexer.SLASH && next != null
-                        && (nextType == FrostlakeLexer.STAR || nextType == FrostlakeLexer.DOUBLE_STAR)
+                    || type == FrostlakeLexer.FLOAT_LITERAL && next != null && nextType == FrostlakeLexer.DOT
                         && next.getStartIndex() == token.getStopIndex() + 1) {
                 return false;
             }
@@ -338,11 +546,19 @@ final class SignatureRecovery {
             following.remove(following.size() - 1);
             properties();
         } else {
-            following.add(bit(DROP_OPTION) | EOR);
+            // A block's statement is followed by another: after a fault the word at hand is read as that one's
+            // first, and the token after it refused.
+            following.add(bit(DROP_OPTION) | (inBlock ? PROPERTY : 0L) | EOR);
             signature();
             following.remove(following.size() - 1);
             if (la(1) == DROP_OPTION) {
                 matched();
+            } else if (inBlock && recovering && in(la(1), PROPERTY)) {
+                matched();
+                report(lt(1));
+                while (la(1) != EOF_CLASS && la(1) != SEMI) {
+                    consume();
+                }
             }
         }
         following.clear();
@@ -358,6 +574,7 @@ final class SignatureRecovery {
             match(EOF_CLASS, 0L);
         } catch (final SignatureFault fault) {
             handle(fault);
+            readsNoFurther = true;
         }
     }
 
@@ -374,7 +591,13 @@ final class SignatureRecovery {
                 return;
             }
             if (first == TABLE) {
-                throw unmodelled();
+                tableItem();
+                while (la(1) == COMMA) {
+                    matched();
+                    tableItem();
+                }
+                match(RPAREN, EOR);
+                return;
             }
             if (!in(first, ITEM_START)) {
                 throw fault(1);
@@ -391,12 +614,40 @@ final class SignatureRecovery {
     }
 
     private void item() {
-        following.add(LIST_END);
+        type(LIST_END);
+    }
+
+    /** One data type read by a rule of its own: a fault inside gives that type up and no more. */
+    private void type(final long follow) {
+        following.add(follow);
         try {
             dataType();
         } catch (final SignatureFault fault) {
             handle(fault);
         }
+        following.remove(following.size() - 1);
+    }
+
+    /** One TABLE(type, …) item: the '(' is supplied before a token that may open a type. */
+    private void tableItem() {
+        following.add(LIST_END);
+        pathLimit = 3;
+        try {
+            if (la(1) != TABLE) {
+                throw fault(1);
+            }
+            matched();
+            match(LPAREN, ITEM_START);
+            type(LIST_END);
+            while (la(1) == COMMA) {
+                matched();
+                type(LIST_END);
+            }
+            match(RPAREN, EOR);
+        } catch (final SignatureFault fault) {
+            handle(fault);
+        }
+        pathLimit = 0;
         following.remove(following.size() - 1);
     }
 
@@ -407,7 +658,8 @@ final class SignatureRecovery {
     private void dataType() {
         final int kind = la(1);
         if (kind == STRUCTURED) {
-            throw unmodelled();
+            structured();
+            return;
         }
         if (kind == BARE_TYPE) {
             matched();
@@ -437,6 +689,177 @@ final class SignatureRecovery {
         throw fault(1);
     }
 
+    /** A structured type, or an INTERVAL with its fields. */
+    private void structured() {
+        final int word = lt(1).getType();
+        if (word == FrostlakeLexer.ARRAY || word == FrostlakeLexer.OBJECT) {
+            matched();
+            if (la(1) == LPAREN && la(2) != TABLE) {
+                matched();
+                if (word == FrostlakeLexer.ARRAY) {
+                    element();
+                } else {
+                    fields();
+                }
+                match(RPAREN, EOR);
+            } else if (la(1) == DOT) {
+                throw fault(1);
+            }
+        } else if (word == FrostlakeLexer.MAP) {
+            matched();
+            match(LPAREN, ITEM_START);
+            type(bit(COMMA));
+            match(COMMA, ITEM_START);
+            type(bit(RPAREN));
+            notNull(bit(RPAREN));
+            match(RPAREN, EOR);
+        } else if (word == FrostlakeLexer.VECTOR) {
+            vector();
+        } else if (word == FrostlakeLexer.INTERVAL) {
+            interval();
+        } else {
+            throw unmodelled();
+        }
+    }
+
+    /** An ARRAY's element: its first token judged by the ARRAY, the rest read as a type of its own. */
+    private void element() {
+        if (!in(la(1), ITEM_START)) {
+            throw fault(1);
+        }
+        type(bit(RPAREN));
+        notNull(bit(RPAREN));
+    }
+
+    /** An OBJECT's fields, none allowed: the first one's first token judged by the OBJECT. */
+    private void fields() {
+        if (la(1) == RPAREN) {
+            return;
+        }
+        if (!namesAField(la(1))) {
+            throw fault(1);
+        }
+        field();
+        while (la(1) == COMMA) {
+            matched();
+            field();
+        }
+    }
+
+    private void field() {
+        following.add(LIST_END);
+        try {
+            if (!namesAField(la(1))) {
+                throw fault(1);
+            }
+            matched();
+            if (!in(la(1), ITEM_START)) {
+                throw fault(1);
+            }
+            type(LIST_END);
+            notNull(LIST_END);
+        } catch (final SignatureFault fault) {
+            handle(fault);
+        }
+        following.remove(following.size() - 1);
+    }
+
+    private static boolean namesAField(final int kind) {
+        return in(kind, ITEM_START | bit(KEYWORD) | bit(BOOLEAN) | bit(CLAUSE_WORD));
+    }
+
+    /** NOT NULL after a type: the NULL supplied before a token that may follow it. */
+    private void notNull(final long follow) {
+        if (lt(1).getType() == FrostlakeLexer.NOT) {
+            matched();
+            match(NULL_WORD, follow);
+        }
+    }
+
+    /** VECTOR(element, dimension): the element and the signed dimension each read by a rule of its own. */
+    private void vector() {
+        matched();
+        if (la(1) == LPAREN) {
+            matched();
+        } else if (la(2) == LPAREN) {
+            final Token extra = lt(1);
+            consume();
+            report(extra);
+            consume();
+        } else if (isVectorElement(lt(1))) {
+            report(lt(1));
+        } else {
+            throw fault(1);
+        }
+        following.add(bit(COMMA));
+        try {
+            if (!isVectorElement(lt(1))) {
+                throw fault(1);
+            }
+            matched();
+        } catch (final SignatureFault fault) {
+            handle(fault);
+        }
+        following.remove(following.size() - 1);
+        match(COMMA, bit(INT) | bit(MINUS));
+        following.add(bit(RPAREN));
+        try {
+            signedNumber(bit(RPAREN));
+        } catch (final SignatureFault fault) {
+            handle(fault);
+        }
+        following.remove(following.size() - 1);
+        match(RPAREN, EOR);
+    }
+
+    private static boolean isVectorElement(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.INT || type == FrostlakeLexer.INTEGER || type == FrostlakeLexer.BIGINT
+            || type == FrostlakeLexer.SMALLINT || type == FrostlakeLexer.TINYINT || type == FrostlakeLexer.BYTEINT
+            || type == FrostlakeLexer.FLOAT || type == FrostlakeLexer.FLOAT4 || type == FrostlakeLexer.FLOAT8
+            || type == FrostlakeLexer.DOUBLE || type == FrostlakeLexer.REAL;
+    }
+
+    /** INTERVAL unit [(p [, s])] [TO unit [(p [, s])]]: a TO is read only with the unit after it. */
+    private void interval() {
+        matched();
+        if (!isIntervalUnit(lt(1))) {
+            throw fault(1);
+        }
+        matched();
+        intervalPrecision();
+        if (lt(1).getType() == FrostlakeLexer.TO && isIntervalUnit(lt(2))) {
+            matched();
+            matched();
+            intervalPrecision();
+        }
+    }
+
+    private void intervalPrecision() {
+        if (la(1) != LPAREN) {
+            return;
+        }
+        if (la(2) != INT) {
+            throw unmodelled();
+        }
+        matched();
+        matched();
+        if (la(1) == COMMA && la(2) == INT) {
+            matched();
+            matched();
+        }
+        if (la(1) != RPAREN) {
+            throw unmodelled();
+        }
+        matched();
+    }
+
+    private static boolean isIntervalUnit(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.YEAR || type == FrostlakeLexer.MONTH || type == FrostlakeLexer.DAY
+            || type == FrostlakeLexer.HOUR || type == FrostlakeLexer.MINUTE || type == FrostlakeLexer.SECOND;
+    }
+
     /** A type's parameters: NUMBER(p [, s]), VARCHAR([n]) or TIME(p), each number signed. */
     private void typeParameters(final int kind) {
         matched();
@@ -459,9 +882,11 @@ final class SignatureRecovery {
 
     /** A dotted path after a word: each '.' followed by a plain or quoted word, read by a rule of its own. */
     private void path() {
+        int parts = 1;
         while (la(1) == DOT) {
             matched();
-            pathPart(PART);
+            parts++;
+            pathPart(pathLimit > 0 && parts > pathLimit ? 0L : PART);
         }
     }
 
@@ -512,7 +937,8 @@ final class SignatureRecovery {
 
     /**
      * The properties: the first may be any property word; a later one follows a ',' or stands on its own, except that
-     * a clause word (IF, COMMENT, TAG, …) continues the list only when an '=' follows it.
+     * a clause word (IF, COMMENT, TAG, …) continues the list only when an '=' follows it. After a ',' any token is
+     * read as a property, so one that names none is refused there.
      */
     private void properties() {
         if (!in(la(1), PROPERTY)) {
@@ -523,9 +949,6 @@ final class SignatureRecovery {
             final int next = la(1);
             if (next == COMMA) {
                 matched();
-                if (!in(la(1), PROPERTY) && la(1) != EOF_CLASS && !(la(1) == SEMI && la(2) == EOF_CLASS)) {
-                    throw unmodelled();
-                }
             } else if (next == CLAUSE_WORD || next == WHEN) {
                 if (la(2) != EQ) {
                     return;
@@ -540,12 +963,22 @@ final class SignatureRecovery {
     private void property() {
         following.add(bit(COMMA) | PROPERTY | EOR);
         try {
-            if (!in(la(1), PROPERTY)) {
-                throw fault(1);
+            if (la(1) == COMMA) {
+                // A second ',' is named and passed over: x = 1,, y = 2 is the second ',' alone.
+                report(lt(1));
+                consume();
+            } else {
+                if (in(la(1), PROPERTY)) {
+                    matched();
+                } else if (la(1) == EQ) {
+                    // After a ',' an '=' is named as the name it lacks, and read.
+                    report(lt(1));
+                } else {
+                    throw fault(1);
+                }
+                match(EQ, EQ_FOLLOW);
+                value();
             }
-            matched();
-            match(EQ, EQ_FOLLOW);
-            value();
         } catch (final SignatureFault fault) {
             handle(fault);
         }
@@ -553,8 +986,8 @@ final class SignatureRecovery {
     }
 
     /**
-     * A property's value: a literal, a stage reference, a signed number, a word with its dotted path, or a
-     * parenthesized list.
+     * A property's value: a literal, a binary string, a variable, a stage reference, a signed number, a word with its
+     * dotted path, or a parenthesized list.
      */
     private void value() {
         final int kind = la(1);
@@ -567,7 +1000,7 @@ final class SignatureRecovery {
             signedNumber();
         } else if (in(kind, PATH_START)) {
             wordValue();
-        } else if (in(kind, LITERAL) || kind == STAGE) {
+        } else if (in(kind, LITERAL) || kind == STAGE || kind == HEX || kind == SESSION_VARIABLE) {
             matched();
         } else {
             throw fault(1);
@@ -575,16 +1008,23 @@ final class SignatureRecovery {
     }
 
     /**
-     * A word and its dotted path, predicted whole: a '.' followed by no word, or a number, a '-' or a '?' after the
-     * path, is refused before anything is read, and the word is read again as a property.
+     * A word and its dotted path, predicted whole: a '.' or a '!' followed by no word, or a number, a '-', a '?' or a
+     * token no rule reads after the path, is refused before anything is read, and the word is read again as a
+     * property.
      */
     private void wordValue() {
         int length = 1;
-        while (la(length + 1) == DOT) {
+        while (la(length + 1) == DOT || la(length + 1) == BANG) {
             if (!in(la(length + 2), PATH_START)) {
                 throw fault(length + 2);
             }
+            if (la(length + 1) == BANG) {
+                throw unmodelled();
+            }
             length += 2;
+        }
+        if (la(length + 1) == SESSION_VARIABLE) {
+            throw unmodelled();
         }
         if (in(la(length + 1), REREAD_AFTER_WORD)) {
             throw fault(length + 1);
@@ -606,7 +1046,8 @@ final class SignatureRecovery {
             matched();
             return;
         }
-        if (first == LPAREN || first == EXPRESSION || first == WHEN || first == COLON) {
+        if (first == LPAREN || first == EXPRESSION || first == WHEN || first == COLON || first == HEX
+                || first == SESSION_VARIABLE) {
             throw unmodelled();
         }
         if (in(first, PATH_START) || first == STR) {
@@ -637,7 +1078,8 @@ final class SignatureRecovery {
         following.add(LIST_END);
         try {
             final int kind = la(1);
-            if (kind == ALL_WORD || kind == EXPRESSION || kind == WHEN || kind == COLON) {
+            if (kind == ALL_WORD || kind == EXPRESSION || kind == WHEN || kind == COLON || kind == HEX
+                    || kind == SESSION_VARIABLE) {
                 throw unmodelled();
             }
             if (kind == MINUS) {
@@ -743,7 +1185,7 @@ final class SignatureRecovery {
             return;
         }
         recovering = true;
-        reported.add(token);
+        reported.add(SyntaxErrorListener.sentence(token));
     }
 
     /** Skip to the first token that may follow any rule being read; never stay twice where a fault was handled. */
@@ -780,9 +1222,14 @@ final class SignatureRecovery {
         return new SignatureFault(null, true);
     }
 
+    /** The token so many ahead; looking at one behind the lexer's refusal reports that refusal's line first. */
     private Token lt(final int ahead) {
-        final int index = at + ahead - 1;
-        return tokens.get(Math.min(index, tokens.size() - 1));
+        final int index = Math.min(at + ahead - 1, tokens.size() - 1);
+        if (lexerLine != null && !lexerLineGiven && index >= lexerLineAt) {
+            lexerLineGiven = true;
+            reported.add(lexerLine);
+        }
+        return tokens.get(index);
     }
 
     private int la(final int ahead) {
@@ -805,6 +1252,12 @@ final class SignatureRecovery {
         final int type = token.getType();
         if (type == Token.EOF) {
             return EOF_CLASS;
+        }
+        if (type == SignatureTokens.UNKNOWN_CHARACTER || type == SignatureTokens.SYMBOL) {
+            return OTHER;
+        }
+        if (type == SignatureTokens.BACKTICKED_NAME) {
+            return QUOTED;
         }
         if (type == FrostlakeLexer.IDENTIFIER) {
             final String word = token.getText().toLowerCase(Locale.ROOT);
@@ -832,9 +1285,9 @@ final class SignatureRecovery {
             FrostlakeLexer.GTE, FrostlakeLexer.PLUS, FrostlakeLexer.STAR, FrostlakeLexer.DOUBLE_STAR,
             FrostlakeLexer.SLASH, FrostlakeLexer.PERCENT, FrostlakeLexer.TILDE, FrostlakeLexer.PIPE_PIPE,
             FrostlakeLexer.DOUBLE_COLON);
-        assign(table, UNMODELLED, FrostlakeLexer.SESSION_VAR_REF, FrostlakeLexer.SYSTEM_STREAM_HAS_DATA,
+        assign(table, UNMODELLED, FrostlakeLexer.SYSTEM_STREAM_HAS_DATA,
             FrostlakeLexer.SYSTEM_USER_TASK_CANCEL, FrostlakeLexer.SYSTEM_FUNC, FrostlakeLexer.MALFORMED_EXPONENT,
-            FrostlakeLexer.HEX_LITERAL, FrostlakeLexer.FILE_URL, FrostlakeLexer.LINE_COMMENT,
+            FrostlakeLexer.FILE_URL, FrostlakeLexer.LINE_COMMENT,
             FrostlakeLexer.BLOCK_COMMENT, FrostlakeLexer.WS, FrostlakeLexer.REVOKE_CURRENT_GRANTS,
             FrostlakeLexer.RESUME_IF_SUSPENDED, FrostlakeLexer.ABORT_ALL_QUERIES);
         assign(table, SEMI, FrostlakeLexer.SEMI);
@@ -851,6 +1304,9 @@ final class SignatureRecovery {
         assign(table, QUESTION, FrostlakeLexer.QUESTION);
         assign(table, COLON, FrostlakeLexer.COLON);
         assign(table, STAGE, FrostlakeLexer.AT);
+        assign(table, HEX, FrostlakeLexer.HEX_LITERAL);
+        assign(table, SESSION_VARIABLE, FrostlakeLexer.SESSION_VAR_REF);
+        assign(table, BANG, FrostlakeLexer.BANG);
         assign(table, BOOLEAN, FrostlakeLexer.TRUE, FrostlakeLexer.FALSE);
         assign(table, NULL_WORD, FrostlakeLexer.NULL);
         assign(table, ALL_WORD, FrostlakeLexer.ALL);

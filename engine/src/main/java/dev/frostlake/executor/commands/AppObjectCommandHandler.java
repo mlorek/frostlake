@@ -43,6 +43,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * CREATE, ALTER, DROP and UNDROP of notebooks and Streamlit apps, and EXECUTE NOTEBOOK. The objects are catalog
@@ -108,7 +109,7 @@ public class AppObjectCommandHandler {
             return execute(existing(kind, nameCtx, false));
         }
         if (ctx.DROP() != null) {
-            return drop(kind, ctx.dropInstanceName(), ctx.if_exists() != null);
+            return drop(kind, ctx.dropInstanceName(), ctx.if_exists() != null, ctx.dropBehavior());
         }
         if (ctx.UNDROP() != null) {
             return undrop(kind, nameCtx);
@@ -211,7 +212,7 @@ public class AppObjectCommandHandler {
             return null;
         }
         if (ctx.DROP() != null) {
-            return drop(kind, ctx.dropInstanceName(), ctx.if_exists() != null);
+            return drop(kind, ctx.dropInstanceName(), ctx.if_exists() != null, ctx.dropBehavior());
         }
         if (ctx.UNDROP() != null) {
             return undrop(kind, nameCtx);
@@ -288,7 +289,7 @@ public class AppObjectCommandHandler {
         }
         // The stage is read by its name as the catalog holds it, whichever way the location spells it.
         final int nameStart = stage.length() - QualifiedName.parse(stage).last().length();
-        final StagePrefix files = queryExecutor.resolveStagePrefix(stageName.equals(stageName.toUpperCase())
+        final StagePrefix files = queryExecutor.resolveStagePrefix(stageName.equals(stageName.toUpperCase(Locale.ROOT))
             ? "@" + stage.substring(0, nameStart) + stageName + (slash >= 0 ? reference.substring(slash) : "") : from);
         if (files == null || files.getRoot() == null) {
             return;
@@ -392,16 +393,20 @@ public class AppObjectCommandHandler {
 
     /**
      * DROP: the name resolves as any object's does — a missing database or schema is refused, IF EXISTS or not —
-     * and a missing object is forgiven by IF EXISTS alone. CASCADE and RESTRICT change nothing.
+     * and a missing object is forgiven by IF EXISTS alone. CASCADE and RESTRICT change nothing; a PURGE is refused
+     * once the name has resolved (see {@link DropPurge}).
      */
     private Object drop(final AppObjectKind kind, final FrostlakeParser.DropInstanceNameContext instance,
-                        final boolean ifExists) {
+                        final boolean ifExists, final FrostlakeParser.DropBehaviorContext behavior) {
         final String[] parts = instance.objectName() != null
             ? queryExecutor.resolveObjectNameParts(instance.objectName())
             : SqlIdentifiers.canonicalTextParts(instance.getText());
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String name = parts[parts.length - 1];
         final AppObject object = schema.getAppObjects().get(kind, name);
+        if (DropPurge.written(behavior) && (ifExists || object != null)) {
+            throw DropPurge.refusal(parts);
+        }
         if (object == null) {
             if (ifExists) {
                 ConditionalDdlOutcome.dropSkipped();

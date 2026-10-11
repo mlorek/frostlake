@@ -22,6 +22,8 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 /**
  * The schema or table a SHOW PRIMARY, UNIQUE or IMPORTED KEYS scope names: a missing table is named as written when
  * its name has one part and in full when it is a path; a one-part schema scope asks for the full search path, even
@@ -116,6 +118,6 @@ public class ShowKeysScopeNamingTest extends BaseDatabaseTest {
         engine.executeQuery("SHOW PRIMARY KEYS IN tpk");
         assertEquals("true",
             answer("SELECT \"created_on\" <= CURRENT_TIMESTAMP() FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))")
-                .toLowerCase());
+                .toLowerCase(Locale.ROOT));
     }
 }

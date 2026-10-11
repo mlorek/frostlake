@@ -23,6 +23,8 @@ public class FunctionCallExpression extends BaseExpression {
     private final List<BaseExpression> arguments;
     /** The quantifier written before the arguments, {@code DISTINCT} or {@code ALL}, or null. */
     private String quantifier;
+    /** The text of each argument that reads no name, null where one does; null when none was recorded. */
+    private List<String> namelessArguments;
 
     public FunctionCallExpression(final String functionName, final List<BaseExpression> arguments) {
         this.functionName = functionName;
@@ -50,5 +52,25 @@ public class FunctionCallExpression extends BaseExpression {
     /** The quantifier written before the arguments, {@code DISTINCT} or {@code ALL}, or null. */
     public String getQuantifier() {
         return quantifier;
+    }
+
+    /**
+     * Record the text of each argument that reads no name — literals, and the operators, conversions and calls
+     * over them — which is how SQL judges the argument when its value alone does not say what was written.
+     *
+     * @param written the arguments' texts in order, null where an argument reads a name
+     */
+    public void describeNamelessArguments(final List<String> written) {
+        this.namelessArguments = written;
+    }
+
+    /**
+     * The text of an argument that reads no name.
+     *
+     * @param index the argument's place, from zero
+     * @return the text as written, or null where the argument reads a name or its text was not recorded
+     */
+    public String getNamelessArgument(final int index) {
+        return namelessArguments != null && index < namelessArguments.size() ? namelessArguments.get(index) : null;
     }
 }

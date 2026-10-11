@@ -28,6 +28,8 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -95,7 +97,7 @@ public class PipesTest extends BaseDatabaseTest {
         assertTrue(pipeStatus("my_pipe").contains("RUNNING"));
         if (!isLiveSnowflake()) {
             final Pipe pipe = catalogPipe("my_pipe");
-            assertEquals("my_pipe", pipe.getName().toLowerCase());
+            assertEquals("my_pipe", pipe.getName().toLowerCase(Locale.ROOT));
             assertFalse(pipe.isAutoIngest());
             assertFalse(pipe.isPaused());
             assertEquals("RUNNING", pipe.getStatus());
@@ -625,7 +627,7 @@ public class PipesTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("SHOW PIPES LIKE 'content_pipe'");
         assertEquals(1, result.getRowCount());
         final Row pipe = result.getRows().get(0);
-        assertEquals("content_pipe", pipe.getValue(result.getColumnIndex("name")).toString().toLowerCase());
+        assertEquals("content_pipe", pipe.getValue(result.getColumnIndex("name")).toString().toLowerCase(Locale.ROOT));
         assertTrue(pipe.getValue(result.getColumnIndex("definition")).toString().contains("COPY INTO"));
         assertEquals("STAGE", pipe.getValue(result.getColumnIndex("kind")));
         assertEquals("false", String.valueOf(pipe.getValue(result.getColumnIndex("is_snowflake_managed"))));
@@ -661,7 +663,7 @@ public class PipesTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("DESCRIBE PIPE desc_pipe");
         assertEquals(1, result.getRowCount());
         // columns: created_on(0) name(1) database_name(2) schema_name(3) definition(4) ...
-        assertEquals("desc_pipe", result.getRows().get(0).getValue(1).toString().toLowerCase());
+        assertEquals("desc_pipe", result.getRows().get(0).getValue(1).toString().toLowerCase(Locale.ROOT));
         assertTrue(result.getRows().get(0).getValue(4).toString().contains("COPY INTO"));
     }
 }

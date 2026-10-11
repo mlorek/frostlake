@@ -18,6 +18,8 @@ package dev.frostlake.functions.file;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -35,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class FlIsCompressedTest extends FileFunctionTestSupport {
 
     private String isCompressed(final String contentType) {
-        return scalar("SELECT FL_IS_COMPRESSED(" + fileOf(contentType) + ")").toUpperCase();
+        return scalar("SELECT FL_IS_COMPRESSED(" + fileOf(contentType) + ")").toUpperCase(Locale.ROOT);
     }
 
     /** Live: every content type measured TRUE, enumerated. */
@@ -88,7 +90,7 @@ public class FlIsCompressedTest extends FileFunctionTestSupport {
     public void epubIsADocumentAndNotCompressed() {
         assertEquals("FALSE", isCompressed("application/epub+zip"));
         assertEquals("TRUE", scalar("SELECT FL_IS_DOCUMENT(" + fileOf("application/epub+zip") + ")")
-            .toUpperCase());
+            .toUpperCase(Locale.ROOT));
         assertEquals("document", scalar("SELECT FL_GET_FILE_TYPE(" + fileOf("application/epub+zip") + ")"));
     }
 
@@ -98,7 +100,7 @@ public class FlIsCompressedTest extends FileFunctionTestSupport {
      */
     @Test
     public void nullFileIsFalseNotNull() {
-        assertEquals("FALSE", scalar("SELECT FL_IS_COMPRESSED(NULL)").toUpperCase());
-        assertEquals("FALSE", scalar("SELECT FL_IS_COMPRESSED(TO_FILE(NULL))").toUpperCase());
+        assertEquals("FALSE", scalar("SELECT FL_IS_COMPRESSED(NULL)").toUpperCase(Locale.ROOT));
+        assertEquals("FALSE", scalar("SELECT FL_IS_COMPRESSED(TO_FILE(NULL))").toUpperCase(Locale.ROOT));
     }
 }

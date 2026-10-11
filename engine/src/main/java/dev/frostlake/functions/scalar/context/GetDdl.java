@@ -19,10 +19,11 @@ package dev.frostlake.functions.scalar.context;
 import dev.frostlake.executor.DefinitionCompile;
 import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.ReturnColumnTypes;
+import dev.frostlake.executor.RoutineReferenceText;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
-import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
@@ -65,9 +66,7 @@ import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.metastore.model.View;
-import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
-import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
@@ -77,11 +76,8 @@ import dev.frostlake.types.StringType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
-import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.misc.ParseCancellationException;
-import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
  * {@code GET_DDL('<object_type>', '<object_name>' [, <use_fully_qualified_names>])} — reconstructs the
@@ -124,6 +120,7 @@ public class GetDdl extends BuiltInFunction {
      */
     private final QueryRunner queryRunner;
     private final RelationNameResolver relationNames;
+    private final DefinitionOwnership ownership;
     /** The recursive text of a schema and a database, built from this function's renderers. */
     private final SchemaDdl containers = new SchemaDdl(this);
 
@@ -142,10 +139,42 @@ public class GetDdl extends BuiltInFunction {
      *                      the current schema alone
      */
     public GetDdl(final Catalog catalog, final QueryRunner queryRunner, final RelationNameResolver relationNames) {
+        this(catalog, queryRunner, relationNames, null);
+    }
+
+    /**
+     * @param catalog       the catalog the objects are read from
+     * @param queryRunner   plans a relation's defining query, or null
+     * @param relationNames finds a relation by a bare name along the session's search path, or null to look in
+     *                      the current schema alone
+     * @param ownership     says whether the session may act as an object's owner, or null to show everything
+     */
+    public GetDdl(final Catalog catalog, final QueryRunner queryRunner, final RelationNameResolver relationNames,
+                  final DefinitionOwnership ownership) {
         super("GET_DDL", StringType.VARCHAR);
         this.catalog = catalog;
         this.queryRunner = queryRunner;
         this.relationNames = relationNames;
+        this.ownership = ownership;
+    }
+
+    /**
+     * Whether the session may not act as an object's owner. Only its owner — a role the session holds or inherits —
+     * is shown how a SECURE function, procedure or view is defined, and a procedure's body, secure or not: to any
+     * other role the secure object is {@code Object does not exist, or operation cannot be performed.}, a schema's
+     * DDL leaves it out, and a procedure's DDL carries an empty body (live-verified).
+     *
+     * @param owner the object's owner role
+     * @return whether the definition is another role's
+     */
+    boolean isAnothers(final String owner) {
+        return ownership != null && !ownership.actsAsOwner(owner);
+    }
+
+    private void requireShown(final boolean secure, final String owner) {
+        if (secure && isAnothers(owner)) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
     }
 
     @Override
@@ -173,7 +202,7 @@ public class GetDdl extends BuiltInFunction {
                 return null;
             }
         }
-        final String typeText = args.get(0).toString().toUpperCase();
+        final String typeText = args.get(0).toString().toUpperCase(Locale.ROOT);
         final String objectType = typeText.replace(' ', '_');
         if (!OBJECT_TYPES.contains(objectType)) {
             throw invalidObjectType(typeText);
@@ -200,10 +229,12 @@ public class GetDdl extends BuiltInFunction {
                 throw new RuntimeException("Unsupported feature 'EVENT_TABLE'.");
             case "FUNCTION": {
                 final Function function = (Function) routine(written.trim(), false);
+                requireShown(function.isSecure(), function.getOwner());
                 return lookupOnly ? null : functionDdl(function, routineOwner(written.trim()), names);
             }
             case "PROCEDURE": {
                 final Procedure procedure = (Procedure) routine(written.trim(), true);
+                requireShown(procedure.isSecure(), procedure.getOwner());
                 return lookupOnly ? null : procedureDdl(procedure, routineOwner(written.trim()), names);
             }
             case "SEQUENCE":
@@ -252,7 +283,7 @@ public class GetDdl extends BuiltInFunction {
      * @return the refusal
      */
     public RuntimeException numberedObject(final Object type) {
-        final String typeText = type.toString().toUpperCase();
+        final String typeText = type.toString().toUpperCase(Locale.ROOT);
         return OBJECT_TYPES.contains(typeText.replace(' ', '_')) ? objectDoesNotExist(type.toString())
             : invalidObjectType(typeText);
     }
@@ -313,9 +344,11 @@ public class GetDdl extends BuiltInFunction {
                 // (live-verified).
                 throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
             }
+            requireShown(owner.getView(name).isSecure(), owner.getView(name).getOwner());
             return lookupOnly ? null : viewDdl(owner.getView(name), owner, names);
         }
         if (owner.hasMaterializedView(name) && named(owner.getMaterializedView(name).getName(), name)) {
+            requireShown(owner.getMaterializedView(name).isSecure(), owner.getMaterializedView(name).getOwner());
             return lookupOnly ? null : materializedViewDdl(owner.getMaterializedView(name), owner, names);
         }
         if (owner.hasDynamicTable(name) && named(owner.getDynamicTable(name).getName(), name)) {
@@ -1035,7 +1068,7 @@ public class GetDdl extends BuiltInFunction {
         sb.append("RETURNS ").append(function.isTableFunction()
             ? "TABLE (" + returnColumns(function.getReturnColumns()) + ")"
             : routineTypeText(function.getReturnType())).append("\n");
-        sb.append("LANGUAGE ").append(function.getLanguage().toUpperCase()).append("\n");
+        sb.append("LANGUAGE ").append(function.getLanguage().toUpperCase(Locale.ROOT)).append("\n");
         if ("RETURNS NULL ON NULL INPUT".equals(function.getNullHandling())) {
             sb.append("STRICT\n");
         }
@@ -1070,7 +1103,7 @@ public class GetDdl extends BuiltInFunction {
         sb.append("RETURNS ").append(procedure.returnsTable()
             ? "TABLE (" + returnColumns(procedure.getReturnColumns()) + ")"
             : routineTypeText(procedure.getReturnType())).append("\n");
-        sb.append("LANGUAGE ").append(procedure.getLanguage().toUpperCase()).append("\n");
+        sb.append("LANGUAGE ").append(procedure.getLanguage().toUpperCase(Locale.ROOT)).append("\n");
         if ("RETURNS NULL ON NULL INPUT".equals(procedure.getNullHandling())) {
             sb.append("STRICT\n");
         }
@@ -1083,8 +1116,10 @@ public class GetDdl extends BuiltInFunction {
             sb.append("COMMENT=").append(ObjectDdl.quoted(procedure.getComment())).append("\n");
         }
         sb.append("EXECUTE AS ").append(procedure.getExecuteAs() == null ? "OWNER"
-            : procedure.getExecuteAs().toUpperCase()).append("\n");
-        return sb.append(bodyClause(procedure.getBody())).toString();
+            : procedure.getExecuteAs().toUpperCase(Locale.ROOT)).append("\n");
+        // A procedure's body is its owner's to read: any other role is given an empty one.
+        return sb.append(bodyClause(procedure.getBody() != null && isAnothers(procedure.getOwner())
+            ? "" : procedure.getBody())).toString();
     }
 
     /**
@@ -1151,8 +1186,9 @@ public class GetDdl extends BuiltInFunction {
      * nothing, and is refused echoing the argument AS WRITTEN, which is how the account echoes it.
      */
     private Object routine(final String written, final boolean procedure) {
-        final FrostlakeParser.RoutineReferenceContext reference = routineReference(written);
-        final List<DataType> types = reference == null ? null : writtenTypes(reference.dataTypeList());
+        final FrostlakeParser.RoutineReferenceContext reference = RoutineReferenceText.parse(written);
+        final List<DataType> types = reference == null ? null
+            : RoutineReferenceText.writtenTypes(reference.dataTypeList());
         if (types == null) {
             throw objectDoesNotExist(written);
         }
@@ -1169,42 +1205,7 @@ public class GetDdl extends BuiltInFunction {
 
     /** The schema a routine argument places its routine in; {@code routine} has already found the routine there. */
     private Schema routineOwner(final String written) {
-        return owner(ParseTreeText.qualifiedNameParts(routineReference(written).qualifiedName()));
-    }
-
-    /** The routine reference a GET_DDL argument spells, or null when the text is not exactly one. */
-    private static FrostlakeParser.RoutineReferenceContext routineReference(final String written) {
-        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(written));
-        lexer.removeErrorListeners();
-        final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
-        parser.removeErrorListeners();
-        parser.setErrorHandler(new BailErrorStrategy());
-        try {
-            return parser.routineReference();
-        } catch (final ParseCancellationException notAReference) {
-            return null;
-        }
-    }
-
-    /** The types a reference lists, in order, or null when an argument is written with a name or is no type. */
-    private static List<DataType> writtenTypes(final FrostlakeParser.DataTypeListContext list) {
-        final List<DataType> types = new ArrayList<DataType>();
-        if (list == null) {
-            return types;
-        }
-        for (int i = 0; i < list.getChildCount(); i++) {
-            final ParseTree child = list.getChild(i);
-            if (child instanceof FrostlakeParser.IdentifierContext) {
-                return null;
-            }
-            if (child instanceof FrostlakeParser.DataTypeNameContext) {
-                final ParseTree next = i + 1 < list.getChildCount() ? list.getChild(i + 1) : null;
-                types.add(DataTypeParser.parse((FrostlakeParser.DataTypeNameContext) child,
-                    next instanceof FrostlakeParser.TypeParametersContext
-                        ? (FrostlakeParser.TypeParametersContext) next : null));
-            }
-        }
-        return types;
+        return owner(ParseTreeText.qualifiedNameParts(RoutineReferenceText.parse(written).qualifiedName()));
     }
 
     private static RuntimeException objectDoesNotExist(final String written) {
@@ -1237,7 +1238,7 @@ public class GetDdl extends BuiltInFunction {
                 out.append(", ");
             }
             out.append(quotedName(columns.get(i).getName())).append(" ")
-               .append(routineTypeText(columns.get(i).getDataType()));
+               .append(ReturnColumnTypes.ddlText(columns.get(i).getDataType()));
         }
         return out.toString();
     }

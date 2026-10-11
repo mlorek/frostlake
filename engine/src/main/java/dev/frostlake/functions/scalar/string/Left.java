@@ -16,7 +16,6 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.executor.expressions.ImpliedTextNumber;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
@@ -34,12 +33,15 @@ public class Left extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         final Object value = args.get(0);
         if (value == null) return null;
         // A text count is read as the number it spells, and refused on the row where it spells none.
         final Object count = args.get(1);
-        final int length = count instanceof CharSequence
-            ? ImpliedTextNumber.read((CharSequence) count).intValue() : ((Number) count).intValue();
+        final int length = wholeNumber(count);
         if (value instanceof BinaryValue) {
             final byte[] bytes = ((BinaryValue) value).bytes();
             if (length < 0) return BinaryValue.of(new byte[0]);

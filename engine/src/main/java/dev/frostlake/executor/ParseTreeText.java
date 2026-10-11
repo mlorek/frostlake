@@ -21,8 +21,11 @@ import dev.frostlake.parser.FrostlakeParser;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 /**
@@ -65,12 +68,12 @@ public final class ParseTreeText {
      *  {@link #namePartText} makes. */
     public static String getIdentifier(final FrostlakeParser.AliasNameContext ctx) {
         return ctx.identifier() != null ? getIdentifier(ctx.identifier())
-            : ctx.getText().toUpperCase();
+            : ctx.getText().toUpperCase(Locale.ROOT);
     }
 
     /** The canonical text of an alias word written bare: a keyword, unquoted by construction. */
     public static String getIdentifier(final FrostlakeParser.BareAliasWordContext ctx) {
-        return ctx.getText().toUpperCase();
+        return ctx.getText().toUpperCase(Locale.ROOT);
     }
 
     public static String getQualifiedName(final FrostlakeParser.QualifiedNameContext ctx) {
@@ -82,19 +85,19 @@ public final class ParseTreeText {
      *  is unquoted by construction and upper-cases directly. */
     public static String namePartText(final FrostlakeParser.NameStartPartContext part) {
         return part.identifier() != null ? getIdentifier(part.identifier())
-            : part.getText().toUpperCase();
+            : part.getText().toUpperCase(Locale.ROOT);
     }
 
     /** See {@link #namePartText(FrostlakeParser.NameStartPartContext)} — the after-dot flavour. */
     public static String namePartText(final FrostlakeParser.NamePartContext part) {
         return part.columnDefName() != null ? namePartText(part.columnDefName())
-            : part.getText().toUpperCase();
+            : part.getText().toUpperCase(Locale.ROOT);
     }
 
     /** The COLUMN-DEFINITION flavour — the same vocabulary less CONSTRAINT, which leads a constraint. */
     public static String namePartText(final FrostlakeParser.ColumnDefNameContext part) {
         return part.identifier() != null ? getIdentifier(part.identifier())
-            : part.getText().toUpperCase();
+            : part.getText().toUpperCase(Locale.ROOT);
     }
 
     /** The FROM-position flavour: a {@code tableQualifiedName}'s parts. */
@@ -221,6 +224,41 @@ public final class ParseTreeText {
         return ctx.start.getInputStream().getText(
             new Interval(ctx.start.getStartIndex(), ctx.stop.getStopIndex())
         );
+    }
+
+    /**
+     * A task's body or an alert's action as it is stored: the statement as written, from its first token to its
+     * last, without the ';' that ends it — {@code AS DROP TABLE t7 ;} stores {@code DROP TABLE t7} (live-verified).
+     *
+     * @param body the body
+     * @return its text
+     */
+    public static String taskBodyText(final FrostlakeParser.TaskBodyContext body) {
+        final Token last = lastTokenBeforeTerminator(body);
+        if (body.start == null || last == null || body.start.getInputStream() == null) {
+            return getOriginalText(body);
+        }
+        return body.start.getInputStream().getText(new Interval(body.start.getStartIndex(), last.getStopIndex()));
+    }
+
+    /** The last token of a tree that is no ';' and not the end of the input, or null. */
+    private static Token lastTokenBeforeTerminator(final ParseTree node) {
+        for (int i = node.getChildCount() - 1; i >= 0; i--) {
+            final ParseTree child = node.getChild(i);
+            if (child instanceof TerminalNode) {
+                final Token token = ((TerminalNode) child).getSymbol();
+                if (token.getType() != FrostlakeParser.SEMI && token.getType() != Token.EOF
+                        && token.getTokenIndex() >= 0) {
+                    return token;
+                }
+            } else {
+                final Token found = lastTokenBeforeTerminator(child);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     public static String extractStringLiteral(final TerminalNode node) {

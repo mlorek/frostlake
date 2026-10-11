@@ -20,6 +20,7 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.types.NumericType;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -45,7 +46,7 @@ final class CatalogRelationConstancy implements OuterNameConstancy {
         this.values = new StoredColumnValues(executor);
         for (final Map.Entry<String, Table> relation : relations.entrySet()) {
             if (relation.getValue() != null) {
-                this.relations.put(relation.getKey().toUpperCase(), relation.getValue());
+                this.relations.put(relation.getKey().toUpperCase(Locale.ROOT), relation.getValue());
             }
         }
     }

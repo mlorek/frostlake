@@ -55,6 +55,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -103,6 +104,18 @@ public class DropCommandHandler implements CommandHandler {
         if (queryExecutor.getSecurityManager() != null) {
             queryExecutor.getSecurityManager().checkPermission(Privilege.DROP, objectType, objectName);
         }
+    }
+
+    /** The kind of relation a DROP names, or null for a kind outside the relations' shared name space. */
+    private static RelationKind relationKindOf(final FrostlakeParser.DropStatementContext ctx) {
+        if (ctx.TABLE() != null) {
+            return ctx.DYNAMIC() != null ? RelationKind.DYNAMIC_TABLE
+                : ctx.ICEBERG() != null || ctx.EVENT() != null ? null : RelationKind.TABLE;
+        }
+        if (ctx.VIEW() != null) {
+            return ctx.MATERIALIZED() != null ? RelationKind.MATERIALIZED_VIEW : RelationKind.VIEW;
+        }
+        return ctx.STREAM() != null ? RelationKind.STREAM : null;
     }
 
     /** Whether the statement ends in RESTRICT. */
@@ -281,32 +294,67 @@ public class DropCommandHandler implements CommandHandler {
         final String missing;
         if (kind.isSchemaObject()) {
             final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
-            final RelationKind found = kind == UnmodelledDropKind.EXTERNAL_TABLE
-                ? owner.relationKindOf(parts[parts.length - 1]) : null;
+            final boolean relationKind = kind == UnmodelledDropKind.EXTERNAL_TABLE
+                || kind == UnmodelledDropKind.SEMANTIC_VIEW;
+            final RelationKind found = relationKind ? owner.relationKindOf(parts[parts.length - 1]) : null;
             if (found != null) {
                 // A relation of another kind holds the name, which IF EXISTS does not forgive (live-verified).
-                throw new RuntimeException(SqlCompilationError.objectOfOtherType(found.spelling(), "EXTERNAL_TABLE"));
+                throw new RuntimeException(SqlCompilationError.objectOfOtherType(found.spelling(), kind.name()));
             }
             missing = SqlCompilationError.doesNotExist(kind.noun(), owner.qualifiedName(parts[parts.length - 1]));
         } else if (parts.length > 1) {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        } else if (kind == UnmodelledDropKind.SHARE) {
+            missing = SqlCompilationError.doesNotExistAsSpelled(kind.noun(), shareName(catalog.getAccountLocator(),
+                parts[0]));
         } else {
             missing = SqlCompilationError.doesNotExist(kind.noun(), parts[0]);
         }
         if (ctx.if_exists() != null) {
+            if (DropPurge.written(ctx.dropBehavior())) {
+                throw DropPurge.refusal(parts);
+            }
             ConditionalDdlOutcome.dropSkipped();
             return null;
         }
         throw new RuntimeException(missing);
     }
 
+    /**
+     * A share as a refusal names it: with the account it belongs to, the two as one quoted name —
+     * {@code "ABC12345.S"} (live-verified).
+     *
+     * @param account the account's locator
+     * @param share the share's canonical name
+     * @return the name between its quotes
+     */
+    static String shareName(final String account, final String share) {
+        return "\"" + account + "." + share + "\"";
+    }
+
     public Object handleDropStatement(final FrostlakeParser.DropStatementContext ctx) {
         final boolean ifExists = ctx.if_exists() != null;
+        final boolean purged = DropPurge.written(ctx.dropBehavior());
+        if (purged && namesAnAccountScopedKind(ctx) && ctx.DATABASE() == null) {
+            // Not known to read the word: a warehouse, a compute pool, a user and a role keep the syntax error.
+            throw DropPurge.unexpected(ctx.dropBehavior());
+        }
         if (ctx.ALERT() != null) {
             return new AlertCommandHandler(queryExecutor).drop(ctx, ifExists);
         }
         RoutineSignatureForm.requireTypesOnly(ctx.dataTypeList());
         requireContainers(ctx);
+        if (purged && ctx.FORMAT() == null && ctx.CONTACT() == null) {
+            final String[] named = dropNameParts(ctx);
+            final RelationKind relation = relationKindOf(ctx);
+            if (relation != null) {
+                // A relation of another kind under the name is refused before the PURGE is.
+                rejectWrongKind(catalog.requireOwningSchema(QualifiedName.of(named)), named[named.length - 1], relation);
+            }
+            if (ifExists || DropPurge.holds(ctx, named, queryExecutor, catalog)) {
+                throw DropPurge.refusal(named);
+            }
+        }
 
         try {
             if (ctx.DATABASE() != null) {
@@ -473,12 +521,19 @@ public class DropCommandHandler implements CommandHandler {
                     if (ctx.ICEBERG() != null && schema.hasTable(tableName)) {
                         IcebergTables.requireIceberg(schema.getTable(tableName));
                     }
+                    if (ctx.EVENT() != null) {
+                        requireEventTable(schema, databaseName, tableName);
+                    } else if (ctx.ICEBERG() != null && schema.relationKindOf(tableName) == null) {
+                        // A missing one is named by the kind the statement asks for.
+                        throw new RuntimeException(SqlCompilationError.doesNotExist("Iceberg table",
+                            QualifiedName.join(databaseName, schema.getName(), tableName)));
+                    }
 
                     // INFORMATION_SCHEMA is read-only, and its views are found before any kind
                     // check — so even DROP TABLE on one refuses naming the VIEW (live-verified).
                     if ("INFORMATION_SCHEMA".equals(schema.getName()) && schema.hasView(tableName)) {
                         throw new RuntimeException(
-                            SqlAccessControlError.insufficientPrivileges("view", tableName.toUpperCase()));
+                            SqlAccessControlError.insufficientPrivileges("view", tableName.toUpperCase(Locale.ROOT)));
                     }
 
                     rejectWrongKind(schema, tableName, RelationKind.TABLE);
@@ -821,7 +876,11 @@ public class DropCommandHandler implements CommandHandler {
                 final String userName = dropNameText(ctx);
 
                 try {
+                    final String held = catalog.hasUser(userName) ? catalog.getUser(userName).getName() : null;
                     catalog.dropUser(userName);
+                    if (held != null) {
+                        SecurityObjectCommandHandler.forgetUser(catalog, held);
+                    }
                     logger.trace("Dropped user: {}", userName);
                 } catch (final RuntimeException e) {
                     if (!forgiven(ifExists, e)) throw e;
@@ -867,17 +926,17 @@ public class DropCommandHandler implements CommandHandler {
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.MASKING_POLICY, dropNameText(ctx));
                     queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
-                    if (!schema.hasMaskingPolicy(parts[parts.length - 1].toUpperCase())) {
+                    if (!schema.hasMaskingPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT))) {
                         // The "<Kind> '<QUALIFIED>' does not exist or not authorized." family — the
                         // same sentence the sibling policies already give, live-verified for this one.
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy",
-                            schema.qualifiedName(parts[parts.length - 1].toUpperCase())));
+                            schema.qualifiedName(parts[parts.length - 1].toUpperCase(Locale.ROOT))));
                     }
                     if (catalog.isPolicyInUse(parts[parts.length - 1], true)) {
-                        throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase()
+                        throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase(Locale.ROOT)
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
-                    schema.dropMaskingPolicy(parts[parts.length - 1].toUpperCase());
+                    schema.dropMaskingPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT));
                     logger.trace("Dropped masking policy: {}", dropNameText(ctx));
                 } catch (final RuntimeException e) { if (!forgiven(ifExists, e)) throw e;
                     ConditionalDdlOutcome.dropSkipped(); }
@@ -889,15 +948,15 @@ public class DropCommandHandler implements CommandHandler {
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.ROW_ACCESS_POLICY, dropNameText(ctx));
                     queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
-                    if (!schema.hasRowAccessPolicy(parts[parts.length - 1].toUpperCase())) {
+                    if (!schema.hasRowAccessPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT))) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy",
-                            schema.qualifiedName(parts[parts.length - 1].toUpperCase())));
+                            schema.qualifiedName(parts[parts.length - 1].toUpperCase(Locale.ROOT))));
                     }
                     if (catalog.isPolicyInUse(parts[parts.length - 1], false)) {
-                        throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase()
+                        throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase(Locale.ROOT)
                             + " cannot be dropped/replaced as it is associated with one or more entities.");
                     }
-                    schema.dropRowAccessPolicy(parts[parts.length - 1].toUpperCase());
+                    schema.dropRowAccessPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT));
                     logger.trace("Dropped row access policy: {}", dropNameText(ctx));
                 } catch (final RuntimeException e) { if (!forgiven(ifExists, e)) throw e;
                     ConditionalDdlOutcome.dropSkipped(); }
@@ -907,7 +966,7 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                    final String policyName = parts[parts.length - 1].toUpperCase();
+                    final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
                     if (!schema.hasJoinPolicy(policyName)) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
                             schema.qualifiedName(policyName)));
@@ -926,7 +985,7 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                    final String policyName = parts[parts.length - 1].toUpperCase();
+                    final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
                     if (!schema.hasAggregationPolicy(policyName)) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
                             schema.qualifiedName(policyName)));
@@ -945,7 +1004,7 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                    final String policyName = parts[parts.length - 1].toUpperCase();
+                    final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
                     if (!schema.hasProjectionPolicy(policyName)) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
                             schema.qualifiedName(policyName)));
@@ -965,7 +1024,7 @@ public class DropCommandHandler implements CommandHandler {
                     final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-                    final String contactName = parts[parts.length - 1].toUpperCase();
+                    final String contactName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
                     if (!schema.hasContact(contactName)) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
                             schema.qualifiedName(contactName)));
@@ -993,6 +1052,26 @@ public class DropCommandHandler implements CommandHandler {
      * left to the ordinary path. Nothing else in the schema is consulted: a sequence keeps its own name
      * space (live-verified).
      */
+    /**
+     * DROP EVENT TABLE drops an event table alone: a table of another kind and a view are "Object found is of type
+     * 'TABLE', not specified type 'EVENT_TABLE'.", and a missing name is refused as an event table, where DROP
+     * TABLE drops an event table as it drops any table (live-verified).
+     */
+    private static void requireEventTable(final Schema schema, final String databaseName, final String tableName) {
+        if (schema.hasTable(tableName)) {
+            if (!schema.getTable(tableName).isEventTable()) {
+                throw new RuntimeException(SqlCompilationError.objectOfOtherType("TABLE", "EVENT_TABLE"));
+            }
+            return;
+        }
+        final RelationKind found = schema.relationKindOf(tableName);
+        if (found != null) {
+            throw new RuntimeException(SqlCompilationError.objectOfOtherType(found.spelling(), "EVENT_TABLE"));
+        }
+        throw new RuntimeException(SqlCompilationError.doesNotExist("Event table",
+            QualifiedName.join(databaseName, schema.getName(), tableName)));
+    }
+
     private void rejectWrongKind(final Schema schema, final String name, final RelationKind specified) {
         if (schema == null || schema.holdsRelation(name, specified)) {
             return;

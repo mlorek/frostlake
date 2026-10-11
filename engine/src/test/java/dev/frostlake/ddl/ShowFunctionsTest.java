@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.SortedSet;
 
@@ -55,7 +56,7 @@ public class ShowFunctionsTest extends BaseDatabaseTest {
     private Set<String> listedNames() {
         final Set<String> names = new HashSet<String>();
         for (final Row row : engine.executeQuery("SHOW FUNCTIONS").getRows()) {
-            names.add(String.valueOf(row.getValue(NAME)).toUpperCase());
+            names.add(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT));
         }
         return names;
     }
@@ -83,7 +84,7 @@ public class ShowFunctionsTest extends BaseDatabaseTest {
         final Set<String> names = new HashSet<String>();
         boolean sawBuiltin = false;
         for (final Row row : rs.getRows()) {
-            names.add(String.valueOf(row.getValue(NAME)).toUpperCase());
+            names.add(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT));
             if ("Y".equals(row.getValue(IS_BUILTIN))) {
                 sawBuiltin = true;
             }
@@ -102,7 +103,7 @@ public class ShowFunctionsTest extends BaseDatabaseTest {
         boolean sawUdf = false;
         boolean sawBuiltin = false;
         for (final Row row : rs.getRows()) {
-            final String name = String.valueOf(row.getValue(NAME)).toUpperCase();
+            final String name = String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT);
             if (name.equals("MY_UDF")) {
                 sawUdf = true;
                 assertEquals("N", row.getValue(IS_BUILTIN), "a user function is not a built-in");
@@ -306,6 +307,6 @@ public class ShowFunctionsTest extends BaseDatabaseTest {
             "SELECT TRANSFORM(ARRAY_CONSTRUCT(1, 2), x -> x * 2)[1]::INTEGER AS T")
             .getRows().get(0).getValue(0)));
         assertEquals("true", String.valueOf(engine.executeQuery(
-            "SELECT 'abc' LIKE ANY ('a%', 'z%') AS L").getRows().get(0).getValue(0)).toLowerCase());
+            "SELECT 'abc' LIKE ANY ('a%', 'z%') AS L").getRows().get(0).getValue(0)).toLowerCase(Locale.ROOT));
     }
 }

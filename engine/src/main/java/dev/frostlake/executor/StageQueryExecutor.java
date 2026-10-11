@@ -56,6 +56,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.TreeMap;
 
 /**
@@ -95,7 +96,7 @@ final class StageQueryExecutor {
             for (final FrostlakeParser.StageQueryParamContext param : params.stageQueryParam()) {
                 final String key = param.FILE_FORMAT() != null ? "FILE_FORMAT"
                     : param.PATTERN() != null ? "PATTERN"
-                    : ParseTreeText.getIdentifier(param.identifier()).toUpperCase();
+                    : ParseTreeText.getIdentifier(param.identifier()).toUpperCase(Locale.ROOT);
                 final String value = param.STRING_LITERAL() != null
                     ? ParseTreeText.extractStringLiteral(param.STRING_LITERAL())
                     : ParseTreeText.getQualifiedName(param.qualifiedName());
@@ -115,7 +116,7 @@ final class StageQueryExecutor {
                             skipHeader = Integer.parseInt(named.getOption("SKIP_HEADER"));
                         }
                     } else {
-                        fileFormat = value.toUpperCase();
+                        fileFormat = value.toUpperCase(Locale.ROOT);
                     }
                 } else if ("PATTERN".equals(key)) {
                     pattern = value;

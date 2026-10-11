@@ -54,7 +54,24 @@ final class ExplainPlan {
     /** The bytes a plan assigns for each partition it scans. */
     private static final long PARTITION_BYTES = 1024;
 
+    private static final ThreadLocal<int[]> PLANNING = new ThreadLocal<int[]>() {
+        @Override
+        protected int[] initialValue() {
+            return new int[1];
+        }
+    };
+
     private ExplainPlan() {
+    }
+
+    /**
+     * Whether a statement is being compiled for its plan alone. A procedure called in the FROM clause, and one
+     * a TO_QUERY text calls, does not run then: an EXPLAIN writes nothing (live-verified).
+     *
+     * @return true while an EXPLAIN compiles its statement
+     */
+    static boolean planning() {
+        return PLANNING.get()[0] > 0;
     }
 
     /**
@@ -66,11 +83,18 @@ final class ExplainPlan {
      */
     static ResultSet answer(final QueryExecutor executor, final FrostlakeParser.ExplainStatementContext ctx) {
         final String format = formatOf(ctx);
-        compile(executor, ctx);
-        final PlanBuilder builder = new PlanBuilder(executor);
         final List<PlanOperator> operators = new ArrayList<>();
-        number(ctx.selectStatement() != null ? builder.query(ctx.selectStatement())
-            : builder.dml(ctx.dmlStatement()), null, 0, new int[1], operators);
+        // A plan is asked for and nothing is carried out: what a relation calls to learn its shape runs no
+        // procedure while this compiles (see planning).
+        PLANNING.get()[0]++;
+        try {
+            compile(executor, ctx);
+            final PlanBuilder builder = new PlanBuilder(executor);
+            number(ctx.selectStatement() != null ? builder.query(ctx.selectStatement())
+                : builder.dml(ctx.dmlStatement()), null, 0, new int[1], operators);
+        } finally {
+            PLANNING.get()[0]--;
+        }
         if ("TEXT".equals(format)) {
             return content(text(operators));
         }

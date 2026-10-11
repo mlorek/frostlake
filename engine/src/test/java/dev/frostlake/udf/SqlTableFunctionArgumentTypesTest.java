@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -326,7 +328,7 @@ public class SqlTableFunctionArgumentTypesTest extends BaseDatabaseTest {
             if ("ok".equals(cell[2])) {
                 assertEquals("r", first(sql), sql);
             } else {
-                assertEquals(refused(column ? 24 : 20, cell[0].toUpperCase(), cell[2]), refusal(sql), sql);
+                assertEquals(refused(column ? 24 : 20, cell[0].toUpperCase(Locale.ROOT), cell[2]), refusal(sql), sql);
             }
         }
     }

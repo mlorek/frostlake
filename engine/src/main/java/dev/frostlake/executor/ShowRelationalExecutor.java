@@ -16,12 +16,14 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
 import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
+import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -167,9 +169,14 @@ final class ShowRelationalExecutor {
     /** Where a table's rows are, so SHOW TABLES and SHOW OBJECTS can count them. */
     private final StorageEngine storageEngine;
 
-    ShowRelationalExecutor(final Catalog catalog, final StorageEngine storageEngine) {
+    /** Says whether the session may act as an object's owner; only the owner reads a SECURE view's text. */
+    private final DefinitionOwnership ownership;
+
+    ShowRelationalExecutor(final Catalog catalog, final StorageEngine storageEngine,
+                           final DefinitionOwnership ownership) {
         this.catalog = catalog;
         this.storageEngine = storageEngine;
+        this.ownership = ownership;
     }
 
     /**
@@ -338,17 +345,20 @@ final class ShowRelationalExecutor {
     /** One SHOW SCHEMAS row; with {@code history}, followed by its {@code dropped_on}. */
     private Row schemaRow(final String dbName, final Schema schema, final boolean current, final boolean history,
                           final Instant droppedOn) {
+        // A schema of the SNOWFLAKE database is its application's where it has an owner at all.
+        final SystemSchema system = SystemSchema.of(dbName, schema.getName());
+        final String owner = system != null ? system.owner() : schema.getOwner();
         final List<Object> cells = new ArrayList<>(Arrays.asList(
                 ShowResultHelpers.createdOn(schema.getCreatedTime()),
                 schema.getName(),
                 "N",
                 current ? "Y" : "N",
                 dbName,
-                ShowResultHelpers.text(schema.getOwner()),
+                ShowResultHelpers.text(owner),
                 ShowResultHelpers.text(schema.getComment()),
                 schemaOptions(schema),
                 schemaRetention(dbName, schema),
-                ShowResultHelpers.ownerRoleType(schema.getOwner()),
+                system != null && owner != null ? "APPLICATION" : ShowResultHelpers.ownerRoleType(owner),
                 null, null, null, null,
                 // Spelled as the text false, not N — live's is_nested convention differs from the
                 // Y/N flags beside it.
@@ -756,7 +766,9 @@ final class ShowRelationalExecutor {
                     ShowResultHelpers.text(view.getComment()),
                     // Snowflake's text column carries the view's full CREATE statement; INFORMATION_SCHEMA's
                     // views were never created and carry none (live-verified).
-                    "INFORMATION_SCHEMA".equals(scName) ? ""
+                    // A SECURE view's text is its owner's to read: any other role is shown none.
+                    "INFORMATION_SCHEMA".equals(scName) || view.isSecure() && !ownership.actsAsOwner(view.getOwner())
+                        ? ""
                         : view.getListedText() != null ? view.getListedText() : view.ddl(scName + "." + view.getName()),
                     // These two read "true"/"false" on a real account, not the Y/N used elsewhere.
                     String.valueOf(view.isSecure()), "false",
@@ -970,8 +982,10 @@ final class ShowRelationalExecutor {
 
     /** The schema, or live's refusal naming it with its database. */
     private Schema resolveSchemaOrRefuse(final String databaseName, final String schemaName) {
+        // A missing database is refused as one, before its schema is looked for.
+        final Database database = resolveDatabaseOrRefuse(databaseName);
         try {
-            return resolveDatabaseOrRefuse(databaseName).getSchema(schemaName);
+            return database.getSchema(schemaName);
         } catch (final RuntimeException missing) {
             throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Schema",
                 databaseName.toUpperCase(Locale.ROOT) + "." + schemaName.toUpperCase(Locale.ROOT)));

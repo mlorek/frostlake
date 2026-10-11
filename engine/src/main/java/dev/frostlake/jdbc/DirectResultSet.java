@@ -53,6 +53,7 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -133,7 +134,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         for (int i = 0; i < columns.size(); i++) {
             final String columnName = columns.get(i).getName();
             final Object value = engineResultSet.getValue(i);
-            currentRowValues.put(columnName.toUpperCase(), value);
+            currentRowValues.put(columnName.toUpperCase(Locale.ROOT), value);
         }
     }
 
@@ -260,7 +261,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             return ((BinaryValue) value).bytes();
         }
         if (value != null && declared instanceof DateTimeType) {
-            final String family = declared.getName().toUpperCase();
+            final String family = declared.getName().toUpperCase(Locale.ROOT);
             if (family.equals("DATE")) {
                 return JdbcMarshaling.toDate(value);
             }
@@ -323,7 +324,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (columnIndex < 1 || columnIndex > columns.size()) {
             throw new SQLException("Invalid column index: " + columnIndex);
         }
-        return columns.get(columnIndex - 1).getName().toUpperCase();
+        return columns.get(columnIndex - 1).getName().toUpperCase(Locale.ROOT);
     }
 
     @Override
@@ -974,9 +975,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateNull(final String columnLabel) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), null);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), null);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), null);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), null);
         }
     }
 
@@ -984,9 +985,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateBoolean(final String columnLabel, final boolean x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -994,9 +995,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateByte(final String columnLabel, final byte x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1004,9 +1005,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateShort(final String columnLabel, final short x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1014,9 +1015,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateInt(final String columnLabel, final int x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1024,9 +1025,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateLong(final String columnLabel, final long x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1034,9 +1035,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateFloat(final String columnLabel, final float x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1044,9 +1045,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateDouble(final String columnLabel, final double x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1054,9 +1055,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateBigDecimal(final String columnLabel, final BigDecimal x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1064,9 +1065,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateString(final String columnLabel, final String x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1074,9 +1075,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateBytes(final String columnLabel, final byte[] x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1084,9 +1085,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateDate(final String columnLabel, final Date x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1094,9 +1095,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateTime(final String columnLabel, final Time x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1104,9 +1105,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateTimestamp(final String columnLabel, final Timestamp x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1134,9 +1135,9 @@ public class DirectResultSet implements java.sql.ResultSet {
     public void updateObject(final String columnLabel, final Object x) throws SQLException {
         checkUpdatable();
         if (onInsertRow) {
-            insertRowValues.put(columnLabel.toUpperCase(), x);
+            insertRowValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         } else {
-            updatedValues.put(columnLabel.toUpperCase(), x);
+            updatedValues.put(columnLabel.toUpperCase(Locale.ROOT), x);
         }
     }
 
@@ -1209,7 +1210,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             if (!first) {
                 sql.append(" AND ");
             }
-            final Object keyValue = currentRowValues.get(keyCol.toUpperCase());
+            final Object keyValue = currentRowValues.get(keyCol.toUpperCase(Locale.ROOT));
             sql.append(keyCol).append(" = ").append(formatValue(keyValue));
             first = false;
         }
@@ -1243,7 +1244,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             if (!first) {
                 sql.append(" AND ");
             }
-            final Object keyValue = currentRowValues.get(keyCol.toUpperCase());
+            final Object keyValue = currentRowValues.get(keyCol.toUpperCase(Locale.ROOT));
             sql.append(keyCol).append(" = ").append(formatValue(keyValue));
             first = false;
         }

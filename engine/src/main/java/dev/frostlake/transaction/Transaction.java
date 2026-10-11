@@ -30,6 +30,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -59,6 +60,9 @@ public class Transaction {
     private final StorageEngine storageEngine;
     private final StreamManager streamManager;
     private boolean explicit;   // started by an explicit BEGIN → suspends statement-end autocommit
+    private boolean begunInBlock;
+    private int scope;
+    private Transaction outer;
     /** SHOW TRANSACTIONS' name cell — live names an unnamed transaction with a fresh UUID, and a
      *  {@code BEGIN NAME <name>} replaces it with that name. */
     private String name = UUID.randomUUID().toString();
@@ -213,6 +217,43 @@ public class Transaction {
         this.explicit = explicit;
     }
 
+    /**
+     * Whether a Snowflake Scripting block or a procedure began the transaction: it is then that block's to end, and
+     * one ended from inside the block leaves nothing for the session to acknowledge.
+     */
+    public boolean isBegunInBlock() {
+        return begunInBlock;
+    }
+
+    public void setBegunInBlock(final boolean begunInBlock) {
+        this.begunInBlock = begunInBlock;
+    }
+
+    /**
+     * The scope whose BEGIN made the transaction explicit, as {@link TransactionManager#enterScope} counts them:
+     * 0 for a statement of the session's own, one more inside each block statement, procedure body and text that
+     * is a block. It is that scope's to end.
+     */
+    public int getScope() {
+        return scope;
+    }
+
+    public void setScope(final int scope) {
+        this.scope = scope;
+    }
+
+    /**
+     * The transaction of an enclosing scope this one was begun beside: it waits, untouched, until this one ends,
+     * and is the session's again then. Null for a transaction begun with none open.
+     */
+    public Transaction getOuter() {
+        return outer;
+    }
+
+    public void setOuter(final Transaction outer) {
+        this.outer = outer;
+    }
+
     public void logInsert(final String tableName, final int rowIndex, final Row row) {
         logs.add(new InsertLog(tableName, rowIndex, row));
         // No lock registration: an append-only INSERT holds no PARTITIONS lock (live-verified).
@@ -241,7 +282,7 @@ public class Transaction {
 
     /** Register the PARTITIONS lock a DML touch takes on a table; the first touch wins the cell. */
     public void recordTableTouch(final String tableName) {
-        final String key = tableName.toUpperCase();
+        final String key = tableName.toUpperCase(Locale.ROOT);
         if (!tableLocks.containsKey(key)) {
             tableLocks.put(key, new TableLock(System.currentTimeMillis(), UUID.randomUUID().toString()));
         }

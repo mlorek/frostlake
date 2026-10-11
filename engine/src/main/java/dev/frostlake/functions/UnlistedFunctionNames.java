@@ -18,6 +18,7 @@ package dev.frostlake.functions;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
@@ -43,7 +44,7 @@ public final class UnlistedFunctionNames {
 
     /** Whether SHOW FUNCTIONS leaves this built-in out of its listing. */
     public static boolean contains(final String name) {
-        return name != null && NAMES.contains(name.toUpperCase());
+        return name != null && NAMES.contains(name.toUpperCase(Locale.ROOT));
     }
 
     /** Every unlisted built-in's name, upper-cased and sorted. */

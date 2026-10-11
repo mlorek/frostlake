@@ -471,8 +471,8 @@ public class Schema extends SqlObject {
             throw new RuntimeException("Join policy not found: " + oldName);
         }
         joinPolicies.remove(keyFor(joinPolicies, oldName));
-        policy.rename(newName.toUpperCase());
-        joinPolicies.put(newName.toUpperCase(), policy);
+        policy.rename(newName.toUpperCase(Locale.ROOT));
+        joinPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
     }
 
     // Aggregation Policies
@@ -489,8 +489,8 @@ public class Schema extends SqlObject {
             throw new RuntimeException("Aggregation policy not found: " + oldName);
         }
         aggregationPolicies.remove(keyFor(aggregationPolicies, oldName));
-        policy.rename(newName.toUpperCase());
-        aggregationPolicies.put(newName.toUpperCase(), policy);
+        policy.rename(newName.toUpperCase(Locale.ROOT));
+        aggregationPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
     }
 
     // Projection Policies
@@ -507,8 +507,8 @@ public class Schema extends SqlObject {
             throw new RuntimeException("Projection policy not found: " + oldName);
         }
         projectionPolicies.remove(keyFor(projectionPolicies, oldName));
-        policy.rename(newName.toUpperCase());
-        projectionPolicies.put(newName.toUpperCase(), policy);
+        policy.rename(newName.toUpperCase(Locale.ROOT));
+        projectionPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
     }
 
     // Masking Policies
@@ -525,8 +525,8 @@ public class Schema extends SqlObject {
             throw new RuntimeException("Masking policy not found: " + oldName);
         }
         maskingPolicies.remove(keyFor(maskingPolicies, oldName));
-        policy.rename(newName.toUpperCase());
-        maskingPolicies.put(newName.toUpperCase(), policy);
+        policy.rename(newName.toUpperCase(Locale.ROOT));
+        maskingPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
     }
 
     // Row Access Policies
@@ -543,8 +543,8 @@ public class Schema extends SqlObject {
             throw new RuntimeException("Row access policy not found: " + oldName);
         }
         rowAccessPolicies.remove(keyFor(rowAccessPolicies, oldName));
-        policy.rename(newName.toUpperCase());
-        rowAccessPolicies.put(newName.toUpperCase(), policy);
+        policy.rename(newName.toUpperCase(Locale.ROOT));
+        rowAccessPolicies.put(newName.toUpperCase(Locale.ROOT), policy);
     }
 
     // Procedures and functions. A routine is stored under its canonical name - an unquoted name
@@ -837,6 +837,99 @@ public class Schema extends SqlObject {
         return SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(name) + "' already exists.");
     }
 
+    /**
+     * Refuses a routine's name and signature that a routine of the other kind holds: a function is not created
+     * over a procedure, with OR REPLACE and with IF NOT EXISTS neither, nor renamed to one's name, and a
+     * procedure not over a function (live-verified).
+     *
+     * @param function   true when the routine being named is a function, false for a procedure
+     * @param name       the routine's canonical name
+     * @param parameters its signature
+     */
+    public void requireNotHeldByOtherKind(final boolean function, final String name,
+                                          final List<Parameter> parameters) {
+        if (function ? hasProcedureSignature(name, parameters) : hasFunctionSignature(name, parameters)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellCanonical(name)
+                + "' already exists as " + (function ? "PROCEDURE" : "FUNCTION")));
+        }
+    }
+
+    /**
+     * Refuses a function signature that an overload the name already has would compete with for some call: the
+     * two take a common number of arguments and agree in the types of that many leading parameters, so only
+     * optional arguments tell them apart (live-verified). {@code f(a NUMBER)} beside {@code f(a NUMBER, b NUMBER
+     * DEFAULT 0)} is refused, in either order, as are {@code f()} beside {@code f(o NUMBER DEFAULT 0)} and two
+     * overloads whose optional arguments alone differ in type; {@code f(a NUMBER, b VARCHAR)} beside
+     * {@code f(a NUMBER, b NUMBER DEFAULT 0)} stands, a call of two arguments telling them apart by type. An
+     * overload of exactly this signature is not judged here: it is the one a CREATE OR REPLACE replaces, or the
+     * name already taken.
+     *
+     * @param name       the function's canonical name
+     * @param parameters the new signature
+     */
+    public void requireUnambiguousFunction(final String name, final List<Parameter> parameters) {
+        for (final Function existing : getFunctionOverloads(name)) {
+            if (competes(existing.getParameters(), parameters)) {
+                throw new RuntimeException(ambiguousOverload("FUNCTION", name));
+            }
+        }
+    }
+
+    /**
+     * {@link #requireUnambiguousFunction} for a procedure.
+     *
+     * @param name       the procedure's canonical name
+     * @param parameters the new signature
+     */
+    public void requireUnambiguousProcedure(final String name, final List<Parameter> parameters) {
+        for (final Procedure existing : getProcedureOverloads(name)) {
+            if (competes(existing.getParameters(), parameters)) {
+                throw new RuntimeException(ambiguousOverload("PROCEDURE", name));
+            }
+        }
+    }
+
+    /**
+     * The refusal an overload that would compete with an existing one gets, on one line (live-verified).
+     *
+     * @param kind FUNCTION or PROCEDURE
+     * @param name the routine's canonical name
+     * @return the refusal's message
+     */
+    public static String ambiguousOverload(final String kind, final String name) {
+        return SqlCompilationError.inline("Cannot overload " + kind + " '" + SqlIdentifiers.spellCanonical(name)
+            + "' as it would cause ambiguous " + kind + " overloading.");
+    }
+
+    /** Whether two different signatures take a call of some argument count with the same leading types. */
+    private boolean competes(final List<Parameter> one, final List<Parameter> other) {
+        if (hasSameSignature(one, other)) {
+            return false;
+        }
+        // The fewest arguments both take: where the leading types differ there, they differ for every longer call.
+        final int fewest = Math.max(requiredCount(one), requiredCount(other));
+        if (fewest > Math.min(one.size(), other.size())) {
+            return false;
+        }
+        for (int i = 0; i < fewest; i++) {
+            if (!one.get(i).getDataType().equals(other.get(i).getDataType())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** How many leading parameters a call must supply: the index after the last one with no default. */
+    private static int requiredCount(final List<Parameter> parameters) {
+        int required = 0;
+        for (int i = 0; i < parameters.size(); i++) {
+            if (!parameters.get(i).hasDefault()) {
+                required = i + 1;
+            }
+        }
+        return required;
+    }
+
     // Helper methods for signature matching
     private boolean hasSameSignature(final List<Parameter> params1, final List<Parameter> params2) {
         if (params1.size() != params2.size()) {
@@ -975,7 +1068,7 @@ public class Schema extends SqlObject {
      */
     public static String signatureFamily(final String typeName) {
         final int open = typeName.indexOf('(');
-        final String name = (open >= 0 ? typeName.substring(0, open) : typeName).trim().toUpperCase();
+        final String name = (open >= 0 ? typeName.substring(0, open) : typeName).trim().toUpperCase(Locale.ROOT);
         if (open >= 0 && ("OBJECT".equals(name) || "ARRAY".equals(name))
                 && !typeName.substring(open + 1).replace(")", "").trim().isEmpty()) {
             return "STRUCTURED " + name;
@@ -1488,15 +1581,15 @@ public class Schema extends SqlObject {
         }
         // Each policy keeps its comment, owner and tags.
         for (final ProjectionPolicy policy : projectionPolicies.values()) {
-            clonedSchema.projectionPolicies.put(policy.getName().toUpperCase(),
+            clonedSchema.projectionPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
                 withPolicyDetails(policy, new ProjectionPolicy(policy.getName(), policy.getBody())));
         }
         for (final AggregationPolicy policy : aggregationPolicies.values()) {
-            clonedSchema.aggregationPolicies.put(policy.getName().toUpperCase(),
+            clonedSchema.aggregationPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
                 withPolicyDetails(policy, new AggregationPolicy(policy.getName(), policy.getBody())));
         }
         for (final JoinPolicy policy : joinPolicies.values()) {
-            clonedSchema.joinPolicies.put(policy.getName().toUpperCase(),
+            clonedSchema.joinPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
                 withPolicyDetails(policy, new JoinPolicy(policy.getName(), policy.getBody())));
         }
         for (final MaskingPolicy policy : maskingPolicies.values()) {
@@ -1504,10 +1597,10 @@ public class Schema extends SqlObject {
                 policy.getReturnType(), policy.getBody());
             clonedPolicy.setReturnDataType(policy.getReturnDataType());
             clonedPolicy.setReturnSpelling(policy.getReturnSpelling());
-            clonedSchema.maskingPolicies.put(policy.getName().toUpperCase(), withPolicyDetails(policy, clonedPolicy));
+            clonedSchema.maskingPolicies.put(policy.getName().toUpperCase(Locale.ROOT), withPolicyDetails(policy, clonedPolicy));
         }
         for (final RowAccessPolicy policy : rowAccessPolicies.values()) {
-            clonedSchema.rowAccessPolicies.put(policy.getName().toUpperCase(),
+            clonedSchema.rowAccessPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
                 withPolicyDetails(policy, new RowAccessPolicy(policy.getName(), policy.getParameters(), policy.getBody())));
         }
 

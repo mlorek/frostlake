@@ -19,9 +19,11 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.AccessControlListings;
 import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.ShowResultHelpers;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.AccountDirectory;
@@ -53,6 +55,7 @@ import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -109,7 +112,7 @@ public final class AccessControlHandler {
             ShowTailSyntax.requireCountOnly(ctx, tail);
             final ResultSet listing = ctx.FUTURE() != null ? futureGrants(ctx) : grantsListing(ctx);
             return tail == null || tail.LIMIT() == null ? listing
-                : firstRows(listing, Integer.parseInt(tail.INTEGER_LITERAL().getText()));
+                : firstRows(listing, ShowPageSize.require(tail.INTEGER_LITERAL().getText()));
         }
         if (ctx.ROLES() != null) {
             return showDatabaseRoles(ctx);
@@ -156,7 +159,7 @@ public final class AccessControlHandler {
             listing = new ResultSet(listing.getColumns(), kept);
         }
         if (ctx.LIMIT() != null) {
-            listing = limitFrom(listing, Integer.parseInt(ctx.INTEGER_LITERAL().getText()),
+            listing = limitFrom(listing, ShowPageSize.require(ctx.INTEGER_LITERAL().getText()),
                 ctx.fromName == null ? null : ParseTreeText.stringValue(ctx.fromName));
         }
         return listing;
@@ -167,7 +170,11 @@ public final class AccessControlHandler {
      * current database.
      */
     static String[] databaseRoleName(final Catalog catalog, final FrostlakeParser.QualifiedNameContext name) {
-        final String[] parts = ParseTreeText.qualifiedNameParts(name);
+        return databaseRoleName(catalog, ParseTreeText.qualifiedNameParts(name));
+    }
+
+    /** {@link #databaseRoleName(Catalog, FrostlakeParser.QualifiedNameContext)} for a name resolved to its parts. */
+    static String[] databaseRoleName(final Catalog catalog, final String[] parts) {
         if (parts.length > 2) {
             throw new RuntimeException(SqlCompilationError.of("Invalid database role name '"
                 + QualifiedName.join(parts) + "'."));
@@ -194,6 +201,15 @@ public final class AccessControlHandler {
      * @throws RuntimeException the does-not-exist refusal when the database or the role is missing
      */
     static DatabaseRole databaseRole(final Catalog catalog, final FrostlakeParser.QualifiedNameContext name) {
+        return databaseRole(catalog, ParseTreeText.qualifiedNameParts(name));
+    }
+
+    /**
+     * The existing database role a name's parts name.
+     *
+     * @throws RuntimeException the does-not-exist refusal when the database or the role is missing
+     */
+    static DatabaseRole databaseRole(final Catalog catalog, final String[] name) {
         final String[] parts = databaseRoleName(catalog, name);
         final Database database = catalog.databaseExact(parts[0]);
         final DatabaseRole role = database.getDatabaseRole(parts[1]);
@@ -336,36 +352,57 @@ public final class AccessControlHandler {
         }
     }
 
-    /** GRANT DATABASE ROLE d.r TO USER u | ROLE r | DATABASE ROLE d.r2. */
+    /**
+     * GRANT DATABASE ROLE d.r TO USER u | ROLE r | DATABASE ROLE d.r2. The user or the role that is to hold it is
+     * found before the database role (live-verified).
+     */
     public Object grantDatabaseRole(final FrostlakeParser.GrantDatabaseRoleStatementContext ctx) {
-        final DatabaseRole role = databaseRole(catalog, ctx.qualifiedName());
         final String grantor = catalog.currentRoleForOwner();
         if (ctx.databaseRoleGrantee() != null) {
-            final DatabaseRole holder = databaseRole(catalog, ctx.databaseRoleGrantee().qualifiedName());
+            final DatabaseRole holder = databaseRole(catalog,
+                PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
+            final DatabaseRole role = grantedDatabaseRole(ctx.referencedName());
             if (holder == role) {
                 throw new RuntimeException(SqlCompilationError.of("Cannot grant database role '"
                     + shown(role.getDatabase(), role.getName()) + "' to itself."));
             }
             holder.grantDatabaseRole(role.getQualifiedName(), grantor);
         } else if (ctx.USER() != null) {
-            catalog.getUser(visitor.getText(ctx.identifier())).grantDatabaseRole(role.getQualifiedName(), grantor);
+            final User holder = catalog.getUser(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            holder.grantDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         } else {
-            catalog.getRole(visitor.getText(ctx.identifier())).grantDatabaseRole(role.getQualifiedName(), grantor);
+            final Role holder = catalog.getRole(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            holder.grantDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         }
         return null;
     }
 
-    /** REVOKE DATABASE ROLE d.r FROM USER u | ROLE r | DATABASE ROLE d.r2. */
+    /** REVOKE DATABASE ROLE d.r FROM USER u | ROLE r | DATABASE ROLE d.r2, its holder found first as a GRANT's is. */
     public Object revokeDatabaseRole(final FrostlakeParser.RevokeDatabaseRoleStatementContext ctx) {
-        final DatabaseRole role = databaseRole(catalog, ctx.qualifiedName());
         if (ctx.databaseRoleGrantee() != null) {
-            databaseRole(catalog, ctx.databaseRoleGrantee().qualifiedName()).revokeDatabaseRole(role.getQualifiedName());
+            final DatabaseRole holder = databaseRole(catalog,
+                PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
+            holder.revokeDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else if (ctx.USER() != null) {
-            catalog.getUser(visitor.getText(ctx.identifier())).revokeDatabaseRole(role.getQualifiedName());
+            final User holder = catalog.getUser(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            holder.revokeDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else {
-            catalog.getRole(visitor.getText(ctx.identifier())).revokeDatabaseRole(role.getQualifiedName());
+            final Role holder = catalog.getRole(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            holder.revokeDatabaseRole(grantedDatabaseRole(ctx.referencedName()).getQualifiedName());
         }
         return null;
+    }
+
+    /**
+     * The database role a GRANT or a REVOKE DATABASE ROLE names. An IDENTIFIER() reference spelling more than a
+     * database and a role names nothing (live-verified).
+     */
+    private DatabaseRole grantedDatabaseRole(final FrostlakeParser.ReferencedNameContext name) {
+        final String[] parts = PrincipalNames.parts(name, queryExecutor);
+        if (parts.length > 2 && PrincipalNames.isReference(name)) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+        return databaseRole(catalog, parts);
     }
 
     private void applyTagSet(final Taggable target, final FrostlakeParser.TagSetContext set) {
@@ -419,18 +456,22 @@ public final class AccessControlHandler {
 
     /** The canonical name of the schema a scope names, {@code DB.SCHEMA}, which must exist. */
     static String schemaScopeName(final Catalog catalog, final FrostlakeParser.QualifiedNameContext name) {
-        final String[] parts = ParseTreeText.qualifiedNameParts(name);
+        return schemaScopeName(catalog, ParseTreeText.qualifiedNameParts(name));
+    }
+
+    /** {@link #schemaScopeName(Catalog, FrostlakeParser.QualifiedNameContext)} for a name already resolved to its parts. */
+    static String schemaScopeName(final Catalog catalog, final String[] parts) {
         final Schema schema = catalog.resolveSchema(QualifiedName.of(parts));
         final String database = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentDatabase();
         return QualifiedName.join(catalog.databaseExact(database).getName(), schema.getName());
     }
 
     /** The canonical name of a bulk grant's scope: {@code DB.SCHEMA} or {@code DB}, the only two it has. */
-    static String scopeName(final Catalog catalog, final FrostlakeParser.BulkScopeContext scope) {
-        if (scope.SCHEMA() != null) {
-            return schemaScopeName(catalog, scope.qualifiedName());
+    static String scopeName(final Catalog catalog, final boolean schema, final String[] parts) {
+        if (schema) {
+            return schemaScopeName(catalog, parts);
         }
-        return catalog.databaseExact(ParseTreeText.qualifiedNameParts(scope.qualifiedName())[0]).getName();
+        return catalog.databaseExact(parts[0]).getName();
     }
 
     /**
@@ -581,7 +622,7 @@ public final class AccessControlHandler {
 
     private Object account(final FrostlakeParser.AccessControlStatementContext ctx, final int first) {
         final AccountDirectory directory = catalog.getAccountDirectory();
-        final String name = visitor.getText(ctx.identifier());
+        final String name = ctx.identifier() != null ? visitor.getText(ctx.identifier()) : undroppedAccount(ctx);
         final Account existing = directory.account(name);
         if (first == FrostlakeParser.CREATE) {
             if (existing != null || isCurrentAccount(name)) {
@@ -607,9 +648,13 @@ public final class AccessControlHandler {
             existing.drop(grace);
         } else {
             if (existing == null) {
-                // The account answers this with another refusal altogether, an access-control one naming an
-                // organization privilege, so no privilege hint is added to this sentence.
-                throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Account", name));
+                // An account that is not there is refused as one the role may not operate on, by the
+                // organization privilege it would need on the current account (live-verified).
+                final SecurityManager security = queryExecutor.getSecurityManager();
+                throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("ACCOUNT", name,
+                    security == null ? null : security.getSessionContext().getCurrentRole(),
+                    security != null && security.getSessionContext().isSecondaryRolesInUse(),
+                    "MANAGE ORGANIZATION ACCOUNTS", catalog.getAccountLocator()));
             }
             if (!existing.isDropped()) {
                 throw new RuntimeException(SqlCompilationError.of("Object '" + name + "' already exists."));
@@ -617,6 +662,15 @@ public final class AccessControlHandler {
             existing.restore();
         }
         return null;
+    }
+
+    /** The account an UNDROP names: one part, a qualifier being refused in the account's words (live-verified). */
+    private static String undroppedAccount(final FrostlakeParser.AccessControlStatementContext ctx) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
+        if (parts.length > 1) {
+            throw new RuntimeException("Cannot specify qualifier for account.");
+        }
+        return parts[0];
     }
 
     private boolean isCurrentAccount(final String name) {
@@ -749,19 +803,13 @@ public final class AccessControlHandler {
     }
 
     /** LIMIT n FROM 'name': at most n rows, from the first whose name sorts after the given one. */
-    /** The first rows of a listing, in its own order; a count of zero is no page size. */
+    /** The first rows of a listing, in its own order. */
     private static ResultSet firstRows(final ResultSet listing, final int limit) {
-        if (limit <= 0) {
-            throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");
-        }
         return limit >= listing.getRows().size() ? listing
             : new ResultSet(listing.getColumns(), new ArrayList<>(listing.getRows().subList(0, limit)));
     }
 
     private static ResultSet limitFrom(final ResultSet listing, final int limit, final String from) {
-        if (limit <= 0) {
-            throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");
-        }
         final int nameIndex = listing.getColumnIndex("name");
         final List<Row> rows = new ArrayList<>();
         for (final Row row : listing.getRows()) {

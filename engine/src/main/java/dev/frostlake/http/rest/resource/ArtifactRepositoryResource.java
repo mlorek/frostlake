@@ -109,8 +109,7 @@ public final class ArtifactRepositoryResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = named(call, name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Artifact Repository '"
-                + UserDefinedFunctionResource.qualified(call, name) + "' does not exist or not authorized.");
+            throw RestException.missing("Artifact Repository", UserDefinedFunctionResource.qualified(call, name));
         }
         return toJson(rows.get(0));
     }

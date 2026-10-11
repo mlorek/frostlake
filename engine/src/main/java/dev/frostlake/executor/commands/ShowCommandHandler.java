@@ -18,23 +18,30 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.GrantedObject;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SchemaObjectName;
 import dev.frostlake.executor.ShowCommandExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.UnmodelledDropKind;
+import dev.frostlake.parser.UnmodelledKindWords;
+import dev.frostlake.security.SessionContext;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -81,33 +88,90 @@ public class ShowCommandHandler implements CommandHandler {
     }
 
     /**
-     * SHOW of a class's instances, {@code SHOW <class>}: refused, no class being modelled.
+     * SHOW of a class's instances, {@code SHOW <class>}, and the listings SHOW DATASETS and SHOW CLASSES
+     * ({@link ClassListing}).
      *
      * @param ctx the statement
-     * @return never
+     * @return the listing
      */
     public ResultSet handleShowClassStatement(final FrostlakeParser.ShowClassStatementContext ctx) {
-        ShowScopeRefusal.refuseClassListing(ctx, catalog, queryExecutor);
-        return null;
+        return new ClassListing(catalog, queryExecutor).show(ctx);
     }
 
     /**
-     * A SHOW listing, its refusals judged in live's order: the syntax of its modifiers, then the scopes its shape
-     * rules out, a LIMIT 0, a WITH PRIVILEGES it does not filter by, and only then the scope's lookup.
+     * Refuses what a SHOW listing's shape alone rules out, in live's order: the syntax of its modifiers, then the
+     * scopes its shape rules out, a LIMIT 0 and a WITH PRIVILEGES it does not filter by. The account raises these
+     * while it compiles the statement, so a block that holds one is refused before any of it runs
+     * ({@link ShowShapeCompiler}); nothing is looked up here.
+     *
+     * @param ctx the statement
+     */
+    public void requireShape(final FrostlakeParser.ShowStatementContext ctx) {
+        requireShape(ctx, true);
+    }
+
+    /**
+     * As {@link #requireShape(FrostlakeParser.ShowStatementContext)}; without {@code namesKnown} — a block's statement
+     * whose names wait for a variable's value — only what no name decides is judged: the modifiers' syntax, a
+     * LIMIT 0 and a WITH PRIVILEGES.
+     *
+     * @param ctx        the statement
+     * @param namesKnown whether the statement's names can be read
+     */
+    public void requireShape(final FrostlakeParser.ShowStatementContext ctx, final boolean namesKnown) {
+        if (ctx.VERSIONS() != null) {
+            new AppObjectListing(catalog).requireVersionsShape(ctx);
+            return;
+        }
+        final ShowListing listing = ShowListing.of(ctx);
+        UnmodelledListings.requireParsed(ctx, listing);
+        ShowTailSyntax.requireParsed(ctx, listing);
+        if (listing == ShowListing.REGIONS && ctx.IN() != null) {
+            throw RegionsListing.scopeRefusal(ctx);
+        }
+        if (ctx.GRANTS() != null && ctx.showGrantsIn() != null) {
+            // The grant listing reads an IN and nothing after it: the statement is refused at what follows it.
+            throw SyntaxAfter.unexpected(ctx.showGrantsIn());
+        }
+        RoutineSignatureForm.requireTypesOnly(ctx.showGrantsTarget() == null ? null : ctx.showGrantsTarget().dataTypeList());
+        if (namesKnown) {
+            ShowScopeKindRefusal.refuseShape(ctx, listing, queryExecutor);
+            ShowScopeRefusal.refuseOverlongDatabase(ctx, catalog, queryExecutor, listing);
+            ShowScopeRefusal.refuseOverlongSchema(ctx, catalog, queryExecutor, listing, false);
+            ShowScopeRefusal.requireListable(ctx, catalog, queryExecutor, listing);
+        }
+        if (ctx.showTail() != null && ctx.showTail().LIMIT() != null) {
+            // A size of zero, or one the clause does not read, is judged on the clause: before the listing's scope
+            // is looked up though after a scope its shape rules out, and whether or not the listing goes on to
+            // paginate (live-verified).
+            ShowPageSize.requireReadable(ctx.showTail().INTEGER_LITERAL().getText());
+        }
+        ShowTailSyntax.refuseUnfilteredPrivileges(ctx, listing);
+    }
+
+    /**
+     * As {@link #requireShape(FrostlakeParser.ShowStatementContext)}, for {@code SHOW <class>}, SHOW DATASETS and
+     * SHOW CLASSES.
+     *
+     * @param ctx the statement
+     */
+    public void requireShape(final FrostlakeParser.ShowClassStatementContext ctx) {
+        new ClassListing(catalog, queryExecutor).requireShape(ctx);
+    }
+
+    /**
+     * A SHOW listing, its refusals judged in live's order: what its shape rules out ({@link #requireShape}), and
+     * only then the lookups — an account's identifier of too many parts, a model, a schema's path, the scope.
      */
     public ResultSet handleShowStatement(final FrostlakeParser.ShowStatementContext ctx) {
+        requireShape(ctx);
         if (ctx.VERSIONS() != null) {
             return new AppObjectListing(catalog).showVersions(ctx);
         }
         final ShowListing listing = ShowListing.of(ctx);
-        ShowTailSyntax.requireParsed(ctx, listing);
-        RoutineSignatureForm.requireTypesOnly(ctx.showGrantsTarget() == null ? null : ctx.showGrantsTarget().dataTypeList());
-        ShowScopeKindRefusal.refuseShape(ctx, listing, queryExecutor);
-        ShowScopeRefusal.requireListable(ctx, catalog, queryExecutor, listing);
-        if (ctx.showTail() != null && ctx.showTail().LIMIT() != null) {
-            requirePositiveLimit(Integer.parseInt(ctx.showTail().INTEGER_LITERAL().getText()));
-        }
-        ShowTailSyntax.refuseUnfilteredPrivileges(ctx, listing);
+        ShowScopeRefusal.refuseOverlongAccount(ctx, queryExecutor, listing);
+        ShowScopeRefusal.refuseMissingModel(ctx);
+        ShowScopeRefusal.refuseOverlongSchema(ctx, catalog, queryExecutor, listing, true);
         if (listing == ShowListing.ROLES && ShowScopeKindRefusal.scopeKind(ctx) == ShowScopeKind.SERVICE
                 && ctx.showInstanceName() != null && ctx.showInstanceName().showScopeName() != null
                 && ctx.showInstanceName().showScopeName().identifier().size() == 1) {
@@ -143,7 +207,8 @@ public class ShowCommandHandler implements CommandHandler {
                 result = rootTasksOnly(result);
             }
             if (tail.LIMIT() != null) {
-                final int limit = Integer.parseInt(tail.INTEGER_LITERAL().getText());
+                // A size past the largest page is refused once the scope is found (live-verified).
+                final int limit = ShowPageSize.require(tail.INTEGER_LITERAL().getText());
                 final String fromName = tail.FROM() != null
                     ? ParseTreeText.stringBody(tail.stringText(literalIndex)) : null;
                 if (profile.honorsLimit()) {
@@ -204,22 +269,6 @@ public class ShowCommandHandler implements CommandHandler {
         }
         final Object predecessors = predecessorsColumn >= 0 ? row.getValue(predecessorsColumn) : null;
         return predecessors == null || predecessors.toString().replaceAll("\\s", "").equals("[]");
-    }
-
-    /**
-     * {@code LIMIT 0} is rejected, and rejected before the listing's scope is looked up — though after a scope its
-     * shape rules out.
-     *
-     * <p>Live-verified on a real account: every one of the twenty listings probed answers
-     * {@code SHOW ... LIMIT 0} with "page size "0" must be greater than 0 in limit clause" — including
-     * STAGES, SEQUENCES, WAREHOUSES and FILE FORMATS, which go on to ignore a positive LIMIT entirely.
-     * The check is therefore on the clause, not on whether the listing paginates, so it lives here
-     * rather than behind {@link ShowModifierProfile#honorsLimit()}.
-     */
-    private static void requirePositiveLimit(final int limit) {
-        if (limit <= 0) {
-            throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");
-        }
     }
 
     /**
@@ -379,7 +428,16 @@ public class ShowCommandHandler implements CommandHandler {
     private ResultSet handleShowStatementInternal(final FrostlakeParser.ShowStatementContext ctx,
                                                   final ShowListingScope forced) {
         final ShowCommandExecutor showExecutor = queryExecutor.getShowExecutor();
+        final ShowListing listed = ShowListing.of(ctx);
+        if (listed.isUnmodelled()) {
+            return new UnmodelledListings(catalog, queryExecutor).show(ctx, listed, listingScope(ctx, listed, forced));
+        }
         if (ctx.MODELS() != null) {
+            if (ctx.objectName() != null && ctx.ACCOUNT() == null && ctx.TABLE() == null
+                    && ctx.showInstanceName() == null) {
+                // A schema or a database that does not exist is not named (live-verified).
+                listingScope(ctx, ShowListing.OTHER, forced).schemas(catalog, true);
+            }
             return showModels();
         }
         if (ctx.NOTEBOOKS() != null || ctx.STREAMLITS() != null) {
@@ -413,9 +471,10 @@ public class ShowCommandHandler implements CommandHandler {
         } else if (ctx.EVENT() != null) {
             return EventTableCommandHandler.listing(tablesInScope(showExecutor, ctx, forced));
         } else if (ctx.EXTERNAL() != null && ctx.TABLES() != null) {
-            // The scope is still judged — IN TABLE is refused like any other schema-level listing's — but
-            // there is never anything to list: an external table reads files this engine cannot reach.
-            listingScope(ctx, ShowListing.EXTERNAL_TABLES, forced);
+            // The scope is still judged — IN TABLE is refused like any other schema-level listing's, and a
+            // schema or a database that does not exist as a table listing's is — but there is never anything
+            // to list: an external table reads files this engine cannot reach.
+            listingScope(ctx, ShowListing.EXTERNAL_TABLES, forced).schemas(catalog, true);
             return ExternalTableListing.listing();
         } else if (ctx.INTEGRATIONS() != null) {
             return new IntegrationCommandHandler(catalog, queryExecutor).show(ctx.integrationKind());
@@ -686,6 +745,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.IMPORTED() != null) {
                 return showExecutor.showImportedKeys(scopeKind, scopeName);
             }
+            if (ctx.EXPORTED() != null) {
+                return showExecutor.showExportedKeys(scopeKind, scopeName);
+            }
             return showExecutor.showKeysScoped(ctx.PRIMARY() != null, scopeKind, scopeName);
         } else if (ctx.TAGS() != null) {
             final ShowListingScope scope = listingScope(ctx, ShowListing.TAGS, forced);
@@ -848,6 +910,10 @@ public class ShowCommandHandler implements CommandHandler {
         if (scope.isAccount()) {
             return alerts.show(null, null);
         }
+        if (scope.name() != null) {
+            // The schema or the database the scope misses is named (live-verified).
+            scope.schemas(catalog, false);
+        }
         if (scope.isDatabase()) {
             if (ctx.objectName() == null) {
                 return alerts.show(scope.name(), null);
@@ -930,6 +996,29 @@ public class ShowCommandHandler implements CommandHandler {
         });
     }
 
+    /**
+     * A schema of the SNOWFLAKE database is not described (live-verified): the share most of them come from lacks
+     * the privilege, and one of the SNOWFLAKE application's asks the session's role for MONITOR. Its
+     * INFORMATION_SCHEMA is described as any database's.
+     */
+    private void refuseSystemSchema(final Schema schema) {
+        final SystemSchema system = SystemSchema.of(schema.getDatabaseName(), schema.getName());
+        if (system == null) {
+            return;
+        }
+        if (system.owner() == null) {
+            throw new PrivilegeRefusal(SqlAccessControlError.insufficientPrivileges("schema", schema.getName())
+                + " Provider share does not have sufficient privileges.");
+        }
+        if (queryExecutor.getSecurityManager() == null) {
+            return;
+        }
+        final SessionContext session = queryExecutor.getSecurityManager().getSessionContext();
+        throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("SCHEMA", schema.getName(),
+            session.getCurrentRole(), session.isSecondaryRolesInUse(), Privilege.MONITOR.name(),
+            QualifiedName.join(schema.getDatabaseName(), schema.getName())));
+    }
+
     /** The name parts DESCRIBE SCHEMA or DATABASE names, refused as live refuses a name with too many parts. */
     private String[] describedContainerParts(final FrostlakeParser.ObjectNameContext name, final int maxParts) {
         final String[] parts = queryExecutor.resolveObjectNameParts(name);
@@ -939,6 +1028,54 @@ public class ShowCommandHandler implements CommandHandler {
         return parts;
     }
 
+    /**
+     * DESCRIBE ICEBERG TABLE over a table that is no Iceberg table: refused in the account's own sentence, before
+     * anything is described; a name that reaches no table keeps its own refusal (live-verified).
+     */
+    private void refuseTableThatIsNoIcebergTable(final FrostlakeParser.ObjectNameContext name) {
+        final String[] parts = queryExecutor.resolveObjectNameParts(name);
+        final Table table;
+        try {
+            table = catalog.requireOwningSchema(QualifiedName.of(parts)).getTable(parts[parts.length - 1]);
+        } catch (final RuntimeException missing) {
+            return;
+        }
+        if (table != null && table.getIcebergMetadata() == null) {
+            throw new RuntimeException("SQL Compilation error: The object "
+                + SqlIdentifiers.spellCanonical(parts[parts.length - 1])
+                + " is not an Iceberg table. Only Iceberg tables can use DESCRIBE ICEBERG TABLE command.");
+        }
+    }
+
+    /**
+     * DESCRIBE of a kind Frostlake models no object of. A resource monitor and an organization are features the
+     * account does not support, whatever is named; every other kind misses its object, the name resolved as a
+     * DROP of the kind resolves it — a share's qualifier being its account (live-verified).
+     *
+     * @param kind the kind described
+     * @param parts the canonical parts of the name written after it
+     * @return the refusal
+     */
+    private RuntimeException describeUnmodelled(final UnmodelledDropKind kind, final String[] parts) {
+        if (kind == UnmodelledDropKind.RESOURCE_MONITOR) {
+            return new RuntimeException("Unsupported feature 'TOK_RESOURCE_MONITOR'.");
+        }
+        if (kind == UnmodelledDropKind.ORGANIZATION) {
+            return new RuntimeException("Unsupported feature 'ORGANIZATION'.");
+        }
+        final String name = parts[parts.length - 1];
+        if (kind == UnmodelledDropKind.SHARE && parts.length <= 2) {
+            return new RuntimeException(SqlCompilationError.doesNotExistAsSpelled(kind.noun(),
+                DropCommandHandler.shareName(parts.length == 2 ? parts[0] : catalog.getAccountLocator(), name)));
+        }
+        if (kind.isSchemaObject()) {
+            final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
+            return new RuntimeException(SqlCompilationError.doesNotExist(kind.noun(), owner.qualifiedName(name)));
+        }
+        return new RuntimeException(parts.length > 1 ? SqlCompilationError.objectDoesNotExist()
+            : SqlCompilationError.doesNotExist(kind.noun(), name));
+    }
+
     public ResultSet handleDescribeStatement(final FrostlakeParser.DescribeStatementContext ctx) {
         if (ctx.INTEGRATION() != null) {
             return new IntegrationCommandHandler(catalog, queryExecutor).describe(ctx.integrationKind(), ctx.identifier());
@@ -946,15 +1083,34 @@ public class ShowCommandHandler implements CommandHandler {
         if (ctx.VOLUME() != null) {
             return new ExternalVolumeCommandHandler(catalog).describe(ctx.identifier());
         }
+        if (ctx.unmodelledKind() != null) {
+            throw describeUnmodelled(UnmodelledDropKind.of(ctx.unmodelledKind()),
+                queryExecutor.resolveObjectNameParts(ctx.objectName()));
+        }
+        if (ctx.IMAGE() != null && ctx.REPOSITORY() != null) {
+            // The account describes no image repository, whatever one is named (live-verified).
+            throw new RuntimeException("Unsupported feature 'TOK_IMAGE_REPOSITORY'.");
+        }
         final ShowCommandExecutor showExecutor = queryExecutor.getShowExecutor();
         if (ctx.NOTEBOOK() != null || ctx.STREAMLIT() != null) {
             return new AppObjectListing(catalog).describe(ctx.NOTEBOOK() != null ? AppObjectKind.NOTEBOOK
                 : AppObjectKind.STREAMLIT, ctx.qualifiedName());
         }
         if (ctx.IDENTIFIER() != null) {
+            if (UnmodelledKindWords.isOneWord(ctx.IDENTIFIER().getSymbol())) {
+                throw describeUnmodelled(UnmodelledDropKind.valueOf(ctx.IDENTIFIER().getText()
+                    .toUpperCase(Locale.ROOT)), ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
+            }
             DescribeProperties.refuseAfterBareName(ctx.describeTypeProperty());
             throw new RuntimeException("Unsupported feature 'DESCRIBE "
                 + ctx.IDENTIFIER().getText().toUpperCase(Locale.ROOT) + "'.");
+        }
+        if (ctx.TAG() != null) {
+            // The account describes no tag: the statement is refused whether or not the tag exists, before its
+            // name is looked up and whatever property follows it; SHOW TAGS is how one is read back
+            // (live-verified).
+            DescribeProperties.requireValues(ctx);
+            throw new RuntimeException(DescribeTagRefusal.SENTENCE);
         }
         RoutineSignatureForm.requireTypesOnly(ctx.dataTypeList());
         final boolean stageProperties = DescribeProperties.describesStage(ctx, queryExecutor);
@@ -963,7 +1119,7 @@ public class ShowCommandHandler implements CommandHandler {
         }
         if (ctx.SCHEMA() != null) {
             final String[] parts = describedContainerParts(ctx.objectName(), 2);
-            catalog.resolveSchema(QualifiedName.of(parts));
+            refuseSystemSchema(catalog.resolveSchema(QualifiedName.of(parts)));
             queryExecutor.requirePrivilege(Privilege.MONITOR, "SCHEMA", parts, null);
             return showExecutor.describeSchema(QualifiedName.join(parts));
         }
@@ -975,6 +1131,9 @@ public class ShowCommandHandler implements CommandHandler {
         if ((ctx.TABLE() != null || ctx.VIEW() != null) && ctx.EVENT() == null && ctx.ICEBERG() == null
                 && ctx.objectName() != null) {
             refuseRelationKeywordOverStream(ctx);
+        }
+        if (ctx.ICEBERG() != null && ctx.objectName() != null) {
+            refuseTableThatIsNoIcebergTable(ctx.objectName());
         }
         if (stageProperties && (ctx.DYNAMIC() != null || ctx.TABLE() != null || ctx.VIEW() != null)) {
             // The stage properties are the relation's, whatever kind the name reaches: a dynamic table
@@ -1017,6 +1176,20 @@ public class ShowCommandHandler implements CommandHandler {
             // missing ("Materialized view 'X' does not exist or not authorized." — live-verified).
             final String describedKind = ctx.MATERIALIZED() != null ? "Materialized view"
                 : ctx.VIEW() != null ? "View" : "Table";
+            if (ctx.EVENT() != null && !showExecutor.namesAStoredRelation(describedName(ctx.objectName()))) {
+                // A missing event table is named as one, by its full path.
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Event table",
+                    catalog.qualifiedObjectName(describedName(ctx.objectName()))));
+            }
+            if (ctx.EXTERNAL() != null && ctx.objectName() != null
+                    && !showExecutor.namesAStoredRelation(describedName(ctx.objectName()))) {
+                // DESCRIBE EXTERNAL TABLE describes whatever relation the name reaches; one that reaches none
+                // is refused as an external table by its full path, after its schema (live-verified).
+                final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+                final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
+                throw new RuntimeException(SqlCompilationError.doesNotExist("External table",
+                    owner.qualifiedName(parts[parts.length - 1])));
+            }
             return showExecutor.describeRelation(describedName(ctx.objectName()), describedKind);
         } else if (ctx.PIPE() != null) {
             return showExecutor.describePipe(schemaObject(ctx.objectName()));
@@ -1038,9 +1211,6 @@ public class ShowCommandHandler implements CommandHandler {
         } else if (ctx.STAGE() != null) {
             final String stageName = getText(ctx.qualifiedName());
             return showExecutor.describeStage(stageName);
-        } else if (ctx.TAG() != null) {
-            final String tagName = getText(ctx.identifier());
-            return showExecutor.describeTag(tagName);
         } else if (ctx.FUNCTION() != null) {
             requireRoutineArgumentTypes(ctx, getText(ctx.qualifiedName()));
             return showExecutor.describeFunction(qualifiedNameParts(ctx.qualifiedName()), writtenSignature(ctx));
@@ -1094,7 +1264,8 @@ public class ShowCommandHandler implements CommandHandler {
 
     /** The index of the name-ish column SHOW filters (LIKE / STARTS WITH / LIMIT FROM) apply to, or -1. */
     private static int nameColumnIndex(final ResultSet rs) {
-        for (final String col : new String[]{"name", "parameter_name", "key", "account_name", "column_name"}) {
+        for (final String col : new String[]{"name", "parameter_name", "key", "account_name", "column_name",
+            "snowflake_region"}) {
             try {
                 return rs.getColumnIndex(col);
             } catch (final RuntimeException ignored) {
@@ -1319,6 +1490,15 @@ public class ShowCommandHandler implements CommandHandler {
             // SHOW GRANTS ON [kind] name
             final FrostlakeParser.ShowGrantsTargetContext target = ctx.showGrantsTarget();
             final String[] parts = ParseTreeText.qualifiedNameParts(target.qualifiedName());
+            if (target.ACCOUNT() != null) {
+                // A name after ACCOUNT names another account, which is looked up and never found.
+                throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
+            if (target.securableKind() == null && target.qualifiedName().getStart() == target.qualifiedName().getStop()
+                    && target.qualifiedName().getStart().getType() == FrostlakeLexer.ACCOUNT) {
+                // The word alone is the account itself, never a table of that name (live-verified).
+                return showExecutor.showGrantsOnAccount();
+            }
             if (target.securableKind() == null) {
                 // A bare name is a table or a view, and anything else is no object at all (live-verified).
                 final GrantedObject relation = queryExecutor.grantedRelation(parts);
@@ -1369,7 +1549,7 @@ public class ShowCommandHandler implements CommandHandler {
                                              final String routineName) {
         if (ctx.LPAREN() == null) {
             throw new RuntimeException("Argument types of function '"
-                + routineName.toUpperCase() + "' must be specified.");
+                + routineName.toUpperCase(Locale.ROOT) + "' must be specified.");
         }
     }
 

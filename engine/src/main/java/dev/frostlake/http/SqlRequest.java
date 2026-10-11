@@ -35,6 +35,10 @@ public class SqlRequest {
     // sends the count with the statement; here it is optional, and the session's MULTI_STATEMENT_COUNT
     // answers for a request that omits it. Zero means any number.
     private Integer multiStatementCount;
+    // Whether the request must only read, or null when it does not say. A request that says so is refused,
+    // nothing run, unless every statement of it is a query, a SHOW, a DESCRIBE or an EXPLAIN that reaches no
+    // write; a session opened read-only answers for a request that omits it.
+    private Boolean readOnly;
 
     public SqlRequest() {
     }
@@ -110,5 +114,13 @@ public class SqlRequest {
      */
     public boolean refusesUnknownSession() {
         return requireSession == null || requireSession.booleanValue();
+    }
+
+    public Boolean getReadOnly() {
+        return readOnly;
+    }
+
+    public void setReadOnly(final Boolean readOnly) {
+        this.readOnly = readOnly;
     }
 }

@@ -95,8 +95,7 @@ public final class ViewResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW VIEWS" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty() || Boolean.TRUE.equals(rows.get(0).bool("is_materialized"))) {
-            throw RestException.notFound("View '" + RelationNames.qualifiedDisplay(call, name)
-                + "' does not exist or not authorized.");
+            throw RestException.missing("View", RelationNames.qualifiedDisplay(call, name));
         }
         return toJson(call, rows.get(0), true);
     }

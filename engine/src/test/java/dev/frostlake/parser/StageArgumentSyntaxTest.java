@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -192,7 +194,7 @@ public class StageArgumentSyntaxTest extends BaseDatabaseTest {
         assertEquals("SQL compilation error:\nUnknown function SA_F1.", refusal("SELECT sa_f1()"));
         engine.execute("CREATE FUNCTION sa_f8() RETURNS VARCHAR AS 'GET_STAGE_LOCATION(@sa_body_st)'");
         assertEquals("true", String.valueOf(engine.executeQuery(
-            "SELECT sa_f8() = GET_STAGE_LOCATION(@sa_body_st)").getRows().get(0).getValue(0)).toLowerCase());
+            "SELECT sa_f8() = GET_STAGE_LOCATION(@sa_body_st)").getRows().get(0).getValue(0)).toLowerCase(Locale.ROOT));
     }
 
     /**

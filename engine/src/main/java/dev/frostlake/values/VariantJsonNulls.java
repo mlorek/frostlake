@@ -19,6 +19,7 @@ package dev.frostlake.values;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -100,7 +101,7 @@ public final class VariantJsonNulls {
 
     /** Whether an aggregate of this name reads a JSON null as a value rather than as missing input. */
     public static boolean isValueAggregate(final String aggregateName) {
-        return aggregateName != null && VALUE_AGGREGATES.contains(aggregateName.toUpperCase());
+        return aggregateName != null && VALUE_AGGREGATES.contains(aggregateName.toUpperCase(Locale.ROOT));
     }
 
     /**

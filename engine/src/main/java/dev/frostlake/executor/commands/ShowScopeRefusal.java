@@ -30,6 +30,9 @@ import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 
+import java.util.EnumSet;
+import java.util.Set;
+
 /**
  * The SHOW statements that parse but name nothing Frostlake can list, refused before the listing runs —
  * live-verified across every listing that takes a scope.
@@ -66,6 +69,12 @@ import org.antlr.v4.runtime.Token;
  */
 final class ShowScopeRefusal {
 
+    /** The listings of the account's own things, whose bare scope is an account's identifier. */
+    private static final Set<ShowListing> ACCOUNT_IDENTIFIED = EnumSet.of(ShowListing.ROLES, ShowListing.USERS,
+        ShowListing.WAREHOUSES, ShowListing.DATABASES, ShowListing.REPLICATION_DATABASES,
+        ShowListing.REPLICATION_GROUPS, ShowListing.FAILOVER_GROUPS, ShowListing.RESOURCE_MONITORS,
+        ShowListing.SHARES, ShowListing.CONNECTIONS, ShowListing.APPLICATIONS, ShowListing.APPLICATION_PACKAGES);
+
     private ShowScopeRefusal() {
     }
 
@@ -95,11 +104,10 @@ final class ShowScopeRefusal {
         if (instance == null) {
             return;
         }
-        if (ctx.FUNCTIONS() != null && ctx.TERSE() == null && ctx.USER() == null && ctx.BUILTIN() == null
-                && isWord(name, "MODEL")) {
-            // The one listing that reads MODEL as a scope kind, the plain SHOW FUNCTIONS: no model exists
-            // (live-verified).
-            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        if (namesModel(ctx)) {
+            // The one listing that reads MODEL as a scope kind, the plain SHOW FUNCTIONS, looks the model up
+            // later (see refuseMissingModel).
+            return;
         }
         if (isKeywordClassName(name)) {
             // The parser reads no other name after such a word; an IDENTIFIER() reference is refused here.
@@ -118,6 +126,116 @@ final class ShowScopeRefusal {
         }
         throw new RuntimeException(SqlCompilationError.of(
             "Unsupported statement type 'Cannot show objects of type " + listing.objectType() + " in INSTANCE'."));
+    }
+
+    /**
+     * Refuse a database scope whose name has more parts than a database's, which the shape alone decides
+     * (live-verified): a database is one part, so {@code IN DATABASE a.b} asks for a full search path, naming the
+     * last part, as {@code IN ACCOUNT x} does — every listing but SCHEMAS, which answers the sentence that names
+     * nothing.
+     *
+     * @param ctx           the SHOW statement
+     * @param catalog       the catalog, which knows the account locator a name may lead with
+     * @param queryExecutor the executor that resolves an IDENTIFIER() reference
+     * @param listing       the statement's listing
+     */
+    static void refuseOverlongDatabase(final FrostlakeParser.ShowStatementContext ctx, final Catalog catalog,
+                                       final QueryExecutor queryExecutor, final ShowListing listing) {
+        final FrostlakeParser.ObjectNameContext name = ctx.objectName();
+        if (name == null || ctx.showInstanceName() != null || ctx.TABLE() != null || ctx.VIEW() != null
+                || ctx.APPLICATION() != null || ctx.CLASS() != null || ctx.DATABASE() == null) {
+            return;
+        }
+        final String[] parts = queryExecutor.resolveObjectNameParts(name);
+        if (catalog.partsWithinAccount(parts) > 1 && listing != ShowListing.SCHEMAS) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Must specify the full search path starting from database for " + parts[parts.length - 1]));
+        }
+    }
+
+    /**
+     * Refuse an account's identifier of three parts or more: an account is at most two, so the listings of the
+     * account's own things — roles, users, warehouses, databases, resource monitors, shares, connections,
+     * applications and their packages, and the replication listings — refuse {@code IN a.b.c} as an account
+     * identifier with too many qualifiers. The name is read when the statement runs, after everything its shape
+     * decides: a {@code LIMIT 0} written after it is refused first (live-verified).
+     *
+     * @param ctx           the SHOW statement
+     * @param queryExecutor the executor that resolves an IDENTIFIER() reference
+     * @param listing       the statement's listing
+     */
+    static void refuseOverlongAccount(final FrostlakeParser.ShowStatementContext ctx,
+                                      final QueryExecutor queryExecutor, final ShowListing listing) {
+        final FrostlakeParser.ObjectNameContext name = ctx.objectName();
+        if (name == null || ctx.showInstanceName() != null || ctx.TABLE() != null || ctx.VIEW() != null
+                || ctx.APPLICATION() != null || ctx.CLASS() != null || ctx.DATABASE() != null || ctx.SCHEMA() != null
+                || !ACCOUNT_IDENTIFIED.contains(listing) || ShowScopeKindRefusal.scopeKind(ctx) != null) {
+            return;
+        }
+        final String[] parts = queryExecutor.resolveObjectNameParts(name);
+        if (parts.length > 2) {
+            throw new RuntimeException(SqlCompilationError.inline("account identifier '"
+                + SqlIdentifiers.spellAlreadyCanonicalPath(QualifiedName.join(parts))
+                + "' has too many qualifiers"));
+        }
+    }
+
+    /**
+     * Refuse the plain {@code SHOW FUNCTIONS IN MODEL m}: the model is looked up when the statement runs, and none
+     * exists (live-verified).
+     *
+     * @param ctx the SHOW statement
+     */
+    static void refuseMissingModel(final FrostlakeParser.ShowStatementContext ctx) {
+        if (namesModel(ctx)) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+    }
+
+    /** Whether the statement is the plain function listing scoped by a model, the one that reads MODEL as a kind. */
+    private static boolean namesModel(final FrostlakeParser.ShowStatementContext ctx) {
+        final FrostlakeParser.ObjectNameContext name = ctx.objectName();
+        return name != null && ShowScopeKindRefusal.scopeKind(ctx) == null && ctx.ACCOUNT() == null
+            && ctx.showInstanceName() != null && ctx.FUNCTIONS() != null && ctx.TERSE() == null && ctx.USER() == null
+            && ctx.BUILTIN() == null && isWord(name, "MODEL");
+    }
+
+    /**
+     * Refuse a schema scope whose name has three parts or more, once the listing's modifiers are judged
+     * (live-verified): a schema is a database and a schema at most, so {@code IN a.b.c} and {@code IN SCHEMA a.b.c}
+     * are answered by the sentence that names nothing — when the statement runs, so {@code lookedUp} holds. The
+     * column and key listings read a table's path after a bare IN, and after IN SCHEMA ask for a full search path,
+     * naming the last part: that the shape alone decides, so it is refused with {@code lookedUp} or without.
+     *
+     * @param ctx           the SHOW statement
+     * @param catalog       the catalog, which knows the account locator a name may lead with
+     * @param queryExecutor the executor that resolves an IDENTIFIER() reference
+     * @param listing       the statement's listing
+     * @param lookedUp      whether the statement runs, and the scope is looked up
+     */
+    static void refuseOverlongSchema(final FrostlakeParser.ShowStatementContext ctx, final Catalog catalog,
+                                     final QueryExecutor queryExecutor, final ShowListing listing,
+                                     final boolean lookedUp) {
+        final FrostlakeParser.ObjectNameContext name = ctx.objectName();
+        if (name == null || ctx.showInstanceName() != null || ctx.ACCOUNT() != null || ctx.DATABASE() != null
+                || ctx.TABLE() != null || ctx.VIEW() != null || ctx.APPLICATION() != null || ctx.CLASS() != null
+                || !listing.isSchemaLevel() || ShowScopeKindRefusal.scopeKind(ctx) != null) {
+            return;
+        }
+        final String[] parts = queryExecutor.resolveObjectNameParts(name);
+        if (catalog.partsWithinAccount(parts) < 3) {
+            return;
+        }
+        if (listing.readsTableAfterIn()) {
+            if (ctx.SCHEMA() != null) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Must specify the full search path starting from database for " + parts[parts.length - 1]));
+            }
+            return;
+        }
+        if (lookedUp) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
     }
 
     /**
@@ -147,19 +265,8 @@ final class ShowScopeRefusal {
 
     /** Whether the listing looks the class of a class-instance scope up: the routine listings and the role listing. */
     private static boolean looksUpClass(final FrostlakeParser.ShowStatementContext ctx, final ShowListing listing) {
-        return ctx.FUNCTIONS() != null || ctx.PROCEDURES() != null || listing == ShowListing.ROLES;
-    }
-
-    /**
-     * Refuse a class listing, {@code SHOW <class>}: its class is missing, before its scope or modifiers are read.
-     *
-     * @param ctx           the statement
-     * @param catalog       the catalog the class name resolves against
-     * @param queryExecutor the executor that reads an IDENTIFIER() class name
-     */
-    static void refuseClassListing(final FrostlakeParser.ShowClassStatementContext ctx, final Catalog catalog,
-                                   final QueryExecutor queryExecutor) {
-        throw new RuntimeException(missingClass(ClassNameParts.of(ctx.className(), queryExecutor), catalog));
+        return ctx.FUNCTIONS() != null || ctx.PROCEDURES() != null || listing == ShowListing.ROLES
+            || listing == ShowListing.EXTERNAL_FUNCTIONS || listing == ShowListing.DATA_METRIC_FUNCTIONS;
     }
 
     /**
@@ -196,7 +303,7 @@ final class ShowScopeRefusal {
     }
 
     /** A syntax error line placed at {@code token}, naming {@code text}, with no prefix. */
-    private static String syntaxErrorAt(final Token token, final String text) {
+    static String syntaxErrorAt(final Token token, final String text) {
         final int[] shown = LeadingCommentOffset.rebase(token.getLine(), token.getCharPositionInLine());
         return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + text + "'.";
     }

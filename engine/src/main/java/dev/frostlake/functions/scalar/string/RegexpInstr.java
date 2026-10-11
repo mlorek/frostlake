@@ -56,6 +56,9 @@ public class RegexpInstr extends TextArgumentFunction {
         RegexpHelper.requireOccurrence(occurrence);
         RegexpHelper.requireReturnOption(option);
         RegexpHelper.requireGroup(groupNum);
+        if (RegexpHelper.matchesNothing(pattern, parameters)) {
+            return 0L;
+        }
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);

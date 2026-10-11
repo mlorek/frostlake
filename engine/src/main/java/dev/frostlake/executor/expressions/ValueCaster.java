@@ -31,6 +31,7 @@ import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.YearMonthInterval;
 
+import java.util.Locale;
 import java.util.Set;
 
 import java.math.BigDecimal;
@@ -62,7 +63,7 @@ public final class ValueCaster {
             return null;
         }
 
-        String baseType = targetType.toUpperCase();
+        String baseType = targetType.toUpperCase(Locale.ROOT);
         final int parenIndex = baseType.indexOf('(');
         if (parenIndex > 0) {
             baseType = baseType.substring(0, parenIndex).trim();
@@ -205,7 +206,7 @@ public final class ValueCaster {
      * 9 when it declares none or is not one of those families.
      */
     private static int declaredFractionalPrecision(final String targetType) {
-        final String type = targetType.toUpperCase();
+        final String type = targetType.toUpperCase(Locale.ROOT);
         final int open = type.indexOf('(');
         final int close = type.indexOf(')');
         if (!type.startsWith("TIME") || open < 0 || close <= open) {

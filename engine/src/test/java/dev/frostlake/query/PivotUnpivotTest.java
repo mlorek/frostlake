@@ -19,6 +19,7 @@ package dev.frostlake.query;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import java.math.BigDecimal;
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -180,8 +181,8 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SELECT quarter FROM (SELECT 1 AS empid, 10 AS q1, 20 AS q2) "
             + "UNPIVOT(amount FOR quarter IN (q1, q2)) ORDER BY quarter");
         assertEquals(1, rs.getColumns().size());
-        assertEquals("Q1", rs.getRows().get(0).getValue(0).toString().toUpperCase());
-        assertEquals("Q2", rs.getRows().get(1).getValue(0).toString().toUpperCase());
+        assertEquals("Q1", rs.getRows().get(0).getValue(0).toString().toUpperCase(Locale.ROOT));
+        assertEquals("Q2", rs.getRows().get(1).getValue(0).toString().toUpperCase(Locale.ROOT));
     }
 
     @Test
@@ -204,7 +205,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         // is referenced as "'Q1'". This assertion previously expected the stripped name, which is not what
         // Snowflake produces — and the stripped form made "'Q1'" unresolvable.
         assertEquals(4, result.getColumns().size());
-        assertEquals("product", result.getColumns().get(0).getName().toLowerCase());
+        assertEquals("product", result.getColumns().get(0).getName().toLowerCase(Locale.ROOT));
         assertEquals("'Q1'", result.getColumns().get(1).getName());
         assertEquals("'Q2'", result.getColumns().get(2).getName());
         assertEquals("'Q3'", result.getColumns().get(3).getName());
@@ -264,7 +265,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         assertEquals(3, result.getColumns().size());
 
         // Check column names use aliases
-        assertEquals("region", result.getColumns().get(0).getName().toLowerCase());
+        assertEquals("region", result.getColumns().get(0).getName().toLowerCase(Locale.ROOT));
         assertEquals("JANUARY", result.getColumns().get(1).getName());
         assertEquals("FEBRUARY", result.getColumns().get(2).getName());
     }
@@ -310,7 +311,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // Should have 3 columns: product, quarter, amount
         assertEquals(3, result.getColumns().size());
-        assertEquals("product", result.getColumns().get(0).getName().toLowerCase());
+        assertEquals("product", result.getColumns().get(0).getName().toLowerCase(Locale.ROOT));
         assertEquals("QUARTER", result.getColumns().get(1).getName());
         assertEquals("AMOUNT", result.getColumns().get(2).getName());
 
@@ -356,8 +357,8 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // Should have 4 columns: region, product, month, sales
         assertEquals(4, result.getColumns().size());
-        assertEquals("region", result.getColumns().get(0).getName().toLowerCase());
-        assertEquals("product", result.getColumns().get(1).getName().toLowerCase());
+        assertEquals("region", result.getColumns().get(0).getName().toLowerCase(Locale.ROOT));
+        assertEquals("product", result.getColumns().get(1).getName().toLowerCase(Locale.ROOT));
         assertEquals("MONTH", result.getColumns().get(2).getName());
         assertEquals("SALES", result.getColumns().get(3).getName());
 

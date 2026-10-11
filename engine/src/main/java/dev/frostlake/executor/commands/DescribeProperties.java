@@ -62,13 +62,11 @@ final class DescribeProperties {
                 types++;
             }
         }
+        requireValues(statement);
         boolean stage = false;
         int typeIndex = 0;
         for (final FrostlakeParser.DescribePropertyContext property : properties) {
             final FrostlakeParser.DescribeParameterContext parameter = property.describeParameter();
-            if (parameter != null && parameter.EQ() == null) {
-                throw new RuntimeException(syntaxErrorAfter(statement, property));
-            }
             if (!isType(property)) {
                 throw new RuntimeException(SqlCompilationError.of(
                     "invalid parameter '" + parameter.getChild(0).getText() + "'"));
@@ -83,6 +81,21 @@ final class DescribeProperties {
     }
 
     /**
+     * The statement is read whole before any property is judged: a name left without its value is the syntax
+     * error, whatever was written before it.
+     *
+     * @param statement the DESCRIBE, its properties in the order written
+     */
+    static void requireValues(final FrostlakeParser.DescribeStatementContext statement) {
+        for (final FrostlakeParser.DescribePropertyContext property : statement.describeProperty()) {
+            final FrostlakeParser.DescribeParameterContext parameter = property.describeParameter();
+            if (parameter != null && parameter.EQ() == null) {
+                throw new RuntimeException(syntaxErrorAfter(statement, property));
+            }
+        }
+    }
+
+    /**
      * Whether a property is a TYPE: the ordinary spelling, or the word TYPE given a session variable, a negative
      * number or a parenthesised value, which read as TYPE's own value and are refused as one.
      */
@@ -93,7 +106,8 @@ final class DescribeProperties {
         }
         final FrostlakeParser.DescribeParameterValueContext value = parameter.describeParameterValue();
         return parameter.identifier() != null && parameter.identifier().getStart().getType() == FrostlakeLexer.TYPE
-            && value != null && (value.SESSION_VAR_REF() != null || value.MINUS() != null || value.LPAREN() != null);
+            && value != null && (value.SESSION_VAR_REF() != null || value.MINUS() != null || value.LPAREN() != null
+                || value.QUESTION() != null || value.COLON() != null || value.stageRef() != null);
     }
 
     /**
@@ -128,6 +142,12 @@ final class DescribeProperties {
         final FrostlakeParser.DescribeParameterValueContext value = parameter.describeParameterValue();
         if (value.LPAREN() != null) {
             throw new RuntimeException("Invalid value specified for property 'TYPE'");
+        }
+        if (value.QUESTION() != null || value.COLON() != null) {
+            // A bind is read where it stands, and none is set here.
+            final Token bind = value.getStart();
+            throw new RuntimeException(SqlCompilationError.at(bind.getLine(), bind.getCharPositionInLine(),
+                "Bind variable " + (value.QUESTION() != null ? "?" : value.identifier().getText()) + " not set."));
         }
         if (value.SESSION_VAR_REF() != null && variable instanceof String) {
             if ("STAGE".equalsIgnoreCase((String) variable)) {
@@ -171,6 +191,9 @@ final class DescribeProperties {
         final String value;
         if (type.STRING_LITERAL() != null) {
             value = SqlStringLiterals.decode(type.STRING_LITERAL().getText());
+        } else if (type.DOLLAR_QUOTED_STRING() != null) {
+            final String written = type.DOLLAR_QUOTED_STRING().getText();
+            value = written.substring(2, written.length() - 2);
         } else if (type.identifier() != null) {
             value = ParseTreeText.getIdentifier(type.identifier());
         } else {

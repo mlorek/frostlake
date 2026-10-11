@@ -35,6 +35,7 @@ import dev.frostlake.values.HexDoubleText;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -45,6 +46,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -130,7 +132,9 @@ public final class SetOperations {
      * {@code SELECT 1, True AS c UNION ALL SELECT 5, 'Y'} yields TRUE and TRUE ('Y' is a TO_BOOLEAN
      * text form), the same union over {@code 'zzz'} fails "Boolean value 'zzz' is not recognized", and
      * {@code SELECT 1, 1 AS c UNION ALL SELECT 5, 'Y'} fails "Numeric value 'Y' is not recognized".
-     * Only a STRING on the later side is converted; every other shape is left to the key coercion.
+     * A STRING on the later side is converted, and so is a number under a BOOLEAN column —
+     * {@code SELECT TRUE UNION ALL SELECT 0} answers TRUE and FALSE, and any other number TRUE; every other
+     * shape is left to the key coercion.
      *
      * <p>The leading type comes from the first branch's VALUES when it produced any, and otherwise from
      * its declared COLUMN types — an EMPTY leading branch still types the union in Snowflake
@@ -153,10 +157,22 @@ public final class SetOperations {
             List<Object> replaced = null;
             for (int i = 0; i < values.size(); i++) {
                 final Object value = values.get(i);
+                final Object leading = i < firstValues.size() ? firstValues.get(i) : null;
+                if (value instanceof Number && !(value instanceof Boolean)) {
+                    // A number under a BOOLEAN column is that BOOLEAN: zero FALSE, anything else TRUE.
+                    final boolean booleanColumn = leading != null ? leading instanceof Boolean
+                        : declaredTypeAt(leadingColumns, i) instanceof BooleanType;
+                    if (booleanColumn) {
+                        if (replaced == null) {
+                            replaced = new ArrayList<>(values);
+                        }
+                        replaced.set(i, Boolean.valueOf(isNonZero((Number) value)));
+                    }
+                    continue;
+                }
                 if (!(value instanceof CharSequence)) {
                     continue;
                 }
-                final Object leading = i < firstValues.size() ? firstValues.get(i) : null;
                 final Object coerced = leading != null
                     ? coerceStringToLeadingType(leading, value.toString())
                     : coerceStringToDeclaredType(declaredTypeAt(leadingColumns, i), value.toString());
@@ -171,6 +187,16 @@ public final class SetOperations {
             converted.add(replaced == null ? row : new Row(replaced));
         }
         return converted;
+    }
+
+    private static boolean isNonZero(final Number value) {
+        if (value instanceof BigDecimal) {
+            return ((BigDecimal) value).signum() != 0;
+        }
+        if (value instanceof Double || value instanceof Float) {
+            return value.doubleValue() != 0.0d;
+        }
+        return value instanceof BigInteger ? ((BigInteger) value).signum() != 0 : value.longValue() != 0L;
     }
 
     /**
@@ -370,7 +396,7 @@ public final class SetOperations {
             return NumericType.isApproximate(declared) ? toApproximateBranchValue(text) : toNumericBranchValue(text);
         }
         if (declared instanceof DateTimeType) {
-            final String name = declared.getName().toUpperCase();
+            final String name = declared.getName().toUpperCase(Locale.ROOT);
             if (name.startsWith("DATE")) {
                 return toDateBranchValue(text);
             }
@@ -383,7 +409,7 @@ public final class SetOperations {
     }
 
     private static Object toBooleanBranchValue(final String text) {
-        final String lower = text.trim().toLowerCase();
+        final String lower = text.trim().toLowerCase(Locale.ROOT);
         if (lower.equals("true") || lower.equals("t") || lower.equals("yes") || lower.equals("y")
                 || lower.equals("on") || lower.equals("1")) {
             return Boolean.TRUE;
@@ -870,7 +896,7 @@ public final class SetOperations {
                 return value;
             case BOOLEAN:
                 if (value instanceof CharSequence) {
-                    final String text = value.toString().trim().toLowerCase();
+                    final String text = value.toString().trim().toLowerCase(Locale.ROOT);
                     if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
                             || text.equals("on") || text.equals("1")) {
                         return Boolean.TRUE;

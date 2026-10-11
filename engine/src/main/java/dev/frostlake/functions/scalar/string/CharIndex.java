@@ -40,7 +40,7 @@ public class CharIndex extends TextArgumentFunction {
             }
         }
         if (args.get(0) == null || args.get(1) == null) return 0L;
-        int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
+        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
         startPos = Math.max(0, startPos);
         if (args.get(0) instanceof BinaryValue && args.get(1) instanceof BinaryValue) {
             return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
@@ -59,7 +59,7 @@ public class CharIndex extends TextArgumentFunction {
                 || args.get(0) instanceof BinaryValue || args.get(1) instanceof BinaryValue) {
             return evaluate(args);
         }
-        int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
+        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
         startPos = Math.max(0, startPos);
         final String haystack = args.get(1).toString();
         final int[] found = CollationMatching.findUnder(collation, haystack,

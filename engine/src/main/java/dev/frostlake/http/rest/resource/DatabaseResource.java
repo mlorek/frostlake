@@ -135,7 +135,7 @@ public final class DatabaseResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = call.sql().showNamed("SHOW DATABASES" + RestShow.likeName(name), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Database '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Database", name);
         }
         return toJson(rows.get(0), call.sql().show("SHOW PARAMETERS IN DATABASE " + name.sql()));
     }

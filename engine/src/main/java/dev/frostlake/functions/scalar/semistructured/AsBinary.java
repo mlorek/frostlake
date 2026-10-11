@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.values.BinaryValue;
 import java.util.List;
 
 /** AS_BINARY(v) — the value when it is BINARY, else NULL (the engine's variant model carries no binary members). */
-public class AsBinary extends StructuredArgumentFunction {
+public class AsBinary extends VariantArgumentFunction {
     public AsBinary() { super("AS_BINARY", BinaryType.UNSIZED); }
 
     @Override

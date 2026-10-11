@@ -18,16 +18,27 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
+
 import java.time.LocalDateTime;
 import java.util.List;
 
-/** AS_TIMESTAMP_NTZ(v) — the value when it is a TIMESTAMP, else NULL (LTZ/TZ alias here too). */
+/**
+ * AS_TIMESTAMP_NTZ(v) — the TIMESTAMP_NTZ a VARIANT holds, and NULL when it holds anything else, a
+ * timestamp of another flavour included. The three timestamp casts each take their own flavour only, and
+ * each declares it. The argument must be a VARIANT ({@link BuiltInFunction#takesVariantOnly},
+ * live-verified).
+ */
 public class AsTimestampNtz extends BuiltInFunction {
     public AsTimestampNtz() { super("AS_TIMESTAMP_NTZ", DateTimeType.TIMESTAMP_NTZ); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         return args.get(0) instanceof LocalDateTime ? args.get(0) : null;
+    }
+
+    @Override
+    public boolean takesVariantOnly() {
+        return true;
     }
 
     @Override

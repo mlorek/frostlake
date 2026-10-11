@@ -95,6 +95,8 @@ final class SessionInfoHandler implements HttpHandler {
                 SqlResponse.error(null, String.valueOf(refused.getMessage()))));
             return;
         }
+        // Read-only from here on: the USEs above placed the session, and nothing after them may change anything.
+        session.setReadOnly(Boolean.TRUE.equals(request.getReadOnly()));
         final SqlResponse created = new SqlResponse(true, session.getSessionId());
         created.setNewSession(true);
         HttpResponses.send(exchange, 200, MAPPER.writeValueAsString(created));

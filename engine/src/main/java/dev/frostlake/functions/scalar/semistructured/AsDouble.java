@@ -16,14 +16,14 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.NumericType;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 
-public class AsDouble extends StructuredArgumentFunction {
+public class AsDouble extends VariantArgumentFunction {
     public AsDouble() { super("AS_DOUBLE", NumericType.DOUBLE); }
 
     @Override

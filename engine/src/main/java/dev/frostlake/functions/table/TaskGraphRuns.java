@@ -29,6 +29,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.task.GraphRunGroup;
 import dev.frostlake.task.TaskGraphs;
 import dev.frostlake.task.TaskTrigger;
+import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
@@ -58,6 +59,10 @@ public final class TaskGraphRuns {
     /** How far ahead a scheduled graph run is listed. */
     private static final int LOOK_AHEAD_DAYS = 8;
     private static final String FAILED = TaskExecutionState.FAILED.name();
+    /** The width the account declares every text column of the task listings with. */
+    static final StringType TEXT = new StringType("VARCHAR", DeclaredTypeFold.UNKNOWN_LENGTH_VARCHAR);
+    /** The type the account declares their versions, run ids and attempt numbers with. */
+    static final NumericType WHOLE_NUMBER = new NumericType("NUMBER", 38, 0);
 
     /** Static helpers only. */
     private TaskGraphRuns() {
@@ -122,13 +127,13 @@ public final class TaskGraphRuns {
      */
     static List<ResultSetColumn> columns(final boolean completed) {
         final List<ResultSetColumn> columns = new ArrayList<>(Arrays.asList(
-            new ResultSetColumn("ROOT_TASK_NAME", StringType.VARCHAR),
-            new ResultSetColumn("DATABASE_NAME", StringType.VARCHAR),
-            new ResultSetColumn("SCHEMA_NAME", StringType.VARCHAR),
-            new ResultSetColumn("STATE", StringType.VARCHAR),
-            new ResultSetColumn("FIRST_ERROR_TASK_NAME", StringType.VARCHAR),
-            new ResultSetColumn("FIRST_ERROR_CODE", NumericType.BIGINT),
-            new ResultSetColumn("FIRST_ERROR_MESSAGE", StringType.VARCHAR),
+            new ResultSetColumn("ROOT_TASK_NAME", TEXT),
+            new ResultSetColumn("DATABASE_NAME", TEXT),
+            new ResultSetColumn("SCHEMA_NAME", TEXT),
+            new ResultSetColumn("STATE", TEXT),
+            new ResultSetColumn("FIRST_ERROR_TASK_NAME", TEXT),
+            new ResultSetColumn("FIRST_ERROR_CODE", TEXT),
+            new ResultSetColumn("FIRST_ERROR_MESSAGE", TEXT),
             new ResultSetColumn("SCHEDULED_TIME", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("QUERY_START_TIME", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("NEXT_SCHEDULED_TIME", ShowResultHelpers.CREATED_ON)));
@@ -136,15 +141,15 @@ public final class TaskGraphRuns {
             columns.add(new ResultSetColumn("COMPLETED_TIME", ShowResultHelpers.CREATED_ON));
         }
         columns.addAll(Arrays.asList(
-            new ResultSetColumn("ROOT_TASK_ID", StringType.VARCHAR),
-            new ResultSetColumn("GRAPH_VERSION", NumericType.BIGINT),
-            new ResultSetColumn("RUN_ID", NumericType.BIGINT),
-            new ResultSetColumn("ATTEMPT_NUMBER", NumericType.BIGINT),
-            new ResultSetColumn("SCHEDULED_FROM", StringType.VARCHAR),
-            new ResultSetColumn("CONFIG", StringType.VARCHAR),
-            new ResultSetColumn("GRAPH_RUN_GROUP_ID", StringType.VARCHAR),
+            new ResultSetColumn("ROOT_TASK_ID", TEXT),
+            new ResultSetColumn("GRAPH_VERSION", WHOLE_NUMBER),
+            new ResultSetColumn("RUN_ID", WHOLE_NUMBER),
+            new ResultSetColumn("ATTEMPT_NUMBER", WHOLE_NUMBER),
+            new ResultSetColumn("SCHEDULED_FROM", TEXT),
+            new ResultSetColumn("CONFIG", TEXT),
+            new ResultSetColumn("GRAPH_RUN_GROUP_ID", TEXT),
             new ResultSetColumn("BACKFILL_INFO", new ObjectType()),
-            new ResultSetColumn("SCHEDULED_BY_USER", StringType.VARCHAR)));
+            new ResultSetColumn("SCHEDULED_BY_USER", TEXT)));
         return columns;
     }
 

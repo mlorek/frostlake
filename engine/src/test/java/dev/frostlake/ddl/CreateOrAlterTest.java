@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -58,7 +60,7 @@ public class CreateOrAlterTest extends BaseDatabaseTest {
     private String columns(final String table) {
         final ResultSet rs = engine.executeQuery("SELECT LISTAGG(column_name, ',') WITHIN GROUP"
             + " (ORDER BY ordinal_position) FROM information_schema.columns WHERE table_name = '"
-            + table.toUpperCase() + "'");
+            + table.toUpperCase(Locale.ROOT) + "'");
         return rs.next() ? String.valueOf(rs.getValue(0)) : "<none>";
     }
 

@@ -253,7 +253,7 @@ final class StreamStart {
             // A bare name is no stream name but a column the point cannot read, refused where it stands.
             if (unreadable.getMessage() != null && unreadable.getMessage().contains("invalid identifier")) {
                 throw new RuntimeException(SqlCompilationError.invalidIdentifier(expression.getStart().getLine(),
-                    expression.getStart().getCharPositionInLine(), expression.getText().toUpperCase()));
+                    expression.getStart().getCharPositionInLine(), expression.getText().toUpperCase(Locale.ROOT)));
             }
             throw unreadable;
         }

@@ -37,6 +37,7 @@ import java.util.regex.Pattern;
  *   AS 'LOG(10)'          not enough arguments for function [LOG(10)], expected 2, got 1
  *   AS 'g2(p)'            Invalid argument types for function 'G2': (NUMBER(38,0))     — p declared INT
  *   AS 'g2(z =&gt; 1)'       named arguments [Z] do not match any signature for function G2
+ *   AS 'ov(a =&gt; 1, b =&gt; 2)'  More than one function of OV are resolved in prepare state.
  * </pre>
  *
  * <p>The body compiles inside a frame of its own, one character before it, so a place on its first line counts
@@ -55,6 +56,7 @@ final class SqlUdfBodyArguments {
     private static final String[] JUDGED = {
         "too many arguments for function", "not enough arguments for function",
         "Invalid argument types for function", "do not match any signature for function",
+        "are resolved in prepare state",
     };
 
     private SqlUdfBodyArguments() {

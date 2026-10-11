@@ -110,5 +110,6 @@ just the session's state apart. A replay that passes is a `FAIL`,
 A conforming runner is small (~150 lines): parse the JSON, connect through the driver under test,
 implement the reset sequence, run steps, apply the normalization rules above, honor capabilities,
 and emit the TSV (`suite · test · status · failedStep · detail · ms`). The Java reference
-implementation is `src/main/java/dev/frostlake/testkit/` — `Runner`, `Compare` (normalization), and
-one `Backend` per transport (~100 lines each) to copy the shape from.
+implementation is `src/test/java/dev/frostlake/testkit/` — `JsonSuiteTest` (the runner), `Compare`
+(normalization), and one `Backend` per transport (`EngineBackend`, `JdbcBackend`, `HttpBackend`; ~100 lines each)
+to copy the shape from.

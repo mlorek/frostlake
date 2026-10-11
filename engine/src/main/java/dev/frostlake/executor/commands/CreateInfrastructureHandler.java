@@ -97,6 +97,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String taskQualifiedName = getText(ctx.qualifiedName(0));
         final String taskName = ddl.extractObjectName(taskQualifiedName);
         final boolean orReplace = ctx.or_replace() != null;
+        TaskBodySyntax.requireOneStatement(ctx);
+        TaskBodySyntax.requireNoCommentAfter(ctx.taskBody(), ctx.commentClause());
 
         try {
             ddl.checkCreatePrivilege(Privilege.CREATE_TASK,
@@ -151,7 +153,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final List<FrostlakeParser.QualifiedNameContext> after = ctx.afterClause() != null
                 ? ctx.afterClause().qualifiedName() : new ArrayList<FrostlakeParser.QualifiedNameContext>();
             for (final FrostlakeParser.QualifiedNameContext predecessor : after) {
-                task.addPredecessor(getText(predecessor).toUpperCase());
+                task.addPredecessor(getText(predecessor).toUpperCase(Locale.ROOT));
             }
             properties.requireScheduleFits(task);
             if (properties.finalizeGiven()) {
@@ -190,23 +192,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
         return null;
     }
 
-    /** The SQL a task body runs, as written: a statement, a CALL, an EXECUTE IMMEDIATE or a scripting block. */
+    /**
+     * The SQL a task body runs, as written: any statement — a query or DML, a CALL, an EXECUTE IMMEDIATE, a
+     * scripting block, a DDL statement — kept as its own text and re-issued when the task runs.
+     */
     private String taskBodyText(final FrostlakeParser.TaskBodyContext body) {
-        if (body.sqlStatement() != null) {
-            return ddl.getOriginalText(body.sqlStatement());
+        if (body == null) {
+            throw new RuntimeException("Task body is required");
         }
-        if (body.callStatement() != null) {
-            return ddl.getOriginalText(body.callStatement());
-        }
-        if (body.executeImmediateStatement() != null) {
-            return ddl.getOriginalText(body.executeImmediateStatement());
-        }
-        if (body.beginEndBlock() != null) {
-            // A Snowflake Scripting block body: kept as its own text and re-issued when the task
-            // runs, exactly like every other body shape.
-            return ddl.getOriginalText(body.beginEndBlock());
-        }
-        throw new RuntimeException("Task body is required");
+        return ParseTreeText.taskBodyText(body);
     }
 
     /** Whether the schema holds a task of exactly that name. */
@@ -380,7 +374,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final int type = ((TerminalNode) child).getSymbol().getType();
             if (type == FrostlakeParser.VALIDATION_MODE || type == FrostlakeParser.FILES) {
                 throw new RuntimeException(SqlCompilationError.PREFIX + " Invalid copy option '"
-                    + child.getText().toUpperCase() + "' in pipe definition.");
+                    + child.getText().toUpperCase(Locale.ROOT) + "' in pipe definition.");
             }
         }
     }
@@ -540,7 +534,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     public Object handleCreateComputePool(final FrostlakeParser.CreateStatementContext ctx,
             final boolean ifNotExists) {
         final String poolName = getText(ctx.identifier(0));
-        if (!poolName.equals(poolName.toUpperCase())) {
+        if (!poolName.equals(poolName.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException(
                 "Invalid compute pool name: '" + poolName + "'. Name must be uppercase.");
         }
@@ -558,7 +552,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             } else if (option.MAX_NODES() != null) {
                 maxNodes = Integer.valueOf(option.INTEGER_LITERAL().getText());
             } else if (option.INSTANCE_FAMILY() != null) {
-                instanceFamily = getText(option.identifier()).toUpperCase();
+                instanceFamily = getText(option.identifier()).toUpperCase(Locale.ROOT);
             } else if (option.AUTO_RESUME() != null) {
                 pool.setAutoResume("TRUE".equalsIgnoreCase(option.booleanValue().getText()));
             } else if (option.INITIALLY_SUSPENDED() != null) {
@@ -725,7 +719,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     /** One parenthesized option's value AS WRITTEN, quotes and all, or null when it is not there. */
     private String parenOptionText(final FrostlakeParser.ParenOptionListContext list, final String key) {
         for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
-            if (key.equals(option.optionKey().getText().toUpperCase()) && option.copyOptionValue() != null) {
+            if (key.equals(option.optionKey().getText().toUpperCase(Locale.ROOT)) && option.copyOptionValue() != null) {
                 return option.copyOptionValue().getText();
             }
         }
@@ -741,7 +735,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     private void collectParenOptions(final FrostlakeParser.ParenOptionListContext list,
                                      final Map<String, String> into) {
         for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
-            final String key = option.optionKey().getText().toUpperCase();
+            final String key = option.optionKey().getText().toUpperCase(Locale.ROOT);
             if (option.LPAREN() != null) {
                 into.put(key, listedValues(option.stringLiteralList()));
                 continue;
@@ -853,7 +847,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                                 || encryptionOptions.containsKey("KMS_KEY_ID");
                             // Only Snowflake-managed encryption fits an internal stage, live-verified.
                             if (url == null && declaredEncryptionType != null
-                                    && !declaredEncryptionType.toUpperCase().startsWith("SNOWFLAKE_")) {
+                                    && !declaredEncryptionType.toUpperCase(Locale.ROOT).startsWith("SNOWFLAKE_")) {
                                 throw new RuntimeException(SqlCompilationError.of("Cannot set URL,"
                                     + " credentials, or encryption key of an internal or temporary stage."));
                             }
@@ -861,7 +855,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     } else if (option.COMMENT() != null) {
                         comment = ddl.extractStringLiteral(option.STRING_LITERAL());
                     } else if (option.identifier() != null) {
-                        final String key = ParseTreeText.getIdentifier(option.identifier()).toUpperCase();
+                        final String key = ParseTreeText.getIdentifier(option.identifier()).toUpperCase(Locale.ROOT);
                         if ("URL".equals(key) && option.copyOptionValue() != null
                                 && option.copyOptionValue().STRING_LITERAL() != null) {
                             // Stage options come in ANY order live, URL included. The grammar anchors
@@ -891,7 +885,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             // Cloud access options make no sense without a location, live-verified wording.
             if (sawCloudAccessOption && url == null) {
                 throw new RuntimeException(SqlCompilationError.of("invalid stage ("
-                    + ddl.extractObjectName(stageName).toUpperCase() + "): location not specified"));
+                    + ddl.extractObjectName(stageName).toUpperCase(Locale.ROOT) + "): location not specified"));
             }
 
             refuseLocalUrlUnlessEnabled(url);
@@ -1077,9 +1071,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 return null;
             }
             throw new RuntimeException(SqlCompilationError.doesNotExist("File format",
-                catalog.getCurrentDatabase().toUpperCase() + "."
-                    + ddl.resolveSchemaFromQualifiedName(name).getName().toUpperCase() + "."
-                    + ddl.extractObjectName(name).toUpperCase()));
+                catalog.getCurrentDatabase().toUpperCase(Locale.ROOT) + "."
+                    + ddl.resolveSchemaFromQualifiedName(name).getName().toUpperCase(Locale.ROOT) + "."
+                    + ddl.extractObjectName(name).toUpperCase(Locale.ROOT)));
         }
         final FrostlakeParser.FileFormatActionContext action = ctx.fileFormatAction();
         if (action.RENAME() == null) {
@@ -1146,7 +1140,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.of(
                         "File format type cannot be changed."));
                 }
-                fileFormat.setType(newType.toUpperCase());
+                fileFormat.setType(newType.toUpperCase(Locale.ROOT));
             } else if (opt.FIELD_DELIMITER() != null) {
                 final String field_delimiterValue = fileFormatOptValue(opt.copyOptionValue());
                 FileFormatSurfaces.requireLegalValue("FIELD_DELIMITER", field_delimiterValue, optionText(opt.copyOptionValue()));
@@ -1177,11 +1171,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     fileFormat.setComment(fileFormatOptValue(opt.copyOptionValue()));
                 } else {
                     if (!FileFormatSurfaces.isKnownOption(optionName)) {
-                        throw ParameterRegistry.invalidSessionParameter(optionName.toUpperCase());
+                        throw ParameterRegistry.invalidSessionParameter(optionName.toUpperCase(Locale.ROOT));
                     }
                     final String value = fileFormatOptValue(opt.copyOptionValue());
                     FileFormatSurfaces.requireLegalValue(optionName, value, optionText(opt.copyOptionValue()));
-                    fileFormat.setOption(optionName.toUpperCase(), value);
+                    fileFormat.setOption(optionName.toUpperCase(Locale.ROOT), value);
                 }
             } else if (opt.identifier() != null && opt.LPAREN() != null) {
                 // A string-list option such as NULL_IF = ('\\N', '') — NULL_IF keeps each value whole (see
@@ -1193,7 +1187,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         values.add(ddl.extractStringLiteral(node));
                     }
                 }
-                final String optionName = getText(opt.identifier()).toUpperCase();
+                final String optionName = getText(opt.identifier()).toUpperCase(Locale.ROOT);
                 if ("NULL_IF".equals(optionName)) {
                     fileFormat.setNullIfValues(values);
                 } else {
@@ -1205,8 +1199,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
         for (final String key : fileFormat.getOptions().keySet()) {
             if (!"TYPE".equalsIgnoreCase(key)
                     && !FileFormatSurfaces.isOptionValidFor(fileFormat.getType(), key)) {
-                throw new RuntimeException(SqlCompilationError.of("Option " + key.toUpperCase()
-                    + " is not valid for file format type " + fileFormat.getType().toUpperCase() + "."));
+                throw new RuntimeException(SqlCompilationError.of("Option " + key.toUpperCase(Locale.ROOT)
+                    + " is not valid for file format type " + fileFormat.getType().toUpperCase(Locale.ROOT) + "."));
             }
         }
     }
@@ -1223,7 +1217,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     private String formatFromOptions(final FrostlakeParser.ParenOptionListContext options, final String fallback) {
         String result = fallback;
         for (final FrostlakeParser.ParenOptionContext option : options.parenOption()) {
-            final String key = option.optionKey().getText().toUpperCase();
+            final String key = option.optionKey().getText().toUpperCase(Locale.ROOT);
             if (!"FORMAT_NAME".equals(key) && !"TYPE".equals(key)) {
                 continue;
             }
@@ -1271,7 +1265,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     /** The FORMAT_NAME a FILE_FORMAT group names, or null where it declares a TYPE instead. */
     private String formatNameFromOptions(final FrostlakeParser.ParenOptionListContext options) {
         for (final FrostlakeParser.ParenOptionContext option : options.parenOption()) {
-            if (!"FORMAT_NAME".equals(option.optionKey().getText().toUpperCase())) {
+            if (!"FORMAT_NAME".equals(option.optionKey().getText().toUpperCase(Locale.ROOT))) {
                 continue;
             }
             final String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : null;

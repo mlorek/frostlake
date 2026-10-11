@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import dev.frostlake.BaseDatabaseTest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -57,7 +58,7 @@ public class DynamicTableClusteringTest extends BaseDatabaseTest {
     }
 
     private static String text(final Object value) {
-        return String.valueOf(value).toUpperCase();
+        return String.valueOf(value).toUpperCase(Locale.ROOT);
     }
 
     private void create(final String sql) {

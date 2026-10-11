@@ -55,6 +55,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -157,11 +158,16 @@ public class CreateRoutineHandler implements CommandHandler {
         // OR REPLACE needs OWNERSHIP of the overload it replaces; the overload itself is dropped only once the
         // new definition has passed every check, so a refused replacement leaves it in place (live-verified).
         final List<DataType> argumentTypes = parameterTypes(parameters);
+        // A procedure of this name and signature holds it, whatever the CREATE is written with (live-verified).
+        schema.requireNotHeldByOtherKind(true, functionName, parameters);
         if (orReplace) {
             queryExecutor.requireFunctionOwnership(schema, functionName, argumentTypes);
         } else if (!ifNotExists && schema.hasFunctionSignature(functionName, parameters)) {
             throw new RuntimeException(Schema.alreadyExists(functionName));
         }
+        // An overload that an existing one would compete with for some call is refused, with OR REPLACE and with
+        // IF NOT EXISTS too: neither names the overload it competes with (live-verified).
+        schema.requireUnambiguousFunction(functionName, parameters);
 
         validateRoutineProperties(functionLanguage(ctx).name(), functionRuntimeVersion(ctx), functionHandler(ctx),
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
@@ -215,7 +221,7 @@ public class CreateRoutineHandler implements CommandHandler {
                         if (colCtx.columnDef() != null) {
                             // A quoted name as written, as a table procedure's is.
                             final String colName = ParseTreeText.namePartText(colCtx.columnDef().columnDefName());
-                            final DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
+                            final DataType colType = columnParser.parseReturnColumnType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
                             returnColumns.add(new Parameter(colName, colType));
                         }
                     }
@@ -330,7 +336,7 @@ public class CreateRoutineHandler implements CommandHandler {
             function.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "FUNCTION", schema, function.getName(),
                 function.getParameters()));
             schema.addFunction(function);
-            keepHandlerClasses(environments, ctx, handler, body);
+            keepHandlerClasses(environments, ctx, handler, body, runtimeVersion);
             if (grantsKept != null) {
                 GrantNames.takeBack(catalog, "FUNCTION", grantsKept, true);
                 GrantNames.renamed(catalog, "FUNCTION", grantsKept,
@@ -347,10 +353,10 @@ public class CreateRoutineHandler implements CommandHandler {
     /** Keep a created routine's handler classes at its TARGET_PATH, when its options name one. */
     private static void keepHandlerClasses(final RoutineEnvironments environments,
                                            final FrostlakeParser.CreateStatementContext ctx, final String handler,
-                                           final String body) {
+                                           final String body, final String runtimeVersion) {
         final String targetPath = RoutineEnvironments.writtenTargetPath(ctx.functionOption());
         if (targetPath != null) {
-            environments.store(targetPath, functionLanguage(ctx), handler, body);
+            environments.store(targetPath, functionLanguage(ctx), handler, body, runtimeVersion);
         }
     }
 
@@ -428,11 +434,15 @@ public class CreateRoutineHandler implements CommandHandler {
         // OR REPLACE needs OWNERSHIP of the overload it replaces; the overload itself is dropped only once the
         // new definition has passed every check, so a refused replacement leaves it in place.
         final List<DataType> argumentTypes = parameterTypes(parameters);
+        // As for a function: a function of this name and signature holds it.
+        schema.requireNotHeldByOtherKind(false, procedureName, parameters);
         if (orReplace) {
             queryExecutor.requireProcedureOwnership(schema, procedureName, argumentTypes);
         } else if (!ifNotExists && schema.hasProcedureSignature(procedureName, parameters)) {
             throw new RuntimeException(Schema.alreadyExists(procedureName));
         }
+        // As for a function: an overload that would compete with an existing one is refused.
+        schema.requireUnambiguousProcedure(procedureName, parameters);
 
         validateRoutineProperties(procedureLanguage.name(), functionRuntimeVersion(ctx), functionHandler(ctx),
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
@@ -464,7 +474,7 @@ public class CreateRoutineHandler implements CommandHandler {
                     for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
                         if (colCtx.columnDef() != null) {
                             final String colName = ParseTreeText.namePartText(colCtx.columnDef().columnDefName());
-                            final DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
+                            final DataType colType = columnParser.parseReturnColumnType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
                             procReturnColumns.add(new Parameter(colName, colType));
                         }
                     }
@@ -556,7 +566,7 @@ public class CreateRoutineHandler implements CommandHandler {
             procedure.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "PROCEDURE", schema, procedure.getName(),
                 procedure.getParameters()));
             schema.addProcedure(procedure);
-            keepHandlerClasses(environments, ctx, handler, body);
+            keepHandlerClasses(environments, ctx, handler, body, runtimeVersion);
             if (grantsKept != null) {
                 GrantNames.takeBack(catalog, "PROCEDURE", grantsKept, true);
                 GrantNames.renamed(catalog, "PROCEDURE", grantsKept,
@@ -767,11 +777,18 @@ public class CreateRoutineHandler implements CommandHandler {
         throw new RuntimeException("Invalid " + kind + " name: " + qualifiedName);
     }
 
-    /** The signature's parameters, as declared. */
+    /**
+     * The signature's parameters, as declared. A DEFAULT that calls a user-defined function, or reads a name, is
+     * refused where it stands (see {@link DefaultExpressionCalls}).
+     */
     private List<Parameter> parseParameters(final FrostlakeParser.CreateStatementContext ctx) {
         final List<Parameter> parameters = new ArrayList<>();
         if (ctx.parameterList() != null) {
+            final DefaultExpressionCalls defaults = new DefaultExpressionCalls(queryExecutor);
             for (final FrostlakeParser.ParameterDefContext parameter : ctx.parameterList().parameterDef()) {
+                if (parameter.expression() != null) {
+                    defaults.requireParameterDefault(parameter.expression());
+                }
                 parameters.add(columnParser.parseParameterDef(parameter));
             }
         }
@@ -823,7 +840,7 @@ public class CreateRoutineHandler implements CommandHandler {
                         if (column.columnDef() != null) {
                             returnColumns.add(new Parameter(
                                 ParseTreeText.namePartText(column.columnDef().columnDefName()),
-                                columnParser.parseDataType(column.columnDef().dataTypeName(),
+                                columnParser.parseReturnColumnType(column.columnDef().dataTypeName(),
                                     column.columnDef().typeParameters())));
                         }
                     }
@@ -883,7 +900,7 @@ public class CreateRoutineHandler implements CommandHandler {
     private void validateRoutineProperties(final String language, final String runtimeVersion,
                                            final String handler, final List<String> imports,
                                            final boolean importsNamed, final boolean packagesNamed) {
-        final String lang = language.toUpperCase();
+        final String lang = language.toUpperCase(Locale.ROOT);
         if (INLINE_BODY_LANGUAGES.contains(lang)) {
             if (importsNamed) {
                 throw new RuntimeException(SqlCompilationError.of(
@@ -1058,7 +1075,7 @@ public class CreateRoutineHandler implements CommandHandler {
         final Set<String> names = new LinkedHashSet<>();
         if (ctx.parameterList() != null) {
             for (final FrostlakeParser.ParameterDefContext parameter : ctx.parameterList().parameterDef()) {
-                names.add(getText(parameter.identifier()).toUpperCase());
+                names.add(getText(parameter.identifier()).toUpperCase(Locale.ROOT));
             }
         }
         return names;
@@ -1193,7 +1210,7 @@ public class CreateRoutineHandler implements CommandHandler {
                 if (column.columnDef() == null) {
                     continue;
                 }
-                final String name = ParseTreeText.namePartText(column.columnDef().columnDefName()).toUpperCase();
+                final String name = ParseTreeText.namePartText(column.columnDef().columnDefName()).toUpperCase(Locale.ROOT);
                 if (!columns.add(name)) {
                     throw new RuntimeException(
                         "Return signature contains a duplicate column name '" + name + "'.");

@@ -19,6 +19,7 @@ package dev.frostlake.functions.window;
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -54,16 +55,30 @@ public final class WindowFunctionHelper {
     }
 
     /**
-     * RATIO_TO_REPORT(expr) — value / SUM(value over partition).
+     * RATIO_TO_REPORT(expr) — value / SUM(value over partition). A text is read as the number it spells,
+     * and one that spells none fails the query as the sum it is divided by would: "Numeric value 'a' is
+     * not recognized" (live-verified).
      */
     public static Object ratioToReport(final Object currentValue, final List<Object> allValues) {
         if (currentValue == null) return null;
-        final double cur = toDouble(currentValue);
+        final double cur = summedNumber(currentValue);
         double sum = 0;
         for (final Object v : allValues) {
-            if (v != null) sum += toDouble(v);
+            if (v != null) sum += summedNumber(v);
         }
         return sum == 0 ? null : cur / sum;
+    }
+
+    private static double summedNumber(final Object v) {
+        if (v instanceof Number) return ((Number) v).doubleValue();
+        try {
+            return new BigDecimal(v.toString().trim()).doubleValue();
+        } catch (final NumberFormatException noNumber) {
+            if (v instanceof String) {
+                throw new RuntimeException("Numeric value '" + v + "' is not recognized");
+            }
+            return toDouble(v);
+        }
     }
 
     /**

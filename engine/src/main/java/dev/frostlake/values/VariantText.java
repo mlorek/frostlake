@@ -16,6 +16,7 @@
 
 package dev.frostlake.values;
 
+import tools.jackson.core.StreamWriteFeature;
 import tools.jackson.core.json.JsonFactory;
 import tools.jackson.core.json.JsonWriteFeature;
 import tools.jackson.databind.JsonNode;
@@ -33,11 +34,15 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>A string escapes its control characters and DEL with lower-case hexadecimal digits, as live prints
  * them (see {@link JsonStringEscapes}).
+ *
+ * <p>A decimal is written with its digits in place - {@code [0.0000001]}, never the {@code 1E-7} its Java text
+ * turns to below a millionth (live-verified). A double keeps the exponent form of its own.
  */
 public final class VariantText {
 
     private static final ObjectMapper CANONICAL = JsonMapper.builder(JsonFactory.builder()
             .characterEscapes(new JsonStringEscapes())
+            .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
             .build())
         .disable(JsonWriteFeature.WRITE_NAN_AS_STRINGS)
         .disable(JsonWriteFeature.WRITE_HEX_UPPER_CASE)
@@ -45,6 +50,7 @@ public final class VariantText {
 
     private static final ObjectMapper STANDARD = JsonMapper.builder(JsonFactory.builder()
             .characterEscapes(new JsonStringEscapes())
+            .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
             .build())
         .disable(JsonWriteFeature.WRITE_HEX_UPPER_CASE)
         .build();

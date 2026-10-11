@@ -22,6 +22,7 @@ import dev.frostlake.metastore.model.Stage;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * What an {@code IMPORTS = ('@stage/file.jar')} clause has to be true of at CREATE time.
@@ -142,14 +143,14 @@ public final class RoutineImports {
     /** Live names the stage in full, under the current database and schema when the reference is bare. */
     private static String qualified(final String stageName, final Catalog catalog) {
         if (stageName.indexOf('.') >= 0) {
-            return stageName.toUpperCase();
+            return stageName.toUpperCase(Locale.ROOT);
         }
         final String database = catalog.getCurrentDatabase();
         final String schema = catalog.getCurrentSchema();
         if (database == null || schema == null) {
-            return stageName.toUpperCase();
+            return stageName.toUpperCase(Locale.ROOT);
         }
-        return database + "." + schema + "." + stageName.toUpperCase();
+        return database + "." + schema + "." + stageName.toUpperCase(Locale.ROOT);
     }
 
     /** Live reports the file's own name, not the path it sat under. */

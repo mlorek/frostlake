@@ -22,6 +22,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * A NETWORK RULE that a NETWORK POLICY still names cannot be dropped with its database: the account
@@ -76,8 +77,8 @@ final class LiveNetworkRuleAssociations {
             while (rs.next()) {
                 final String name = rs.getString(1);
                 final String value = rs.getString(2);
-                if (name != null && name.toUpperCase().contains("RULE_LIST")
-                        && value != null && value.toUpperCase().contains(database.toUpperCase() + ".")) {
+                if (name != null && name.toUpperCase(Locale.ROOT).contains("RULE_LIST")
+                        && value != null && value.toUpperCase(Locale.ROOT).contains(database.toUpperCase(Locale.ROOT) + ".")) {
                     return true;
                 }
             }

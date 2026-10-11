@@ -32,8 +32,10 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /**
@@ -74,6 +76,9 @@ public class TransactionWriteSet {
     // copy() paid O(all pending rows) per statement however few tables the statement touched.
     private WriteSetSavepoint activeSavepoint;
 
+    /** The savepoints of the statements that are running a statement of their own, outermost first. */
+    private final ArrayDeque<WriteSetSavepoint> enclosing = new ArrayDeque<>();
+
     /** How many completed statements' savepoints are kept at most, the same window a table's history keeps. */
     private static final int MAX_KEPT_STATEMENTS = 200;
 
@@ -93,24 +98,78 @@ public class TransactionWriteSet {
     /** The newest ordinal whose savepoint was let go: a point that needs one at or below it cannot be read. */
     private long lastForgotten;
 
-    /** Begin a statement savepoint (deferred-apply explicit transactions). */
+    /**
+     * For a statement that ran statements with savepoints of their own, the ordinal of the last of them: the
+     * statement's changes are everything up to that one, so a read of the transaction as the statement left it
+     * looks past it.
+     */
+    private final TreeMap<Long, Long> lastRunBy = new TreeMap<>();
+
+    /**
+     * Begin a statement savepoint (deferred-apply explicit transactions). A statement that begins one while
+     * another's is running — a statement of a block, of a procedure's body, one a handler issues — is a statement
+     * of its own: it alone is undone when it fails, and the statement that runs it undoes nothing afterwards.
+     */
     public WriteSetSavepoint beginStatementSavepoint() {
+        if (activeSavepoint != null) {
+            activeSavepoint.markSuperseded();
+            enclosing.addLast(activeSavepoint);
+        }
         activeSavepoint = new WriteSetSavepoint(new LinkedHashMap<>(tableLocks), ++statementOrdinal);
         return activeSavepoint;
     }
 
-    /** End the statement savepoint without restoring (the statement succeeded). */
-    public void endStatementSavepoint() {
-        if (activeSavepoint != null && !activeSavepoint.touchedTables().isEmpty()) {
+    /**
+     * End a statement's savepoint without restoring (the statement succeeded).
+     *
+     * @param savepoint what {@link #beginStatementSavepoint} returned for the statement
+     */
+    public void endStatementSavepoint(final WriteSetSavepoint savepoint) {
+        if (!unwindTo(savepoint)) {
+            return;
+        }
+        noteLastRunBy(savepoint);
+        if (!activeSavepoint.touchedTables().isEmpty()) {
             completed.addLast(activeSavepoint);
             keptEntries += activeSavepoint.heldEntries();
             while (completed.size() > MAX_KEPT_STATEMENTS || keptEntries > MAX_KEPT_ENTRIES && completed.size() > 1) {
                 final WriteSetSavepoint oldest = completed.removeFirst();
                 keptEntries -= oldest.heldEntries();
                 lastForgotten = oldest.ordinal();
+                lastRunBy.headMap(Long.valueOf(lastForgotten), true).clear();
             }
         }
-        activeSavepoint = null;
+        activeSavepoint = enclosing.pollLast();
+    }
+
+    /** Notes the last statement a statement ran with a savepoint of its own, when it ran any. */
+    private void noteLastRunBy(final WriteSetSavepoint savepoint) {
+        if (statementOrdinal > savepoint.ordinal()) {
+            lastRunBy.put(Long.valueOf(savepoint.ordinal()), Long.valueOf(statementOrdinal));
+        }
+    }
+
+    /**
+     * Makes a running statement's savepoint the active one again, letting go of the savepoints of the statements
+     * it was running that never ended theirs: a failure it let out passed them by.
+     *
+     * @return false when the savepoint is no running statement's in this transaction, and nothing of it is left
+     */
+    private boolean unwindTo(final WriteSetSavepoint savepoint) {
+        if (savepoint == null) {
+            return false;
+        }
+        if (savepoint == activeSavepoint) {
+            return true;
+        }
+        if (!enclosing.contains(savepoint)) {
+            return false;
+        }
+        while (enclosing.peekLast() != savepoint) {
+            enclosing.removeLast();
+        }
+        activeSavepoint = enclosing.removeLast();
+        return true;
     }
 
     /**
@@ -136,7 +195,9 @@ public class TransactionWriteSet {
      */
     public List<Row> overlayRowsAsOf(final String table, final TableStorage base, final long ordinal,
                                      final boolean before) {
-        final long firstAfter = before ? ordinal : ordinal + 1;
+        // What the statement changed includes what the statements it ran changed.
+        final Long last = lastRunBy.get(Long.valueOf(ordinal));
+        final long firstAfter = before ? ordinal : (last == null ? ordinal : last.longValue()) + 1;
         if (firstAfter <= lastForgotten) {
             return null;
         }
@@ -153,8 +214,19 @@ public class TransactionWriteSet {
         return overlayRows(table, base);
     }
 
-    /** Restore exactly the entries the failed statement touched, and the lock map. */
+    /**
+     * Restore exactly the entries the failed statement touched, and the lock map. A statement that ran statements
+     * of its own restores nothing: each of those undid itself or stands.
+     */
     public void rollbackToSavepoint(final WriteSetSavepoint savepoint) {
+        if (!unwindTo(savepoint)) {
+            return;
+        }
+        noteLastRunBy(savepoint);
+        if (savepoint.isSuperseded()) {
+            activeSavepoint = enclosing.pollLast();
+            return;
+        }
         for (final String table : savepoint.touchedTables()) {
             final List<Row> insertsPre = savepoint.insertsBefore(table);
             if (insertsPre == null) {
@@ -178,7 +250,7 @@ public class TransactionWriteSet {
         tableLocks.clear();
         tableLocks.putAll(savepoint.locksBefore());
         lockNotedRaw.clear();
-        activeSavepoint = null;
+        activeSavepoint = enclosing.pollLast();
     }
 
     private void snapshotForSavepoint(final String table) {
@@ -248,7 +320,7 @@ public class TransactionWriteSet {
         if (!lockNotedRaw.add(table)) {
             return;
         }
-        final String key = table.toUpperCase();
+        final String key = table.toUpperCase(Locale.ROOT);
         if (!tableLocks.containsKey(key)) {
             tableLocks.put(key, new TableLock(System.currentTimeMillis(), UUID.randomUUID().toString()));
         }

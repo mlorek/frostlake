@@ -20,6 +20,7 @@ import dev.frostlake.executor.QueryResultCache;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.types.NumericType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -69,7 +70,12 @@ public class ResultScan extends TableFunction {
         // SYSTEM$TYPEOF and a table built over the scan see a type rather than nothing.
         final List<ResultSetColumn> declared = new ArrayList<>();
         for (final ResultSetColumn column : result.getColumns()) {
-            declared.add(column.getStaticType() != null ? column
+            declared.add(column.getStaticType() != null && column.getStaticType() != column.getDataType()
+                    && column.getDataType() instanceof NumericType && column.getStaticType() instanceof NumericType
+                // The scan declares the width the result itself reported, a rewritten SUM's included.
+                ? new ResultSetColumn(column.getName(), column.getDataType(), column.getTableName(),
+                    column.getDataType(), column.isNullable(), column.isNullabilityKnown(), column.getValueRange())
+                : column.getStaticType() != null ? column
                 : new ResultSetColumn(column.getName(), column.getDataType(), column.getTableName(),
                     column.getDataType(), column.isNullable(), column.isNullabilityKnown(),
                     column.getValueRange()));

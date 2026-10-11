@@ -59,6 +59,36 @@ public class RestUserTest extends BaseRestTest {
     }
 
     @Test
+    public void aNetworkPolicyIsAttachedReadBackAndTakenOff() throws Exception {
+        sql("CREATE NETWORK POLICY u_np_one ALLOWED_IP_LIST = ('10.0.0.0/8')");
+        sql("CREATE NETWORK POLICY u_np_two ALLOWED_IP_LIST = ('10.1.0.0/16')");
+        ok(post("/api/v2/users", "{\"name\":\"u_np\",\"network_policy\":\"u_np_one\"}"));
+        assertEquals("U_NP_ONE", ok(get("/api/v2/users/u_np")).path("network_policy").asString());
+        // A PUT that names another policy attaches it; one that leaves it out takes the policy off.
+        ok(put("/api/v2/users/u_np", "{\"name\":\"u_np\",\"network_policy\":\"u_np_two\"}"));
+        assertEquals("U_NP_TWO", ok(get("/api/v2/users/u_np")).path("network_policy").asString());
+        ok(put("/api/v2/users/u_np", "{\"name\":\"u_np\"}"));
+        assertTrue(ok(get("/api/v2/users/u_np")).path("network_policy").isNull());
+        // A policy attached by a statement is read back too.
+        sql("ALTER USER u_np SET NETWORK_POLICY = u_np_one");
+        assertEquals("U_NP_ONE", ok(get("/api/v2/users/u_np")).path("network_policy").asString());
+        // IF NOT EXISTS leaves the user it finds as it is, its policy included.
+        ok(post("/api/v2/users?createMode=ifNotExists", "{\"name\":\"u_np\",\"network_policy\":\"u_np_two\"}"));
+        assertEquals("U_NP_ONE", ok(get("/api/v2/users/u_np")).path("network_policy").asString());
+        // A policy that is not there fails the request before anything is created.
+        error(404, post("/api/v2/users", "{\"name\":\"u_np_orphan\",\"network_policy\":\"no_such_policy\"}"));
+        error(404, get("/api/v2/users/u_np_orphan"));
+        error(404, put("/api/v2/users/u_np_put", "{\"name\":\"u_np_put\",\"network_policy\":\"no_such_policy\"}"));
+        error(404, get("/api/v2/users/u_np_put"));
+        ok(put("/api/v2/users/u_np_put", "{\"name\":\"u_np_put\",\"network_policy\":\"u_np_two\"}"));
+        assertEquals("U_NP_TWO", ok(get("/api/v2/users/u_np_put")).path("network_policy").asString());
+        ok(delete("/api/v2/users/u_np"));
+        ok(delete("/api/v2/users/u_np_put"));
+        sql("DROP NETWORK POLICY u_np_one");
+        sql("DROP NETWORK POLICY u_np_two");
+    }
+
+    @Test
     public void createModeSelectsTheCreateSpelling() throws Exception {
         ok(post("/api/v2/users", "{\"name\":\"u_modes\",\"comment\":\"first\"}"));
         error(409, post("/api/v2/users", "{\"name\":\"u_modes\"}"));

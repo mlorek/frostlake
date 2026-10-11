@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ClonePoint;
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
@@ -35,6 +36,7 @@ import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.StreamSources;
+import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -481,6 +483,10 @@ public class DDLCommandHandler implements CommandHandler {
             if (!sourceSchema.hasTable(sourceObjectName) && sourceSchema.hasDynamicTable(sourceObjectName)) {
                 throw new RuntimeException(SqlCompilationError.objectOfOtherType("DYNAMIC_TABLE", "TABLE"));
             }
+            if (!sourceSchema.hasTable(sourceObjectName) && qualifiedNameParts(ctx.qualifiedName(1)).length == 1) {
+                // A source written bare is named bare, where one written by a path is named in full.
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Table", sourceObjectName));
+            }
             // Check if table exists
             final Table table = sourceSchema.getTable(sourceObjectName);
             if (table == null) {
@@ -504,7 +510,7 @@ public class DDLCommandHandler implements CommandHandler {
             // guarded rather than letting the catalog's generic "View does not exist: x" surface.
             if (!sourceSchema.hasView(sourceObjectName)) {
                 throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("View",
-                    sourceObjectName.toUpperCase()));
+                    sourceObjectName.toUpperCase(Locale.ROOT)));
             }
             sourceView = sourceSchema.getView(sourceObjectName);
         }
@@ -659,6 +665,15 @@ public class DDLCommandHandler implements CommandHandler {
                 : destination.hasProcedureSignature(newSimple, ((Procedure) routine).getParameters())) {
                 throw new RuntimeException(Schema.alreadyExists(newSimple));
             }
+            // Nor may a routine of the other kind hold the new name with this signature (live-verified).
+            destination.requireNotHeldByOtherKind(isFunction, newSimple, isFunction
+                ? ((Function) routine).getParameters() : ((Procedure) routine).getParameters());
+            // Nor may the new name hold an overload this one would compete with for some call (live-verified).
+            if (isFunction) {
+                destination.requireUnambiguousFunction(newSimple, ((Function) routine).getParameters());
+            } else {
+                destination.requireUnambiguousProcedure(newSimple, ((Procedure) routine).getParameters());
+            }
             final List<Parameter> parameters = isFunction
                 ? ((Function) routine).getParameters() : ((Procedure) routine).getParameters();
             final String grantedBefore = GrantNames.routine(schema, routine.getName(), parameters);
@@ -686,6 +701,16 @@ public class DDLCommandHandler implements CommandHandler {
         } else if (action.TAG() != null) {
             // A tag is set and unset on a routine as it is anywhere else, and changes nothing else
             // about it (live-verified).
+            for (int i = 0; i < action.qualifiedName().size(); i++) {
+                final Tag tag = TagActions.tag(action.qualifiedName(i), catalog);
+                if (action.SET() != null) {
+                    final String value = SqlStringLiterals.decode(action.STRING_LITERAL(i).getText());
+                    TagValues.requireAllowed(tag, value);
+                    TagAssignments.set(routine, tag, value);
+                } else {
+                    TagAssignments.unset(routine, tag);
+                }
+            }
             logger.trace("Tag changed on routine: {}", qualifiedName);
         } else if (!action.routineSetProperty().isEmpty()) {
             // A repeated property is taken, the last one winning, as the account takes it.
@@ -801,7 +826,7 @@ public class DDLCommandHandler implements CommandHandler {
                 new RoutineEnvironments(catalog, queryExecutor).integrations(property.routineIntegrationList()));
             return;
         }
-        requireRoutineProperty(getText(property.identifier()).toUpperCase(), isFunction);
+        requireRoutineProperty(getText(property.identifier()).toUpperCase(Locale.ROOT), isFunction);
     }
 
     /** A SQL routine's secrets and integrations are no property an ALTER takes (live-verified). */
@@ -832,12 +857,12 @@ public class DDLCommandHandler implements CommandHandler {
             environmentOf(routine, isFunction).setExternalAccessIntegrations(null);
             return;
         }
-        if ("SECRETS".equals(getText(property.identifier()).toUpperCase())) {
+        if ("SECRETS".equals(getText(property.identifier()).toUpperCase(Locale.ROOT))) {
             // Taken, and the secrets stay as they were (live-verified).
             requireHandlerRoutine(routine, "SECRETS", isFunction);
             return;
         }
-        requireRoutineProperty(getText(property.identifier()).toUpperCase(), isFunction);
+        requireRoutineProperty(getText(property.identifier()).toUpperCase(Locale.ROOT), isFunction);
     }
 
     /** Refuse a name that is not a property of a routine at all, in the account's own words. */
@@ -1107,7 +1132,7 @@ public class DDLCommandHandler implements CommandHandler {
 
     private void applyDynamicTableSetting(final DynamicTable dt,
                                           final FrostlakeParser.DynamicTableSettingContext setting) {
-        final String name = setting.dynamicTableProperty().getText().toUpperCase();
+        final String name = setting.dynamicTableProperty().getText().toUpperCase(Locale.ROOT);
         if ("TARGET_LAG".equals(name) && setting.DOWNSTREAM() != null) {
             dt.setTargetLag("DOWNSTREAM");
         } else if ("TARGET_LAG".equals(name) && setting.STRING_LITERAL() != null
@@ -1117,9 +1142,9 @@ public class DDLCommandHandler implements CommandHandler {
             final String warehouse = getText(setting.identifier());
             if (!catalog.hasWarehouse(warehouse)) {
                 // Live's sentence for a warehouse, which has no "not authorized" half (live-verified).
-                throw new RuntimeException("Warehouse '" + warehouse.toUpperCase() + "' does not exist.");
+                throw new RuntimeException("Warehouse '" + warehouse.toUpperCase(Locale.ROOT) + "' does not exist.");
             }
-            dt.setWarehouse(warehouse.toUpperCase());
+            dt.setWarehouse(warehouse.toUpperCase(Locale.ROOT));
         } else if ("COMMENT".equals(name) && setting.STRING_LITERAL() != null) {
             dt.setComment(extractStringLiteral(setting.STRING_LITERAL()));
         } else if ("DATA_RETENTION_TIME_IN_DAYS".equals(name) && setting.INTEGER_LITERAL() != null
@@ -1141,7 +1166,7 @@ public class DDLCommandHandler implements CommandHandler {
      */
     private void unsetDynamicTableProperty(final DynamicTable dt, final String dtName,
                                            final FrostlakeParser.DynamicTablePropertyContext property) {
-        final String name = property.getText().toUpperCase();
+        final String name = property.getText().toUpperCase(Locale.ROOT);
         if ("TARGET_LAG".equals(name)) {
             throw new RuntimeException(SqlCompilationError.of("invalid value 'null' for property 'TARGET_LAG'"));
         }
@@ -1332,14 +1357,24 @@ public class DDLCommandHandler implements CommandHandler {
             logger.trace("Using warehouse: {}", warehouseName);
         } else if (ctx.SECONDARY() != null) {
             if (ctx.ALL() != null) {
-                catalog.useSecondaryRoles("ALL");
+                catalog.useSecondaryRoles(null);
                 logger.trace("Using secondary roles: ALL");
+            } else if (ctx.identifier().isEmpty()) {
+                // The statement ends where its roles belong (live-verified).
+                final Token roles = ctx.ROLES().getSymbol();
+                final Token end = ctx.SEMI() == null ? null : ctx.SEMI().getSymbol();
+                final int[] shown = LeadingCommentOffset.rebase(roles.getLine(), end != null
+                    ? end.getCharPositionInLine() : roles.getCharPositionInLine() + roles.getText().length());
+                throw new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
+                    + shown[1] + " unexpected '" + (end != null ? end.getText() : "<EOF>") + "'."));
             } else {
-                // USE SECONDARY ROLES r1, r2, ... — activate each named role.
+                // USE SECONDARY ROLES r1, r2, … — the roles named replace the ones in use.
+                final List<String> named = new ArrayList<String>();
                 for (final FrostlakeParser.IdentifierContext role : ctx.identifier()) {
-                    catalog.useSecondaryRoles(getText(role));
-                    logger.trace("Using secondary role: {}", getText(role));
+                    named.add(SqlIdentifiers.canonical(role));
                 }
+                catalog.useSecondaryRoles(named);
+                logger.trace("Using secondary roles: {}", named);
             }
         } else if (ctx.ROLE() != null) {
             final String roleName = queryExecutor.resolveObjectName(ctx.objectName());
@@ -1622,7 +1657,7 @@ public class DDLCommandHandler implements CommandHandler {
 
     void handleIfNotExists(final boolean ifNotExists, final RuntimeException e, final String objectName) {
         if (!ifNotExists) throw e;
-        final String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+        final String msg = e.getMessage() != null ? e.getMessage().toLowerCase(Locale.ROOT) : "";
         // A name another KIND holds is refused whatever IF NOT EXISTS says (live-verified).
         if (!msg.contains("already exists") || msg.contains("already exists as") || msg.contains("column '")
                 || msg.contains("primary key") || msg.contains("constraint with")) {
@@ -1697,7 +1732,7 @@ public class DDLCommandHandler implements CommandHandler {
             return extractStringLiteral(ctx.STRING_LITERAL());
         }
         if (ctx.SESSION_VAR_REF() != null) {
-            final String varName = ctx.SESSION_VAR_REF().getText().substring(1).toUpperCase();
+            final String varName = ctx.SESSION_VAR_REF().getText().substring(1).toUpperCase(Locale.ROOT);
             final SecurityManager sm = queryExecutor != null ? queryExecutor.getSecurityManager() : null;
             final Object val = sm != null ? sm.getSessionContext().getSessionVariable(varName)
                                     : (queryExecutor != null ? queryExecutor.getSessionVariables().get(varName) : null);
@@ -1837,7 +1872,7 @@ public class DDLCommandHandler implements CommandHandler {
      */
     private String warehouseSizeValue(final FrostlakeParser.WarehousePropertyContext prop) {
         if (prop.SESSION_VAR_REF() != null) {
-            final String varName = prop.SESSION_VAR_REF().getText().substring(1).toUpperCase();
+            final String varName = prop.SESSION_VAR_REF().getText().substring(1).toUpperCase(Locale.ROOT);
             final Object val = queryExecutor != null && queryExecutor.getSecurityManager() != null
                 ? queryExecutor.getSecurityManager().getSessionContext().getSessionVariable(varName)
                 : queryExecutor != null ? queryExecutor.getSessionVariables().get(varName) : null;
@@ -1856,7 +1891,7 @@ public class DDLCommandHandler implements CommandHandler {
      * what SHOW WAREHOUSES reports; a bare STANDARD and a quoted 'standard' reach the same stored value.
      */
     private String warehouseTypeValue(final String written) {
-        final String canonical = written.toUpperCase();
+        final String canonical = written.toUpperCase(Locale.ROOT);
         if (canonical.equals("STANDARD") || canonical.equals("SNOWPARK-OPTIMIZED") || canonical.equals("ADAPTIVE")) {
             return canonical;
         }
@@ -1891,7 +1926,7 @@ public class DDLCommandHandler implements CommandHandler {
         for (final FrostlakeParser.WarehousePropertyContext prop : properties) {
             if (prop.WAREHOUSE_TYPE() != null) {
                 type = prop.STANDARD() != null ? "STANDARD" : prop.ADAPTIVE() != null ? "ADAPTIVE"
-                    : extractStringLiteral(prop.STRING_LITERAL()).toUpperCase();
+                    : extractStringLiteral(prop.STRING_LITERAL()).toUpperCase(Locale.ROOT);
             }
         }
         for (final FrostlakeParser.WarehousePropertyContext prop : properties) {
@@ -1931,7 +1966,7 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     WarehouseSize parseWarehouseSizeString(final String sizeStr) {
-        switch (sizeStr.toUpperCase().replace("-", "_")) {
+        switch (sizeStr.toUpperCase(Locale.ROOT).replace("-", "_")) {
             case "X_SMALL": case "XSMALL": return WarehouseSize.X_SMALL;
             case "SMALL": return WarehouseSize.SMALL;
             case "MEDIUM": return WarehouseSize.MEDIUM;

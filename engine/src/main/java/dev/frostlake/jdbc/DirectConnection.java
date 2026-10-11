@@ -134,10 +134,12 @@ public class DirectConnection implements Connection, AbortableSession {
         aborted = true;
     }
 
-    /** Roll back what the aborted session left open, once the aborting statement is over. */
+    /** Roll back what the aborted session left open, and drop what it created TEMPORARY, once the aborting
+     *  statement is over. */
     @Override
     public void endAborted() {
         endOwnTransaction();
+        dropOwnTemporaryObjects();
     }
 
     /**
@@ -252,6 +254,25 @@ public class DirectConnection implements Connection, AbortableSession {
             engine.getSessionDirectory().unregister(sessionSettings.getSessionNumber());
         }
         endOwnTransaction();
+        dropOwnTemporaryObjects();
+    }
+
+    /**
+     * Drop what this connection's session created TEMPORARY, as the session ends: a temporary object lives as long
+     * as its session, and on an account a connection is one. A connection that shares the engine's own session
+     * leaves its objects to the engine.
+     */
+    private void dropOwnTemporaryObjects() {
+        if (sessionSettings == null) {
+            return;
+        }
+        synchronized (engine) {
+            try {
+                engine.dropTemporaryObjectsOf(sessionSettings.getSessionNumber());
+            } catch (final RuntimeException ignored) {
+                // The session is gone either way; what could not be dropped goes when the engine shuts down.
+            }
+        }
     }
 
     /**
@@ -310,14 +331,23 @@ public class DirectConnection implements Connection, AbortableSession {
     public void commit() throws SQLException {
         checkClosed();
         requireSession();
-        executeScoped("COMMIT");
+        endTransaction("COMMIT");
     }
 
     @Override
     public void rollback() throws SQLException {
         checkClosed();
         requireSession();
-        executeScoped("ROLLBACK");
+        endTransaction("ROLLBACK");
+    }
+
+    /** A COMMIT can fail — of a transaction that was aborted, for one — and fails as a statement's does. */
+    private void endTransaction(final String statement) throws SQLException {
+        try {
+            executeScoped(statement);
+        } catch (final RuntimeException failed) {
+            throw new SQLException(failed.getMessage(), failed);
+        }
     }
 
     private void checkClosed() throws SQLException {

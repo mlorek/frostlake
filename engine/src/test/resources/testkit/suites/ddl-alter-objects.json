@@ -181,11 +181,12 @@
        "expect": {"rows": [["Y"]]}}
     ]},
     {"name": "grantor-tracked-from-session",
-     "skip": {"backends": ["snowflake"], "reason": "USE ROLE of a just-created role needs a grant to the session user on a live account (Java test had the same assumption)"},
+     "skip": {"backends": ["snowflake"], "reason": "works as a role it creates, which a replay on a live account is not switched to (the Java test had the same assumption)"},
      "steps": [
       {"sql": "CREATE OR REPLACE ROLE granting_role"},
       {"sql": "CREATE OR REPLACE ROLE child_role"},
       {"sql": "CREATE OR REPLACE ROLE parent_role"},
+      {"sql": "GRANT ROLE granting_role TO ROLE SYSADMIN"},
       {"sql": "USE ROLE granting_role"},
       {"sql": "GRANT ROLE child_role TO ROLE parent_role"},
       {"sql": "SHOW GRANTS OF ROLE child_role", "expect": {"rowCount": 1}},
@@ -197,10 +198,11 @@
       {"sql": "DROP ROLE parent_role"}
     ]},
     {"name": "object-owner-stamped-with-creating-role",
-     "skip": {"backends": ["snowflake"], "reason": "USE ROLE of a just-created role needs a grant to the session user on a live account (Java test had the same assumption)"},
+     "skip": {"backends": ["snowflake"], "reason": "works as a role it creates, which a replay on a live account is not switched to (the Java test had the same assumption)"},
      "steps": [
       {"sql": "CREATE OR REPLACE ROLE data_owner"},
       {"sql": "GRANT CREATE TABLE ON SCHEMA test_schema TO ROLE data_owner"},
+      {"sql": "GRANT ROLE data_owner TO ROLE SYSADMIN"},
       {"sql": "USE ROLE data_owner"},
       {"sql": "CREATE TABLE owned_tbl (id INTEGER)"},
       {"sql": "SHOW TABLES LIKE 'owned_tbl'", "expect": {"rowCount": 1}},
@@ -222,9 +224,10 @@
       {"sql": "INSERT INTO def_tbl(id) VALUES (2)", "expect": {"error": {}}}
     ]},
     {"name": "show-roles-is-current-reflects-session",
-     "skip": {"backends": ["snowflake"], "reason": "USE ROLE of a just-created role needs a grant to the session user on a live account (Java test had the same assumption)"},
+     "skip": {"backends": ["snowflake"], "reason": "works as a role it creates, which a replay on a live account is not switched to (the Java test had the same assumption)"},
      "steps": [
       {"sql": "CREATE OR REPLACE ROLE my_show_role"},
+      {"sql": "GRANT ROLE my_show_role TO ROLE SYSADMIN"},
       {"sql": "USE ROLE my_show_role"},
       {"sql": "SHOW ROLES"},
       {"sql": "SELECT \"is_current\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MY_SHOW_ROLE'",

@@ -94,6 +94,8 @@ public class SyntaxErrorListener extends BaseErrorListener {
     private int lastMessagePosition = -1;
     /** Token index of the ')' closing a group whose '(' was already refused; see groupOpenedHere. */
     private int suppressUntilTokenIndex = -1;
+    /** Whether the first fault is an END written where a DECLARE section's BEGIN belongs. */
+    private boolean declareSectionEnd;
     /** Per message line: its line number and position, so lines from two parses merge in text order. */
     private final List<int[]> coordinates;
     /** Per message line: the lines live stacks after it when it is the first line reported; or null. */
@@ -117,6 +119,11 @@ public class SyntaxErrorListener extends BaseErrorListener {
     private boolean castReadingDone;
     /** The lines of a first fault refusing a word after a keyword SHOW scope in a block; or null. */
     private KeywordScopeLines keywordScopeLines;
+    /**
+     * The semicolon of the block statement the first fault gave up with its block (see BlockReadOn), or the refused
+     * word of a listing's open modifier; null when the fault is read any other way.
+     */
+    private Token gaveUpAt;
     // Speculative parses (is this UDF body a query or a bare expression?) EXPECT to fail on one of
     // the alternatives; logging their syntax errors at ERROR flooded the log with noise for every
     // perfectly working expression-body UDF. Quiet mode demotes the logging to DEBUG — the collected
@@ -266,6 +273,18 @@ public class SyntaxErrorListener extends BaseErrorListener {
                     reported = startToken;
                 }
             }
+            // ★ A DECLARE SECTION WRITTEN AFTER A BLOCK'S STATEMENTS wants its BEGIN, so the END written where that BEGIN
+            // belongs is the token refused, and nothing after it is read: BEGIN RETURN 1; DECLARE q INT; END names the
+            // END (live-verified).
+            if (e instanceof NoViableAltException && recognizer instanceof Parser) {
+                final Token end = ((NoViableAltException) e).getStartToken();
+                if (end != null && end.getType() == FrostlakeLexer.END
+                        && closesADeclareSection(((Parser) recognizer).getInputStream(), end)) {
+                    reported = end;
+                    endsReport = true;
+                    declareSectionEnd = errors.size() == 1;
+                }
+            }
             // ★ AN EMPTY BODY is refused at the END that closes it, and an END where a label stands at that END — see
             // ConstructEndSyntax.
             final List<Token> labelEnd = ConstructEndSyntax.endAsLabel(recognizer, reported, e);
@@ -325,13 +344,23 @@ public class SyntaxErrorListener extends BaseErrorListener {
             // ★ CAST WHERE A VALUE IS READ, WITH NO PARENTHESIS AFTER IT, and WHEN straight after SELECT lead a
             // construct that never opens, and live refuses the token AFTER the word and reports nothing more:
             // SELECT cast FROM t and SELECT case cast FROM t name the FROM, ORDER BY cast the end of input.
-            if (e instanceof NoViableAltException && ((NoViableAltException) e).getStartToken() == reported
+            // TRY_CAST reads the same, and so does either word before a dot: in a select item the dot and the name
+            // after it are read past and the token after them is refused, anywhere else the dot is —
+            // SELECT cast.a FROM t cast names the FROM, WHERE cast.a = 1 the dot.
+            final boolean castWord = reported.getType() == FrostlakeLexer.CAST
+                || reported.getType() == FrostlakeLexer.TRY_CAST;
+            if ((e instanceof NoViableAltException && ((NoViableAltException) e).getStartToken() == reported
+                    || e instanceof FailedPredicateException && castWord)
                     && recognizer instanceof Parser && !openerRefused && !stackDecided) {
                 final TokenStream written = ((Parser) recognizer).getInputStream();
-                final Token after = nextSpoken(written, reported.getTokenIndex());
-                final boolean cast = reported.getType() == FrostlakeLexer.CAST && after != null
-                    && after.getType() != FrostlakeLexer.LPAREN;
+                Token after = nextSpoken(written, reported.getTokenIndex());
+                final boolean cast = castWord && after != null && after.getType() != FrostlakeLexer.LPAREN;
                 final boolean when = reported.getType() == FrostlakeLexer.WHEN && precededBySelect(written, reported);
+                if (cast && after.getType() == FrostlakeLexer.DOT && opensSelectItem(written, reported)) {
+                    final Token name = nextSpoken(written, after.getTokenIndex());
+                    final Token beyond = name == null ? null : nextSpoken(written, name.getTokenIndex());
+                    after = beyond != null ? beyond : after;
+                }
                 if (after != null && (cast || when)) {
                     reported = after;
                     openerRefused = true;
@@ -465,7 +494,18 @@ public class SyntaxErrorListener extends BaseErrorListener {
                         stacked = resumed.isEmpty() ? null : resumed.get(0);
                         stackedAgain = resumed.size() < 2 ? null : resumed.get(1);
                     } else {
-                        stacked = stackedAfterMissingTerminator(recognizer, reported);
+                        gaveUpAt = null;
+                        // A loop's swallowed label has its own reading of the ENDs after it (pastNestedBlockEnds).
+                        stacked = stackedAfterMissingTerminator(recognizer, reported, labelled == null);
+                        // ★ A STATEMENT GIVEN UP WITH ITS BLOCK has its whole report in what the rest refuses, and a
+                        // branch keyword or an END's wrong word refused there stacks one line more — see BlockReadOn.
+                        if (gaveUpAt != null) {
+                            endsReport = true;
+                            if (stacked != null && gaveUpAt.getType() == FrostlakeLexer.SEMI) {
+                                stackedAgain = BlockReadOn.followerAfter(((Parser) recognizer).getInputStream(),
+                                    gaveUpAt, stacked);
+                            }
+                        }
                         if (labelled != null) {
                             stacked = ConstructEndSyntax.pastNestedBlockEnds(recognizer, stacked);
                         }
@@ -498,6 +538,17 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 if (listed != null) {
                     reported = listed;
                     stackDecided = true;
+                }
+            }
+            // ★ A WITH THAT OPENS NO PRIVILEGE LIST IN A SHOW LISTING, AND A SCOPE ENDING IN A DOT — see ShowWithSyntax.
+            if (errors.size() == 1 && recognizer instanceof Parser && statementParse) {
+                final List<Token> listing = ShowWithSyntax.lines(((Parser) recognizer).getInputStream(), reported);
+                if (listing != null) {
+                    reported = listing.get(0);
+                    stacked = listing.size() > 1 ? listing.get(1) : null;
+                    stackedAgain = null;
+                    stackDecided = true;
+                    stackEndsReport = true;
                 }
             }
             // ★ A WORD AFTER A KEYWORD WRITTEN ALONE AS A SHOW SCOPE, in a block, is two lines — see KeywordScopeLines.
@@ -738,7 +789,8 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 // recovery follows it to be silenced — unless it is the ')' closing a comma's list, after
                 // which live reports nothing more of the statement.
                 if (named != null && ((IdentifierReferenceFault) e).endsTheReport()) {
-                    suppressUntilTokenIndex = statementEndIndex(recognizer, named);
+                    suppressUntilTokenIndex = e instanceof InputEndingFault ? Integer.MAX_VALUE
+                        : statementEndIndex(recognizer, named);
                 }
             } else if (named != null && named.getType() == FrostlakeLexer.LPAREN) {
                 // ★ A REFUSED '(' IN THE FETCH COUNT SLOT ENDS THE STATEMENT'S REPORTING. Live resyncs
@@ -924,7 +976,34 @@ public class SyntaxErrorListener extends BaseErrorListener {
             return null;
         }
         final Token before = previousSpoken(stream, describe.getTokenIndex());
-        return before == null || before.getType() == FrostlakeLexer.SEMI ? describe : null;
+        if (before == null || before.getType() == FrostlakeLexer.SEMI) {
+            return describe;
+        }
+        // The statement a task's body or an alert's action is opens the same way.
+        for (ParserRuleContext up = ((Parser) recognizer).getContext(); up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.TaskBodyContext) {
+                return up.getStart() != null && up.getStart().getTokenIndex() == describe.getTokenIndex()
+                    ? describe : null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether an END stands where a DECLARE section's BEGIN belongs: the nearest DECLARE or BEGIN written before it
+     * is a DECLARE.
+     */
+    private static boolean closesADeclareSection(final TokenStream stream, final Token end) {
+        for (Token before = previousSpoken(stream, end.getTokenIndex()); before != null;
+                before = previousSpoken(stream, before.getTokenIndex())) {
+            if (before.getType() == FrostlakeLexer.BEGIN) {
+                return false;
+            }
+            if (before.getType() == FrostlakeLexer.DECLARE) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether {@code e} is a block's statement ending without its semicolon (the statement list's own check). */
@@ -1033,9 +1112,13 @@ public class SyntaxErrorListener extends BaseErrorListener {
      *
      * <p>A query whose FROM list ends in a table reference aliased with AS names the refused word TWICE,
      * at the same place. A statement inside an IF, LOOP, CASE, FOR, WHILE or REPEAT body resumes at the
-     * construct's own END instead — see {@link #afterEnclosingConstruct}.
+     * construct's own END instead — see {@link #afterEnclosingConstruct}. With the statement's semicolon straight
+     * after the name, and {@code readsOn}, the statement is given up with its block and the rest read on — see
+     * {@link BlockReadOn}; a word a SHOW listing's open modifier refuses is one line
+     * ({@link ShowScopeWords#followsOpenModifier}).
      */
-    private static Token stackedAfterMissingTerminator(final Recognizer<?, ?> recognizer, final Token first) {
+    private Token stackedAfterMissingTerminator(final Recognizer<?, ?> recognizer, final Token first,
+                                                final boolean readsOn) {
         // A statement run into its body's own END is the first line alone: the recovery already stands
         // where the body closes.
         if (!(recognizer instanceof Parser) || first.getType() == Token.EOF
@@ -1047,6 +1130,21 @@ public class SyntaxErrorListener extends BaseErrorListener {
             return null;
         }
         final FrostlakeParser.StatementListContext list = (FrostlakeParser.StatementListContext) parser.getContext();
+        if (readsOn && ShowScopeWords.followsOpenModifier(parser.getInputStream(), first)) {
+            // ★ A WORD A SHOW LISTING'S OPEN MODIFIER REFUSES is one line, unless another word follows it or a
+            // statement reads on past the semicolon — see ShowScopeWords#followsOpenModifier.
+            gaveUpAt = first;
+            if (parser.getInputStream() instanceof BufferedTokenStream) {
+                ((BufferedTokenStream) parser.getInputStream()).fill();
+            }
+            final Token after = nextSpoken(parser.getInputStream(), first.getTokenIndex());
+            if (after == null || after.getType() == Token.EOF || after.getType() == FrostlakeLexer.END) {
+                return null;
+            }
+            return after.getType() == FrostlakeLexer.SEMI
+                ? BlockReadOn.refusedPastStatement(parser.getInputStream(), after)
+                : BlockReadOn.refusedAfter(parser.getInputStream(), after);
+        }
         final ParserRuleContext owner = list.getParent();
         if (owner instanceof FrostlakeParser.IfStatementContext || owner instanceof FrostlakeParser.LoopStatementContext
                 || owner instanceof FrostlakeParser.CaseStatementContext
@@ -1055,8 +1153,18 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 || owner instanceof FrostlakeParser.RepeatStatementContext) {
             // Only where the block-level reading would stack a line at all: with no name before the
             // statement's semicolon (RETURN 1 1;) the fault is one line in a body too.
-            return owner.getStart() == null || firstNameBeforeSemicolon(parser.getInputStream(), first) == null
-                ? null : afterEnclosingConstruct(parser.getInputStream(), owner.getStart());
+            final Token name = owner.getStart() == null ? null
+                : firstNameBeforeSemicolon(parser.getInputStream(), first);
+            if (name == null) {
+                return null;
+            }
+            // With the statement's semicolon straight after the name, the body is given up there — see BlockReadOn.
+            final Token after = nextSpoken(parser.getInputStream(), name.getTokenIndex());
+            if (readsOn && after != null && after.getType() == FrostlakeLexer.SEMI) {
+                gaveUpAt = after;
+                return BlockReadOn.refusedAfter(parser.getInputStream(), after);
+            }
+            return afterEnclosingConstruct(parser.getInputStream(), owner.getStart());
         }
         if (!(list.getParent() instanceof FrostlakeParser.BeginEndBlockContext)
                 && !(list.getParent() instanceof FrostlakeParser.ExceptionHandlerContext)) {
@@ -1074,7 +1182,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (first.getType() == FrostlakeLexer.CALL) {
             return null;
         }
-        return afterFirstName(parser, first);
+        return readsOn ? afterFirstNameReadingOn(parser, first) : afterFirstName(parser, first);
     }
 
     /**
@@ -1192,6 +1300,22 @@ public class SyntaxErrorListener extends BaseErrorListener {
      */
     static Token afterFirstName(final Parser parser, final Token first) {
         return afterFirstName(parser.getInputStream(), first);
+    }
+
+    /**
+     * As {@link #afterFirstName(Parser, Token)} for a block statement that ran into a word: with the statement's
+     * semicolon straight after the name, the statement is given up with its block and the rest is read from what
+     * stands around it — see {@link BlockReadOn}.
+     */
+    private Token afterFirstNameReadingOn(final Parser parser, final Token first) {
+        final TokenStream stream = parser.getInputStream();
+        final Token name = firstNameBeforeSemicolon(stream, first);
+        final Token next = name == null ? null : nextSpoken(stream, name.getTokenIndex());
+        if (next == null || next.getType() != FrostlakeLexer.SEMI) {
+            return afterFirstName(stream, first);
+        }
+        gaveUpAt = next;
+        return BlockReadOn.refusedAfter(stream, next);
     }
 
     /**
@@ -1798,23 +1922,6 @@ public class SyntaxErrorListener extends BaseErrorListener {
     }
 
     /**
-     * Offers a word a check after the parse refuses in the statements the parse read on at the top level, when the
-     * first fault refused a word after a keyword SHOW scope in a block: it is that fault's second line when it comes
-     * before the parse's own next fault — see KeywordScopeLines.
-     *
-     * @param word the refused word
-     * @return whether the first fault takes it
-     */
-    public boolean takesLaterRefusal(final Token word) {
-        if (keywordScopeLines == null || !keywordScopeLines.offer(word)) {
-            return false;
-        }
-        // The word is a later line of its own, so the lines worked out before it came are no longer the answer.
-        forgetReportedLines();
-        return true;
-    }
-
-    /**
      * Whether the FIRST error was a block's statement ending without its semicolon: the engine read that
      * statement whole, so no construct it does not know can explain the fault, and a CREATE may refuse the
      * body as the account does.
@@ -1966,17 +2073,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
             return readAsCast;
         }
         if (keywordScopeLines != null) {
-            // The parse's own reading, the refused word set aside as the dead end it is, gives the second line. It is
-            // worked out afresh, not through the cache, which holds the answer WITH the keyword scope's lines; the
-            // first line is the refused word's in both modes, so the first-only question needs no second reading.
-            final KeywordScopeLines keywordScope = keywordScopeLines;
-            keywordScopeLines = null;
-            try {
-                return keywordScope.lines(keywordScope.readsNextFault() && !firstOnly
-                    ? workOutReportedLines(false) : null);
-            } finally {
-                keywordScopeLines = keywordScope;
-            }
+            return keywordScopeLines.lines();
         }
         final List<Token> spokenTokens = sql == null ? null : defaultChannelTokens();
         final List<String> starModifier = spokenTokens == null || !statementParse ? null
@@ -2086,6 +2183,11 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (bracketed != null) {
             return bracketed;
         }
+        final List<String> subqueryAlias = spokenTokens == null ? null
+            : SubqueryAliasFaultLines.lines(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (subqueryAlias != null) {
+            return subqueryAlias;
+        }
         final List<String> nested = nestedAliasParenRefusal(kept);
         if (nested != null) {
             return nested;
@@ -2158,8 +2260,28 @@ public class SyntaxErrorListener extends BaseErrorListener {
         if (fromList != null) {
             return fromList;
         }
+        final String joinBracket = spokenTokens == null || !statementParse ? null
+            : JoinConditionEnd.bracketFault(spokenTokens, offendingIndexes.get(kept.get(0)));
+        if (joinBracket != null) {
+            return Collections.singletonList(joinBracket);
+        }
+        final List<String> assigned = spokenTokens == null ? null
+            : AssignmentValueLines.lines(spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (assigned != null) {
+            return assigned;
+        }
+        final List<String> caseFault = spokenTokens == null ? null
+            : CaseFaultLines.lines(spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (caseFault != null) {
+            return caseFault;
+        }
+        final List<String> castFault = spokenTokens == null ? null
+            : CastFaultLines.lines(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+        if (castFault != null) {
+            return castFault;
+        }
         final List<String> castComma = spokenTokens == null ? null
-            : CastCommaLines.lines(spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
+            : CastCommaLines.lines(sql, spokenTokens, offendingIndexes.get(kept.get(0)), statementParse);
         if (castComma != null) {
             return castComma;
         }
@@ -2751,9 +2873,69 @@ public class SyntaxErrorListener extends BaseErrorListener {
     }
 
     /** A syntax-error sentence naming {@code token} at its own place. */
+    /** Whether a token opens a select item: SELECT, or a select list's comma, DISTINCT or ALL, stands before it. */
+    private static boolean opensSelectItem(final TokenStream written, final Token token) {
+        final Token before = previousSpoken(written, token.getTokenIndex());
+        if (before == null) {
+            return false;
+        }
+        if (before.getType() == FrostlakeLexer.SELECT || before.getType() == FrostlakeLexer.DISTINCT
+                || before.getType() == FrostlakeLexer.ALL) {
+            return true;
+        }
+        if (before.getType() != FrostlakeLexer.COMMA) {
+            return false;
+        }
+        // The comma is a select list's when the nearest clause word before it, outside brackets, is SELECT.
+        int closed = 0;
+        Token at = before;
+        while (at != null) {
+            final int type = at.getType();
+            if (type == FrostlakeLexer.RPAREN) {
+                closed++;
+            } else if (type == FrostlakeLexer.LPAREN) {
+                if (closed == 0) {
+                    return false;
+                }
+                closed--;
+            } else if (closed == 0 && type == FrostlakeLexer.SELECT) {
+                return true;
+            } else if (closed == 0 && (type == FrostlakeLexer.FROM || type == FrostlakeLexer.WHERE
+                    || type == FrostlakeLexer.BY || type == FrostlakeLexer.HAVING || type == FrostlakeLexer.SEMI)) {
+                return false;
+            }
+            at = previousSpoken(written, at.getTokenIndex());
+        }
+        return false;
+    }
+
     static String sentence(final Token token) {
         final int[] at = LeadingCommentOffset.rebase(token.getLine(), token.getCharPositionInLine());
-        return "syntax error line " + at[0] + " at position " + at[1] + " unexpected '" + token.getText() + "'.";
+        return "syntax error line " + at[0] + " at position " + at[1] + " unexpected '" + writtenText(token) + "'.";
+    }
+
+    /**
+     * A token's text as live's lexer reads it: a stage reference is one token there, the '@' and every character
+     * after it up to a delimiter — white space, a bracket, a comma, a semicolon, a quote, a backtick, an angle
+     * bracket, a bar, a character outside ASCII, and a '~' past the first character (live-verified).
+     */
+    private static String writtenText(final Token token) {
+        final CharStream source = token.getType() == FrostlakeLexer.AT ? token.getInputStream() : null;
+        if (source == null || token.getStartIndex() < 0 || token.getStartIndex() >= source.size()) {
+            return token.getText();
+        }
+        final int at = token.getStartIndex();
+        int end = at + 1;
+        while (end < source.size()) {
+            final char character = source.getText(Interval.of(end, end)).charAt(0);
+            if (character <= ' ' || character == '(' || character == ')' || character == ',' || character == ';'
+                    || character == '\'' || character == '`' || character == '<' || character == '>'
+                    || character == '|' || character >= 128 || character == '~' && end > at + 1) {
+                break;
+            }
+            end++;
+        }
+        return source.getText(Interval.of(at, end - 1));
     }
 
 
@@ -3587,17 +3769,25 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 logger.error("=> Failed to parse SQL query:\n{}", sql);
             }
             // An Iceberg table's unknown type is refused under the prefix its other type refusals carry.
-            throw new SqlSyntaxException(icebergTypeRefusal ? "SQL Compilation error:\n" + detail
-                : SqlCompilationError.of(detail.toString()), errors, sql);
+            final SqlSyntaxException refusal = new SqlSyntaxException(icebergTypeRefusal
+                ? "SQL Compilation error:\n" + detail : SqlCompilationError.of(detail.toString()), errors, sql);
+            if (declareSectionEnd) {
+                refusal.markDeclareSectionEnd();
+            }
+            throw refusal;
         }
     }
     /**
      * A token's text as live's lexer would split it. A few multi-word clauses lex here as one token (REVOKE CURRENT
-     * GRANTS); live reads their words one by one, so a refusal names only the first.
+     * GRANTS); live reads their words one by one, so a refusal names only the first. A stage reference is one token
+     * there, the '@' with what is written after it ({@link #writtenText}).
      */
     private static String firstWord(final Token token) {
         final String text = token.getText();
         final int type = token.getType();
+        if (type == FrostlakeLexer.AT) {
+            return writtenText(token);
+        }
         if (type != FrostlakeLexer.REVOKE_CURRENT_GRANTS && type != FrostlakeLexer.RESUME_IF_SUSPENDED
                 && type != FrostlakeLexer.ABORT_ALL_QUERIES) {
             return text;

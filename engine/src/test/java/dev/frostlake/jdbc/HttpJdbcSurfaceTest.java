@@ -44,6 +44,7 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -375,8 +376,8 @@ public class HttpJdbcSurfaceTest {
         try (final ResultSet rs = md.getSchemas("HTTP_SURFACE_DB", null)) {
             final ResultSetMetaData rsMeta = rs.getMetaData();
             assertEquals(2, rsMeta.getColumnCount());
-            assertEquals("TABLE_SCHEM", rsMeta.getColumnLabel(1).toUpperCase());
-            assertEquals("TABLE_CATALOG", rsMeta.getColumnLabel(2).toUpperCase());
+            assertEquals("TABLE_SCHEM", rsMeta.getColumnLabel(1).toUpperCase(Locale.ROOT));
+            assertEquals("TABLE_CATALOG", rsMeta.getColumnLabel(2).toUpperCase(Locale.ROOT));
 
             boolean sawPublic = false;
             boolean sawInformationSchema = false;
@@ -473,7 +474,7 @@ public class HttpJdbcSurfaceTest {
         final Map<String, String> found = new TreeMap<>();
         try (final ResultSet rs = md.getTables("HTTP_SURFACE_DB", "PUBLIC", "FL162%", types)) {
             while (rs.next()) {
-                found.put(rs.getString("TABLE_NAME").toUpperCase(), rs.getString("TABLE_TYPE"));
+                found.put(rs.getString("TABLE_NAME").toUpperCase(Locale.ROOT), rs.getString("TABLE_TYPE"));
             }
         }
         return found;
@@ -484,7 +485,7 @@ public class HttpJdbcSurfaceTest {
         final ResultSetMetaData md = rs.getMetaData();
         final List<String> labels = new ArrayList<>();
         for (int i = 1; i <= md.getColumnCount(); i++) {
-            labels.add(md.getColumnLabel(i).toUpperCase());
+            labels.add(md.getColumnLabel(i).toUpperCase(Locale.ROOT));
         }
         return labels;
     }
@@ -515,7 +516,7 @@ public class HttpJdbcSurfaceTest {
         final Map<String, String> found = new LinkedHashMap<>();
         try (final ResultSet rs = md.getColumns("HTTP_SURFACE_DB", "PUBLIC", table, "%")) {
             while (rs.next()) {
-                found.put(rs.getString("COLUMN_NAME").toUpperCase(), rs.getString("TYPE_NAME"));
+                found.put(rs.getString("COLUMN_NAME").toUpperCase(Locale.ROOT), rs.getString("TYPE_NAME"));
             }
         }
         return found;
@@ -543,7 +544,7 @@ public class HttpJdbcSurfaceTest {
         // Size and scale survive the HTTP round trip, so the client's column grid is populated.
         try (final ResultSet rs = md.getColumns("HTTP_SURFACE_DB", "PUBLIC", "FL164_STAR", "%")) {
             while (rs.next()) {
-                final String column = rs.getString("COLUMN_NAME").toUpperCase();
+                final String column = rs.getString("COLUMN_NAME").toUpperCase(Locale.ROOT);
                 if ("LABEL".equals(column)) {
                     assertEquals(30, rs.getInt("COLUMN_SIZE"));
                     assertEquals(Types.VARCHAR, rs.getInt("DATA_TYPE"));
@@ -590,7 +591,7 @@ public class HttpJdbcSurfaceTest {
             while (rs.next()) {
                 // rs.getInt is the point: DATA_TYPE used to be a type-name string, which no client
                 // could read as the int the JDBC contract promises.
-                codes.put(rs.getString("COLUMN_NAME").toUpperCase(), rs.getInt("DATA_TYPE"));
+                codes.put(rs.getString("COLUMN_NAME").toUpperCase(Locale.ROOT), rs.getInt("DATA_TYPE"));
             }
         }
         assertEquals(Types.BIGINT, codes.get("C_INT"));

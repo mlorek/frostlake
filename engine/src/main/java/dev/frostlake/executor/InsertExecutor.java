@@ -56,6 +56,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -211,6 +212,12 @@ final class InsertExecutor {
                             // the text — and evaluating it would raise the refusal live gives a DEFAULT
                             // that is not standing alone.
                             final Expression parsed = ExpressionEvaluator.parse(exprText);
+                            if (!(parsed instanceof DefaultMarkerExpression)) {
+                                // A name stands for nothing in a VALUES row: a date part's word too, which is a
+                                // value only as a function's argument (live-verified: VALUES (s) is invalid
+                                // identifier 'S').
+                                evaluator.validateColumnScope(parsed);
+                            }
                             value = parsed instanceof DefaultMarkerExpression
                                 ? parsed : evaluator.evaluate(exprText, dummyRow);
                         } finally {
@@ -435,10 +442,14 @@ final class InsertExecutor {
         }
     }
 
-    /** A VALUES item's static type: null for a NULL, a DEFAULT, or an item the channel cannot type. */
+    /**
+     * A VALUES item's static type: null for a NULL, a DEFAULT, a scripting variable written alone that holds NULL —
+     * which fits any column, whatever its declared type (live-verified) — or an item the channel cannot type.
+     */
     private static DataType valueStaticType(final Expression parsed, final ExpressionEvaluator evaluator) {
         if (parsed == null || parsed instanceof DefaultMarkerExpression
-                || parsed instanceof LiteralExpression && ((LiteralExpression) parsed).getType() == LiteralType.NULL) {
+                || parsed instanceof LiteralExpression && ((LiteralExpression) parsed).getType() == LiteralType.NULL
+                || evaluator.isNullVariable(parsed)) {
             return null;
         }
         try {
@@ -526,10 +537,10 @@ final class InsertExecutor {
                 throw new RuntimeException(SqlCompilationError.of("Invalid data type ["
                     + ((CastExpression) ast).getDeclaredTarget().getName() + "] in VALUES clause"));
             }
-            final String target = ((CastExpression) ast).getTargetType().toUpperCase();
+            final String target = ((CastExpression) ast).getTargetType().toUpperCase(Locale.ROOT);
             semiStructured = target.startsWith("VARIANT") || target.startsWith("OBJECT") || target.startsWith("ARRAY");
         } else if (ast instanceof FunctionCallExpression) {
-            final String name = ((FunctionCallExpression) ast).getFunctionName().toUpperCase();
+            final String name = ((FunctionCallExpression) ast).getFunctionName().toUpperCase(Locale.ROOT);
             final BuiltInFunction fn = executor.getFunctionRegistry().getFunction(name);
             semiStructured = fn != null && (fn.getReturnType() instanceof VariantType
                 || fn.getReturnType() instanceof ObjectType || fn.getReturnType() instanceof ArrayType
@@ -590,7 +601,7 @@ final class InsertExecutor {
     private static boolean containsRejectedFunction(final Expression node) {
         if (node instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) node;
-            if (VALUES_REJECTED_FUNCTIONS.contains(call.getFunctionName().toUpperCase())) {
+            if (VALUES_REJECTED_FUNCTIONS.contains(call.getFunctionName().toUpperCase(Locale.ROOT))) {
                 return true;
             }
             for (final Expression argument : call.getArguments()) {
@@ -1004,8 +1015,11 @@ final class InsertExecutor {
                 }
                 final DataType written;
                 try {
-                    written = scope.inferStaticType(
-                        ExpressionEvaluator.parse(executor.getOriginalText(values.get(i))));
+                    final Expression value = ExpressionEvaluator.parse(executor.getOriginalText(values.get(i)));
+                    if (scope.isNullVariable(value)) {
+                        continue;
+                    }
+                    written = scope.inferStaticType(value);
                 } catch (final RuntimeException untyped) {
                     continue;
                 }
@@ -1200,6 +1214,6 @@ final class InsertExecutor {
         } else {
             return failed;
         }
-        return DmlWriteTarget.failedOnColumn(writtenName, column.toUpperCase(), failed);
+        return DmlWriteTarget.failedOnColumn(writtenName, column.toUpperCase(Locale.ROOT), failed);
     }
 }

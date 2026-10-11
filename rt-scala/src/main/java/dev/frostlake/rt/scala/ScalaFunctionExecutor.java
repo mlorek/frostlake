@@ -17,17 +17,21 @@
 package dev.frostlake.rt.scala;
 
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.udf.HandlerResults;
 import dev.frostlake.executor.udf.JarHandlerLoader;
+import dev.frostlake.executor.udf.JavaHandlerArguments;
+import dev.frostlake.executor.udf.JavaHandlerFailure;
 import dev.frostlake.executor.udf.UdfConsoleCapture;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
-import dev.frostlake.values.BinaryValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import scala.collection.JavaConverters;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
 
@@ -71,10 +75,16 @@ public final class ScalaFunctionExecutor {
 
         try {
             // Inline bodies compile ONCE (cached); jar handlers load from IMPORTS. Avoids per-row recompiles.
+            final String where = " in function " + function.getName() + " with handler " + handler;
             final Class<?> compiled = function.getImports().isEmpty()
-                ? ScalaCompiler.compileCached(function.getBody(), className)
+                ? ScalaCompiler.compileCached(function.getBody(), className, where)
                 : JarHandlerLoader.load(function.getImports(), className, catalog, s3Resolver);
-            final Object result = invokeHandler(compiled, methodName, arguments);
+            final Object answered = invokeHandler(compiled, methodName, arguments, parameters, where);
+            // What the handler hands back becomes the declared RETURNS type's value as a Java handler's does:
+            // an Array[String] an ARRAY, a Map an OBJECT, a text read as the type reads one.
+            final Object result = HandlerResults.fromJava(answered instanceof scala.collection.Map
+                ? JavaConverters.mapAsJavaMap((scala.collection.Map<?, ?>) answered) : answered,
+                function.getReturnType(), function.getName(), handler);
             logger.debug("Scala function {} executed successfully", function.getName());
             return result;
         } catch (final RuntimeException e) {
@@ -86,7 +96,8 @@ public final class ScalaFunctionExecutor {
     }
 
     private static Object invokeHandler(final Class<?> clazz, final String methodName,
-                                        final List<Object> arguments) throws Exception {
+                                        final List<Object> arguments, final List<Parameter> parameters,
+                                        final String where) throws Exception {
         Object instance;
         try {
             final Field moduleField = clazz.getField("MODULE$");
@@ -95,40 +106,23 @@ public final class ScalaFunctionExecutor {
             instance = clazz.getDeclaredConstructor().newInstance();
         }
         final Method target = findMethod(clazz, methodName, arguments.size());
-        final Class<?>[] paramTypes = target.getParameterTypes();
-        final Object[] callArgs = new Object[arguments.size()];
-        for (int i = 0; i < arguments.size(); i++) {
-            callArgs[i] = coerce(arguments.get(i), paramTypes[i]);
-        }
+        // A Scala handler's parameters are the JVM's: each argument becomes its type as a Java handler's does,
+        // so a number outside an Int's or a Long's range is refused, never wrapped.
+        final Object[] callArgs = JavaHandlerArguments.of(target.getParameterTypes(), parameters, arguments, where);
         UdfConsoleCapture.enter();
         try {
             return target.invoke(instance, callArgs);
+        } catch (final InvocationTargetException thrown) {
+            // What the handler raised reaches SQL as its report, as a Java handler's does (live-verified): the
+            // exception and its frames in the handler's source, an object's method under its forwarder.
+            final Throwable cause = thrown.getCause() != null ? thrown.getCause() : thrown;
+            final String name = clazz.getName();
+            throw new RuntimeException(JavaHandlerFailure.report(cause, clazz, where, ScalaCompiler.SOURCE_NAME,
+                name.endsWith("$") ? "function_handler_0//" + name.substring(0, name.length() - 1) + '.'
+                    + methodName + '(' + ScalaCompiler.SOURCE_NAME + ')' : null), cause);
         } finally {
             UdfConsoleCapture.exit();
         }
-    }
-
-    /** Coerce an engine value to the Scala handler's parameter type — reflection requires exact wrappers. */
-    private static Object coerce(final Object value, final Class<?> targetType) {
-        if (value == null || targetType.isInstance(value)) {
-            return value;
-        }
-        if (value instanceof Number) {
-            final Number n = (Number) value;
-            if (targetType == int.class || targetType == Integer.class) return n.intValue();
-            if (targetType == long.class || targetType == Long.class) return n.longValue();
-            if (targetType == double.class || targetType == Double.class) return n.doubleValue();
-            if (targetType == float.class || targetType == Float.class) return n.floatValue();
-            if (targetType == short.class || targetType == Short.class) return n.shortValue();
-            if (targetType == byte.class || targetType == Byte.class) return n.byteValue();
-        }
-        if (value instanceof BinaryValue && targetType == byte[].class) {
-            return ((BinaryValue) value).bytes();
-        }
-        if (targetType == String.class) {
-            return value.toString();
-        }
-        return value;
     }
 
     private static Method findMethod(final Class<?> clazz, final String methodName, final int argCount) {

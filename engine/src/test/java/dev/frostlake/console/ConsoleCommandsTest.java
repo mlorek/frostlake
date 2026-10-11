@@ -30,6 +30,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -200,7 +201,7 @@ public class ConsoleCommandsTest {
         }
 
         final String csvOutput = csv.toString();
-        final String csvUpper = csvOutput.toUpperCase();
+        final String csvUpper = csvOutput.toUpperCase(Locale.ROOT);
         assertTrue(csvUpper.contains("ID") && csvUpper.contains("NAME") && csvUpper.contains("VALUE"));
         assertTrue(csvOutput.contains("1,Alice,100.5") || csvOutput.contains("1, Alice, 100.5"));
         assertTrue(csvOutput.contains("2,Bob,200.75") || csvOutput.contains("2, Bob, 200.75"));
@@ -246,7 +247,7 @@ public class ConsoleCommandsTest {
         json.append("]\n");
 
         final String jsonOutput = json.toString();
-        final String jsonUpper = jsonOutput.toUpperCase();
+        final String jsonUpper = jsonOutput.toUpperCase(Locale.ROOT);
         assertTrue(jsonUpper.contains("\"ID\"") || jsonUpper.contains("\"id\""));
         assertTrue(jsonOutput.contains("1"));
         assertTrue(jsonOutput.contains("Alice"));
@@ -283,7 +284,7 @@ public class ConsoleCommandsTest {
         xml.append("</resultset>\n");
 
         final String xmlOutput = xml.toString();
-        final String xmlUpper = xmlOutput.toUpperCase();
+        final String xmlUpper = xmlOutput.toUpperCase(Locale.ROOT);
         assertTrue(xmlUpper.contains("<ID>1</ID>") || xmlOutput.contains("<id>1</id>"));
         assertTrue(xmlUpper.contains("ALICE") && xmlOutput.contains("<row>"));
     }
@@ -325,7 +326,7 @@ public class ConsoleCommandsTest {
         html.append("</table>\n");
 
         final String htmlOutput = html.toString();
-        final String htmlUpper = htmlOutput.toUpperCase();
+        final String htmlUpper = htmlOutput.toUpperCase(Locale.ROOT);
         assertTrue(htmlUpper.contains("<TH>ID</TH>") || htmlUpper.contains("<th>id</th>"));
         assertTrue(htmlUpper.contains("<TH>NAME</TH>") || htmlUpper.contains("<th>name</th>"));
         assertTrue(htmlOutput.contains("<td>1</td>"));

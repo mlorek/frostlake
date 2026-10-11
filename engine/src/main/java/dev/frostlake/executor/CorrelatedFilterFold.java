@@ -24,6 +24,7 @@ import dev.frostlake.values.ValueRange;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -55,7 +56,7 @@ final class CorrelatedFilterFold {
             if (relation.getValue() == null) {
                 continue;
             }
-            keyed.put(relation.getKey().toUpperCase(), relation.getValue());
+            keyed.put(relation.getKey().toUpperCase(Locale.ROOT), relation.getValue());
             if (!tables.contains(relation.getValue())) {
                 tables.add(relation.getValue());
             }

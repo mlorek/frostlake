@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.executor.expressions.BindVariableExpression;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
@@ -633,6 +634,43 @@ public class ExpressionEvaluator {
             reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
         }
         return reusableVisitor.readsUntypedNull((ColumnReferenceExpression) expression);
+    }
+
+    /**
+     * The type the plan reports for a select item where it differs from the declared one: a SUM over a shifted
+     * column is reported at the width of the intermediate it is rewritten into (see
+     * {@link ExpressionEvaluatorVisitor#planReportedType}).
+     *
+     * @param expression the item
+     * @param declared   the item's declared type
+     * @return the reported type, {@code declared} itself where the plan rewrites nothing
+     */
+    public DataType planReportedType(final Expression expression, final DataType declared) {
+        if (reusableVisitor == null || declared == null) {
+            return declared;
+        }
+        try {
+            return reusableVisitor.planReportedType(expression, declared);
+        } catch (final RuntimeException undetermined) {
+            return declared;
+        }
+    }
+
+    /**
+     * Whether an expression is a scripting variable's reference written alone, {@code :name} or {@code (:name)}, whose
+     * variable holds NULL. A statement of a block reads such a bind with no type where the value is a whole item of
+     * a VALUES row (live-verified).
+     *
+     * @param expression the item
+     * @return whether it is a reference to a variable that holds NULL
+     */
+    public boolean isNullVariable(final Expression expression) {
+        if (!(expression instanceof BindVariableExpression) || queryExecutor == null) {
+            return false;
+        }
+        final ProceduralExecutor procedural = queryExecutor.getProceduralExecutor();
+        final String name = ((BindVariableExpression) expression).getVarName();
+        return procedural != null && procedural.hasVariable(name) && procedural.getVariable(name) == null;
     }
 
     public DataType inferStaticType(final Expression expression) {

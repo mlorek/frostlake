@@ -21,6 +21,8 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -143,8 +145,8 @@ public class ArrayFunctionObjectArgumentTest extends BaseDatabaseTest {
     @Test
     public void aVariantAnArrayAndAPlainObjectWhereTheAccountTakesOneAreAccepted() {
         assertEquals("null", scalarText("SELECT ARRAY_SIZE(PARSE_JSON('{\"a\":1}'))"));
-        assertEquals("false", scalarText("SELECT ARRAY_CONTAINS(1, PARSE_JSON('{\"a\":1}'))").toLowerCase());
-        assertEquals("true", scalarText("SELECT ARRAY_CONTAINS(1, [1,2]::ARRAY(NUMBER))").toLowerCase());
+        assertEquals("false", scalarText("SELECT ARRAY_CONTAINS(1, PARSE_JSON('{\"a\":1}'))").toLowerCase(Locale.ROOT));
+        assertEquals("true", scalarText("SELECT ARRAY_CONTAINS(1, [1,2]::ARRAY(NUMBER))").toLowerCase(Locale.ROOT));
         assertEquals("2", scalarText("SELECT ARRAY_SIZE([1,2]::ARRAY(NUMBER))"));
         // Live-verified: ARRAY_SIZE reads a plain OBJECT as a VARIANT and answers NULL.
         assertEquals("null", scalarText("SELECT ARRAY_SIZE(OBJECT_CONSTRUCT())"));

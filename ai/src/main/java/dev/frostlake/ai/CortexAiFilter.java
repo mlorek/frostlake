@@ -20,6 +20,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * AI_FILTER(predicate [, value]) — TRUE or FALSE for a question asked in English, so a WHERE clause
@@ -48,7 +49,7 @@ public class CortexAiFilter extends BuiltInFunction {
         final String reply = OllamaClient.generate(OllamaConfig.model(),
             "Answer the following with the single word true or false.\n\n" + asked,
             Double.valueOf(0.0), null);
-        return Boolean.valueOf(CortexText.strip(reply).toLowerCase().startsWith("true"));
+        return Boolean.valueOf(CortexText.strip(reply).toLowerCase(Locale.ROOT).startsWith("true"));
     }
 
     @Override

@@ -38,28 +38,24 @@ import org.antlr.v4.runtime.TokenStream;
  *   BEGIN SHOW TABLES IN DATASET y; RETURN 1; END;     'y', then 'RETURN'  past the semicolon, the first thing the
  *   BEGIN SHOW TABLES IN DATASET y; SELECT 1; END;     'y', then 'END'     rest read outside the block cannot take
  *   BEGIN SHOW TABLES IN DATASET y END;                'y' alone          END straight after the name
- *   IF (TRUE) THEN SHOW TABLES IN USER x y; END IF;    'x', then the token after the construct's END IF;
+ *   IF (TRUE) THEN SHOW TABLES IN USER x y; END IF;    'x', then what the rest refuses once the IF is given up
  * </pre>
  *
- * <p>Past the semicolon live reads the rest outside the block, as this parse does: a scripting statement is refused
- * at its first word there (see ScriptingStatementPlacement, which offers that word), a SQL statement reads on, and
- * the block's END is refused. A statement in the body of an IF, LOOP, CASE, FOR, WHILE or REPEAT resumes past the
- * construct's own END, as a statement there run into the next word without its semicolon does, unless an ELSE, an
- * ELSEIF or an UNTIL follows the statement's semicolon: then that is read outside the block as well. Outside a block
- * the parse's own line stands alone.
+ * <p>Past the statement's semicolon the rest is read from the construct around the statement's own, which is given
+ * up with it: see {@link BlockReadOn}. A statement of a control construct's body is read on that way even when a
+ * word follows the first name. Outside a block the parse's own line stands alone.
+ *
+ * <p>A refused token that reads as no name is named twice: {@code BEGIN SHOW TABLES IN DATASET 1; END;} is '1' and
+ * '1' again.
  */
 final class KeywordScopeLines {
 
     private final Token refused;
-    private final Token stacked;
-    private final boolean takesNextFault;
-    /** A word a check after the parse refuses in what the parse read on past the refused word, or null. */
-    private Token laterRefusal;
+    private final List<String> stacked;
 
-    private KeywordScopeLines(final Token refused, final Token stacked, final boolean takesNextFault) {
+    private KeywordScopeLines(final Token refused, final List<String> stacked) {
         this.refused = refused;
         this.stacked = stacked;
-        this.takesNextFault = takesNextFault;
     }
 
     /**
@@ -71,8 +67,15 @@ final class KeywordScopeLines {
      * @return the lines, or null for any other fault
      */
     static KeywordScopeLines of(final Recognizer<?, ?> recognizer, final RecognitionException e, final Token refused) {
-        if (!(recognizer instanceof Parser) || !(e instanceof NoViableAltException)
-                || !(e.getCtx() instanceof FrostlakeParser.ShowStatementContext) || refused.getType() == Token.EOF) {
+        if (!(recognizer instanceof Parser) || refused.getType() == Token.EOF || e == null) {
+            return null;
+        }
+        // A word is refused inside the listing; a token that is no name is met once the listing has been read.
+        final boolean inListing = e instanceof NoViableAltException
+            && e.getCtx() instanceof FrostlakeParser.ShowStatementContext;
+        final boolean afterListing = e.getCtx() instanceof FrostlakeParser.StatementListContext
+            && !SyntaxErrorListener.isNameLike(refused);
+        if (!inListing && !afterListing) {
             return null;
         }
         final Parser parser = (Parser) recognizer;
@@ -86,94 +89,49 @@ final class KeywordScopeLines {
         // A listing a RESULTSET is filled from is no statement of the list: LET r RESULTSET := (SHOW TABLES IN DATASET
         // y); is 'y' alone (live-verified).
         if (e.getCtx().getParent() instanceof FrostlakeParser.ResultSetStatementContext) {
-            return new KeywordScopeLines(refused, null, false);
+            return new KeywordScopeLines(refused, new ArrayList<String>());
         }
         final ParserRuleContext owner = statementListOwner((ParserRuleContext) e.getCtx());
+        if (owner != null && !SyntaxErrorListener.isNameLike(refused)) {
+            // ★ A TOKEN THAT IS NO NAME — a number, a string, a bind's colon, a NULL — is named twice in a block's
+            // own statement; in a control construct's body the second line is the rest's, read on.
+            final List<String> again = new ArrayList<>();
+            if (owner instanceof FrostlakeParser.BeginEndBlockContext
+                    || owner instanceof FrostlakeParser.ExceptionHandlerContext) {
+                again.add(SyntaxErrorListener.sentence(refused));
+            } else {
+                again.addAll(BlockReadOn.linesAfter(stream, refused));
+            }
+            return new KeywordScopeLines(refused, again);
+        }
         final Token name = firstNameBeforeSemicolon(parser, refused);
         if (owner == null || name == null) {
             return null;
         }
         final Token after = nextSpoken(stream, name.getTokenIndex());
         if (after == null || after.getType() == Token.EOF || after.getType() == FrostlakeLexer.END) {
-            return new KeywordScopeLines(refused, null, false);
+            return new KeywordScopeLines(refused, new ArrayList<String>());
         }
         final boolean block = owner instanceof FrostlakeParser.BeginEndBlockContext
             || owner instanceof FrostlakeParser.ExceptionHandlerContext;
-        if (after.getType() == FrostlakeLexer.SEMI) {
-            final Token resumed = nextSpoken(stream, after.getTokenIndex());
-            final boolean branchFollows = resumed != null && (resumed.getType() == FrostlakeLexer.ELSE
-                || resumed.getType() == FrostlakeLexer.ELSEIF || resumed.getType() == FrostlakeLexer.UNTIL);
-            if (block || branchFollows) {
-                return new KeywordScopeLines(refused, null, true);
-            }
-        } else if (block) {
-            return new KeywordScopeLines(refused, after, false);
+        if (after.getType() != FrostlakeLexer.SEMI && block) {
+            final List<String> pair = new ArrayList<>();
+            pair.add(SyntaxErrorListener.sentence(after));
+            return new KeywordScopeLines(refused, pair);
         }
-        return new KeywordScopeLines(refused, SyntaxErrorListener.afterEnclosingConstruct(stream, owner.getStart()),
-            false);
+        return new KeywordScopeLines(refused, BlockReadOn.linesAfter(stream, after));
     }
 
     /**
-     * Whether the second line is the one the parse reports for the fault it meets after the refused word.
+     * The lines to report: the refused word, then the stacked lines.
      *
-     * @return whether it is
-     */
-    boolean readsNextFault() {
-        return takesNextFault;
-    }
-
-    /**
-     * Takes a word a check after the parse refuses in the statements the parse read on past the refused word — a
-     * scripting statement's first word, which the block's recovery reads outside the block — as the fault the second
-     * line may name.
-     *
-     * @param word the refused word
-     * @return whether the second line may name it
-     */
-    boolean offer(final Token word) {
-        if (!takesNextFault || laterRefusal != null || word.getTokenIndex() <= refused.getTokenIndex()) {
-            return false;
-        }
-        laterRefusal = word;
-        return true;
-    }
-
-    /**
-     * The lines to report: the refused word, then the stacked token, or else the earlier of the word a later check
-     * refuses and the first line the parse reports once the refused word is set aside.
-     *
-     * @param laterLines the lines the parse reports once the refused word is set aside, or null
      * @return the lines
      */
-    List<String> lines(final List<String> laterLines) {
+    List<String> lines() {
         final List<String> lines = new ArrayList<>();
-        final String first = SyntaxErrorListener.sentence(refused);
-        lines.add(first);
-        if (stacked != null) {
-            lines.add(SyntaxErrorListener.sentence(stacked));
-            return lines;
-        }
-        if (!takesNextFault) {
-            return lines;
-        }
-        final String parsed = laterLines == null || laterLines.isEmpty() || first.equals(laterLines.get(0))
-            ? null : laterLines.get(0);
-        final String checked = laterRefusal == null ? null : SyntaxErrorListener.sentence(laterRefusal);
-        final String second = parsed == null ? checked : checked == null ? parsed : earlier(checked, parsed);
-        if (second != null) {
-            lines.add(second);
-        }
+        lines.add(SyntaxErrorListener.sentence(refused));
+        lines.addAll(stacked);
         return lines;
-    }
-
-    /** The one of two sentences whose place in the text comes first. */
-    private static String earlier(final String one, final String other) {
-        final int[] at = SyntaxErrorListener.sentenceCoordinates(one);
-        final int[] otherAt = SyntaxErrorListener.sentenceCoordinates(other);
-        if (at == null || otherAt == null) {
-            return one;
-        }
-        return at[0] < otherAt[0] || at[0] == otherAt[0] && at[1] <= otherAt[1] ? one : other;
     }
 
     /**

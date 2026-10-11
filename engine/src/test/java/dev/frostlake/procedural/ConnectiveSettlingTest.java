@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,7 +47,7 @@ public class ConnectiveSettlingTest extends BaseJdbcTest {
                 return rs.wasNull() ? "null" : String.valueOf(value);
             }
             final String value = rs.getString(1);
-            return value == null ? "null" : value.toLowerCase();
+            return value == null ? "null" : value.toLowerCase(Locale.ROOT);
         } catch (final SQLException refused) {
             return "! " + refused.getMessage();
         }

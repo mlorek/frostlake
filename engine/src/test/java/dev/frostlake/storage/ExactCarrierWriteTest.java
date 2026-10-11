@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Locale;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -95,12 +96,12 @@ public class ExactCarrierWriteTest extends BaseDatabaseTest {
         assertEquals("8", cell(predicates.get(2), 1));
         assertEquals("2.50", cell(predicates.get(2), 2));
         for (int r = 0; r < 3; r++) {
-            assertEquals("true", cell(predicates.get(r), 3).toLowerCase(), "a IN (4, 7) on row " + r);
+            assertEquals("true", cell(predicates.get(r), 3).toLowerCase(Locale.ROOT), "a IN (4, 7) on row " + r);
         }
-        assertEquals("true", cell(predicates.get(0), 4).toLowerCase());
-        assertEquals("true", cell(predicates.get(0), 5).toLowerCase());
-        assertEquals("false", cell(predicates.get(2), 4).toLowerCase());
-        assertEquals("false", cell(predicates.get(2), 5).toLowerCase());
+        assertEquals("true", cell(predicates.get(0), 4).toLowerCase(Locale.ROOT));
+        assertEquals("true", cell(predicates.get(0), 5).toLowerCase(Locale.ROOT));
+        assertEquals("false", cell(predicates.get(2), 4).toLowerCase(Locale.ROOT));
+        assertEquals("false", cell(predicates.get(2), 5).toLowerCase(Locale.ROOT));
         final Row extremes = rows("SELECT MIN(COALESCE(a, b)), MAX(COALESCE(a, b)), MIN(d), MAX(d), SUM(a), SUM(d) FROM c0").get(0);
         assertEquals("4", cell(extremes, 0));
         assertEquals("7", cell(extremes, 1));

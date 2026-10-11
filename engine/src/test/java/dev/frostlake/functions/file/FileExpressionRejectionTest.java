@@ -19,6 +19,8 @@ package dev.frostlake.functions.file;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -86,8 +88,8 @@ public class FileExpressionRejectionTest extends FileFunctionTestSupport {
         createPopulatedFileColumn();
         engine.execute("INSERT INTO fx VALUES (2, NULL)");
 
-        assertEquals("TRUE", scalar("SELECT f = f FROM fx WHERE id = 1").toUpperCase());
-        assertEquals("FALSE", scalar("SELECT f IS NULL FROM fx WHERE id = 1").toUpperCase());
+        assertEquals("TRUE", scalar("SELECT f = f FROM fx WHERE id = 1").toUpperCase(Locale.ROOT));
+        assertEquals("FALSE", scalar("SELECT f IS NULL FROM fx WHERE id = 1").toUpperCase(Locale.ROOT));
         assertEquals("1", scalar("SELECT COUNT(f) FROM fx"));
         assertEquals("2", scalar("SELECT COUNT(*) FROM fx"));
     }

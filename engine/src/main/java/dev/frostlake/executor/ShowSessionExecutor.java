@@ -31,6 +31,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.UniqueConstraint;
+import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
@@ -49,6 +50,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -115,8 +117,9 @@ final class ShowSessionExecutor {
 
     /**
      * SHOW PARAMETERS, IN SESSION or IN ACCOUNT. The session listing reports what the session runs with: its own
-     * setting at level SESSION, else the account's at level ACCOUNT ({@link AccountParameters}), else the default
-     * with an empty level. The account listing leaves the session's settings out.
+     * setting at level SESSION, else its user's at level USER, else the account's at level ACCOUNT
+     * ({@link AccountParameters}), else the default with an empty level. The account listing leaves the session's
+     * and the user's settings out.
      *
      * @param likePattern the LIKE pattern, or null for every row
      * @param inAccount   whether the statement said IN ACCOUNT
@@ -132,21 +135,28 @@ final class ShowSessionExecutor {
             ? securityManager.getSessionContext().getAllSessionParameters()
             : new LinkedHashMap<>();
 
+        // The user whose sessions these are: what ALTER USER set on it stands between the session and the account.
+        final String sessionUserName = inAccount ? null : catalog.currentUserForDdl();
+        final User sessionUser = sessionUserName != null && catalog.hasUser(sessionUserName)
+            ? catalog.getUser(sessionUserName) : null;
         final List<Row> rows = new ArrayList<>();
         final Set<String> listed = new HashSet<>();
-        for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {
+        for (final SessionParameterRow parameter : inAccount ? accountRows() : SessionParameterCatalog.rows()) {
             final String key = parameter.getName();
-            listed.add(key.toUpperCase());
+            listed.add(key.toUpperCase(Locale.ROOT));
             if (!matchesLike(key, likePattern)) {
                 continue;
             }
             final boolean setBySession = sessionParams.containsKey(key);
-            final String setByAccount = AccountParameters.value(key);
+            final String setByUser = sessionUser == null ? null : sessionUser.getParameters().get(key);
+            final String setByAccount = AccountParameters.value(catalog, key);
             // JSON_INDENT is the one row whose unset value the ENGINE decides rather than the table:
             // it is a real setting here, and SHOW must report what the renderer is actually using.
             final String inForce;
             if (setBySession) {
                 inForce = String.valueOf(sessionParams.get(key));
+            } else if (setByUser != null) {
+                inForce = setByUser;
             } else if (setByAccount != null) {
                 inForce = setByAccount;
             } else if ("JSON_INDENT".equals(key)) {
@@ -157,14 +167,14 @@ final class ShowSessionExecutor {
             // The LEVEL is where the value in force came from: a parameter this session has SET reads
             // SESSION, one the account sets reads ACCOUNT, and one still on its default reads EMPTY.
             rows.add(new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
-                levelOf(setBySession ? "SESSION" : null, setByAccount), parameter.getDescription(),
-                parameter.getType())));
+                levelOf(setBySession ? "SESSION" : setByUser != null ? "USER" : null, setByAccount),
+                parameter.getDescription(), parameter.getType())));
         }
         // A session parameter the catalog has never heard of still appears once it is set — with no
         // default and no description, because there is nothing to report for either.
         for (final Map.Entry<String, Object> e : sessionParams.entrySet()) {
             final String key = e.getKey();
-            if (!listed.contains(key.toUpperCase()) && matchesLike(key, likePattern)) {
+            if (!listed.contains(key.toUpperCase(Locale.ROOT)) && matchesLike(key, likePattern)) {
                 rows.add(new Row(Arrays.asList(key, e.getValue() != null ? e.getValue().toString() : null,
                     null, "SESSION", null, "TEXT")));
             }
@@ -172,16 +182,30 @@ final class ShowSessionExecutor {
         return new ResultSet(columns, rows);
     }
 
+    /** Every parameter the account lists: a session's own and the ones only the account carries, by name. */
+    private static List<SessionParameterRow> accountRows() {
+        final List<SessionParameterRow> rows = new ArrayList<>(SessionParameterCatalog.rows());
+        rows.addAll(SessionParameterCatalog.accountOnlyRows());
+        Collections.sort(rows, new Comparator<SessionParameterRow>() {
+            @Override
+            public int compare(final SessionParameterRow left, final SessionParameterRow right) {
+                return left.getName().compareTo(right.getName());
+            }
+        });
+        return rows;
+    }
+
     /**
-     * SHOW PARAMETERS IN USER: the parameters a user carries, each at its default, and the network policy attached
-     * to the user, whose level reads USER while one is attached and is empty otherwise. The pattern is a LIKE
-     * pattern, matched case-insensitively.
+     * SHOW PARAMETERS IN USER: the parameters a user carries — each as ALTER USER set it, at level USER, else as the
+     * account sets it, else at its default — and the network policy attached to the user, whose level reads USER
+     * while one is attached and is empty otherwise. The pattern is a LIKE pattern, matched case-insensitively.
      *
      * @param userName    the user, canonical
      * @param likePattern the LIKE pattern, or null for every row
      */
     public ResultSet showParametersInUser(final String userName, final String likePattern) {
-        final String user = catalog.getUser(userName).getName();
+        final User listed = catalog.getUser(userName);
+        final String user = listed.getName();
         final Map<String, SessionParameterRow> known = new HashMap<>();
         for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {
             known.put(parameter.getName(), parameter);
@@ -201,10 +225,13 @@ final class ShowSessionExecutor {
                 row = new Row(Arrays.asList(key, policy == null ? "" : policy, parameter.getDefaultValue(),
                     policy == null ? "" : "USER", parameter.getDescription(), parameter.getType()));
             } else {
-                // A user sets none of its parameters here, so each is the account's, else the default.
-                final String setByAccount = AccountParameters.value(key);
-                row = new Row(Arrays.asList(key, setByAccount != null ? setByAccount : parameter.getDefaultValue(),
-                    parameter.getDefaultValue(), levelOf(null, setByAccount), parameter.getDescription(),
+                // The user's own setting, else the account's, else the default.
+                final String setByUser = listed.getParameters().get(key);
+                final String setByAccount = AccountParameters.value(catalog, key);
+                final String inForce = setByUser != null ? setByUser
+                    : setByAccount != null ? setByAccount : parameter.getDefaultValue();
+                row = new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
+                    levelOf(setByUser != null ? "USER" : null, setByAccount), parameter.getDescription(),
                     parameter.getType()));
             }
             addIfLike(rows, row, likePattern);
@@ -294,7 +321,7 @@ final class ShowSessionExecutor {
                 continue;
             }
             final String set = task.getSessionParameters().get(key);
-            final String setByAccount = AccountParameters.value(key);
+            final String setByAccount = AccountParameters.value(catalog, key);
             final String inherited = setByAccount != null ? setByAccount : row.getDefaultValue();
             rows.add(new Row(Arrays.asList(key, set != null ? set : inherited, row.getDefaultValue(),
                 levelOf(set != null ? "TASK" : null, setByAccount), row.getDescription(), row.getType())));
@@ -763,7 +790,7 @@ final class ShowSessionExecutor {
             return null;
         }
         final String user = securityManager.getSessionContext().getCurrentUser();
-        return user == null ? null : user.toUpperCase();
+        return user == null ? null : user.toUpperCase(Locale.ROOT);
     }
 
     public ResultSet showVariables(final String likePattern) {
@@ -801,7 +828,7 @@ final class ShowSessionExecutor {
                 currentSessionNumber(),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
-                e.getKey().toUpperCase(),
+                e.getKey().toUpperCase(Locale.ROOT),
                 value != null ? value.toString() : null,
                 type,
                 "")));
@@ -1042,6 +1069,94 @@ final class ShowSessionExecutor {
             }
         }
         return new ResultSet(cols, rows);
+    }
+
+    /**
+     * SHOW EXPORTED KEYS: the foreign keys that reference the tables of the scope, wherever the referencing table
+     * lives — the rows SHOW IMPORTED KEYS lists for the referencing side, read from the referenced one
+     * (live-verified: a table lists the keys other tables import from it, and none it imports itself). The rows
+     * follow the referenced tables, then the referencing ones, and a key of several columns lists them in the
+     * referencing table's column order, where SHOW IMPORTED KEYS lists them in the key's own.
+     */
+    public ResultSet showExportedKeys(final String scopeKind, final String scopeName) {
+        final List<String> referenced = new ArrayList<>();
+        for (final Schema schema : schemasInScope(scopeKind, scopeName)) {
+            final String databaseName = databaseNameOf(schema);
+            for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
+                referenced.add(QualifiedName.join(databaseName, schema.getName(), table.getName()));
+            }
+        }
+        final ResultSet imported = showImportedKeys("ACCOUNT", null);
+        final List<Row> rows = new ArrayList<>();
+        for (final String target : referenced) {
+            final Map<String, List<Row>> byReferencing = new LinkedHashMap<>();
+            for (final Row row : imported.getRows()) {
+                if (target.equals(tableOf(row, 1))) {
+                    final String referencing = tableOf(row, 5);
+                    if (!byReferencing.containsKey(referencing)) {
+                        byReferencing.put(referencing, new ArrayList<Row>());
+                    }
+                    byReferencing.get(referencing).add(row);
+                }
+            }
+            for (final Map.Entry<String, List<Row>> keys : byReferencing.entrySet()) {
+                final List<String> columns = columnNamesOf(keys.getKey());
+                Collections.sort(keys.getValue(), new Comparator<Row>() {
+                    @Override
+                    public int compare(final Row left, final Row right) {
+                        return Integer.compare(columns.indexOf(String.valueOf(left.getValue(8))),
+                            columns.indexOf(String.valueOf(right.getValue(8))));
+                    }
+                });
+                rows.addAll(keys.getValue());
+            }
+        }
+        return new ResultSet(imported.getColumns(), rows);
+    }
+
+    /** The table a key row names in the three columns from {@code first} on, or null when one of them is unset. */
+    private static String tableOf(final Row row, final int first) {
+        if (row.getValue(first) == null || row.getValue(first + 1) == null || row.getValue(first + 2) == null) {
+            return null;
+        }
+        return QualifiedName.join(row.getValue(first).toString(), row.getValue(first + 1).toString(),
+            row.getValue(first + 2).toString());
+    }
+
+    /** A table's column names in their order, or none when the table cannot be found. */
+    private List<String> columnNamesOf(final String qualifiedTable) {
+        final List<String> names = new ArrayList<>();
+        if (qualifiedTable == null) {
+            return names;
+        }
+        final Table table;
+        try {
+            table = catalog.resolveTable(qualifiedTable);
+        } catch (final RuntimeException gone) {
+            return names;
+        }
+        if (table != null) {
+            for (final TableColumn column : table.getColumns()) {
+                names.add(column.getName());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * SHOW GRANTS ON ACCOUNT: the privileges roles hold on the account itself, the account named by its locator
+     * as every grant on it is.
+     */
+    public ResultSet showGrantsOnAccount() {
+        final ResultSet granted = facade.showGrantsOnObject("ACCOUNT", "ACCOUNT", null);
+        final int name = granted.getColumnIndex("name");
+        final List<Row> rows = new ArrayList<>();
+        for (final Row row : granted.getRows()) {
+            final List<Object> values = new ArrayList<>(row.getValues());
+            values.set(name, identity.getAccountLocator());
+            rows.add(new Row(values));
+        }
+        return new ResultSet(granted.getColumns(), rows);
     }
 
     /** The database a scope schema belongs to — Schema itself carries no back-reference to its database. */

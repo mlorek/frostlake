@@ -21,6 +21,8 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
 
+import java.util.Locale;
+
 /**
  * The SEARCH_PATH a session sets: a comma-separated list of schemas an unqualified reference is looked for
  * in, with the two markers {@code $current} and {@code $public} standing for the session's own schema and
@@ -94,6 +96,6 @@ final class SearchPathValue {
 
     /** The entry as the refusal spells it: as written when quoted, upper-cased when not. */
     private static String echo(final String entry) {
-        return entry.indexOf('"') >= 0 ? entry : entry.toUpperCase();
+        return entry.indexOf('"') >= 0 ? entry : entry.toUpperCase(Locale.ROOT);
     }
 }

@@ -116,7 +116,8 @@ public final class AlertCommandHandler {
             final Schema sourceSchema = catalog.requireOwningSchema(QualifiedName.of(sourceParts));
             alert = sourceSchema.getAlert(sourceParts[sourceParts.length - 1]).copy(name);
         } else {
-            alert = new Alert(name, sourceText(definition.alertCondition()), sourceText(definition.taskBody()));
+            alert = new Alert(name, sourceText(definition.alertCondition()),
+                ParseTreeText.taskBodyText(definition.taskBody()));
             applyProperties(catalog, alert, definition.alertProperty());
         }
         if (schema.hasAlert(name)) {
@@ -153,7 +154,7 @@ public final class AlertCommandHandler {
         alert.setSuspendAfterNumFailures(null);
         applyProperties(catalog, alert, definition.alertProperty());
         alert.setCondition(sourceText(definition.alertCondition()));
-        alert.setAction(sourceText(definition.taskBody()));
+        alert.setAction(ParseTreeText.taskBodyText(definition.taskBody()));
         rescheduleIfChanged(schema, alert, schedule);
     }
 
@@ -257,7 +258,7 @@ public final class AlertCommandHandler {
         } else if (action.CONDITION() != null) {
             alert.setCondition(sourceText(action.alertCondition()));
         } else if (action.ACTION() != null) {
-            alert.setAction(sourceText(action.taskBody()));
+            alert.setAction(ParseTreeText.taskBodyText(action.taskBody()));
         }
     }
 
@@ -279,6 +280,9 @@ public final class AlertCommandHandler {
             : ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String name = parts[parts.length - 1];
+        if (DropPurge.written(ctx.dropBehavior()) && (ifExists || schema.hasAlert(name))) {
+            throw DropPurge.refusal(parts);
+        }
         if (!schema.hasAlert(name)) {
             if (ifExists) {
                 ConditionalDdlOutcome.dropSkipped();

@@ -37,7 +37,10 @@ public class AsDecimal extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         final JsonNode node = ArrayFunctionHelper.parseNode(args.get(0));
         final BigDecimal raw;
-        if (node != null && node.isNumber()) {
+        if (node != null && node.isFloatingPointNumber() && !node.isBigDecimal()) {
+            // A DOUBLE held in the VARIANT is no fixed-point number: NULL (live-verified).
+            return null;
+        } else if (node != null && node.isNumber()) {
             raw = node.decimalValue();
         } else if (args.get(0) instanceof Number) {
             raw = new BigDecimal(args.get(0).toString());
@@ -68,4 +71,9 @@ public class AsDecimal extends BuiltInFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 3; }
+
+    @Override
+    public boolean takesVariantOnly() {
+        return true;
+    }
 }

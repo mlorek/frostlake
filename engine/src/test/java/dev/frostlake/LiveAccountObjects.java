@@ -135,6 +135,10 @@ public final class LiveAccountObjects {
             return;
         }
         for (final String[] made : createdBy(sql)) {
+            if (isHarnessObject(made[0], made[1])) {
+                // The harness's own database is nobody's to drop, and making it again touches no account object.
+                continue;
+            }
             Set<String> names = CREATED.get(made[0]);
             if (names == null) {
                 names = new LinkedHashSet<String>();

@@ -20,10 +20,12 @@ import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.PlannedCorrelations;
+import dev.frostlake.executor.expressions.SqlFunctionArgument;
 import dev.frostlake.executor.expressions.SubqueryAnchor;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
+import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
@@ -42,6 +44,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -239,10 +242,10 @@ public final class CorrelationPlanJudgement {
             outer.put(name, stored);
         }
         final Map<String, Table> within = new LinkedHashMap<>();
-        within.put(stored.getName().toUpperCase(), stored);
+        within.put(stored.getName().toUpperCase(Locale.ROOT), stored);
         final FrostlakeParser.TableReferenceContext innerReference = innerFrom.tableReference(0);
         if (innerReference.aliasName() != null) {
-            within.put(ParseTreeText.getIdentifier(innerReference.aliasName()).toUpperCase(), stored);
+            within.put(ParseTreeText.getIdentifier(innerReference.aliasName()).toUpperCase(Locale.ROOT), stored);
         } else if (innerReference.nonJoinKeywordIdentifier() != null) {
             within.put(SqlIdentifiers.canonicalText(innerReference.nonJoinKeywordIdentifier().getText()), stored);
         }
@@ -376,26 +379,35 @@ public final class CorrelationPlanJudgement {
     }
 
     /**
-     * The refusal of the first correlated subquery live cannot evaluate, or null. Every refused subquery is
-     * recorded in {@link #refusedKeys()}.
+     * The refusal of the correlated subquery live cannot evaluate, or null: of several the one written last in the
+     * select list, and with none there the last of the first other clause that holds one —
+     * {@code SELECT ABS((SELECT …)), ABS((SELECT …))} is placed at the second (live-verified). Every refused
+     * subquery is recorded in {@link #refusedKeys()}.
      */
     public RuntimeException refusal() {
         final boolean spared = pruned() || readRowByRow();
         final Set<String> outerNames = outerNames();
+        RuntimeException inSelectList = null;
         RuntimeException first = null;
         for (final ParseTree judged : judgedClauses()) {
+            RuntimeException last = null;
             for (final ParseTree subquery : subqueries(judged)) {
                 final boolean kept = spared && keptThroughTableFunction(subquery, outerNames);
                 if (spared && !kept) {
                     continue;
                 }
                 final RuntimeException refused = judge(subquery, outerNames, kept);
-                if (first == null) {
-                    first = refused;
+                if (refused != null) {
+                    last = refused;
                 }
             }
+            if (judged instanceof FrostlakeParser.SelectItemContext) {
+                inSelectList = last != null ? last : inSelectList;
+            } else if (first == null) {
+                first = last;
+            }
         }
-        return first;
+        return inSelectList != null ? inSelectList : first;
     }
 
     /**
@@ -494,6 +506,11 @@ public final class CorrelationPlanJudgement {
         }
         final String text = ParseTreeText.getOriginalText(subquery);
         refusedKeys.add(scalar ? PlannedCorrelations.valueKey(text) : PlannedCorrelations.membershipKey(text));
+        final Function called = scalar ? SqlFunctionArgument.calledWith(executor, node) : null;
+        if (called != null) {
+            // Inside a SQL function's arguments the refusal names the function and gives no place.
+            return UnsupportedSubqueryException.inside(called);
+        }
         if (rule.outerReadDepth() == 2 && standsInWhere(node)) {
             // A WHERE's subquery whose own subquery reads the outer row is refused with no place given, where one
             // read from three levels in, and any of a select list or a HAVING, is placed (live-verified).
@@ -550,6 +567,15 @@ public final class CorrelationPlanJudgement {
 
     // ── what is judged ──────────────────────────────────────────────────────────────
 
+    /**
+     * Whether the query aggregates with no GROUP BY: it answers one row, so its ORDER BY is dropped and the
+     * subqueries of its keys are never judged.
+     */
+    private boolean answersOneRow() {
+        return clause.groupByClause() == null && (clause.havingClause() != null
+            || UnreadColumnPruning.containsAggregate(clause.selectList(), executor.getFunctionRegistry()));
+    }
+
     /** The clauses whose subqueries are judged, in live's order. */
     private List<ParseTree> judgedClauses() {
         final List<ParseTree> judged = new ArrayList<>();
@@ -569,7 +595,7 @@ public final class CorrelationPlanJudgement {
         if (clause.qualifyClause() != null && !foldsToFalse(clause.qualifyClause().booleanExpr())) {
             judged.add(clause.qualifyClause());
         }
-        if (statement.orderByClause() != null && statement.selectOperand().size() == 1) {
+        if (statement.orderByClause() != null && statement.selectOperand().size() == 1 && !answersOneRow()) {
             judged.add(statement.orderByClause());
         }
         final List<ParseTree> holding = new ArrayList<>();
@@ -629,7 +655,7 @@ public final class CorrelationPlanJudgement {
         if (!(node instanceof FrostlakeParser.FunctionCallExprContext)) {
             return false;
         }
-        final String name = ((FrostlakeParser.FunctionCallExprContext) node).functionName().getText().toUpperCase();
+        final String name = ((FrostlakeParser.FunctionCallExprContext) node).functionName().getText().toUpperCase(Locale.ROOT);
         return CONDITIONAL_CALLS.contains(name);
     }
 
@@ -675,7 +701,7 @@ public final class CorrelationPlanJudgement {
         final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) conditional;
         final List<FrostlakeParser.FunctionArgContext> args = call.functionArgList() == null
             ? new ArrayList<FrostlakeParser.FunctionArgContext>() : call.functionArgList().functionArg();
-        final String name = call.functionName().getText().toUpperCase();
+        final String name = call.functionName().getText().toUpperCase(Locale.ROOT);
         if ("IFF".equals(name) || "NVL2".equals(name)) {
             if (args.size() != 3) {
                 return null;
@@ -1035,7 +1061,7 @@ public final class CorrelationPlanJudgement {
         final String column = parts[parts.length - 1];
         if (parts.length == 2) {
             final Table owner = named.containsKey(parts[0]) ? named.get(parts[0])
-                : named.get(parts[0].toUpperCase());
+                : named.get(parts[0].toUpperCase(Locale.ROOT));
             return owner != null && owner.hasColumn(column) ? owner : null;
         }
         if (parts.length != 1) {
@@ -1064,10 +1090,10 @@ public final class CorrelationPlanJudgement {
             executor.groupedSubqueryAggregateKeys(clause, table, relations, new ArrayList<>(relations.values())));
         for (final Map.Entry<String, Table> relation : relations.entrySet()) {
             for (final TableColumn column : relation.getValue().getColumns()) {
-                final String columnName = column.getName().toUpperCase();
+                final String columnName = column.getName().toUpperCase(Locale.ROOT);
                 names.add(columnName);
-                names.add(relation.getKey().toUpperCase() + "." + columnName);
-                names.add(relation.getValue().getName().toUpperCase() + "." + columnName);
+                names.add(relation.getKey().toUpperCase(Locale.ROOT) + "." + columnName);
+                names.add(relation.getValue().getName().toUpperCase(Locale.ROOT) + "." + columnName);
             }
         }
         return names;

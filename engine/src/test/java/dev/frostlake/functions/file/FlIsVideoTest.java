@@ -18,6 +18,8 @@ package dev.frostlake.functions.file;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -31,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class FlIsVideoTest extends FileFunctionTestSupport {
 
     private String isVideo(final String contentType) {
-        return scalar("SELECT FL_IS_VIDEO(" + fileOf(contentType) + ")").toUpperCase();
+        return scalar("SELECT FL_IS_VIDEO(" + fileOf(contentType) + ")").toUpperCase(Locale.ROOT);
     }
 
     /** Live: every content type measured TRUE, enumerated. */
@@ -74,7 +76,7 @@ public class FlIsVideoTest extends FileFunctionTestSupport {
     @Test
     public void aviIsVideoAndAudioAtOnce() {
         assertEquals("TRUE", isVideo("video/x-msvideo"));
-        assertEquals("TRUE", scalar("SELECT FL_IS_AUDIO(" + fileOf("video/x-msvideo") + ")").toUpperCase());
+        assertEquals("TRUE", scalar("SELECT FL_IS_AUDIO(" + fileOf("video/x-msvideo") + ")").toUpperCase(Locale.ROOT));
         assertEquals("video", scalar("SELECT FL_GET_FILE_TYPE(" + fileOf("video/x-msvideo") + ")"));
     }
 
@@ -84,7 +86,7 @@ public class FlIsVideoTest extends FileFunctionTestSupport {
      */
     @Test
     public void nullFileIsFalseNotNull() {
-        assertEquals("FALSE", scalar("SELECT FL_IS_VIDEO(NULL)").toUpperCase());
-        assertEquals("FALSE", scalar("SELECT FL_IS_VIDEO(TO_FILE(NULL))").toUpperCase());
+        assertEquals("FALSE", scalar("SELECT FL_IS_VIDEO(NULL)").toUpperCase(Locale.ROOT));
+        assertEquals("FALSE", scalar("SELECT FL_IS_VIDEO(TO_FILE(NULL))").toUpperCase(Locale.ROOT));
     }
 }

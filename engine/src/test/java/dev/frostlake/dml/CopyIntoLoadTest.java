@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -265,7 +266,7 @@ public class CopyIntoLoadTest {
         engine.executeQuery("COPY INTO @data_stage FROM hdr_t FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) HEADER");
 
         final String content = Files.readString(stageDir.resolve("data_0_0_0.csv"));
-        final String firstLine = content.split("\n", 2)[0].toUpperCase();
+        final String firstLine = content.split("\n", 2)[0].toUpperCase(Locale.ROOT);
         assertTrue(firstLine.contains("ID") && firstLine.contains("NAME"),
             "bare HEADER should emit a column-name header row, got: " + firstLine);
     }
@@ -512,7 +513,7 @@ public class CopyIntoLoadTest {
         final ResultSet rs = engine.executeQuery(
             "COPY INTO v3 FROM @data_stage VALIDATION_MODE = 'RETURN_2_ROWS'");
         assertEquals(2, rs.getRowCount(), "RETURN_2_ROWS previews exactly two rows");
-        assertEquals("ID", rs.getColumns().get(0).getName().toUpperCase());
+        assertEquals("ID", rs.getColumns().get(0).getName().toUpperCase(Locale.ROOT));
         assertEquals(0L, count("v3"), "the preview must not load any rows");
     }
 

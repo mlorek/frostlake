@@ -271,7 +271,9 @@ import dev.frostlake.functions.scalar.semistructured.AsDouble;
 import dev.frostlake.functions.scalar.semistructured.AsInteger;
 import dev.frostlake.functions.scalar.semistructured.AsObject;
 import dev.frostlake.functions.scalar.semistructured.AsTime;
+import dev.frostlake.functions.scalar.semistructured.AsTimestampLtz;
 import dev.frostlake.functions.scalar.semistructured.AsTimestampNtz;
+import dev.frostlake.functions.scalar.semistructured.AsTimestampTz;
 import dev.frostlake.functions.scalar.semistructured.AsVarchar;
 import dev.frostlake.functions.scalar.semistructured.CheckJson;
 import dev.frostlake.functions.scalar.semistructured.CheckXml;
@@ -290,7 +292,9 @@ import dev.frostlake.functions.scalar.semistructured.IsInteger;
 import dev.frostlake.functions.scalar.semistructured.IsNullValue;
 import dev.frostlake.functions.scalar.semistructured.IsObject;
 import dev.frostlake.functions.scalar.semistructured.IsTime;
+import dev.frostlake.functions.scalar.semistructured.IsTimestampLtz;
 import dev.frostlake.functions.scalar.semistructured.IsTimestampNtz;
+import dev.frostlake.functions.scalar.semistructured.IsTimestampTz;
 import dev.frostlake.functions.scalar.semistructured.IsVarchar;
 import dev.frostlake.functions.scalar.semistructured.JsonExtractPathText;
 import dev.frostlake.functions.scalar.semistructured.MapCat;
@@ -472,6 +476,7 @@ import dev.frostlake.functions.scalar.GroupingIdFn;
 
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.Set;
@@ -1010,7 +1015,7 @@ public class FunctionRegistry {
         register(new XmlGet());
         register(new CurrentIpAddress());
         register(new CurrentRoleType());
-        register(new CurrentSecondaryRoles());
+        register(new CurrentSecondaryRoles(catalog, sessionContext));
         register(new CurrentOrganizationName(config != null ? config : new EngineConfig()));
         register(new CurrentAccountName(config != null ? config : new EngineConfig()));
         register(new CurrentStatement(sessionContext));
@@ -1025,13 +1030,13 @@ public class FunctionRegistry {
         functions.put("AS_CHAR", new AsVarchar());
         functions.put("AS_NUMBER", new AsDecimal());
         functions.put("AS_REAL", new AsDouble());
-        functions.put("AS_TIMESTAMP_LTZ", new AsTimestampNtz());
-        functions.put("AS_TIMESTAMP_TZ", new AsTimestampNtz());
+        functions.put("AS_TIMESTAMP_LTZ", new AsTimestampLtz());
+        functions.put("AS_TIMESTAMP_TZ", new AsTimestampTz());
         functions.put("IS_CHAR", new IsVarchar());
         functions.put("IS_DATE_VALUE", new IsDate());
         functions.put("IS_REAL", new IsDoubleFn());
-        functions.put("IS_TIMESTAMP_LTZ", new IsTimestampNtz());
-        functions.put("IS_TIMESTAMP_TZ", new IsTimestampNtz());
+        functions.put("IS_TIMESTAMP_LTZ", new IsTimestampLtz());
+        functions.put("IS_TIMESTAMP_TZ", new IsTimestampTz());
         functions.put("BIT_AND", new Bitand());
         functions.put("BIT_OR", new Bitor());
         functions.put("BIT_XOR", new Bitxor());
@@ -1098,11 +1103,11 @@ public class FunctionRegistry {
 
     /** Registers an alias name for an already-constructed function (used by FunctionProviders). */
     public void registerAlias(final String name, final BuiltInFunction function) {
-        functions.put(name.toUpperCase(), function);
+        functions.put(name.toUpperCase(Locale.ROOT), function);
     }
 
     public void register(final BuiltInFunction function) {
-        functions.put(function.getName().toUpperCase(), function);
+        functions.put(function.getName().toUpperCase(Locale.ROOT), function);
     }
 
     /**
@@ -1113,15 +1118,15 @@ public class FunctionRegistry {
      */
     public void registerUnlisted(final BuiltInFunction function) {
         register(function);
-        unlistedNames.add(function.getName().toUpperCase());
+        unlistedNames.add(function.getName().toUpperCase(Locale.ROOT));
     }
 
     public void registerAggregate(final AggregateFunction function) {
-        aggregateFunctions.put(function.getName().toUpperCase(), function);
+        aggregateFunctions.put(function.getName().toUpperCase(Locale.ROOT), function);
     }
 
     public void registerTableFunction(final TableFunction function) {
-        tableFunctions.put(function.getName().toUpperCase(), function);
+        tableFunctions.put(function.getName().toUpperCase(Locale.ROOT), function);
     }
 
     /**
@@ -1131,7 +1136,7 @@ public class FunctionRegistry {
      */
     public void registerUnlistedTableFunction(final TableFunction function) {
         registerTableFunction(function);
-        unlistedNames.add(function.getName().toUpperCase());
+        unlistedNames.add(function.getName().toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -1180,27 +1185,27 @@ public class FunctionRegistry {
     }
 
     public BuiltInFunction getFunction(final String name) {
-        return functions.get(name.toUpperCase());
+        return functions.get(name.toUpperCase(Locale.ROOT));
     }
 
     public AggregateFunction getAggregateFunction(final String name) {
-        return aggregateFunctions.get(name.toUpperCase());
+        return aggregateFunctions.get(name.toUpperCase(Locale.ROOT));
     }
 
     public TableFunction getTableFunction(final String name) {
-        return tableFunctions.get(name.toUpperCase());
+        return tableFunctions.get(name.toUpperCase(Locale.ROOT));
     }
 
     public boolean hasFunction(final String name) {
-        return functions.containsKey(name.toUpperCase());
+        return functions.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public boolean hasAggregateFunction(final String name) {
-        return aggregateFunctions.containsKey(name.toUpperCase());
+        return aggregateFunctions.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public boolean hasTableFunction(final String name) {
-        return tableFunctions.containsKey(name.toUpperCase());
+        return tableFunctions.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public Collection<BuiltInFunction> getAllFunctions() {

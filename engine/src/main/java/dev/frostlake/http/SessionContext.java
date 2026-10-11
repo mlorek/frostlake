@@ -45,6 +45,8 @@ public class SessionContext {
     // How many statements a request of this session may hold when it declares no count of its own.
     // It starts at 1, as the account's does, and follows an ALTER SESSION that moves it.
     private volatile int multiStatementCount = 1;
+    // Whether the session was opened read-only: its requests may only read, whatever each one says.
+    private volatile boolean readOnly;
     private volatile Long transactionId;
 
     // Session-specific variables (for stored procedures)
@@ -201,5 +203,14 @@ public class SessionContext {
 
     public synchronized void clearVariables() {
         sessionVariables.clear();
+    }
+
+    /** Whether the session was opened read-only, so that every request in it must only read. */
+    public boolean isReadOnly() {
+        return readOnly;
+    }
+
+    public void setReadOnly(final boolean readOnly) {
+        this.readOnly = readOnly;
     }
 }

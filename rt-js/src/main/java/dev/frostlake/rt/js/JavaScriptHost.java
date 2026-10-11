@@ -16,6 +16,7 @@
 
 package dev.frostlake.rt.js;
 
+import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.Value;
 
 import java.time.Instant;
@@ -46,6 +47,7 @@ public final class JavaScriptHost {
      * @param epochMillis the instant
      * @return the name
      */
+    @HostAccess.Export
     public String zoneName(final double epochMillis) {
         final boolean daylight = !Double.isNaN(epochMillis)
             && zone.getRules().isDaylightSavings(Instant.ofEpochMilli((long) epochMillis));
@@ -58,6 +60,7 @@ public final class JavaScriptHost {
      * @param text the text {@code JSON.parse} was given
      * @return the sentence, or null when the text is JSON
      */
+    @HostAccess.Export
     public String jsonFault(final String text) {
         final V8JsonFault fault = V8JsonFault.of(text);
         if (fault == null) {
@@ -72,6 +75,7 @@ public final class JavaScriptHost {
      *
      * @param function the function
      */
+    @HostAccess.Export
     public void describer(final Value function) {
         if (describer == null) {
             describer = function;

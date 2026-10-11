@@ -29,6 +29,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.util.Locale;
 import java.util.Properties;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -163,9 +164,9 @@ public class JdbcDriverTest {
                 final ResultSetMetaData meta = rs.getMetaData();
 
                 assertEquals(3, meta.getColumnCount());
-                assertEquals("ID", meta.getColumnName(1).toUpperCase());
-                assertEquals("NAME", meta.getColumnName(2).toUpperCase());
-                assertEquals("ACTIVE", meta.getColumnName(3).toUpperCase());
+                assertEquals("ID", meta.getColumnName(1).toUpperCase(Locale.ROOT));
+                assertEquals("NAME", meta.getColumnName(2).toUpperCase(Locale.ROOT));
+                assertEquals("ACTIVE", meta.getColumnName(3).toUpperCase(Locale.ROOT));
 
                 // An INT column is NUMBER(38,0) in the catalog, as on a real account, and a
                 // scale-less NUMBER is a BIGINT to JDBC — which is exactly what live reports for it.

@@ -25,6 +25,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -160,8 +161,7 @@ public final class StarArgument {
                 throw new RuntimeException(SqlCompilationError.of("column '" + name + "' does not exist"));
             }
         }
-        final Pattern pattern = ilike == null ? null
-            : Pattern.compile(ilikeToRegex(ilike), Pattern.CASE_INSENSITIVE);
+        final Pattern pattern = ilike == null ? null : ilikePattern(ilike);
         final List<String[]> columns = new ArrayList<>();
         for (final Table source : chosen) {
             final String spelledAs = spelling(source, aliasToTable);
@@ -245,7 +245,7 @@ public final class StarArgument {
         // The LAST part names the relation, as a column's qualifier does: COUNT(db.sch.t.*) and
         // COUNT(t.*) resolve alike (live-verified).
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
-        return parts[parts.length - 1].toUpperCase();
+        return parts[parts.length - 1].toUpperCase(Locale.ROOT);
     }
 
     private static List<String> excludesOf(final List<FrostlakeParser.StarArgumentModifierContext> modifiers) {
@@ -268,6 +268,16 @@ public final class StarArgument {
             }
         }
         return null;
+    }
+
+    /**
+     * The test an ILIKE pattern puts a column's name to.
+     *
+     * @param ilike the pattern between its quotes
+     * @return the pattern, matching whole names whatever their case
+     */
+    public static Pattern ilikePattern(final String ilike) {
+        return Pattern.compile(ilikeToRegex(ilike), Pattern.CASE_INSENSITIVE);
     }
 
     private static String ilikeToRegex(final String pattern) {

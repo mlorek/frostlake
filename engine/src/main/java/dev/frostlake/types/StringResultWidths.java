@@ -68,7 +68,7 @@ public final class StringResultWidths {
         "REPLACE", "TO_VARCHAR", "TO_CHAR", "TO_JSON", "ARRAY_TO_STRING", "TYPEOF", "COLLATION", "LAST_QUERY_ID",
         "CURRENT_DATABASE", "CURRENT_SCHEMA", "CURRENT_USER", "CURRENT_ROLE", "CURRENT_WAREHOUSE", "CURRENT_VERSION",
         "CURRENT_REGION", "CURRENT_ACCOUNT", "CURRENT_STATEMENT", "CURRENT_SESSION", "GETVARIABLE",
-        "CURRENT_TRANSACTION", "LAST_TRANSACTION", "GET_DDL",
+        "CURRENT_TRANSACTION", "LAST_TRANSACTION", "GET_DDL", "CURRENT_SECONDARY_ROLES",
         // A replacement can be any length, so the account bounds it at nothing at all — a widthless
         // VARCHAR, not the 128MB one, at every arity and over a column as well as a literal.
         "REGEXP_REPLACE"));
@@ -282,6 +282,28 @@ public final class StringResultWidths {
      * @param width the computed width
      * @return the declared type
      */
+    /**
+     * BASE64_ENCODE's width with the line breaks its second argument asks for: a positive integer literal L below the
+     * unbroken width W adds a break after every L characters but the last run, W + ceil(W / L) - 1; a 0 or an L of
+     * W or more adds none; and any other value - an expression, a cast, a NULL, a text, a decimal - is not read,
+     * and the width allows a break after every character, 2W - 1 (live-verified).
+     *
+     * @param unbroken   the width without breaks
+     * @param lineLength the line length when it is written as an integer literal, or null
+     * @return the declared type
+     */
+    public static DataType withLineBreaks(final DataType unbroken, final Long lineLength) {
+        if (!(unbroken instanceof StringType)) {
+            return unbroken;
+        }
+        final long width = ((StringType) unbroken).getMaxLength();
+        final long length = lineLength == null ? 1 : lineLength.longValue();
+        if (width <= 0 || length <= 0 || length >= width) {
+            return unbroken;
+        }
+        return varchar(width + (width + length - 1) / length - 1);
+    }
+
     private static StringType varchar(final long width) {
         return new StringType("VARCHAR", (int) Math.max(0, Math.min(width, UNBOUNDED)));
     }

@@ -31,6 +31,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -170,7 +171,7 @@ public class DroppedVersionsSurviveSnapshotsTest {
         assertEquals(3, saved.size());
         for (final DroppedObjectSnapshot version : saved) {
             // As a snapshot written while the catalog upper-cased its keys holds them.
-            version.key = version.key.toUpperCase();
+            version.key = version.key.toUpperCase(Locale.ROOT);
         }
         final DatabaseEngine restored = track(new DatabaseEngine());
         restored.execute("CREATE DATABASE d");

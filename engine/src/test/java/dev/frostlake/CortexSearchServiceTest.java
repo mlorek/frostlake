@@ -17,6 +17,7 @@
 package dev.frostlake;
 
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -117,6 +118,35 @@ public class CortexSearchServiceTest extends BaseDatabaseTest {
         assertEquals("TEST_DB", cell(rs, "database_name"));
         assertEquals("TEST_SCHEMA", cell(rs, "schema_name"));
         assertTrue(cell(rs, "definition").contains("FROM docs"), "definition keeps the query as written");
+    }
+
+    /**
+     * STARTS WITH keeps the names that begin with its text, case and all, and LIMIT … FROM the first names after
+     * its cursor, the listing going by name, as the statement's reference describes them.
+     */
+    @Test
+    public void startsWithAndLimitFromNarrowTheListing() {
+        engine.execute(CREATE_S1);
+        engine.execute(CREATE_S1.replace(" s1", " s2"));
+        engine.execute(CREATE_S1.replace(" s1", " t1"));
+        assertEquals(List.of("S1", "S2", "T1"), names("SHOW CORTEX SEARCH SERVICES"));
+        assertEquals(List.of("S1", "S2"), names("SHOW CORTEX SEARCH SERVICES STARTS WITH 'S'"));
+        assertEquals(List.of(), names("SHOW CORTEX SEARCH SERVICES STARTS WITH 's'"));
+        assertEquals(List.of("S2"), names("SHOW CORTEX SEARCH SERVICES IN SCHEMA test_schema STARTS WITH 'S2'"));
+        assertEquals(List.of("S1"), names("SHOW CORTEX SEARCH SERVICES LIMIT 1"));
+        assertEquals(List.of("S2"), names("SHOW CORTEX SEARCH SERVICES LIMIT 1 FROM 'S1'"));
+        assertEquals(List.of("S2", "T1"), names("SHOW CORTEX SEARCH SERVICES LIMIT 5 FROM 'S1'"));
+        assertEquals(List.of(), names("SHOW CORTEX SEARCH SERVICES STARTS WITH 'S' LIMIT 5 FROM 'T'"));
+        assertEquals(List.of("T1"), names("SHOW CORTEX SEARCH SERVICES LIKE 't%' LIMIT 1"));
+    }
+
+    private List<String> names(final String show) {
+        final ResultSet rs = engine.executeQuery(show);
+        final List<String> names = new ArrayList<>();
+        for (final Row row : rs.getRows()) {
+            names.add(String.valueOf(row.getValue(rs.getColumnIndex("name"))));
+        }
+        return names;
     }
 
     /** SHOW's 20 columns, in a real account's order. */

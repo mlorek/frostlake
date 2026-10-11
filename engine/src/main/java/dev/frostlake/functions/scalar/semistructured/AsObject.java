@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.values.VariantValue;
@@ -25,7 +25,7 @@ import tools.jackson.databind.JsonNode;
 import java.util.List;
 import java.util.Map;
 
-public class AsObject extends StructuredArgumentFunction {
+public class AsObject extends VariantArgumentFunction {
     public AsObject() { super("AS_OBJECT", ObjectType.OBJECT); }
 
     @Override

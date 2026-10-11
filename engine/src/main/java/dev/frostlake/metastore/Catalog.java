@@ -17,6 +17,7 @@
 package dev.frostlake.metastore;
 
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementClock;
@@ -28,6 +29,7 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
+import dev.frostlake.metastore.model.ObjectParameters;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.ProjectionPolicy;
@@ -57,6 +59,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Catalog {
@@ -85,6 +88,14 @@ public class Catalog {
     private S3PathResolver s3PathResolver;
     // Session context used to stamp the creating role as owner on new objects; set by the engine.
     private SessionContext sessionContext;
+    /** The parameters set on the account, which every user and session inherits. */
+    private final ObjectParameters accountParameters = new ObjectParameters();
+
+    /** The parameters set on the account (its users and their sessions inherit them). */
+    public ObjectParameters getAccountParameters() {
+        return accountParameters;
+    }
+
     // Dropped-object retention for UNDROP (Time Travel restore): "KIND:fqName" → every dropped version of that name,
     // oldest first. UNDROP restores the newest, and the next UNDROP of the name the one dropped before it.
     private final Map<String, List<DroppedObject>> droppedObjects = new ConcurrentHashMap<>();
@@ -110,7 +121,16 @@ public class Catalog {
         // Create default SNOWFLAKE database
         // Marked read-only so external callers cannot write to it
         createDatabase("SNOWFLAKE");
-        getDatabase("SNOWFLAKE").setReadOnly(true);
+        final Database system = getDatabase("SNOWFLAKE");
+        // The schemas every account's SNOWFLAKE database holds, empty here unless something is modelled in them.
+        for (final SystemSchema seeded : SystemSchema.values()) {
+            final Schema schema = new Schema(seeded.name());
+            // No role owns one: the owner a listing names for some is the SNOWFLAKE application (SystemSchema).
+            schema.setOwner(null);
+            schema.setComment(seeded.comment());
+            system.addSchema(schema);
+        }
+        system.setReadOnly(true);
         this.currentDatabase = "SNOWFLAKE";
         this.currentSchema = "PUBLIC";
     }
@@ -314,7 +334,7 @@ public class Catalog {
      *  table or view — Snowflake refuses to drop or replace such a policy (live-verified). Attachment
      *  names may be stored bare or qualified, so the comparison uses the last segment. */
     public boolean isPolicyInUse(final String policyName, final boolean masking) {
-        final String bare = policyName.toUpperCase();
+        final String bare = policyName.toUpperCase(Locale.ROOT);
         for (final Database database : getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
@@ -371,7 +391,7 @@ public class Catalog {
      */
     public void beginSessionScope(final String database, final String schema, final String warehouse) {
         sessionScope.set(new String[] {storedDatabaseName(database), storedSchemaName(database, schema),
-            warehouse == null ? null : warehouse.toUpperCase()});
+            warehouse == null ? null : warehouse.toUpperCase(Locale.ROOT)});
     }
 
     /**
@@ -385,7 +405,7 @@ public class Catalog {
             return null;
         }
         final Database database = databases.get(NameKeys.keyFor(databases, name));
-        return database != null ? database.getName() : name.toUpperCase();
+        return database != null ? database.getName() : name.toUpperCase(Locale.ROOT);
     }
 
     /** {@link #storedDatabaseName}'s counterpart for a schema of that database. */
@@ -395,7 +415,7 @@ public class Catalog {
         }
         final Database database = databaseName == null ? null : databases.get(NameKeys.keyFor(databases, databaseName));
         return database != null && database.hasSchema(schemaName)
-            ? database.getSchema(schemaName).getName() : schemaName.toUpperCase();
+            ? database.getSchema(schemaName).getName() : schemaName.toUpperCase(Locale.ROOT);
     }
 
     /** End this thread's session scope (idempotent). Read the final values via the getters first. */
@@ -464,7 +484,17 @@ public class Catalog {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
         final Database db = getDatabase(getCurrentDatabase());
-        setCurrentSchemaName(db.getSchema(name).getName()); // Validates existence
+        final String schemaName = db.getSchema(name).getName(); // Validates existence
+        requireUsable(db.getName(), schemaName);
+        setCurrentSchemaName(schemaName);
+    }
+
+    /** Two schemas of the SNOWFLAKE database are listed and not reached by a USE, which fails as any USE fails. */
+    private static void requireUsable(final String databaseName, final String schemaName) {
+        final SystemSchema system = SystemSchema.of(databaseName, schemaName);
+        if (system != null && !system.isUsable()) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
     }
 
     /**
@@ -502,6 +532,7 @@ public class Catalog {
         if (schema == null || !schema.getName().equals(resolvedSchema)) {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
+        requireUsable(database.getName(), schema.getName());
         setCurrentDatabaseName(database.getName());
         setCurrentSchemaName(schema.getName());
     }
@@ -550,7 +581,7 @@ public class Catalog {
      * @param locator the locator CURRENT_ACCOUNT() answers with
      */
     public void setAccountLocator(final String locator) {
-        this.accountLocator = locator == null ? null : locator.toUpperCase();
+        this.accountLocator = locator == null ? null : locator.toUpperCase(Locale.ROOT);
     }
 
     /** The account locator CURRENT_ACCOUNT() answers with, upper-cased; null when none was set. */
@@ -569,6 +600,18 @@ public class Catalog {
      * @param objectParts how many parts the name may have without the account
      * @return the parts naming the object within the account
      */
+    /**
+     * How many parts of a name name something within the account: all of them, less the account locator a name of
+     * several parts may lead with.
+     *
+     * @param parts the resolved parts
+     * @return the count without a leading locator of this account
+     */
+    public int partsWithinAccount(final String[] parts) {
+        return parts.length > 1 && accountLocator != null && accountLocator.equals(parts[0]) ? parts.length - 1
+            : parts.length;
+    }
+
     public String[] withoutAccount(final String[] parts, final int objectParts) {
         if (parts.length <= objectParts) {
             return parts;
@@ -806,16 +849,16 @@ public class Catalog {
 
     // Warehouse Management
     public void createWarehouse(final String name, final WarehouseSize size) {
-        if (warehouses.containsKey(name.toUpperCase())) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + name.toUpperCase() + "' already exists."));
+        if (warehouses.containsKey(name.toUpperCase(Locale.ROOT))) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + name.toUpperCase(Locale.ROOT) + "' already exists."));
         }
         final Warehouse warehouse = new Warehouse(name, size);
         warehouse.setOwner(currentRoleForOwner());
-        warehouses.put(name.toUpperCase(), warehouse);
+        warehouses.put(name.toUpperCase(Locale.ROOT), warehouse);
     }
 
     public void dropWarehouse(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = name.toUpperCase(Locale.ROOT);
         if (!warehouses.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", name));
         }
@@ -830,30 +873,30 @@ public class Catalog {
 
     /** A real account phrases the duplicate as a generic object clash, not a pool-specific one. */
     public void createComputePool(final ComputePool pool) {
-        if (computePools.containsKey(pool.getName().toUpperCase())) {
+        if (computePools.containsKey(pool.getName().toUpperCase(Locale.ROOT))) {
             throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + pool.getName().toUpperCase() + "' already exists."));
+                "Object '" + pool.getName().toUpperCase(Locale.ROOT) + "' already exists."));
         }
         pool.setOwner(currentRoleForOwner());
-        computePools.put(pool.getName().toUpperCase(), pool);
+        computePools.put(pool.getName().toUpperCase(Locale.ROOT), pool);
     }
 
     public boolean hasComputePool(final String name) {
-        return computePools.containsKey(name.toUpperCase());
+        return computePools.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public ComputePool getComputePool(final String name) {
-        final ComputePool pool = computePools.get(name.toUpperCase());
+        final ComputePool pool = computePools.get(name.toUpperCase(Locale.ROOT));
         if (pool == null) {
             throw new RuntimeException(
-                SqlCompilationError.doesNotExist("Compute pool", name.toUpperCase()));
+                SqlCompilationError.doesNotExist("Compute pool", name.toUpperCase(Locale.ROOT)));
         }
         return pool;
     }
 
     public void dropComputePool(final String name) {
         getComputePool(name);
-        computePools.remove(name.toUpperCase());
+        computePools.remove(name.toUpperCase(Locale.ROOT));
     }
 
     /** Every pool, sorted by name — the order SHOW COMPUTE POOLS lists them in. */
@@ -871,11 +914,11 @@ public class Catalog {
     /** Whether that warehouse exists, without the throw — for the statements that must VALIDATE a
      *  warehouse they only reference. */
     public boolean hasWarehouse(final String name) {
-        return name != null && warehouses.containsKey(name.toUpperCase());
+        return name != null && warehouses.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public Warehouse getWarehouse(final String name) {
-        final Warehouse wh = warehouses.get(name.toUpperCase());
+        final Warehouse wh = warehouses.get(name.toUpperCase(Locale.ROOT));
         if (wh == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", name));
         }
@@ -888,7 +931,7 @@ public class Catalog {
 
     public void useWarehouse(final String name) {
         getWarehouse(name); // Validates existence
-        setCurrentWarehouseName(name.toUpperCase());
+        setCurrentWarehouseName(name.toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -984,7 +1027,7 @@ public class Catalog {
             return null;
         }
         try {
-            switch (objectType.toUpperCase()) {
+            switch (objectType.toUpperCase(Locale.ROOT)) {
                 case "TABLE": return resolveTable(objectName).getOwner();
                 case "VIEW": return resolveView(objectName).getOwner();
                 case "SCHEMA": return resolveSchema(objectName).getOwner();
@@ -995,7 +1038,7 @@ public class Catalog {
                     // Schema-level objects: resolve the containing schema, then the object by bare name.
                     final Schema schema = resolveSchemaForObject(objectName);
                     final String bare = objectName(objectName);
-                    switch (objectType.toUpperCase()) {
+                    switch (objectType.toUpperCase(Locale.ROOT)) {
                         case "STREAM": return schema.getStream(bare).getOwner();
                         case "TASK": return schema.getTask(bare).getOwner();
                         case "PIPE": return schema.getPipe(bare).getOwner();
@@ -1033,40 +1076,102 @@ public class Catalog {
      * indistinguishable from one that does not exist, so the message cannot confirm either.
      */
     public void useRole(final String roleName) {
-        final String upper = roleName == null ? null : roleName.toUpperCase();
+        final String upper = roleName == null ? null : roleName.toUpperCase(Locale.ROOT);
         if (upper == null || !roles.containsKey(upper)) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Object does not exist, or operation cannot be performed."));
         }
+        requireAssigned(upper);
         if (sessionContext != null) {
             sessionContext.setCurrentRole(upper);
         }
     }
 
-    /** USE SECONDARY ROLES {ALL | NONE | &lt;role&gt;}: adjust which non-primary roles' privileges are active. */
-    public void useSecondaryRoles(final String spec) {
+    /**
+     * Refuses a role the session's user may not activate. A role is one the user may activate when it was
+     * granted to the user, or to a role the user may activate - so a role two grants below one the user holds is
+     * reached, and the system roles under ACCOUNTADMIN are for a user who holds it - and PUBLIC always is. A role
+     * that merely exists, its creator's included, is refused, and the session keeps the role it has
+     * (live-verified). A session whose user this catalog does not hold is held to no grants.
+     *
+     * @param role the role named, upper-cased
+     */
+    private void requireAssigned(final String role) {
+        if (sessionContext == null || "PUBLIC".equals(role)) {
+            return;
+        }
+        // The engine's own session runs as SYSTEM on behalf of the user CURRENT_USER() names.
+        final String securityUser = sessionContext.getCurrentUser();
+        final String executing = "SYSTEM".equals(securityUser) ? sessionContext.getDisplayUser() : securityUser;
+        final User user = executing == null ? null : users.get(executing.toUpperCase(Locale.ROOT));
+        if (user == null) {
+            return;
+        }
+        final Set<String> reached = new HashSet<String>();
+        final List<String> pending = new ArrayList<String>(user.getGrantedRoles());
+        while (!pending.isEmpty()) {
+            final String next = pending.remove(pending.size() - 1).toUpperCase(Locale.ROOT);
+            final Role held = roles.get(next);
+            if (reached.add(next) && held != null) {
+                pending.addAll(held.getGrantedRoles());
+            }
+        }
+        if (!reached.contains(role)) {
+            throw new RuntimeException(SqlAccessControlError.roleNotAssigned(role));
+        }
+    }
+
+    /**
+     * USE SECONDARY ROLES {ALL | NONE | role, …}: which roles beside the primary one are active. What is named
+     * replaces what was in use before, each role once and in alphabetical order; NONE among the names stands for
+     * no role, and ALL or NONE in quotes, whatever its case, is the word; a named role that is not there is
+     * refused as any object USE cannot reach, one that is there and that the user may not activate as USE ROLE
+     * refuses it, and the session keeps what it had (live-verified).
+     *
+     * @param named the roles named, canonical; null for ALL
+     */
+    public void useSecondaryRoles(final List<String> named) {
         if (sessionContext == null) {
             return;
         }
-        if ("ALL".equalsIgnoreCase(spec)) {
+        final boolean all = named == null || named.size() == 1 && "ALL".equalsIgnoreCase(named.get(0));
+        final Set<String> wanted = new TreeSet<String>();
+        if (!all) {
+            for (final String role : named) {
+                final String upper = role.toUpperCase(Locale.ROOT);
+                if ("NONE".equals(upper)) {
+                    continue;
+                }
+                if (!roles.containsKey(upper)) {
+                    throw new RuntimeException(SqlCompilationError.of(
+                        "Object does not exist, or operation cannot be performed."));
+                }
+                wanted.add(upper);
+            }
+            // Each role named is there: now each must be one the user may activate, as USE ROLE asks.
+            for (final String role : wanted) {
+                requireAssigned(role);
+            }
+        }
+        sessionContext.clearActiveRoles();
+        if (sessionContext.getCurrentRole() != null) {
+            sessionContext.addActiveRole(sessionContext.getCurrentRole());
+        }
+        if (!all) {
+            sessionContext.setSecondaryRoles(String.join(",", wanted));
+            for (final String role : wanted) {
+                sessionContext.addActiveRole(role);
+            }
+        } else {
             // ALL is every role granted to the session's USER, not every role of the account: a role nobody
             // was granted stays out of reach (live-verified).
-            sessionContext.setSecondaryRolesInUse(true);
+            sessionContext.setSecondaryRoles("ALL");
             final User user = users.get(String.valueOf(sessionContext.getCurrentUser()).toUpperCase(Locale.ROOT));
             if (user != null) {
                 for (final String granted : user.getGrantedRoles()) {
                     sessionContext.addActiveRole(granted);
                 }
             }
-        } else if ("NONE".equalsIgnoreCase(spec)) {
-            sessionContext.setSecondaryRolesInUse(false);
-            sessionContext.clearActiveRoles();
-            if (sessionContext.getCurrentRole() != null) {
-                sessionContext.addActiveRole(sessionContext.getCurrentRole());
-            }
-        } else if (spec != null) {
-            sessionContext.setSecondaryRolesInUse(true);
-            sessionContext.addActiveRole(spec);
         }
     }
 
@@ -1097,7 +1202,7 @@ public class Catalog {
      * e.g. {@code DATABASE} or {@code SCHEMA}): every dropped version of each name, the newest first.
      */
     public List<DroppedObject> droppedOfKind(final String kind) {
-        final String prefix = kind.toUpperCase() + ":";
+        final String prefix = kind.toUpperCase(Locale.ROOT) + ":";
         final List<DroppedObject> out = new ArrayList<>();
         synchronized (droppedObjects) {
             purgeExpiredDropped();
@@ -1476,7 +1581,7 @@ public class Catalog {
 
     /** True when a join policy is attached to any table — live refuses to drop or replace one. */
     public boolean isJoinPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase();
+        final String bare = policyName.toUpperCase(Locale.ROOT);
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
@@ -1501,7 +1606,7 @@ public class Catalog {
 
     /** True when an aggregation policy is attached to any table — live refuses to drop or replace one. */
     public boolean isAggregationPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase();
+        final String bare = policyName.toUpperCase(Locale.ROOT);
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
@@ -1526,7 +1631,7 @@ public class Catalog {
 
     /** True when a projection policy is attached to any column — live refuses to drop or replace one. */
     public boolean isProjectionPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase();
+        final String bare = policyName.toUpperCase(Locale.ROOT);
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
@@ -1628,29 +1733,29 @@ public class Catalog {
     }
 
     public void createUser(final String name) {
-        if (users.containsKey(name.toUpperCase())) {
+        if (users.containsKey(name.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException("User already exists: " + name);
         }
         final User user = new User(name);
         user.setOwner(currentRoleForOwner());
         // Automatically grant PUBLIC role to all users
         user.grantRole("PUBLIC");
-        users.put(name.toUpperCase(), user);
+        users.put(name.toUpperCase(Locale.ROOT), user);
     }
 
     public void createUser(final String name, final String password, final String defaultRole) {
-        if (users.containsKey(name.toUpperCase())) {
+        if (users.containsKey(name.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException("User already exists: " + name);
         }
         final User user = new User(name, password, defaultRole);
         user.setOwner(currentRoleForOwner());
         // Automatically grant PUBLIC role to all users
         user.grantRole("PUBLIC");
-        users.put(name.toUpperCase(), user);
+        users.put(name.toUpperCase(Locale.ROOT), user);
     }
 
     public void dropUser(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = name.toUpperCase(Locale.ROOT);
         if (!users.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("User", name));
         }
@@ -1669,11 +1774,11 @@ public class Catalog {
 
     /** Whether a user of this name exists, for callers that must not throw on a miss. */
     public boolean hasUser(final String name) {
-        return name != null && users.containsKey(name.toUpperCase());
+        return name != null && users.containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public User getUser(final String name) {
-        final User user = users.get(name.toUpperCase());
+        final User user = users.get(name.toUpperCase(Locale.ROOT));
         if (user == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("User", name));
         }
@@ -1685,7 +1790,7 @@ public class Catalog {
     }
 
     public void createRole(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = name.toUpperCase(Locale.ROOT);
         if (isSystemRole(upperName)) {
             throw new RuntimeException("Cannot create system role: " + name);
         }
@@ -1698,7 +1803,7 @@ public class Catalog {
     }
 
     public void dropRole(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = name.toUpperCase(Locale.ROOT);
         if (!roles.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Role", name));
         }
@@ -1716,7 +1821,7 @@ public class Catalog {
      * Check if a role is a system role
      */
     public boolean isSystemRole(final String roleName) {
-        final String upperName = roleName.toUpperCase();
+        final String upperName = roleName.toUpperCase(Locale.ROOT);
         return upperName.equals("ORGADMIN") ||
                upperName.equals("ACCOUNTADMIN") ||
                upperName.equals("SECURITYADMIN") ||
@@ -1731,7 +1836,7 @@ public class Catalog {
     }
 
     public Role getRole(final String name) {
-        final Role role = roles.get(name.toUpperCase());
+        final Role role = roles.get(name.toUpperCase(Locale.ROOT));
         if (role == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Role", name));
         }
@@ -1772,13 +1877,13 @@ public class Catalog {
     public void grantPrivilegeToRole(final String privilege, final String objectType, final String objectName,
                                      final String roleName, final String grantor) {
         final Role role = getRole(roleName);
-        final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         role.grantPrivilege(objectType, objectName, priv, grantor != null ? grantor : currentRoleForOwner());
     }
 
     public void revokePrivilegeFromRole(final String privilege, final String objectType, final String objectName, final String roleName) {
         final Role role = getRole(roleName);
-        final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         role.revokePrivilege(objectType, objectName, priv);
     }
 
@@ -1794,47 +1899,48 @@ public class Catalog {
     public void grantPrivilegeToUser(final String privilege, final String objectType, final String objectName,
                                      final String userName, final String grantor) {
         final User user = getUser(userName);
-        final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         user.grantPrivilege(objectType, objectName, priv, grantor != null ? grantor : currentRoleForOwner());
     }
 
     public void revokePrivilegeFromUser(final String privilege, final String objectType, final String objectName, final String userName) {
         final User user = getUser(userName);
-        final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         user.revokePrivilege(objectType, objectName, priv);
     }
 
     public void grantColumnPrivilegeToRole(final String privilege, final String objectType, final String objectName,
                                            final String columnName, final String roleName) {
         final Role role = getRole(roleName);
-        final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         role.grantColumnPrivilege(objectType, objectName, columnName, priv);
     }
 
     public void revokeColumnPrivilegeFromRole(final String privilege, final String objectType, final String objectName,
                                               final String columnName, final String roleName) {
         final Role role = getRole(roleName);
-        final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         role.revokeColumnPrivilege(objectType, objectName, columnName, priv);
     }
 
     public void grantColumnPrivilegeToUser(final String privilege, final String objectType, final String objectName,
                                            final String columnName, final String userName) {
         final User user = getUser(userName);
-        final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         user.grantColumnPrivilege(objectType, objectName, columnName, priv);
     }
 
     public void revokeColumnPrivilegeFromUser(final String privilege, final String objectType, final String objectName,
                                               final String columnName, final String userName) {
         final User user = getUser(userName);
-        final Privilege priv = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege priv = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         user.revokeColumnPrivilege(objectType, objectName, columnName, priv);
     }
 
     public void grantRoleToRole(final String grantedRoleName, final String targetRoleName) {
-        final Role grantedRole = getRole(grantedRoleName);
+        // The role that is to hold the grant is found first (live-verified).
         final Role targetRole = getRole(targetRoleName);
+        final Role grantedRole = getRole(grantedRoleName);
 
         // Prevent circular grants
         if (hasCircularRoleGrant(grantedRoleName, targetRoleName)) {
@@ -1845,15 +1951,15 @@ public class Catalog {
     }
 
     public void revokeRoleFromRole(final String revokedRoleName, final String targetRoleName) {
-        final Role revokedRole = getRole(revokedRoleName);
         final Role targetRole = getRole(targetRoleName);
+        final Role revokedRole = getRole(revokedRoleName);
         targetRole.revokeRole(revokedRole.getName());
     }
 
     private boolean hasCircularRoleGrant(final String grantedRoleName, final String targetRoleName) {
         // Check if granting would create a cycle
         final Set<String> visited = new HashSet<>();
-        return checkCircular(grantedRoleName.toUpperCase(), targetRoleName.toUpperCase(), visited);
+        return checkCircular(grantedRoleName.toUpperCase(Locale.ROOT), targetRoleName.toUpperCase(Locale.ROOT), visited);
     }
 
     private boolean checkCircular(final String currentRole, final String targetRole, final Set<String> visited) {
@@ -2030,36 +2136,36 @@ public class Catalog {
 
     public void renameUser(final String oldName, final String newName) {
         final User user = getUser(oldName);
-        if (users.containsKey(newName.toUpperCase())) {
+        if (users.containsKey(newName.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException("User already exists: " + newName);
         }
-        users.remove(oldName.toUpperCase());
+        users.remove(oldName.toUpperCase(Locale.ROOT));
         user.rename(newName);
-        users.put(newName.toUpperCase(), user);
+        users.put(newName.toUpperCase(Locale.ROOT), user);
     }
 
     public void renameRole(final String oldName, final String newName) {
         final Role role = getRole(oldName);
-        if (roles.containsKey(newName.toUpperCase())) {
+        if (roles.containsKey(newName.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException("Role already exists: " + newName);
         }
         final String heldAs = role.getName();
-        roles.remove(oldName.toUpperCase());
+        roles.remove(oldName.toUpperCase(Locale.ROOT));
         role.rename(newName);
-        roles.put(newName.toUpperCase(), role);
+        roles.put(newName.toUpperCase(Locale.ROOT), role);
         // The role goes on owning its objects under its new name.
         RoleOwnership.handOver(this, heldAs, role.getName());
     }
 
     public void renameWarehouse(final String oldName, final String newName) {
         final Warehouse warehouse = getWarehouse(oldName);
-        if (warehouses.containsKey(newName.toUpperCase())) {
+        if (warehouses.containsKey(newName.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException("Warehouse already exists: " + newName);
         }
         final String grantedBefore = warehouse.getName();
-        warehouses.remove(oldName.toUpperCase());
+        warehouses.remove(oldName.toUpperCase(Locale.ROOT));
         warehouse.rename(newName);
-        warehouses.put(newName.toUpperCase(), warehouse);
+        warehouses.put(newName.toUpperCase(Locale.ROOT), warehouse);
         // A renamed warehouse is not followed: the session that had it as current has none (live-verified).
         forgetCurrentWarehouse(oldName);
         GrantNames.renamed(this, "WAREHOUSE", grantedBefore, warehouse.getName());

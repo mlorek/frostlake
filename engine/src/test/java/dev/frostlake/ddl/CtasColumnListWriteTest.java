@@ -21,6 +21,8 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -72,7 +74,7 @@ public class CtasColumnListWriteTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE t16 (x NUMBER(5,1), y VARCHAR(3)) AS SELECT 2.46, 'abc'");
         assertEquals("2.5, abc", first("SELECT x, y FROM t16"));
         engine.execute("CREATE TABLE t7 (x BOOLEAN) AS SELECT 'yes'");
-        assertEquals("true", first("SELECT x FROM t7").toLowerCase());
+        assertEquals("true", first("SELECT x FROM t7").toLowerCase(Locale.ROOT));
         engine.execute("CREATE TABLE t15 (x FLOAT) AS SELECT '1e3'");
         assertEquals(1000.0, Double.parseDouble(first("SELECT x FROM t15")));
         engine.execute("CREATE TABLE t17 (x TIMESTAMP_NTZ) AS SELECT '2024-01-02 03:04:05'");

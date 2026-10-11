@@ -42,6 +42,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.time.LocalDate;
@@ -70,6 +71,46 @@ public final class SecurityObjectCommandHandler {
     private static final String ACCOUNT = "ACCOUNT";
     private static final String PASSWORD_POLICY_PREFIX = "PASSWORD_POLICY|";
     private static final String NETWORK_POLICY_PREFIX = "NETWORK_POLICY|";
+
+    /**
+     * The key a user's network policy is attached under.
+     *
+     * @param userName the user's name, as the account holds it
+     * @return the attachment's key
+     */
+    static String userNetworkPolicyKey(final String userName) {
+        return NETWORK_POLICY_PREFIX + "USER|" + userName;
+    }
+
+    /**
+     * Takes the policies attached to a user off as the user goes: a dropped or replaced user holds no policy, so
+     * the policies it held may be dropped.
+     *
+     * @param catalog the catalog
+     * @param userName the user's name, as the account holds it
+     */
+    static void forgetUser(final Catalog catalog, final String userName) {
+        catalog.getSecurityObjects().detach(NETWORK_POLICY_PREFIX + "USER|" + userName);
+        catalog.getSecurityObjects().detach(PASSWORD_POLICY_PREFIX + "USER|" + userName);
+    }
+
+    /**
+     * Moves the policies attached to a user to the name the user is renamed to.
+     *
+     * @param catalog the catalog
+     * @param oldName the name the user had, as the account held it
+     * @param newName the name the user has now, as the account holds it
+     */
+    static void renameUser(final Catalog catalog, final String oldName, final String newName) {
+        final SecurityObjectStore account = catalog.getSecurityObjects();
+        for (final String prefix : new String[] {NETWORK_POLICY_PREFIX, PASSWORD_POLICY_PREFIX}) {
+            final String attached = account.attachment(prefix + "USER|" + oldName);
+            if (attached != null) {
+                account.detach(prefix + "USER|" + oldName);
+                account.attach(prefix + "USER|" + newName, attached);
+            }
+        }
+    }
 
     private final Catalog catalog;
     private final QueryExecutor queryExecutor;
@@ -473,6 +514,15 @@ public final class SecurityObjectCommandHandler {
         final String name = kind.isSchemaObject() ? lastPart(ctx.qualifiedName(0))
             : SqlIdentifiers.canonical(ctx.identifier(0));
         final SecurityObjectStore store = store(kind, schema);
+        if (DropPurge.written(ctx.dropBehavior())) {
+            // A secret and a network rule take the word; a network policy is not known to read it.
+            if (kind == SecurityObjectKind.NETWORK_POLICY) {
+                throw DropPurge.unexpected(ctx.dropBehavior());
+            }
+            if (kind == SecurityObjectKind.PASSWORD_POLICY && (ctx.if_exists() != null || store.get(kind, name) != null)) {
+                throw DropPurge.refusal(ParseTreeText.qualifiedNameParts(ctx.qualifiedName(0)));
+            }
+        }
         if (store.get(kind, name) == null) {
             if (ctx.if_exists() != null) {
                 ConditionalDdlOutcome.dropSkipped();
@@ -663,6 +713,19 @@ public final class SecurityObjectCommandHandler {
      * recorded, where {@code SHOW PASSWORD POLICIES ON} reads it back, and never enforced.
      */
     private Object attach(final FrostlakeParser.SecurityObjectStatementContext ctx) {
+        if (ctx.NETWORK_POLICY() != null && ctx.INTEGER_LITERAL() != null) {
+            // A number names no policy, and is refused before the user is looked up (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("invalid value [" + ctx.INTEGER_LITERAL().getText()
+                + "] for parameter 'NETWORK_POLICY'"));
+        }
+        if (ctx.NETWORK_POLICY() != null && ctx.USER() != null && ctx.identifier().size() > 1) {
+            // Neither does TRUE or FALSE written bare (live-verified).
+            final Token word = ctx.identifier(1).getStart();
+            if (word.getType() == FrostlakeParser.TRUE || word.getType() == FrostlakeParser.FALSE) {
+                throw new RuntimeException(SqlCompilationError.of("invalid value ["
+                    + word.getText().toUpperCase(Locale.ROOT) + "] for parameter 'NETWORK_POLICY'"));
+            }
+        }
         final String target;
         if (ctx.USER() != null) {
             final String user = SqlIdentifiers.canonical(ctx.identifier(0));
@@ -700,12 +763,18 @@ public final class SecurityObjectCommandHandler {
             return null;
         }
         final FrostlakeParser.IdentifierContext written = ctx.identifier(ctx.USER() != null ? 1 : 0);
+        // A user's policy given as a string is that name exactly, case and all, where a name written bare
+        // folds as an identifier does: 'np' finds no policy NP (live-verified). The account's form is not
+        // measured and keeps reading the string as a name.
+        final boolean exact = written == null && ctx.USER() != null;
         final String policy = written != null ? SqlIdentifiers.canonical(written)
+            : exact ? SqlStringLiterals.decode(ctx.STRING_LITERAL().getText())
             : SqlIdentifiers.canonicalText(SqlStringLiterals.decode(ctx.STRING_LITERAL().getText()));
-        if (account.get(SecurityObjectKind.NETWORK_POLICY, policy) == null) {
+        final SecurityObject found = account.get(SecurityObjectKind.NETWORK_POLICY, policy);
+        if (found == null || exact && !policy.equals(found.getName())) {
             throw new RuntimeException("Network policy " + policy + " does not exist or not authorized.");
         }
-        account.attach(NETWORK_POLICY_PREFIX + target, policy);
+        account.attach(NETWORK_POLICY_PREFIX + target, found.getName());
         return null;
     }
 
@@ -731,7 +800,7 @@ public final class SecurityObjectCommandHandler {
             return showPasswordPoliciesOn(ctx);
         }
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : scope(ctx.securityListingScope())) {
+        for (final Schema schema : scopeOf(kind, ctx.securityListingScope())) {
             for (final SecurityObject object : schema.getSecurityObjects().list(kind)) {
                 rows.add(showRow(kind, schema, object, null));
             }
@@ -744,10 +813,7 @@ public final class SecurityObjectCommandHandler {
             listing = startingWith(listing, prefix);
         }
         if (ctx.LIMIT() != null) {
-            final int limit = Integer.parseInt(ctx.INTEGER_LITERAL().getText());
-            if (limit <= 0) {
-                throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");
-            }
+            final int limit = ShowPageSize.require(ctx.INTEGER_LITERAL().getText());
             final String from = ctx.FROM() == null ? null
                 : ParseTreeText.stringValue(ctx.stringText(ctx.stringText().size() - 1));
             // A network rule listing starts at the name's own row; a secret listing after it (live-verified).
@@ -755,6 +821,30 @@ public final class SecurityObjectCommandHandler {
                 : ShowPageStart.AFTER_NAME);
         }
         return listing;
+    }
+
+    /**
+     * The schemas a listing of {@code kind} covers. A network rule listing does not name the schema or the database
+     * its scope misses (live-verified); the other kinds do.
+     */
+    private List<Schema> scopeOf(final SecurityObjectKind kind,
+                                 final FrostlakeParser.SecurityListingScopeContext scope) {
+        if (scope != null && scope.DATABASE() != null && scope.qualifiedName() != null) {
+            // A database is one part: a path after IN DATABASE asks for a full search path (live-verified).
+            final String[] parts = ParseTreeText.qualifiedNameParts(scope.qualifiedName());
+            if (parts.length > 1) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Must specify the full search path starting from database for " + parts[parts.length - 1]));
+            }
+        }
+        if (kind != SecurityObjectKind.NETWORK_RULE) {
+            return scope(scope);
+        }
+        try {
+            return scope(scope);
+        } catch (final RuntimeException missing) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
     }
 
     /**

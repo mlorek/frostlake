@@ -18,20 +18,23 @@ package dev.frostlake.transaction;
 
 /**
  * What {@link TransactionManager#setAsideTransaction} set aside on a thread: the transaction its statements were
- * running in, the session's per-thread autocommit mode and the depth of any enclosing atomic section. Work that
- * runs as a session of its own, such as a task's run, starts without them; {@link TransactionManager#resumeTransaction}
- * puts them back.
+ * running in, the session's per-thread autocommit mode and the depth of any enclosing atomic section and
+ * transaction scope. Work that runs as a session of its own, such as a task's run, starts without them;
+ * {@link TransactionManager#resumeTransaction} puts them back.
  */
 public final class SetAsideTransaction {
 
     private final Transaction transaction;
     private final Boolean sessionAutoCommit;
     private final int atomicSectionDepth;
+    private final int scopeDepth;
 
-    SetAsideTransaction(final Transaction transaction, final Boolean sessionAutoCommit, final int atomicSectionDepth) {
+    SetAsideTransaction(final Transaction transaction, final Boolean sessionAutoCommit, final int atomicSectionDepth,
+                        final int scopeDepth) {
         this.transaction = transaction;
         this.sessionAutoCommit = sessionAutoCommit;
         this.atomicSectionDepth = atomicSectionDepth;
+        this.scopeDepth = scopeDepth;
     }
 
     /** The transaction set aside, or null when there was none. */
@@ -47,5 +50,10 @@ public final class SetAsideTransaction {
     /** How deep in atomic sections the thread was. */
     int atomicSectionDepth() {
         return atomicSectionDepth;
+    }
+
+    /** How deep in transaction scopes the thread was. */
+    int scopeDepth() {
+        return scopeDepth;
     }
 }

@@ -36,6 +36,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Small stateless helpers shared by more than one SHOW/DESCRIBE sub-executor. Kept in one place so the
@@ -116,6 +117,18 @@ public final class ShowResultHelpers {
         }
     }
 
+    /**
+     * The database a SHOW scope names, for a kind whose miss live reports generically — the IN DATABASE form of
+     * {@link #scopeSchemaReportedGenerically}.
+     */
+    public static Database scopeDatabaseReportedGenerically(final Catalog catalog, final String databaseName) {
+        try {
+            return catalog.getDatabase(databaseName);
+        } catch (final RuntimeException missing) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+    }
+
     static Schema resolveDescribeSchema(final Catalog catalog) {
         return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
     }
@@ -146,7 +159,7 @@ public final class ShowResultHelpers {
             return def.toString();
         }
         final String s = def.toString();
-        final String upper = s.toUpperCase();
+        final String upper = s.toUpperCase(Locale.ROOT);
         if (upper.equals("CURRENT_TIMESTAMP") || upper.equals("CURRENT_DATE") || upper.equals("CURRENT_TIME")
                 || upper.equals("TRUE") || upper.equals("FALSE") || upper.equals("NULL") || upper.endsWith("()")) {
             return s;

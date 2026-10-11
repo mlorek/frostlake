@@ -38,10 +38,32 @@ public class TransactionManager {
     private final AtomicLong transactionIdGenerator;
     private final Map<Long, Transaction> activeTransactions;
     private final ThreadLocal<Transaction> currentTransaction;
+    // Transactions SYSTEM$ABORT_TRANSACTION ended while a session still held them, by id, and the one this
+    // thread's session holds: every statement of that session is refused until it issues a COMMIT or a ROLLBACK.
+    private final Map<Long, Transaction> abortedTransactions = new ConcurrentHashMap<>();
+    private final ThreadLocal<Transaction> abortedCurrent = new ThreadLocal<>();
     private final Catalog catalog;
     private final StorageEngine storageEngine;
     private StreamManager streamManager;
     private WalSink walSink;   // durability hook: receives a transaction's statements when it commits
+
+    /** How a scope that did not begin the transaction is refused a COMMIT, a ROLLBACK or a statement that commits. */
+    public static final String OTHER_SCOPE =
+        "Modifying a transaction that has started at a different scope is not allowed.";
+
+    /** How a block or a procedure that ends with a transaction of its own still open is refused. */
+    public static final String SCOPE_LEFT_OPEN = "Stored procedure execution error: "
+        + "Scoped transaction started in stored procedure is incomplete and it was rolled back.";
+
+    // How deep this thread's statement is in transaction scopes: 0 for a statement of the session's own, one more
+    // inside each block statement, procedure body and text that is a block. A scope is over before its statement
+    // is, so the depth is the thread's and not the session's.
+    private final ThreadLocal<Integer> scopeDepth = new ThreadLocal<Integer>() {
+        @Override
+        protected Integer initialValue() {
+            return Integer.valueOf(0);
+        }
+    };
 
     public TransactionManager(final Catalog catalog, final StorageEngine storageEngine) {
         this.transactionIdGenerator = new AtomicLong(1);
@@ -85,12 +107,87 @@ public class TransactionManager {
      *  name in SHOW TRANSACTIONS' name cell in place of the UUID an unnamed one carries. */
     public void beginExplicitTransaction(final String name) {
         Transaction txn = currentTransaction.get();
-        if (txn == null) {
+        final int depth = scopeDepth.get().intValue();
+        if (txn != null && txn.isExplicit() && txn.getScope() < depth) {
+            // An enclosing scope's transaction is open: this scope's BEGIN starts one of its own beside it, which
+            // commits and rolls back by itself and sees nothing the other has not committed. The enclosing one
+            // waits until this one ends (live-verified).
+            final Transaction outer = txn;
+            currentTransaction.remove();
             txn = beginTransaction();
+            txn.setOuter(outer);
+        } else if (txn == null) {
+            txn = beginTransaction();
+        }
+        if (!txn.isExplicit()) {
+            txn.setScope(depth);
         }
         txn.setExplicit(true);
         if (name != null) {
             txn.setName(name);
+        }
+    }
+
+    /**
+     * Enters a transaction scope: a block statement, a procedure's body or a text that is a block starts running.
+     * A transaction is the scope's that began it — a scope inside may add to it and may not end it — and a scope
+     * that begins one while an enclosing scope's is open gets a transaction of its own (live-verified).
+     */
+    public void enterScope() {
+        scopeDepth.set(Integer.valueOf(scopeDepth.get().intValue() + 1));
+    }
+
+    /**
+     * How many scopes are running on this thread, the innermost included: the level of the body that is running,
+     * zero for a statement the session sends on its own.
+     *
+     * @return the depth {@link #enterScope} has reached
+     */
+    public int scopeDepth() {
+        return scopeDepth.get().intValue();
+    }
+
+    /**
+     * Leaves the scope {@link #enterScope} entered. A transaction the scope began and left open is rolled back
+     * here, and the enclosing scope's transaction it was begun beside is the session's again.
+     *
+     * @return whether the scope left a transaction of its own open, which its statement reports as
+     *         {@link #SCOPE_LEFT_OPEN}
+     */
+    public boolean exitScope() {
+        final int depth = scopeDepth.get().intValue();
+        final Transaction txn = currentTransaction.get();
+        boolean leftOpen = false;
+        if (depth > 0 && txn != null && txn.isExplicit() && txn.getScope() >= depth) {
+            leftOpen = true;
+            try {
+                rollback();
+            } catch (final RuntimeException rollbackFailure) {
+                logger.warn("Could not roll back a transaction a scope left open: {}", rollbackFailure.getMessage());
+            }
+        }
+        scopeDepth.set(Integer.valueOf(Math.max(0, depth - 1)));
+        return leftOpen;
+    }
+
+    /**
+     * Refuses a statement that would end the open transaction from a scope that did not begin it: a COMMIT, a
+     * ROLLBACK or a statement that commits, in a block or a procedure called while its caller's transaction is
+     * open (live-verified).
+     */
+    public void requireOwnScope() {
+        final Transaction txn = currentTransaction.get();
+        if (txn != null && txn.isExplicit() && txn.getScope() != scopeDepth.get().intValue()) {
+            throw new RuntimeException(OTHER_SCOPE);
+        }
+    }
+
+    /** The transaction that ended was begun beside an enclosing scope's: that one is the thread's again. */
+    private void resumeOuter(final Transaction ended) {
+        final Transaction outer = ended.getOuter();
+        if (outer != null) {
+            ended.setOuter(null);
+            bind(outer);
         }
     }
 
@@ -217,8 +314,79 @@ public class TransactionManager {
         }
     }
 
+    /**
+     * Ends the open transaction of a public id on behalf of whoever names it — the caller's own or another
+     * session's (live-verified): its writes are rolled back and its locks released at once. The session that held
+     * it is left holding an aborted transaction, and each of its statements is refused until it issues a COMMIT,
+     * which fails, or a ROLLBACK. A transaction a running block began and ends this way is simply over: the block
+     * goes on outside any transaction.
+     *
+     * @param publicId    the id CURRENT_TRANSACTION() answers inside the transaction
+     * @param insideBlock whether a Snowflake Scripting block or a procedure is running the abort
+     * @return whether a transaction of that id was open
+     */
+    public boolean abort(final long publicId, final boolean insideBlock) {
+        Transaction named = null;
+        for (final Transaction open : activeTransactions.values()) {
+            if (open.getPublicId() == publicId) {
+                named = open;
+                break;
+            }
+        }
+        if (named == null) {
+            return false;
+        }
+        final boolean own = named == currentTransaction.get();
+        try {
+            named.rollback();
+            named.setState(TransactionState.ROLLED_BACK);
+        } finally {
+            activeTransactions.remove(named.getId());
+            if (own) {
+                currentTransaction.remove();
+            }
+        }
+        if (own && insideBlock && named.isBegunInBlock()) {
+            publishCompletion(named);
+            resumeOuter(named);
+            return true;
+        }
+        abortedTransactions.put(named.getId(), named);
+        if (own) {
+            abortedCurrent.set(named);
+        }
+        return true;
+    }
+
+    /** The transaction this thread's session holds although it was aborted, or null when it holds none. */
+    public Transaction getAbortedTransaction() {
+        return abortedCurrent.get();
+    }
+
+    /**
+     * Lets go of the aborted transaction this thread's session holds, which a COMMIT or a ROLLBACK does. The
+     * transaction is the session's last from then on.
+     *
+     * @return the transaction, or null when the session held none
+     */
+    public Transaction acknowledgeAborted() {
+        final Transaction aborted = abortedCurrent.get();
+        if (aborted != null) {
+            abortedCurrent.remove();
+            abortedTransactions.remove(aborted.getId());
+            publishCompletion(aborted);
+        }
+        return aborted;
+    }
+
     public void commit() {
         final Transaction txn = currentTransaction.get();
+        if (txn == null) {
+            final Transaction aborted = acknowledgeAborted();
+            if (aborted != null) {
+                throw new RuntimeException(TransactionAbortedMessages.commitFailed(aborted));
+            }
+        }
         publishCompletion(txn);
         if (txn == null) {
             throw new RuntimeException("No active transaction");
@@ -247,6 +415,7 @@ public class TransactionManager {
         } finally {
             activeTransactions.remove(txn.getId());
             currentTransaction.remove();
+            resumeOuter(txn);
         }
 
         // Durability: the commit has applied successfully — now append it to the WAL and fsync (a failure
@@ -258,6 +427,9 @@ public class TransactionManager {
 
     public void rollback() {
         final Transaction txn = currentTransaction.get();
+        if (txn == null && acknowledgeAborted() != null) {
+            return;
+        }
         publishCompletion(txn);
         if (txn == null) {
             throw new RuntimeException("No active transaction");
@@ -269,6 +441,7 @@ public class TransactionManager {
         } finally {
             activeTransactions.remove(txn.getId());
             currentTransaction.remove();
+            resumeOuter(txn);
         }
     }
 
@@ -287,6 +460,7 @@ public class TransactionManager {
         } finally {
             activeTransactions.remove(txn.getId());
             currentTransaction.remove();
+            resumeOuter(txn);
         }
     }
 
@@ -314,17 +488,20 @@ public class TransactionManager {
      * Sets this thread's transaction aside for work that runs as a session of its own: a task's run, an alert's
      * evaluation, a pipe's load. Such work never joins the caller's transaction, so the caller's ROLLBACK cannot
      * undo it. It starts with no transaction, with autocommit on whatever the caller's session chose, and outside
-     * any atomic section, so each of its statements commits at its end. Hand the answer back to
+     * any atomic section and transaction scope, so each of its statements commits at its end. Hand the answer back to
      * {@link #resumeTransaction}.
      *
      * @return what was set aside
      */
     public SetAsideTransaction setAsideTransaction() {
-        final SetAsideTransaction aside = new SetAsideTransaction(currentTransaction.get(), sessionAutoCommit.get(),
-            atomicSectionDepth.get());
+        final Transaction held = currentTransaction.get() != null ? currentTransaction.get() : abortedCurrent.get();
+        final SetAsideTransaction aside = new SetAsideTransaction(held, sessionAutoCommit.get(),
+            atomicSectionDepth.get(), scopeDepth.get().intValue());
         currentTransaction.remove();
+        abortedCurrent.remove();
         sessionAutoCommit.set(Boolean.TRUE);
         atomicSectionDepth.set(0);
+        scopeDepth.set(Integer.valueOf(0));
         return aside;
     }
 
@@ -345,8 +522,10 @@ public class TransactionManager {
                 currentTransaction.remove();
             }
         }
+        // An aborted transaction the work left unacknowledged goes with the work.
+        acknowledgeAbortedUnrecorded();
         if (aside.transaction() != null) {
-            currentTransaction.set(aside.transaction());
+            bind(aside.transaction());
         }
         if (aside.sessionAutoCommit() != null) {
             sessionAutoCommit.set(aside.sessionAutoCommit());
@@ -354,20 +533,53 @@ public class TransactionManager {
             sessionAutoCommit.remove();
         }
         atomicSectionDepth.set(aside.atomicSectionDepth());
+        scopeDepth.set(Integer.valueOf(aside.scopeDepth()));
     }
 
     public boolean hasActiveTransaction() {
         return currentTransaction.get() != null;
     }
 
+    /**
+     * Binds a session's transaction to this thread for the statement about to run, or unbinds whatever the thread
+     * held when the session has none. A transaction that was aborted since the session last ran is bound as that:
+     * the session's statements are refused until it acknowledges it.
+     *
+     * @param transactionId the session's transaction, as {@link #getCurrentTransactionId} answered it, or null
+     */
     public void setCurrentTransaction(final Long transactionId) {
         if (transactionId == null) {
             currentTransaction.remove();
-        } else {
-            final Transaction txn = activeTransactions.get(transactionId);
-            if (txn != null) {
-                currentTransaction.set(txn);
-            }
+            abortedCurrent.remove();
+            return;
+        }
+        final Transaction txn = activeTransactions.get(transactionId);
+        if (txn != null) {
+            currentTransaction.set(txn);
+            abortedCurrent.remove();
+            return;
+        }
+        final Transaction aborted = abortedTransactions.get(transactionId);
+        if (aborted != null) {
+            currentTransaction.remove();
+            abortedCurrent.set(aborted);
+        }
+    }
+
+    /** Binds a transaction this thread held before as what it is now: open, aborted, or gone. */
+    private void bind(final Transaction txn) {
+        if (activeTransactions.get(txn.getId()) == txn) {
+            currentTransaction.set(txn);
+        } else if (abortedTransactions.get(txn.getId()) == txn) {
+            abortedCurrent.set(txn);
+        }
+    }
+
+    private void acknowledgeAbortedUnrecorded() {
+        final Transaction aborted = abortedCurrent.get();
+        if (aborted != null) {
+            abortedCurrent.remove();
+            abortedTransactions.remove(aborted.getId());
         }
     }
 
@@ -375,8 +587,12 @@ public class TransactionManager {
         return activeTransactions.values();
     }
 
+    /**
+     * The id of the transaction this thread's session holds, an aborted one it has not acknowledged included: a
+     * front end keeps the id with the session and hands it back to {@link #setCurrentTransaction}.
+     */
     public Long getCurrentTransactionId() {
-        final Transaction txn = currentTransaction.get();
+        final Transaction txn = currentTransaction.get() != null ? currentTransaction.get() : abortedCurrent.get();
         return txn != null ? txn.getId() : null;
     }
 

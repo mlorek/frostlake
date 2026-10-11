@@ -154,7 +154,8 @@ public final class AnsiFromFormSyntax {
      * The lines live stacks after the FROM: those of the reading the call's place decides — the enclosing parentheses
      * and casts given up one by one for a call carrying a select item's value ({@code AnsiFromFormGroupLines}, the
      * query's own FROM clause where that reading does not reach), the enclosing bracket for a call nested in another
-     * call or standing in a WHERE, a CAST's AS for a call a CAST holds in a WHERE. None anywhere else.
+     * call or standing in a WHERE, a CAST's AS for a call a CAST holds in a WHERE, and the closing parenthesis of a
+     * cast that holds an EXTRACT or a SUBSTRING inside one other call. None anywhere else.
      */
     private static List<String> readAsFromClause(final ParserRuleContext call, final Token from,
                                                  final TokenStream tokens, final String sql) {
@@ -165,6 +166,7 @@ public final class AnsiFromFormSyntax {
         boolean carried = true;
         ParserRuleContext innermost = null;
         boolean callAbove = false;
+        int callsAbove = 0;
         ParserRuleContext place = null;
         final List<ParserRuleContext> levels = new ArrayList<>();
         for (ParserRuleContext up = call.getParent(); up != null && place == null; up = up.getParent()) {
@@ -175,6 +177,7 @@ public final class AnsiFromFormSyntax {
                     innermost = up;
                 } else if (up instanceof FrostlakeParser.FunctionCallExprContext) {
                     callAbove = true;
+                    callsAbove++;
                 }
                 levels.add(up);
                 carried = carried && carriesTheValue(up);
@@ -204,6 +207,14 @@ public final class AnsiFromFormSyntax {
                 (FrostlakeParser.ExprItemContext) place, from, firstFor(call), levels, tokens, sql);
             return givenUp != null ? givenUp : fromClauseLines((FrostlakeParser.ExprItemContext) place, call, from, sql);
         }
+        if ((innermost instanceof FrostlakeParser.CastExprContext
+                    || innermost instanceof FrostlakeParser.TryCastExprContext)
+                && callsAbove == 1 && !hasForTail(call) && hasFromFormOfItsOwn(call)
+                && innermost.getStop() != null && innermost.getStop().getType() == FrostlakeLexer.RPAREN) {
+            // A cast holding the call, inside one other call: the cast's closing parenthesis is refused too.
+            stacked.add(SyntaxErrorListener.sentence(innermost.getStop()));
+            return stacked;
+        }
         final boolean inCall = innermost instanceof FrostlakeParser.FunctionCallExprContext;
         final boolean inGroupOfCall = innermost instanceof FrostlakeParser.ParenExprContext && callAbove;
         if (!inCall && !inGroupOfCall) {
@@ -223,6 +234,16 @@ public final class AnsiFromFormSyntax {
             return stacked;
         }
         return droppedCallLines(call, from, inGroupOfCall ? innermost.getStart() : null, inCall, tokens, sql);
+    }
+
+    /** Whether the refused call is one of the two names the account reads a FROM form of: EXTRACT and SUBSTRING. */
+    private static boolean hasFromFormOfItsOwn(final ParserRuleContext call) {
+        final FrostlakeParser.FunctionNameContext name = call instanceof FrostlakeParser.AnsiSubstringExprContext
+            ? ((FrostlakeParser.AnsiSubstringExprContext) call).functionName()
+            : call instanceof FrostlakeParser.ExtractFromExprContext
+                ? ((FrostlakeParser.ExtractFromExprContext) call).functionName() : null;
+        final String word = name == null ? "" : name.getText().toUpperCase(Locale.ROOT);
+        return EXTRACT.equals(word) || "SUBSTRING".equals(word) || "SUBSTR".equals(word);
     }
 
     /** Whether a context brackets the call: a call's parentheses, a CAST's or TRY_CAST's, or plain parentheses. */

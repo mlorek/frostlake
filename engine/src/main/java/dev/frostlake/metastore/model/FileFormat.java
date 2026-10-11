@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -48,7 +49,7 @@ public class FileFormat {
 
     public FileFormat(final String name, final String type) {
         this.name = name;
-        this.type = type != null ? type.toUpperCase() : "CSV";
+        this.type = type != null ? type.toUpperCase(Locale.ROOT) : "CSV";
         this.options = new LinkedHashMap<>();
     }
 
@@ -65,7 +66,7 @@ public class FileFormat {
     }
 
     public void setType(final String type) {
-        this.type = type != null ? type.toUpperCase() : null;
+        this.type = type != null ? type.toUpperCase(Locale.ROOT) : null;
     }
 
     public Map<String, String> getOptions() {
@@ -74,12 +75,12 @@ public class FileFormat {
 
     public void setOption(final String key, final String value) {
         if (key != null) {
-            options.put(key.toUpperCase(), value);
+            options.put(key.toUpperCase(Locale.ROOT), value);
         }
     }
 
     public String getOption(final String key) {
-        return key == null ? null : options.get(key.toUpperCase());
+        return key == null ? null : options.get(key.toUpperCase(Locale.ROOT));
     }
 
     /**

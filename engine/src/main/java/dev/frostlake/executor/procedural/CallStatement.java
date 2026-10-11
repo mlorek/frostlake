@@ -16,65 +16,25 @@
 
 package dev.frostlake.executor.procedural;
 
-import java.util.ArrayList;
-import java.util.List;
-
+/**
+ * A CALL a block runs. It is a statement of its own and runs as it is written: its {@code :names} are bound from the
+ * block, and a bare name among its arguments is an identifier of the statement's, never a variable of the block
+ * (live-verified).
+ */
 public class CallStatement extends Statement {
-    private final String procedureName;
-    private final List<BaseExpression> arguments;
-    // Parallel to arguments: the argument name for a {@code name => value} named argument, or null for a
-    // positional one. Null overall means every argument is positional.
-    private final List<String> argumentNames;
+    // The CALL as written, without its INTO clause.
+    private final String writtenCall;
     // CALL ... INTO :variable: the variable the value the procedure returns is assigned to, or null for a bare CALL.
     private final String intoTarget;
-    // A CALL of a SYSTEM$ function, which runs as the statement it is written as; null for a procedure's CALL.
-    private final String writtenCall;
-
-    public CallStatement(final String procedureName, final List<BaseExpression> arguments) {
-        this(procedureName, arguments, null);
-    }
-
-    public CallStatement(final String procedureName, final List<BaseExpression> arguments,
-                         final List<String> argumentNames) {
-        this(procedureName, arguments, argumentNames, null);
-    }
-
-    public CallStatement(final String procedureName, final List<BaseExpression> arguments,
-                         final List<String> argumentNames, final String intoTarget) {
-        super(StatementType.CALL);
-        this.procedureName = procedureName;
-        this.arguments = arguments;
-        this.argumentNames = argumentNames;
-        this.intoTarget = intoTarget;
-        this.writtenCall = null;
-    }
 
     /**
-     * A CALL of a SYSTEM$ function whose answer goes INTO a variable: it runs as written.
-     *
      * @param writtenCall the CALL as written, without its INTO clause
-     * @param intoTarget  the variable its answer is assigned to
+     * @param intoTarget  the variable its answer is assigned to, or null for a bare CALL
      */
     public CallStatement(final String writtenCall, final String intoTarget) {
         super(StatementType.CALL);
-        this.procedureName = null;
-        this.arguments = new ArrayList<>();
-        this.argumentNames = null;
-        this.intoTarget = intoTarget;
         this.writtenCall = writtenCall;
-    }
-
-    public String getProcedureName() {
-        return procedureName;
-    }
-
-    public List<BaseExpression> getArguments() {
-        return arguments;
-    }
-
-    /** Argument names parallel to {@link #getArguments()} (null entry = positional), or null if all positional. */
-    public List<String> getArgumentNames() {
-        return argumentNames;
+        this.intoTarget = intoTarget;
     }
 
     /** The variable CALL ... INTO assigns the returned value to, or null for a bare CALL. */
@@ -82,7 +42,7 @@ public class CallStatement extends Statement {
         return intoTarget;
     }
 
-    /** The CALL as written, for a SYSTEM$ function's; null for a procedure's, which is re-issued from its parts. */
+    /** The CALL as written, without its INTO clause. */
     public String getWrittenCall() {
         return writtenCall;
     }

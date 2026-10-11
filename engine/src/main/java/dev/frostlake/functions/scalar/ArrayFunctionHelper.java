@@ -27,6 +27,7 @@ import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
 
+import tools.jackson.core.StreamWriteFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.cfg.JsonNodeFeature;
@@ -53,7 +54,11 @@ public final class ArrayFunctionHelper {
     private ArrayFunctionHelper() {
     }
 
-    public static final ObjectMapper MAPPER = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
+    /** Reads a fraction as a decimal, and writes a decimal with its digits in place: 0.0000001, not 1E-7. */
+    public static final ObjectMapper MAPPER = JsonMapper.builder()
+        .enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+        .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+        .build();
 
     /** Parse a value to JsonNode. Returns null if unparseable. */
     public static JsonNode parseNode(final Object value) {

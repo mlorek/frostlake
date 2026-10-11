@@ -17,19 +17,64 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.User;
+import dev.frostlake.security.SessionContext;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
+import java.util.TreeSet;
 
-/** CURRENT_SECONDARY_ROLES() — the active secondary roles (none in the embedded engine). */
+/**
+ * CURRENT_SECONDARY_ROLES() — what USE SECONDARY ROLES last asked of the session, as a JSON object in text:
+ * {@code {"roles":"","value":""}} with none, {@code {"roles":"R1,R2","value":"R1,R2"}} for the roles it named and
+ * {@code {"roles":"…","value":"ALL"}} for ALL, whose roles are those granted to the session's user but its primary
+ * one, in alphabetical order — read when the function is called, so a USE ROLE after it is heard (live-verified).
+ */
 public class CurrentSecondaryRoles extends BuiltInFunction {
-    public CurrentSecondaryRoles() { super("CURRENT_SECONDARY_ROLES", StringType.VARCHAR); }
+
+    private static final String ALL = "ALL";
+    private static final String PUBLIC = "PUBLIC";
+
+    private final Catalog catalog;
+    private final SessionContext sessionContext;
+
+    public CurrentSecondaryRoles(final Catalog catalog, final SessionContext sessionContext) {
+        super("CURRENT_SECONDARY_ROLES", StringType.VARCHAR);
+        this.catalog = catalog;
+        this.sessionContext = sessionContext;
+    }
 
     @Override
-    public Object evaluate(final List<Object> args) { return "{\"roles\":\"\",\"value\":\"\"}"; }
+    public Object evaluate(final List<Object> args) {
+        final String value = sessionContext == null ? "" : sessionContext.getSecondaryRolesValue();
+        return "{\"roles\":\"" + (ALL.equals(value) ? allRoles() : value) + "\",\"value\":\"" + value + "\"}";
+    }
+
+    /** The roles ALL stands for: every role granted to the session's user but the primary one. */
+    private String allRoles() {
+        final TreeSet<String> roles = new TreeSet<String>();
+        try {
+            final User user = catalog.getUser(sessionContext.getCurrentUser());
+            roles.addAll(user.getGrantedRoles());
+        } catch (final RuntimeException noSuchUser) {
+            // A session user without a catalog entry was granted no role.
+        }
+        // PUBLIC is every user's, and is no secondary role the account lists.
+        roles.remove(PUBLIC);
+        if (sessionContext.getCurrentRole() != null) {
+            roles.remove(sessionContext.getCurrentRole());
+        }
+        return String.join(",", roles);
+    }
 
     @Override
-    public int getMinArgCount() { return 0; }
+    public int getMinArgCount() {
+        return 0;
+    }
+
     @Override
-    public int getMaxArgCount() { return 0; }
+    public int getMaxArgCount() {
+        return 0;
+    }
 }

@@ -153,7 +153,7 @@ public final class WarehouseResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = call.sql().showNamed("SHOW WAREHOUSES" + RestShow.likeName(name), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Warehouse '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Warehouse", name);
         }
         return toJson(rows.get(0), call.sql().show("SHOW PARAMETERS IN WAREHOUSE " + name.sql()));
     }
@@ -263,6 +263,10 @@ public final class WarehouseResource implements RestResource {
         if (RestJson.present(body, "warehouse_size")) {
             // WAIT_FOR_COMPLETION waits for a resize, so the account takes it only beside WAREHOUSE_SIZE.
             set.bool(body, "wait_for_completion", "WAIT_FOR_COMPLETION");
+        } else {
+            // A warehouse cannot be without a size, so the size is no property to UNSET: a body that leaves it
+            // out puts the warehouse back on the default one.
+            set.property("WAREHOUSE_SIZE", "XSMALL");
         }
         if (set.propertyCount() > 0) {
             status = call.sql().status(set.toString());
@@ -276,6 +280,9 @@ public final class WarehouseResource implements RestResource {
                 continue;
             }
             if ("resource_constraint".equals(p[0]) && !"SNOWPARK-OPTIMIZED".equals(existing.get(0).string("type"))) {
+                continue;
+            }
+            if ("warehouse_size".equals(p[0])) {
                 continue;
             }
             unsetIfAbsent(unset, body, p);

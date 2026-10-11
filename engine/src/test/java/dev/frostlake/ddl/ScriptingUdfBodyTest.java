@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import java.math.BigDecimal;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -465,7 +466,7 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
             seen = engine.executeQuery("CALL p_owner()").getRows().get(0).getValue(0);
         } catch (final RuntimeException invalidIdentifier) {
             // Snowflake's answer: the name simply does not resolve inside the function.
-            assertTrue(invalidIdentifier.getMessage().toUpperCase().contains("ZZ"),
+            assertTrue(invalidIdentifier.getMessage().toUpperCase(Locale.ROOT).contains("ZZ"),
                 invalidIdentifier.getMessage());
             return;
         }

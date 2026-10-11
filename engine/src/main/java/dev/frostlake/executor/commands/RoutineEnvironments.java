@@ -23,6 +23,7 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StagePathSegments;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
+import dev.frostlake.executor.udf.JavaRuntimeLevel;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.RoutineEnvironment;
@@ -256,8 +257,10 @@ final class RoutineEnvironments {
      * @param language the routine's language
      * @param handler  the routine's handler, {@code Class.method}
      * @param body     the routine's inline body
+     * @param runtimeVersion the routine's RUNTIME_VERSION, whose Java level the classes are compiled at, or null
      */
-    void store(final String written, final UdfLanguage language, final String handler, final String body) {
+    void store(final String written, final UdfLanguage language, final String handler, final String body,
+               final String runtimeVersion) {
         final int slash = written.indexOf('/');
         final Path base = queryExecutor.resolveCopyBaseDir("@" + canonicalStage(written.substring(1, slash)));
         if (base == null || StatementClock.isReplay()
@@ -269,7 +272,8 @@ final class RoutineEnvironments {
         final Map<String, byte[]> entries = new LinkedHashMap<>();
         if (language == UdfLanguage.JAVA && className != null) {
             for (final Map.Entry<String, byte[]> compiled
-                    : new JavaFunctionCompiler().compileClasses(body, className).entrySet()) {
+                    : new JavaFunctionCompiler().compileClasses(body, className,
+                        JavaRuntimeLevel.of(runtimeVersion), "").entrySet()) {
                 entries.put(compiled.getKey().replace('.', '/') + ".class", compiled.getValue());
             }
         } else {

@@ -17,6 +17,9 @@
 package dev.frostlake.parser;
 
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.tree.TerminalNode;
+
+import java.util.Locale;
 
 /**
  * The object kinds live drops that Frostlake has no statements for. Live's lexer keeps each word as a keyword, so
@@ -25,16 +28,35 @@ import org.antlr.v4.runtime.Token;
  * {@code Alert 'DB.PUBLIC.A' does not exist or not authorized.} and {@code DROP ALERT IF EXISTS a} the ordinary
  * already-dropped status (live-verified). A listing and a failover or replication group belong to the account, so
  * their names have one part, and both group kinds are named as a replication group.
+ *
+ * <p>The kinds a statement names by words of their own ({@link UnmodelledKindWords}) are here too, each with the
+ * noun the account's sentence opens with: a DBT project in capitals, a semantic view with both words capitalized.
  */
 public enum UnmodelledDropKind {
 
     ALERT("Alert", true),
+    APPLICATION("Application", false),
+    APPLICATION_PACKAGE("Application package", false),
+    AUTHENTICATION_POLICY("Authentication policy", true),
+    CONNECTION("Connection", false),
     DATASET("Dataset", true),
+    DBT_PROJECT("DBT PROJECT", true),
     EXTERNAL_TABLE("External table", true),
     FAILOVER_GROUP("Replication group", false),
+    GIT_REPOSITORY("Git repository", true),
     LISTING("Data exchange listing", false),
     MODEL("Model", true),
-    REPLICATION_GROUP("Replication group", false);
+    ORGANIZATION("Organization", false),
+    ORGANIZATION_PROFILE("Organization profile", false),
+    PACKAGES_POLICY("Packages policy", true),
+    PRIVACY_POLICY("Privacy policy", true),
+    REPLICATION_GROUP("Replication group", false),
+    RESOURCE_MONITOR("Resource monitor", false),
+    SEMANTIC_VIEW("Semantic View", true),
+    SESSION_POLICY("Session policy", true),
+    SHARE("Share", false),
+    SNAPSHOT("Snapshot", true),
+    STORAGE_LIFECYCLE_POLICY("Storage lifecycle policy", true);
 
     private final String noun;
     private final boolean schemaObject;
@@ -97,6 +119,9 @@ public enum UnmodelledDropKind {
      * @return the kind, or null
      */
     public static UnmodelledDropKind of(final FrostlakeParser.DropClassStatementContext drop) {
+        if (drop.unmodelledKind() != null) {
+            return of(drop.unmodelledKind());
+        }
         if (drop.dropKindWord == null) {
             return of(drop.className());
         }
@@ -105,5 +130,21 @@ public enum UnmodelledDropKind {
             return EXTERNAL_TABLE;
         }
         return "FAILOVER".equalsIgnoreCase(first) ? FAILOVER_GROUP : REPLICATION_GROUP;
+    }
+
+    /**
+     * The kind a statement names by the kind's own words.
+     *
+     * @param words the words, as the grammar read them
+     * @return the kind
+     */
+    public static UnmodelledDropKind of(final FrostlakeParser.UnmodelledKindContext words) {
+        final StringBuilder name = new StringBuilder();
+        for (int i = 0; i < words.getChildCount(); i++) {
+            if (words.getChild(i) instanceof TerminalNode) {
+                name.append(name.length() == 0 ? "" : "_").append(words.getChild(i).getText().toUpperCase(Locale.ROOT));
+            }
+        }
+        return valueOf(name.toString());
     }
 }

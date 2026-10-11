@@ -38,7 +38,11 @@ public class Base64Encode extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         // A NULL max line length makes the whole call NULL, rather than meaning "do not wrap" —
         // live-verified, and the two are easy to confuse because an ABSENT one does mean that.
-        if (args.get(0) == null || args.size() > 1 && args.get(1) == null) return null;
+        // A NULL alphabet does the same, where an absent one is the standard alphabet (live-verified).
+        if (args.get(0) == null || args.size() > 1 && args.get(1) == null
+                || args.size() > 2 && args.get(2) == null) {
+            return null;
+        }
         final String standard =
             Base64.getEncoder().encodeToString(SharedFunctionHelpers.toUtf8(args.get(0)));
         return Base64Options.wrap(

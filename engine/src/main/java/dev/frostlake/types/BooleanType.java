@@ -16,6 +16,8 @@
 
 package dev.frostlake.types;
 
+import java.util.Locale;
+
 public class BooleanType extends DataType {
 
     public BooleanType() {
@@ -33,7 +35,7 @@ public class BooleanType extends DataType {
     @Override
     public String formatValue(final Object value) {
         if (value == null) return "NULL";
-        return value.toString().toUpperCase();
+        return value.toString().toUpperCase(Locale.ROOT);
     }
 
     @Override

@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * CALL ... INTO :variable, which Snowflake Scripting uses to assign the value a stored procedure returns to a variable.
  * It was a syntax error, so a procedure whose body used it could not even be created. The call runs as a bare CALL
  * does, statement or nested in a loop or an IF, and the variable takes the returned value as an assignment would.
- * Outside a block the clause stays the syntax error it was.
+ * Outside a block the clause is refused as one no statement there takes.
  */
 public class CallIntoTest {
 
@@ -109,8 +109,9 @@ public class CallIntoTest {
     }
 
     @Test
-    public void outsideABlockTheIntoClauseIsStillASyntaxError() {
+    public void outsideABlockTheIntoClauseIsNotAllowed() {
         final String refused = refusal("CALL p1('top') INTO :s");
-        assertTrue(refused.contains("syntax error line 1 at position 15 unexpected 'INTO'"), refused);
+        assertTrue(refused.contains("error line 1 at position 15 INTO clause is not allowed in this context"),
+            refused);
     }
 }

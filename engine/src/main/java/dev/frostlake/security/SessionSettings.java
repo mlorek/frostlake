@@ -18,6 +18,7 @@ package dev.frostlake.security;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
@@ -97,7 +98,7 @@ public final class SessionSettings {
      * @return its value, or null
      */
     public Object getParameter(final String name) {
-        return name == null ? null : parameters.get(name.toUpperCase());
+        return name == null ? null : parameters.get(name.toUpperCase(Locale.ROOT));
     }
 
     /** The variables SET defined, by upper-case name, in the order they were defined. */

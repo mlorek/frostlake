@@ -18,6 +18,8 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.SqlCompilationError;
 
+import java.util.Locale;
+
 /**
  * How Snowflake stores a dynamic table's TARGET_LAG: the input is canonicalized, not echoed.
  * Live-verified — {@code '1 minutes'} reads back {@code 1 minute}, {@code '90 seconds'} reads
@@ -100,7 +102,7 @@ public final class TargetLag {
 
     /** Seconds per unit, accepting singular and plural spellings; -1 for an unknown unit. */
     private static long unitSeconds(final String unit) {
-        switch (unit.toLowerCase()) {
+        switch (unit.toLowerCase(Locale.ROOT)) {
             case "second":
             case "seconds":
                 return 1;

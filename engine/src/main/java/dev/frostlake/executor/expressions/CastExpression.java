@@ -36,6 +36,8 @@ public class CastExpression implements Expression {
     private final CastFieldsModifier fieldsModifier;
     /** Where the cast was written — its {@code ::} or its CAST keyword — relative to its fragment. */
     private SourcePosition position;
+    /** Whether this is a typed literal, {@code DATE '2020-01-02'}, rather than a cast anybody wrote. */
+    private boolean typedLiteral;
 
     public CastExpression(final Expression expression, final String targetType) {
         this(expression, targetType, false);
@@ -90,6 +92,22 @@ public class CastExpression implements Expression {
 
     public void setPosition(final SourcePosition position) {
         this.position = position;
+    }
+
+    /**
+     * Whether this is a typed literal — {@code DATE '2020-01-02'}, {@code TIME '01:02:03'} — which converts as
+     * the cast of its text does and is no cast in the tree as parsed: there it is the call of the type's
+     * conversion function, {@code TO_DATE('2020-01-02')} (live-verified).
+     *
+     * @return true for a typed literal
+     */
+    public boolean isTypedLiteral() {
+        return typedLiteral;
+    }
+
+    /** Mark this cast as a typed literal — see {@link #isTypedLiteral()}. */
+    public void markTypedLiteral() {
+        this.typedLiteral = true;
     }
 
     @Override

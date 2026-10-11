@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -91,7 +93,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
         // and increment, the GET_DDL spelling).
         final String ddl = engine.executeQuery("SELECT GET_DDL('TABLE', 'users')")
             .getRows().get(0).getValue(0).toString();
-        assertTrue(ddl.toLowerCase().contains("autoincrement"), ddl);
+        assertTrue(ddl.toLowerCase(Locale.ROOT).contains("autoincrement"), ddl);
     }
 
     @Test

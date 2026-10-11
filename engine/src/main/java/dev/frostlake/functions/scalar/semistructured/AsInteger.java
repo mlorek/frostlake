@@ -38,6 +38,10 @@ public class AsInteger extends BuiltInFunction {
         if (node instanceof DecimalOriginNode) {
             return null;
         }
+        // Nor is a DOUBLE, whole or not: AS_INTEGER(PARSE_JSON('1e0')) is NULL (live-verified).
+        if (node != null && node.isFloatingPointNumber() && !node.isBigDecimal()) {
+            return null;
+        }
         if (node != null && node.isNumber()) {
             final BigDecimal dec = node.decimalValue().stripTrailingZeros();
             return dec.scale() <= 0 ? (Object) dec.longValue() : null;
@@ -54,4 +58,9 @@ public class AsInteger extends BuiltInFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    @Override
+    public boolean takesVariantOnly() {
+        return true;
+    }
 }

@@ -50,7 +50,7 @@ final class RestIntegrations {
         final List<RestRow> rows = call.sql().showNamed("SHOW " + kindWords + " INTEGRATIONS" + RestShow.likeName(name),
             name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Integration '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Integration", name);
         }
         return rows.get(0);
     }

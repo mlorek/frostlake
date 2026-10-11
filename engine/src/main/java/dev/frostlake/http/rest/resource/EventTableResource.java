@@ -113,7 +113,7 @@ public final class EventTableResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW EVENT TABLES" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Event table '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Event table", RelationNames.qualifiedDisplay(call, name));
         }
         return details(call, rows.get(0), name);
     }

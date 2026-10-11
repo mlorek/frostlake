@@ -169,7 +169,8 @@ final class ShowInfraExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(stageColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : ShowResultHelpers.scopeDatabaseReportedGenerically(catalog, dbName)
+                .getAllSchemas()) {
             appendStageRows(dbName, schema, rows);
         }
         return new ResultSet(stageColumns(), rows);
@@ -458,7 +459,7 @@ final class ShowInfraExecutor {
     ResultSet describeTableStage(final Map<String, String> written, final Map<String, String> copyOptions) {
         final List<Row> rows = new ArrayList<>();
         for (final FormatProperty property : FileFormatSurfaces.tree(written.get("TYPE"))) {
-            final String value = written.get(property.name.toUpperCase());
+            final String value = written.get(property.name.toUpperCase(Locale.ROOT));
             // A stage's default format is CSV whichever tree is answered, so the TYPE row's default
             // column reads CSV even under a JSON format (live-verified).
             final String shownDefault = "TYPE".equals(property.name) ? "CSV" : property.shownDefault;

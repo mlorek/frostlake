@@ -42,6 +42,7 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Locale;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -212,7 +213,7 @@ public final class ExpressionArithmetic {
         // the relationship-loader idiom), a number as zero/non-zero. An unrecognized string is
         // FALSE here (Snowflake raises; the engine stays lenient as elsewhere).
         if (value instanceof String) {
-            final String text = ((String) value).trim().toLowerCase();
+            final String text = ((String) value).trim().toLowerCase(Locale.ROOT);
             return text.equals("true") || text.equals("t") || text.equals("yes")
                 || text.equals("y") || text.equals("on") || text.equals("1");
         }
@@ -256,7 +257,7 @@ public final class ExpressionArithmetic {
             return VariantBooleans.convert((VariantValue) value);
         }
         if (value instanceof String) {
-            final String text = ((String) value).trim().toLowerCase();
+            final String text = ((String) value).trim().toLowerCase(Locale.ROOT);
             if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
                     || text.equals("on") || text.equals("1")) {
                 return Boolean.TRUE;

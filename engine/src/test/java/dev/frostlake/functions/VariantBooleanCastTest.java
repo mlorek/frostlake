@@ -23,6 +23,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -50,7 +52,7 @@ public class VariantBooleanCastTest extends BaseDatabaseTest {
             if (i > 0) {
                 all.append(", ");
             }
-            all.append(String.valueOf(rs.getRows().get(0).getValue(i)).toLowerCase());
+            all.append(String.valueOf(rs.getRows().get(0).getValue(i)).toLowerCase(Locale.ROOT));
         }
         return all.toString();
     }

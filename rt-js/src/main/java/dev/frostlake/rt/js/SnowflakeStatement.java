@@ -19,46 +19,74 @@ package dev.frostlake.rt.js;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.storage.ResultSet;
+import org.graalvm.polyglot.HostAccess;
+
 import java.util.List;
 
 /**
- * A prepared statement created by {@code snowflake.createStatement}. Its {@code execute()} substitutes any
- * positional {@code ?} binds and runs the SQL; column metadata (count/name) reflects the last execution,
- * as the Snowflake API exposes it on the statement.
+ * The statement behind the one {@code snowflake.createStatement} answers. The handler holds the script-side
+ * {@code Statement} (see {@code JavaScriptHandler}), which calls only the members exported here. Its
+ * {@code execute()} substitutes any positional {@code ?} binds and runs the SQL; the column metadata is the last
+ * execution's, and asking for it before there is one is refused: {@code Statement is not executed yet.}
+ * (live-verified).
  */
 public class SnowflakeStatement {
+
+    private static final String NOT_EXECUTED = "Statement is not executed yet.";
+
     private final DatabaseEngine engine;
     private final String sqlText;
     private final List<Object> binds;
+    private final JavaScriptApiFailures failures;
     private ResultSet lastResult;
 
-    SnowflakeStatement(final DatabaseEngine engine, final String sqlText, final List<Object> binds) {
+    SnowflakeStatement(final DatabaseEngine engine, final String sqlText, final List<Object> binds,
+                       final JavaScriptApiFailures failures) {
         this.engine = engine;
         this.sqlText = sqlText;
         this.binds = binds;
+        this.failures = failures;
     }
 
-    public JavaScriptResultSet execute() {
+    /**
+     * @return the rows, a {@link JavaScriptResultSet}, or a led failure
+     */
+    @HostAccess.Export
+    public Object execute() {
         final String sql = (binds == null || binds.isEmpty())
             ? sqlText : JdbcMarshaling.substitutePlaceholders(sqlText, binds);
         try {
             final ResultSet rs = engine.executeQuery(sql);
             this.lastResult = rs;
-            return new JavaScriptResultSet(rs);
-        } catch (final Exception e) {
-            throw new RuntimeException("Error executing SQL: " + e.getMessage(), e);
+            return new JavaScriptResultSet(rs, failures);
+        } catch (final RuntimeException failed) {
+            return failures.statement(failed);
         }
     }
 
-    public int getColumnCount() {
-        return lastResult == null ? 0 : lastResult.getColumnCount();
+    @HostAccess.Export
+    public Object getColumnCount() {
+        return lastResult == null ? (Object) failures.misuse(NOT_EXECUTED)
+            : (Object) Integer.valueOf(lastResult.getColumnCount());
     }
 
-    public String getColumnName(final int columnIndex) {
-        return lastResult == null ? null : lastResult.getColumns().get(columnIndex - 1).getName();
+    @HostAccess.Export
+    public Object getColumnName(final int columnIndex) {
+        if (lastResult == null) {
+            return failures.misuse(NOT_EXECUTED);
+        }
+        return columnIndex >= 1 && columnIndex <= lastResult.getColumns().size()
+            ? lastResult.getColumns().get(columnIndex - 1).getName() : null;
     }
 
-    public int getRowCount() {
-        return lastResult == null ? 0 : lastResult.getRowCount();
+    @HostAccess.Export
+    public Object getRowCount() {
+        return lastResult == null ? (Object) failures.misuse(NOT_EXECUTED)
+            : (Object) Integer.valueOf(lastResult.getRowCount());
+    }
+
+    @HostAccess.Export
+    public String getSqlText() {
+        return sqlText;
     }
 }

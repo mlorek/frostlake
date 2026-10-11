@@ -344,6 +344,16 @@ public final class StatementSeparation {
                 final Token inside = nextSpoken(tokens, word.getTokenIndex());
                 return fault(inside.getText(), inside.getLine(), inside.getCharPositionInLine(), null).between(i + 1);
             }
+            if (word.getType() == FrostlakeLexer.WITH && chain.getStart() != null
+                    && chain.getStart().getType() == FrostlakeLexer.SHOW) {
+                // A WITH after a SHOW listing is read on as the listing's own, and the word after it is refused:
+                // SHOW TABLES WITH x AS (SELECT 1) SELECT 1 is the 'x' (live-verified).
+                final Token named = nextSpoken(tokens, word.getTokenIndex());
+                if (named != null && named.getType() != Token.EOF && named.getType() != FrostlakeLexer.SEMI) {
+                    return fault(named.getText(), named.getLine(), named.getCharPositionInLine(), null)
+                        .between(i + 1);
+                }
+            }
             if (swallowsWord(chain, word)) {
                 final Token follower = nextSpoken(tokens, word.getTokenIndex());
                 if (follower != null && follower.getType() != Token.EOF

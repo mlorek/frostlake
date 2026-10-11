@@ -68,13 +68,27 @@ public final class NamedArguments {
      * @return whether the routine takes the call
      */
     public static boolean fit(final List<Parameter> params, final List<String> written) {
+        return targets(params, written) != null;
+    }
+
+    /**
+     * The parameter each written argument fills, where the parameter list takes the call (see {@link #fit}).
+     *
+     * @param params  the routine's parameters, in declaration order
+     * @param written the names as written, one per argument, null for a positional one
+     * @return each argument's parameter index, in the order the arguments are written, or null when the list
+     *         does not take the call
+     */
+    public static int[] targets(final List<Parameter> params, final List<String> written) {
         final boolean[] filled = new boolean[params.size()];
+        final int[] targets = new int[written.size()];
         for (int i = 0; i < written.size(); i++) {
             if (written.get(i) == null) {
                 if (i >= params.size()) {
-                    return false;
+                    return null;
                 }
                 filled[i] = true;
+                targets[i] = i;
                 continue;
             }
             final String name = SqlIdentifiers.canonicalText(written.get(i));
@@ -85,15 +99,16 @@ public final class NamedArguments {
                 }
             }
             if (target < 0) {
-                return false;
+                return null;
             }
             filled[target] = true;
+            targets[i] = target;
         }
         for (int p = 0; p < params.size(); p++) {
             if (!filled[p] && !params.get(p).hasDefault()) {
-                return false;
+                return null;
             }
         }
-        return true;
+        return targets;
     }
 }

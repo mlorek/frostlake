@@ -21,6 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -140,7 +141,7 @@ public class LikeAnyValueOperandTest extends BaseDatabaseTest {
 
     /** What an anonymous block returns, as text. */
     private String blockAnswer(final String block) {
-        return String.valueOf(scalar("EXECUTE IMMEDIATE $$" + block + "$$")).toLowerCase();
+        return String.valueOf(scalar("EXECUTE IMMEDIATE $$" + block + "$$")).toLowerCase(Locale.ROOT);
     }
 
     @Test

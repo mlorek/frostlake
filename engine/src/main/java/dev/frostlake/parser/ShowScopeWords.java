@@ -77,6 +77,61 @@ public final class ShowScopeWords {
     }
 
     /**
+     * Whether a refused word stands where a SHOW listing's modifier wants its rest: straight after a WITH or a
+     * LIMIT, after WITH PRIVILEGES, or after the IN of a grant listing. Live reads the listing whole and then refuses
+     * the word, so in a block it is one line (live-verified): {@code BEGIN SHOW TABLES WITH x; END;},
+     * {@code … WITH PRIVILEGES nosuch; RETURN 1; …} and {@code BEGIN SHOW GRANTS IN x; END;} name the word alone.
+     * The block's line is stacked all the same when another word follows the refused one ({@code … WITH x y; END;}
+     * is 'x', then 'END') or a statement reads on past the semicolon ({@code … IN x; SELECT 1; END;} likewise).
+     *
+     * @param stream  the parse's tokens
+     * @param refused the refused word
+     * @return whether a listing's open modifier stands before it
+     */
+    public static boolean followsOpenModifier(final TokenStream stream, final Token refused) {
+        final Token[] before = new Token[4];
+        int index = refused.getTokenIndex();
+        for (int k = 0; k < before.length && index > 0; k++) {
+            index--;
+            while (index > 0 && stream.get(index).getChannel() != Token.DEFAULT_CHANNEL) {
+                index--;
+            }
+            before[k] = stream.get(index).getChannel() == Token.DEFAULT_CHANNEL ? stream.get(index) : null;
+        }
+        if (before[0] == null) {
+            return false;
+        }
+        final int last = before[0].getType();
+        if (last == FrostlakeLexer.PRIVILEGES) {
+            return before[1] != null && before[1].getType() == FrostlakeLexer.WITH && opensInShow(stream, refused);
+        }
+        if (last == FrostlakeLexer.WITH || last == FrostlakeLexer.LIMIT) {
+            return opensInShow(stream, refused);
+        }
+        return last == FrostlakeLexer.IN && before[1] != null && before[1].getType() == FrostlakeLexer.GRANTS
+            && before[2] != null && before[2].getType() == FrostlakeLexer.SHOW;
+    }
+
+    /** Whether the statement a token stands in opens with SHOW. */
+    private static boolean opensInShow(final TokenStream stream, final Token token) {
+        Token first = null;
+        for (int i = token.getTokenIndex() - 1; i >= 0; i--) {
+            final Token read = stream.get(i);
+            if (read.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            if (read.getType() == FrostlakeLexer.SEMI || read.getType() == FrostlakeLexer.BEGIN
+                    || read.getType() == FrostlakeLexer.THEN || read.getType() == FrostlakeLexer.ELSE
+                    || read.getType() == FrostlakeLexer.DO || read.getType() == FrostlakeLexer.LOOP
+                    || read.getType() == FrostlakeLexer.REPEAT) {
+                break;
+            }
+            first = read;
+        }
+        return first != null && first.getType() == FrostlakeLexer.SHOW;
+    }
+
+    /**
      * {@link #takesInstance} over the six tokens before the one that follows the scope's name, nearest first — the
      * scope's word, the IN, and the four before it — and the type of that following token.
      */

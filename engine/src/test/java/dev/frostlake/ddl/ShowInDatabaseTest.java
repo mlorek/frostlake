@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -46,7 +47,7 @@ public class ShowInDatabaseTest extends BaseDatabaseTest {
     private Set<String> names(final ResultSet rs) {
         final Set<String> out = new HashSet<String>();
         for (final Row row : rs.getRows()) {
-            out.add(String.valueOf(row.getValue(NAME)).toUpperCase());
+            out.add(String.valueOf(row.getValue(NAME)).toUpperCase(Locale.ROOT));
         }
         return out;
     }
@@ -56,7 +57,7 @@ public class ShowInDatabaseTest extends BaseDatabaseTest {
         final Set<String> out = new HashSet<String>();
         final int nameIndex = rs.getColumnIndex("name");
         for (final Row row : rs.getRows()) {
-            out.add(String.valueOf(row.getValue(nameIndex)).toUpperCase());
+            out.add(String.valueOf(row.getValue(nameIndex)).toUpperCase(Locale.ROOT));
         }
         return out;
     }

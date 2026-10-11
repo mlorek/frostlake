@@ -41,8 +41,9 @@ The same suite then checks that Frostlake and Snowflake answer alike. A live run
 recreates `test_db` on the account. The test bases' teardown drops the account-level objects — databases, roles,
 users, warehouses — created since the first base-class test started, except `test_db` and the claim database; a
 `BaseDatabaseTest` test runs that cleanup only when one of its own statements creates, alters, drops or undrops such
-an object. The corpus runner on `snowflake` drops only `test_db`, so whatever its cases create outside it stays on
-the account. Tests that read engine internals (the catalog,
+an object. The corpus runner on `snowflake` does the same for its cases: it reads the account before its first
+case, and before each case — and once more at the end — drops the account-level objects the cases before created,
+from the role and the warehouse the session opened with. Tests that read engine internals (the catalog,
 the managers) still exercise the embedded engine.
 
 ### One live run per account

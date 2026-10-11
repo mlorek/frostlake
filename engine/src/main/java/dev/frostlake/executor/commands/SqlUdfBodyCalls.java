@@ -76,10 +76,7 @@ final class SqlUdfBodyCalls {
                        final String routineName, final String database, final String schema) {
         final List<FrostlakeParser.FunctionCallExprContext> calls = new ArrayList<FrostlakeParser.FunctionCallExprContext>();
         collect(body, calls);
-        final List<FrostlakeParser.FunctionCallExprContext> reached =
-            new ArrayList<FrostlakeParser.FunctionCallExprContext>();
-        collectReached(body, reached);
-        rejectCycle(queryExecutor, reached, routineName, database, schema);
+        rejectCycle(queryExecutor, body, routineName, database, schema);
         rejectNonWindowCallsWithOver(queryExecutor.getFunctionRegistry(), calls);
         final ExpressionEvaluator scan = new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(),
             queryExecutor.getCatalog(), queryExecutor);
@@ -197,8 +194,7 @@ final class SqlUdfBodyCalls {
         return message.contains("Unknown function") || message.contains("Unknown user-defined function");
     }
 
-    private static void rejectCycle(final QueryExecutor queryExecutor,
-                                    final List<FrostlakeParser.FunctionCallExprContext> calls,
+    private static void rejectCycle(final QueryExecutor queryExecutor, final ParseTree body,
                                     final String routineName, final String database, final String schema) {
         if (routineName == null) {
             return;
@@ -211,15 +207,22 @@ final class SqlUdfBodyCalls {
                 home = null;
             }
         }
-        if (reaches(queryExecutor, home, calls, routineName, new HashSet<String>())) {
+        if (reaches(queryExecutor, home, body, routineName, new HashSet<String>(), new HashSet<String>())) {
             throw new RuntimeException("Detected a cycle in SQL UDF: " + routineName);
         }
     }
 
-    /** Whether these calls reach the target by name, directly or through the SQL UDF bodies they call. */
-    private static boolean reaches(final QueryExecutor queryExecutor, final Schema home,
-                                   final List<FrostlakeParser.FunctionCallExprContext> calls, final String target,
-                                   final Set<String> visited) {
+    /**
+     * Whether a body reaches the target by name: through a call it makes, through the body of a SQL function it
+     * calls, or through a view it reads — a view's query calls functions as a body does, and a view may read
+     * another (live-verified). Only names written with one part are followed, as the account follows them.
+     */
+    private static boolean reaches(final QueryExecutor queryExecutor, final Schema home, final ParseTree body,
+                                   final String target, final Set<String> visitedFunctions,
+                                   final Set<String> visitedViews) {
+        final List<FrostlakeParser.FunctionCallExprContext> calls =
+            new ArrayList<FrostlakeParser.FunctionCallExprContext>();
+        collectReached(body, calls);
         for (final FrostlakeParser.FunctionCallExprContext call : calls) {
             final List<String> parts = nameParts(call);
             if (parts.size() != 1) {
@@ -229,7 +232,7 @@ final class SqlUdfBodyCalls {
             if (name.equals(target)) {
                 return true;
             }
-            if (home == null || !visited.add(name)) {
+            if (home == null || !visitedFunctions.add(name)) {
                 continue;
             }
             for (final Function called : home.getFunctionOverloads(name)) {
@@ -239,18 +242,45 @@ final class SqlUdfBodyCalls {
                 // A body that closes its own frame before a semicolon calls only what its frame holds.
                 final ParseTree calledBody =
                     parse(queryExecutor, SqlUdfBodyFrame.executableBody(called.getBody()).trim());
-                if (calledBody == null) {
-                    continue;
-                }
-                final List<FrostlakeParser.FunctionCallExprContext> inner =
-                    new ArrayList<FrostlakeParser.FunctionCallExprContext>();
-                collectReached(calledBody, inner);
-                if (reaches(queryExecutor, home, inner, target, visited)) {
+                if (calledBody != null
+                        && reaches(queryExecutor, home, calledBody, target, visitedFunctions, visitedViews)) {
                     return true;
                 }
             }
         }
+        if (home == null) {
+            return false;
+        }
+        final List<String> read = new ArrayList<String>();
+        collectRelationNames(body, read);
+        for (final String name : read) {
+            if (!home.hasView(name) || !visitedViews.add(name)) {
+                continue;
+            }
+            final String definition = home.getView(name).getDefinition();
+            final ParseTree query = definition == null ? null : parse(queryExecutor, definition.trim());
+            if (query != null && reaches(queryExecutor, home, query, target, visitedFunctions, visitedViews)) {
+                return true;
+            }
+        }
         return false;
+    }
+
+    /** The relations a tree reads by a name of one part: the tables and the views of its FROM clauses. */
+    private static void collectRelationNames(final ParseTree node, final List<String> names) {
+        if (node instanceof FrostlakeParser.TableQualifiedNameContext) {
+            final FrostlakeParser.TableQualifiedNameContext name = (FrostlakeParser.TableQualifiedNameContext) node;
+            if (name.namePart().isEmpty() && name.nameStartPart() != null) {
+                final String[] parts = SqlIdentifiers.canonicalTextParts(name.nameStartPart().getText());
+                if (parts.length == 1) {
+                    names.add(parts[0]);
+                }
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectRelationNames(node.getChild(i), names);
+        }
     }
 
     private static void rejectNonWindowCallsWithOver(final FunctionRegistry registry,

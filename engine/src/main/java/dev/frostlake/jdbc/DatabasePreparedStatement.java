@@ -41,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -386,7 +387,7 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
         if (currentResultSet != null) {
             return currentResultSet.getMetaData();
         }
-        final String head = originalSql.trim().toUpperCase();
+        final String head = originalSql.trim().toUpperCase(Locale.ROOT);
         if (!(head.startsWith("SELECT") || head.startsWith("WITH") || head.startsWith("SHOW")
                 || head.startsWith("DESC") || head.startsWith("EXPLAIN") || head.startsWith("CALL"))) {
             return null;

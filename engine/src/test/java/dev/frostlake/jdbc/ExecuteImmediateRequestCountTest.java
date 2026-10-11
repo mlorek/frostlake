@@ -27,6 +27,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -73,7 +74,7 @@ public class ExecuteImmediateRequestCountTest extends BaseJdbcTest {
                 if (rows) {
                     try (ResultSet rs = target.getResultSet()) {
                         rs.next();
-                        answers.add(rs.getMetaData().getColumnLabel(1).toLowerCase() + "=" + rs.getString(1));
+                        answers.add(rs.getMetaData().getColumnLabel(1).toLowerCase(Locale.ROOT) + "=" + rs.getString(1));
                     }
                 } else if (target.getUpdateCount() == -1) {
                     break;

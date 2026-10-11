@@ -27,6 +27,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -46,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class FailedRequestOpenTransactionTest extends BaseJdbcTest {
 
     /** A per-run suffix keeping the transaction names apart from any other run on the account. */
-    private final String nonce = Long.toString(System.nanoTime(), 36).toUpperCase();
+    private final String nonce = Long.toString(System.nanoTime(), 36).toUpperCase(Locale.ROOT);
 
     @Override
     protected void setupTest() throws SQLException {
@@ -104,7 +105,7 @@ public class FailedRequestOpenTransactionTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE ft1 (n INT)");
         fails("BEGIN TRANSACTION NAME " + name + "; INSERT INTO ft1 VALUES (1); INSERT INTO nowhere_xyz VALUES (2)");
         try (Connection other = observer(); Statement watch = other.createStatement()) {
-            assertEquals("true", answer(statement, "SELECT CURRENT_TRANSACTION() IS NOT NULL").toLowerCase());
+            assertEquals("true", answer(statement, "SELECT CURRENT_TRANSACTION() IS NOT NULL").toLowerCase(Locale.ROOT));
             assertEquals("1", answer(statement, "SELECT COUNT(*) FROM ft1"), "the session reads its own row");
             assertEquals("0", answer(watch, "SELECT COUNT(*) FROM ft1"), "no other session does");
             assertEquals("running", listedState(watch, name));
@@ -123,7 +124,7 @@ public class FailedRequestOpenTransactionTest extends BaseJdbcTest {
             assertEquals("running", listedState(watch, name));
             statement.execute("ROLLBACK");
             assertNull(listedState(watch, name));
-            assertEquals("true", answer(statement, "SELECT CURRENT_TRANSACTION() IS NULL").toLowerCase());
+            assertEquals("true", answer(statement, "SELECT CURRENT_TRANSACTION() IS NULL").toLowerCase(Locale.ROOT));
             assertEquals("0", answer(statement, "SELECT COUNT(*) FROM ft2"));
         }
     }
@@ -134,9 +135,9 @@ public class FailedRequestOpenTransactionTest extends BaseJdbcTest {
         final String name = "FLTX_BARE_" + nonce;
         fails("BEGIN TRANSACTION NAME " + name + "; INSERT INTO nowhere_xyz VALUES (1)");
         try (Connection other = observer(); Statement watch = other.createStatement()) {
-            assertEquals("true", answer(statement, "SELECT CURRENT_TRANSACTION() IS NOT NULL").toLowerCase());
+            assertEquals("true", answer(statement, "SELECT CURRENT_TRANSACTION() IS NOT NULL").toLowerCase(Locale.ROOT));
             assertEquals("running", listedState(watch, name));
-            assertEquals("true", answer(watch, "SELECT CURRENT_TRANSACTION() IS NULL").toLowerCase(),
+            assertEquals("true", answer(watch, "SELECT CURRENT_TRANSACTION() IS NULL").toLowerCase(Locale.ROOT),
                 "the other session is not inside it");
             statement.execute("ROLLBACK");
             assertNull(listedState(watch, name));

@@ -75,7 +75,7 @@ public final class ExternalVolumeResource implements RestResource {
                 final List<RestRow> rows = call.sql().showNamed("SHOW EXTERNAL VOLUMES" + RestShow.likeName(name),
                     name);
                 if (rows.isEmpty()) {
-                    throw RestException.notFound("External volume '" + name + "' does not exist or not authorized.");
+                    throw RestException.missing("External volume", name);
                 }
                 return RestResponse.json(200, toJson(call, rows.get(0)));
             case "deleteExternalVolume":

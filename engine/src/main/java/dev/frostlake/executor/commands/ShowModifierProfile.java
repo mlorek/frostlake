@@ -192,6 +192,11 @@ public final class ShowModifierProfile {
             // keeping the account's own order.
             return sorted(true, true, NO_TERSE, null, false);
         }
+        if (ctx.CORTEX() != null && ctx.SERVICES() != null) {
+            // LIKE, STARTS WITH and LIMIT … FROM all act on the listing, by name, as the statement's reference
+            // describes them.
+            return sorted(true, true, NO_TERSE, null, false);
+        }
         if (ctx.NOTEBOOKS() != null) {
             return sorted(true, true, NO_TERSE, null, false);
         }

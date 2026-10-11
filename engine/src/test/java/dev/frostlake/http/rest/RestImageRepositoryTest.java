@@ -70,8 +70,15 @@ public class RestImageRepositoryTest extends BaseRestTest {
         ok(post(REPOS, "{\"name\":\"repo_tags\"}"));
         ok(post(REPOS + "/repo_tags:set-tags",
             "[{\"tag_database\":\"img_db\",\"tag_schema\":\"s\",\"tag_name\":\"repo_tag\",\"tag_value\":\"v\"}]"));
+        final JsonNode tags = ok(get(REPOS + "/repo_tags:get-tags"));
+        assertEquals(1, tags.size(), tags.toString());
+        assertEquals("REPO_TAG", tags.get(0).path("tag_name").asString());
+        assertEquals("v", tags.get(0).path("tag_value").asString());
+        assertEquals("IMAGE_REPOSITORY", tags.get(0).path("level").asString());
         ok(post(REPOS + "/repo_tags:unset-tags",
             "[{\"tag_database\":\"img_db\",\"tag_schema\":\"s\",\"tag_name\":\"repo_tag\"}]"));
+        assertEquals(0, ok(get(REPOS + "/repo_tags:get-tags")).size());
+        error(404, get(REPOS + "/no_such_repo:get-tags"));
         error(404, post(REPOS + "/no_such_repo:set-tags",
             "[{\"tag_database\":\"img_db\",\"tag_schema\":\"s\",\"tag_name\":\"repo_tag\",\"tag_value\":\"v\"}]"));
     }

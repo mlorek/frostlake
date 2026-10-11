@@ -27,6 +27,7 @@ import dev.frostlake.types.TypeCategory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -257,7 +258,7 @@ public class DataFrame {
             return DataTypes.BinaryType;
         }
         if (category == TypeCategory.DATE_TIME) {
-            final String name = type.toString().toUpperCase();
+            final String name = type.toString().toUpperCase(Locale.ROOT);
             if (name.startsWith("DATE")) {
                 return DataTypes.DateType;
             }

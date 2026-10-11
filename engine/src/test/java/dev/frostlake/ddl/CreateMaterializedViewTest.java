@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -48,7 +50,7 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
 
     private String mvCell(final String name, final String column) {
         final ResultSet views = engine.executeQuery("SHOW MATERIALIZED VIEWS LIKE '" + name + "'");
-        return cell(views, soleRowWhere(views, "name", name.toUpperCase()), column);
+        return cell(views, soleRowWhere(views, "name", name.toUpperCase(Locale.ROOT)), column);
     }
 
     @Test
@@ -67,7 +69,7 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         engine.execute("CREATE MATERIALIZED VIEW mv_expensive AS SELECT * FROM products WHERE price > 150");
 
         assertEquals(1, mvCount("mv_expensive"));
-        assertTrue(mvCell("mv_expensive", "text").toLowerCase().contains("price > 150"),
+        assertTrue(mvCell("mv_expensive", "text").toLowerCase(Locale.ROOT).contains("price > 150"),
             mvCell("mv_expensive", "text"));
     }
 

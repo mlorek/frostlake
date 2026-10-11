@@ -25,6 +25,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -197,7 +199,7 @@ public class ServerlessTaskTest extends BaseDatabaseTest {
     private Row showTaskRow(final String taskName) {
         final ResultSet tasks = engine.executeQuery("SHOW TASKS");
         for (final Row row : tasks.getRows()) {
-            if (taskName.equals(String.valueOf(row.getValue(tasks.getColumnIndex("name"))).toUpperCase())) {
+            if (taskName.equals(String.valueOf(row.getValue(tasks.getColumnIndex("name"))).toUpperCase(Locale.ROOT))) {
                 return row;
             }
         }

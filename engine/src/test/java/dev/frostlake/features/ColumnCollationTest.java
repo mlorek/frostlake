@@ -23,6 +23,8 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -45,13 +47,13 @@ public class ColumnCollationTest extends BaseDatabaseTest {
     /** Asserts the column's type cell carries exactly this collation spec. */
     private void assertCollation(final String table, final String column, final String spec) {
         final String type = columnType(table, column);
-        assertTrue(type.toUpperCase().contains("COLLATE '" + spec.toUpperCase() + "'"),
+        assertTrue(type.toUpperCase(Locale.ROOT).contains("COLLATE '" + spec.toUpperCase(Locale.ROOT) + "'"),
             column + " should be collated '" + spec + "' but its type reads: " + type);
     }
 
     private void assertNoCollation(final String table, final String column) {
         final String type = columnType(table, column);
-        assertFalse(type.toUpperCase().contains("COLLATE"),
+        assertFalse(type.toUpperCase(Locale.ROOT).contains("COLLATE"),
             column + " should carry no collation but its type reads: " + type);
     }
 

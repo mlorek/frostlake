@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -39,7 +41,7 @@ public class TasksTest extends BaseDatabaseTest {
 
     private String taskCell(final String name, final String column) {
         final ResultSet tasks = engine.executeQuery("SHOW TASKS LIKE '" + name + "'");
-        return cell(tasks, soleRowWhere(tasks, "name", name.toUpperCase()), column);
+        return cell(tasks, soleRowWhere(tasks, "name", name.toUpperCase(Locale.ROOT)), column);
     }
 
     @Test
@@ -172,7 +174,7 @@ public class TasksTest extends BaseDatabaseTest {
             CALL refresh_data()
             """);
 
-        assertTrue(taskCell("refresh_task", "definition").toUpperCase().contains("CALL"),
+        assertTrue(taskCell("refresh_task", "definition").toUpperCase(Locale.ROOT).contains("CALL"),
             "task body should be the CALL statement");
 
         engine.execute("ALTER TASK refresh_task RESUME");

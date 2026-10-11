@@ -45,6 +45,7 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -95,7 +96,7 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
      * zero rows (so it is cheap) while still carrying the projection's columns.
      */
     private ResultSetMetaData prepareResultMetaData() throws SQLException {
-        final String head = sql.trim().toUpperCase();
+        final String head = sql.trim().toUpperCase(Locale.ROOT);
         if (!(head.startsWith("SELECT") || head.startsWith("WITH") || head.startsWith("SHOW")
                 || head.startsWith("DESC") || head.startsWith("EXPLAIN") || head.startsWith("CALL"))) {
             return null;

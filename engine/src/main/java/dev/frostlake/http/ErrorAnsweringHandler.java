@@ -38,14 +38,30 @@ public final class ErrorAnsweringHandler implements HttpHandler {
     private static final Logger logger = LoggerFactory.getLogger(ErrorAnsweringHandler.class);
 
     private final HttpHandler delegate;
+    private final RequestGuard guard;
+    private final boolean jsonBody;
 
     public ErrorAnsweringHandler(final HttpHandler delegate) {
+        this(delegate, null, false);
+    }
+
+    /**
+     * @param delegate the handler
+     * @param guard what a request is held to before the handler sees it, or null for nothing
+     * @param jsonBody whether the handler takes a JSON body and no other
+     */
+    ErrorAnsweringHandler(final HttpHandler delegate, final RequestGuard guard, final boolean jsonBody) {
         this.delegate = delegate;
+        this.guard = guard;
+        this.jsonBody = jsonBody;
     }
 
     @Override
     public void handle(final HttpExchange exchange) throws IOException {
         try {
+            if (guard != null && guard.answered(exchange, jsonBody)) {
+                return;
+            }
             delegate.handle(exchange);
         } catch (final RuntimeException | Error fault) {
             logger.error("Unanswered fault handling {} {}", exchange.getRequestMethod(), exchange.getRequestURI(),

@@ -110,7 +110,9 @@ final class RowOperandWalk extends AstPrinterVisitor {
         if ("POSITION".equalsIgnoreCase(expr.getFunctionName()) && !expr.getArguments().isEmpty()) {
             positionTests.add(expr.getArguments().get(0));
         }
-        return super.visitFunctionCall(expr);
+        final String printed = super.visitFunctionCall(expr);
+        context.rejectRowCall(expr);
+        return printed;
     }
 
     @Override

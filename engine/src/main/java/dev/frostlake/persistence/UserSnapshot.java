@@ -22,6 +22,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Serializable snapshot of user metadata
@@ -48,6 +49,8 @@ public class UserSnapshot implements Serializable {
     // the reader can apply them VERBATIM — including the nulls, which is what makes an explicitly
     // unset property survive a round trip. A snapshot predating the group deserializes it as null,
     // and the reader then leaves the restored user's own defaults alone rather than nulling them.
+    /** The session parameters set on the user, by name; null on a snapshot written before they were kept. */
+    public Map<String, String> parameters;
     public Boolean propertiesWritten;
     public String loginName;
     public String displayName;

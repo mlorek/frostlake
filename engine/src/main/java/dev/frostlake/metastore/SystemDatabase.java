@@ -18,8 +18,8 @@ package dev.frostlake.metastore;
 
 /**
  * The SNOWFLAKE database, which every account has and nobody changes: it cannot be cloned, renamed, altered,
- * commented on, dropped or replaced, and its schemas are its own — none is created in it, dropped from it, altered,
- * or moved into or out of it.
+ * commented on, dropped or replaced, and its schemas are its own — the ones an account's holds
+ * ({@link SystemSchema}); none is created in it, dropped from it, altered, or moved into or out of it.
  *
  * <p>Its PUBLIC schema is another matter. A real SNOWFLAKE database has none (live-verified, see
  * {@code SnowflakeSchemas}); here it is the engine's default working schema ({@code database.default} and

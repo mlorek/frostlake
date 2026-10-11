@@ -131,7 +131,18 @@ public final class LeadingCommentOffset {
      * @return the two re-based, as {line, position}
      */
     public static int[] rebase(final int line, final int position) {
-        final SourcePosition origin = ORIGIN.get();
+        return rebase(ORIGIN.get(), line, position);
+    }
+
+    /**
+     * {@link #rebase(int, int)} against an origin given, as {@link #of} reads one from a text.
+     *
+     * @param origin   the first real token's place, or null for no re-basing
+     * @param line     the place's line, 1-based
+     * @param position its column
+     * @return the two re-based, as {line, position}
+     */
+    public static int[] rebase(final SourcePosition origin, final int line, final int position) {
         if (origin == null || line < origin.getLine()) {
             return new int[]{line, position};
         }

@@ -27,6 +27,7 @@ import dev.frostlake.storage.Row;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * {@code WITH PRIVILEGES} keeps only the objects the session's role holds one of those privileges on.
@@ -171,7 +172,7 @@ final class ShowPrivilegeFilter {
 
     /** The privilege a written name stands for, or null when this engine does not model it. */
     private static Privilege privilegeOf(final String written) {
-        final String name = written.toUpperCase().replace(' ', '_');
+        final String name = written.toUpperCase(Locale.ROOT).replace(' ', '_');
         for (final Privilege privilege : Privilege.values()) {
             if (privilege.name().equals(name)) {
                 return privilege;

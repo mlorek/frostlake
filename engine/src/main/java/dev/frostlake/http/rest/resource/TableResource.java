@@ -176,8 +176,7 @@ public final class TableResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = existing(call, name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Table '" + RelationNames.qualifiedDisplay(call, name)
-                + "' does not exist or not authorized.");
+            throw RestException.missing("Table", RelationNames.qualifiedDisplay(call, name));
         }
         final ObjectNode table = toJson(rows.get(0));
         details(call, table, call.qualifiedSql(name));

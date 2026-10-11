@@ -22,6 +22,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -179,12 +180,12 @@ final class StarQualifierCheck {
         QueryExecutor.collectCteNames(from, names);
         if (cteResults != null) {
             for (final String cte : cteResults.keySet()) {
-                names.add(cte.toUpperCase());
+                names.add(cte.toUpperCase(Locale.ROOT));
             }
         }
         if (executor.getCurrentCteContext() != null) {
             for (final String cte : executor.getCurrentCteContext().keySet()) {
-                names.add(cte.toUpperCase());
+                names.add(cte.toUpperCase(Locale.ROOT));
             }
         }
         return names;

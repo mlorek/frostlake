@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -88,7 +90,7 @@ public class CompleteTaskGraphsFunctionTest extends BaseDatabaseTest {
         assertEquals(1L, ((Number) cell(rs, 0, "ATTEMPT_NUMBER")).longValue());
         assertTrue(cell(rs, 0, "COMPLETED_TIME") != null);
         assertNull(cell(rs, 0, "BACKFILL_INFO"));
-        assertEquals(1, graphs(root.toLowerCase(), "").getRowCount(), "the root's name in any case");
+        assertEquals(1, graphs(root.toLowerCase(Locale.ROOT), "").getRowCount(), "the root's name in any case");
     }
 
     @Test

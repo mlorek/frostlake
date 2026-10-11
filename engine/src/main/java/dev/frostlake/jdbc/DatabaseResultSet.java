@@ -46,6 +46,7 @@ import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.Calendar;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -124,7 +125,7 @@ public class DatabaseResultSet implements ResultSet {
             return false;
         }
         final String type = data.getColumns().get(columnIndex - 1).getDataType();
-        return type != null && ("TIME".equalsIgnoreCase(type) || type.toUpperCase().startsWith("TIMESTAMP"));
+        return type != null && ("TIME".equalsIgnoreCase(type) || type.toUpperCase(Locale.ROOT).startsWith("TIMESTAMP"));
     }
 
     /** Whether a 1-based column is declared DATE, TIME or a TIMESTAMP flavour, read off the wire metadata. */
@@ -133,7 +134,7 @@ public class DatabaseResultSet implements ResultSet {
             return false;
         }
         final String type = data.getColumns().get(columnIndex - 1).getDataType();
-        return type != null && (type.toUpperCase().startsWith("DATE") || type.toUpperCase().startsWith("TIME"));
+        return type != null && (type.toUpperCase(Locale.ROOT).startsWith("DATE") || type.toUpperCase(Locale.ROOT).startsWith("TIME"));
     }
 
     /** Whether a 1-based column is a NUMBER of scale 0, whose cells read as whole numbers. */
@@ -142,7 +143,7 @@ public class DatabaseResultSet implements ResultSet {
             return false;
         }
         final ColumnData column = data.getColumns().get(columnIndex - 1);
-        return column.getDataType() != null && column.getDataType().toUpperCase().startsWith("NUMBER")
+        return column.getDataType() != null && column.getDataType().toUpperCase(Locale.ROOT).startsWith("NUMBER")
             && column.scaleOrZero() == 0;
     }
 
@@ -434,7 +435,7 @@ public class DatabaseResultSet implements ResultSet {
         wasNull = (value == null);
         if (value instanceof String && columnIndex <= data.getColumns().size()) {
             final String typeName = data.getColumns().get(columnIndex - 1).getDataType();
-            if (typeName != null && typeName.toUpperCase().contains("BINARY")) {
+            if (typeName != null && typeName.toUpperCase(Locale.ROOT).contains("BINARY")) {
                 // BINARY crosses the JSON wire as hex text; getObject restores the JDBC byte[] form.
                 return JdbcMarshaling.toBytes(value);
             }
@@ -448,7 +449,7 @@ public class DatabaseResultSet implements ResultSet {
             // A temporal cell crosses the JSON wire as text and comes back as the java.sql class the
             // column's metadata NAMES — the class the account's driver answers with, and the one a client
             // reading getColumnClassName is entitled to cast to.
-            final String type = data.getColumns().get(columnIndex - 1).getDataType().toUpperCase();
+            final String type = data.getColumns().get(columnIndex - 1).getDataType().toUpperCase(Locale.ROOT);
             if (type.startsWith("DATE")) {
                 return JdbcMarshaling.toDate(value);
             }

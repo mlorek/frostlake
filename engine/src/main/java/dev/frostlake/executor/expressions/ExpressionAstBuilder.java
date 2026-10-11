@@ -690,6 +690,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         }
         final BinaryOperationExpression node = new BinaryOperationExpression(left, comparisonOperator(op), right);
         node.setPosition(new SourcePosition(op.getLine(), op.getCharPositionInLine()));
+        if (isBangSpelled(op)) {
+            node.markBangSpelled();
+        }
         return node;
     }
 
@@ -1107,9 +1110,12 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final QuantifiedComparisonExpression quantified = new QuantifiedComparisonExpression(
             value,
             comparisonOperator(ctx.op),
-            Quantifier.valueOf(ctx.quantifier().getText().toUpperCase()),
+            Quantifier.valueOf(ctx.quantifier().getText().toUpperCase(Locale.ROOT)),
             positionedSubquery(ctx.selectStatement()));
         quantified.setPosition(keywordPosition(ctx.op));
+        if (isBangSpelled(ctx.op)) {
+            quantified.markBangSpelled();
+        }
         return quantified;
     }
 
@@ -1294,9 +1300,10 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         // A typed date/time literal — DATE '2020-01-15', TIMESTAMP '2020-01-15 10:30:00', TIMESTAMP_NTZ '…' —
         // is exactly '<string>'::<TYPE>; route it through CAST so it reuses the same conversion and value.
         final String value = unquoteString(ctx.STRING_LITERAL().getText());
-        final String typeName = ctx.dateTimeLiteralType().getText().toUpperCase();
-        return new CastExpression(
-            new LiteralExpression(value, LiteralType.STRING), typeName);
+        final String typeName = ctx.dateTimeLiteralType().getText().toUpperCase(Locale.ROOT);
+        final CastExpression literal = new CastExpression(new LiteralExpression(value, LiteralType.STRING), typeName);
+        literal.markTypedLiteral();
+        return literal;
     }
 
     // ------------------------------------------------------------------
@@ -1535,7 +1542,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     public Expression visitExtractFromExpr(final FrostlakeParser.ExtractFromExprContext ctx) {
         // ANSI EXTRACT(<part> FROM <expr>) — desugar to the two-argument function form the engine already
         // supports, EXTRACT('<part>', <expr>), with the date-part identifier carried as a string literal.
-        final String fromFunction = ctx.functionName().getText().toUpperCase();
+        final String fromFunction = ctx.functionName().getText().toUpperCase(Locale.ROOT);
         if (!fromFunction.equals("EXTRACT")) {
             // Live reports the FROM itself, at its own position, and says nothing about the function:
             // SUBSTRING(v FROM 2) is "unexpected 'FROM'" (a statement meets AnsiFromFormSyntax first, which
@@ -1589,6 +1596,20 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             }
         }
         window.describeOver(distinctCall, partition, order, ascending, nullsFirst);
+        if (isWholePartition(over.windowFrame())) {
+            window.markWholeFramed();
+        }
+    }
+
+    /** Whether a frame runs from the partition's first row to its last. */
+    private static boolean isWholePartition(final FrostlakeParser.WindowFrameContext frame) {
+        if (frame == null || frame.BETWEEN() == null) {
+            return false;
+        }
+        final FrostlakeParser.FrameBoundContext from = frame.frameBound(0);
+        final FrostlakeParser.FrameBoundContext to = frame.frameBound(1);
+        return from.UNBOUNDED() != null && from.PRECEDING() != null
+            && to.UNBOUNDED() != null && to.FOLLOWING() != null;
     }
 
     @Override
@@ -1600,7 +1621,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             // functions that hand their argument back — reading them off the parse tree here rather than
             // re-parsing the call text later.
             final WindowFunctionExpression window = new WindowFunctionExpression(originalText(ctx));
-            window.describeCall(ctx.functionName().getText().toUpperCase(),
+            window.describeCall(ctx.functionName().getText().toUpperCase(Locale.ROOT),
                 argList(ctx.functionArgList()));
             window.describeNameParts(functionNameParts(ctx.functionName()));
             // ROWS only: a RANGE frame leaves the window CUMULATIVE as far as the declared width goes,
@@ -1619,7 +1640,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 // A lone star argument keeps its qualifier and filters for the arity walk, which
                 // expands it exactly as the plain star call is expanded.
                 final FrostlakeParser.FunctionArgContext star = ctx.functionArgList().functionArg(0);
-                final FunctionCallExpression starCall = starCall(ctx.functionName().getText().toUpperCase(),
+                final FunctionCallExpression starCall = starCall(ctx.functionName().getText().toUpperCase(Locale.ROOT),
                     ctx.DISTINCT() != null, star.starQualifiedName(), star.starArgumentModifier());
                 starCall.setPosition(window.getPosition());
                 window.describeStar(starCall);
@@ -1908,7 +1929,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                                                final TerminalNode distinct, final TerminalNode all,
                                                final FrostlakeParser.WithinGroupClauseContext withinGroup) {
         final WindowFunctionExpression window = new WindowFunctionExpression(originalText(ctx));
-        window.describeCall(name.getText().toUpperCase(), values);
+        window.describeCall(name.getText().toUpperCase(Locale.ROOT), values);
         window.describeNameParts(functionNameParts(name));
         window.describeWindow(over.orderByClause() != null,
             over.windowFrame() != null && over.windowFrame().ROWS() != null);
@@ -2021,7 +2042,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     public Expression visitFunctionCallStarExpr(final FrostlakeParser.FunctionCallStarExprContext ctx) {
         // COUNT(*) / COUNT(DISTINCT *) / COUNT(t.*) — a star call, with its qualifier and its EXCLUDE /
         // ILIKE filters carried for the star-aware callers.
-        final FunctionCallExpression call = starCall(ctx.functionName().getText().toUpperCase(),
+        final FunctionCallExpression call = starCall(ctx.functionName().getText().toUpperCase(Locale.ROOT),
             ctx.DISTINCT() != null, ctx.starQualifiedName(), ctx.starArgumentModifier());
         // The parse tree's canonical parts, so a user-defined function resolves by its exact name.
         call.setNameParts(functionNameParts(ctx.functionName()));
@@ -2053,7 +2074,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         call.setStarExcludes(excludes);
         if (qualifier != null) {
             final String[] parts = ParseTreeText.qualifiedNameParts(qualifier);
-            call.setStarQualifier(parts[parts.length - 1].toUpperCase());
+            call.setStarQualifier(parts[parts.length - 1].toUpperCase(Locale.ROOT));
         }
         return call;
     }
@@ -2087,7 +2108,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     @Override
     public Expression visitSystemFuncExpr(final FrostlakeParser.SystemFuncExprContext ctx) {
         final FunctionCallExpression call = new FunctionCallExpression(
-            ctx.SYSTEM_FUNC().getText().toUpperCase(), argList(ctx.booleanExprList()));
+            ctx.SYSTEM_FUNC().getText().toUpperCase(Locale.ROOT), argList(ctx.booleanExprList()));
         // Positioned like any other call, so an arity refusal can point at it the way live does.
         call.setPosition(new SourcePosition(ctx.getStart().getLine(),
             ctx.getStart().getCharPositionInLine()));
@@ -2106,7 +2127,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 built.add(visit(arg));
             }
             final FunctionCallExpression call = new FunctionCallExpression(
-                ctx.SYSTEM_STREAM_HAS_DATA().getText().toUpperCase(), built);
+                ctx.SYSTEM_STREAM_HAS_DATA().getText().toUpperCase(Locale.ROOT), built);
             call.setPosition(new SourcePosition(ctx.getStart().getLine(),
                 ctx.getStart().getCharPositionInLine()));
             return call;
@@ -2168,6 +2189,13 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         if (list != null) {
             for (final FrostlakeParser.BooleanExprContext arg : list.booleanExpr()) {
                 args.add(visit(arg));
+            }
+            if (list.booleanExpr().size() == 1 && args.get(0) instanceof SubqueryExpression) {
+                // The call's query argument, placed where the argument begins (see SubqueryAnchor).
+                final SubqueryExpression whole = (SubqueryExpression) args.get(0);
+                final Token argumentStart = list.booleanExpr(0).getStart();
+                whole.setQueryPosition(whole.getQueryPosition());
+                whole.setPosition(new SourcePosition(argumentStart.getLine(), argumentStart.getCharPositionInLine()));
             }
         }
         return args;
@@ -2355,6 +2383,11 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             return CastFieldsModifier.ADD;
         }
         return CastFieldsModifier.NONE;
+    }
+
+    /** Whether a comparison operator is the inequality written {@code !=}. */
+    private static boolean isBangSpelled(final Token op) {
+        return op.getType() == FrostlakeParser.NEQ && op.getText().startsWith("!");
     }
 
     private BinaryOperator comparisonOperator(final Token op) {

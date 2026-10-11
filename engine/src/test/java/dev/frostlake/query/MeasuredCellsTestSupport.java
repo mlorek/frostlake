@@ -56,9 +56,10 @@ public abstract class MeasuredCellsTestSupport extends BaseDatabaseTest {
                     out.append(c == 0 ? "" : "|").append(String.valueOf(rs.getValue(c)).replace("\n", " | "));
                 }
             }
-            return out.toString();
+            // A value may carry a refusal too: a handler that returns its SQLERRM.
+            return masked(out.toString());
         } catch (final RuntimeException refused) {
-            return "REFUSED " + roleMasked(String.valueOf(refused.getMessage()).replace("\n", " | "));
+            return "REFUSED " + masked(String.valueOf(refused.getMessage()).replace("\n", " | "));
         }
     }
 
@@ -74,16 +75,21 @@ public abstract class MeasuredCellsTestSupport extends BaseDatabaseTest {
             }
             return out.toString();
         } catch (final RuntimeException refused) {
-            return "REFUSED " + roleMasked(String.valueOf(refused.getMessage()).replace("\n", " | "));
+            return "REFUSED " + masked(String.valueOf(refused.getMessage()).replace("\n", " | "));
         }
     }
 
     /**
-     * A refusal with the role it names masked: the privilege hint of a missing object names the session's own
-     * role, which is not the same on every engine the suite runs against.
+     * A refusal with what differs by the account it ran on masked: the role a privilege hint names — the session's
+     * own, or the owner a procedure runs as — and the account's locator, which a hint on the account and a share's
+     * name carry. Neither is the same on every engine the suite runs against.
      */
-    private static String roleMasked(final String message) {
-        return message.replaceAll("Your primary role \\S+ must", "Your primary role <ROLE> must");
+    private static String masked(final String message) {
+        return message.replaceAll("Your primary role \\S+ (or one of your secondary roles )?must",
+                "Your primary role <ROLE> $1must")
+            .replaceAll("The owner role \\S+ must", "The owner role <ROLE> must")
+            .replaceAll("granted on ACCOUNT \\S+\\.", "granted on ACCOUNT <ACCOUNT>.")
+            .replaceAll("(Share '\"|granted on SHARE \")[A-Za-z0-9_]+\\.", "$1<ACCOUNT>.");
     }
 
     private static String spelled(final DataType type) {
@@ -112,8 +118,24 @@ public abstract class MeasuredCellsTestSupport extends BaseDatabaseTest {
         assertEquals(expected, answer(sql), sql);
     }
 
+    /**
+     * Asserts one statement reads as measured once what every run generates anew is masked: a 19-digit id — a
+     * transaction's — as {@code <ID19>} and a UUID as {@code <QID>}.
+     */
+    protected void assertShapedAnswer(final String expected, final String sql) {
+        assertEquals(expected, answer(sql).replaceAll("\\b\\d{19}\\b", "<ID19>")
+            .replaceAll("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<QID>"), sql);
+    }
+
     /** Asserts one statement's columns are the measured ones. */
     protected void assertShape(final String expected, final String sql) {
         assertEquals(expected, shape(sql), sql);
+    }
+
+    /** Asserts each of the statements has the measured columns, the same for all of them. */
+    protected void assertShapes(final String expected, final String... statements) {
+        for (final String sql : statements) {
+            assertEquals(expected, shape(sql), sql);
+        }
     }
 }

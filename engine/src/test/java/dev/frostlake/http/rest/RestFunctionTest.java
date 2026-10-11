@@ -71,4 +71,19 @@ public class RestFunctionTest extends BaseRestTest {
         error(404, post(FUNCTIONS, function("orphan_fn").replace("echo_svc", "no_such_svc")));
         error(400, post(FUNCTIONS, "{\"name\":\"no_path\",\"arguments\":[],\"service\":\"echo_svc\",\"endpoint\":\"api\"}"));
     }
+
+    @Test
+    public void tagsAreSetReadAndUnsetOnTheOverload() throws Exception {
+        sql("CREATE TAG sf_db.s.sf_tag");
+        ok(post(FUNCTIONS + "/plain_fn():set-tags",
+            "[{\"tag_database\":\"sf_db\",\"tag_schema\":\"s\",\"tag_name\":\"sf_tag\",\"tag_value\":\"v\"}]"));
+        final JsonNode tags = ok(get(FUNCTIONS + "/plain_fn():get-tags"));
+        assertEquals(1, tags.size(), tags.toString());
+        assertEquals("SF_TAG", tags.get(0).path("tag_name").asString());
+        assertEquals("v", tags.get(0).path("tag_value").asString());
+        assertEquals("FUNCTION", tags.get(0).path("level").asString());
+        ok(post(FUNCTIONS + "/plain_fn():unset-tags",
+            "[{\"tag_database\":\"sf_db\",\"tag_schema\":\"s\",\"tag_name\":\"sf_tag\"}]"));
+        assertEquals(0, ok(get(FUNCTIONS + "/plain_fn():get-tags")).size());
+    }
 }

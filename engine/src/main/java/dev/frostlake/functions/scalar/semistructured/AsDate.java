@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.types.DateTimeType;
 import java.time.LocalDate;
 import java.util.List;
 
 /** AS_DATE(v) — the value when it is a DATE, else NULL (variant members carry dates as text). */
-public class AsDate extends StructuredArgumentFunction {
+public class AsDate extends VariantArgumentFunction {
     public AsDate() { super("AS_DATE", DateTimeType.DATE); }
 
     @Override

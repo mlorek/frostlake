@@ -230,7 +230,7 @@ public class GroupByOperator implements Operator {
                 lateralAliasSink.putAll(outerBindings);
             }
             for (final String alias : nullAliasNames) {
-                lateralAliasSink.put(alias.toUpperCase(), null);
+                lateralAliasSink.put(alias.toUpperCase(Locale.ROOT), null);
             }
         }
     }
@@ -242,7 +242,7 @@ public class GroupByOperator implements Operator {
         }
         final String alias = lateralAliasNames.get(index);
         if (alias != null) {
-            lateralAliasSink.put(alias.toUpperCase(), value);
+            lateralAliasSink.put(alias.toUpperCase(Locale.ROOT), value);
         }
     }
 

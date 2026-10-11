@@ -67,7 +67,7 @@ final class SyntaxAfter {
     }
 
     /** The first token after a node, found among the later children of its ancestors; null at the end. */
-    private static Token following(final ParseTree clause) {
+    static Token following(final ParseTree clause) {
         ParseTree node = clause;
         while (node.getParent() != null) {
             final ParseTree parent = node.getParent();

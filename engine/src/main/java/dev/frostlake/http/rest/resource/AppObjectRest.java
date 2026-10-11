@@ -56,8 +56,7 @@ final class AppObjectRest {
         final List<RestRow> rows = call.sql().showNamed("SHOW " + kind + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound(display + " '" + qualifiedDisplay(call, name)
-                + "' does not exist or not authorized.");
+            throw RestException.missing(display, qualifiedDisplay(call, name));
         }
         return rows.get(0);
     }

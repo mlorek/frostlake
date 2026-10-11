@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -47,7 +49,7 @@ public class SystemRolesTest extends BaseDatabaseTest {
     /** One SHOW ROLES cell for the given role, matched by its name column. */
     private String roleCell(final String role, final String column) {
         final ResultSet rs = engine.executeQuery("SHOW ROLES LIKE '" + role + "'");
-        return cell(rs, soleRowWhere(rs, "name", role.toUpperCase()), column);
+        return cell(rs, soleRowWhere(rs, "name", role.toUpperCase(Locale.ROOT)), column);
     }
 
     private int roleCount(final String name) {

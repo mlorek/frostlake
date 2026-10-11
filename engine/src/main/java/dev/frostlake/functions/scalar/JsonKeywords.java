@@ -24,6 +24,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -162,7 +163,7 @@ public final class JsonKeywords {
             final char sign = wordStart == i ? '\0' : c;
             final String word = text.substring(wordStart, end);
             final boolean isName = sign == '\0' && expectsName(open) && colonFollows(text, end);
-            final String replacement = isName ? '"' + word + '"' : replacementFor(word.toLowerCase(), sign);
+            final String replacement = isName ? '"' + word + '"' : replacementFor(word.toLowerCase(Locale.ROOT), sign);
             if (replacement == null) {
                 if (out != null) {
                     out.append(text, i, end);

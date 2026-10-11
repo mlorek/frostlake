@@ -26,7 +26,6 @@ import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphConfig;
 import dev.frostlake.task.TaskScheduler;
-import dev.frostlake.transaction.Transaction;
 import dev.frostlake.transaction.TransactionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,6 +37,7 @@ import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
@@ -73,7 +73,7 @@ public class SystemFunctionEvaluator {
         if (!SystemFunctionNames.contains(funcName)) {
             throw new RuntimeException("Unsupported system function: " + funcName);
         }
-        switch (funcName.toUpperCase()) {
+        switch (funcName.toUpperCase(Locale.ROOT)) {
             case "SYSTEM$TYPEOF": {
                 if (!args.isEmpty() && args.get(0) != null) {
                     final Object v = args.get(0);
@@ -113,7 +113,7 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$LOG_WARN":
             case "SYSTEM$LOG_ERROR":
             case "SYSTEM$LOG_FATAL":
-                if (!args.isEmpty()) logger.info("{}: {}", funcName.toUpperCase(), args.get(0));
+                if (!args.isEmpty()) logger.info("{}: {}", funcName.toUpperCase(Locale.ROOT), args.get(0));
                 return null;
             case "SYSTEM$CLUSTERING_DEPTH": {
                 final String t = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
@@ -134,7 +134,7 @@ public class SystemFunctionEvaluator {
                 return "Query cancelled.";
             case "SYSTEM$STREAM_BACKLOG": {
                 if (!args.isEmpty() && args.get(0) != null) {
-                    final String name = args.get(0).toString().replaceAll("^'|'$", "").toUpperCase();
+                    final String name = args.get(0).toString().replaceAll("^'|'$", "").toUpperCase(Locale.ROOT);
                     final String dbN = catalog.getCurrentDatabase();
                     final String scN = catalog.getCurrentSchema();
                     if (dbN != null && scN != null) {
@@ -243,20 +243,20 @@ public class SystemFunctionEvaluator {
             rootName = rootName.substring(rootDot + 1);
         }
         final Set<String> enabled = new HashSet<>();
-        enabled.add(rootName.toUpperCase());
+        enabled.add(rootName.toUpperCase(Locale.ROOT));
         boolean changed = true;
         while (changed) {
             changed = false;
             for (final Task task : tasks) {
-                if (enabled.contains(task.getName().toUpperCase())) {
+                if (enabled.contains(task.getName().toUpperCase(Locale.ROOT))) {
                     continue;
                 }
                 for (final String predecessor : task.getPredecessors()) {
                     final int dot = predecessor.lastIndexOf('.');
                     final String bare = dot >= 0 ? predecessor.substring(dot + 1) : predecessor;
-                    if (enabled.contains(bare.toUpperCase())) {
+                    if (enabled.contains(bare.toUpperCase(Locale.ROOT))) {
                         task.setState(TaskState.STARTED);
-                        enabled.add(task.getName().toUpperCase());
+                        enabled.add(task.getName().toUpperCase(Locale.ROOT));
                         changed = true;
                         break;
                     }
@@ -266,17 +266,12 @@ public class SystemFunctionEvaluator {
     }
 
     /**
-     * SYSTEM$ABORT_TRANSACTION(&lt;id&gt;): abort the transaction the id NAMES — the public id SHOW TRANSACTIONS
-     * lists and CURRENT_TRANSACTION() answers — not whichever one the caller happens to hold. An id that names
-     * no running transaction is answered, not refused: {@code Could not abort txn: <id>}.
+     * SYSTEM$ABORT_TRANSACTION(&lt;id&gt;) for a caller that hands over the argument's value alone: abort the
+     * transaction the id NAMES — the public id SHOW TRANSACTIONS lists and CURRENT_TRANSACTION() answers —
+     * whichever session holds it. See {@link TransactionAbort}.
      */
     private Object abortTransaction(final List<Object> args) {
-        final String written = args.isEmpty() || args.get(0) == null ? "" : String.valueOf(args.get(0)).trim();
-        final Transaction own = transactionManager.getCurrentTransaction();
-        if (own != null && written.equals(String.valueOf(own.getPublicId()))) {
-            transactionManager.rollback();
-            return "Transaction aborted.";
-        }
-        return "Could not abort txn: " + written;
+        return TransactionAbort.answer(TransactionAbort.byValue(args.isEmpty() ? null : args.get(0)),
+            transactionManager, false);
     }
 }

@@ -45,15 +45,36 @@ public class ConvertTimezone extends BuiltInFunction {
      */
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.size() == 2) {
             if (args.get(1) == null) return null;
-            final ZoneId target = ZoneId.of(args.get(0).toString());
+            final ZoneId target = zone(args.get(0));
             return instantOf(args.get(1)).atZone(target).withFixedOffsetZone();
         }
         if (args.get(2) == null) return null;
-        final ZoneId src = ZoneId.of(args.get(0).toString());
-        final ZoneId tgt = ZoneId.of(args.get(1).toString());
+        final ZoneId src = zone(args.get(0));
+        final ZoneId tgt = zone(args.get(1));
         return SharedFunctionHelpers.toLocalDateTime(args.get(2)).atZone(src).withZoneSameInstant(tgt).toLocalDateTime();
+    }
+
+    /**
+     * The zone an argument names. A zone goes by its own name in the zone database, matched exactly: an
+     * offset ({@code +01:00}, {@code UTC+1}, {@code Z}), an abbreviation the database does not keep
+     * ({@code PST}), another case ({@code utc}) and a name with a blank beside it are each "Unknown
+     * timezone: 'utc'", the argument echoed as it was given (live-verified).
+     *
+     * @param name the argument
+     * @return the zone it names
+     */
+    private static ZoneId zone(final Object name) {
+        final ZoneId known = SessionZone.named(name.toString());
+        if (known == null) {
+            throw new RuntimeException("Unknown timezone: '" + name + "'");
+        }
+        return known;
     }
 
     /**

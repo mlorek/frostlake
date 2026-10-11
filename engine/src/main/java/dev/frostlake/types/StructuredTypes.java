@@ -17,6 +17,7 @@
 package dev.frostlake.types;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Predicates and rendering shared by the STRUCTURED types ({@link StructuredObjectType},
@@ -154,7 +155,7 @@ public final class StructuredTypes {
         }
         if (type instanceof NumericType) {
             final NumericType numeric = (NumericType) type;
-            final String name = numeric.getName().toUpperCase();
+            final String name = numeric.getName().toUpperCase(Locale.ROOT);
             if (name.contains("FLOAT") || name.contains("DOUBLE") || name.contains("REAL")) {
                 return "FLOAT";
             }
@@ -171,7 +172,7 @@ public final class StructuredTypes {
             // A temporal leaf keeps its flavour and its declared precision: SYSTEM$TYPEOF names a cast to
             // OBJECT(k TIMESTAMP_NTZ(3)) as OBJECT(k TIMESTAMP_NTZ(3)) (live-verified), where every TIME read
             // TIME(9) here and every timestamp TIMESTAMP_NTZ(9).
-            final String name = type.getName().toUpperCase();
+            final String name = type.getName().toUpperCase(Locale.ROOT);
             if (name.equals("DATE")) {
                 return "DATE";
             }
@@ -190,6 +191,6 @@ public final class StructuredTypes {
         if (type instanceof ObjectType) {
             return "OBJECT";
         }
-        return type.getName().toUpperCase();
+        return type.getName().toUpperCase(Locale.ROOT);
     }
 }

@@ -26,14 +26,17 @@ import java.util.Map;
 
 /**
  * TO_QUERY table function — compiles a SQL text into a query and returns its result set:
- * {@code SELECT * FROM TABLE(TO_QUERY('SELECT ...'))}. Optional named arguments are bound into
- * {@code :name} placeholders inside the text ({@code TO_QUERY('... WHERE c = :v', v => 5)});
- * an unsupplied placeholder binds as NULL.
+ * {@code SELECT * FROM TABLE(TO_QUERY('SELECT ...'))}. The text is one query or one CALL (see
+ * {@code ToQueryText}). Optional named arguments are bound into {@code :name} placeholders inside the
+ * text ({@code TO_QUERY('... WHERE c = :v', v => '5')}); the text and every bind are strings.
  */
 public class ToQuery extends TableFunction {
 
     /** The query text's parameter name — SQL, which is also what a leading positional argument fills. */
     private static final String SQL_PARAMETER = "SQL";
+
+    /** The refusal of a text, or a bind, that is no string (live-verified). */
+    private static final String NOT_A_STRING = "SQL compilation error:\nargument needs to be a string: '0'";
 
     private final QueryRunner queryRunner;
 
@@ -72,13 +75,19 @@ public class ToQuery extends TableFunction {
     @Override
     public void validateArgs(final Map<String, Object> namedArgs) {
         if (!(namedArgs.get(SQL_PARAMETER) instanceof String)) {
-            throw new RuntimeException("TO_QUERY requires a SQL text argument");
+            throw new RuntimeException(NOT_A_STRING);
         }
     }
 
     private ResultSet run(final Object sqlText, final Map<String, Object> binds) {
         if (!(sqlText instanceof String)) {
-            throw new RuntimeException("TO_QUERY requires a SQL text argument");
+            throw new RuntimeException(NOT_A_STRING);
+        }
+        // A bind is a text too: a number, a BOOLEAN and a NULL written for one are refused as the text is.
+        for (final Object bound : binds.values()) {
+            if (!(bound instanceof String)) {
+                throw new RuntimeException(NOT_A_STRING);
+            }
         }
         String sql = (String) sqlText;
         if (!binds.isEmpty()) {

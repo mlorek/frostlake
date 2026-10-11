@@ -65,6 +65,8 @@ public class SnowscriptUdfExpressionTest extends BaseDatabaseTest {
         assertEquals(UNSUPPORTED + "NOSUCH(NOSUCH2(1))", refusal("RETURN nosuch(nosuch2(1));"));
         assertEquals(UNSUPPORTED + "TEST_SCHEMA.NOSUCH(1)", refusal("RETURN test_schema.nosuch(1);"));
         assertEquals(UNSUPPORTED + "NOSUCH(1, 2)", refusal("RETURN nosuch(\n    1,\n    2);"));
+        assertEquals(UNSUPPORTED + "NOSUCH(TO_TIMESTAMP('2020-01-02 03:04:05'))",
+            refusal("RETURN nosuch(TIMESTAMP '2020-01-02 03:04:05');"));
     }
 
     @Test

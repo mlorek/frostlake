@@ -50,7 +50,7 @@ public final class NonFiniteDoubles {
         }
         final char first = text.charAt(0);
         final char sign = first == '+' || first == '-' ? first : '\0';
-        final String word = (sign == '\0' ? text : text.substring(1)).toLowerCase();
+        final String word = (sign == '\0' ? text : text.substring(1)).toLowerCase(Locale.ROOT);
         if (word.equals("nan")) {
             return sign == '-' ? null : Double.valueOf(Double.NaN);
         }
@@ -81,6 +81,21 @@ public final class NonFiniteDoubles {
         return text.length() > 1 && text.charAt(0) == '-'
             && "nan".equals(text.substring(1).toLowerCase(Locale.ROOT))
             ? Double.valueOf(Double.NaN) : null;
+    }
+
+    /**
+     * A non-finite double as SQL text that reads back as the same value: the cast of its word. No numeric
+     * literal spells NaN or an infinity, and the word written bare is a name.
+     *
+     * @param value a number
+     * @return {@code 'NaN'::FLOAT}, {@code 'inf'::FLOAT} or {@code '-inf'::FLOAT}, or null for a finite number
+     */
+    public static String castOfWord(final Number value) {
+        if (!isNonFinite(value)) {
+            return null;
+        }
+        final double approximate = value.doubleValue();
+        return Double.isNaN(approximate) ? "'NaN'::FLOAT" : approximate > 0 ? "'inf'::FLOAT" : "'-inf'::FLOAT";
     }
 
     /**

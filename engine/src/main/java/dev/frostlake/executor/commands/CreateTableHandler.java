@@ -389,7 +389,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
-                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName + "/" + schema.getName());
+                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
                 attachRowAccessPolicy(ctx, table);
@@ -436,7 +436,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
-                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName + "/" + schema.getName());
+                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
                 attachRowAccessPolicy(ctx, table);
@@ -520,7 +520,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
-                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName + "/" + schema.getName());
+                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
                 attachRowAccessPolicy(ctx, table);
@@ -542,7 +542,7 @@ public class CreateTableHandler implements CommandHandler {
                 // are written into them strictly, as an INSERT writes, inside the CTAS envelope.
                 final String envelopeName = ((parts.length == 3
                         ? queryExecutor.getEngineConfig().getAccountId() + "." : "")
-                    + databaseName + "." + schema.getName() + "." + tableName).toUpperCase();
+                    + databaseName + "." + schema.getName() + "." + tableName).toUpperCase(Locale.ROOT);
                 for (final Row resultRow : resultSet.getRows()) {
                     final Row typedRow = new Row(new ArrayList<>(resultRow.getValues()));
                     if (ctx.columnList() != null) {
@@ -607,7 +607,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
-                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName + "/" + schema.getName());
+                IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
                 attachRowAccessPolicy(ctx, table);
@@ -747,7 +747,7 @@ public class CreateTableHandler implements CommandHandler {
         if (column == null) {
             return failed;
         }
-        return DmlWriteTarget.failedOnColumn(qualifiedName.toUpperCase(), column.toUpperCase(),
+        return DmlWriteTarget.failedOnColumn(qualifiedName.toUpperCase(Locale.ROOT), column.toUpperCase(Locale.ROOT),
             failed);
     }
 

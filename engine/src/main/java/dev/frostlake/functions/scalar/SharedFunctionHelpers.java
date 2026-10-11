@@ -209,7 +209,7 @@ public final class SharedFunctionHelpers {
         if (v instanceof Boolean) return (Boolean) v;
         if (v instanceof Number) return ((Number) v).doubleValue() != 0;
         if (v instanceof String) {
-            final String s = ((String) v).trim().toUpperCase();
+            final String s = ((String) v).trim().toUpperCase(Locale.ROOT);
             return s.equals("TRUE") || s.equals("1");
         }
         return false;

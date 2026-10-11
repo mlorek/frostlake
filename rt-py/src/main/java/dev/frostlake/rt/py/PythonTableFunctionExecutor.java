@@ -16,6 +16,7 @@
 
 package dev.frostlake.rt.py;
 
+import dev.frostlake.executor.udf.TablePartitionRows;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
@@ -62,6 +63,24 @@ public final class PythonTableFunctionExecutor {
      */
     public static ResultSet executePythonTableFunctionPartitioned(final Function function,
                                                                    final List<List<Object>> rows) {
+        final TablePartitionRows written = executePartition(function, rows);
+        final List<Row> all = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) {
+            all.addAll(written.writtenFor(i));
+        }
+        all.addAll(written.atEnd());
+        return new ResultSet(buildOutputColumns(function), all);
+    }
+
+    /**
+     * Runs the handler over one partition of the function's input: one instance reads each row with
+     * {@code process} and is then told the partition is through with {@code end_partition}, when it has one.
+     *
+     * @param function the function
+     * @param rows     the partition's rows, each the function's arguments
+     * @return the rows the handler wrote for each input row and once the partition was through
+     */
+    public static TablePartitionRows executePartition(final Function function, final List<List<Object>> rows) {
         if (function.getUdfLanguage() != UdfLanguage.PYTHON || !function.isTableFunction()) {
             throw new RuntimeException("Function is not a Python table function");
         }
@@ -72,7 +91,8 @@ public final class PythonTableFunctionExecutor {
         }
 
         final List<ResultSetColumn> outputColumns = buildOutputColumns(function);
-        final List<Row> outputRows = new ArrayList<>();
+        final List<List<Row>> writtenPerRow = new ArrayList<>();
+        final List<Row> atEnd = new ArrayList<>();
 
         try {
             PythonRuntime.eval(dedent(function.getBody()));
@@ -90,7 +110,9 @@ public final class PythonTableFunctionExecutor {
             for (final List<Object> rowArgs : rows) {
                 final String callCode = buildProcessCall(params, rowArgs);
                 PythonRuntime.eval("__process_result = __handler_instance.process(" + callCode + ")");
-                collectRows(PythonRuntime.global("__process_result"), outputColumns.size(), outputRows);
+                final List<Row> written = new ArrayList<>();
+                collectRows(PythonRuntime.global("__process_result"), outputColumns.size(), written);
+                writtenPerRow.add(written);
             }
 
             // Call end_partition() if it exists
@@ -98,7 +120,7 @@ public final class PythonTableFunctionExecutor {
             final Value hasEnd = PythonRuntime.global("__has_end_partition");
             if (hasEnd != null && hasEnd.isBoolean() && hasEnd.asBoolean()) {
                 PythonRuntime.eval("__end_result = __handler_instance.end_partition()");
-                collectRows(PythonRuntime.global("__end_result"), outputColumns.size(), outputRows);
+                collectRows(PythonRuntime.global("__end_result"), outputColumns.size(), atEnd);
             }
 
         } catch (final Exception e) {
@@ -108,7 +130,7 @@ public final class PythonTableFunctionExecutor {
                 + ": " + e.getMessage(), e);
         }
 
-        return new ResultSet(outputColumns, outputRows);
+        return new TablePartitionRows(writtenPerRow, atEnd);
     }
 
     private static String buildProcessCall(final List<Parameter> params, final List<Object> args) {

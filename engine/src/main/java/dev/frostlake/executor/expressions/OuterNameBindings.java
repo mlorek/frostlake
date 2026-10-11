@@ -19,6 +19,7 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.AmbiguousColumnException;
 
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -79,7 +80,7 @@ final class OuterNameBindings {
             return false;
         }
         final String column = key.substring(key.lastIndexOf('.') + 1);
-        final String folded = column.toUpperCase();
+        final String folded = column.toUpperCase(Locale.ROOT);
         return !folded.equals(column) && ((Set<?>) recorded).contains(folded) && !((Set<?>) recorded).contains(column);
     }
 

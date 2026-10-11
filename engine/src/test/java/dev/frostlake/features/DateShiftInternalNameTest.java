@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -168,7 +170,7 @@ public class DateShiftInternalNameTest extends BaseDatabaseTest {
             {"SELECT DATEADD(month, 1, TO_DATE('2020-01-01'))", "2020-02-01"},
             {"SELECT DATEADD(month, 1, NULL)", "null"},
         }) {
-            assertEquals(cell[1].toLowerCase(), answer(cell[0]).toLowerCase(), cell[0]);
+            assertEquals(cell[1].toLowerCase(Locale.ROOT), answer(cell[0]).toLowerCase(Locale.ROOT), cell[0]);
         }
     }
 

@@ -28,6 +28,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * PARSE_IP(ip_address, type [, permissive]) — parses an IPv4/IPv6 address (optionally in CIDR
@@ -60,7 +61,7 @@ public class ParseIp extends TextArgumentFunction {
         if (args.get(0) == null) return null;
         final boolean permissive = args.size() > 2 && args.get(2) != null
             && ((Number) args.get(2)).intValue() != 0;
-        final String type = args.get(1) == null ? "inet" : args.get(1).toString().trim().toLowerCase();
+        final String type = args.get(1) == null ? "inet" : args.get(1).toString().trim().toLowerCase(Locale.ROOT);
         if (!type.equals("inet") && !type.equals("cidr")) {
             return onError("invalid type '" + args.get(1) + "' (expected INET or CIDR)", permissive);
         }

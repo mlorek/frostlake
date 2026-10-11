@@ -20,6 +20,8 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.model.Schema;
 
+import java.util.Locale;
+
 /**
  * How GET_DDL spells the name of each object it recreates: bare, or — when its third argument asks for fully
  * qualified names — prefixed with the database and schema that hold the object. Only the recreated object's own
@@ -106,7 +108,7 @@ final class DdlNames {
             return ((Number) value).doubleValue() != 0;
         }
         final String text = value.toString();
-        switch (text.toUpperCase()) {
+        switch (text.toUpperCase(Locale.ROOT)) {
             case "TRUE":
             case "T":
             case "YES":

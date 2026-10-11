@@ -50,6 +50,7 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.UserInterruptException;
@@ -258,7 +259,7 @@ public class ConsoleClient {
     }
 
     private void handleMetaCommand(final String command) {
-        final String cmd = command.toLowerCase().trim();
+        final String cmd = command.toLowerCase(Locale.ROOT).trim();
 
         switch (cmd) {
             // Exit commands (SnowSQL: !quit, !exit)

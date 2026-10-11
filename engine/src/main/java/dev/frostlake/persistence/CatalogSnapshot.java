@@ -42,6 +42,8 @@ public class CatalogSnapshot implements Serializable {
     public List<IntegrationSnapshot> integrations = new ArrayList<>();
     public List<ExternalVolumeSnapshot> externalVolumes = new ArrayList<>();
     public List<AccountSnapshot> accounts = new ArrayList<>();
+    /** The parameters set on the account, by name. */
+    public HashMap<String, String> accountParameters = new HashMap<>();
     public List<ManagedAccountSnapshot> managedAccounts = new ArrayList<>();
     /** The last account locator number handed out, so a restored engine does not reuse one. */
     public int accountLocatorSequence;

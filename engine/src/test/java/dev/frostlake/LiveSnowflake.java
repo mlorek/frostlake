@@ -501,10 +501,10 @@ public final class LiveSnowflake {
         statement.execute("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 300");
         // A test's own QUERY_TAG must not outlive it either.
         statement.execute("ALTER SESSION UNSET QUERY_TAG");
-        // The engine models no secondary roles (CURRENT_SECONDARY_ROLES() is empty), while the account's
-        // users default to ALL, which lengthens every missing-object refusal's privilege hint to "Your
-        // primary role R or one of your secondary roles must have ...". NONE gives the short form the
-        // engine speaks. USE ROLE leaves the secondary roles as they were, so a reset re-applies this too.
+        // A session of the engine starts with no secondary roles, while the account's users default to ALL,
+        // which lengthens every missing-object refusal's privilege hint to "Your primary role R or one of
+        // your secondary roles must have ...". NONE gives the short form both speak without them. USE ROLE
+        // leaves the secondary roles as they were, so a reset re-applies this too.
         statement.execute("USE SECONDARY ROLES NONE");
     }
 

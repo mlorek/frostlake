@@ -17,26 +17,20 @@
 package dev.frostlake;
 
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.executor.ReadOnlyRequest;
 import dev.frostlake.functions.scalar.file.NamedStage;
 import dev.frostlake.http.ExpiredSessionListener;
 import dev.frostlake.http.SessionContext;
 import dev.frostlake.http.SessionManager;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.parser.FrostlakeLexer;
-import dev.frostlake.parser.FrostlakeParser;
-import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSet;
 
-import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.RecognitionException;
-import org.antlr.v4.runtime.Recognizer;
-import org.antlr.v4.runtime.Token;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -75,8 +69,8 @@ public class ConcurrentDatabaseEngine {
         // own bootstrap session, and idle out after http.session.idleTimeoutMinutes (Snowflake's four hours
         // unless set; 0 keeps them until they are released).
         this.sessionManager = new SessionManager(
-            engine.getConfig().getDefaultDatabase().toUpperCase(),
-            engine.getConfig().getDefaultSchema().toUpperCase(),
+            engine.getConfig().getDefaultDatabase().toUpperCase(Locale.ROOT),
+            engine.getConfig().getDefaultSchema().toUpperCase(Locale.ROOT),
             engine.getConfig().getSessionIdleTimeoutMinutes() * 60L * 1000L);
         // Non-fair: higher read throughput for this read-heavy engine. The JDK's non-fair RRWL still
         // blocks barging readers when a writer is queued, so writers are not badly starved.
@@ -237,57 +231,12 @@ public class ConcurrentDatabaseEngine {
     /**
      * Whether EVERY statement in {@code sql} may run under the SHARED read lock — decided from the
      * PARSE TREE, not a text prefix: 'SELECT 1; DROP TABLE t' is a write, and so is
-     * 'SELECT seq1.NEXTVAL' (the sequence advances). Anything unparseable classifies as a WRITE,
+     * 'SELECT seq1.NEXTVAL' (the sequence advances) and a query that reaches a write through TO_QUERY or a
+     * system function that acts (see {@link ReadOnlyRequest}). Anything unparseable classifies as a WRITE,
      * so the exclusive lock is the failure mode.
      */
     private boolean isReadOnlyQuery(final String sql) {
-        try {
-            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
-            final CommonTokenStream tokens = new CommonTokenStream(lexer);
-            final FrostlakeParser parser = new FrostlakeParser(tokens);
-            final boolean[] failed = new boolean[1];
-            final BaseErrorListener silent = new BaseErrorListener() {
-                @Override
-                public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol,
-                        final int line, final int charPositionInLine, final String msg,
-                        final RecognitionException e) {
-                    failed[0] = true;
-                }
-            };
-            lexer.removeErrorListeners();
-            lexer.addErrorListener(silent);
-            parser.removeErrorListeners();
-            parser.addErrorListener(silent);
-            final FrostlakeParser.SqlScriptContext script = parser.sqlScript();
-            if (failed[0] || script.flowChain().isEmpty()) {
-                return false;
-            }
-            for (final Token token : tokens.getTokens()) {
-                if (token.getType() == FrostlakeLexer.NEXTVAL) {
-                    return false;   // seq.NEXTVAL advances the sequence even inside a SELECT
-                }
-            }
-            for (final FrostlakeParser.FlowChainContext chain : script.flowChain()) {
-                for (final FrostlakeParser.StatementContext stmt : chain.statement()) {
-                    if (!isReadOnlyStatement(stmt)) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        } catch (final RuntimeException e) {
-            return false;
-        }
-    }
-
-    /** A query (SELECT / WITH, however wrapped), EXPLAIN, SHOW or DESCRIBE — nothing else reads only. */
-    private boolean isReadOnlyStatement(final FrostlakeParser.StatementContext stmt) {
-        if (stmt.queryStatement() != null || stmt.explainStatement() != null) {
-            return true;
-        }
-        final int first = stmt.getStart().getType();
-        return first == FrostlakeParser.SHOW || first == FrostlakeParser.DESCRIBE
-            || first == FrostlakeParser.DESC;
+        return ReadOnlyRequest.reads(sql);
     }
 
     /**
@@ -351,7 +300,9 @@ public class ConcurrentDatabaseEngine {
             session.setCurrentSchema(engine.getCurrentSchema());
             session.setCurrentWarehouse(engine.getCatalog().getCurrentWarehouse());
             session.setAutoCommit(engine.isAutoCommit());
-            session.setInTransaction(engine.getTransactionManager().hasActiveTransaction());
+            // An aborted transaction the session has not acknowledged is still the session's to end.
+            session.setInTransaction(engine.getTransactionManager().hasActiveTransaction()
+                || engine.getTransactionManager().getAbortedTransaction() != null);
             session.setTransactionId(engine.getTransactionManager().getCurrentTransactionId());
         } catch (final Exception e) {
             logger.warn("Error capturing session context: {}", e.getMessage());
@@ -386,9 +337,10 @@ public class ConcurrentDatabaseEngine {
     }
 
     /**
-     * End a session for good: roll back the transaction it left open, then drop everything the engine kept
-     * for it. Both a released session and an expired one end this way, so neither can leave a transaction
-     * running with nobody to end it.
+     * End a session for good: roll back the transaction it left open, drop what it created TEMPORARY, then drop
+     * everything the engine kept for it. Both a released session and an expired one end this way, so neither can
+     * leave a transaction running with nobody to end it, nor a temporary table or function for the sessions after
+     * it to find.
      *
      * @param session the session to end
      */
@@ -402,6 +354,16 @@ public class ConcurrentDatabaseEngine {
                 // The session goes regardless; its transaction's writes were never committed.
                 logger.warn("Rolling back ended session {} failed: {}", session.getSessionId(), failed.getMessage());
             }
+        }
+        // What the session created TEMPORARY ends with it: under the engine's write lock, like the DROP it is.
+        engineLock.writeLock().lock();
+        try {
+            engine.dropTemporaryObjectsOf(session.getSettings().getSessionNumber());
+        } catch (final RuntimeException failed) {
+            logger.warn("Dropping the temporary objects of ended session {} failed: {}", session.getSessionId(),
+                failed.getMessage());
+        } finally {
+            engineLock.writeLock().unlock();
         }
         removeSession(session.getSessionId());
     }

@@ -35,6 +35,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -80,7 +81,7 @@ public class StreamManager {
                     ChangeType.INSERT,
                     false,
                     rowId,
-                    tableName.toUpperCase()
+                    tableName.toUpperCase(Locale.ROOT)
                 );
                 stream.addRecord(record);
                 logger.debug("Tracked INSERT to stream: {}", stream.getName());
@@ -117,7 +118,7 @@ public class StreamManager {
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(row.getValues(), ChangeType.INSERT, false, rowId,
-                tableName.toUpperCase()));
+                tableName.toUpperCase(Locale.ROOT)));
         }
     }
 
@@ -130,9 +131,9 @@ public class StreamManager {
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(oldRow.getValues(), ChangeType.DELETE, true, rowId,
-                tableName.toUpperCase()));
+                tableName.toUpperCase(Locale.ROOT)));
             stream.addRecord(new StreamRecord(newRow.getValues(), ChangeType.INSERT, true, rowId,
-                tableName.toUpperCase()));
+                tableName.toUpperCase(Locale.ROOT)));
         }
     }
 
@@ -145,7 +146,7 @@ public class StreamManager {
         final String tableName = QualifiedName.parse(qualifiedTableName).last();
         for (final Stream stream : capturing) {
             stream.addRecord(new StreamRecord(row.getValues(), ChangeType.DELETE, false, rowId,
-                tableName.toUpperCase()));
+                tableName.toUpperCase(Locale.ROOT)));
         }
     }
 
@@ -215,7 +216,7 @@ public class StreamManager {
                     ChangeType.DELETE,
                     true,
                     rowId,
-                    tableName.toUpperCase()
+                    tableName.toUpperCase(Locale.ROOT)
                 );
                 stream.addRecord(deleteRecord);
 
@@ -224,7 +225,7 @@ public class StreamManager {
                     ChangeType.INSERT,
                     true,
                     rowId,
-                    tableName.toUpperCase()
+                    tableName.toUpperCase(Locale.ROOT)
                 );
                 stream.addRecord(insertRecord);
 
@@ -259,7 +260,7 @@ public class StreamManager {
                     ChangeType.DELETE,
                     false,
                     rowId,
-                    tableName.toUpperCase()
+                    tableName.toUpperCase(Locale.ROOT)
                 );
                 stream.addRecord(record);
                 logger.debug("Tracked DELETE to stream: {}", stream.getName());
@@ -283,7 +284,7 @@ public class StreamManager {
     public void trackRefresh(final String databaseName, final StreamSourceType kind, final String sourceName,
                              final List<List<Object>> removed, final List<List<Object>> added) {
         for (final Stream stream : streamsOver(databaseName, kind, sourceName)) {
-            final String rowIdKey = sourceName.toUpperCase() + "#" + stream.getName();
+            final String rowIdKey = sourceName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
             for (final List<Object> values : removed) {
                 stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
             }
@@ -309,7 +310,7 @@ public class StreamManager {
             final List<List<Object>> removed = new ArrayList<>();
             final List<List<Object>> added = new ArrayList<>();
             diff(before, rows, removed, added);
-            final String rowIdKey = tableName.toUpperCase() + "#" + stream.getName();
+            final String rowIdKey = tableName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
             for (final List<Object> values : removed) {
                 stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
             }
@@ -387,7 +388,7 @@ public class StreamManager {
         if (parts.length != 3) {
             return;
         }
-        final String tableName = parts[2].toUpperCase();
+        final String tableName = parts[2].toUpperCase(Locale.ROOT);
         for (final Stream stream : capturingStreams(qualifiedTableName)) {
             final boolean viewStream = stream.getSourceType() == StreamSourceType.VIEW
                 || !stream.getBaseTableNames().isEmpty();
@@ -408,7 +409,7 @@ public class StreamManager {
         if (parts.length != 3) {
             return;
         }
-        final String tableName = parts[2].toUpperCase();
+        final String tableName = parts[2].toUpperCase(Locale.ROOT);
         for (final Stream stream : capturingStreams(qualifiedTableName)) {
             final boolean viewStream = stream.getSourceType() == StreamSourceType.VIEW
                 || !stream.getBaseTableNames().isEmpty();
@@ -423,21 +424,21 @@ public class StreamManager {
      */
     public void onTableDropped(final String qualifiedTableName) {
         if (qualifiedTableName != null) {
-            rowIdCounters.remove(qualifiedTableName.toUpperCase());
+            rowIdCounters.remove(qualifiedTableName.toUpperCase(Locale.ROOT));
         }
     }
 
     /** Forget the counters of every table in a dropped schema (DROP SCHEMA cascades to its tables). */
     public void onSchemaDropped(final String databaseName, final String schemaName) {
         if (databaseName != null && schemaName != null) {
-            removeByPrefix((databaseName + "." + schemaName + ".").toUpperCase());
+            removeByPrefix((databaseName + "." + schemaName + ".").toUpperCase(Locale.ROOT));
         }
     }
 
     /** Forget the counters of every table in a dropped database (DROP DATABASE cascades). */
     public void onDatabaseDropped(final String databaseName) {
         if (databaseName != null) {
-            removeByPrefix((databaseName + ".").toUpperCase());
+            removeByPrefix((databaseName + ".").toUpperCase(Locale.ROOT));
         }
     }
 
@@ -457,7 +458,7 @@ public class StreamManager {
     private long getNextRowId(final String sourceAndStream) {
         // putIfAbsent rather than get/put: two threads racing here must end up sharing ONE counter,
         // or the same row id would be handed out twice.
-        final String key = sourceAndStream.toUpperCase();
+        final String key = sourceAndStream.toUpperCase(Locale.ROOT);
         AtomicLong counter = rowIdCounters.get(key);
         if (counter == null) {
             counter = new AtomicLong(1);

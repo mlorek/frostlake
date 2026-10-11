@@ -62,6 +62,18 @@ public interface UdfLanguageRuntime {
     ResultSet executeTableFunction(Function function, List<Object> arguments);
 
     /**
+     * Run a table function's handler over one partition of its input: the handler is made once, reads each
+     * row in turn, and is then told the partition is through. Languages without table functions throw.
+     *
+     * @param function the function
+     * @param rows     the partition's rows, each the function's arguments
+     * @return the rows the handler wrote for each input row and once the partition was through
+     */
+    default TablePartitionRows executeTablePartition(final Function function, final List<List<Object>> rows) {
+        throw new RuntimeException(language().name() + " table functions are not supported");
+    }
+
+    /**
      * Compile a FUNCTION's body at CREATE time, throwing if the routine could never run — live-verified,
      * a Python, Java or Scala function whose body will not compile, or whose HANDLER is not in it, is
      * refused by CREATE rather than by the first call.

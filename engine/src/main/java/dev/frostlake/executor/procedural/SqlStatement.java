@@ -19,6 +19,7 @@ package dev.frostlake.executor.procedural;
 public class SqlStatement extends Statement {
     private final String sql;
     private final boolean selectInto;
+    private final boolean writtenBinds;
 
     public SqlStatement(final String sql) {
         this(sql, false);
@@ -31,13 +32,31 @@ public class SqlStatement extends Statement {
      * @param selectInto whether it is the block's own SELECT … INTO, the one context an INTO clause is allowed in
      */
     public SqlStatement(final String sql, final boolean selectInto) {
+        this(sql, selectInto, false);
+    }
+
+    /**
+     * A statement of a block, run as text.
+     *
+     * @param sql          the statement's text
+     * @param selectInto   whether it is the block's own SELECT … INTO
+     * @param writtenBinds whether its {@code :names} stay as they are written and are bound from the block when it
+     *                     runs, as a CALL's are, which judges each by the type its variable is declared with
+     */
+    public SqlStatement(final String sql, final boolean selectInto, final boolean writtenBinds) {
         super(StatementType.SQL);
         this.sql = sql;
         this.selectInto = selectInto;
+        this.writtenBinds = writtenBinds;
     }
 
     public boolean isSelectInto() {
         return selectInto;
+    }
+
+    /** Whether the statement runs with its {@code :names} as written, bound from the block when it runs. */
+    public boolean keepsWrittenBinds() {
+        return writtenBinds;
     }
 
     public String getSql() {

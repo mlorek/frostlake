@@ -29,6 +29,8 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 
+import java.util.Locale;
+
 /**
  * The compatibility classes of the SQL UDF return-type checks, exactly as a real account divides
  * them (live-verified): the fixed-point and floating-point numerics are SEPARATE families, the three
@@ -58,7 +60,7 @@ enum ReturnTypeFamily {
     /** The family of {@code type}, or null for the kinds the check does not judge. */
     static ReturnTypeFamily of(final DataType type) {
         if (type instanceof NumericType) {
-            final String name = type.getName().toUpperCase();
+            final String name = type.getName().toUpperCase(Locale.ROOT);
             if (name.startsWith("FLOAT") || name.startsWith("DOUBLE") || name.equals("REAL")) {
                 return REAL;
             }
@@ -71,7 +73,7 @@ enum ReturnTypeFamily {
             return BOOLEAN;
         }
         if (type instanceof DateTimeType) {
-            switch (type.getName().toUpperCase()) {
+            switch (type.getName().toUpperCase(Locale.ROOT)) {
                 case "DATE":
                     return DATE;
                 case "TIME":

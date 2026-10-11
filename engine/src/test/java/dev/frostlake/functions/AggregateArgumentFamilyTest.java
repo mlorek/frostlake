@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -188,7 +190,7 @@ public class AggregateArgumentFamilyTest extends BaseDatabaseTest {
 
     private static String doubleConversion(final String column, final String family) {
         return "SQL compilation error:|invalid type [TO_DOUBLE(IFF(AT.N IS NULL, SYSTEM$NULL_TO_" + family
-            + "(NULL), AT." + column.toUpperCase() + "))] for parameter 'TO_DOUBLE'";
+            + "(NULL), AT." + column.toUpperCase(Locale.ROOT) + "))] for parameter 'TO_DOUBLE'";
     }
 
     /** ★ APPROX_PERCENTILE: the accumulator's name, the value's type alone, anchored nowhere. */

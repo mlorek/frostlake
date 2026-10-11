@@ -132,6 +132,65 @@ enum ShowListing {
     /** PARAMETERS reads none of the modifiers, and a scope of its own (see ShowCommandHandler). */
     PARAMETERS(null, null, ShowTailGrammar.NONE, false, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW,
         ShowScopeAnswer.CANNOT_SHOW, false, true),
+    // The listings of the kinds no object is modelled of (UnmodelledListing), each with the facts the account
+    // answers it by: the account's own things first, then the things of a schema.
+    RESOURCE_MONITORS("RESOURCE MONITOR", "RESOURCE_MONITORS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, false),
+    SHARES("SHARE", "SHARES", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, false),
+    CONNECTIONS("CONNECTION", "CONNECTIONS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, false),
+    APPLICATIONS("APPLICATION", "APPLICATIONS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, false),
+    APPLICATION_PACKAGES("APPLICATION PACKAGE", "APPLICATION_PACKAGES", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, false),
+    /**
+     * REGIONS takes the modifiers and no scope at all (RegionsListing); the account's own name for the listing is
+     * deployment locations.
+     */
+    REGIONS(null, "DEPLOYMENT_LOCATIONS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    /** An index is a hybrid table's, which the account calls a key value table. */
+    INDEXES("KEY VALUE TABLE INDEX", "KEY_VALUE_TABLE_INDEXS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.OBJECT_DOES_NOT_EXIST, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    /** CHANNELS reads a LIMIT, and neither STARTS WITH nor WITH PRIVILEGES. */
+    CHANNELS("CHANNEL", null, ShowTailGrammar.LIMIT_ONLY, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, true),
+    SNAPSHOTS("SNAPSHOT", "SERVICE_SNAPSHOTS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    GIT_REPOSITORIES("GIT REPOSITORY", "GIT_REPOSITORYS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    SEMANTIC_VIEWS("SEMANTIC VIEW", "SEMANTIC_VIEWS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    /** The session and the authentication policies read no WITH PRIVILEGES. */
+    SESSION_POLICIES("SESSION POLICY", null, ShowTailGrammar.NO_PRIVILEGES, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    AUTHENTICATION_POLICIES("AUTHENTICATION POLICY", null, ShowTailGrammar.NO_PRIVILEGES, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    PACKAGES_POLICIES("PACKAGES POLICY", "PACKAGES_POLICYS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    PRIVACY_POLICIES("PRIVACY POLICY", "PRIVACY_POLICYS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    /** The external and the data metric functions answer every scope as FUNCTIONS does. */
+    EXTERNAL_FUNCTIONS("FUNCTION", "FUNCTIONS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.MISSING_CLASS, ShowScopeAnswer.MISSING_SERVICE, false,
+        false),
+    DATA_METRIC_FUNCTIONS("FUNCTION", "FUNCTIONS", ShowTailGrammar.FULL, false,
+        ShowScopeAnswer.MISSING_APPLICATION, ShowScopeAnswer.MISSING_CLASS, ShowScopeAnswer.MISSING_SERVICE, false,
+        false),
+    /** The replication listings read a LIKE and an account, and none of the modifiers. */
+    REPLICATION_DATABASES(null, null, ShowTailGrammar.NONE, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, true),
+    REPLICATION_GROUPS(null, null, ShowTailGrammar.NONE, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, true),
+    FAILOVER_GROUPS(null, null, ShowTailGrammar.NONE, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, true, true),
+    /** REPLICATION ACCOUNTS reads a LIKE and nothing else. */
+    REPLICATION_ACCOUNTS(null, null, ShowTailGrammar.NONE, false, ShowScopeAnswer.CANNOT_SHOW,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
+    /** DELEGATED AUTHORIZATIONS reads a user or an integration, and none of the modifiers. */
+    DELEGATED_AUTHORIZATIONS(null, null, ShowTailGrammar.NONE, false,
+        ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW, false, false),
     /** A listing that takes none of these scopes and modifiers. */
     OTHER(null, null, ShowTailGrammar.NONE, false, ShowScopeAnswer.CANNOT_SHOW, ShowScopeAnswer.CANNOT_SHOW,
         ShowScopeAnswer.CANNOT_SHOW, false, false);
@@ -201,6 +260,11 @@ enum ShowListing {
         return accountLevel;
     }
 
+    /** Whether the listing names the objects of a schema, or the schemas themselves: what a schema scope narrows. */
+    boolean isSchemaLevel() {
+        return this == SCHEMAS || listsCurrentSchemaUnscoped() || listsSearchPathUnscoped();
+    }
+
     /**
      * Whether the listing, written with no IN clause, looks in the current SCHEMA alone. Live splits the
      * schema-level listings kind by kind, with nothing in the object kind to predict it: the ones named here read
@@ -232,10 +296,62 @@ enum ShowListing {
             case STREAMLITS:
             case CONTACTS:
             case KEYS:
+            // No object of these kinds can be created here, so either scope lists nothing.
+            case INDEXES:
+            case CHANNELS:
+            case SNAPSHOTS:
+            case GIT_REPOSITORIES:
+            case SEMANTIC_VIEWS:
+            case SESSION_POLICIES:
+            case AUTHENTICATION_POLICIES:
+            case PACKAGES_POLICIES:
+            case PRIVACY_POLICIES:
+            case EXTERNAL_FUNCTIONS:
+            case DATA_METRIC_FUNCTIONS:
                 return true;
             default:
                 return false;
         }
+    }
+
+    /** Whether the listing is one of a kind no object is modelled of, answered by its columns alone. */
+    boolean isUnmodelled() {
+        return ordinal() >= RESOURCE_MONITORS.ordinal() && ordinal() <= DELEGATED_AUTHORIZATIONS.ordinal();
+    }
+
+    /** Whether the listing is one of the three replication listings that take an account for a scope. */
+    boolean isReplication() {
+        return this == REPLICATION_DATABASES || this == REPLICATION_GROUPS || this == FAILOVER_GROUPS;
+    }
+
+    /**
+     * Whether the listing reads a table for a scope, {@code IN TABLE t}: columns, keys, indexes and channels
+     * (live-verified). Every other listing of a schema's objects refuses the scope by its shape.
+     */
+    boolean takesTableScope() {
+        return this == COLUMNS || this == KEYS || this == INDEXES || this == CHANNELS;
+    }
+
+    /**
+     * Whether a bare name after IN is a table's, as it is after IN TABLE, and a schema is named in full: the
+     * column and key listings and CHANNELS (live-verified).
+     */
+    boolean readsTableAfterIn() {
+        return this == COLUMNS || this == KEYS || this == CHANNELS;
+    }
+
+    /**
+     * Whether an account-level listing scoped by a name answers that the account it would name does not exist,
+     * where the others answer that no object does (live-verified).
+     */
+    boolean namesMissingAccount() {
+        return this == COMPUTE_POOLS || this == SHARES || this == CONNECTIONS || this == REPLICATION_GROUPS
+            || this == FAILOVER_GROUPS;
+    }
+
+    /** Whether the listing reads HISTORY after its kind; of the unmodelled ones, all but three (live-verified). */
+    boolean readsHistory() {
+        return this != CHANNELS && this != SESSION_POLICIES && this != AUTHENTICATION_POLICIES;
     }
 
     /**
@@ -283,6 +399,22 @@ enum ShowListing {
      * @return its listing
      */
     static ShowListing of(final FrostlakeParser.ShowStatementContext ctx) {
+        if (ctx.unmodelledListingKind() != null) {
+            return unmodelled(ctx.unmodelledListingKind());
+        }
+        if (ctx.replicationListingKind() != null) {
+            if (ctx.replicationListingKind().DATABASES() != null) {
+                return REPLICATION_DATABASES;
+            }
+            if (ctx.replicationListingKind().ACCOUNTS() != null) {
+                return REPLICATION_ACCOUNTS;
+            }
+            return "FAILOVER".equalsIgnoreCase(ctx.replicationListingKind().word.getText()) ? FAILOVER_GROUPS
+                : REPLICATION_GROUPS;
+        }
+        if (ctx.DELEGATED() != null) {
+            return DELEGATED_AUTHORIZATIONS;
+        }
         if (ctx.COMPUTE() != null) {
             return ctx.FAMILIES() != null ? COMPUTE_POOL_INSTANCE_FAMILIES : COMPUTE_POOLS;
         }
@@ -332,6 +464,49 @@ enum ShowListing {
             return ORGANIZATION_ACCOUNTS;
         }
         return plain(ctx);
+    }
+
+    private static ShowListing unmodelled(final FrostlakeParser.UnmodelledListingKindContext kind) {
+        if (kind.POLICIES() != null) {
+            if (kind.SESSION() != null) {
+                return SESSION_POLICIES;
+            }
+            if (kind.AUTHENTICATION() != null) {
+                return AUTHENTICATION_POLICIES;
+            }
+            return kind.PACKAGES() != null ? PACKAGES_POLICIES : PRIVACY_POLICIES;
+        }
+        if (kind.FUNCTIONS() != null) {
+            return kind.EXTERNAL() != null ? EXTERNAL_FUNCTIONS : DATA_METRIC_FUNCTIONS;
+        }
+        if (kind.PACKAGES() != null) {
+            return APPLICATION_PACKAGES;
+        }
+        if (kind.MONITORS() != null) {
+            return RESOURCE_MONITORS;
+        }
+        if (kind.SHARES() != null) {
+            return SHARES;
+        }
+        if (kind.CONNECTIONS() != null) {
+            return CONNECTIONS;
+        }
+        if (kind.APPLICATIONS() != null) {
+            return APPLICATIONS;
+        }
+        if (kind.REGIONS() != null) {
+            return REGIONS;
+        }
+        if (kind.INDEXES() != null) {
+            return INDEXES;
+        }
+        if (kind.CHANNELS() != null) {
+            return CHANNELS;
+        }
+        if (kind.SNAPSHOTS() != null) {
+            return SNAPSHOTS;
+        }
+        return kind.REPOSITORIES() != null ? GIT_REPOSITORIES : SEMANTIC_VIEWS;
     }
 
     private static ShowListing policies(final FrostlakeParser.ShowStatementContext ctx) {

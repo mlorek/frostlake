@@ -112,10 +112,8 @@ public final class FunctionResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RoutineSignature signature) {
         final List<RestRow> shows = call.sql().showNamed(show(call, RestShow.likeName(signature.name())),
             signature.name());
-        final String missing = "Function '"
-            + UserDefinedFunctionResource.qualified(call, signature.name()) + "' does not exist or not authorized.";
         if (shows.isEmpty()) {
-            throw RestException.notFound(missing);
+            throw RestException.missing("Function", UserDefinedFunctionResource.qualified(call, signature.name()));
         }
         final List<String> types = signature.hasArguments() ? signature.types()
             : RoutineSupport.showArgumentTypes(shows.get(0));

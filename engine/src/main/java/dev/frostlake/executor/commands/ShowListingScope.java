@@ -17,8 +17,10 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.SearchPath;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
 
@@ -65,27 +67,44 @@ final class ShowListingScope {
      */
     static ShowListingScope of(final FrostlakeParser.ShowStatementContext ctx, final ShowListing listing,
                                final Catalog catalog, final String writtenName) {
-        if (ctx.ACCOUNT() != null) {
+        return of(ctx.IN() != null, ctx.ACCOUNT() != null, ctx.DATABASE() != null, ctx.SCHEMA() != null,
+            listing.listsCurrentSchemaUnscoped(), catalog, writtenName);
+    }
+
+    /**
+     * {@link #of(FrostlakeParser.ShowStatementContext, ShowListing, Catalog, String)} for a listing of another
+     * statement rule, its IN clause given word by word.
+     *
+     * @param in            whether the statement writes an IN clause
+     * @param account       whether the clause says ACCOUNT
+     * @param database      whether it says DATABASE
+     * @param schema        whether it says SCHEMA
+     * @param readsSchemaUnscoped whether the listing, written with no IN clause, reads the current schema
+     * @param catalog       the catalog holding the session's current database and schema
+     * @param writtenName   the canonical name the scope writes, or null when it writes none
+     * @return the resolved scope
+     */
+    static ShowListingScope of(final boolean in, final boolean account, final boolean database, final boolean schema,
+                               final boolean readsSchemaUnscoped, final Catalog catalog, final String writtenName) {
+        if (account) {
             return new ShowListingScope(ShowScopeLevel.ACCOUNT, null);
         }
-        if (ctx.IN() != null && ctx.DATABASE() == null && ctx.SCHEMA() == null) {
+        if (in && !database && !schema) {
             // IN <name>: a schema, named as written.
             return new ShowListingScope(ShowScopeLevel.SCHEMA, writtenName);
         }
         if (writtenName != null) {
-            return new ShowListingScope(ctx.DATABASE() != null ? ShowScopeLevel.DATABASE : ShowScopeLevel.SCHEMA,
-                writtenName);
+            return new ShowListingScope(database ? ShowScopeLevel.DATABASE : ShowScopeLevel.SCHEMA, writtenName);
         }
-        final String database = catalog.getCurrentDatabase();
-        if (database == null) {
+        final String current = catalog.getCurrentDatabase();
+        if (current == null) {
             return new ShowListingScope(ShowScopeLevel.ACCOUNT, null);
         }
-        final boolean schemaWanted = ctx.SCHEMA() != null
-            || ctx.IN() == null && listing.listsCurrentSchemaUnscoped();
+        final boolean schemaWanted = schema || !in && readsSchemaUnscoped;
         if (schemaWanted && catalog.getCurrentSchema() != null) {
             return new ShowListingScope(ShowScopeLevel.SCHEMA, null);
         }
-        return new ShowListingScope(ShowScopeLevel.DATABASE, database);
+        return new ShowListingScope(ShowScopeLevel.DATABASE, current);
     }
 
     /**
@@ -126,6 +145,38 @@ final class ShowListingScope {
             names.add(QualifiedName.join(schema.getDatabaseName(), schema.getName()));
         }
         return names;
+    }
+
+    /**
+     * The schemas the scope covers. A scope naming a schema or a database that does not exist is refused: by the
+     * sentence that names nothing for the kinds answering so, by the missing container's own refusal for the
+     * others — see {@link SqlCompilationError#objectDoesNotExist()} for which kinds are which.
+     *
+     * @param catalog             the catalog the scope resolves against
+     * @param reportedGenerically whether the listing's kind does not name what was missing
+     * @return the schemas, in catalog order
+     */
+    List<Schema> schemas(final Catalog catalog, final boolean reportedGenerically) {
+        final List<Schema> schemas = new ArrayList<>();
+        try {
+            if (isAccount()) {
+                for (final Database database : catalog.getAllDatabases()) {
+                    schemas.addAll(database.getAllSchemas());
+                }
+            } else if (isDatabase()) {
+                schemas.addAll(catalog.getDatabase(name).getAllSchemas());
+            } else if (name != null) {
+                schemas.add(catalog.resolveSchema(name));
+            } else {
+                schemas.add(catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema()));
+            }
+        } catch (final RuntimeException missing) {
+            if (reportedGenerically) {
+                throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
+            throw missing;
+        }
+        return schemas;
     }
 
     /** @return the container level the listing looks in */

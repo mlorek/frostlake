@@ -25,6 +25,8 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -107,7 +109,7 @@ public class TimestampLtzTest extends BaseDatabaseTest {
 
         final String defaultCell = describeCell("test_ts_ltz_default", "TS", "default");
         assertNotNull(defaultCell);
-        assertTrue(defaultCell.toUpperCase().contains("CURRENT_TIMESTAMP"), defaultCell);
+        assertTrue(defaultCell.toUpperCase(Locale.ROOT).contains("CURRENT_TIMESTAMP"), defaultCell);
 
         engine.execute("INSERT INTO test_ts_ltz_default (id) VALUES (1)");
 

@@ -35,8 +35,15 @@ public final class ClassNameWords {
     private static final String[] KEYWORDS = {
         "D", "T", "TS", "FN", "OJ",
         "ALERT", "DATASET", "EXTERNAL", "FAILOVER", "LISTING", "MODEL", "REPLICATION",
-        "ALIAS", "BRANCH", "SOURCE"
+        "ALIAS", "BRANCH", "SOURCE", "DATASETS", "CLASSES"
     };
+
+    /**
+     * The plural words live keeps as keywords that a {@code SHOW <word>} lists by here: SHOW DATASETS and SHOW
+     * CLASSES are listings, while {@code DROP DATASETS x} is refused at the word and {@code SHOW FUNCTIONS IN
+     * CLASSES x} at the {@code x}, as for any keyword (live-verified).
+     */
+    private static final String[] OWN_LISTINGS = {"DATASETS", "CLASSES"};
 
     /** A keyword of live's that opens a kind named by two words, GIT REPOSITORY, which Frostlake reads as a name. */
     private static final String GIT = "GIT";
@@ -92,6 +99,24 @@ public final class ClassNameWords {
     }
 
     /**
+     * Whether a word, written alone and unquoted, is one a {@code SHOW <word>} lists by: DATASETS or CLASSES.
+     *
+     * @param word the token
+     * @return whether it is such a word
+     */
+    public static boolean isOwnListing(final Token word) {
+        if (word == null || word.getType() != FrostlakeLexer.IDENTIFIER) {
+            return false;
+        }
+        for (final String listing : OWN_LISTINGS) {
+            if (listing.equalsIgnoreCase(word.getText())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Whether a word is one of the plural listing words live keeps as keywords.
      *
      * @param word the token
@@ -127,6 +152,18 @@ public final class ClassNameWords {
             }
         }
         return false;
+    }
+
+    /**
+     * Whether a word opens one of the replication listings, {@code SHOW REPLICATION …} or {@code SHOW FAILOVER …}:
+     * written alone after SHOW it is refused at what follows it, where the listing's second word should stand.
+     *
+     * @param word the token
+     * @return whether it opens such a listing
+     */
+    public static boolean opensReplicationListing(final Token word) {
+        return word != null && word.getType() == FrostlakeLexer.IDENTIFIER
+            && ("REPLICATION".equalsIgnoreCase(word.getText()) || "FAILOVER".equalsIgnoreCase(word.getText()));
     }
 
     /**

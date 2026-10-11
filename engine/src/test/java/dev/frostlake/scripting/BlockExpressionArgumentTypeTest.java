@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -261,7 +263,7 @@ public class BlockExpressionArgumentTypeTest extends BaseDatabaseTest {
     @Test
     public void whatTheArgumentsTakeRuns() {
         assertEquals("1", answer(block("BEGIN IF (FALSE) THEN RETURN TO_DATE('2024-01-01') + TRUE; END IF; RETURN 1; END;")));
-        assertEquals("FALSE", answer(block("BEGIN LET b := TRUE; RETURN NOT b; END;")).toUpperCase());
+        assertEquals("FALSE", answer(block("BEGIN LET b := TRUE; RETURN NOT b; END;")).toUpperCase(Locale.ROOT));
         assertEquals("2", answer(block("BEGIN LET x := 1; RETURN x + 1; END;")));
         assertEquals("abc1", answer(block("BEGIN LET s := 'abc'; RETURN s || 1; END;")));
         assertEquals("2024-01-02", answer(block("BEGIN LET d := TO_DATE('2024-01-01'); RETURN TO_VARCHAR(d + 1); END;")));

@@ -142,8 +142,15 @@ public class RestUserDefinedFunctionTest extends BaseRestTest {
         ok(post(UDFS, sqlFunction("tagged_fn", "t")));
         ok(post(UDFS + "/tagged_fn(NUMBER,NUMBER):set-tags",
             "[{\"tag_database\":\"udf_db\",\"tag_schema\":\"s\",\"tag_name\":\"fn_tag\",\"tag_value\":\"v\"}]"));
+        final JsonNode tags = ok(get(UDFS + "/tagged_fn(NUMBER,NUMBER):get-tags"));
+        assertEquals(1, tags.size(), tags.toString());
+        assertEquals("FN_TAG", tags.get(0).path("tag_name").asString());
+        assertEquals("v", tags.get(0).path("tag_value").asString());
+        assertEquals("FUNCTION", tags.get(0).path("level").asString());
         ok(post(UDFS + "/tagged_fn(NUMBER,NUMBER):unset-tags",
             "[{\"tag_database\":\"udf_db\",\"tag_schema\":\"s\",\"tag_name\":\"fn_tag\"}]"));
+        assertEquals(0, ok(get(UDFS + "/tagged_fn(NUMBER,NUMBER):get-tags")).size());
+        error(404, get(UDFS + "/no_such_fn(NUMBER):get-tags"));
         error(404, post(UDFS + "/no_such_fn(NUMBER):set-tags",
             "[{\"tag_database\":\"udf_db\",\"tag_schema\":\"s\",\"tag_name\":\"fn_tag\",\"tag_value\":\"v\"}]"));
     }

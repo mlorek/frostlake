@@ -45,6 +45,7 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -303,7 +304,7 @@ final class UpdateDeleteExecutor {
             plan.add(whereStage(table, targetAlias, whereExpr, cteResults, whereOrigin));
         }
         final Map<String, Integer> setIndexes = setIndexes(table, assignments);
-        final Map<Row, Integer> rowPositions = firstPositionsOf(rows);
+        final RowPositions rowPositions = new RowPositions(rows);
         plan.add(new StageOperator(updateDescription(table, assignments)) {
             @Override
             protected List<Row> apply(final List<Row> matchingRows) {
@@ -316,7 +317,7 @@ final class UpdateDeleteExecutor {
                     final List<Row> written = new ArrayList<>();
                     for (final Row row : matchingRows) {
                         final Row oldRow = row;
-                        final int rowIndex = rowPositions.get(row).intValue();
+                        final int rowIndex = rowPositions.take(row).intValue();
                         final Row updatedRow = row.copy();
                         for (final Map.Entry<String, String> entry : assignments.entrySet()) {
                             final String colName = entry.getKey();
@@ -407,12 +408,12 @@ final class UpdateDeleteExecutor {
         if (whereExpr != null) {
             plan.add(whereStage(table, targetAlias, whereExpr, cteResults, whereOrigin));
         }
-        // A pending insert is known by identity; within each partition a row is written at the position of
-        // the first row equal to it, as the plain path reads them.
+        // A pending insert is known by identity, and so is every row's position: two rows of the same values
+        // are written each at its own.
         final Set<Row> pendingRows = Collections.newSetFromMap(new IdentityHashMap<Row, Boolean>());
         pendingRows.addAll(pendingInserts);
-        final Map<Row, Integer> effectivePositions = firstPositionsOf(effective);
-        final Map<Row, Integer> pendingPositions = firstPositionsOf(pendingInserts);
+        final RowPositions effectivePositions = new RowPositions(effective);
+        final RowPositions pendingPositions = new RowPositions(pendingInserts);
         plan.add(new StageOperator(updateDescription(table, assignments)) {
             @Override
             protected List<Row> apply(final List<Row> matching) {
@@ -427,7 +428,7 @@ final class UpdateDeleteExecutor {
                     final List<Row> written = new ArrayList<>();
                     for (final Row row : matching) {
                         if (pendingRows.contains(row)) {
-                            final Integer idx = pendingPositions.get(row);
+                            final Integer idx = pendingPositions.take(row);
                             if (idx != null) {
                                 writeSet.setPendingInsert(fullyQualifiedName, idx.intValue(),
                                     buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes, writtenName,
@@ -435,7 +436,7 @@ final class UpdateDeleteExecutor {
                                 written.add(row);
                             }
                         } else {
-                            final Integer idx = effectivePositions.get(row);
+                            final Integer idx = effectivePositions.take(row);
                             if (idx != null) {
                                 writeSet.recordUpdate(fullyQualifiedName, effectiveIds.get(idx.intValue()),
                                     buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes, writtenName,
@@ -466,7 +467,7 @@ final class UpdateDeleteExecutor {
         if (whereExpr != null) {
             plan.add(whereStage(table, targetAlias, whereExpr, cteResults, null));
         }
-        final Map<Row, Integer> deletePositions = firstPositionsOf(rows);
+        final RowPositions deletePositions = new RowPositions(rows);
         plan.add(new StageOperator("DELETE[" + table.getName() + "]") {
             @Override
             protected List<Row> apply(final List<Row> rowsToDelete) {
@@ -475,7 +476,7 @@ final class UpdateDeleteExecutor {
                 // Each row's identity, read while the row is still stored: a stream reports the DELETE under it.
                 final List<Long> idsToDelete = new ArrayList<>();
                 for (final Row row : rowsToDelete) {
-                    final Integer rowIndex = deletePositions.get(row);
+                    final Integer rowIndex = deletePositions.take(row);
                     if (rowIndex != null) {
                         indicesToDelete.add(rowIndex);
                         idsToDelete.add(storage.getRowId(rowIndex));
@@ -541,8 +542,8 @@ final class UpdateDeleteExecutor {
         }
         final Set<Row> pendingRows = Collections.newSetFromMap(new IdentityHashMap<Row, Boolean>());
         pendingRows.addAll(pendingInserts);
-        final Map<Row, Integer> effectivePositions = firstPositionsOf(effective);
-        final Map<Row, Integer> pendingPositions = firstPositionsOf(pendingInserts);
+        final RowPositions effectivePositions = new RowPositions(effective);
+        final RowPositions pendingPositions = new RowPositions(pendingInserts);
         plan.add(new StageOperator("DELETE[" + table.getName() + "]") {
             @Override
             protected List<Row> apply(final List<Row> matching) {
@@ -550,12 +551,12 @@ final class UpdateDeleteExecutor {
                 final List<Integer> pendingIndices = new ArrayList<>();
                 for (final Row row : matching) {
                     if (pendingRows.contains(row)) {
-                        final Integer idx = pendingPositions.get(row);
+                        final Integer idx = pendingPositions.take(row);
                         if (idx != null) {
                             pendingIndices.add(idx);
                         }
                     } else {
-                        final Integer idx = effectivePositions.get(row);
+                        final Integer idx = effectivePositions.take(row);
                         if (idx != null) {
                             writeSet.recordDelete(fullyQualifiedName, effectiveIds.get(idx.intValue()));
                             deleted.add(row);
@@ -573,18 +574,6 @@ final class UpdateDeleteExecutor {
         });
         executor.recordPlan(plan);
         return plan.execute().size();
-    }
-
-    /** First-occurrence position of every row VALUE in {@code rows} — one pass replacing the
-     *  per-matched-row indexOf equals-scan, reproducing its first-equal-wins answer exactly. */
-    private static Map<Row, Integer> firstPositionsOf(final List<Row> rows) {
-        final Map<Row, Integer> positions = new HashMap<>();
-        for (int i = 0; i < rows.size(); i++) {
-            if (!positions.containsKey(rows.get(i))) {
-                positions.put(rows.get(i), Integer.valueOf(i));
-            }
-        }
-        return positions;
     }
 
     /** The table's name in full as its resolution recorded it, or its bare name before any resolution did. */
@@ -642,11 +631,11 @@ final class UpdateDeleteExecutor {
         final List<Table> allTables = new ArrayList<>();
         allTables.add(target);
         final Map<String, Table> aliasToTable = new HashMap<>();
-        aliasToTable.put(target.getName().toUpperCase(), target);
+        aliasToTable.put(target.getName().toUpperCase(Locale.ROOT), target);
         // Register the target's alias too (UPDATE t tgt … FROM s …): without it a WHERE like
         // tgt.col = s.col can't disambiguate tgt from the source when both share a column name.
         if (targetAlias != null) {
-            aliasToTable.put(targetAlias.toUpperCase(), target);
+            aliasToTable.put(targetAlias.toUpperCase(Locale.ROOT), target);
         }
         final RowsProvider sources = planSources(sourceRefs, joinClauses, cteResults, allTables, aliasToTable);
         final boolean refuseMultiJoined = errorOnNondeterministicUpdate();
@@ -766,11 +755,11 @@ final class UpdateDeleteExecutor {
         final List<Table> allTables = new ArrayList<>();
         allTables.add(target);
         final Map<String, Table> aliasToTable = new HashMap<>();
-        aliasToTable.put(target.getName().toUpperCase(), target);
+        aliasToTable.put(target.getName().toUpperCase(Locale.ROOT), target);
         // Register the target's alias too (DELETE FROM t wcs USING …): without it a WHERE like
         // wcs.col = d.col can't disambiguate wcs from the source when both share a column name.
         if (targetAlias != null) {
-            aliasToTable.put(targetAlias.toUpperCase(), target);
+            aliasToTable.put(targetAlias.toUpperCase(Locale.ROOT), target);
         }
         final RowsProvider sources = planSources(sourceRefs, joinClauses, cteResults, allTables, aliasToTable);
         Table combined = allTables.get(0);
@@ -887,7 +876,7 @@ final class UpdateDeleteExecutor {
                 assignmentOrigins == null ? null : assignmentOrigins.get(assignment.getKey()));
             try {
                 final Expression parsed = ExpressionEvaluator.parse(assignment.getValue());
-                parsedByColumn.put(assignment.getKey().toUpperCase(), parsed);
+                parsedByColumn.put(assignment.getKey().toUpperCase(Locale.ROOT), parsed);
                 ev.validateColumnScope(parsed);
             } catch (final RuntimeException unjudged) {
                 if (SqlCompilationError.isCompilationError(unjudged.getMessage())) {
@@ -898,7 +887,7 @@ final class UpdateDeleteExecutor {
             }
         }
         for (final TableColumn column : target.getColumns()) {
-            final Expression parsed = parsedByColumn.get(column.getName().toUpperCase());
+            final Expression parsed = parsedByColumn.get(column.getName().toUpperCase(Locale.ROOT));
             if (parsed == null || parsed instanceof DefaultMarkerExpression) {
                 continue;
             }
@@ -992,7 +981,7 @@ final class UpdateDeleteExecutor {
     /** Register one source into both the combined alias context (target + sources) and the source-only one. */
     private void registerSource(final TableData sd, final List<Table> allTables, final Map<String, Table> aliasToTable,
             final List<Table> srcAllTables, final Map<String, Table> srcAliasToTable) {
-        final String key = (sd.alias != null ? sd.alias : sd.table.getName()).toUpperCase();
+        final String key = (sd.alias != null ? sd.alias : sd.table.getName()).toUpperCase(Locale.ROOT);
         allTables.add(sd.table);
         aliasToTable.put(key, sd.table);
         srcAllTables.add(sd.table);
@@ -1111,7 +1100,7 @@ final class UpdateDeleteExecutor {
         // The target in scope under the name the statement gives it, so a qualified reference
         // (T.col, or x.col under an alias) is judged as well as a bare one.
         final Map<String, Table> aliasToTable = new HashMap<>();
-        aliasToTable.put((alias != null ? alias : table.getName()).toUpperCase(), table);
+        aliasToTable.put((alias != null ? alias : table.getName()).toUpperCase(Locale.ROOT), table);
         final List<Table> allTables = new ArrayList<>();
         allTables.add(table);
         final boolean joinedSources = sources != null && !sources.isEmpty();
@@ -1249,10 +1238,10 @@ final class UpdateDeleteExecutor {
         // names them in. A DEFAULT, or a value the static channel cannot type, is left to the evaluation.
         final Map<String, FrostlakeParser.AssignmentContext> assigned = new HashMap<>();
         for (final FrostlakeParser.AssignmentContext assign : assignments) {
-            assigned.put(ParseTreeText.namePartText(assign.namePart()).toUpperCase(), assign);
+            assigned.put(ParseTreeText.namePartText(assign.namePart()).toUpperCase(Locale.ROOT), assign);
         }
         for (final TableColumn column : table.getColumns()) {
-            final FrostlakeParser.AssignmentContext assign = assigned.get(column.getName().toUpperCase());
+            final FrostlakeParser.AssignmentContext assign = assigned.get(column.getName().toUpperCase(Locale.ROOT));
             if (assign == null) {
                 continue;
             }
@@ -1285,7 +1274,7 @@ final class UpdateDeleteExecutor {
     /** One FROM or USING source's shape, in scope under its alias or else its name. */
     private static void registerShape(final TableData source, final Map<String, Table> aliasToTable,
                                       final List<Table> allTables) {
-        aliasToTable.put((source.alias != null ? source.alias : source.table.getName()).toUpperCase(), source.table);
+        aliasToTable.put((source.alias != null ? source.alias : source.table.getName()).toUpperCase(Locale.ROOT), source.table);
         allTables.add(source.table);
     }
 
@@ -1301,7 +1290,7 @@ final class UpdateDeleteExecutor {
         } catch (final RuntimeException unknown) {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(
                 where.getStart().getLine(), where.getStart().getCharPositionInLine(),
-                colName.toUpperCase()), unknown);
+                colName.toUpperCase(Locale.ROOT)), unknown);
         }
     }
 

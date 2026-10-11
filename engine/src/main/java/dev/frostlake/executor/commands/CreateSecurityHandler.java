@@ -194,12 +194,12 @@ public class CreateSecurityHandler implements CommandHandler {
             final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            final String policyName = parts[parts.length - 1].toUpperCase();
+            final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
             ddl.checkCreatePrivilege(Privilege.CREATE_MASKING_POLICY, schema);
             if (orReplace) {
                 queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
                 if (catalog.isPolicyInUse(policyName, true)) {
-                    throw new RuntimeException("Policy " + policyName.toUpperCase()
+                    throw new RuntimeException("Policy " + policyName.toUpperCase(Locale.ROOT)
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
                 try { schema.dropMaskingPolicy(policyName); } catch (final RuntimeException ignored) {}
@@ -213,7 +213,7 @@ public class CreateSecurityHandler implements CommandHandler {
                     params.add(columnParser.parseParameterDef(p));
                 }
             }
-            final String returnType = ctx.dataTypeName() != null ? ctx.dataTypeName().getText().toUpperCase() : "STRING";
+            final String returnType = ctx.dataTypeName() != null ? ctx.dataTypeName().getText().toUpperCase(Locale.ROOT) : "STRING";
             // The body is stored as EXPRESSION TEXT verbatim: a string-literal body keeps its
             // quotes ('***') so DESCRIBE shows it as typed (live-verified) and policy application
             // can inline it as an expression.
@@ -256,7 +256,7 @@ public class CreateSecurityHandler implements CommandHandler {
             final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            final String policyName = parts[parts.length - 1].toUpperCase();
+            final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
             ddl.checkCreatePrivilege(Privilege.CREATE_ROW_ACCESS_POLICY, schema);
             if (orReplace) {
                 queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
@@ -520,12 +520,17 @@ public class CreateSecurityHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("Object '" + userName + "' already exists."));
         }
         UserProperties.checkNew(properties);
+        // A network policy the list names has to exist before the user is made.
+        final String networkPolicy = UserNetworkPolicy.named(catalog, properties);
         if (ctx.or_replace() != null && catalog.hasUser(userName)) {
+            final String held = catalog.getUser(userName).getName();
             catalog.dropUser(userName);
+            SecurityObjectCommandHandler.forgetUser(catalog, held);
         }
         if (ctx.userProperties() != null) {
             catalog.createUser(userName, null, null);
             UserProperties.apply(catalog.getUser(userName), properties);
+            UserNetworkPolicy.attach(catalog, catalog.getUser(userName), networkPolicy);
         } else {
             catalog.createUser(userName);
         }

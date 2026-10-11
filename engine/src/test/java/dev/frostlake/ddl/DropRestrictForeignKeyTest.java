@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -82,7 +84,7 @@ public class DropRestrictForeignKeyTest extends BaseDatabaseTest {
         pair("fk_p2", "fk_c2");
         engine.execute("DROP TABLE fk_p2 CASCADE");
         assertEquals(0, foreignKeys("FK_C2"));
-        assertFalse(ddl("fk_c2").toLowerCase().contains("references"), ddl("fk_c2"));
+        assertFalse(ddl("fk_c2").toLowerCase(Locale.ROOT).contains("references"), ddl("fk_c2"));
         assertFalse(engine.executeQuery("SHOW IMPORTED KEYS IN TABLE fk_c2").next());
         pair("fk_p3", "fk_c3");
         engine.execute("DROP TABLE fk_p3");
@@ -109,7 +111,7 @@ public class DropRestrictForeignKeyTest extends BaseDatabaseTest {
         assertEquals(TABLE_HELD, refusal("DROP TABLE fk_n1 RESTRICT"));
         engine.execute("DROP TABLE fk_n1 CASCADE");
         assertEquals(0, foreignKeys("FK_N2"));
-        assertFalse(ddl("fk_n2").toLowerCase().contains("foreign key"), ddl("fk_n2"));
+        assertFalse(ddl("fk_n2").toLowerCase(Locale.ROOT).contains("foreign key"), ddl("fk_n2"));
         engine.execute("CREATE OR REPLACE TABLE fk_s1 (id INT PRIMARY KEY, pid INT REFERENCES fk_s1(id))");
         engine.execute("DROP TABLE fk_s1 RESTRICT");
     }

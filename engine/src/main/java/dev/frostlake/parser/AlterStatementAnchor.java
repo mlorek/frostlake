@@ -51,6 +51,9 @@ import java.util.List;
  *                                                            after the body, which nothing may follow
  *   ALTER USER u SET EMAIL = 'x' 'y'     'EMAIL' at 17        a user's SET or UNSET names the first word after it
  *   ALTER USER u UNSET EMAIL COMMENT     'EMAIL' at 19        for any fault in its property list
+ *   ALTER USER SET QUERY_TAG = 5 x       'SET' at 11          written without a name, the user's SET names itself
+ *   ALTER ACCOUNT SET QUERY_TAG = 5 x    'QUERY_TAG' at 18    the account's SET names the first token after it:
+ *   ALTER ACCOUNT SET , QUERY_TAG = 5    ',' at 18            a name, a comma, or the end of input
  * </pre>
  *
  * <p>Nothing more of the statement is reported after these lines. A sequence's RENAME followed by any word but TO
@@ -111,6 +114,11 @@ public final class AlterStatementAnchor {
         final Token userWord = userListFault(alter, stream, reported);
         if (userWord != null) {
             lines.add(userWord);
+            return lines;
+        }
+        final Token accountWord = accountListFault(alter, stream, reported);
+        if (accountWord != null) {
+            lines.add(accountWord);
             return lines;
         }
         final Token rename = renameStart(alter);
@@ -208,8 +216,27 @@ public final class AlterStatementAnchor {
         if (verb.getType() != FrostlakeLexer.SET && verb.getType() != FrostlakeLexer.UNSET) {
             return null;
         }
+        // Written without a name the statement alters the session's own user, and its SET is what is refused.
+        if (verb.getType() == FrostlakeLexer.SET && alter.identifier() == null && alter.if_exists() == null) {
+            return verb;
+        }
         final Token first = nextSpoken(stream, verb.getTokenIndex());
         return first == null || first.getType() == FrostlakeLexer.TAG ? null : first;
+    }
+
+    /**
+     * The token live refuses a fault in the account's SET list at: the first one after the SET, whichever
+     * assignment the fault lies in, or null when the fault lies elsewhere.
+     */
+    private static Token accountListFault(final FrostlakeParser.AlterStatementContext alter, final TokenStream stream,
+                                          final Token reported) {
+        final FrostlakeParser.SessionActionContext action = alter.sessionAction();
+        if (alter.ACCOUNT() == null || action == null || action.getStart() == null
+                || action.getStart().getType() != FrostlakeLexer.SET
+                || action.getStart().getTokenIndex() > reported.getTokenIndex()) {
+            return null;
+        }
+        return nextSpoken(stream, action.getStart().getTokenIndex());
     }
 
     /** The next default-channel token after token index {@code after}, or null past the end. */

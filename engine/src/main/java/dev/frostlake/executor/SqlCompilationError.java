@@ -268,12 +268,14 @@ public final class SqlCompilationError {
     /**
      * The sentence live gives when a SHOW cannot reach its scope — for the kinds that do not name what
      * was missing. Measured across all three scope forms ({@code IN SCHEMA db.missing},
-     * {@code IN SCHEMA missing}, {@code IN DATABASE missing}): TABLES, VIEWS, STAGES, FILE FORMATS and
-     * DYNAMIC TABLES answer exactly this, while PIPES, STREAMS, TASKS, SEQUENCES, TAGS, the two policy
-     * kinds, CORTEX SEARCH SERVICES, PROCEDURES, FUNCTIONS and COLUMNS name the missing schema or
-     * database instead. Which one a kind uses is a property of the kind, not of the scope form. Every
-     * USE that resolves nothing — a database, a schema, a role, a quoted name in the wrong case — answers
-     * it too.
+     * {@code IN SCHEMA missing}, {@code IN DATABASE missing}): TABLES and its EVENT, ICEBERG, EXTERNAL,
+     * HYBRID and DYNAMIC flavours, VIEWS, OBJECTS, STAGES, FILE FORMATS, NETWORK RULES, NOTEBOOKS,
+     * STREAMLITS and MODELS answer exactly this, and so does SCHEMAS IN DATABASE; while PIPES, STREAMS,
+     * TASKS, ALERTS, SEQUENCES, TAGS, SECRETS, CONTACTS, MATERIALIZED VIEWS, every policy kind, CORTEX
+     * SEARCH SERVICES, IMAGE REPOSITORIES, SERVICES, PROCEDURES, FUNCTIONS, DATABASE ROLES, COLUMNS and
+     * the key listings name the missing schema or database instead. Which one a kind uses is a property
+     * of the kind, not of the scope form. Every USE that resolves nothing — a database, a schema, a role,
+     * a quoted name in the wrong case — answers it too.
      */
     public static String objectDoesNotExist() {
         return of("Object does not exist, or operation cannot be performed.");

@@ -28,6 +28,10 @@ public class Translate extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) return null;
         final String str = args.get(0).toString();
         final String from = args.get(1) == null ? "" : args.get(1).toString();

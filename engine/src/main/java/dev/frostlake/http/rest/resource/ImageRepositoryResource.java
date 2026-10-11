@@ -93,8 +93,7 @@ public final class ImageRepositoryResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = call.sql().showNamed(show(call, RestShow.likeName(name)), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Image repository '"
-                + UserDefinedFunctionResource.qualified(call, name) + "' does not exist or not authorized.");
+            throw RestException.missing("Image repository", UserDefinedFunctionResource.qualified(call, name));
         }
         return toJson(rows.get(0));
     }

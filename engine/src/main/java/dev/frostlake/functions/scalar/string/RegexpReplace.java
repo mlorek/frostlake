@@ -36,6 +36,10 @@ public class RegexpReplace extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) {
             return null;
         }
@@ -47,10 +51,15 @@ public class RegexpReplace extends TextArgumentFunction {
         final String parameters = args.size() > 5 && args.get(5) != null ? args.get(5).toString() : null;
         RegexpHelper.requirePosition(position);
         RegexpHelper.requireOccurrenceOrAll(occurrence);
+        if (RegexpHelper.matchesNothing(pattern, parameters)) {
+            return subject;
+        }
 
         // The position counts characters, a supplementary one included (live-verified).
         final int start = Math.max(0, position - 1);
-        if (start >= CodePointText.length(subject)) {
+        // A position right past the end still reads the empty text there, which a pattern may match:
+        // REGEXP_REPLACE('', 'a*', '-') is '-' (live-verified).
+        if (start > CodePointText.length(subject)) {
             return subject;
         }
         final String prefix = CodePointText.slice(subject, 0, start);

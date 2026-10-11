@@ -24,6 +24,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -77,7 +78,7 @@ public class BuildScopedFileUrlTest extends BaseDatabaseTest {
     public void everyCallMakesADifferentUrl() {
         engine.execute("CREATE STAGE bsc_twice");
         assertEquals("false", value("SELECT BUILD_SCOPED_FILE_URL(@bsc_twice, 'a') = BUILD_SCOPED_FILE_URL(@bsc_twice,"
-            + " 'a')").toLowerCase());
+            + " 'a')").toLowerCase(Locale.ROOT));
         final Row row = engine.executeQuery("SELECT BUILD_SCOPED_FILE_URL(@bsc_twice, 'a') AS u1,"
             + " BUILD_SCOPED_FILE_URL(@bsc_twice, 'b') AS u2").getRows().get(0);
         final String first = row.getValue(0).toString();

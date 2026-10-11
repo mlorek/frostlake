@@ -41,6 +41,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -336,7 +337,7 @@ final class RoutineReturnTypeChecker {
      */
     static String spellColumn(final DataType type) {
         if (type instanceof StringType && !(type instanceof UuidType)) {
-            return type.getName().toUpperCase() + "(" + ((StringType) type).getMaxLength() + ")";
+            return type.getName().toUpperCase(Locale.ROOT) + "(" + ((StringType) type).getMaxLength() + ")";
         }
         if (type instanceof BinaryType) {
             return "BINARY(" + ((BinaryType) type).getMaxLength() + ")";
@@ -430,7 +431,7 @@ final class RoutineReturnTypeChecker {
         }
         if (type instanceof StringType) {
             final int length = ((StringType) type).getMaxLength();
-            return type.getName().toUpperCase() + "(" + (length == 16777216 ? 134217728 : length) + ")";
+            return type.getName().toUpperCase(Locale.ROOT) + "(" + (length == 16777216 ? 134217728 : length) + ")";
         }
         if (type instanceof BinaryType) {
             final int length = ((BinaryType) type).getMaxLength();
@@ -456,6 +457,6 @@ final class RoutineReturnTypeChecker {
                 || family == ReturnTypeFamily.ARRAY || family == ReturnTypeFamily.OBJECT) {
             return family.name();
         }
-        return type.getName().toUpperCase();
+        return type.getName().toUpperCase(Locale.ROOT);
     }
 }

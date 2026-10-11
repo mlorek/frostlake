@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -143,7 +145,7 @@ public class FromlessSelectAliasScopeTest extends BaseDatabaseTest {
     /** A BOOLEAN item IS a condition, and NOT over a number still converts. */
     @Test
     public void aBooleanItemIsACondition() {
-        assertEquals("true", scalar("SELECT TRUE AS a WHERE a").toLowerCase());
+        assertEquals("true", scalar("SELECT TRUE AS a WHERE a").toLowerCase(Locale.ROOT));
         assertEquals("1", scalar("SELECT 1 AS a WHERE IFF(a = 1, TRUE, FALSE)"));
         assertNoRow("SELECT 1 AS a WHERE NOT a");
     }

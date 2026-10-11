@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -35,7 +37,7 @@ public class CollationOrderingRulesTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery(sql);
         assertEquals(1, rs.getRowCount());
         final Object value = rs.getRows().get(0).getValue(0);
-        return value == null ? "NULL" : value.toString().toUpperCase();
+        return value == null ? "NULL" : value.toString().toUpperCase(Locale.ROOT);
     }
 
     private void assertTrueCell(final String sql) {

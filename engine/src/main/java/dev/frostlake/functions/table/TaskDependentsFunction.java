@@ -92,17 +92,17 @@ public class TaskDependentsFunction extends TableFunction {
     private static List<ResultSetColumn> columns() {
         return Arrays.asList(
             new ResultSetColumn("CREATED_ON", ShowResultHelpers.CREATED_ON),
-            new ResultSetColumn("NAME", StringType.VARCHAR),
-            new ResultSetColumn("DATABASE_NAME", StringType.VARCHAR),
-            new ResultSetColumn("SCHEMA_NAME", StringType.VARCHAR),
-            new ResultSetColumn("OWNER", StringType.VARCHAR),
-            new ResultSetColumn("COMMENT", StringType.VARCHAR),
-            new ResultSetColumn("WAREHOUSE", StringType.VARCHAR),
-            new ResultSetColumn("SCHEDULE", StringType.VARCHAR),
+            new ResultSetColumn("NAME", TaskGraphRuns.TEXT),
+            new ResultSetColumn("DATABASE_NAME", TaskGraphRuns.TEXT),
+            new ResultSetColumn("SCHEMA_NAME", TaskGraphRuns.TEXT),
+            new ResultSetColumn("OWNER", TaskGraphRuns.TEXT),
+            new ResultSetColumn("COMMENT", TaskGraphRuns.TEXT),
+            new ResultSetColumn("WAREHOUSE", TaskGraphRuns.TEXT),
+            new ResultSetColumn("SCHEDULE", TaskGraphRuns.TEXT),
             new ResultSetColumn("PREDECESSORS", new ArrayType(StringType.VARCHAR)),
-            new ResultSetColumn("STATE", StringType.VARCHAR),
-            new ResultSetColumn("DEFINITION", StringType.VARCHAR),
-            new ResultSetColumn("CONDITION", StringType.VARCHAR));
+            new ResultSetColumn("STATE", TaskGraphRuns.TEXT),
+            new ResultSetColumn("DEFINITION", TaskGraphRuns.TEXT),
+            new ResultSetColumn("CONDITION", TaskGraphRuns.TEXT));
     }
 
     /** The task's row, its predecessors named fully qualified as SHOW TASKS names them. */

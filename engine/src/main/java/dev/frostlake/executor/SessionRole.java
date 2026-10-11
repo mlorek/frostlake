@@ -89,6 +89,18 @@ public final class SessionRole {
     }
 
     /**
+     * Whether the running statement runs inside a stored procedure with its owner's rights: in that procedure's
+     * own body, in a statement its handler issues, or in a procedure the body called, whatever rights that one
+     * was created with.
+     *
+     * @return true inside an owner's-rights procedure
+     */
+    public static boolean runsWithOwnersRights() {
+        final SessionRole pinned = PINNED.get();
+        return pinned != null && pinned.ownersRights;
+    }
+
+    /**
      * Put back what a pin displaced; a null restores the unpinned state.
      *
      * @param previous what {@link #pin} returned, or what {@link #pinned} read
@@ -108,6 +120,11 @@ public final class SessionRole {
      */
     String role() {
         return session.getCurrentRole();
+    }
+
+    /** Whether the session asked for secondary roles, which a refusal addressed to its primary role says. */
+    boolean secondaryRoles() {
+        return session.isSecondaryRolesInUse();
     }
 
     /** Whether the statement runs inside a procedure with its owner's rights, which words the refusal for it. */

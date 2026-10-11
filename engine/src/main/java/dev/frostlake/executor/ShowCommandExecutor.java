@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.config.AccountIdentity;
 import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.metastore.model.Account;
@@ -68,9 +69,16 @@ public class ShowCommandExecutor {
         this.transactionManager = transactionManager;
         this.queryHistoryTracker = queryHistoryTracker;
         this.sessionVariables = sessionVariables;
-        this.relationalExecutor = new ShowRelationalExecutor(catalog, storageEngine);
+        // Read live, as the security family reads it: the SecurityManager is installed after construction.
+        final DefinitionOwnership ownership = new DefinitionOwnership() {
+            @Override
+            public boolean actsAsOwner(final String owner) {
+                return securityManager == null || securityManager.actsAsOwner(owner);
+            }
+        };
+        this.relationalExecutor = new ShowRelationalExecutor(catalog, storageEngine, ownership);
         this.pipelineExecutor = new ShowPipelineExecutor(catalog);
-        this.routineExecutor = new ShowRoutineExecutor(catalog, functionRegistry);
+        this.routineExecutor = new ShowRoutineExecutor(catalog, functionRegistry, ownership);
         this.infraExecutor = new ShowInfraExecutor(catalog);
         // The security and session families read securityManager live through this facade, so they receive
         // a reference to it rather than the (still-null-at-construction) SecurityManager value.
@@ -454,10 +462,6 @@ public class ShowCommandExecutor {
         return routineExecutor.showTagsInAccount();
     }
 
-    public ResultSet describeTag(final String tagName) {
-        return routineExecutor.describeTag(tagName);
-    }
-
     public ResultSet describeFunction(final String[] parts, final List<DataType> argumentTypes) {
         return routineExecutor.describeFunction(parts, argumentTypes);
     }
@@ -588,6 +592,14 @@ public class ShowCommandExecutor {
 
     public ResultSet showImportedKeys(final String scopeKind, final String scopeName) {
         return sessionExecutor.showImportedKeys(scopeKind, scopeName);
+    }
+
+    public ResultSet showExportedKeys(final String scopeKind, final String scopeName) {
+        return sessionExecutor.showExportedKeys(scopeKind, scopeName);
+    }
+
+    public ResultSet showGrantsOnAccount() {
+        return sessionExecutor.showGrantsOnAccount();
     }
 
     public ResultSet showColumnsScoped(final String name, final boolean view) {

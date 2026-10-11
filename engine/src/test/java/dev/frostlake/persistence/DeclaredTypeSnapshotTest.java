@@ -77,14 +77,15 @@ public class DeclaredTypeSnapshotTest {
 
         final DatabaseEngine clone = original.cloneInstance();
         assertEquals(declared, declaredTypes(clone));
-        assertEquals("7.5", scalar(clone, "SELECT d.PUBLIC.f0('7.5')::VARCHAR"));
+        // A text converts to the parameter's NUMBER(8,4), scale included (live-verified).
+        assertEquals("7.5000", scalar(clone, "SELECT d.PUBLIC.f0('7.5')::VARCHAR"));
 
         dir = Files.createTempDirectory("declared_type_snapshot_");
         original.checkpointStateTo(dir);
         final DatabaseEngine restored = new DatabaseEngine();
         restored.restoreStateFrom(dir);
         assertEquals(declared, declaredTypes(restored));
-        assertEquals("7.5", scalar(restored, "SELECT d.PUBLIC.f0('7.5')::VARCHAR"));
+        assertEquals("7.5000", scalar(restored, "SELECT d.PUBLIC.f0('7.5')::VARCHAR"));
     }
 
     /** Each column's type and each routine's DDL signature, in a fixed order. */

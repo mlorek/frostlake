@@ -16,19 +16,21 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.BooleanType;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 
 /** IS_DECIMAL(v) — TRUE when the variant holds a fixed-point number (integral or decimal node). */
-public class IsDecimal extends StructuredArgumentFunction {
+public class IsDecimal extends VariantArgumentFunction {
     public IsDecimal() { super("IS_DECIMAL", BooleanType.BOOLEAN); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        // A FLOAT converts to a DOUBLE variant, which is no fixed-point number (live-verified).
+        if (args.get(0) instanceof Double || args.get(0) instanceof Float) return false;
         final JsonNode node = ArrayFunctionHelper.parseNode(args.get(0));
         return node != null && (node.isIntegralNumber() || node.isBigDecimal());
     }

@@ -18,23 +18,22 @@ package dev.frostlake;
 
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.CallDepth;
+import dev.frostlake.executor.InheritedSessionParameters;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.QueryResultCache;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementBoundaries;
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.executor.StatementNesting;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.TableShadows;
+import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.Database;
-import dev.frostlake.metastore.model.Function;
-import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.persistence.CatalogSnapshot;
 import dev.frostlake.persistence.MemoryTableDataStore;
@@ -68,6 +67,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -134,6 +134,8 @@ public class DatabaseEngine {
         this.catalog.setS3PathResolver(queryExecutor.getS3PathResolver());
         // Let the catalog stamp the session's current role as owner on newly-created objects.
         this.catalog.setSessionContext(sessionContext);
+        // A session runs with what its user and the account set for the parameters it does not set itself.
+        sessionContext.setInheritedParameters(new InheritedSessionParameters(catalog));
         this.transactionManager.setSessionContext(sessionContext);
 
         // Create TaskExecutor that delegates to QueryExecutor. Each task statement passes through the
@@ -640,8 +642,8 @@ public class DatabaseEngine {
      * properties exist: a writable landing database for servers and containers.
      */
     private void applyConfiguredDefaults() {
-        final String defaultDatabase = config.getDefaultDatabase().toUpperCase();
-        final String defaultSchema = config.getDefaultSchema().toUpperCase();
+        final String defaultDatabase = config.getDefaultDatabase().toUpperCase(Locale.ROOT);
+        final String defaultSchema = config.getDefaultSchema().toUpperCase(Locale.ROOT);
         try {
             catalog.getDatabase(defaultDatabase);
         } catch (final RuntimeException e) {
@@ -686,6 +688,9 @@ public class DatabaseEngine {
      * Execute a SQL statement or script
      */
     public ExecutionResult execute(final String sql) {
+        // A statement a handler issues from inside a procedure arrives here too: one issued past the depth bodies
+        // run to ends its body (see CallDepth). A statement the session sends runs in no body.
+        CallDepth.requireMayIssue(transactionManager.scopeDepth());
         sessionContext.setCurrentStatement(sql);
         logger.debug("Executing SQL: {}", sql);
 
@@ -721,7 +726,8 @@ public class DatabaseEngine {
                 recordStatementForWal(statementText);
                 transactionManager.autocommitStatementEnd();
                 if (statementSavepoint[0] != null && transactionManager.isExplicitTransaction()) {
-                    transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint();
+                    transactionManager.getCurrentTransaction().getWriteSet()
+                        .endStatementSavepoint(statementSavepoint[0]);
                 }
                 statementSavepoint[0] = null;
             }
@@ -758,7 +764,7 @@ public class DatabaseEngine {
             final String queryId = queryExecutor.getResultCache().getLastQueryId();
 
             if (stmtSavepoint != null && transactionManager.isExplicitTransaction()) {
-                transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint();
+                transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint(stmtSavepoint);
             }
 
             return new ExecutionResult(true, results, null, queryId);
@@ -768,6 +774,8 @@ public class DatabaseEngine {
             logger.error("SQL syntax error in query:\n{}\nError details:\n{}", sql, e.getMessage());
             if (!statementByStatement[0]) {
                 rollbackFailedStatement(stmtSavepoint, e);
+            } else {
+                releaseRequestSavepoint(stmtSavepoint);
             }
             // Re-throw exception so tests and callers can handle it
             throw e;
@@ -775,15 +783,38 @@ public class DatabaseEngine {
             logger.error("Error executing SQL:\n{}\nError: {}", sql, e.getMessage(), e);
             if (!statementByStatement[0]) {
                 rollbackFailedStatement(stmtSavepoint, e);
+            } else {
+                releaseRequestSavepoint(stmtSavepoint);
             }
             // Re-throw exception so tests can catch it
             throw e;
+        } catch (final StackOverflowError overflow) {
+            // Nesting the stack could not hold is the statement's failure like any other, undone and reported as
+            // one, where it escaped as an Error past both.
+            final RuntimeException failure = new RuntimeException(StatementNesting.REFUSAL);
+            logger.error("Error executing SQL:\n{}\nError: {}", sql, failure.getMessage());
+            if (!statementByStatement[0]) {
+                rollbackFailedStatement(stmtSavepoint, failure);
+            } else {
+                releaseRequestSavepoint(stmtSavepoint);
+            }
+            throw failure;
         } finally {
             queryExecutor.restoreStatementBoundaries(displacedBoundaries);
             statementDepth.set(Integer.valueOf(statementDepth.get().intValue() - 1));
             if (statementDepth.get().intValue() == 0) {
                 checkpointAfterRun();
             }
+        }
+    }
+
+    /**
+     * Lets go of the savepoint of a request whose statements each ended or undid themselves: the statement that
+     * failed rolled itself back, and the ones before it stand.
+     */
+    private void releaseRequestSavepoint(final WriteSetSavepoint stmtSavepoint) {
+        if (stmtSavepoint != null && stmtSavepoint.isSuperseded() && transactionManager.isExplicitTransaction()) {
+            transactionManager.getCurrentTransaction().getWriteSet().rollbackToSavepoint(stmtSavepoint);
         }
     }
 
@@ -1096,52 +1127,23 @@ public class DatabaseEngine {
     }
 
     /**
-     * Discard everything created TEMPORARY when the session ends — tables, and equally the views,
-     * functions and procedures the temporary spellings can now create.
-     *
-     * <p>A temporary object's lifetime is the session, live-verified for all four kinds: a second
-     * session sees neither the view ({@code Object 'V' does not exist or not authorized}) nor the
-     * routine ({@code Unknown function F}). Frostlake keeps one namespace per catalog, so it models
-     * that lifetime rather than the isolation — see the divergence recorded on the temporary-object
-     * tests.
+     * Discard everything created TEMPORARY as the engine shuts down, whatever session created it (see
+     * {@link TemporaryObjects}).
      */
     private void dropTemporaryObjects() {
-        for (final Database db : catalog.getAllDatabases()) {
-            for (final Schema schema : db.getAllSchemas()) {
-                for (final Table table : new ArrayList<>(schema.getTables())) {
-                    if (table.isTemporary()) {
-                        final String fqn = db.getName() + "." + schema.getName() + "." + table.getName();
-                        schema.dropTable(table.getName());
-                        if (storageEngine.hasTable(fqn)) {
-                            storageEngine.dropTable(fqn);
-                        }
-                        logger.debug("Dropped temporary table: {}", fqn);
-                    }
-                }
-                // Each permanent table a temporary one hid is uncovered.
-                for (final Table hidden : schema.getShadowedTables()) {
-                    TableShadows.settle(schema, storageEngine, db.getName(), hidden.getName());
-                }
-                for (final View view : new ArrayList<>(schema.getViews())) {
-                    if (view.isTemporary()) {
-                        schema.dropView(view.getName());
-                        logger.debug("Dropped temporary view: {}", view.getName());
-                    }
-                }
-                for (final Function function : new ArrayList<>(schema.getFunctions())) {
-                    if (function.isTemporary()) {
-                        schema.removeFunction(function);
-                        logger.debug("Dropped temporary function: {}", function.getName());
-                    }
-                }
-                for (final Procedure procedure : new ArrayList<>(schema.getProcedures())) {
-                    if (procedure.isTemporary()) {
-                        schema.removeProcedure(procedure);
-                        logger.debug("Dropped temporary procedure: {}", procedure.getName());
-                    }
-                }
-            }
-        }
+        TemporaryObjects.drop(catalog, storageEngine, null);
+    }
+
+    /**
+     * Discard what a session created TEMPORARY, as that session ends: its tables, views, functions and procedures
+     * go with it, and a later session finds the names free. The caller holds whatever keeps other statements out,
+     * as it does for a statement.
+     *
+     * @param sessionNumber the number CURRENT_SESSION() answered in the session that ended
+     * @return how many objects were dropped
+     */
+    public int dropTemporaryObjectsOf(final long sessionNumber) {
+        return TemporaryObjects.drop(catalog, storageEngine, Long.valueOf(sessionNumber));
     }
 
     /**

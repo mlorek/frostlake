@@ -31,6 +31,10 @@ public class Replace extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null) return null;
         final String str = args.get(0).toString();
         final String search = args.get(1) != null ? args.get(1).toString() : "";
@@ -41,6 +45,10 @@ public class Replace extends TextArgumentFunction {
     /** Under a collation every substring the collation calls equal to the search text is replaced. */
     @Override
     public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (collation == null || args.get(0) == null) {
             return evaluate(args);
         }

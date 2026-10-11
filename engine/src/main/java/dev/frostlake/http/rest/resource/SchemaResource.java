@@ -119,8 +119,7 @@ public final class SchemaResource implements RestResource {
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = existing(call, name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Schema '" + call.identifier("database") + "." + name
-                + "' does not exist or not authorized.");
+            throw RestException.missing("Schema", call.identifier("database") + "." + name);
         }
         return toJson(rows.get(0), call.sql().show("SHOW PARAMETERS IN SCHEMA " + qualified(call, name)));
     }

@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.types.BooleanType;
 import java.time.LocalTime;
 import java.util.List;
 
 /** IS_TIME(v) — TRUE when the value is a TIME. */
-public class IsTime extends StructuredArgumentFunction {
+public class IsTime extends VariantArgumentFunction {
     public IsTime() { super("IS_TIME", BooleanType.BOOLEAN); }
 
     @Override

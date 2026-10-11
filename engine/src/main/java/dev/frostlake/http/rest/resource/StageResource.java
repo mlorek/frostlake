@@ -124,7 +124,7 @@ public final class StageResource implements RestResource {
         final List<RestRow> rows = call.sql().showNamed("SHOW STAGES" + RestShow.likeName(name) + " IN SCHEMA "
             + call.schemaSql(), name);
         if (rows.isEmpty()) {
-            throw RestException.notFound("Stage '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Stage", RelationNames.qualifiedDisplay(call, name));
         }
         return toJson(rows.get(0), call.sql().show("DESCRIBE STAGE " + call.qualifiedSql(name)));
     }
@@ -466,7 +466,7 @@ public final class StageResource implements RestResource {
         }
         if (call.sql().showNamed("SHOW STAGES" + RestShow.likeName(name) + " IN SCHEMA " + call.schemaSql(), name)
                 .isEmpty()) {
-            throw RestException.notFound("Stage '" + name + "' does not exist or not authorized.");
+            throw RestException.missing("Stage", RelationNames.qualifiedDisplay(call, name));
         }
         final ObjectNode out = RestJson.object();
         RestJson.put(out, "presigned_url", call.sql().status(sql.append(')').toString()));

@@ -18,6 +18,8 @@ package dev.frostlake.functions.file;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -32,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class FlIsImageTest extends FileFunctionTestSupport {
 
     private String isImage(final String contentType) {
-        return scalar("SELECT FL_IS_IMAGE(" + fileOf(contentType) + ")").toUpperCase();
+        return scalar("SELECT FL_IS_IMAGE(" + fileOf(contentType) + ")").toUpperCase(Locale.ROOT);
     }
 
     /** Live: every content type measured TRUE, enumerated. */
@@ -81,11 +83,11 @@ public class FlIsImageTest extends FileFunctionTestSupport {
         assertEquals("TRUE", scalar("SELECT FL_IS_IMAGE(TRY_TO_FILE(OBJECT_CONSTRUCT("
             + "'STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1,"
             + " 'LAST_MODIFIED', '" + LAST_MODIFIED + "', 'CONTENT_TYPE', 'image/png',"
-            + " 'ETAG', 'e1')))").toUpperCase());
+            + " 'ETAG', 'e1')))").toUpperCase(Locale.ROOT));
         assertEquals("FALSE", scalar("SELECT FL_IS_IMAGE(TRY_TO_FILE(OBJECT_CONSTRUCT("
             + "'STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.png', 'SIZE', 1,"
             + " 'LAST_MODIFIED', '" + LAST_MODIFIED + "', 'CONTENT_TYPE', 'text/plain',"
-            + " 'ETAG', 'e1')))").toUpperCase());
+            + " 'ETAG', 'e1')))").toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -94,7 +96,7 @@ public class FlIsImageTest extends FileFunctionTestSupport {
      */
     @Test
     public void nullFileIsFalseNotNull() {
-        assertEquals("FALSE", scalar("SELECT FL_IS_IMAGE(NULL)").toUpperCase());
-        assertEquals("FALSE", scalar("SELECT FL_IS_IMAGE(TO_FILE(NULL))").toUpperCase());
+        assertEquals("FALSE", scalar("SELECT FL_IS_IMAGE(NULL)").toUpperCase(Locale.ROOT));
+        assertEquals("FALSE", scalar("SELECT FL_IS_IMAGE(TO_FILE(NULL))").toUpperCase(Locale.ROOT));
     }
 }

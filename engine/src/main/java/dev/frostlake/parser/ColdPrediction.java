@@ -18,7 +18,6 @@ package dev.frostlake.parser;
 
 import org.antlr.v4.runtime.Parser;
 import org.antlr.v4.runtime.atn.ATN;
-import org.antlr.v4.runtime.atn.ParserATNSimulator;
 import org.antlr.v4.runtime.atn.PredictionContextCache;
 import org.antlr.v4.runtime.dfa.DFA;
 
@@ -54,6 +53,6 @@ public final class ColdPrediction {
         for (int i = 0; i < decisions.length; i++) {
             decisions[i] = new DFA(atn.getDecisionState(i), i);
         }
-        parser.setInterpreter(new ParserATNSimulator(parser, atn, decisions, new PredictionContextCache()));
+        parser.setInterpreter(new RefusalPrediction(parser, atn, decisions, new PredictionContextCache()));
     }
 }

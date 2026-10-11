@@ -29,20 +29,47 @@ final class SessionParameterSetting {
     private final String key;
     private final String type;
     private final FrostlakeParser.SessionValueContext valueContext;
+    private final boolean sessionParameter;
     private SessionParameterValue value;
     private Object stored;
 
     SessionParameterSetting(final FrostlakeParser.SessionParameterContext name,
                             final FrostlakeParser.SessionValueContext valueContext) {
-        this.written = name.MULTI_STATEMENT_COUNT() != null
-            ? name.MULTI_STATEMENT_COUNT().getText() : name.identifier().getText();
+        this(writtenOf(name), valueContext, false);
+    }
+
+    /**
+     * A name written for the account or for a user, which take every parameter the account lists and the ones a
+     * user alone carries beside a session's own.
+     *
+     * @param written      the name as the statement spells it
+     * @param valueContext the value, or null for an UNSET
+     * @param everyLevel   whether the name may be a parameter of any level
+     */
+    SessionParameterSetting(final String written, final FrostlakeParser.SessionValueContext valueContext,
+                            final boolean everyLevel) {
+        this.written = written;
         this.valueContext = valueContext;
         // A quoted name is no parameter's, whatever it spells.
         final String folded = written.startsWith("\"") ? null : ParameterRegistry.canonical(written);
         final SessionParameterRow row = folded != null && ParameterRegistry.isSessionParameter(folded)
             ? SessionParameterCatalog.find(folded) : null;
-        this.key = row == null ? null : folded;
-        this.type = row == null ? null : row.getType();
+        final String wider = row == null && everyLevel && folded != null
+            ? LeveledParameterSettings.typeOf(folded) : null;
+        this.key = row == null && wider == null ? null : folded;
+        this.type = row != null ? row.getType() : wider;
+        this.sessionParameter = row != null;
+    }
+
+    /** A parameter's name as its statement spells it. */
+    static String writtenOf(final FrostlakeParser.SessionParameterContext name) {
+        return name.MULTI_STATEMENT_COUNT() != null
+            ? name.MULTI_STATEMENT_COUNT().getText() : name.identifier().getText();
+    }
+
+    /** Whether the name is a session parameter's, whose ranges and vocabularies are known. */
+    boolean isSessionParameter() {
+        return sessionParameter;
     }
 
     /** The name as the statement spells it, quotes included. */

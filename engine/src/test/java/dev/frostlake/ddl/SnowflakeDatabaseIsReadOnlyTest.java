@@ -92,8 +92,12 @@ public class SnowflakeDatabaseIsReadOnlyTest {
         assertEquals(READ_ONLY, refusal("DROP SCHEMA SNOWFLAKE.PUBLIC"));
         engine.execute("CREATE SCHEMA p.s");
         assertEquals(READ_ONLY, refusal("ALTER SCHEMA p.s RENAME TO SNOWFLAKE.s"));
-        assertEquals("PUBLIC", scalar("SELECT LISTAGG(SCHEMA_NAME, ',') WITHIN GROUP (ORDER BY SCHEMA_NAME)"
-            + " FROM SNOWFLAKE.INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME <> 'INFORMATION_SCHEMA'"));
+        // None was added: the schemas are the database's own and its working schema.
+        assertEquals("ACCOUNT_USAGE,ALERT,BCR_ROLLOUT,BILLING,CORE,CORTEX,DATA_PRIVACY,DATA_SHARING_USAGE,IMAGES,"
+            + "MARKETPLACE_NOTIFICATION,ML,MONITORING,NOTIFICATION,ORGANIZATION_USAGE,PUBLIC,READER_ACCOUNT_USAGE,"
+            + "SNOWPARK,SNOWPARK_CONNECT,WORKLOAD_INSIGHTS,WORKLOAD_OPTIMIZATION",
+            scalar("SELECT LISTAGG(SCHEMA_NAME, ',') WITHIN GROUP (ORDER BY SCHEMA_NAME)"
+                + " FROM SNOWFLAKE.INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME <> 'INFORMATION_SCHEMA'"));
         // Neither IF form changes anything, and neither refuses.
         engine.execute("CREATE SCHEMA IF NOT EXISTS SNOWFLAKE.PUBLIC");
         engine.execute("DROP SCHEMA IF EXISTS SNOWFLAKE.nope");

@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -47,7 +49,7 @@ public class GetDdlTest extends BaseDatabaseTest {
         assertTrue(ddl.contains("NUMBER(10,2)"), ddl);
         assertTrue(ddl.contains("NOT NULL"), ddl);
         assertTrue(ddl.contains("DEFAULT 0"), ddl);
-        assertTrue(ddl.toLowerCase().contains("primary key (id)"), ddl);
+        assertTrue(ddl.toLowerCase(Locale.ROOT).contains("primary key (id)"), ddl);
     }
 
     @Test

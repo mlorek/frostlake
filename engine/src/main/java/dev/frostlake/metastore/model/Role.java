@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -65,7 +66,7 @@ public class Role implements Taggable {
      * @param createdTime when it was created, on the host's wall clock
      */
     public Role(final String name, final LocalDateTime createdTime) {
-        this.name = name.toUpperCase();
+        this.name = name.toUpperCase(Locale.ROOT);
         this.objectPrivileges = new HashMap<>();
         this.columnPrivileges = new HashMap<>();
         this.grantedRoles = new HashSet<>();
@@ -116,7 +117,7 @@ public class Role implements Taggable {
      * of grants (live-verified); the callers hand in canonical names.
      */
     private static String key(final String objectType, final String objectName) {
-        return objectType.toUpperCase() + ":" + objectName;
+        return objectType.toUpperCase(Locale.ROOT) + ":" + objectName;
     }
 
     public void grantPrivilege(final String objectType, final String objectName, final Privilege privilege) {
@@ -158,16 +159,16 @@ public class Role implements Taggable {
     }
 
     public void grantRole(final String roleName) {
-        grantedRoles.add(roleName.toUpperCase());
+        grantedRoles.add(roleName.toUpperCase(Locale.ROOT));
     }
 
     public void revokeRole(final String roleName) {
-        grantedRoles.remove(roleName.toUpperCase());
-        roleGrantTimes.remove(roleName.toUpperCase());
+        grantedRoles.remove(roleName.toUpperCase(Locale.ROOT));
+        roleGrantTimes.remove(roleName.toUpperCase(Locale.ROOT));
     }
 
     public boolean hasRole(final String roleName) {
-        return grantedRoles.contains(roleName.toUpperCase());
+        return grantedRoles.contains(roleName.toUpperCase(Locale.ROOT));
     }
 
     public Set<String> getGrantedRoles() {
@@ -206,9 +207,9 @@ public class Role implements Taggable {
 
     public void grantRole(final String roleName, final String grantor) {
         grantRole(roleName);
-        roleGrantors.put(roleName.toUpperCase(), grantor);
+        roleGrantors.put(roleName.toUpperCase(Locale.ROOT), grantor);
         // The grant is stamped with the statement's own instant, which a replay restores.
-        roleGrantTimes.put(roleName.toUpperCase(), StatementClock.instant());
+        roleGrantTimes.put(roleName.toUpperCase(Locale.ROOT), StatementClock.instant());
     }
 
     /** When each role in grantedRoles was granted, by role name; none for a grant made with no moment recorded. */
@@ -221,7 +222,7 @@ public class Role implements Taggable {
      * @return the moment, or null for a grant with none recorded
      */
     public Instant getRoleGrantTime(final String roleName) {
-        return roleGrantTimes.get(roleName.toUpperCase());
+        return roleGrantTimes.get(roleName.toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -232,14 +233,14 @@ public class Role implements Taggable {
      */
     public void restoreRoleGrantTime(final String roleName, final Instant granted) {
         if (granted != null) {
-            roleGrantTimes.put(roleName.toUpperCase(), granted);
+            roleGrantTimes.put(roleName.toUpperCase(Locale.ROOT), granted);
         } else {
-            roleGrantTimes.remove(roleName.toUpperCase());
+            roleGrantTimes.remove(roleName.toUpperCase(Locale.ROOT));
         }
     }
 
     public String getRoleGrantor(final String roleName) {
-        return roleGrantors.getOrDefault(roleName.toUpperCase(), "SYSADMIN");
+        return roleGrantors.getOrDefault(roleName.toUpperCase(Locale.ROOT), "SYSADMIN");
     }
 
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
@@ -249,7 +250,7 @@ public class Role implements Taggable {
             byColumn = new HashMap<>();
             columnPrivileges.put(key, byColumn);
         }
-        final String upperColumn = columnName.toUpperCase();
+        final String upperColumn = columnName.toUpperCase(Locale.ROOT);
         Set<Privilege> granted = byColumn.get(upperColumn);
         if (granted == null) {
             granted = new HashSet<>();
@@ -262,11 +263,11 @@ public class Role implements Taggable {
         final String key = key(objectType, objectName);
         final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
         if (columns != null) {
-            final Set<Privilege> privileges = columns.get(columnName.toUpperCase());
+            final Set<Privilege> privileges = columns.get(columnName.toUpperCase(Locale.ROOT));
             if (privileges != null) {
                 privileges.remove(privilege);
                 if (privileges.isEmpty()) {
-                    columns.remove(columnName.toUpperCase());
+                    columns.remove(columnName.toUpperCase(Locale.ROOT));
                 }
                 if (columns.isEmpty()) {
                     columnPrivileges.remove(key);
@@ -285,7 +286,7 @@ public class Role implements Taggable {
         final String key = key(objectType, objectName);
         final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
         if (columns != null) {
-            final Set<Privilege> privileges = columns.get(columnName.toUpperCase());
+            final Set<Privilege> privileges = columns.get(columnName.toUpperCase(Locale.ROOT));
             return privileges != null && privileges.contains(privilege);
         }
         return false;
@@ -506,7 +507,7 @@ public class Role implements Taggable {
     public void rename(final String newName) {
         // Match the constructor, which upper-cases the name; a verbatim rename would
         // otherwise leave getName() inconsistent with every freshly-created role.
-        this.name = newName.toUpperCase();
+        this.name = newName.toUpperCase(Locale.ROOT);
     }
 
     /**

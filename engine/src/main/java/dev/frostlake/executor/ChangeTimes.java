@@ -37,6 +37,7 @@ import dev.frostlake.storage.TableStorage;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
@@ -176,7 +177,7 @@ final class ChangeTimes {
         if (schema.hasTable(name[2])) {
             return schema.getTable(name[2]).getChangeToken();
         }
-        if (!seen.add(QualifiedName.join(name).toUpperCase())) {
+        if (!seen.add(QualifiedName.join(name).toUpperCase(Locale.ROOT))) {
             return 0L;
         }
         if (schema.hasView(name[2])) {
@@ -211,7 +212,7 @@ final class ChangeTimes {
         long token = 0L;
         for (final FrostlakeParser.TableQualifiedNameContext written : names) {
             final String[] parts = ParseTreeText.qualifiedNameParts(written);
-            if (parts.length == 1 && cteNames.contains(parts[0].toUpperCase())) {
+            if (parts.length == 1 && cteNames.contains(parts[0].toUpperCase(Locale.ROOT))) {
                 continue;
             }
             final Long read = relationToken(catalog, fullName(home, parts), seen);

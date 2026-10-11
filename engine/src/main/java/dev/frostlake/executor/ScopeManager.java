@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
@@ -95,7 +96,7 @@ public class ScopeManager {
     /** Called when a variable is DECLARED (not just assigned) in the current scope. */
     public void markDeclaredInCurrentScope(final String name) {
         if (!declaredInScopeStack.isEmpty()) {
-            declaredInScopeStack.peek().add(name.toUpperCase());
+            declaredInScopeStack.peek().add(name.toUpperCase(Locale.ROOT));
         }
     }
 
@@ -110,11 +111,20 @@ public class ScopeManager {
     }
 
     public void setVariable(final String name, final Object value) {
-        variables.put(name.toUpperCase(), value);
+        variables.put(name.toUpperCase(Locale.ROOT), value);
     }
 
     public Object getVariable(final String name) {
-        return variables.get(name.toUpperCase());
+        return variables.get(name.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Take a name out of the variables, so that it is no name at all again.
+     *
+     * @param name the name
+     */
+    public void removeVariable(final String name) {
+        variables.remove(name.toUpperCase(Locale.ROOT));
     }
 
     public Map<String, Object> getAllVariables() {

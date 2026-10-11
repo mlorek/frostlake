@@ -19,6 +19,7 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import java.util.List;
+import java.util.Locale;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
@@ -50,7 +51,7 @@ final class TableStageOptions {
             if (tail.optionKey() == null || tail.parenOptionList() == null) {
                 continue;
             }
-            final String key = tail.optionKey().getText().toUpperCase();
+            final String key = tail.optionKey().getText().toUpperCase(Locale.ROOT);
             if ("STAGE_FILE_FORMAT".equals(key)) {
                 readGroup(tail.parenOptionList(), table.getStageFileFormat());
             } else if ("STAGE_COPY_OPTIONS".equals(key)) {
@@ -66,7 +67,7 @@ final class TableStageOptions {
             if (option.optionKey() == null) {
                 continue;
             }
-            into.put(option.optionKey().getText().toUpperCase(), writtenValue(option));
+            into.put(option.optionKey().getText().toUpperCase(Locale.ROOT), writtenValue(option));
         }
     }
 

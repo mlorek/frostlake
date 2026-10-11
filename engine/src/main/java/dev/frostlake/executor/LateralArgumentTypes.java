@@ -66,6 +66,20 @@ final class LateralArgumentTypes {
     }
 
     /**
+     * @return the FROM-clause keys the running LATERAL item reads, or null outside any
+     */
+    Map<String, Table> aliases() {
+        return aliasStack.get().peek();
+    }
+
+    /**
+     * @return the relations the running LATERAL item reads, in combined-row order, or null outside any
+     */
+    List<Table> tables() {
+        return tablesStack.get().peek();
+    }
+
+    /**
      * Gives an argument's evaluator the relations the running LATERAL item reads as its declared-type base; an
      * evaluator outside any LATERAL item is left as it is.
      *

@@ -54,6 +54,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -213,15 +214,18 @@ public class VisitorExpressionBuilder {
             final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) ctx;
             final String funcName = funcCtx.functionName().getText();
             final List<BaseExpression> args = new ArrayList<>();
+            final List<String> written = new ArrayList<>();
 
             if (funcCtx.functionArgList() != null) {
                 for (final FrostlakeParser.BooleanExprContext argCtx : ParseTreeText.functionBooleanArgs(funcCtx.functionArgList())) {
                     args.add(buildExpression(argCtx));
+                    written.add(NamelessArgument.readsNoName(argCtx) ? visitor.getOriginalText(argCtx) : null);
                 }
             }
 
             final FunctionCallExpression call = new FunctionCallExpression(funcName, args);
             call.describeQuantifier(funcCtx.DISTINCT() != null ? "DISTINCT" : funcCtx.ALL() != null ? "ALL" : null);
+            call.describeNamelessArguments(written);
             return call;
         }
 
@@ -474,14 +478,15 @@ public class VisitorExpressionBuilder {
             // :varname — procedural variable binding, treat as variable reference
             final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
             if (visitor.getProceduralExecutor() != null) {
-                final Object v = visitor.getProceduralExecutor().getVariable(varName);
+                final Object v = visitor.getProceduralExecutor().readVariable(varName);
                 if (v != null) return v;
             }
             return null;
         }
         if (ctx instanceof FrostlakeParser.SessionVarExprContext) {
             final String token = ((FrostlakeParser.SessionVarExprContext) ctx).SESSION_VAR_REF().getText();
-            final String name = token.substring(1).toUpperCase(); // strip leading $
+            final String name = token.substring(1).toUpperCase(Locale.ROOT); // strip leading $
+            SessionVariableUse.requireCallersRights(name);
             final SecurityManager sm = queryExecutor.getSecurityManager();
             return sm != null ? sm.getSessionContext().getSessionVariable(name)
                               : queryExecutor.getSessionVariables().get(name);
@@ -490,7 +495,7 @@ public class VisitorExpressionBuilder {
             // This might be a variable reference
             final String varName = ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().getText();
             if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
-                final Object varValue = visitor.getProceduralExecutor().getVariable(varName);
+                final Object varValue = visitor.getProceduralExecutor().readVariable(varName);
                 if (varValue != null) {
                     return varValue;
                 }
@@ -499,7 +504,7 @@ public class VisitorExpressionBuilder {
             final SecurityManager sm = queryExecutor.getSecurityManager();
             final Object sessionVal = sm != null
                 ? sm.getSessionContext().getSessionVariable(varName)
-                : queryExecutor.getSessionVariables().get(varName.toUpperCase());
+                : queryExecutor.getSessionVariables().get(varName.toUpperCase(Locale.ROOT));
             if (sessionVal != null) {
                 return sessionVal;
             }
@@ -508,7 +513,7 @@ public class VisitorExpressionBuilder {
             if (!scriptingNamesVisible
                     && ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().namePart().isEmpty()) {
                 throw new RuntimeException(SqlCompilationError.at(ctx.getStart().getLine(),
-                    ctx.getStart().getCharPositionInLine(), "invalid identifier '" + varName.toUpperCase() + "'"));
+                    ctx.getStart().getCharPositionInLine(), "invalid identifier '" + varName.toUpperCase(Locale.ROOT) + "'"));
             }
         }
         if (ctx instanceof FrostlakeParser.ParenExprContext) {
@@ -648,7 +653,7 @@ public class VisitorExpressionBuilder {
      */
     private Object evaluateSystemFunc(final FrostlakeParser.SystemFuncExprContext ctx,
                                       final boolean scriptingNamesVisible) {
-        final String rawName = ctx.SYSTEM_FUNC().getText().toUpperCase(); // e.g. SYSTEM$WAIT
+        final String rawName = ctx.SYSTEM_FUNC().getText().toUpperCase(Locale.ROOT); // e.g. SYSTEM$WAIT
         // Same guard as SystemFunctionEvaluator: SystemFunctionNames is the single declaration of the
         // SYSTEM$ family, shared with SHOW FUNCTIONS via FunctionRegistry.allDispatchableNames(). This
         // parse-tree path and the expression-AST path both consult it, so neither switch can grow a name
@@ -656,9 +661,10 @@ public class VisitorExpressionBuilder {
         if (!SystemFunctionNames.contains(rawName)) {
             throw new RuntimeException("Unsupported system function: " + rawName);
         }
-        if ("SYSTEM$TYPEOF".equals(rawName)) {
+        if ("SYSTEM$TYPEOF".equals(rawName) || "SYSTEM$ABORT_TRANSACTION".equals(rawName)) {
             // It types its argument rather than reading a value, so it is evaluated where every expression's
             // type is known: over the block's names in a scripting expression, as SQL everywhere else.
+            // SYSTEM$ABORT_TRANSACTION judges its argument as written, and goes the same way.
             if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
                 return visitor.getProceduralExecutor().evaluateExpression(buildExpression(ctx));
             }
@@ -760,10 +766,6 @@ public class VisitorExpressionBuilder {
             // ── Session / transaction ──────────────────────────────────────────
             case "SYSTEM$ABORT_SESSION":
                 return queryExecutor.evaluateSystemFunction(rawName, args);
-
-            case "SYSTEM$ABORT_TRANSACTION":
-                try { queryExecutor.getTransactionManager().rollback(); } catch (final Exception ignored) {}
-                return "Transaction aborted.";
 
             case "SYSTEM$CANCEL_QUERY":
             case "SYSTEM$CANCEL_ALL_QUERIES":

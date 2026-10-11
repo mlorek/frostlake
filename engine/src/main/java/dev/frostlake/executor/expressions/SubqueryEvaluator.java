@@ -29,6 +29,7 @@ import dev.frostlake.executor.StoredColumnValues;
 import dev.frostlake.executor.SubqueryAhead;
 import dev.frostlake.executor.SubqueryCompilation;
 import dev.frostlake.functions.CollationMatching;
+import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.JoinedRelations;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -40,6 +41,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -110,7 +112,7 @@ final class SubqueryEvaluator {
         if (parsed != null) {
             final Set<String> outerNames = new HashSet<>();
             for (final String name : (names == null ? buildLateralContext() : names).keySet()) {
-                outerNames.add(name.toUpperCase());
+                outerNames.add(name.toUpperCase(Locale.ROOT));
             }
             final String text = new CorrelatedSubqueryRule(queryExecutor, outerNames).countedBodyText(parsed);
             if (text != null) {
@@ -146,7 +148,7 @@ final class SubqueryEvaluator {
         if (parsed != null) {
             final Set<String> outerNames = new HashSet<>();
             for (final String name : buildLateralContext().keySet()) {
-                outerNames.add(name.toUpperCase());
+                outerNames.add(name.toUpperCase(Locale.ROOT));
             }
             final String text = new CorrelatedSubqueryRule(queryExecutor, outerNames, visitor.scopeRelations())
                 .statisticsBodyText(parsed);
@@ -620,7 +622,7 @@ final class SubqueryEvaluator {
         if (parsed != null && !outerHoldsOneRowAtMost(queryExecutor)) {
             final Set<String> outerNames = new HashSet<>();
             for (final String name : buildLateralContext().keySet()) {
-                outerNames.add(name.toUpperCase());
+                outerNames.add(name.toUpperCase(Locale.ROOT));
             }
             final Map<String, Boolean> pinned = new HashMap<>();
             final Map<String, Boolean> varying = new HashMap<>();
@@ -656,6 +658,10 @@ final class SubqueryEvaluator {
             // the statement's plan has refused it already where it stands anywhere else.
             if (scalar ? rule.refusesScalar(parsed)
                     : rule.refusesMembership(parsed, in, in && !not, subject == null ? null : printed(subject))) {
+                final Function called = scalar ? visitor.sqlFunctionBeingCalled() : null;
+                if (called != null) {
+                    throw UnsupportedSubqueryException.inside(called);
+                }
                 final SourcePosition at = ExpressionSource.resolve(expr.getPosition());
                 throw new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be evaluated"
                     + (at == null ? "" : " at line " + at.getLine() + ", position " + at.getCharPositionInLine())));
@@ -807,16 +813,16 @@ final class SubqueryEvaluator {
             for (final TableColumn column : table.getColumns()) {
                 final String colName = column.getName();
                 context.put(table.getName() + "." + colName, null);
-                context.put(table.getName().toUpperCase() + "." + colName.toUpperCase(), null);
+                context.put(table.getName().toUpperCase(Locale.ROOT) + "." + colName.toUpperCase(Locale.ROOT), null);
                 context.put(colName, null);
-                context.put(colName.toUpperCase(), null);
+                context.put(colName.toUpperCase(Locale.ROOT), null);
             }
         }
         final Map<String, Table> aliasToTable = visitor.getMultiTableAliasToTable();
         if (aliasToTable != null) {
             for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
                 for (final TableColumn column : entry.getValue().getColumns()) {
-                    context.put((entry.getKey() + "." + column.getName()).toUpperCase(), null);
+                    context.put((entry.getKey() + "." + column.getName()).toUpperCase(Locale.ROOT), null);
                     context.put(entry.getKey() + "." + column.getName(), null);
                 }
             }

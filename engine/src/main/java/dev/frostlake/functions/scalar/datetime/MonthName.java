@@ -21,6 +21,7 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
+import java.util.Locale;
 
 public class MonthName extends BuiltInFunction {
     public MonthName() { super("MONTHNAME", StringType.VARCHAR); }
@@ -31,7 +32,7 @@ public class MonthName extends BuiltInFunction {
         // Three letters, not the full name — live answers Jan,Feb,Mar,…,Dec, measured across a whole
         // year, and NULL for NULL.
         final String month = SharedFunctionHelpers.toLocalDate(args.get(0)).getMonth().name();
-        return month.substring(0, 1) + month.substring(1, 3).toLowerCase();
+        return month.substring(0, 1) + month.substring(1, 3).toLowerCase(Locale.ROOT);
     }
 
     @Override

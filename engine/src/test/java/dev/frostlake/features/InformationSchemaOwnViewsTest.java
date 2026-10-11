@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -96,7 +97,7 @@ public class InformationSchemaOwnViewsTest extends BaseDatabaseTest {
         final ResultSet services = engine.executeQuery("SELECT * FROM test_db.INFORMATION_SCHEMA.APPLICATION_SERVICES");
         final List<String> names = new ArrayList<>();
         for (final ResultSetColumn column : services.getColumns()) {
-            names.add(column.getName().toUpperCase());
+            names.add(column.getName().toUpperCase(Locale.ROOT));
         }
         assertEquals(Arrays.asList(
             "APPLICATION_SERVICE_CATALOG", "APPLICATION_SERVICE_SCHEMA", "APPLICATION_SERVICE_NAME", "STATUS", "URL",

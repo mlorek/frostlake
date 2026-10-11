@@ -25,6 +25,9 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
 /**
@@ -43,6 +46,7 @@ public class EngineConfig {
     public static final String PROP_HTTP_PORT = "http.port";
     public static final String PROP_HTTP_HOST = "http.host";
     public static final String PROP_HTTP_MAX_CONNECTIONS = "http.maxConnections";
+    public static final String PROP_HTTP_CORS_ALLOWED_ORIGINS = "http.cors.allowedOrigins";
     /** How long a {@code /api/v2} request waits for its operation before it is answered 202 Accepted. */
     public static final String PROP_HTTP_REST_SYNC_WAIT_MS = "http.rest.syncWaitMs";
     /** How long a {@code /api/v2} result handle stays fetchable after it was issued. */
@@ -122,7 +126,8 @@ public class EngineConfig {
     // default-configured engine never writes persistence files into the current working directory.
     private static final String DEFAULT_DATA_DIR = resolveDefaultDataDir();
     private static final String DEFAULT_PERSISTENCE_DIRECTORY = DEFAULT_DATA_DIR;
-    private static final String DEFAULT_WAL_FILE = DEFAULT_DATA_DIR + "/wal.log";
+    /** The write-ahead log's name inside the persisted-data directory, when no file is configured for it. */
+    private static final String WAL_FILE_NAME = "wal.log";
 
     private final Properties properties;
 
@@ -195,7 +200,6 @@ public class EngineConfig {
         properties.setProperty(PROP_PERSISTENCE_ENABLED, "false");
         properties.setProperty(PROP_PERSISTENCE_DIRECTORY, DEFAULT_PERSISTENCE_DIRECTORY);
         properties.setProperty(PROP_DURABILITY_WAL_ENABLED, "false");
-        properties.setProperty(PROP_DURABILITY_WAL_FILE, DEFAULT_WAL_FILE);
         properties.setProperty(PROP_DURABILITY_CHECKPOINT_INTERVAL, "0");
         properties.setProperty(PROP_DURABILITY_WAL_REPLAY_STRICT, "false");
         properties.setProperty(PROP_PERSISTENCE_AUTO_SAVE, "true");
@@ -247,6 +251,24 @@ public class EngineConfig {
         return getProperty(PROP_HTTP_HOST, DEFAULT_HTTP_HOST);
     }
 
+    /**
+     * The origins whose pages the HTTP server answers, as {@code http.cors.allowedOrigins} lists them, a comma
+     * apart: {@code https://localhost:18443,https://sheets.example.com}. None by default — the server takes no
+     * credentials, so a page is served only when its origin is named here, and never by a wildcard.
+     *
+     * @return the origins, each as written
+     */
+    public List<String> getCorsAllowedOrigins() {
+        final List<String> origins = new ArrayList<String>();
+        final String listed = getProperty(PROP_HTTP_CORS_ALLOWED_ORIGINS, "");
+        for (final String origin : listed.split(",")) {
+            if (!origin.trim().isEmpty()) {
+                origins.add(origin.trim());
+            }
+        }
+        return origins;
+    }
+
     public int getMaxConnections() {
         return getIntProperty(PROP_HTTP_MAX_CONNECTIONS, DEFAULT_MAX_CONNECTIONS);
     }
@@ -289,12 +311,12 @@ public class EngineConfig {
      * is WJ64893, and SHOW ACCOUNTS reports them in separate columns.
      */
     public String getAccountName() {
-        return getProperty(PROP_ACCOUNT_NAME, getAccountId()).toUpperCase();
+        return getProperty(PROP_ACCOUNT_NAME, getAccountId()).toUpperCase(Locale.ROOT);
     }
 
     /** The organization the account belongs to, which CURRENT_ORGANIZATION_NAME() answers with. */
     public String getOrganizationName() {
-        return getProperty(PROP_ORGANIZATION_NAME, DEFAULT_ORGANIZATION_NAME).toUpperCase();
+        return getProperty(PROP_ORGANIZATION_NAME, DEFAULT_ORGANIZATION_NAME).toUpperCase(Locale.ROOT);
     }
 
     public boolean isEnforcePrimaryKey() {
@@ -361,7 +383,7 @@ public class EngineConfig {
     }
 
     public String getDefaultUser() {
-        return getProperty(PROP_DEFAULT_USER, DEFAULT_USER).toUpperCase();
+        return getProperty(PROP_DEFAULT_USER, DEFAULT_USER).toUpperCase(Locale.ROOT);
     }
 
     public boolean isInMemoryStorage() {
@@ -407,8 +429,17 @@ public class EngineConfig {
         return getBooleanProperty(PROP_DURABILITY_WAL_ENABLED, false);
     }
 
+    /**
+     * Where the write-ahead log is kept: the file {@code durability.walFile} names, else {@code wal.log} inside
+     * the persisted-data directory, so a deployment that moves {@code persistence.directory} moves its log with
+     * it.
+     *
+     * @return the log's path
+     */
     public String getWalFile() {
-        return getProperty(PROP_DURABILITY_WAL_FILE, DEFAULT_WAL_FILE);
+        final String configured = properties.getProperty(PROP_DURABILITY_WAL_FILE);
+        return configured != null && !configured.trim().isEmpty() ? configured.trim()
+            : getPersistenceDirectory() + "/" + WAL_FILE_NAME;
     }
 
     /**

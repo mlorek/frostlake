@@ -30,6 +30,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public final class PythonExecutor {
@@ -58,7 +59,7 @@ public final class PythonExecutor {
                 final Parameter parameter = parameters.get(i);
                 final String pName = parameter.getName();
                 bindArgument(parameter, pName, arguments.get(i));
-                bindArgument(parameter, pName.toLowerCase(), arguments.get(i));
+                bindArgument(parameter, pName.toLowerCase(Locale.ROOT), arguments.get(i));
             }
 
             // A FUNCTION body may import snowflake.snowpark exactly like a procedure body; the

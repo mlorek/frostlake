@@ -21,6 +21,8 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -234,7 +236,7 @@ public class TryToRefusalShapeTest extends BaseDatabaseTest {
     public void theStringFormStaysNull() {
         assertEquals("NULL",
             String.valueOf(engine.executeQuery("SELECT TRY_TO_NUMBER('1000', 2, 0)")
-                .getRows().get(0).getValue(0)).toUpperCase());
+                .getRows().get(0).getValue(0)).toUpperCase(Locale.ROOT));
     }
 
     @Test

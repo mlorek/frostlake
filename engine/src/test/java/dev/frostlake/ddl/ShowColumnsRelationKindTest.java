@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -90,7 +92,7 @@ public class ShowColumnsRelationKindTest extends BaseDatabaseTest {
                 }
             });
             assertTrue(e.getMessage().contains(
-                    "Must specify the full search path starting from database for " + name.toUpperCase()),
+                    "Must specify the full search path starting from database for " + name.toUpperCase(Locale.ROOT)),
                 "unqualified VIEW spelling over " + name + " said: " + e.getMessage());
         }
     }

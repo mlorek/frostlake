@@ -21,6 +21,7 @@ import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Canonical form of a SQL identifier, matching Snowflake's identifier resolution:
@@ -77,7 +78,7 @@ public final class SqlIdentifiers {
             final String param = ctx.POSITIONAL_PARAMETER().getText();
             return "COLUMN" + Integer.parseInt(param.substring(1));
         }
-        return ctx.getText().toUpperCase();
+        return ctx.getText().toUpperCase(Locale.ROOT);
     }
 
     /**
@@ -103,7 +104,7 @@ public final class SqlIdentifiers {
             return null;
         }
         if (!rawToken.startsWith("\"") || !rawToken.endsWith("\"") || rawToken.length() <= 1) {
-            return rawToken.toUpperCase();
+            return rawToken.toUpperCase(Locale.ROOT);
         }
         // A quoted name is echoed WITH its quotes only when it needs them. Live drops them for a name
         // that could have been written bare and kept them otherwise, measured spelling by spelling:
@@ -340,14 +341,14 @@ public final class SqlIdentifiers {
                 continue;
             }
             if (ch == '.' && !quoted) {
-                parts.add(wasQuoted ? part.toString() : part.toString().toUpperCase());
+                parts.add(wasQuoted ? part.toString() : part.toString().toUpperCase(Locale.ROOT));
                 part.setLength(0);
                 wasQuoted = false;
                 continue;
             }
             part.append(ch);
         }
-        parts.add(wasQuoted ? part.toString() : part.toString().toUpperCase());
+        parts.add(wasQuoted ? part.toString() : part.toString().toUpperCase(Locale.ROOT));
         return parts.toArray(new String[0]);
     }
 }

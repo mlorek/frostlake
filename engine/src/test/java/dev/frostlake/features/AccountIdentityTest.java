@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -68,7 +69,7 @@ public class AccountIdentityTest extends BaseDatabaseTest {
                 "CURRENT_ACCOUNT_NAME()", "CURRENT_REGION()")) {
             final String value = scalar("SELECT " + function);
             assertNotNull(value, function);
-            assertEquals(value.toUpperCase(), value, function + " is upper-cased");
+            assertEquals(value.toUpperCase(Locale.ROOT), value, function + " is upper-cased");
         }
     }
 

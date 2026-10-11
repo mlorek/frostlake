@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -51,10 +52,15 @@ public class Warehouse implements Taggable {
     private String warehouseType = "STANDARD";
     private boolean initiallySuspended = true;
     private String resourceMonitor;
-    private int maxConcurrencyLevel = 8;
+    /** MAX_CONCURRENCY_LEVEL while the warehouse sets none. */
+    private static final int DEFAULT_MAX_CONCURRENCY_LEVEL = 8;
+    /** STATEMENT_TIMEOUT_IN_SECONDS while the warehouse sets none: two days. */
+    private static final int DEFAULT_STATEMENT_TIMEOUT_SECONDS = 172800;
+
+    private int maxConcurrencyLevel = DEFAULT_MAX_CONCURRENCY_LEVEL;
     private int statementQueuedTimeoutSeconds = 0;
-    // Live's default is two days; the engine stores the setting but enforces no timeout.
-    private int statementTimeoutSeconds = 172800;
+    // The engine stores the setting but enforces no timeout.
+    private int statementTimeoutSeconds = DEFAULT_STATEMENT_TIMEOUT_SECONDS;
     /** Parameter names this warehouse set explicitly, which SHOW PARAMETERS reports at WAREHOUSE level. */
     private final Set<String> explicitParameters = new LinkedHashSet<>();
     /** ENABLE_QUERY_ACCELERATION as a statement set it, or null while the warehouse keeps its type's default. */
@@ -100,7 +106,7 @@ public class Warehouse implements Taggable {
      *  (live-verified wording), unlike a compute pool's idempotent suspend. */
     public void suspend() {
         if (state == WarehouseState.SUSPENDED) {
-            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase()
+            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase(Locale.ROOT)
                 + "' cannot be suspended.");
         }
         this.state = WarehouseState.SUSPENDING;
@@ -117,7 +123,7 @@ public class Warehouse implements Taggable {
             if (ifSuspended) {
                 return;
             }
-            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase()
+            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase(Locale.ROOT)
                 + "' cannot be resumed since it is not suspended.");
         }
         start();
@@ -155,17 +161,17 @@ public class Warehouse implements Taggable {
 
     @Override
     public void setTag(final String tagName, final String value) {
-        tags.put(tagName.toUpperCase(), value);
+        tags.put(tagName.toUpperCase(Locale.ROOT), value);
     }
 
     @Override
     public void unsetTag(final String tagName) {
-        tags.remove(tagName.toUpperCase());
+        tags.remove(tagName.toUpperCase(Locale.ROOT));
     }
 
     @Override
     public String getTagValue(final String tagName) {
-        return tags.get(tagName.toUpperCase());
+        return tags.get(tagName.toUpperCase(Locale.ROOT));
     }
 
     @Override
@@ -271,7 +277,7 @@ public class Warehouse implements Taggable {
     }
 
     public String getWarehouseType() { return warehouseType; }
-    public void setWarehouseType(final String warehouseType) { this.warehouseType = warehouseType != null ? warehouseType.toUpperCase() : "STANDARD"; }
+    public void setWarehouseType(final String warehouseType) { this.warehouseType = warehouseType != null ? warehouseType.toUpperCase(Locale.ROOT) : "STANDARD"; }
 
     public boolean isInitiallySuspended() { return initiallySuspended; }
     public void setInitiallySuspended(final boolean initiallySuspended) { this.initiallySuspended = initiallySuspended; }
@@ -281,7 +287,25 @@ public class Warehouse implements Taggable {
 
     /** Record that {@code parameterName} was given on the warehouse rather than left at its default. */
     public void markParameterSet(final String parameterName) {
-        explicitParameters.add(parameterName.toUpperCase());
+        explicitParameters.add(parameterName.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Puts a parameter the warehouse set itself back on its default, its level blank again:
+     * MAX_CONCURRENCY_LEVEL 8, STATEMENT_QUEUED_TIMEOUT_IN_SECONDS 0, STATEMENT_TIMEOUT_IN_SECONDS 172800.
+     *
+     * @param parameterName the parameter's name
+     */
+    public void unsetParameter(final String parameterName) {
+        final String name = parameterName.toUpperCase(Locale.ROOT);
+        explicitParameters.remove(name);
+        if ("MAX_CONCURRENCY_LEVEL".equals(name)) {
+            maxConcurrencyLevel = DEFAULT_MAX_CONCURRENCY_LEVEL;
+        } else if ("STATEMENT_QUEUED_TIMEOUT_IN_SECONDS".equals(name)) {
+            statementQueuedTimeoutSeconds = 0;
+        } else if ("STATEMENT_TIMEOUT_IN_SECONDS".equals(name)) {
+            statementTimeoutSeconds = DEFAULT_STATEMENT_TIMEOUT_SECONDS;
+        }
     }
 
     /** Every parameter the warehouse set itself, upper-cased — a copy. */
@@ -291,7 +315,7 @@ public class Warehouse implements Taggable {
 
     /** Whether the warehouse set this parameter itself — a WAREHOUSE level rather than a blank one. */
     public boolean isParameterSetOnWarehouse(final String parameterName) {
-        return explicitParameters.contains(parameterName.toUpperCase());
+        return explicitParameters.contains(parameterName.toUpperCase(Locale.ROOT));
     }
 
     public int getMaxConcurrencyLevel() { return maxConcurrencyLevel; }

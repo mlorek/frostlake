@@ -23,6 +23,7 @@ import dev.frostlake.values.BinaryValue;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * TO_BINARY(string [, format]) — decodes the input string into a {@link BinaryValue} using
@@ -44,7 +45,7 @@ public class ToBinary extends BuiltInFunction {
         final BinaryFormat format = args.size() > 1 && args.get(1) != null
             ? BinaryFormat.fromString(args.get(1).toString()) : BinaryFormat.HEX;
         if (format == null) {
-            throw new RuntimeException("Unsupported TO_BINARY format: " + args.get(1).toString().toUpperCase()
+            throw new RuntimeException("Unsupported TO_BINARY format: " + args.get(1).toString().toUpperCase(Locale.ROOT)
                 + " (expected HEX, BASE64, or UTF-8)");
         }
         final byte[] bytes;

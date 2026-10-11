@@ -165,6 +165,8 @@ The three tag endpoints of every taggable resource are served by one helper:
 table, schema and database (`TAG_REFERENCES` rows with `APPLY_METHOD` `INHERITED`), each with the `level` the tag is
 set on. A tag named without a database and schema resolves in the call's session, whose current database and schema are
 the server's defaults (`database.default` / `schema.default`, SNOWFLAKE.PUBLIC unless configured): name them.
+A function, a procedure and a service function are named to `TAG_REFERENCES` by their signature (`"DB"."S"."F"(NUMBER)`),
+and a service and an image repository under the domains `SERVICE` and `IMAGE REPOSITORY`.
 
 ### Accounts and managed accounts (`account.yaml`, `managed-account.yaml`)
 
@@ -234,8 +236,10 @@ A fetched user answers `password` as `********` when it has one, and `enable_unr
 `false`; `password_last_set` is not recorded and answers null.
 
 Not provided: grantees other than roles, users and database roles (`share`, `application`, `application-role`
-answer `501`); `network_policy` is neither applied nor read back (null even when `ALTER USER … SET NETWORK_POLICY`
-attached one), and `enable_unredacted_query_syntax_error`, which no USER statement takes, is not applied. `showLimit` on the grants listings cuts the answer.
+answer `501`); `enable_unredacted_query_syntax_error`, which no USER statement takes, is not applied. `showLimit` on the grants listings cuts the answer.
+`network_policy` is the statement's `NETWORK_POLICY` property — a policy that is not there fails the request and
+creates nothing, and a `PUT` that leaves it out takes the policy off — and a fetched user answers the policy its
+parameters name (`SHOW PARAMETERS LIKE 'NETWORK_POLICY' IN USER`); the listing leaves it null.
 `days_to_expiry`, `mins_to_unlock` and `mins_to_bypass_mfa` are applied as `DAYS_TO_EXPIRY`, `MINS_TO_UNLOCK` and
 `MINS_TO_BYPASS_MFA` and read back as the whole days and minutes left; `rsa_public_key` and `rsa_public_key_2` are
 applied as the keys and read back as `DESCRIBE USER` prints them, with their `_fp` fingerprints.
@@ -408,9 +412,10 @@ neither per table.
 Only Snowflake-managed Iceberg tables exist: `CREATE [OR REPLACE] [TRANSIENT] ICEBERG TABLE` in the four shapes of a
 table (columns, `AS SELECT`, `CLONE`, `LIKE`) stores the rows as an ordinary table's and keeps the Iceberg metadata
 (`EXTERNAL_VOLUME`, `CATALOG = 'SNOWFLAKE'`, `BASE_LOCATION`, `CATALOG_SYNC`, `STORAGE_SERIALIZATION_POLICY`). A
-table written without an external volume is kept in `SNOWFLAKE_MANAGED` storage (where a `BASE_LOCATION` is
-refused; a schema's, database's or account's `EXTERNAL_VOLUME` parameter is not consulted, where a real account uses
-it) and one without a base location gets `<DB>/<SCHEMA>/<NAME>.<8 random characters>/` — a clone keeps its
+table written without an external volume takes the `EXTERNAL_VOLUME` parameter of its schema, else its database's
+(`ALTER SCHEMA | DATABASE … SET EXTERNAL_VOLUME`), which has to name a volume that exists or `SNOWFLAKE_MANAGED`;
+with none set it is kept in `SNOWFLAKE_MANAGED` storage (where a `BASE_LOCATION` is refused), and one without a
+base location gets `<DB>/<SCHEMA>/<NAME>.<8 random characters>/` — a clone keeps its
 source's — as on a real account. Change tracking is always on (`CHANGE_TRACKING = FALSE` is refused, at CREATE and
 in `ALTER ICEBERG TABLE`). `SHOW TABLES` reports it with `is_iceberg = Y`, `SHOW ICEBERG TABLES` lists it, and `DROP
 ICEBERG TABLE` refuses a table that is not one. Its columns take the Iceberg format's types, as on a real account: a
@@ -874,7 +879,7 @@ them from a local Ollama server. The REST surface calls them through SQL, so on 
 |---|---|
 | `cortexLLMInferenceComplete` `POST /cortex/inference:complete` | `SNOWFLAKE.CORTEX.COMPLETE(model, prompt)` for one user message without options, else `COMPLETE(model, [{role, content}, …], {temperature, top_p, max_tokens})` |
 | `embed` `POST /cortex/inference:embed` | `SNOWFLAKE.CORTEX.EMBED_TEXT_768` or `EMBED_TEXT_1024`, chosen by the model, once per text |
-| `listCortexSearchServices` | `SHOW CORTEX SEARCH SERVICES [LIKE] IN SCHEMA [STARTS WITH] [LIMIT … FROM]` (the engine parses both modifiers but applies neither) |
+| `listCortexSearchServices` | `SHOW CORTEX SEARCH SERVICES [LIKE] IN SCHEMA [STARTS WITH] [LIMIT … FROM]` |
 | `createCortexSearchService` | `CREATE CORTEX SEARCH SERVICE … ON <search_column> [ATTRIBUTES …] WAREHOUSE = … TARGET_LAG = '<seconds> seconds' [COMMENT] AS <definition>` |
 | `fetchCortexSearchService` | `SHOW CORTEX SEARCH SERVICES LIKE … IN SCHEMA` |
 | `deleteCortexSearchService` | `DROP CORTEX SEARCH SERVICE [IF EXISTS]` |

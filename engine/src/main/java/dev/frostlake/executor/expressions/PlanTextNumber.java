@@ -19,6 +19,8 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * How the account's plan reads a text LITERAL as a number beside an exact one — the width its echoes spell
@@ -82,6 +84,49 @@ final class PlanTextNumber {
     }
 
     /**
+     * The width a conditional over text literals reads at beside an exact number: IFF and CASE whose results are
+     * all text literals read at the widest scale their results spell — {@code IFF(TRUE, '1.50', '2') * 1} and
+     * {@code IFF(FALSE, '1.50', '2') * 1} are both NUMBER(19,1) — where NVL and COALESCE over the same texts
+     * read as any text value does (live-verified).
+     *
+     * @param operand the operand
+     * @return the width, or null for any other operand
+     */
+    static NumericType typeOfSettled(final Expression operand) {
+        final List<Expression> results = new ArrayList<Expression>();
+        if (operand instanceof FunctionCallExpression) {
+            final FunctionCallExpression call = (FunctionCallExpression) operand;
+            if (!"IFF".equalsIgnoreCase(call.getFunctionName()) || call.getArguments().size() != 3) {
+                return null;
+            }
+            results.add(call.getArguments().get(1));
+            results.add(call.getArguments().get(2));
+        } else if (operand instanceof CaseExpression) {
+            final CaseExpression chosen = (CaseExpression) operand;
+            if (chosen.getElseExpression() == null) {
+                return null;
+            }
+            for (final WhenClause when : chosen.getWhenClauses()) {
+                results.add(when.getResult());
+            }
+            results.add(chosen.getElseExpression());
+        } else {
+            return null;
+        }
+        int precision = DIGITS;
+        int scale = 0;
+        for (final Expression result : results) {
+            if (!ImpliedTextNumber.isTextLiteral(result)) {
+                return null;
+            }
+            final NumericType read = type(String.valueOf(((LiteralExpression) result).getValue()));
+            precision = Math.max(precision, read.getPrecision());
+            scale = Math.max(scale, read.getScale());
+        }
+        return new NumericType("NUMBER", precision, scale);
+    }
+
+    /**
      * The number the text reads as, at the width {@link #type} gives it.
      *
      * @param text the literal's text
@@ -90,7 +135,8 @@ final class PlanTextNumber {
     static BigDecimal value(final String text) {
         final BigDecimal number = spelled(text);
         if (number != null) {
-            return number;
+            // 1e2 is the 100 it spells, at no scale below zero.
+            return number.scale() < 0 ? number.setScale(0) : number;
         }
         try {
             return ImpliedTextNumber.read(text);

@@ -494,7 +494,7 @@ public class Table extends SqlObject {
                 for (final Map.Entry<String, String> tag : now.getTagValues().entrySet()) {
                     column.setTag(tag.getKey(), tag.getValue());
                 }
-                namedThen.put(now.getName().toUpperCase(), past.getName());
+                namedThen.put(now.getName().toUpperCase(Locale.ROOT), past.getName());
             }
             restored.add(column);
         }
@@ -555,9 +555,9 @@ public class Table extends SqlObject {
     private static void renameKeys(final Map<String, String> byColumn, final Map<String, String> namedThen) {
         final Map<String, String> renamed = new HashMap<>();
         for (final Map.Entry<String, String> entry : byColumn.entrySet()) {
-            final String then = namedThen.get(entry.getKey().toUpperCase());
+            final String then = namedThen.get(entry.getKey().toUpperCase(Locale.ROOT));
             if (then != null) {
-                renamed.put(then.toUpperCase(), entry.getValue());
+                renamed.put(then.toUpperCase(Locale.ROOT), entry.getValue());
             }
         }
         byColumn.clear();
@@ -568,7 +568,7 @@ public class Table extends SqlObject {
     private static List<String> namedAsThen(final List<String> names, final Map<String, String> namedThen) {
         final List<String> then = new ArrayList<>(names.size());
         for (final String name : names) {
-            final String named = namedThen.get(name.toUpperCase());
+            final String named = namedThen.get(name.toUpperCase(Locale.ROOT));
             if (named == null) {
                 return null;
             }
@@ -581,7 +581,7 @@ public class Table extends SqlObject {
     private static List<String> renamedWhereStanding(final List<String> names, final Map<String, String> namedThen) {
         final List<String> then = new ArrayList<>(names.size());
         for (final String name : names) {
-            final String named = namedThen.get(name.toUpperCase());
+            final String named = namedThen.get(name.toUpperCase(Locale.ROOT));
             then.add(named != null ? named : name);
         }
         return then;
@@ -667,7 +667,7 @@ public class Table extends SqlObject {
         for (int i = 0; i < columns.size(); i++) {
             final String name = columns.get(i).getName();
             exactColumnIndex.put(name, i);
-            columnIndex.putIfAbsent(name.toUpperCase(), i);
+            columnIndex.putIfAbsent(name.toUpperCase(Locale.ROOT), i);
         }
     }
 
@@ -677,7 +677,7 @@ public class Table extends SqlObject {
      */
     private Integer indexOf(final String name) {
         final Integer exact = exactColumnIndex.get(name);
-        return exact != null ? exact : columnIndex.get(name.toUpperCase());
+        return exact != null ? exact : columnIndex.get(name.toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -836,7 +836,7 @@ public class Table extends SqlObject {
     /** Restore a persisted name for the single-column UNIQUE constraint on one column. */
     public void setUniqueConstraintName(final String columnName, final String name) {
         if (name != null && !name.isEmpty()) {
-            uniqueConstraintNames.put(columnName.toUpperCase(), name);
+            uniqueConstraintNames.put(columnName.toUpperCase(Locale.ROOT), name);
         }
     }
 
@@ -942,7 +942,7 @@ public class Table extends SqlObject {
     /** Restore a persisted name for the FOREIGN KEY constraint an inline {@code REFERENCES} declares. */
     public void setColumnForeignKeyConstraintName(final String columnName, final String name) {
         if (name != null && !name.isEmpty()) {
-            columnForeignKeyConstraintNames.put(columnName.toUpperCase(), name);
+            columnForeignKeyConstraintNames.put(columnName.toUpperCase(Locale.ROOT), name);
         }
     }
 
@@ -1003,7 +1003,7 @@ public class Table extends SqlObject {
     }
 
     private String memoizedConstraintName(final Map<String, String> names, final String columnName) {
-        final String key = columnName.toUpperCase();
+        final String key = columnName.toUpperCase(Locale.ROOT);
         String name = names.get(key);
         if (name == null) {
             name = ConstraintNames.generate();
@@ -1023,7 +1023,7 @@ public class Table extends SqlObject {
 
     /** Forget the generated names tied to one column, so a re-added constraint gets a fresh name. */
     private void forgetColumnConstraintNames(final String columnName) {
-        final String key = columnName.toUpperCase();
+        final String key = columnName.toUpperCase(Locale.ROOT);
         uniqueConstraintNames.remove(key);
         columnForeignKeyConstraintNames.remove(key);
     }
@@ -1603,8 +1603,8 @@ public class Table extends SqlObject {
         }
         if (exactColumnIndex.containsKey(newName)) {
             // The account treats the rename target as an OBJECT, spelled table.column.
-            throw new RuntimeException(SqlCompilationError.of("Object '" + getName().toUpperCase()
-                + "." + newName.toUpperCase() + "' already exists."));
+            throw new RuntimeException(SqlCompilationError.of("Object '" + getName().toUpperCase(Locale.ROOT)
+                + "." + newName.toUpperCase(Locale.ROOT) + "' already exists."));
         }
 
         final TableColumn oldColumn = columns.get(index);
@@ -1676,9 +1676,9 @@ public class Table extends SqlObject {
     }
 
     private void moveConstraintName(final Map<String, String> names, final String oldName, final String newName) {
-        final String existing = names.remove(oldName.toUpperCase());
+        final String existing = names.remove(oldName.toUpperCase(Locale.ROOT));
         if (existing != null) {
-            names.put(newName.toUpperCase(), existing);
+            names.put(newName.toUpperCase(Locale.ROOT), existing);
         }
     }
 
@@ -1751,7 +1751,7 @@ public class Table extends SqlObject {
                 columns.set(index, copyColumnWithConstraintFlags(oldColumn, oldColumn.isPrimaryKey(), false));
             }
         }
-        uniqueConstraintNames.remove(columnName.toUpperCase());
+        uniqueConstraintNames.remove(columnName.toUpperCase(Locale.ROOT));
     }
 
     // A UNIQUE constraint is all-or-nothing: once one of its columns stops being unique (dropped, or named
@@ -1784,7 +1784,7 @@ public class Table extends SqlObject {
                 final TableColumn col = columns.get(index);
                 col.setReferencedTable(null);
                 col.setReferencedColumn(null);
-                columnForeignKeyConstraintNames.remove(colName.toUpperCase());
+                columnForeignKeyConstraintNames.remove(colName.toUpperCase(Locale.ROOT));
             }
         }
     }
@@ -1792,7 +1792,7 @@ public class Table extends SqlObject {
     private List<String> upperCased(final List<String> names) {
         final List<String> out = new ArrayList<>(names.size());
         for (final String n : names) {
-            out.add(n.toUpperCase());
+            out.add(n.toUpperCase(Locale.ROOT));
         }
         return out;
     }

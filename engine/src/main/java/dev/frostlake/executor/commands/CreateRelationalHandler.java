@@ -63,6 +63,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -508,7 +509,7 @@ public class CreateRelationalHandler implements CommandHandler {
             }
             final String table = (fullyQualified ? queryExecutor.getEngineConfig().getAccountId() + "." : "")
                 + schema.getDatabaseName() + "." + schema.getName() + "." + mvName;
-            throw DmlWriteTarget.failedOnColumn(table.toUpperCase(), column.toUpperCase(), failed);
+            throw DmlWriteTarget.failedOnColumn(table.toUpperCase(Locale.ROOT), column.toUpperCase(Locale.ROOT), failed);
         }
     }
 
@@ -846,7 +847,7 @@ public class CreateRelationalHandler implements CommandHandler {
                             targetLag = TargetLag.canonicalize(ddl.extractStringLiteral(opt.STRING_LITERAL()));
                         }
                     } else if (opt.WAREHOUSE() != null && opt.identifier() != null) {
-                        warehouse = getText(opt.identifier()).toUpperCase();
+                        warehouse = getText(opt.identifier()).toUpperCase(Locale.ROOT);
                         WarehouseReference.require(catalog, warehouse);
                     } else if (opt.REFRESH_MODE() != null) {
                         if (opt.FULL() != null) refreshMode = RefreshMode.FULL;
@@ -938,10 +939,10 @@ public class CreateRelationalHandler implements CommandHandler {
         final Schema sourceSchema = dynamicTableSchema(sourceParts);
         final String sourceName = sourceParts[sourceParts.length - 1];
         if (!sourceSchema.hasDynamicTable(sourceName)) {
-            // A missing source is named as an object, by its full path.
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Object", QualifiedName.join(
-                sourceParts.length == 3 ? sourceParts[0] : catalog.getCurrentDatabase(), sourceSchema.getName(),
-                sourceName)));
+            // A missing source is named as an object: bare when it was written bare, else by its full path.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Object", sourceParts.length == 1
+                ? sourceName : QualifiedName.join(sourceParts.length == 3 ? sourceParts[0]
+                    : catalog.getCurrentDatabase(), sourceSchema.getName(), sourceName)));
         }
         final DynamicTable source = sourceSchema.getDynamicTable(sourceName);
         final Schema schema = dynamicTableSchema(parts);
@@ -963,7 +964,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 clone.setTargetLag(option.DOWNSTREAM() != null ? "DOWNSTREAM"
                     : TargetLag.canonicalize(ddl.extractStringLiteral(option.STRING_LITERAL())));
             } else if (option.WAREHOUSE() != null) {
-                final String warehouse = getText(option.identifier()).toUpperCase();
+                final String warehouse = getText(option.identifier()).toUpperCase(Locale.ROOT);
                 WarehouseReference.require(catalog, warehouse);
                 clone.setWarehouse(warehouse);
             }

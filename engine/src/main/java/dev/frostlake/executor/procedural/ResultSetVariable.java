@@ -21,9 +21,34 @@ import dev.frostlake.storage.ResultSet;
 public class ResultSetVariable {
     private final String selectQuery;
     private ResultSet resultSet;
+    private AsyncJob job;
+    private String name;
 
     public ResultSetVariable(final String selectQuery) {
         this.selectQuery = selectQuery;
+    }
+
+    /** The name the RESULTSET was declared or assigned under, upper-cased, or null. */
+    public String getName() {
+        return name;
+    }
+
+    public void setName(final String name) {
+        this.name = name;
+    }
+
+    /** Whether nothing has been given to the RESULTSET: no statement, no job, no rows. */
+    public boolean isEmpty() {
+        return selectQuery == null && resultSet == null && job == null;
+    }
+
+    /** The asynchronous job that fills this RESULTSET, or null when a statement filled it where it stands. */
+    public AsyncJob getJob() {
+        return job;
+    }
+
+    public void setJob(final AsyncJob job) {
+        this.job = job;
     }
 
     public String getSelectQuery() {

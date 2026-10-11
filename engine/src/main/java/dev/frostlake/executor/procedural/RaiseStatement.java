@@ -32,6 +32,26 @@ public class RaiseStatement extends Statement {
         this.message = null;
     }
 
+    private RaiseStatement() {
+        super(StatementType.RAISE);
+        this.exceptionName = null;
+        this.message = null;
+    }
+
+    /**
+     * A RAISE that names nothing: it raises again the exception the handler it stands in is handling.
+     *
+     * @return the statement
+     */
+    public static RaiseStatement again() {
+        return new RaiseStatement();
+    }
+
+    /** Whether this RAISE names nothing and raises the handled exception again. */
+    public boolean isAgain() {
+        return exceptionName == null && message == null;
+    }
+
     public String getExceptionName() {
         return exceptionName;
     }

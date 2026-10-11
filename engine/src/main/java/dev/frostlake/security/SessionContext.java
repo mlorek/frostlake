@@ -16,9 +16,12 @@
 
 package dev.frostlake.security;
 
+import dev.frostlake.metastore.StatementSession;
+
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -57,6 +60,8 @@ public class SessionContext {
     private String displayUser;
     private final Set<String> activeRoles;
     private boolean secondaryRolesInUse;
+    /** What USE SECONDARY ROLES last asked for: ALL, the roles it named joined by commas, or nothing. */
+    private String secondaryRolesValue = "";
     private boolean securityEnabled;
     /**
      * The settings of a statement run outside any front-end's session: the ALTER SESSION parameters and the
@@ -70,6 +75,8 @@ public class SessionContext {
     private final ThreadLocal<SessionSettings> boundSettings = new ThreadLocal<SessionSettings>();
     /** The owner of the owner's-rights procedure running on this thread (see {@link #getExecutableOwner}). */
     private final ThreadLocal<String> executableOwner = new ThreadLocal<String>();
+    /** Where the session's user and account keep their parameters; null when nothing is wired. */
+    private InheritedParameters inheritedParameters;
 
     public SessionContext() {
         this.activeRoles = new HashSet<>();
@@ -107,7 +114,7 @@ public class SessionContext {
     }
 
     public void setCurrentUser(final String currentUser) {
-        this.currentUser = currentUser != null ? currentUser.toUpperCase() : null;
+        this.currentUser = currentUser != null ? currentUser.toUpperCase(Locale.ROOT) : null;
     }
 
     /** Display name returned by CURRENT_USER() — may differ from the internal security user. */
@@ -116,7 +123,7 @@ public class SessionContext {
     }
 
     public void setDisplayUser(final String displayUser) {
-        this.displayUser = displayUser != null ? displayUser.toUpperCase() : null;
+        this.displayUser = displayUser != null ? displayUser.toUpperCase(Locale.ROOT) : null;
     }
 
     public String getCurrentRole() {
@@ -124,9 +131,9 @@ public class SessionContext {
     }
 
     public void setCurrentRole(final String currentRole) {
-        this.currentRole = currentRole != null ? currentRole.toUpperCase() : null;
+        this.currentRole = currentRole != null ? currentRole.toUpperCase(Locale.ROOT) : null;
         if (currentRole != null) {
-            activeRoles.add(currentRole.toUpperCase());
+            activeRoles.add(currentRole.toUpperCase(Locale.ROOT));
         }
     }
 
@@ -152,7 +159,7 @@ public class SessionContext {
         if (owner == null) {
             executableOwner.remove();
         } else {
-            executableOwner.set(owner.toUpperCase());
+            executableOwner.set(owner.toUpperCase(Locale.ROOT));
         }
     }
 
@@ -164,7 +171,7 @@ public class SessionContext {
 
     public void addActiveRole(final String role) {
         if (role != null) {
-            activeRoles.add(role.toUpperCase());
+            activeRoles.add(role.toUpperCase(Locale.ROOT));
         }
     }
 
@@ -187,6 +194,25 @@ public class SessionContext {
         this.secondaryRolesInUse = secondaryRolesInUse;
     }
 
+    /**
+     * What USE SECONDARY ROLES last asked for, as CURRENT_SECONDARY_ROLES() answers its {@code value}.
+     *
+     * @return {@code ALL}, the roles named joined by commas, or the empty text for none
+     */
+    public String getSecondaryRolesValue() {
+        return secondaryRolesValue;
+    }
+
+    /**
+     * Records what USE SECONDARY ROLES asked for; anything but the empty text puts secondary roles in use.
+     *
+     * @param value {@code ALL}, the roles named joined by commas, or the empty text for none
+     */
+    public void setSecondaryRoles(final String value) {
+        this.secondaryRolesValue = value;
+        this.secondaryRolesInUse = !value.isEmpty();
+    }
+
     public boolean isSecurityEnabled() {
         return securityEnabled;
     }
@@ -203,6 +229,7 @@ public class SessionContext {
         activeRoles.add("SYSADMIN");
         activeRoles.add("PUBLIC");
         secondaryRolesInUse = false;
+        secondaryRolesValue = "";
         securityEnabled = true;
         settings().reset();
     }
@@ -216,11 +243,14 @@ public class SessionContext {
      */
     public void bindSettings(final SessionSettings settings) {
         boundSettings.set(settings);
+        // What the thread's statements create from here on is the bound session's.
+        StatementSession.bind(settings == null ? null : Long.valueOf(settings.getSessionNumber()));
     }
 
     /** Back to the context's own settings on this thread. */
     public void unbindSettings() {
         boundSettings.remove();
+        StatementSession.unbind();
     }
 
     /**
@@ -241,27 +271,41 @@ public class SessionContext {
 
     public void setSessionParameter(final String name, final Object value) {
         if (name != null) {
-            settings().parameters().put(name.toUpperCase(), value);
+            settings().parameters().put(name.toUpperCase(Locale.ROOT), value);
         }
     }
 
+    /**
+     * A parameter's value for this session: what ALTER SESSION set, else what the session's user carries, else
+     * what the account sets; null when none of them sets it and the parameter is at its default.
+     */
     public Object getSessionParameter(final String name) {
         if (name == null) {
             return null;
         }
-        return settings().parameters().get(name.toUpperCase());
+        final String key = name.toUpperCase(Locale.ROOT);
+        final Object own = settings().parameters().get(key);
+        if (own != null || inheritedParameters == null) {
+            return own;
+        }
+        return inheritedParameters.value(getDisplayUser(), key);
+    }
+
+    /** Wire where this session's user and account keep the parameters set on them. */
+    public void setInheritedParameters(final InheritedParameters inheritedParameters) {
+        this.inheritedParameters = inheritedParameters;
     }
 
     public void unsetSessionParameter(final String name) {
         if (name != null) {
-            settings().parameters().remove(name.toUpperCase());
+            settings().parameters().remove(name.toUpperCase(Locale.ROOT));
         }
     }
 
     /** Define, or redefine, the session variable SET names. */
     public void setSessionVariable(final String name, final Object value) {
         if (name != null) {
-            settings().variables().put(name.toUpperCase(), value);
+            settings().variables().put(name.toUpperCase(Locale.ROOT), value);
         }
     }
 
@@ -270,13 +314,13 @@ public class SessionContext {
         if (name == null) {
             return null;
         }
-        return settings().variables().get(name.toUpperCase());
+        return settings().variables().get(name.toUpperCase(Locale.ROOT));
     }
 
     /** Forget a session variable UNSET removed. Removing a name no SET defined is silently accepted. */
     public void unsetSessionVariable(final String name) {
         if (name != null) {
-            settings().variables().remove(name.toUpperCase());
+            settings().variables().remove(name.toUpperCase(Locale.ROOT));
         }
     }
 
@@ -285,7 +329,7 @@ public class SessionContext {
      * {@code $TIMEZONE} and {@code $QUERY_TAG} unless a SET made a variable of that name.
      */
     public boolean isSessionVariable(final String name) {
-        return name != null && settings().variables().containsKey(name.toUpperCase());
+        return name != null && settings().variables().containsKey(name.toUpperCase(Locale.ROOT));
     }
 
     public Map<String, Object> getAllSessionParameters() {

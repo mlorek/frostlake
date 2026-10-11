@@ -22,6 +22,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -85,7 +86,7 @@ public class IsRoleInSessionTest extends BaseDatabaseTest {
     public void aWrittenNameIsReadAsAnIdentifier() {
         final String role = currentRole();
         assertEquals(List.of("true", "true", "true", "true"), cells("SELECT IS_ROLE_IN_SESSION('"
-            + role.toLowerCase() + "'), IS_ROLE_IN_SESSION('\"" + role + "\"'), IS_ROLE_IN_SESSION('public'),"
+            + role.toLowerCase(Locale.ROOT) + "'), IS_ROLE_IN_SESSION('\"" + role + "\"'), IS_ROLE_IN_SESSION('public'),"
             + " IS_ROLE_IN_SESSION('\"PUBLIC\"')"));
         assertEquals(List.of("false", "false", "false"), cells(
             "SELECT IS_ROLE_IN_SESSION(' PUBLIC'), IS_ROLE_IN_SESSION(''), IS_ROLE_IN_SESSION('TEST_DB.PUBLIC')"),

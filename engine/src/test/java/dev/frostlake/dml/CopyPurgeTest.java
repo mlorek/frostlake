@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -95,7 +96,7 @@ public class CopyPurgeTest {
 
     /** The directory backing {@code @%<table>} for a table in the test schema. */
     private Path tableStageDir(final String table) {
-        return internalRoot.resolve("tables").resolve("DB.S." + table.toUpperCase());
+        return internalRoot.resolve("tables").resolve("DB.S." + table.toUpperCase(Locale.ROOT));
     }
 
     private void assertStaged(final Path stageDir, final String fileName) {

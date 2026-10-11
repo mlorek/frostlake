@@ -19,6 +19,7 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -69,14 +70,28 @@ public final class ContainerServicesHandler {
 
     private final Catalog catalog;
     private final EngineConfig config;
+    private final QueryExecutor queryExecutor;
 
     /**
+     * A handler for the statements that read: a SHOW, a DESCRIBE.
+     *
      * @param catalog the catalog the objects live in
      * @param config the engine configuration, for the account names a repository URL carries
      */
     public ContainerServicesHandler(final Catalog catalog, final EngineConfig config) {
+        this(catalog, config, null);
+    }
+
+    /**
+     * @param catalog the catalog the objects live in
+     * @param config the engine configuration, for the account names a repository URL carries
+     * @param queryExecutor the executor whose session variables a tag's {@code $name} value reads
+     */
+    public ContainerServicesHandler(final Catalog catalog, final EngineConfig config,
+                                    final QueryExecutor queryExecutor) {
         this.catalog = catalog;
         this.config = config;
+        this.queryExecutor = queryExecutor;
     }
 
     /** Runs one container statement: a result set for a SHOW or DESCRIBE, null for the others. */
@@ -268,14 +283,18 @@ public final class ContainerServicesHandler {
             return null;
         }
         final FrostlakeParser.ArtifactRepositoryAlterActionContext action = ctx.artifactRepositoryAlterAction();
-        if (action.SET() != null && action.tagSet() == null) {
+        if (action.tagSet() != null) {
+            TagActions.set(repository, action.tagSet(), catalog, queryExecutor);
+        } else if (action.tagUnset() != null) {
+            TagActions.unset(repository, action.tagUnset(), catalog);
+        } else if (action.SET() != null) {
             for (final FrostlakeParser.ContainerPropertyContext property : action.containerProperty()) {
                 if (!"COMMENT".equals(propertyName(property))) {
                     throw invalidProperty(propertyName(property), "STAGE");
                 }
                 repository.setComment(text(property.containerValue()));
             }
-        } else if (action.UNSET() != null && action.tagUnset() == null) {
+        } else if (action.UNSET() != null) {
             for (final FrostlakeParser.IdentifierContext id : action.identifier()) {
                 if (!"COMMENT".equals(SqlIdentifiers.canonical(id).toUpperCase(Locale.ROOT))) {
                     throw invalidProperty(SqlIdentifiers.canonical(id), "STAGE");
@@ -520,14 +539,18 @@ public final class ContainerServicesHandler {
             service.setStatus(service.isJob() ? service.getStatus() : "RUNNING");
         } else if (action.serviceSource() != null) {
             applySource(service, action.serviceSource());
-        } else if (action.SET() != null && action.tagSet() == null) {
+        } else if (action.tagSet() != null) {
+            TagActions.set(service, action.tagSet(), catalog, queryExecutor);
+        } else if (action.tagUnset() != null) {
+            TagActions.unset(service, action.tagUnset(), catalog);
+        } else if (action.SET() != null) {
             for (final FrostlakeParser.ContainerPropertyContext property : action.containerProperty()) {
                 requireKnown(propertyName(property), SERVICE_PROPERTIES, "SERVICE");
             }
             for (final FrostlakeParser.ContainerPropertyContext property : action.containerProperty()) {
                 setServiceProperty(service, property, "SERVICE");
             }
-        } else if (action.UNSET() != null && action.tagUnset() == null) {
+        } else if (action.UNSET() != null) {
             for (final FrostlakeParser.IdentifierContext id : action.identifier()) {
                 final String key = SqlIdentifiers.canonical(id).toUpperCase(Locale.ROOT);
                 requireKnown(key, SERVICE_PROPERTIES, "SERVICE");
@@ -611,7 +634,7 @@ public final class ContainerServicesHandler {
         if (tail == null || tail.LIMIT() == null || tail.INTEGER_LITERAL() == null) {
             return set;
         }
-        final int max = Integer.parseInt(tail.INTEGER_LITERAL().getText());
+        final int max = ShowPageSize.require(tail.INTEGER_LITERAL().getText());
         String from = null;
         if (tail.FROM() != null) {
             final int index = tail.STARTS() != null ? 1 : 0;
@@ -841,7 +864,8 @@ public final class ContainerServicesHandler {
     private ResultSet showArtifactRepositories(final FrostlakeParser.ContainerServicesStatementContext ctx) {
         final List<Row> rows = new ArrayList<>();
         final String like = like(ctx);
-        final int max = ctx.LIMIT() != null ? Integer.parseInt(ctx.INTEGER_LITERAL().getText()) : Integer.MAX_VALUE;
+        final int max = ctx.LIMIT() != null ? ShowPageSize.require(ctx.INTEGER_LITERAL().getText())
+            : Integer.MAX_VALUE;
         for (final Schema schema : scope(ctx.containerShowScope())) {
             for (final ArtifactRepository repository : schema.getContainerObjects().getArtifactRepositories()) {
                 if (rows.size() < max && (like == null || ShowResultHelpers.matchesLike(repository.getName(), like))) {
@@ -882,7 +906,9 @@ public final class ContainerServicesHandler {
         }
         String database = null;
         if (!account && scope != null && scope.DATABASE() != null) {
-            database = scope.identifier() != null ? SqlIdentifiers.canonical(scope.identifier())
+            // A database that does not exist is named by its own refusal (live-verified).
+            database = scope.identifier() != null
+                ? catalog.databaseExact(SqlIdentifiers.canonical(scope.identifier())).getName()
                 : catalog.getCurrentDatabase();
         } else if (!account && scope == null) {
             database = catalog.getCurrentDatabase();

@@ -577,6 +577,22 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
     }
 
+    /** Whether a condition is the NOT of a call folding to NULL, which the plan converts beneath the NOT. */
+    private boolean negatesAFoldedNull(final Expression condition) {
+        return planShaped() && condition instanceof UnaryOperationExpression
+            && ((UnaryOperationExpression) condition).getOperator() == UnaryOperator.NOT
+            && foldsToNullByCall(((UnaryOperationExpression) condition).getOperand());
+    }
+
+    /** Whether an expression is a call that folds to an untyped NULL, and not the bare word itself. */
+    private boolean foldsToNullByCall(final Expression expression) {
+        return !isUntypedNullLiteral(expression) && UntypedNullFold.foldsToUntypedNull(expression);
+    }
+
+    private static boolean isUntypedNullLiteral(final Expression expression) {
+        return expression instanceof LiteralExpression && ((LiteralExpression) expression).getType() == LiteralType.NULL;
+    }
+
     /** An argument printed with an untyped NULL planned as {@code family}. */
     private String typedArgument(final Expression argument, final String family) {
         final String previous = nullFamily;
@@ -839,6 +855,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                     return ((UnaryOperationExpression) operand).getOperand().accept(this);
                 }
                 final String notExists = notExists(operand);
+                if (notExists == null && planShaped() && foldsToNullByCall(operand)) {
+                    // What NOT negates is a condition: NOT(SYSTEM$NULL_TO_ROWINDEX(NVL(CAST(null AS NULL), null))).
+                    return "NOT(" + typedArgument(operand, "ROWINDEX") + ")";
+                }
                 return notExists != null ? notExists : "NOT(" + operand.accept(this) + ")";
             }
             case EXISTS: {
@@ -1153,18 +1173,18 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             if (correlationScope == null && context.isEnclosingQualifier(expr.getTableName())
                     && !namesARelationOf(context, expr.getTableName())) {
                 // A name of the row around this query, which none of its own relations answers to.
-                return "CORRELATION(" + expr.getTableName().toUpperCase() + "." + spelledColumn(expr) + ")";
+                return "CORRELATION(" + expr.getTableName().toUpperCase(Locale.ROOT) + "." + spelledColumn(expr) + ")";
             }
             if (correlationScope != null && !ownQualifiers.contains(expr.getTableName())
                     && namesAnOuterRelation(expr.getTableName())
                     || correlationScope == null && compiledOuterQualifier(expr) != null) {
-                final String read = expr.getTableName().toUpperCase() + "." + spelledColumn(expr);
+                final String read = expr.getTableName().toUpperCase(Locale.ROOT) + "." + spelledColumn(expr);
                 return printingCorrelatedCall ? read : "CORRELATION(" + read + ")";
             }
             if (writtenQualifiers != null) {
                 writtenQualifiers.add(expr.getTableName());
             }
-            return expr.getTableName().toUpperCase() + "." + spelledColumn(expr);
+            return expr.getTableName().toUpperCase(Locale.ROOT) + "." + spelledColumn(expr);
         }
         final String qualifier = context.strictMessageQualifier(expr);
         if (qualifier == null && correlationScope != null) {
@@ -1549,6 +1569,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (target instanceof NumericType) {
             return NumericType.isApproximate(target) ? "REAL" : "FIXED";
         }
+        if (target instanceof BooleanType) {
+            return "BOOLEAN";
+        }
         return target instanceof StringType ? "TEXT" : null;
     }
 
@@ -1835,6 +1858,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         if (name.equals("DECODE") && args.size() >= 3) {
             return plannedDecode(args);
         }
+        if (name.equals("CONCAT") || name.equals("CONCAT_WS") && args.size() >= 2) {
+            return plannedConcat(args, name.equals("CONCAT_WS"));
+        }
         final String nullMet = isFoldedConditional(expr) ? nullMetCall(expr, name) : null;
         if (nullMet != null) {
             return nullMet;
@@ -1860,6 +1886,34 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             text.append(i > 0 ? ", " : "").append(typedArgument(args.get(i), families.get(i)));
         }
         return text.append(')').toString();
+    }
+
+    /**
+     * CONCAT as the plan holds it, every argument a text: a NULL the text's typed null, a text as it is and
+     * anything else converted — {@code CONCAT(CAST(RT.N AS VARCHAR(134217728)), 'a', CAST(TRUE AS
+     * VARCHAR(134217728)))}. CONCAT_WS is the CONCAT of its elements with the separator between them: {@code
+     * CONCAT_WS(',', n, g)} is {@code CONCAT(CAST(RT.N AS VARCHAR(134217728)), ',', RT.G)} (live-verified).
+     */
+    private String plannedConcat(final List<Expression> args, final boolean separated) {
+        final StringBuilder text = new StringBuilder("CONCAT(");
+        final String separator = separated ? concatenated(args.get(0)) : null;
+        for (int i = separated ? 1 : 0; i < args.size(); i++) {
+            if (i > (separated ? 1 : 0)) {
+                text.append(", ").append(separated ? separator + ", " : "");
+            }
+            text.append(concatenated(args.get(i)));
+        }
+        return text.append(')').toString();
+    }
+
+    /** One argument of a CONCAT as the text the plan reads it as. */
+    private String concatenated(final Expression argument) {
+        if (isNullValue(argument)) {
+            return typedArgument(argument, "TEXT");
+        }
+        final DataType type = argumentType(argument);
+        return type == null || type instanceof StringType ? argument.accept(this)
+            : "CAST(" + argument.accept(this) + " AS VARCHAR(" + DataTypeParser.CAST_STRING_DEFAULT + "))";
     }
 
     /** The family argument {@code index} of a call plans an untyped NULL as, or null where it is not modelled. */
@@ -1948,7 +2002,10 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             results.add(args.get(i + 1));
         }
         final boolean hasDefault = args.size() % 2 == 0;
-        final String subjectFamily = isUntypedNull(subject) ? meetingFamily(searches) : null;
+        // A subject folding to NULL takes the searches' family as the bare word does, its text inside:
+        // DECODE(SYSTEM$NULL_TO_FIXED(NVL(CAST(null AS NULL), null)), 1, 2, 3) (live-verified).
+        final String subjectFamily = isUntypedNull(subject) || foldsToNullByCall(subject)
+            ? meetingFamily(searches) : null;
         // A NULL subject beside NULL searches has no type to take: the plan holds it as CAST(null AS NULL).
         final StringBuilder text = new StringBuilder("DECODE(")
             .append(isUntypedNull(subject) && subjectFamily == null && allNull(searches) ? "CAST(null AS NULL)"
@@ -2811,7 +2868,8 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             }
             return text.toString();
         }
-        if (spellsOutAPredicate(condition) || (!convertLiterals && condition instanceof LiteralExpression)) {
+        if (spellsOutAPredicate(condition) || (!convertLiterals && condition instanceof LiteralExpression)
+                || negatesAFoldedNull(condition)) {
             return condition.accept(this);
         }
         return asBooleanCondition(condition);
@@ -2835,8 +2893,15 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
         }
     }
 
-    /** A boolean that is no predicate, converted to one: CAST in the plan, BOOLEAN_TO_ROWINDEX in an invalid-type sentence. */
+    /**
+     * A boolean that is no predicate, converted to one: CAST in the plan, BOOLEAN_TO_ROWINDEX in an invalid-type
+     * sentence. A call folding to an untyped NULL is converted as the NULL it is, its text inside: {@code
+     * SYSTEM$NULL_TO_ROWINDEX(NVL(CAST(null AS NULL), null))}.
+     */
     private String asBooleanCondition(final Expression condition) {
+        if (planShaped() && foldsToNullByCall(condition)) {
+            return typedArgument(condition, "ROWINDEX");
+        }
         final String printed = condition.accept(this);
         return conversionShaped() ? "BOOLEAN_TO_ROWINDEX(" + printed + ")" : "CAST(" + printed + " AS BOOLEAN)";
     }

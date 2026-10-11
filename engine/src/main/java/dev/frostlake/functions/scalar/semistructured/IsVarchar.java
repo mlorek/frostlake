@@ -16,14 +16,14 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.values.UuidTextNode;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 
-public class IsVarchar extends StructuredArgumentFunction {
+public class IsVarchar extends VariantArgumentFunction {
     public IsVarchar() { super("IS_VARCHAR", new BooleanType()); }
 
     @Override

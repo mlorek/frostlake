@@ -79,6 +79,18 @@ public enum TableFunctionParameterKind {
     },
 
     /**
+     * A number. {@code GENERATOR(ROWCOUNT =&gt; '3')} is {@code invalid type [VARCHAR(1)] for parameter 'ROWCOUNT'}
+     * and a BOOLEAN {@code invalid type [BOOLEAN] …}: a text that spells a number is not converted, while a FLOAT
+     * and a NULL of a numeric type are taken.
+     */
+    NUMBER {
+        @Override
+        boolean accepts(final DataType declared) {
+            return !(declared instanceof StringType || declared instanceof BooleanType);
+        }
+    },
+
+    /**
      * BOOLEAN. The string {@code 'TRUE'} does NOT count: live answers
      * {@code invalid type [VARCHAR(4)] for parameter 'OUTER'}, so the flags take a boolean literal.
      */

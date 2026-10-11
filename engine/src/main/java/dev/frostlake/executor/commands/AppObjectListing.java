@@ -24,7 +24,6 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AppObject;
 import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.AppObjectVersion;
-import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
@@ -92,29 +91,14 @@ public class AppObjectListing {
      */
     ResultSet show(final AppObjectKind kind, final ShowListingScope scope) {
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : schemasOf(scope)) {
+        // Neither kind names the schema or the database its scope misses (live-verified).
+        for (final Schema schema : scope.schemas(catalog, true)) {
             for (final AppObject object : schema.getAppObjects().all(kind)) {
                 rows.add(new Row(kind == AppObjectKind.NOTEBOOK ? notebookRow(object) : streamlitRow(object)));
             }
         }
         return new ResultSet(textColumns(kind == AppObjectKind.NOTEBOOK ? SHOW_NOTEBOOK_COLUMNS
             : SHOW_STREAMLIT_COLUMNS), rows);
-    }
-
-    private List<Schema> schemasOf(final ShowListingScope scope) {
-        final List<Schema> schemas = new ArrayList<>();
-        if (scope.isAccount()) {
-            for (final Database database : catalog.getAllDatabases()) {
-                schemas.addAll(database.getAllSchemas());
-            }
-        } else if (scope.isDatabase()) {
-            schemas.addAll(catalog.getDatabase(scope.name()).getAllSchemas());
-        } else if (scope.name() != null) {
-            schemas.add(catalog.resolveSchema(scope.name()));
-        } else {
-            schemas.add(catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema()));
-        }
-        return schemas;
     }
 
     private static List<Object> notebookRow(final AppObject object) {
@@ -235,19 +219,29 @@ public class AppObjectListing {
      * @param ctx the SHOW statement
      * @return the listing
      */
-    public ResultSet showVersions(final FrostlakeParser.ShowStatementContext ctx) {
+    /**
+     * Refuses what the shape of a SHOW VERSIONS alone rules out: any form but the one in a notebook or a Streamlit
+     * app, a modifier other than a LIMIT and its count, and a count of 0. Nothing is looked up.
+     *
+     * @param ctx the statement
+     */
+    void requireVersionsShape(final FrostlakeParser.ShowStatementContext ctx) {
         if (ctx.qualifiedName() == null || ctx.NOTEBOOK() == null && ctx.STREAMLIT() == null) {
             final String scope = ctx.ACCOUNT() != null ? " IN ACCOUNT" : ctx.DATABASE() != null ? " IN DATABASE"
                 : ctx.SCHEMA() != null ? " IN SCHEMA" : ctx.TABLE() != null ? " IN TABLE" : "";
             throw new RuntimeException("Unsupported feature 'SHOW VERSIONS" + scope + "'.");
         }
         ShowTailSyntax.requireCountOnly(ctx);
+        if (ctx.showTail() != null && ctx.showTail().LIMIT() != null) {
+            ShowPageSize.require(ctx.showTail().INTEGER_LITERAL().getText());
+        }
+    }
+
+    public ResultSet showVersions(final FrostlakeParser.ShowStatementContext ctx) {
+        requireVersionsShape(ctx);
         int limit = Integer.MAX_VALUE;
         if (ctx.showTail() != null && ctx.showTail().LIMIT() != null) {
             final BigInteger written = new BigInteger(ctx.showTail().INTEGER_LITERAL().getText());
-            if (written.signum() == 0) {
-                throw new RuntimeException("page size \"0\" must be greater than 0 in limit clause");
-            }
             limit = written.bitLength() < Integer.SIZE ? written.intValue() : Integer.MAX_VALUE;
         }
         final AppObjectKind kind = ctx.NOTEBOOK() != null ? AppObjectKind.NOTEBOOK : AppObjectKind.STREAMLIT;

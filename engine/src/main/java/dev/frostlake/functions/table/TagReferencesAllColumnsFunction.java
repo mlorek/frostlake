@@ -16,6 +16,7 @@
  */
 package dev.frostlake.functions.table;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
@@ -33,7 +34,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -45,13 +45,16 @@ import java.util.Map;
  * itself ({@code LEVEL} {@code COLUMN}, {@code APPLY_METHOD} {@code MANUAL}) and each tag the column inherits
  * from its table, schema and database. The rows of one tag stay together, its columns in their own order.
  *
- * <p>The domain is {@code TABLE} for every table-like object: a kind of one is refused as
- * {@link TagReferencesFunction} refuses it, any other domain the account knows as not supported, and an unknown one
- * as unknown (live-verified).
+ * <p>The domain is {@code TABLE} for every table-like object: a view, a materialized view and an external table
+ * are refused as {@link TagReferencesFunction} refuses them, any other domain the account knows as not supported —
+ * a dynamic table's own among them — and an unknown one as unknown (live-verified).
  */
 public class TagReferencesAllColumnsFunction extends TableFunction {
 
     private static final String NAME = "TAG_REFERENCES_ALL_COLUMNS";
+
+    /** How many parts a table's full name has. */
+    private static final int TABLE_NAME_PARTS = 3;
 
     private final Catalog catalog;
     private final TagReferencesFunction references;
@@ -69,23 +72,24 @@ public class TagReferencesAllColumnsFunction extends TableFunction {
 
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
+        if (namedArgs == null || namedArgs.isEmpty()) {
+            // A call without an argument misses the first one.
+            TagReferencesFunction.requireArguments(NAME, new ArrayList<Object>());
+        }
         throw new RuntimeException(NAME + " requires an object name and an object domain");
     }
 
     @Override
     public ResultSet execute(final List<Object> positionalArgs) {
         TagReferencesFunction.requireArguments(NAME, positionalArgs);
-        final String domain = positionalArgs.get(1).toString().trim().toUpperCase(Locale.ROOT);
-        if ("VIEW".equals(domain) || "MATERIALIZED VIEW".equals(domain)) {
-            throw new RuntimeException(TagReferencesFunction.tableLikeOnly(domain));
-        }
-        if (!"TABLE".equals(domain)) {
-            throw new RuntimeException(TagReferencesFunction.isDomain(domain)
-                ? "Unsupported feature 'Only table-like objects are currently supported'."
-                : "Unknown domain: " + domain + ".");
+        if (!"TABLE".equals(TagReferencesFunction.domainOf(positionalArgs.get(1).toString()))) {
+            throw new RuntimeException("Unsupported feature 'Only table-like objects are currently supported'.");
         }
         final String[] written = SqlIdentifiers.canonicalTextParts(positionalArgs.get(0).toString());
         final String objectName = QualifiedName.join(written);
+        if (written.length > TABLE_NAME_PARTS) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
         final String[] name = references.tableName(written, objectName);
         final Schema schema = references.tableSchema(name, objectName);
         final Taggable table = references.requireTableLike(schema, name[2], written, objectName);

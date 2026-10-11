@@ -22,6 +22,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -77,7 +78,7 @@ public class IntervalExpressionTest extends BaseJdbcTest {
             "SELECT TO_CHAR('2024-01-01'::DATE + INTERVAL '10', 'YYYY-MM-DD HH24:MI:SS') DAYS");
         assertTrue(rs.next());
         assertEquals("2024-01-01 00:00:10", rs.getString(1));
-        assertEquals("DAYS", rs.getMetaData().getColumnLabel(1).toUpperCase());
+        assertEquals("DAYS", rs.getMetaData().getColumnLabel(1).toUpperCase(Locale.ROOT));
     }
 
     @Test

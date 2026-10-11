@@ -18,6 +18,7 @@ package dev.frostlake.functions.table;
 
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.TableFunction;
+import dev.frostlake.functions.scalar.ExtractionPath;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -63,8 +64,11 @@ import java.util.Set;
  *       object's members are neither emitted nor followed, which is why
  *       {@code FLATTEN(PARSE_JSON('{"arr":[1,2,3]}'), MODE => 'ARRAY', RECURSIVE => TRUE)} is
  *       empty.</li>
- *   <li>PATH prefixes the reported path rather than replacing it: {@code PATH => 'a.b'} reports
- *       {@code a.b[0]}. A path that matches nothing, or matches a scalar, yields no rows.</li>
+ *   <li>PATH is an {@link ExtractionPath} and prefixes the reported path rather than replacing it:
+ *       {@code PATH => 'a.b'} reports {@code a.b[0]}. A path that matches nothing, or matches a scalar,
+ *       yields no rows; one that cannot be read is refused.</li>
+ *   <li>The PATH column spells a member that is no plain name between brackets and quotes:
+ *       {@code ['a b'].c[0]}.</li>
  *   <li>OUTER's stand-in row is all NULL. For an empty container it still reports the container as
  *       THIS and an empty PATH; for a scalar or NULL input both are NULL.</li>
  * </ul>
@@ -106,7 +110,8 @@ public class Flatten extends TableFunction {
         final Object input = namedArgs.get("INPUT");
 
         // Get optional parameters
-        final String path = namedArgs.containsKey("PATH") ? namedArgs.get("PATH").toString() : null;
+        // A NULL path is no path, as an empty one is (live-verified).
+        final String path = namedArgs.get("PATH") != null ? namedArgs.get("PATH").toString() : null;
         final boolean outer = namedArgs.containsKey("OUTER") &&
                        Boolean.parseBoolean(namedArgs.get("OUTER").toString());
         final boolean recursive = namedArgs.containsKey("RECURSIVE") &&
@@ -126,12 +131,18 @@ public class Flatten extends TableFunction {
         // renders XML-shaped variants as XML text, which is not parseable JSON)
         JsonNode jsonInput = parseInput(input);
 
-        // Apply path filter if specified. The path also PREFIXES every reported path — live answers
-        // "a.b[0]" for PATH => 'a.b', not "[0]".
+        // Apply path filter if specified. The path also PREFIXES every reported path, in the spelling the
+        // PATH column gives every path rather than the one it was written in — live answers "a.b[0]" for
+        // PATH => 'a.b' and for PATH => 'a["b"]' alike. A path that cannot be read is refused whatever the
+        // input holds.
         String pathPrefix = "";
         if (path != null && !path.isEmpty()) {
-            jsonInput = navigatePath(jsonInput, path);
-            pathPrefix = path;
+            final ExtractionPath selected = ExtractionPath.read(path);
+            if (selected == null) {
+                throw new RuntimeException(ExtractionPath.malformed(path, getName()));
+            }
+            jsonInput = selected.in(jsonInput);
+            pathPrefix = selected.canonical();
         }
 
         // Flatten the JSON structure
@@ -182,46 +193,6 @@ public class Flatten extends TableFunction {
         }
     }
 
-    private JsonNode navigatePath(final JsonNode element, final String path) {
-        if (path == null || path.isEmpty() || element == null) {
-            return element;
-        }
-
-        // Simple path navigation (e.g., "field1.field2" or "array[0]")
-        final String[] parts = path.split("\\.");
-        JsonNode current = element;
-
-        for (final String part : parts) {
-            if (current == null || current.isNull()) {
-                return null;
-            }
-
-            // Handle array index
-            if (part.matches(".*\\[\\d+\\]")) {
-                final String fieldName = part.substring(0, part.indexOf('['));
-                final int index = Integer.parseInt(part.substring(part.indexOf('[') + 1, part.indexOf(']')));
-
-                if (!fieldName.isEmpty() && current.isObject()) {
-                    current = current.get(fieldName);
-                }
-
-                if (current != null && current.isArray()) {
-                    if (index >= 0 && index < current.size()) {
-                        current = current.get(index);
-                    } else {
-                        return null;
-                    }
-                }
-            } else if (current.isObject()) {
-                current = current.get(part);
-            } else {
-                return null;
-            }
-        }
-
-        return current;
-    }
-
     /**
      * Walk one container, emitting the rows its MODE calls for.
      *
@@ -250,7 +221,7 @@ public class Flatten extends TableFunction {
                 for(final Map.Entry<String, JsonNode> entry : fields) {
                     final String key = entry.getKey();
                     final JsonNode value = entry.getValue();
-                    final String newPath = currentPath.isEmpty() ? key : currentPath + "." + key;
+                    final String newPath = ExtractionPath.member(currentPath, key);
                     final boolean emitted = mode == FlattenMode.OBJECT || mode == FlattenMode.BOTH;
 
                     if (emitted) {

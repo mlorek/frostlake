@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,10 +45,10 @@ public class ShowKeysTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SHOW PRIMARY KEYS IN TABLE pk_t");
         assertEquals(1, rs.getRows().size());
         final Row row = rs.getRows().get(0);
-        assertEquals("ID", value(rs, row, "column_name").toUpperCase());
-        assertEquals("PK_T", value(rs, row, "table_name").toUpperCase());
-        assertEquals("TEST_SCHEMA", value(rs, row, "schema_name").toUpperCase());
-        assertEquals("TEST_DB", value(rs, row, "database_name").toUpperCase());
+        assertEquals("ID", value(rs, row, "column_name").toUpperCase(Locale.ROOT));
+        assertEquals("PK_T", value(rs, row, "table_name").toUpperCase(Locale.ROOT));
+        assertEquals("TEST_SCHEMA", value(rs, row, "schema_name").toUpperCase(Locale.ROOT));
+        assertEquals("TEST_DB", value(rs, row, "database_name").toUpperCase(Locale.ROOT));
         assertEquals("1", value(rs, row, "key_sequence"));
         assertEquals("false", value(rs, row, "rely"), "a constraint without RELY reports false");
         assertTrue(value(rs, row, "constraint_name").startsWith("SYS_CONSTRAINT_"),
@@ -72,8 +74,8 @@ public class ShowKeysTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SHOW UNIQUE KEYS IN TABLE uk_t");
         assertEquals(1, rs.getRows().size());
         final Row row = rs.getRows().get(0);
-        assertEquals("EMAIL", value(rs, row, "column_name").toUpperCase());
-        assertEquals("UK_T", value(rs, row, "table_name").toUpperCase());
+        assertEquals("EMAIL", value(rs, row, "column_name").toUpperCase(Locale.ROOT));
+        assertEquals("UK_T", value(rs, row, "table_name").toUpperCase(Locale.ROOT));
         assertEquals("1", value(rs, row, "key_sequence"));
         assertTrue(value(rs, row, "constraint_name").startsWith("SYS_CONSTRAINT_"),
             "an unnamed UNIQUE constraint is auto-named SYS_CONSTRAINT_<uuid>");
@@ -87,8 +89,8 @@ public class ShowKeysTest extends BaseDatabaseTest {
         // Unlike TABLE_CONSTRAINTS (one row per constraint), SHOW PRIMARY KEYS stays one row per COLUMN —
         // live-verified — with both rows sharing the one constraint's name.
         assertEquals(2, rs.getRows().size());
-        assertEquals("A", value(rs, rs.getRows().get(0), "column_name").toUpperCase());
-        assertEquals("B", value(rs, rs.getRows().get(1), "column_name").toUpperCase());
+        assertEquals("A", value(rs, rs.getRows().get(0), "column_name").toUpperCase(Locale.ROOT));
+        assertEquals("B", value(rs, rs.getRows().get(1), "column_name").toUpperCase(Locale.ROOT));
         assertEquals("1", value(rs, rs.getRows().get(0), "key_sequence"));
         assertEquals("2", value(rs, rs.getRows().get(1), "key_sequence"));
         assertEquals("MY_PK", value(rs, rs.getRows().get(0), "constraint_name"));
@@ -100,7 +102,7 @@ public class ShowKeysTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE uq_named (id INTEGER, email VARCHAR, CONSTRAINT my_uq UNIQUE (email))");
         final ResultSet rs = engine.executeQuery("SHOW UNIQUE KEYS IN TABLE uq_named");
         assertEquals(1, rs.getRows().size());
-        assertEquals("EMAIL", value(rs, rs.getRows().get(0), "column_name").toUpperCase());
+        assertEquals("EMAIL", value(rs, rs.getRows().get(0), "column_name").toUpperCase(Locale.ROOT));
         assertEquals("MY_UQ", value(rs, rs.getRows().get(0), "constraint_name"));
     }
 
@@ -135,7 +137,7 @@ public class ShowKeysTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SHOW PRIMARY KEYS");
         int seen = 0;
         for (final Row row : rs.getRows()) {
-            final String table = value(rs, row, "table_name").toUpperCase();
+            final String table = value(rs, row, "table_name").toUpperCase(Locale.ROOT);
             if ("KA".equals(table) || "KB".equals(table)) {
                 seen++;
             }

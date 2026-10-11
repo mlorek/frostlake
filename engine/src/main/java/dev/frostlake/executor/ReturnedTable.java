@@ -31,7 +31,7 @@ import java.util.List;
 
 /**
  * What a procedure declared RETURNS TABLE answers to a CALL: the table its RETURN TABLE hands back, under the
- * declared columns' names and types with the returned values unconverted. A procedure declaring no columns,
+ * declared columns' names and types ({@link ReturnColumnTypes}) with the returned values unconverted. A procedure declaring no columns,
  * RETURNS TABLE (), answers the table as returned. Every rule is live-verified.
  */
 final class ReturnedTable {
@@ -68,7 +68,8 @@ final class ReturnedTable {
             if (!takes(declared.get(i).getDataType(), actual.get(i).getDataType())) {
                 throw new RuntimeException(MISMATCH);
             }
-            columns.add(new ResultSetColumn(declared.get(i).getName(), declared.get(i).getDataType(), null));
+            columns.add(new ResultSetColumn(declared.get(i).getName(),
+                ReturnColumnTypes.ofProcedure(declared.get(i).getDataType()), null));
         }
         return new ResultSet(columns, returned.getRows());
     }

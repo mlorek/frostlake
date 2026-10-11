@@ -20,6 +20,7 @@ import dev.frostlake.executor.StatementClock;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -39,6 +40,8 @@ public abstract class SqlObject implements Taggable {
     private Instant lastDdlTime;
     /** Object tags applied via ALTER ... SET TAG (the assignment's key, see TagAssignments -> value). */
     private final Map<String, String> tags = new HashMap<>();
+    /** The session whose statement created this object (see {@link StatementSession}); null for the engine's own. */
+    private final Long createdInSession = StatementSession.current();
 
     /**
      * Constructor for SQL objects
@@ -68,6 +71,15 @@ public abstract class SqlObject implements Taggable {
      */
     public String getName() {
         return name;
+    }
+
+    /**
+     * The session whose statement created this object, which is the session a temporary object lives in.
+     *
+     * @return the session's number, or null for an object the engine's own session created
+     */
+    public Long getCreatedInSession() {
+        return createdInSession;
     }
 
     /** Rename this object (the catalog/schema map re-keying is the caller's responsibility). */
@@ -181,17 +193,17 @@ public abstract class SqlObject implements Taggable {
 
     @Override
     public void setTag(final String tagName, final String value) {
-        tags.put(tagName.toUpperCase(), value);
+        tags.put(tagName.toUpperCase(Locale.ROOT), value);
     }
 
     @Override
     public void unsetTag(final String tagName) {
-        tags.remove(tagName.toUpperCase());
+        tags.remove(tagName.toUpperCase(Locale.ROOT));
     }
 
     @Override
     public String getTagValue(final String tagName) {
-        return tags.get(tagName.toUpperCase());
+        return tags.get(tagName.toUpperCase(Locale.ROOT));
     }
 
     @Override
@@ -239,6 +251,6 @@ public abstract class SqlObject implements Taggable {
 
     @Override
     public int hashCode() {
-        return name != null ? name.toUpperCase().hashCode() : 0;
+        return name != null ? name.toUpperCase(Locale.ROOT).hashCode() : 0;
     }
 }

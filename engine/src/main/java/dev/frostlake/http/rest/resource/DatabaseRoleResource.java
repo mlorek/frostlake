@@ -160,7 +160,7 @@ public final class DatabaseRoleResource implements RestResource {
             }
         }
         if (found == null) {
-            throw RestException.notFound("Database role '" + source + "' does not exist or not authorized.");
+            throw RestException.missing("Database role", source);
         }
         final RestIdentifier name = RestJson.identifier(call.body(), "name", true);
         final String targetDatabase = call.query("targetDatabase") == null ? call.databaseSql()

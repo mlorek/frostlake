@@ -101,6 +101,19 @@ public class RestApiIntegrationTest extends BaseRestTest {
     }
 
     @Test
+    public void putThatNamesEveryOptionalPropertyUnsetsNothing() throws Exception {
+        ok(put("/api/v2/api-integrations/ri_full", String.format(AWS, "ri_full", "created")));
+        ok(put("/api/v2/api-integrations/ri_full", "{\"name\":\"ri_full\",\"api_hook\":{\"type\":\"AWS\","
+            + "\"api_provider\":\"AWS_API_GATEWAY\",\"api_aws_role_arn\":\"arn:aws:iam::1:role/r3\","
+            + "\"api_key\":\"k\"},\"api_allowed_prefixes\":[\"https://c/\"],"
+            + "\"api_blocked_prefixes\":[\"https://c/x\"],\"enabled\":true,\"comment\":\"kept\"}"));
+        final JsonNode fetched = ok(get("/api/v2/api-integrations/ri_full"));
+        assertEquals("arn:aws:iam::1:role/r3", fetched.path("api_hook").path("api_aws_role_arn").asString());
+        assertEquals("https://c/x", fetched.path("api_blocked_prefixes").get(0).asString());
+        assertEquals("kept", fetched.path("comment").asString());
+    }
+
+    @Test
     public void tagsAreSetReadAndUnset() throws Exception {
         sql("CREATE DATABASE IF NOT EXISTS ri_tag_db");
         sql("CREATE TAG IF NOT EXISTS ri_tag_db.public.ri_tag");

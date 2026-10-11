@@ -23,6 +23,7 @@ import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Catalog-aware SQL behind the {@code java.sql.DatabaseMetaData} object-listing calls, shared by
@@ -483,7 +484,7 @@ final class JdbcMetadataQueries {
             if (i > 0) {
                 sql.append(", ");
             }
-            sql.append('\'').append(values.get(i).toUpperCase().replace("'", "''")).append('\'');
+            sql.append('\'').append(values.get(i).toUpperCase(Locale.ROOT).replace("'", "''")).append('\'');
         }
         sql.append(')');
     }
@@ -560,7 +561,7 @@ final class JdbcMetadataQueries {
             return;
         }
         sql.append(" AND UPPER(").append(column).append(") LIKE '")
-            .append(pattern.toUpperCase().replace("'", "''")).append("'");
+            .append(pattern.toUpperCase(Locale.ROOT).replace("'", "''")).append("'");
     }
 
     /** An exact-name argument as an equality filter, skipping the "match all" cases (null, empty). */
@@ -569,7 +570,7 @@ final class JdbcMetadataQueries {
             return;
         }
         sql.append(" AND UPPER(").append(column).append(") = '")
-            .append(value.toUpperCase().replace("'", "''")).append("'");
+            .append(value.toUpperCase(Locale.ROOT).replace("'", "''")).append("'");
     }
 
     /**
@@ -593,7 +594,7 @@ final class JdbcMetadataQueries {
             if (i > 0) {
                 sql.append(", ");
             }
-            final String type = types[i] == null ? "" : types[i].toUpperCase();
+            final String type = types[i] == null ? "" : types[i].toUpperCase(Locale.ROOT);
             sql.append("'").append(type.replace("'", "''")).append("'");
         }
         if (types.length == 0) {

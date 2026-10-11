@@ -23,6 +23,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 
 /**
  * Represents a single query execution in the query history
@@ -106,7 +107,7 @@ public class QueryHistory {
 
     private StatementKind determineQueryType(final String query) {
         if (query == null) return StatementKind.UNKNOWN;
-        final String upperQuery = query.trim().toUpperCase();
+        final String upperQuery = query.trim().toUpperCase(Locale.ROOT);
 
         if (upperQuery.startsWith("SELECT")) return StatementKind.SELECT;
         if (upperQuery.startsWith("INSERT")) return StatementKind.INSERT;

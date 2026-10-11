@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+
+import java.util.Locale;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -198,8 +200,8 @@ public class TruncateTest extends BaseDatabaseTest {
                     
                 }
             });
-            assertTrue(exception.getMessage().toLowerCase().contains("duplicate") ||
-                       exception.getMessage().toLowerCase().contains("primary key"));
+            assertTrue(exception.getMessage().toLowerCase(Locale.ROOT).contains("duplicate") ||
+                       exception.getMessage().toLowerCase(Locale.ROOT).contains("primary key"));
         } finally {
             engine.getStorageEngine().setEnforcePrimaryKey(false);
         }

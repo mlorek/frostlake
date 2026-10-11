@@ -154,12 +154,12 @@ public class Task implements Taggable {
 
     /** Record that {@code parameterName} was given on the task itself rather than left at its default. */
     public void markParameterSet(final String parameterName) {
-        explicitParameters.add(parameterName.toUpperCase());
+        explicitParameters.add(parameterName.toUpperCase(Locale.ROOT));
     }
 
     /** Whether the task set this parameter itself — the difference between a TASK level and a blank one. */
     public boolean isParameterSetOnTask(final String parameterName) {
-        return explicitParameters.contains(parameterName.toUpperCase());
+        return explicitParameters.contains(parameterName.toUpperCase(Locale.ROOT));
     }
 
     public String getName() {

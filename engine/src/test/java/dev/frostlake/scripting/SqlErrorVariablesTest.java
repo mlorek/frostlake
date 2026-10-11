@@ -20,6 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -102,7 +104,7 @@ public class SqlErrorVariablesTest extends BaseDatabaseTest {
         final Object v = ret(
             "BEGIN SELECT * FROM no_such_table_xyz;"
             + " EXCEPTION WHEN OTHER THEN RETURN SQLERRM; END");
-        assertTrue(String.valueOf(v).toUpperCase().contains("NO_SUCH_TABLE_XYZ"),
+        assertTrue(String.valueOf(v).toUpperCase(Locale.ROOT).contains("NO_SUCH_TABLE_XYZ"),
             "SQLERRM should mention the failing object, got: " + v);
     }
 

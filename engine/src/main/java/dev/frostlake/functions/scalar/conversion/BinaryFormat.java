@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.scalar.conversion;
 
+import java.util.Locale;
+
 /**
  * The decoding format of {@code TO_BINARY(string [, format])}: hex digits ({@link #HEX}, the default), base64
  * ({@link #BASE64}), or the string's UTF-8 bytes ({@link #UTF8}).
@@ -28,7 +30,7 @@ enum BinaryFormat {
         if (value == null) {
             return null;
         }
-        switch (value.trim().toUpperCase()) {
+        switch (value.trim().toUpperCase(Locale.ROOT)) {
             case "HEX": return HEX;
             case "BASE64": return BASE64;
             case "UTF-8": case "UTF8": return UTF8;

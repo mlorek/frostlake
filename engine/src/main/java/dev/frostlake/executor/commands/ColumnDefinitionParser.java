@@ -20,6 +20,7 @@ import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.IntegerLiteralRange;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.ReturnColumnTypes;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.expressions.BinaryLiteralText;
@@ -154,8 +155,11 @@ public class ColumnDefinitionParser implements CommandHandler {
                 || negatedLiteral(defaultExpression.expression()) != null) {
             return;
         }
+        // A default that calls a user-defined function is echoed as the plan prints it, the function under its
+        // bare name in upper case, and a name that is no function is refused as one first (live-verified).
+        final String planned = new DefaultExpressionCalls(queryExecutor).addColumnEcho(defaultExpression.expression());
         throw new RuntimeException(SqlCompilationError.of("Invalid column default expression ["
-            + castSpelling(defaultExpression.expression()) + "]"));
+            + (planned != null ? planned : castSpelling(defaultExpression.expression())) + "]"));
     }
 
     /**
@@ -194,7 +198,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (expr instanceof FrostlakeParser.CastExpr2Context) {
             final FrostlakeParser.CastExpr2Context cast = (FrostlakeParser.CastExpr2Context) expr;
             return "CAST(" + getOriginalText(cast.expression()) + " AS "
-                + getOriginalText(cast.dataTypeName()).toUpperCase()
+                + getOriginalText(cast.dataTypeName()).toUpperCase(Locale.ROOT)
                 + (cast.typeParameters() != null ? getOriginalText(cast.typeParameters()) : "") + ")";
         }
         return getOriginalText(expr);
@@ -227,7 +231,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of(
                 "Expression type does not match column data type, expecting "
                 + SqlTypeNames.canonical(dataType) + " but got " + SqlTypeNames.canonical(literalType)
-                + " for column " + colName.toUpperCase()));
+                + " for column " + colName.toUpperCase(Locale.ROOT)));
         }
     }
 
@@ -312,7 +316,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             return;
         }
         throw new RuntimeException(SqlCompilationError.of(
-            "Default value data type does not match data type for column " + colName.toUpperCase()));
+            "Default value data type does not match data type for column " + colName.toUpperCase(Locale.ROOT)));
     }
 
     /**
@@ -334,7 +338,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
         evaluator.inferStaticType(parsed);
         throw new RuntimeException(SqlCompilationError.of(
-            "Default value data type does not match data type for column " + colName.toUpperCase()));
+            "Default value data type does not match data type for column " + colName.toUpperCase(Locale.ROOT)));
     }
 
     /** The DEFAULT's own type: a literal's measured type, or a computed expression's static type. */
@@ -395,7 +399,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
-            final String name = call.functionName().getText().toUpperCase();
+            final String name = call.functionName().getText().toUpperCase(Locale.ROOT);
             if (queryExecutor.getFunctionRegistry().hasAggregateFunction(name)) {
                 final Token at = call.getStart();
                 throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
@@ -471,7 +475,7 @@ public class ColumnDefinitionParser implements CommandHandler {
 
     /** A temporal type's flavour: DATE, TIME, or a TIMESTAMP's NTZ, LTZ or TZ. */
     private static String temporalFlavour(final DateTimeType type) {
-        final String name = type.getName().toUpperCase();
+        final String name = type.getName().toUpperCase(Locale.ROOT);
         if ("DATE".equals(name) || "TIME".equals(name)) {
             return name;
         }
@@ -651,7 +655,7 @@ public class ColumnDefinitionParser implements CommandHandler {
                 if (sawDefault) {
                     throw new RuntimeException(SqlCompilationError.of(
                         "Default value data type does not match data type for column "
-                        + colName.toUpperCase()));
+                        + colName.toUpperCase(Locale.ROOT)));
                 }
                 collation = extractCollation(constraint.collateClause());
             }
@@ -662,7 +666,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             // specification itself is judged; one that parses is kept lower-cased.
             if (!(dataType instanceof StringType)) {
                 throw new RuntimeException(SqlCompilationError.of("Cannot specify column collation for data type '"
-                    + SqlTypeNames.canonical(dataType) + "' for column '" + colName.toUpperCase() + "'"));
+                    + SqlTypeNames.canonical(dataType) + "' for column '" + colName.toUpperCase(Locale.ROOT) + "'"));
             }
             collation = CollationSpec.parse(collation).getText();
         }
@@ -674,6 +678,17 @@ public class ColumnDefinitionParser implements CommandHandler {
         rejectUnsupportedDefaultShape(defaultExpression);
         rejectCollatedDefault(colName, defaultExpression);
         rejectUncoercibleDefault(colName, dataType, defaultExpression, defaultValue);
+        if (defaultExpression != null && defaultExpression.expression() != null) {
+            // A user-defined function a default cannot expand is refused once the default's type fits: such a
+            // function's FLOAT is no default of an exact NUMBER column, which is refused for the type first.
+            final DataType source = dataType instanceof NumericType && !NumericType.isApproximate(dataType)
+                ? defaultSourceType(defaultExpression, defaultValue) : null;
+            new DefaultExpressionCalls(queryExecutor).requireColumnDefault(defaultExpression.expression(),
+                source instanceof NumericType && NumericType.isApproximate(source)
+                    ? new RuntimeException(SqlCompilationError.of(
+                        "Default value data type does not match data type for column " + colName.toUpperCase(Locale.ROOT)))
+                    : null);
+        }
         rejectNonNullableFieldsInNullableStructure(colName, dataType, notNull);
 
         // A PRIMARY KEY column is NOT NULL whether or not the definition says so, and an explicit NULL
@@ -1316,7 +1331,7 @@ public class ColumnDefinitionParser implements CommandHandler {
      */
     private static void rejectAnsiReservedColumnName(final String colName,
                                                      final FrostlakeParser.ColumnDefContext colDef) {
-        final String upper = colName.toUpperCase();
+        final String upper = colName.toUpperCase(Locale.ROOT);
         if (!"CURRENT_DATE".equals(upper) && !"CURRENT_TIME".equals(upper)
                 && !"CURRENT_TIMESTAMP".equals(upper) && !"CURRENT_USER".equals(upper)) {
             return;
@@ -1333,6 +1348,21 @@ public class ColumnDefinitionParser implements CommandHandler {
 
     public DataType parseDataType(final FrostlakeParser.DataTypeNameContext ctx, final FrostlakeParser.TypeParametersContext typeParams) {
         return sessionMappedTimestamp(DataTypeParser.parse(ctx, typeParams));
+    }
+
+    /**
+     * The type of a column a routine's RETURNS TABLE declares: a column's type, but for a text or a binary written
+     * with no width, which is of no width of its own there ({@link ReturnColumnTypes}).
+     *
+     * @param ctx        the type's name
+     * @param typeParams its parameters, or null
+     * @return the declared type
+     */
+    public DataType parseReturnColumnType(final FrostlakeParser.DataTypeNameContext ctx,
+                                          final FrostlakeParser.TypeParametersContext typeParams) {
+        final boolean widthWritten = typeParams != null && typeParams.INTEGER_LITERAL() != null
+            && !typeParams.INTEGER_LITERAL().isEmpty();
+        return ReturnColumnTypes.declared(parseDataType(ctx, typeParams), widthWritten);
     }
 
     /**
@@ -1472,7 +1502,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             // Handle qualified names (identifiers like CURRENT_TIMESTAMP, TRUE, FALSE, NULL)
             if (expr instanceof FrostlakeParser.QualifiedNameExprContext) {
                 final FrostlakeParser.QualifiedNameExprContext nameCtx = (FrostlakeParser.QualifiedNameExprContext) expr;
-                final String name = getText(nameCtx.qualifiedName()).toUpperCase();
+                final String name = getText(nameCtx.qualifiedName()).toUpperCase(Locale.ROOT);
                 // Return recognized special values
                 if (name.equals("CURRENT_TIMESTAMP") || name.equals("CURRENT_DATE") ||
                     name.equals("CURRENT_TIME") || name.equals("TRUE") ||
@@ -1505,7 +1535,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             // Handle function calls (store as canonical name for evaluation at insert time)
             if (expr instanceof FrostlakeParser.FunctionCallExprContext) {
                 final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) expr;
-                final String funcName = funcCtx.functionName().getText().toUpperCase();
+                final String funcName = funcCtx.functionName().getText().toUpperCase(Locale.ROOT);
                 if (funcName.equals("CURRENT_TIMESTAMP") || funcName.equals("CURRENT_DATE") ||
                     funcName.equals("CURRENT_TIME")) {
                     return funcName;
@@ -1529,7 +1559,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             // Recognized context/datetime keywords can reach here as other context shapes (e.g. bare
             // CURRENT_TIMESTAMP); keep returning their canonical string so evaluateDefaultValue resolves
             // them and the stored metadata stays a plain keyword (not an opaque expression).
-            final String canonical = getOriginalText(expr).trim().toUpperCase();
+            final String canonical = getOriginalText(expr).trim().toUpperCase(Locale.ROOT);
             switch (canonical) {
                 case "CURRENT_TIMESTAMP":
                 case "CURRENT_TIMESTAMP()":
@@ -1605,6 +1635,9 @@ public class ColumnDefinitionParser implements CommandHandler {
                 return text.substring(2, text.length() - 2);
             }
             return text;
+        } else if (ctx.HEX_LITERAL() != null) {
+            // X'41' is the BINARY it spells; read as no literal at all, it was a NULL wherever a block wrote one.
+            return BinaryLiteralText.decode(ctx.HEX_LITERAL().getText());
         } else if (ctx.TRUE() != null) {
             return true;
         } else if (ctx.FALSE() != null) {

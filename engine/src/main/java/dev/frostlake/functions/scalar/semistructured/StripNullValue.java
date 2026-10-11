@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.VariantType;
 import tools.jackson.databind.JsonNode;
@@ -40,4 +41,20 @@ public class StripNullValue extends BuiltInFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 1; }
+
+    /** A text is no VARIANT to strip — refused by the argument types, as a date, a time and a BINARY are. */
+    @Override
+    public SemiStructuredRejection textRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

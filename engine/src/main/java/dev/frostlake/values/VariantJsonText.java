@@ -99,7 +99,7 @@ public final class VariantJsonText {
             return null;
         }
         final StringBuilder out = new StringBuilder();
-        append(node, out);
+        append(node, out, false);
         return out.toString();
     }
 
@@ -243,11 +243,36 @@ public final class VariantJsonText {
      */
     public static String render(final JsonNode node) {
         final StringBuilder out = new StringBuilder();
-        append(node, out);
+        append(node, out, false);
         return out.toString();
     }
 
-    private static void append(final JsonNode node, final StringBuilder out) {
+    /**
+     * The JSON text PARSE_JSON reads back as the same value: the canonical text, with every DOUBLE spelled in
+     * full and with an exponent, which is what makes a number read from text a DOUBLE again. The canonical
+     * text alone says {@code 3.5} for one, a DECIMAL to whoever reads it back, and the conversion text rounds
+     * to sixteen digits.
+     *
+     * @param value the value
+     * @return the text that re-reads as it
+     */
+    public static String rereadableTextOf(final VariantValue value) {
+        final JsonNode node = value.node();
+        if (node == null || XmlVariants.isXmlElement(node) || !holdsFiniteDouble(node)) {
+            return value.text();
+        }
+        final StringBuilder out = new StringBuilder();
+        append(node, out, true);
+        return out.toString();
+    }
+
+    /** A DOUBLE in full, with the exponent that keeps it one: {@code 3.5e0}, {@code 1.0E20}. */
+    private static String exactDoubleText(final double value) {
+        final String shortest = Double.toString(value);
+        return shortest.indexOf('E') >= 0 ? shortest : shortest + "e0";
+    }
+
+    private static void append(final JsonNode node, final StringBuilder out, final boolean exact) {
         final VectorValue vector = TypedVectorNode.vectorValueOf(node);
         if (vector != null) {
             // The vector's own elements, each in the fifteen-decimal form — a second spelling of the
@@ -260,7 +285,7 @@ public final class VariantJsonText {
                 if (vector.getElementType() == VectorElementType.INT) {
                     out.append((long) vector.element(i));
                 } else {
-                    out.append(doubleText(vector.element(i)));
+                    out.append(exact ? exactDoubleText(vector.element(i)) : doubleText(vector.element(i)));
                 }
             }
             out.append(']');
@@ -275,7 +300,7 @@ public final class VariantJsonText {
                 }
                 first = false;
                 out.append(VariantText.canonical(StringNode.valueOf(member.getKey()))).append(':');
-                append(member.getValue(), out);
+                append(member.getValue(), out, exact);
             }
             out.append('}');
             return;
@@ -286,13 +311,13 @@ public final class VariantJsonText {
                 if (i > 0) {
                     out.append(',');
                 }
-                append(node.get(i), out);
+                append(node.get(i), out, exact);
             }
             out.append(']');
             return;
         }
         if (isRewritableDouble(node)) {
-            out.append(doubleText(node.doubleValue()));
+            out.append(exact ? exactDoubleText(node.doubleValue()) : doubleText(node.doubleValue()));
             return;
         }
         // Every other leaf converts as it displays — including the typed scalars, whose text is their

@@ -138,7 +138,7 @@ public class NetworkPolicyTest extends BaseDatabaseTest {
         engine.execute("CREATE NETWORK POLICY np_e ALLOWED_IP_LIST = ('1.1.1.1')");
         engine.execute("CREATE USER np_user");
         engine.execute("ALTER ACCOUNT SET NETWORK_POLICY = np_e");
-        engine.execute("ALTER USER np_user SET NETWORK_POLICY = 'np_e'");
+        engine.execute("ALTER USER np_user SET NETWORK_POLICY = 'NP_E'");
         engine.execute("ALTER USER np_user UNSET NETWORK_POLICY");
         engine.execute("ALTER ACCOUNT UNSET NETWORK_POLICY");
         engine.execute("ALTER USER IF EXISTS np_nobody SET NETWORK_POLICY = np_e");
@@ -150,6 +150,24 @@ public class NetworkPolicyTest extends BaseDatabaseTest {
         engine.execute("DROP NETWORK POLICY np_e");
         assertTrue(refusal("ALTER USER np_nobody SET NETWORK_POLICY = np_e").contains(
             "User 'NP_NOBODY' does not exist or not authorized."));
+    }
+
+    @Test
+    public void aStringNamesAUsersPolicyExactly() {
+        assumeFalse(LiveSnowflake.enabled(), "the test makes a user and attaches a network policy to it");
+        engine.execute("CREATE NETWORK POLICY np_s ALLOWED_IP_LIST = ('192.0.2.1')");
+        engine.execute("CREATE USER np_s_user");
+        // The string is the policy's name as it stands, where a name written bare folds as an identifier does.
+        assertEquals("Network policy np_s does not exist or not authorized.",
+            refusal("ALTER USER np_s_user SET NETWORK_POLICY = 'np_s'"));
+        engine.execute("ALTER USER np_s_user SET NETWORK_POLICY = 'NP_S'");
+        engine.execute("ALTER USER np_s_user SET NETWORK_POLICY = np_s");
+        assertEquals("Network policy nosuch_np does not exist or not authorized.",
+            refusal("ALTER USER np_s_user SET NETWORK_POLICY = 'nosuch_np'"));
+        assertEquals("Network policy NOSUCH_NP does not exist or not authorized.",
+            refusal("ALTER USER np_s_user SET NETWORK_POLICY = nosuch_np"));
+        engine.execute("ALTER USER np_s_user UNSET NETWORK_POLICY");
+        engine.execute("DROP NETWORK POLICY np_s");
     }
 
     @Test

@@ -23,6 +23,7 @@ import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -50,24 +51,27 @@ public class Insert extends TextArgumentFunction {
                 return null;
             }
         }
-        final int position = ((Number) args.get(1)).intValue();
-        final int length = ((Number) args.get(2)).intValue();
+        // The two cuts are computed before they are rounded, as the SUBSTRs the call is planned as round them:
+        // INSERT('abcdef', 1.6, 1.6, 'x') keeps one character (0.6) and resumes at the third (3.2).
+        final BigDecimal position = decimalOf(args.get(1));
+        final int headLength = wholeNumber(position.subtract(BigDecimal.ONE));
+        final int tailStart = wholeNumber(position.add(decimalOf(args.get(2))));
         if (args.get(0) instanceof BinaryValue && args.get(3) instanceof BinaryValue) {
             final byte[] base = ((BinaryValue) args.get(0)).bytes();
             final byte[] insertion = ((BinaryValue) args.get(3)).bytes();
-            final int[] head = Substring.window(base.length, 1, position - 1);
-            final int[] tail = Substring.window(base.length, position + length, Integer.MAX_VALUE);
-            final int headLength = head[1] - head[0];
-            final byte[] spliced = new byte[headLength + insertion.length + tail[1] - tail[0]];
-            System.arraycopy(base, head[0], spliced, 0, headLength);
-            System.arraycopy(insertion, 0, spliced, headLength, insertion.length);
-            System.arraycopy(base, tail[0], spliced, headLength + insertion.length, tail[1] - tail[0]);
+            final int[] head = Substring.window(base.length, 1, headLength);
+            final int[] tail = Substring.window(base.length, tailStart, Integer.MAX_VALUE);
+            final int kept = head[1] - head[0];
+            final byte[] spliced = new byte[kept + insertion.length + tail[1] - tail[0]];
+            System.arraycopy(base, head[0], spliced, 0, kept);
+            System.arraycopy(insertion, 0, spliced, kept, insertion.length);
+            System.arraycopy(base, tail[0], spliced, kept + insertion.length, tail[1] - tail[0]);
             return BinaryValue.of(spliced);
         }
         final String base = SharedFunctionHelpers.textOf(args.get(0));
         final int characters = CodePointText.length(base);
-        final int[] head = Substring.window(characters, 1, position - 1);
-        final int[] tail = Substring.window(characters, position + length, Integer.MAX_VALUE);
+        final int[] head = Substring.window(characters, 1, headLength);
+        final int[] tail = Substring.window(characters, tailStart, Integer.MAX_VALUE);
         return CodePointText.slice(base, head[0], head[1]) + SharedFunctionHelpers.textOf(args.get(3))
             + CodePointText.slice(base, tail[0], tail[1]);
     }

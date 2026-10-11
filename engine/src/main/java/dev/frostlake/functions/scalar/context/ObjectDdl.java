@@ -47,6 +47,7 @@ import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -132,7 +133,7 @@ final class ObjectDdl {
             return null;
         }
         if ("Boolean".equals(property.type)) {
-            return written.equalsIgnoreCase(property.shownDefault) ? null : written.toUpperCase();
+            return written.equalsIgnoreCase(property.shownDefault) ? null : written.toUpperCase(Locale.ROOT);
         }
         if ("Integer".equals(property.type)) {
             return sameNumber(written, property.shownDefault) ? null : written.trim();
@@ -141,7 +142,7 @@ final class ObjectDdl {
         if (escaped.equals(property.shownDefault)) {
             return null;
         }
-        return "COMPRESSION".equals(property.name) ? written.toUpperCase() : "'" + escaped + "'";
+        return "COMPRESSION".equals(property.name) ? written.toUpperCase(Locale.ROOT) : "'" + escaped + "'";
     }
 
     /**
@@ -441,7 +442,7 @@ final class ObjectDdl {
         if (typeName == null) {
             return "VARCHAR";
         }
-        final String upper = typeName.toUpperCase();
+        final String upper = typeName.toUpperCase(Locale.ROOT);
         return "STRING".equals(upper) || "TEXT".equals(upper) ? "VARCHAR" : upper;
     }
 

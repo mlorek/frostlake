@@ -14,6 +14,341 @@ Changes since 0.2.0 accumulate here as they land.
 
 ### Now refused (SQL that earlier versions accepted)
 
+- **USE ROLE of a role the user may not activate.** `USE ROLE r` activated any role that existed, so a script
+  that created a role and switched to it without granting it ran here and failed on an account. As there, a role
+  is activated only by a user it reaches: one granted to the user, or to a role the user holds, however far
+  down - the system roles under ACCOUNTADMIN and PUBLIC included. Any other role is refused, `SQL access control
+  error: Requested role 'R' is not assigned to the executing user.  Specify another role to activate.`, and the
+  session keeps the role it has. `USE SECONDARY ROLES` holds each role it names to the same rule, after it has
+  found every one of them. Add `GRANT ROLE r TO ROLE <a role the user holds>` (or `TO USER`) before the switch.
+- **FLATTEN with no argument, or with more than five by position.** `TABLE(FLATTEN())` answered no rows and a
+  sixth positional argument was ignored. As on an account: `not enough arguments for function [FLATTEN], expected
+  1, got 0` and `too many arguments for function [FLATTEN] expected 5, got 6`.
+- **A GENERATOR bound that is no constant.** `ROWCOUNT` and `TIMELIMIT` were read like any other argument, so a
+  column of a relation to the left gave every row its own count and `ROWCOUNT => RANDOM()` could ask for more
+  rows than the heap holds. As on an account both must be constants: a column, `RANDOM()` and `SEQ4()`
+  are refused while the statement compiles, `argument 1 to function GENERATOR needs to be constant, found
+  'GN.N'` (`argument 2` for the time limit). An expression of constants, a scalar subquery and a
+  session variable are still taken, and so is a bound no row can change - `NULL + t.n`, `t.n * 0 + 2`,
+  `IFF(FALSE, t.n, 2)`, `NVL(2, t.n)` - where `NVL(NULL, t.n)` is refused for `'T.N'`. The LATERAL spellings of
+  the call (`CROSS JOIN LATERAL GENERATOR(ROWCOUNT => t.n)`) are refused alike. A negative `TIMELIMIT` is `Invalid value [-1] for function 'GENERATOR',
+  parameter TIMELIMIT:  must be non-negative.` and a text one `invalid type [VARCHAR(1)] for parameter
+  'TIMELIMIT'`.
+- **A malformed path in GET_PATH and in FLATTEN's PATH.** `GET_PATH(v, 'a.')`, `'a['`, `'a[x]'`, `'a..b'`, `'.a'`
+  and `' a'` answered a value or NULL, and FLATTEN took `PATH => 'a.'` for `a`. A path written as a text literal
+  is now judged while the statement compiles, as an account judges it, and the refusal says what is wrong and
+  where: `Invalid extraction path 'a.': dangling dot at position 2.` - likewise `dangling square bracket`,
+  `dangling quote`, `empty square brackets`, `empty (unquoted) field name`, `invalid number`, `invalid field` and
+  `invalid token`, and `array index 2,147,483,648 is off limits; must be between 0 and 2,147,483,647.` Any other
+  path is judged when the row is read: `Bad compound object's field path name 'a.' in GET_PATH` (the empty path
+  too) and `… in FLATTEN`.
+- **A Java or Scala table function whose handler class cannot be one.** CREATE FUNCTION … RETURNS TABLE took any
+  class - or none - for a Java or a Scala function, and every call failed. As on an account, the class is now
+  judged when the function is created: `Failed to find a public method named "getOutputClass" with 0 arguments` /
+  `The getOutputClass() method is required for Java UDTFs`, `Failed to find a public method named "process" with 1
+  arguments`, `The return type of the "process" method is "java.util.List" but must be java.util.stream.Stream`,
+  and `The output class "Out" is missing fields with the following names: MISSING. Make sure the member fields
+  are public`, each ending ` in function F with handler Gen`. A Scala table function is held to the same rules.
+- **A JavaScript table function whose body ran as SQL.** A JavaScript RETURNS TABLE function whose body happened
+  to be a query - `AS $$SELECT 42$$` - answered the query's rows. Its body is JavaScript now: that one is refused
+  when it is called, as a script that is no handler object.
+- **An inline Java body written for a later Java than its routine's RUNTIME_VERSION.** A body was compiled at the
+  level of the JDK the engine runs on, whatever the routine declared, so a function of `RUNTIME_VERSION = '11'`
+  was created and ran with a switch expression, a pattern in `instanceof`, a text block, a record or
+  `"…".formatted(…)` in it, and failed only when it was deployed. The body is now compiled at its routine's
+  level - 11 when the routine names no version, as on an account - for functions, procedures and the classes a
+  TARGET_PATH keeps: such a body is refused when the routine is created, `Error while compiling source: …`,
+  and the same body under `RUNTIME_VERSION = '17'` is created. A version above the engine's own JDK cannot be
+  held to and is compiled at the JDK's level. The syntax refusals are worded by the engine's compiler
+  (`switch expressions are not supported in -source 11`), where an account's Java 11 compiler words them its own
+  way (`illegal start of expression`); a method the version's library lacks reads the same on both
+  (`cannot find symbol … method formatted(int)`).
+- **A Scala function or procedure whose handler method the body lacks.** It was created, and the first call
+  failed with `Method g with 1 args not found in H$`. CREATE now refuses it as an account does: `Failed to find a
+  public method named "g" with 1 arguments in function F with handler H.g`, a procedure's count including its
+  Session.
+- **A value a Java or Scala function returns that its RETURNS type cannot hold.** A Java function's value came
+  back as it was, or as its Java text. As on an account — and as a procedure's CALL already did — a value the
+  declared type does not take is refused: a text that is no JSON, or JSON of another kind, for an ARRAY, an
+  OBJECT or a VARIANT (`Error parsing JSON: output JSON is not an array type: {"a":1} in function JAS with
+  handler H.f`); a text that is no number for a NUMBER or a FLOAT; a `BigDecimal` or a whole number the declared
+  width has no room for (`BigDecimal value cannot be losslessly represented as a Snowflake NUMBER with a
+  precision of 5 and a scale of 1`); bytes past a declared BINARY(n); and a `java.sql.Time` that counts no time
+  of day (`Time value out of range: 86401000 ms`).
+- **A Java table procedure whose handler hands back no DataFrame.** `RETURNS TABLE (…)` over a handler method
+  that returns anything but a DataFrame — and a scalar RETURNS over one that returns a DataFrame — is refused
+  when the procedure is created: `Expected stored procedure to return TABLE if and only if handler method returns
+  DATAFRAME in function P with handler H.run`. A handler that returns `null` for a table is refused at the CALL.
+- **A number a Java or Scala handler's integer parameter cannot hold, and a NULL for a primitive one.** A NUMBER
+  handed to an `int`, a `long` or a `short` parameter was narrowed as Java narrows: `fi(3000000000)` answered
+  -1294967296 and `fsh(40000)` -25536. An account refuses it, and so does the engine: `Number out of representable
+  range: type int32, value 3000000000 in function FI with handler H.f` (`int64`, `int16`). A SQL NULL for a
+  primitive parameter is `Cannot pass a NULL value as input to a Java type of int in function FI with handler
+  H.f`; a boxed `Integer` takes it as `null`.
+- **A Java function whose instance handler's class cannot be made.** A handler method that is not static is
+  called on an instance, which an account makes when the function is created. A class without a zero-argument
+  constructor, or with a private one, is refused there — `The provided method is non-static, but the enclosing
+  class does not have a public zero-argument constructor in function F with handler H.f` — as are an abstract
+  class and a constructor that throws, which read as a handler's own exception does (`User Error Report:`).
+- **A JavaScript procedure's result set read by a name it does not have, or before its first row.**
+  `rs.getColumnValue('name')` read the column `NAME`: names were matched whatever their case. An account matches a
+  name exactly as the result spells it, and so does the engine now — `Given column name/index does not exist:
+  name`, also for a number past the columns. A column read before `rs.next()` is `ResultSet is empty or not
+  prepared (call next() first).`, a statement asked for its columns before it ran `Statement is not executed
+  yet.`, and `snowflake.execute({})` `empty argument passed`; each is thrown to the handler with the code 100183
+  and the state P0000.
+- **A value a JavaScript function returns that its RETURNS type cannot hold.** A JavaScript function handed back
+  whatever its handler returned, whatever it declared. As on an account — and as a procedure's CALL already did —
+  a value the declared type does not take is refused: `JavaScript execution error: Return value is not an ARRAY`
+  for anything but an array (`null` and a JSON text included), `… is not an OBJECT` for an array, a text, a number
+  or `null`, `Late exception in return value conversion` for a symbol returned as a VARCHAR, a BigInt returned as
+  a FLOAT or inside a VARIANT and a conversion that throws, and `String 'abcdef' is too long and would be
+  truncated` for a text wider than a declared VARCHAR(n). A procedure's symbol, BigInt and throwing conversion
+  are refused the same way, where a symbol was its description and a BigInt a number.
+- **A TIME inside a JavaScript handler's VARIANT, ARRAY or OBJECT argument.** JavaScript has no counterpart for a
+  TIME, so an account refuses the call — `JavaScript execution error: TIME inside VARIANT value - not supported
+  in function F with handler F`, for a procedure as for a function — where the handler was handed the text. A
+  variant that is no object, handed to a JavaScript function's OBJECT parameter, is refused as a cast refuses it:
+  `Failed to cast variant value 1 to OBJECT`.
+- **A column DEFAULT that calls a function it cannot expand.** A column's DEFAULT may call a SQL function whose
+  body is an expression — an account expands the body into the default, and so does the engine. A JavaScript, a
+  Python, a Java or a Scala function, a Snowflake Scripting one, and a SQL function whose body reaches one, were
+  taken too; they are refused as on an account, the default echoed as the plan prints it: `Invalid column default
+  expression [JSF()]`. A SQL function whose body aggregates is refused while it is expanded (`While expanding UDF
+  in default expression: … aggregate functions are not allowed as part of the specification of a default value
+  clause.`), a call with too many arguments where it stands, and such a function's FLOAT in an exact NUMBER
+  column for its type.
+- **A routine parameter's DEFAULT that calls a user-defined function or reads a name.** `CREATE FUNCTION g(x
+  NUMBER DEFAULT f1())` and its procedure twin were created; a parameter's default calls no user-defined
+  function, a SQL one included — `invalid default argument expression F1()`, placed where the expression stands
+  — and `DEFAULT a` over another parameter is `invalid identifier 'A'`. A built-in call and arithmetic are taken
+  as before, and a name that is no function is an unknown function when the routine is created.
+- **A number a table function's declared column has no room for.** `RETURNS TABLE (n NUMBER(3,1)) AS 'SELECT
+  1234.5'` answered 1234.5; reading the column is now `Number out of representable range: type
+  FIXED[SB2](3,1){nullable}, value 1234.5`, as on an account. A statement that reads the function's other
+  columns, or counts its rows, is not refused.
+- **Named arguments that several overloads take equally well.** `ov(a => 1, b => 2)` between `ov(a NUMBER, b
+  VARCHAR)` and `ov(a VARCHAR, b NUMBER)` ran the first overload; it is refused as on an account — `More than one
+  function of OV are resolved in prepare state.` — while the statement compiles, over a table with no rows and
+  in the body of a function being created too, and so is the same `CALL` of a procedure. Written by position the
+  arguments still run an overload: the first in the order of the signatures.
+- **A routine named with a quoted schema or database of another case.** `"test_db".s.f(1)`,
+  `TABLE(db."s".tf())` and `CALL "test_db".s.p()` reached the routine of the database TEST_DB; a part the name
+  writes is now matched exactly, as a table's is, and the call is an unknown user-defined function. A table
+  function missed under a qualified name is `Unknown user-defined table function S.TF`.
+- **A SECURE function's, procedure's or view's definition, to a role that does not own it.** Only the owner — a
+  role the session holds or inherits — is shown how a secure object is defined. To any other role, whatever it was
+  granted on the object, `GET_DDL` of it is `Object does not exist, or operation cannot be performed.`, a schema's
+  or a database's DDL leaves it out, `DESCRIBE FUNCTION` and `DESCRIBE PROCEDURE` answer a NULL body and `SHOW
+  VIEWS` an empty text, where each showed the whole definition. A procedure's body is its owner's whether it is
+  secure or not: another role's `GET_DDL` carries `AS ''` and its DESCRIBE an empty body. And
+  `INFORMATION_SCHEMA`'s `FUNCTION_DEFINITION`, `PROCEDURE_DEFINITION` and `VIEW_DEFINITION` are NULL for every
+  object another role owns.
+- **A unit a SQL function's body cannot read.** `CREATE FUNCTION … AS 'DATEADD(u, 1, d)'` over a parameter `u` is
+  refused when the function is created — `Date/time component [CORRELATION(NULL) ]for function DATEADD needs to
+  be an identifier or a string literal.` — and a word that is no unit in the function's own sentence (`['NOSUCH']
+  is not a valid date/time component for function DATEADD.`), where both were created and failed when called.
+- **A RESULTSET read before anything was given to it.** A cursor declared over a RESULTSET that was declared and
+  never assigned a statement, and a FOR over one, ran over no rows; they are refused as the account refuses them —
+  `Stored procedure execution error: uninitialized resultSet 'RS'` (92212 to a handler), placed where the cursor's
+  declaration names the RESULTSET, so its OPEN is never reached. `RETURN TABLE(rs)` of one answers that sentence
+  too, where it named a Java class (`RETURN TABLE expects a RESULTSET, got: ResultSetVariable`).
+- **A table function's TIME or timestamp argument of other digits than its parameter's.**
+  `TABLE(f('10:30:00.5'::TIME(3)))` for a parameter declared `TIME` is `Invalid argument types for function 'F':
+  (TIME(3))`, as a NUMBER of another scale already was: a table function takes only arguments of its parameters'
+  own types.
+- **A handler that reads a LET of its block's BEGIN section.** A variable, a cursor or a RESULTSET that a block
+  declares with LET among its statements is not passed to the block's exception handlers — one a handler uses
+  belongs in the DECLARE section — and Frostlake let the handler read it. The block still compiles and a handler
+  that never touches the name runs; the read is now refused when it is reached, as `invalid identifier 'Y'` at
+  the place it is written: in an expression, a bind of a statement, an OPEN or a FOR over a LET cursor, a RETURN
+  TABLE of a LET RESULTSET, a block nested in the handler. A handler that assigns the name first, or declares it
+  again, reads its own value. The refusal ends the body — no handler of the body catches it — and the statement
+  that called the body may catch it. (An account aborts such a read with an internal error of its own; the
+  sentence is Frostlake's.)
+- **A RESULTSET read before its asynchronous job was awaited, and an AWAIT of anything else.** `RETURN TABLE(r)`
+  and a cursor declared over `r` are `Stored procedure execution error: uninitialized resultSet 'R'` until
+  `AWAIT r` or `AWAIT ALL` has run the job that fills it, where the job used to run at its ASYNC. `AWAIT x` of a
+  name that is no RESULTSET, or of no name at all, is refused while the block compiles (` Invalid target for
+  AWAIT statement. Expected a resultset.`), `AWAIT r` of a RESULTSET never given anything is `Can not wait on an
+  empty resultset`, and of one whose job failed at an earlier AWAIT `Statement is terminated.`
+- **A date assigned to an OBJECT variable.** `o := d` for a DATE `d` is `invalid type [CAST(TO_DATE('2024-01-02')
+  AS OBJECT)] for parameter 'TO_OBJECT'`, as a number assigned to one already was.
+- **A BREAK, a CONTINUE or an EXIT that stands in no loop.** A body that held one was accepted, and running it set
+  a flag that ended, or skipped an iteration of, a loop of the body that had called it — or of the next statement
+  the session sent. Such a body is now refused when it starts to run, at the word, on a branch never taken too:
+  ` Break used outside of loop` (the one sentence for the three words), and ` Label 'NOSUCH' not found` for a
+  label no loop around it carries. A procedure or a function that holds one is still created and is refused when
+  it is called, so a body can no longer end a loop that is not its own.
+- **A cursor used out of turn.** An OPEN of a cursor that is open is `Stored procedure execution error: CURSOR
+  'C' is already open.` (92215 to a handler) and a CLOSE of one already closed `CURSOR C is not open` (92201),
+  where the second CLOSE was accepted; a FETCH from a cursor that is not open fails with `CURSOR C is not open`
+  alone, and no handler of the block catches it. A procedure that opens a cursor its caller declared is refused
+  as `invalid identifier 'C'`: a body sees none of its caller's cursors.
+- **Procedure calls nested more than sixteen deep.** A procedure that called itself without end ran until the
+  Java stack gave out and ended in a `StackOverflowError` that no handler caught and no history recorded. Bodies
+  now nest as on an account — a procedure's call in any language, a block the session sends and a dynamic text
+  that is a block each count as one. Sixteen run inside one another; a seventeenth still runs, but the first
+  statement it issues ends it, and the statement that started it fails with `Stored procedure execution error:
+  Stored procedure exceeds the maximum allowed number of recursive calls.` (90235 / 42601 to a handler), worded
+  once more by every body it leaves. The sixteenth body may handle it; the seventeenth's own handler never sees
+  it. As for any failed CALL, nothing the bodies wrote before is undone.
+- **A handler that names no exception in sight.** `WHEN RuntimeException THEN` caught any failure by the name of
+  its Java class, `WHEN no_such THEN` was accepted and never ran, and `SQL_STATEMENT_EXCEPTION`, `SYNTAX_ERROR`
+  and `NUMERIC_VALUE_OUT_OF_RANGE` were names of the engine's own. A handler names STATEMENT_ERROR,
+  EXPRESSION_ERROR, OTHER, or an exception its block or a block around it declares; any other name — a
+  variable's, an exception's that only a nested block declares — is `invalid identifier 'NO_SUCH'` at the name
+  while the block compiles, whether or not anything fails when it runs.
+- **OTHER in a list of names, or before another handler.** `WHEN e1 OR OTHER THEN` is `The OTHER handler cannot
+  be used in a list`, and an OTHER handler followed by another is `The OTHER handler must be the last handler`,
+  each at the handler's WHEN.
+- **An exception named STATEMENT_ERROR or EXPRESSION_ERROR declared anew.** A body's top block that declares one
+  is refused as ` Variable with name 'STATEMENT_ERROR' declared twice.`, where the declaration replaced the
+  built-in exception for its handlers.
+- **An untyped LET over an expression that holds a query with a FROM.** `LET z := 10 / (SELECT COUNT(*) FROM t)`
+  is ` variable 'Z' cannot have its type inferred from initializer`, as `LET z := (SELECT COUNT(*) FROM t)`
+  was; `1 + (SELECT 1)` and a declared type are fine.
+- **A SQL function whose body reaches itself through a view.** `CREATE OR REPLACE FUNCTION f() … AS 'SELECT MAX(c)
+  FROM v'` over a view `v` that calls `f()` — or reads a view that does — is `Detected a cycle in SQL UDF: F`,
+  as a cycle through another function was; the earlier definition stays.
+- **A value a handler returns that its procedure's RETURNS type cannot hold.** A CALL of a JavaScript, Python,
+  Java or Scala procedure answered the text of whatever the handler returned, whatever RETURNS declared. The value
+  is now converted to the declared type, and one that does not convert is refused in the sentence an account
+  uses: `JavaScript execution error: Return value is not an ARRAY` (`an OBJECT`, `a BINARY`, `Incorrect Timestamp
+  returned`), `String 'abc' is too long and would be truncated` and `Binary value '010203' is too long and would
+  be truncated` for a JavaScript body; `Python value cannot be losslessly represented as a Snowflake NUMBER with a
+  precision of 3, value: 1000 in function P with handler run`, `Return value should be a date object …`, `python
+  value needs to be a list to convert to Snowflake ARRAY …` and `TypeError: Object of type set is not
+  serializable` for a Python one; `BigDecimal value cannot be losslessly represented as a Snowflake NUMBER with a
+  precision of 10 and a scale of 2 in function P with handler H.run`, `Numeric value 'x' is not recognized …` and
+  `Error parsing JSON: Document is not a valid JSON object: abc …` for a Java or a Scala one; and for bytes past
+  a declared BINARY(n) from a Python, a Java or a Scala handler `System byte length limit (2) exceeded by string
+  …`.
+- **An overload that differs from an existing one by optional arguments alone.** `CREATE FUNCTION f(a NUMBER, b
+  NUMBER DEFAULT 0)` beside `f(a NUMBER)` was accepted, although `f(1)` could mean either. A signature is now
+  refused when a call of some number of arguments could mean it or an existing overload — `SQL compilation error:
+  Cannot overload FUNCTION 'F' as it would cause ambiguous FUNCTION overloading.` (`PROCEDURE` for a procedure;
+  949 / 42723 to a handler) — also under OR REPLACE and IF NOT EXISTS, for a table function and a JavaScript
+  function, and for an `ALTER FUNCTION … RENAME TO` a name that holds such an overload. Overloads that differ in
+  the type of a parameter a call must supply stay legal.
+- **A function created over a procedure of its name and signature, or a procedure over a function.** `CREATE
+  PROCEDURE f(a NUMBER)` beside a function `f(a NUMBER)` was accepted, and so was the other order. Each is now
+  refused — `Object 'F' already exists as FUNCTION`, `… as PROCEDURE` — with OR REPLACE and with IF NOT EXISTS
+  too, and so is an `ALTER FUNCTION … RENAME TO` or an `ALTER PROCEDURE … RENAME TO` onto such a name. A function
+  and a procedure of one name whose signatures differ stand side by side as before.
+- **An argument that does not convert to its parameter's type.** A CALL handed a JavaScript, Python, Java or
+  Scala procedure, and a SQL procedure's BOOLEAN parameter, the argument as written, so `CALL p('maybe')` into a
+  BOOLEAN parameter or `CALL p('x')` into a NUMBER one ran the body with the text. Each is now refused at the
+  CALL, before the body runs, as on an account: `Boolean value 'maybe' is not recognized`, `Numeric value 'x' is
+  not recognized`, `Date 'x' is not recognized`, and for a variant `Failed to cast variant value [1] to OBJECT`.
+- **A NULL or a number a Java handler's parameter cannot hold.** `Cannot pass a NULL value as input to a Java type
+  of long in function F with handler H.run` and `Number out of representable range: type int32, value 3000000000
+  in function F with handler H.run`, where the first reached the handler's reflection and the second wrapped.
+- **A COMMIT, a ROLLBACK or a statement that commits, in a procedure or a block run inside a transaction.** With
+  a transaction open, a COMMIT or a ROLLBACK written in a procedure the session calls, in a block it sends or in a
+  text that is a block ended the caller's transaction, and a `CREATE TABLE` there committed it. As on an account
+  each is now refused — `Modifying a transaction that has started at a different scope is not allowed.`, 90239 /
+  25000 to a handler — and the transaction stays open with everything written so far. A transaction is ended
+  where it was begun: move the COMMIT beside the BEGIN, or begin the transaction in the procedure.
+- **A block that leaves a transaction of its own open.** `BEGIN BEGIN TRANSACTION; INSERT …; END;` left its
+  transaction open in the session. It is rolled back and the block refused — `Stored procedure execution error:
+  Scoped transaction started in stored procedure is incomplete and it was rolled back.` — as a procedure's was,
+  and that is what a block or a procedure reports when it lets another failure out with its transaction open.
+- **A called procedure reading or writing its caller's variables.** A procedure called from a block, or from another
+  procedure, saw that caller's variables and parameters: it could read them, bind them as `:name` and assign them,
+  and an assignment was still in force after the CALL. A body now sees its own parameters and declarations alone,
+  as on an account: a caller's name in it is `invalid identifier 'X'` while the body compiles, whatever rights the
+  procedure runs with, and the calling block reports that as its own statement's failure (`Uncaught exception of
+  type 'STATEMENT_ERROR' on line 1 at position 60 : SQL compilation error: …`). Pass the value as an argument
+  instead. The statements a JavaScript, Python, Java or Scala handler issues bind none of the caller's variables
+  either: a `:name` in one is a bind nothing sets.
+- **A block run by EXECUTE IMMEDIATE reading the block that runs it.** Inside a block, `EXECUTE IMMEDIATE 'BEGIN x
+  := 1; END;'` assigned that block's `x`. The text is a body of its own now: it reads, assigns and binds none of
+  the enclosing block's variables and has none of the names of a handler that runs it. A text that is itself a
+  block binds nothing of a USING list either — `?` in it is ` Unexpected unnamed bind in SQL stored procedure.` and
+  `:1` is `invalid identifier '1'`; a statement text still takes the list.
+- **SQLERRM and SQLSTATE outside an exception handler, and a numbered bind in a block.** Each is `invalid
+  identifier` while the block compiles — in an expression, a call's argument or a bind, on a branch that never runs
+  too — where they read NULL or, in a procedure called from a handler, that handler's values. `BEGIN RETURN :1;
+  END` is `invalid identifier '1'`. SQLCODE still reads NULL where no handler runs.
+- **A RAISE that names nothing, outside a handler.** It raised `Error raised`; it is now refused while the block
+  compiles: `RAISE without specifying exception only allowed inside a handler.`
+- **Declaring or assigning the variables a script is given.** In a body's top block a DECLARE or a LET of SQLCODE,
+  SQLROWCOUNT, SQLFOUND, SQLNOTFOUND or SQLID is ` Variable with name 'SQLCODE' declared twice.` (a nested block may
+  declare one), and an assignment to one of them or to ACTIVITY_COUNT is ` Assignment to variable 'SQLCODE' is not
+  permitted.` A procedure that declares one is still created, and refused when it is called.
+- **An owner's-rights procedure reading the session's variables and listings.** A stored procedure that runs with
+  its owner's rights read the caller's `$name` and ran the session's listings. As on an account it is now refused
+  `Use of session variable '$V' is not allowed in owners rights stored procedure` where it reads one — in an
+  expression of its block, in a statement, in a statement its JavaScript, Python, Java or Scala handler issues, and
+  in a caller's-rights procedure it calls — and `SHOW VARIABLES`, `SHOW LOCKS`, `SHOW TRANSACTIONS` and a `SHOW
+  PARAMETERS` of the session are `Stored procedure execution error: Unsupported statement type 'SHOW VARIABLE'.`
+  (`SHOW LOCK`, `SHOW TRANSACTION`, `SHOW PARAMETER`), a `SHOW GRANTS` that names nothing `SHOW GRANTS to the
+  current user is not supported in owner's rights stored procedures.` GETVARIABLE still answers, and `EXECUTE AS
+  CALLER` keeps all of it. Pass the value as an argument instead.
+- **SET, UNSET, ALTER SESSION and USE issued by a handler with its owner's rights.** A JavaScript, Python, Java or
+  Scala procedure that runs with its owner's rights changed the caller's session through the statements it issued.
+  Each is now `Stored procedure execution error: Unsupported statement type 'SET'.` (`UNSET`, `ALTER_SESSION`,
+  `USE`), as it already was in a SQL body.
+- **CREATE PROCEDURE over a session variable that does not exist.** A SQL procedure whose block names a `$name`
+  compiles against the session's variables when it is created: without the variable it is `Session variable '$V'
+  does not exist`, at the name's place in the body, whatever rights it would run with.
+- **A RESULTSET declared in a Snowscript UDF.** A SQL function whose body is a block was created with `LET rs
+  RESULTSET;`, `DECLARE rs RESULTSET;` or a RESULTSET over a dynamic statement in it, and one declared over a query
+  was refused for the query. Each is now `Unsupported statement type for Snowscript UDF: resultset declaration`, as
+  on an account, before anything its query holds.
+- **Statements of a session whose transaction was aborted.** After `SYSTEM$ABORT_TRANSACTION` ended a session's
+  transaction, that session ran on as if it had rolled back. It now holds the aborted transaction, as on an account:
+  every statement is refused with `Your transaction was aborted. All statements will be ignored until you issue a
+  COMMIT or a ROLLBACK.` until it issues a ROLLBACK, which succeeds, or a COMMIT, which fails as `COMMIT failed. Your
+  transaction '<name>', id '<id>', was already aborted.` A block that aborts the transaction it runs in goes on, and
+  each statement it then runs is refused (SQLCODE 624, SQLSTATE 57014).
+- **Arguments SYSTEM$ABORT_TRANSACTION does not take.** The function answered `Could not abort txn: <text>` for
+  whatever it was handed. No argument or two are an arity refusal; a BOOLEAN, a date, a time, a timestamp, a BINARY,
+  an ARRAY and an OBJECT are refused for their type; a column, a subquery, `CURRENT_TRANSACTION()` and a NULL cast to
+  a type are `argument 1 to function SYSTEM$ABORT_TRANSACTION needs to be constant, found '…'`. Hand the id over in a
+  session variable or a block's variable.
+- **SYSTEM$ABORT_TRANSACTION inside a stored query or an owner's-rights procedure.** `CREATE VIEW v AS SELECT
+  SYSTEM$ABORT_TRANSACTION(…)`, a `CREATE TABLE … AS SELECT` over the call and a SQL function whose body calls it
+  were created; they are refused as `View or UDF contains a function with side effects [SYSTEM$ABORT_TRANSACTION]`.
+  A procedure that runs with its owner's rights is refused the call when it runs.
+
+- **A failure a block's STATEMENT_ERROR handler no longer catches.** `WHEN STATEMENT_ERROR` caught everything but a
+  syntax error: a value a `LET` could not compute (`LET x INT := 1/0`) and an exception the script raised itself
+  (`RAISE my_exception`) ran its handler. The first is an EXPRESSION_ERROR and the second is caught by its own name
+  or by `WHEN OTHER` alone, so a block with only a STATEMENT_ERROR handler now fails with `Uncaught exception of
+  type 'EXPRESSION_ERROR' …` or the exception's own sentence, as it does on an account.
+- **A flow chain as a task's body.** `CREATE TASK t AS SELECT 1 ->> SELECT * FROM $1` created the task from the first
+  statement and then failed on the second, and `ALTER TASK t MODIFY AS …` did the same. A body is one statement, so
+  both are now `Invalid statement for task definition. Expecting one of the following: STATEMENT` and nothing is
+  created or changed. A COMMENT written after a body that is no query, DML, call or block (`CREATE TASK t AS DROP
+  TABLE x COMMENT = 'c'`) is a syntax error at the COMMENT.
+- **An ungrouped column read by a subquery inside a HAVING aggregate.** `SELECT b FROM fz GROUP BY b HAVING
+  MAX((SELECT MAX(v) FROM g WHERE g.id < fz.id)) > 0` answered rows, and its neighbours were refused as an
+  unsupported correlation. A query written as a value inside a HAVING aggregate's argument reads the enclosing
+  query's columns against the groups, as one written in HAVING directly does: `[FZ.ID] is not a valid group by
+  expression`. A query with no FROM, one under EXISTS and a condition that an `OR TRUE` settles are not judged.
+- **A keyword as a signature item, wherever the statement stands.** `DROP TABLE t (VIEW)` and `DESCRIBE TABLE t
+  (TYPE)` were refused only as a request's one statement. Beside another statement (`DROP TABLE t (VIEW); SELECT
+  1`), in a `BEGIN … END` block, in the text of EXECUTE IMMEDIATE and in a SQL procedure's body they ran, and the DROP
+  dropped the table. The word is now refused by the parse itself, so nothing runs anywhere, and each statement
+  reports the lines it reports standing alone; a statement after it keeps its own.
+- **DESCRIBE ICEBERG TABLE over a table that is no Iceberg table.** It described the table. It is now `SQL
+  Compilation error: The object T1 is not an Iceberg table. Only Iceberg tables can use DESCRIBE ICEBERG TABLE
+  command.`
+- **A signature item that names no type.** After a table's or a view's name a DROP and a DESCRIBE take a signature,
+  and `DROP TABLE t (VECTOR)`, `(MAP)`, `(INTERVAL)`, `(OBJECT(a))`, `(ARRAY.a)`, `(MAP(INT))` or `(VECTOR(VARCHAR,
+  3))` dropped the table: a structured type's word was read as a plain one with any parameters. Each is now a syntax
+  error where the account stops reading — the `)` after `VECTOR`, the `.` after `ARRAY`, the `VARCHAR` — and the
+  table stays. ARRAY takes one type, OBJECT fields, MAP a key and a value, VECTOR an integer or floating-point type's
+  word and a signed dimension, INTERVAL its fields; an element, a field and a MAP's value may end in NOT NULL.
+- **Two columns of one name under `OBJECT_CONSTRUCT(*)`.** Over a join whose sides share a column name the call kept
+  one of the two values. It is now refused per row as `Duplicate field key 'ID'`, and `OBJECT_CONSTRUCT(* ILIKE
+  'i%')` keeps the matching columns only, where the pattern was ignored.
+- **CAST and TRY_CAST qualify no column.** `SELECT cast.a FROM t cast` ran, reading `cast` as the table's alias. The
+  two words read as nothing but a cast where a value is read, so the statement is now a syntax error — at the
+  token after `cast.a` in a select item, at the dot anywhere else — as is `try_cast.a`. The words stay aliases
+  (`FROM t cast`, `SELECT a AS cast`), a star's qualifier (`SELECT cast.* FROM t cast`) and names when quoted.
 - **A parenthesized list is a ROW, not an array, and no function takes one.** `ARRAY_CONSTRUCT((1, 2))` answered
   `[[1,2]]`, `COALESCE((1, 2), (3, 4))` `[1,2]`, and `HASH`, `TO_JSON`, `COUNT`, `ARRAY_AGG`, `IFF`, `NVL`, `LEAST`
   and the rest read the list as an array too. Each is now refused while the statement compiles, the list typed as
@@ -503,6 +838,615 @@ Changes since 0.2.0 accumulate here as they land.
 
 ### Fixed
 
+- **INFORMATION_SCHEMA views for a role that is no administrator.** Reading `INFORMATION_SCHEMA.TABLES`,
+  `COLUMNS` or `FUNCTIONS` as a user without an administrative role failed with a raw
+  `java.lang.SecurityException` - each view was held to a SELECT grant no role can be given. The views need no
+  grant now, as on an account, and a grant on one is still refused.
+- **INFORMATION_SCHEMA lists what the role reaches.** `TABLES`, `COLUMNS`, `VIEWS`, `TABLE_CONSTRAINTS`,
+  `REFERENTIAL_CONSTRAINTS`, `FUNCTIONS`, `PROCEDURES`, `SEQUENCES`, `STAGES`, `FILE_FORMATS` and `SCHEMATA` listed
+  every object of the database to every role. As on an account they list only what the statement's rights own
+  or hold a privilege on, in the schemas and the database those rights were granted into - ACCOUNTADMIN is not
+  exempt - and inside a stored procedure that runs with owner's rights, what the owner reaches. A session that
+  reads these views as a role other than the objects' owner sees fewer rows than before; the SHOW commands
+  still list every object, as the account's do.
+- **A refusal of FLATTEN or SPLIT_TO_TABLE names the call as it is written.** The echo was the function's name
+  in capitals. It is the first part of the call's name as written - `[flatten]`, `[my_schema]`, `["My"]` - which
+  is what an account echoes, since a qualifier before a built-in table function's name is not looked up: the
+  built-in runs whatever schema the name is written under.
+- **A decimal below a millionth in JSON text and in a refusal's echo.** `ARRAY_CONSTRUCT(0.0000001)` read
+  `[1E-7]`, `TO_JSON` and `OBJECT_CONSTRUCT` likewise, and a refusal echoed the literal as `ABS(1E-7, 1)`. The
+  digits stay in place, `[0.0000001]` and `ABS(0.0000001, 1)`, as an account writes them.
+- **Paths with two positions in a row, quoted names and bracketed names.** FLATTEN's `PATH` applied only the
+  first position of a step, so `PATH => 'a[0][1]'` flattened `a[0]`, and read no quoted name at all; GET_PATH split
+  its path on every dot. Both now read one path grammar, the account's: a bare name, a quoted one (`"a b"`), a
+  bracketed one (`['a b']`, `["a b"]`) and a position (`[0]`), joined by `.` or `:`, with a backslash escape and a
+  doubled quote inside the quotes. `PATH => '"a b".c'`, `'k[''m''].n'` and `'a[0][1]'` select what the same steps
+  select after a colon, a name reaches into an object only and a position into an array only, and a NULL `PATH` is
+  no path instead of an internal error.
+- **FLATTEN's PATH column for a member that is no plain name.** It joined every name with a dot, `a b.c[0]`. A
+  name that is empty, starts with a digit or holds anything but letters, digits and underscores now goes between
+  brackets and quotes, `['a b'].c[0]`, `['a.b'][0]`, `['0']`, with a quote, a backslash and a line break escaped -
+  for the members FLATTEN walks and for the path a `PATH` argument selected, which is spelled this way whatever
+  spelling it was written in (`PATH => 'k[''m'']'` reports `k.m.n`).
+- **GENERATOR counts past a 32-bit number.** A count was narrowed to 32 bits, so `ROWCOUNT => 4294967297`
+  generated one row and `2147483648` was refused as negative. A count is read whole: with a `TIMELIMIT` the rows
+  stop at whichever bound comes first, a `TIMELIMIT` of 0 is no limit, a fraction is cut to its whole part, and
+  a count above 2147483647 with no time limit - more rows than the engine can hold - is refused by name instead
+  of wrapped.
+- **Names and keywords under a JVM whose default locale folds case its own way.** Function names, keywords,
+  identifiers, type names and format elements were folded with `toUpperCase()` / `toLowerCase()` in the JVM's
+  default locale. Under a Turkish default locale `insert` folds to `İNSERT` and `TITLE` to `tıtle`, so statements
+  failed with unknown functions, columns and types, and texts read differently. Every fold in the engine and the
+  optional packs is now in the root locale - 1,302 calls - and the build refuses a new one.
+- **A SQL function's call costs a fraction of what it did.** Every call of a SQL function parsed the function's
+  body twice as a script, to learn that it was no scripting block, before it did anything else: over 20,000 rows
+  `SUM(addone(i))` took 4 seconds where `SUM(i + 1)` took 5 milliseconds, and a function that calls another took
+  25. That answer is now kept per body, and expressions and statements are parsed in two stages — a quick
+  prediction first, the full one only for the rare text the quick one gives up on, with the same tree either
+  way — which every statement gains from, not only a function's body. The same calls take 76 ms (an expression
+  body), 290 ms (a query body, 1.1 s before) and 220 ms (the nested one); a call with a constant argument 33 ms
+  where it took 3.6 s. What a call answers is unchanged.
+- **Table functions written in Java and JavaScript run.** A RETURNS TABLE function in Java, JavaScript or Scala
+  was created, and every call ran its body as SQL: `SELECT * FROM TABLE(jt(5))` was `syntax error line 2 at
+  position 0 unexpected 'import'`. A Java table function now runs its handler class - `process` for each input
+  row, `endPartition` once a partition is through, the output class's public fields the declared columns by
+  name, whatever their case and order - and a JavaScript one its handler object - `initialize`, `processRow(row,
+  rowWriter, context)` and `finalize`, the rows those written with `rowWriter.writeRow`, a row's columns the
+  object's members of the declared columns' upper-case names. An argument and a written value are converted as a
+  scalar function's of the language are; what a handler raises is the call's refusal in the language's own
+  report. `SHOW USER FUNCTIONS` and the catalog are as they were.
+- **`TABLE(f(…) OVER (PARTITION BY … ORDER BY …))` is the partitioning of a table function's input.** Every such
+  call was refused as a window call, `Invalid function type [F] for window function`. A handler table function -
+  Java, JavaScript or Python - now reads its input by the partitions the clause names, in the order it asks for:
+  one handler per partition, each row it writes joined to the row it was reading, and the rows it writes at the
+  partition's end joined to the partition's own columns with NULL in every other. `OVER ()` and an ORDER BY alone
+  make one partition; a key that is no column is `Invalid partitioning expression 'UPPER(EV.G)'; must be a
+  column.` and a frame a syntax error. So `TABLE(py_sum(ev.v) OVER (PARTITION BY ev.g))` answers one total a
+  group, where each row got a handler and an `end_partition` of its own. Without OVER a JavaScript function now
+  reads the whole input as one partition, as an account did; a Java or a Python function still reads each row
+  as its own. A SQL or a built-in table function takes the clause to no effect.
+- **The SEQ functions count beside a window function.** In a query whose select list holds a window function
+  SEQ1, SEQ2, SEQ4 and SEQ8 answered 0 on every row - in the select list, and in the window's own arguments and
+  keys, so `ROW_NUMBER() OVER (ORDER BY SEQ4() DESC)` did not reverse and `SELECT SEQ4(), SUM(SEQ4()) OVER ()
+  FROM TABLE(GENERATOR(ROWCOUNT => 3))` answered `0 | 0` three times. They number the rows the projection is
+  handed there as anywhere else: `0 | 3`, `1 | 3`, `2 | 3`.
+- **A lateral item keeps its columns when its argument would fail for a NULL.** To learn a lateral item's columns
+  the engine read it once with every column to its left bound to NULL, and when that reading failed it planned
+  the item with no columns at all. So over rows that hold no NULL, `SELECT w.id, f.value FROM w, LATERAL
+  FLATTEN(INPUT => jsplit(w.s)) f` was `invalid identifier 'F.VALUE'` whenever `jsplit` - a JavaScript, Python,
+  Java or Scala function - was not null-safe, and so was a FLATTEN over `PARSE_JSON(COALESCE(j.s, '{'))`, a
+  SPLIT_TO_TABLE over `SUBSTR(w.s, 1 / COALESCE(w.id, 0))` or any argument that divides by a column; `f.*` was
+  `Object 'F' does not exist` and `SELECT *` answered rows wider than its own column list. A table function's
+  arguments are now read for the shape without a row behind them: the names they use are judged, a fault a NULL
+  raises is not the statement's, and the item has the columns its function declares. A handler in the argument
+  is no longer called an extra time with NULLs for the shape - a counter it keeps saw three calls for two rows -
+  and a Python table function called laterally has the columns its RETURNS TABLE declares without its handler
+  being run for them, so one that raises on `None` no longer loses its columns.
+  What a row's own value raises now reads in its own words, without `Unable to evaluate expression '…' in
+  LATERAL context:` before it.
+- **A Scala function's exception, and a Scala body that does not compile, say what went wrong.** A handler's
+  exception reached SQL as `Failed to execute Scala function F: null`, and a body that does not compile as `Scala
+  compilation failed for H` while the compiler's complaint went to the engine's console. An exception now reads
+  as an account reports it - `User Error Report:`, `Java Stack Trace:`, the exception, its frames
+  `function_handler_0//H$.f(ScalaUDF:1)` and, for an object, the forwarder `function_handler_0//H.f(ScalaUDF)`,
+  its cause, and ` in function F with handler H.f` - and a compile error is the compiler's own: `ScalaUDF:1:
+  error: type mismatch;`, ` found   : String`, ` required: Int`, the line and a mark under the place, for a
+  function and a procedure.
+- **An inline Java body's compile error is the compiler's whole report.** The refusal quoted the compiler's
+  messages alone. It is now what an account answers: `Error while compiling source: /InlineCode.java:4: error:
+  incompatible types: String cannot be converted to int`, the body's line and a mark under the place, each
+  further fault, the compiler's notes, `2 errors`, and ` in function F with handler H.f` - with the line counted
+  from the body's first line.
+- **A Java procedure is compiled once.** Every CALL of an inline Java procedure wrote its source to a temporary
+  directory and ran the compiler over the whole class path, about 33 ms a CALL on a warm engine. The body is now
+  compiled when the procedure is created - or at its first CALL - and the classes are kept, as a Java
+  function's are: twenty CALLs took 640 ms and take 3. A body that does not compile is refused with `Error while
+  compiling source: …` at a CALL too, the sentence CREATE gives.
+- **A Java handler's class is the statement's or the CALL's own.** A Java function's class was loaded once and
+  kept, so what a handler left in a static field was there for every later statement of the JVM, another
+  session's included; a procedure's instance was new for every CALL and its class too, at the cost above. On an
+  account a procedure's static and instance fields both start as the source writes them on every CALL, and a
+  function's static fields are kept over the rows one call of the function reads and by nothing else: `jfc(1)`
+  over a counter answers 1 in every statement, `SELECT jfc(1), jfc(2)` answers `1 | 1`, and `MAX(jfc(v))` over
+  three rows 3. The engine now loads the kept classes anew for each CALL and for each statement and calling
+  place, about 0.07 ms a statement; a query's rows cost what they did.
+- **Two inline sources that share a hash run their own code.** The compiled classes of Java and Scala handlers
+  were kept under the handler's class name and the source's 32-bit hash, so of two bodies that differ only in
+  texts sharing a hash - `"Aa"` and `"BB"` - the second ran the first one's code: `SELECT hc1(1), hc2(1)`
+  answered `Aa | Aa`. The whole source names a compilation now, and the answer is `Aa | BB`.
+- **The Snowpark `Variant` a Java handler compiles against is the real class.** The engine's
+  `com.snowflake.snowpark_java.types.Variant` had four constructors and two methods, so a handler that read a
+  VARIANT with `asMap()`, `asString()` or `asInt()`, or built one from a list, a date or bytes, did not compile
+  and CREATE FUNCTION refused it. It now has the real class's sixteen constructors - `float`, `double`, `long`,
+  `int`, `short`, `boolean`, `BigDecimal`, `BigInteger`, `String`, `byte[]`, `java.sql.Time`, `Date` and
+  `Timestamp`, `List<Object>`, `Object[]` and `Object` - and its readers: `asString`, `asJsonString`,
+  `asJsonNode`, `asBinary`, `asTime`, `asDate`, `asTimestamp`, `asBoolean`, `asFloat`, `asDouble`, `asShort`,
+  `asInt`, `asLong`, `asBigDecimal`, `asBigInteger`, `asArray`, `asList`, `asMap`, `equals`, `hashCode` and
+  `toString`, each answering as the account's does. A value answers by what it was made as: one made from a text
+  answers every reader, every value answers as a text, a number answers as a whole or a real number and as a
+  timestamp, a boolean as a number, and a date, a time, a timestamp, bytes, a list and a map as their own kind
+  alone - any other reading raises `Conversion from Variant of Date to FixedNumber is not supported`, and
+  `asMap` or `asList` over anything else `Failed to convert s to Map`. The earlier `Variant(Map)`,
+  `Variant(Number)` and `Variant(Boolean)` overloads, which the real class lacks, are gone: `Variant(Object)`
+  takes those values. What changes for a handler that already compiled: `new Variant(text)` no longer throws
+  for a text that is no JSON - the value is the text - and reads only the text's first value, and `toString()`
+  is `asString()`, a text without its quotes.
+- **A VARIANT argument arrives in a Java handler as its kind, and a `Variant` handed back answers as its
+  kind.** Every argument arrived as its JSON text read back. An exact number now arrives as a decimal, a FLOAT
+  as a double, a BOOLEAN as a boolean, a BINARY as bytes and a DATE, a TIME and a timestamp as their `java.sql`
+  values; a text, an OBJECT, an ARRAY and a JSON null arrive as their text, which is read as JSON - so
+  `TO_VARIANT('12')` is the number 12 in the handler, `TO_VARIANT('{"a":1}')` an object, and an array holding a
+  SQL NULL, whose text `[1,undefined,"x"]` is no JSON, the text. Handed back, a number is an INTEGER, a DECIMAL
+  or a DOUBLE, a boolean a BOOLEAN, bytes a BINARY and a `java.sql` value a DATE, a TIME or a TIMESTAMP_NTZ
+  where each was the VARCHAR of its JSON; a value made from a text is the OBJECT, the ARRAY or the JSON null it
+  holds and a VARCHAR otherwise, so `new Variant("7")` answers the text `7`. A handler runs in the session's
+  time zone as far as a `Variant` goes: a date, a time and a timestamp are held as their instant's wall clock
+  there, so under `America/Los_Angeles` a DATE argument reads `2024-03-04` for 2024-03-05 and comes back as
+  that day, as on an account. A procedure's `Variant` parameter and result follow the same rules.
+- **A Java or Scala function answers its RETURNS type.** Numbers, texts and booleans passed as they were and
+  anything else became its Java text: a `byte[]` under RETURNS BINARY was `[B@1cc8416a`, a `String[]` under
+  RETURNS ARRAY `[Ljava.lang.String;@…`, a `Map` under RETURNS OBJECT `{k=v}`, and a text returned for an ARRAY
+  stayed a text, so a container nested it quoted. Each is now the declared type's value: bytes a BINARY, a
+  `String[]` an ARRAY of texts (a null element one of its SQL NULLs), a `Map` an OBJECT, a text read as JSON for
+  an ARRAY, an OBJECT or a VARIANT and as a number for a NUMBER or a FLOAT, a `BigDecimal` rounded half to even
+  to the declared scale (`fdec(1.25)` under NUMBER(10,2) is 1.39), a `short` a whole number, and a
+  `java.sql.Date`, `Time` or `Timestamp` the DATE, the TIME or the timestamp it counts at UTC, nanoseconds kept.
+  A Scala `Array[String]` and `Map[String, String]` follow.
+- **A Java function's DATE, TIME and timestamp arguments hold the account's instants.** A `java.sql.Date` was the
+  machine's local midnight and a `java.sql.Timestamp` of a TIMESTAMP_NTZ the machine's local reading, so
+  `getTime()` depended on where the engine ran. As on an account, and as a procedure's arguments already were, a
+  DATE is its midnight at UTC, a TIME the milliseconds of its day and a TIMESTAMP_NTZ its wall clock read at UTC,
+  whatever the session's zone — and handed back, each is the value it was.
+- **A Java or Scala procedure declared RETURNS TABLE answers its DataFrame's rows.** The CALL answered one row
+  holding the DataFrame object's text (`com.snowflake.snowpark_java.DataFrame@…`) and `SELECT * FROM TABLE(p())`
+  failed on it. The rows are now the DataFrame's, under the declared columns' names, for a CALL and in a FROM
+  clause; a DataFrame of another shape than the declaration is `Stored procedure execution error: data type of
+  returned table does not match expected returned table type`.
+- **A Scala function or procedure finds a handler JAR an internal named stage keeps.** `IMPORTS =
+  ('@st/handlers.jar')` worked for a Java routine and failed for a Scala one with `Handler class … not found …
+  [MISSING FILE]`: the stage's file was looked for as a relative path. A handler loaded from IMPORTS is now found
+  where the engine keeps the stage's files, whatever the routine's language.
+- **A Java function's handler may be an instance method.** Every handler was called without an instance, so a
+  method that is not static failed with a `NullPointerException` on every call. The class is now made with its
+  zero-argument constructor and the method called on that instance, one for a statement that calls the function:
+  what the instance holds is there for the statement's later rows and for nothing else. A method the class
+  inherits is the handler too.
+- **A Java function's arguments become the handler's parameter types.** The handler was looked for by the classes
+  of the values the engine held, so a pairing the CREATE had accepted failed on every call with `Method not
+  found: f in class H`: a number for a VARCHAR parameter, a text for a NUMBER one, a BOOLEAN, a NUMBER or a FLOAT
+  for a `String`, a BINARY for a `byte[]`, a DATE for a `java.sql.Date`, a timestamp for a `java.sql.Timestamp`,
+  an OBJECT for a `Map<String, String>` and a VARIANT for a `Variant`. As on an account, each argument now
+  becomes its parameter's SQL type first — `fs(42)` is `s:42`, `fi('42')` 42, and a NUMBER parameter rounds a
+  fraction away where Java truncated it: `fi(1.99)` is 2 and `fi(-1.5)` -2, for a Scala `Int` too — and then the
+  Java type the handler declares. A `String` holds the value's text for any type (a NUMBER(10,2) as `7.00`, a
+  TIME as `10:11:12.500000000Z`, a timestamp to the millisecond with its offset, a BINARY as hex, a VARIANT as its
+  JSON); a `BigDecimal` holds the parameter's declared scale; a `Map` and a `String[]` hold a text as it is,
+  anything else as its JSON, and a JSON null or a SQL NULL element as `null`.
+- **An exception a Java handler raises reads as an account reports it.** It read `Java function handler f threw:
+  java.lang.IllegalArgumentException: bad 1`. It is now `User Error Report:`, a line `Java Stack Trace:`, the
+  exception, its frames down to the handler's own — `at function_handler_0//H.f(InlineCode.java:1)`, the line the
+  source's — a cause as Java prints one, and ` in function F with handler H.f`.
+- **A JavaScript function's globals are its own call's, for one statement.** Every JavaScript function called on a
+  thread ran in one shared world, which only the handler's own name was taken out of: a global one function set
+  was there for any other function, for later statements and — since a server's sessions share its threads — for
+  another session's functions; a member added to `Array.prototype`, or a replaced `Math.max`, stayed for all of
+  them. As on an account, each call of a function written in a statement now runs in a world made for that
+  statement: its globals are there for the statement's later rows and gone with the statement, and neither
+  another function, another call of the same function in the statement, a later statement, a procedure nor
+  another session sees them. A statement that calls a JavaScript function costs about a millisecond more for the
+  world it makes; a call's cost per row is unchanged.
+- **A JavaScript handler reaches no Java object.** The JavaScript context allowed every public member of any Java
+  object that reached a handler, and several did: a procedure's result set and statement were the engine's own
+  objects (`rs.getClass()` answered), a column of a NUMBER with a fraction, a DATE, a TIMESTAMP, a BINARY or a
+  VARIANT was a Java value with Java's methods and none of the language's, and a failed statement was caught as
+  a Java exception. Host access is now limited to the members the engine exports for its own wrapper script, and
+  nothing of the host is handed to a handler: a BINARY argument crosses as text, and the procedure API's objects
+  are made in the handler's world, as an account's are — a `ResultSet` and a `Statement` that print as `[object
+  Object]`. A column's value is a number, a string, a boolean, `null`, a `Date`, a `Uint8Array`, an array or an
+  object, and a member of the result set under the column's name once a row is read. A statement that fails is
+  thrown as an object that is no `Error`, with the statement's `code`, `state` and `message` and the place of the
+  call in `stackTraceTxt` (`Snowflake.execute, line 1 position 11`); uncaught, it fails the CALL as an account
+  words it: `Execution error in store procedure P:`, the statement's sentence, `At Snowflake.execute, line 1
+  position 11`.
+- **An inline Java function whose source declares more than one class.** Only the handler's class was loaded, so
+  a function that used a nested class, an enum, an anonymous class or another top-level class of its own source
+  was created and then failed on every call with `NoClassDefFoundError`. Every class the source declares is
+  loaded with the handler's.
+- **A JavaScript handler's VARIANT, ARRAY and OBJECT arguments arrive as native values.** An array that held a
+  SQL NULL element — `ARRAY_CONSTRUCT(1, NULL, 'x')`, at any depth of the argument — reached a function's handler
+  as its text (an ARRAY parameter wrapped that string in a one-element array), because the text spelled the
+  element `undefined`, which is not JSON, and the failed parse was swallowed. The handler now gets the array, the
+  element a hole of it as on an account: `A.length` is 3, `A[1]` is `undefined` and `1 in A` is false, while a
+  JSON null stays `null`. A procedure's handler found a `null` there and finds the hole too. What the value
+  holds arrives as its own kind, in a function and a procedure alike: a DATE and a TIMESTAMP as a `Date` (a DATE
+  the midnight that begins it in the session's time zone), a BINARY as a `Uint8Array`, and a FLOAT NaN or
+  infinity as that number, where each was a text. A variant that is no array is a one-element array for a
+  function's ARRAY parameter, and a JSON null is a SQL NULL for an ARRAY or an OBJECT one.
+- **A JavaScript function answers its RETURNS type.** What a handler returned came back nearly as it was, so
+  `RETURNS VARCHAR` over `return 5` was a number and over `return {a: 1}` the object's JSON, and a FLOAT could
+  come back a text. Each declared type now converts the value as an account does: a VARCHAR is its string (`1,2`
+  for an array, `[object Object]` for an object without a `toString`), a FLOAT its number (`NaN` for a text that
+  is none), a BOOLEAN its truthiness, a DATE and a TIMESTAMP the `Date` or the milliseconds it converts to. A
+  VARIANT, an ARRAY and an OBJECT are a copy of the value, member by member: a `Date` is a TIMESTAMP_LTZ and a
+  `Uint8Array` a BINARY, a number with a fraction a DOUBLE, a function `{}`, an `undefined` element one of the
+  array's SQL NULLs (dropped where it trails), an `undefined` member left out, `null` a JSON null, and `toJSON`
+  is not called. A value handed in therefore comes back as it arrived — `rv(ARRAY_CONSTRUCT(1, NULL, 2))` is
+  `[1,undefined,2]`, and a DATE inside it a timestamp. A procedure's answer follows the same copy (it never
+  calls `toJSON` either and unwraps a `Number` or a `String` object), keeping a `Date` and a `Uint8Array` as
+  their texts, and its OBJECT takes any object that is no array.
+- **A JavaScript function's arguments arrive as their parameters' types.** A JavaScript function's handler was
+  handed each argument as the engine held it: a decimal for a FLOAT parameter was a host object, so `X + 1`
+  concatenated (`0.1 + 1` was `0.11`) and handing it back failed; a DATE or a timestamp had no `getFullYear()`; a
+  number or a date for a VARCHAR parameter was no string; `'no'` for a BOOLEAN parameter was truthy; a BINARY was
+  a signed byte array. As on an account — and as a procedure's CALL already did — each argument now becomes its
+  parameter's SQL type first (a text that does not convert is the call's refusal, `Numeric value 'abc' is not
+  recognized`) and then the handler's own: a FLOAT is a number, a VARCHAR a string, a DATE the `Date` of its
+  midnight in the session's time zone, a TIMESTAMP_NTZ the `Date` of its wall clock there, a TIMESTAMP_LTZ and a
+  TIMESTAMP_TZ their instants, a BINARY a `Uint8Array`, a BOOLEAN the number 1 or 0 (`X === true` is false, as on
+  an account) and a SQL NULL `undefined`. A `Date` handed back for a DATE or a timestamp, a `Uint8Array` for a
+  BINARY and a truthy value for a BOOLEAN are those values.
+- **A SQL table function's number columns hold what they declare.** The result columns took the declared RETURNS
+  TABLE types while the rows stayed as the body produced them, so an `INT` column held `3.333333` — and `WHERE a =
+  3` found nothing — and a `NUMBER(5,2)` column held `1.257`. Each value of a column declared an exact NUMBER is
+  now held at the declared scale, rounded half away from zero as a write rounds it: `3`, `1.26`, and `1.50` for
+  `1.5` — in a direct and a lateral call, an aggregate, a UNION, a view, a CTAS and an INSERT. A text keeps its
+  characters whatever width the column declares, as on an account.
+- **A session's temporary objects end with it.** A temporary table, view, function, procedure or stage was
+  dropped only when the whole engine shut down, so on the HTTP server and over JDBC it stayed for every later
+  session, kept its name taken, and a long-running server collected every client's temporary tables. Each is now
+  dropped when the session that created it ends: a released, an expired or an aborted session of the server, a
+  closed connection (`jdbc:frostlake:direct:` and `file:` alike), and a task's run, which is a session of its
+  own. A permanent table a temporary one hid is there again, and the session's open transaction is rolled back
+  first. The embedded engine's own session still ends at shutdown. While its session lives a temporary object is
+  still visible to the other sessions of the engine, where an account shows it to its own session alone.
+- **ALTER TABLE ADD COLUMN echoes a default's function as the plan names it.** `ADD COLUMN c NUMBER DEFAULT
+  test_schema.f1() + 1` was refused as `[test_schema.f1() + 1]`; it is `Invalid column default expression [F1() +
+  1]`, and a default that calls a name no function has is an unknown function.
+- **A SQL function's parameter is read only where a value stands.** A parameter's name was replaced wherever the
+  body spelled it, so a function, a table, a common table expression, an alias, a named argument's name or a type
+  of that name broke the body: `f(upper VARCHAR) AS 'upper(upper)'`, `f(people NUMBER) AS 'SELECT COUNT(*) FROM
+  people'`, `f(v NUMBER) AS 'SELECT 5 AS v'`, `f(input VARCHAR) AS 'SELECT … FLATTEN(input => PARSE_JSON(input))'`
+  and `f(date VARCHAR) AS 'date::DATE'` all failed when called. The body is now bound by its parse tree: a
+  parameter stands where a column could be read by its bare name, and there it comes before a column of that name
+  (`MAX(id)` over a parameter `id` is the argument, `people.id` the column). A parameter in a GROUP BY or an
+  ORDER BY is its value, which a number names a position with. A parameter is named in upper case however it was
+  declared, so `"X"` reads the parameter `x`. A query body whose `ON a.id = id` meets a parameter `id` is no
+  longer refused as an ambiguous column when the function is created.
+- **A parameter named like a word of another parameter's value.** The parameters were bound one after another, so
+  one named `number`, `date`, `varchar` or `timestamp_ntz` rewrote the type the previous parameter's value was
+  written with: `f(a NUMBER(10,2), number NUMBER)` failed for every call. All parameters are bound in one pass.
+- **Named arguments choose the overload.** An overload was chosen by the values in the order written, against each
+  overload's parameters in the order declared, and the names were read afterwards: `pick(y => 5)` beside
+  `pick(x NUMBER)` failed on an unknown argument name, and `ov(b => 1, a => 'x')` ran the overload whose `a` is a
+  NUMBER. Only an overload that declares every name written is now a candidate, and each value is judged against
+  the parameter its name fills — for a function, and for a procedure's `CALL`, which read a named argument as an
+  untyped NULL. Names whose only overloads refuse a value's type are `named arguments [X] do not match any
+  signature for function PICK`, and that sentence names the routine as the call writes it (`TEST_SCHEMA.PICK`).
+  A name written twice is refused before the number of arguments is.
+- **Overloads are chosen by all the arguments together.** Between overloads that take the argument count, the
+  first argument decided and the others only broke its ties, so `f('x', 'y')` over `f(a NUMBER, b VARCHAR)` and
+  `f(a VARCHAR, b NUMBER)` ran the second. A call now runs the overload whose conversions weigh least in total,
+  as an account does — a NUMBER read as a FLOAT weighs less than one read as a text, a text read as a BOOLEAN
+  less than one read as a FLOAT or a NUMBER, a FLOAT read as a NUMBER most of all — and of overloads that weigh
+  alike the first in the order of their signatures, whatever order they were created in. Procedures choose the
+  same way.
+- **A function called by its full name with no current database.** `SELECT db.schema.f(1)` was an unknown
+  user-defined function in a session without a current database — one opened without one, or whose database was
+  dropped — while the same schema's tables and table functions answered. A name written with its database needs
+  no session context and is found there.
+- **A SQL function's expression body may name a date part and bind a lambda.** `CREATE FUNCTION … AS 'DATEADD(day,
+  1, t)'` was refused with `invalid identifier 'DAY'`, and so was every other unit word of DATEADD, DATEDIFF,
+  DATE_TRUNC, DATE_PART, TIMEADD, TIMEDIFF, TIMESTAMPADD, TIMESTAMPDIFF and LAST_DAY, and the parameter of a
+  lambda (`FILTER(a, x -> x > 1)`, `TRANSFORM`, `REDUCE`): the check of a body's names read each as a name the
+  signature had to declare. A unit is the function's word and a lambda's parameters are names of its body, so
+  these functions are created and answer as their query-bodied twins did. Where a lambda's parameter and the
+  function's share a name, the function's is the one the body reads, as on an account.
+- **A SQL function's body reads with its owner's privileges.** A role granted USAGE on a function was refused the
+  table the body reads — by a scalar function with a query body or a subquery, by a table function, by a function
+  called from another's body — where a view over the same table answered. The body now reads what its owner may
+  read, beside what the caller may; what neither may read is refused as the statement's own, in the caller's
+  name. `CURRENT_ROLE()` inside the body is still the caller's.
+- **A SQL function's parameter holds its argument's value.** A SQL function's body was run with each parameter
+  written out as its argument's display text, so the value was only right when that text read back as the same
+  value of the same type. In a scalar function a FLOAT parameter computed as a NUMBER (`x / 3` over `1` answered
+  `0.333333`), a TIME lost its fraction and a timestamp everything past the millisecond, a date followed
+  `DATE_OUTPUT_FORMAT` (`MONTH(d)` of 1 February answered `1` under `DD/MM/YYYY`, and the call failed under
+  `MON DD, YYYY`), a BINARY arrived as text, and a VARIANT holding a DATE or a BINARY was refused. In a table
+  function a DATE became the arithmetic `2024 - 01 - 15`, a TIME, a timestamp, a VARIANT and an OBJECT were
+  syntax errors, an ARRAY of texts, a BINARY and a NaN unknown names, and a backslash in a text was read again as
+  an escape. Every argument is now written as SQL that answers the value itself: a FLOAT as a FLOAT, temporals
+  with their nine digits and offset whatever the output formats, a BINARY as one, a semi-structured value with
+  what it holds. In a scalar function a NULL argument is the NULL of the parameter's type, a number takes the
+  parameter's scale when its own is smaller (`1` into a NUMBER(10,2) is `1.00` of that type), and a parameter
+  declared `TIMESTAMP_NTZ(3)` reads three digits. A negative argument is one value beside an operator: `2-x` over
+  `-5` is `7`, where the text read `2--5`, a comment.
+- **An exception declared with the empty string as its message** keeps the ` : ` tail of its uncaught sentence
+  (`Uncaught exception of type 'E1' on line 1 at position 42 : `); only one declared with no message at all ends
+  at the place.
+- **A semi-structured variable holds the JSON of its value.** A VARIANT, ARRAY or OBJECT variable of a block —
+  and a SQL procedure's parameter, a FETCH or SELECT INTO target, a field of a loop's record, a value returned
+  under a semi-structured RETURNS — kept whatever it was given, so `TYPEOF(v)` of a variable holding
+  `TO_VARIANT('2024-01-02'::DATE)` answered `DATE`. It holds the JSON of the value read back, as on an account:
+  a DATE, a TIME, a timestamp, a BINARY and a UUID in it are text (`VARCHAR`), whole or inside an array or an
+  object, and a DOUBLE is the number its sixteen digits of JSON say. A date assigned to an ARRAY variable is
+  its one element.
+- **A DOUBLE stays a DOUBLE in a block's function call.** A call in a block expression is evaluated from its
+  arguments' values, and a VARIANT holding `3.5::FLOAT` was written back out as `3.5`, a DECIMAL to the function:
+  `TYPEOF(v)` answered `DECIMAL` and `TO_JSON(v)` lost the fifteen-decimal form, for a FLOAT variable or
+  parameter handed to `TO_VARIANT` too. The value now reads back with its family, and what a call written as
+  another call's argument answers reaches the outer call with its members' types:
+  `TYPEOF(GET(ARRAY_CONSTRUCT('2024-01-02'::DATE), 0))` is `DATE` in a block as in a query.
+- **ASYNC takes any statement, and its job runs when it is awaited.** `ASYNC (…)` took DML and a CALL only and ran
+  them where it stood. It takes any one statement — a query, DDL, a SHOW, an EXECUTE IMMEDIATE, a block — and a
+  RESULTSET is filled by one: `r RESULTSET DEFAULT ASYNC (…)`, `LET r RESULTSET := ASYNC (…)` and
+  `r := ASYNC (…)`. The job binds the block's variables as they stand at the ASYNC and runs at `AWAIT r` or
+  `AWAIT ALL`, in the
+  order the jobs were started; `AWAIT ALL` stops at the first job that fails, reports it where that job's
+  statement stands and leaves the later jobs to be awaited again, and a job the body never waits for never
+  runs. After `AWAIT r` the counts are the job's; after `AWAIT ALL` they are NULL.
+- **`$name` in a block is the session's variable.** In a block's own expressions — a RETURN, an assignment, a
+  CASE operand, a FOR bound, a function's argument — `$x` read a block variable, a parameter or a loop counter
+  named `x` when there was one, while the same `$x` in a statement of the block read the session's. It reads
+  the session variable everywhere; the block's `x` is `x` or `:x`.
+- **A cursor's name belongs to its block.** An inner block, a called procedure and a dynamic block could not
+  declare a cursor named like one of the calling block's (`Cursor already declared: C`). Each declares the name
+  for itself, the outer cursor keeps its position, and it is the name's again when the inner block ends. A
+  RESULTSET declared in an inner block no longer replaces the outer one of its name, and a block nested in a FOR
+  loop over a cursor reads the loop's record, where it was `invalid identifier 'R'`.
+- **EXIT is BREAK's other spelling.** `EXIT;` and `EXIT label;` were syntax errors.
+- **An exception declaration belongs to its block.** Declarations were kept in one map for the session: an inner
+  block, a called procedure, a dynamic block or a scripting function that declared an exception of a name its
+  caller used replaced the caller's, and a later `RAISE e1` there raised the other one's code and message. A
+  declaration now hides an outer one only while its own block runs, and a body run from a block declares for
+  itself alone. A handler catches the declaration its block sees: an `e1` that a nested block or a called
+  procedure declared for itself and let out is caught by OTHER (and by STATEMENT_ERROR when a CALL let it out),
+  not by the caller's `WHEN e1`.
+- **A handler clause takes EXIT, and several names joined by OR.** `WHEN STATEMENT_ERROR OR e1 EXIT THEN …` was
+  a syntax error at `OR` and at `EXIT`. EXIT says what a handler does by default; CONTINUE goes on with the
+  statement after the one that failed.
+- **Runaway nesting fails as a statement does.** A text that ran itself (`SET q = 'EXECUTE IMMEDIATE $q';
+  EXECUTE IMMEDIATE $q`) and a cycle of SQL functions made by `ALTER FUNCTION … RENAME TO`, or written with
+  qualified names, ended in a `StackOverflowError`: no handler caught it, the history held no row and the
+  statement's writes were not treated as a failed statement's. Dynamic texts now nest a hundred deep and the
+  statement past that fails with `SQL execution internal error: Processing aborted: the statement nests deeper
+  than the engine can follow.`; a call that meets a SQL function again inside that function's own body is
+  refused as `Detected a cycle in SQL UDF: F` (an account abandons such a call as an internal failure of its
+  own). Both are ordinary failures: a handler catches them and the session goes on.
+- **SQLCODE and SQLSTATE of two more refusals.** `Invalid expression [1 / 0] in VALUES clause` reads 2014 / 22000
+  and `Error parsing JSON: …` 100069 / 22P02 in a handler, where both read 100351 / P0000.
+- **A CALL of a JavaScript, Python, Java or Scala procedure answers its RETURNS type.** The result was a VARCHAR
+  column holding the handler's value as text. It is one row in a column named after the procedure and typed as
+  declared — `NUMBER(10,2)`, `FLOAT`, `BOOLEAN`, `DATE`, `TIMESTAMP_NTZ`, `VARIANT`, `ARRAY`, `OBJECT`, `BINARY` —
+  with the value converted the way each runtime does on an account: a JavaScript body's by `String(…)`,
+  `Number(…)` and truthiness, a `Date` or a number of milliseconds for a date or a timestamp, a `Uint8Array` for
+  BINARY; a Python body's by `int(…)` (7.5 is 7), `float(…)`, `str(…)` and `bool(…)`, a `Decimal` rounded half to
+  even to the declared scale; a Java or a Scala handler's `BigDecimal` rounded half to even, its `String` read as
+  a SQL cast reads it, its `java.sql.Date`, `Time` and `Timestamp`, `String[]`, `Map` and `byte[]` as a date, a
+  time, a timestamp, an ARRAY, an OBJECT and a BINARY. The column keeps a declared width — `VARCHAR(2)`,
+  `BINARY(2)` — and a BINARY declared without one reads `BINARY(67108864)`.
+- **What a handler's semi-structured answer holds.** Inside a VARIANT, an ARRAY or an OBJECT a JavaScript number
+  with a fraction (or from 1e21 on) and every Python float is a DOUBLE — `[1.500000000000000e+00,2]` —, a NaN and
+  an infinity stay themselves, a JavaScript `Date` is the text of its instant in the session's zone (`2024-01-01
+  19:04:05.678 -0800`), a `Uint8Array` its hex text, a Python date, time, datetime, `Decimal` and `bytes` the text
+  `str(…)` gives, and an object's members come in key order. A JavaScript `null` and a Python `None` returned for
+  a VARIANT are a JSON null (`IS NULL` is false and TYPEOF is `NULL_VALUE`), where `undefined` and a Java `null`
+  are a SQL NULL; a text a Java or a Scala handler returns for a VARIANT is read as PARSE_JSON reads one, so
+  `1.5e0` is a DOUBLE and `[undefined]` keeps its element.
+- **A handler that returns nothing answers a NULL.** A JavaScript, Python, Java or Scala procedure whose handler
+  returned `null`, `None`, `undefined` or nothing at all answered a `status` column reading `Statement executed
+  successfully.`; its CALL answers one row holding NULL in the procedure's column, of the declared type, as a SQL
+  body's does.
+- **Overloads of which one has optional arguments resolve.** With `f(a NUMBER)` and `f(a VARCHAR, b NUMBER DEFAULT
+  0)` — a legal pair — both `f(1)` and `f('x')` were `Unknown function F.`: only overloads declaring exactly the
+  call's number of parameters were considered.
+- **An owner's-rights CALL from a session with no current database leaves it with none.** After the CALL the
+  session sat in the procedure's database and schema, so a bare `CREATE TABLE t (…)` created its table there; the
+  session is where it was — nowhere — and the statement is refused again as `Cannot perform CREATE TABLE. This
+  session does not have a current database. Call 'USE DATABASE', or use a qualified name.`
+- **A USE in a procedure that runs with its caller's rights stays in force.** A SQL body's `USE SCHEMA` was undone
+  when the CALL returned, while its SET and its ALTER SESSION stayed; the caller now finds the session where the
+  body left it, as it does after a handler's USE.
+- **A RETURN, a BREAK or a CONTINUE inside a branch or a loop of an exception handler ends the handler.** `…
+  EXCEPTION WHEN OTHER THEN IF (c) THEN RETURN 'a'; END IF; RETURN 'b'; END` answered `b` with `c` true: the
+  handler ran on to its last statement.
+- **A RAISE that names nothing raises the handled exception again from a loop or a branch of the handler too.**
+  Written inside an IF or a FOR of the handler it raised `Error raised`.
+- **Where a failure inside a handler, a called procedure or a dynamic text is placed.** A statement of a handler
+  that fails is named at its own place, where the block named the statement that failed first. A procedure called
+  from a block reports the places of its own body (they read `position 0`). A block run by EXECUTE IMMEDIATE words
+  what it lets out as a script does, and the statement that ran it adds its own sentence: `Uncaught exception of
+  type 'STATEMENT_ERROR' on line 1 at position 53 : Uncaught exception of type 'STATEMENT_ERROR' on line 1 at
+  position 6 : Division by zero`.
+- **An unnamed bind in a query that is a scripting expression's value** — `LET y := (SELECT ?)` — is refused as `
+  Unexpected unnamed bind in SQL stored procedure.`, where it read `in {2}.` as a statement's query does.
+- **A Snowscript UDF's refusal prints its expression from the tree as parsed.** `Unsupported expression for Snowscript
+  UDF: …` named the expression as the plan holds it, with the type check's rewrites in it, where an account names it
+  as parsed. `CASE WHEN nosuch(1) = 1 THEN 2 ELSE 3 END` now reads `CASE((NOSUCH(1)) = 1, 2, 3)` (was
+  `CASE_FLATTENED(…)`), `nosuch(1)::INT` reads `CAST(NOSUCH(1) AS NUMBER(38,0))` (was `… AS INT`),
+  `nosuch(a) BETWEEN 1 AND 2` reads `BETWEEN(NOSUCH(A), 1, 2)` (was the two comparisons), `COALESCE`, `NVL2`,
+  `DATEADD`, `MEDIAN` and `COUNT_IF` keep their names, `IFF(TRUE, …)` takes no cast, `nosuch(a => 1)` reads
+  `NOSUCH(1)`, `"noSuch"(1)` keeps its quotes, `CURRENT_DATE` stays the keyword it was written as and `a != 1`
+  keeps its spelling. With a query or a window call in it the expression prints every operator as a call —
+  `"+"((SELECT 1 AS "1" FROM (VALUES (null)) DUAL), NOSUCH(1))`, `"="(1, ANY(SELECT …))`, `"COUNT(*)"() OVER ()` —
+  and a query prints with no name resolved, `(SELECT MAX(A) AS "MAX(A)" FROM RC_T AS RC_T)`, its clauses in the
+  order the account's tree keeps them, a set operation over operands named `OB$n`.
+- **The width of a routine's RETURNS TABLE columns.** A column declared as a text or a binary with no width —
+  `RETURNS TABLE (a VARCHAR, b BINARY)` — was read at a table column's default width, 16777216 and 8388608. It
+  is of no width of its own, as on an account: a driver reads `VARCHAR(134217728)` and `BINARY(67108864)` for it
+  in a `CALL`, in `TABLE(p())`, over the CALL's `RESULT_SCAN` and from a SQL table function, a view over it and
+  what is computed from it follow, and a table created over it still declares `VARCHAR(16777216)` and
+  `BINARY(8388608)`. A width that is written is kept, the default one included. `SYSTEM$TYPEOF` over a table
+  procedure's column in FROM names its type, where it answered `NULL`, and `GET_DDL` writes a routine's return
+  columns back as they were declared — `VARCHAR` beside `VARCHAR(16777216)`, `BINARY` beside `BINARY(8388608)`.
+- **Where a SHOW statement's syntax error is reported.** A listing that reads no scope — `SHOW VARIABLES IN
+  db.s`, `SHOW ORGANIZATION ACCOUNTS IN DATABASE d` — reported its `IN` and then the name after it; an account
+  reports the `IN` alone. `SHOW REPLICATION` and `SHOW FAILOVER` written alone are refused at the end of the
+  statement, where the listing's second word is missing, and `SHOW GROUPS`, `SHOW MONITORS`, `SHOW AUTHORIZATIONS`,
+  `SHOW REPOSITORIES` and `SHOW POLICIES` at the word itself, which was reported at the end. A `STARTS WITH` that a
+  listing does not read reports a second line at its prefix only straight after the listing's own words:
+  `SHOW VARIABLES LIKE 'a' STARTS WITH 'b'` is the one line at `STARTS`.
+- **UPDATE and DELETE over rows of the same values.** A statement that matched several rows whose values were all
+  the same wrote only the first of them and still reported every one: `INSERT INTO t VALUES (1), (1), (1); DELETE
+  FROM t` answered 3 and left two rows, and `UPDATE t SET c = c + 1` left 1, 1, 2. Each row is now written at its
+  own position, outside a transaction and inside one. Rows that differ in any column were never affected.
+- **SYSTEM$ABORT_TRANSACTION ends any open transaction.** It ended only the caller's own and answered `Transaction
+  aborted.`; for another session's transaction it answered `Could not abort txn: <id>` and left it open. It now
+  ends the transaction the id names, whichever session holds it — over HTTP and over in-process JDBC connections
+  alike — rolls its writes back, releases its locks and answers `Aborted transaction id: <id>`. A text argument is
+  read as the number it spells, a number with a fraction and a value in a VARIANT answer `Bad transaction id`, NULL
+  answers NULL, and the answer is typed VARCHAR.
+- **A failed COMMIT or ROLLBACK through `Connection.commit()` on an in-process connection** surfaced as an unchecked
+  exception; it is an `SQLException` now, as a failed statement's is.
+
+- **BASE64_ENCODE's width with a line length.** `BASE64_ENCODE('abcdef', 2)` declared VARCHAR(32), the width without
+  the line breaks the call inserts, so a table created from it held values longer than its column declared. The
+  width counts the breaks: W + ceil(W / L) - 1 for an integer literal L below the unbroken width W (VARCHAR(47)
+  here), W for a 0 or a longer line, and 2W - 1 when the line length is anything but an integer literal.
+- **A grouped MIN or MAX's storage tag.** `SELECT SYSTEM$TYPEOF(MAX(v)) FROM g GROUP BY k` was tagged by one end of
+  the column's interval (`NUMBER(6,0)[SB1]`), as an ungrouped MAX rightly is. Under a grouping key, a HAVING or a
+  WHERE each answer may be any value of the interval, so the whole interval tags it (`[SB2]`), and a SUM over such a
+  column of a derived table is rewritten as one over a column that varies.
+- **The width a rewritten SUM reports.** `SELECT SUM(n + 1) FROM t` over a NUMBER(5,2) reported NUMBER(18,2) in its
+  result's columns, where only SYSTEM$TYPEOF knew the NUMBER(24,2) the plan computes it at. The result's own column,
+  DESCRIBE RESULT and a RESULT_SCAN of it now report the rewritten width; a table created from the query, a view, a
+  derived table and a set operation's operand keep the declared one.
+- **What a block's handler reads for a refusal.** A syntax error in the text EXECUTE IMMEDIATE runs went to `WHEN
+  OTHER`; it is the statement's STATEMENT_ERROR. SQLCODE and SQLSTATE read 100351 / P0000 for nearly every refusal:
+  they now read the refusal's family — 1003 / 42000 for a syntax error (a string LIMIT and a routine body's
+  included), 90203 / 42601 for a SQL function's or a policy's body that does not compile, 904 / 42000 for an invalid
+  identifier, 2002 / 42710 for a name already taken and 1430 / 42601 for a column's, 2139 / 02000 for an unknown
+  function or procedure, 2043 / 02000 for a schema USE cannot enter, 938 and 939 / 22023 for a wrong argument count,
+  100038 / 22018 for a text that is no number, 100040 / 22007 for one that is no date, 90150 / 22000 for a scalar
+  subquery of several rows and 1104 / 42601 for a column outside the grouping. SQLERRM is NULL for an exception
+  declared without a message, where it read the exception's class name.
+- **A subquery of several columns as a function's argument.** `SELECT COUNT((SELECT 1, 2)) FROM g`, `SELECT MAX((SELECT
+  1, 2))` and the same under a WHERE, a HAVING or a QUALIFY were refused as `Unsupported: Scalar subquery with
+  multi-column SELECT clause`. The subquery is the ROW of its items and the function refuses it in its family's
+  words: `Invalid argument types for function 'COUNT': (ROW(NUMBER(1,0), NUMBER(1,0)))` at the call — AVG as SUM,
+  STDDEV and VARIANCE as COUNT, APPROX_COUNT_DISTINCT as HLL_ACCUMULATE, COUNT_IF as IFF —, `Function MAX does not
+  support ROW(…) argument type` for MIN, MAX, MODE and the constructors, `incompatible types` for MEDIAN, and for a
+  conversion `invalid type [TO_VARCHAR((SELECT 1 AS "1", 2 AS "2" FROM (VALUES (NULL)) DUAL))] for parameter
+  'TO_VARCHAR'` with the subquery printed from its plan. A sign over one is `NEGATE`, a CASE result converts to
+  nothing, and SYSTEM$TYPEOF places the subquery's own sentence at its argument.
+- **A DECLARE section after a block's statements.** `BEGIN RETURN 1; DECLARE q INT; END` was refused at the end of the
+  input. It is refused at the END written where the section's BEGIN belongs, and nothing after it is read — in an
+  anonymous block, in a procedure's, a function's and a task's body, quoted or not.
+- **A function's block that does not compile.** `CREATE FUNCTION f() RETURNS INT AS BEGIN RETURN (SELECT a FROM t LIMIT
+  'x'); END` was refused as an expression a Snowscript function may not hold. The block does not compile, so the
+  body is read as the function's expression and refused where that frame stops: `Compilation of SQL UDF failed:` and
+  the RETURN and the SELECT, in the frame's positions. A cursor a LET declares in a function's block is refused as a
+  cursor declaration.
+- **Any statement as a task's body or an alert's action.** `CREATE TASK t AS CREATE OR REPLACE TABLE x (a INT)` was a
+  syntax error at the CREATE: a body had to be a query, DML, a CALL, an EXECUTE IMMEDIATE or a block. A CREATE, an
+  ALTER or a DROP, a TRUNCATE, a SHOW or a DESCRIBE, a USE, a SET or an UNSET, a GRANT, a COMMIT, an EXPLAIN, a LIST
+  and a COMMENT ON are bodies too, after `ALTER TASK … MODIFY AS`, an alert's THEN and `ALTER ALERT … MODIFY ACTION` as
+  well. The body is stored as written, without its `;` and unjudged, runs when the task or the alert does, and a
+  fault in it is reported where that statement reports it: `… AS DROP TABLE t7 x` names the x, as `… AS INSERT INTO t
+  VALUES (1, 2) x` now does too, and `… AS DESCRIBE` the DESCRIBE.
+- **A subquery refused inside a SQL function's arguments.** `SELECT f1((SELECT MAX(fz.id + g.v) FROM g)) FROM fz` was
+  refused with the place a built-in call's argument gets. Among a SQL function's arguments — under a built-in call,
+  a CASE, a cast or an operator too, in any clause, in DML and in a SQL table function's arguments — it is
+  `Unsupported subquery type cannot be evaluated inside Function object: F1`, the innermost such function as it is
+  stored and no place. A function in another language keeps the placed sentence. Of several subqueries the account
+  cannot evaluate the one written last in the select list is now reported, and with none there the last of the
+  first other clause, where the first one written was: `SELECT ABS((SELECT …)), ABS((SELECT …))` is placed at the
+  second.
+- **A DROP's or DESCRIBE's signature read by the account's tokens.** Where this lexer reads a text otherwise than the
+  account's, the lines of a faulty signature were the parse's own. A stage reference is one token up to its
+  delimiter — `DESCRIBE TABLE t (@"s")` names `@"s"`, `(@s!=x)` names `@s!=x`, `(@s<>x)` the `@s` and then the `)` —
+  `|`, `^`, `&` and a lone `$` are tokens of one character, a character with no token is named with the one after
+  it (`(é b)` is `'é '` and then the `)`), a backticked name is a name, and `1.5.6` and `0x1F` are one token each. A
+  text the account's lexer refuses — an unclosed string, quoted name or comment, a number that stops after its
+  exponent's letter or its second point — adds that lexer's line among the others, where the reading first looks
+  behind it: `DESCRIBE TABLE t ((a), b) /* x` is the `(`, the first `)`, `parse error … near '<EOF>'` and the second
+  `)`. After a property list's comma a token that names no property is named and passed over (`x = 1, 2, y = 3` is
+  the 2 alone), a word value followed by a token no rule reads is refused twice (`x = y +`), and a binary string is
+  a property's value (`x = X'AB'` is refused for its name, not as a syntax error).
+- **A SQL function's body refused at CREATE.** A string LIMIT in the body (`… AS 'SELECT a FROM t LIMIT ''x'''`) was
+  refused without the account's `Compilation of SQL UDF failed: ` before it, and every refusal of a body was
+  placed as if the blanks that open the body were not there: `$$⏎SELECT nosuch FROM t$$` reported line 1 at
+  position 8. The syntax refusal carries the prefix, and a refusal is placed where the body writes it — line 2 at
+  position 7, and position 10 for `'  SELECT nosuch FROM t'` — for a table function too.
+- **The place of a later statement's refusal in a request of several statements.** `SELECT 1; SELECT nosuch FROM
+  t` reported the invalid identifier at position 17, counted from the request's start, and on line 2 when the
+  statement stood on the request's second line. A statement's refusal is placed from the statement's own first
+  token — position 7, line 1 — for a name, a type, an arity and a QUALIFY without a window alike; the sentence
+  naming the failing statement still places it in the request, a comment that opens the request not counted.
+- **The place of a refusal raised inside an aggregate's argument.** `SELECT b, MAX(IFF(b, (SELECT MAX(t.id + g.v)
+  FROM g), 0)) FROM t GROUP BY b` was `Unsupported subquery type cannot be evaluated` with no place. A refusal raised
+  while a grouped query computes an aggregate's argument is placed in the statement — `at line 1, position 22`, the
+  subquery's SELECT — in the select list and in ORDER BY, on the line the argument is written on.
+- **The aggregate echoed in a DISTINCT query's ORDER BY refusal.** `SELECT DISTINCT b FROM t GROUP BY b ORDER BY
+  MAX(id + 1)` was `[MAX(id + 1)] is not a valid order by expression`, the key as written. It is echoed as the
+  plan holds it: `[MAX(T.ID + 1)]`, the column qualified by its relation or its alias, a cast spelled out
+  (`[MAX(UPPER(CAST(T.ID AS VARCHAR(134217728))))]`) and a column the select list publishes by its bare name.
+- **The order a select with no FROM is judged in.** `SELECT (SELECT 'x' + TRUE), nosuch` reported the subquery's
+  argument types, `SELECT 'o' + TRUE, nosuch` and `SELECT UPPER(1, 2), nosuch` the first item's own fault, and
+  `SELECT (SELECT 'x' + TRUE), (SELECT nosuch)` the second subquery's name. Such a select is now judged as one over
+  a relation is: the names of every item, of the WHERE and of the ORDER BY first (`invalid identifier 'NOSUCH'`),
+  then each subquery whole in the order written, the ORDER BY's included, and only then the select's own types.
+- **The ORDER BY of an aggregate query with no GROUP BY.** Such a query answers one row, and the account drops its
+  ORDER BY once the keys' names, argument types and ordinals have been judged. Frostlake computed the keys: `SELECT
+  MAX(id) FROM t ORDER BY MAX(id / 0)` was `Division by zero`, a key holding a subquery of several rows `Single-row
+  subquery returns more than one row`, a correlated one an unsupported subquery, and under DISTINCT a key outside
+  the select list `not a valid order by expression`. Each now answers the one row — with a HAVING, a QUALIFY or a
+  LIMIT beside it and inside a derived table too. A GROUP BY query keeps its ORDER BY, one group or not, and a
+  name that does not resolve is still refused.
+- **A DESCRIBE's properties.** A comma between two properties (`DESCRIBE TABLE t TYPE = STAGE, TYPE = COLUMNS`,
+  the last TYPE winning) and a `$$` string as a value (`TYPE = $$COLUMNS$$`) were syntax errors and are read. So
+  are a list in parentheses — an empty one too — a bind (`?`, `:b`) and a stage reference as a value, which the
+  account reads before refusing the property by its name (`invalid parameter 'x'`); under TYPE a bind is `Bind
+  variable ? not set.` and a NULL `invalid value [NULL] for parameter 'TYPE'`. The statement is read whole before
+  any name is judged: `DESCRIBE TABLE t x = TRUE y` is the syntax error at the end of the text, not the invalid
+  parameter.
+- **A signature after the name of every DROP and DESCRIBE.** `DROP SEQUENCE IF EXISTS s (a)`, `DROP SECRET IF EXISTS
+  s ()` and the same after a database, a stream, a task, a pipe, a tag, a file format, a masking or row access
+  policy, an alert, a network rule, a password policy, a notebook, a streamlit, a search service and a dynamic or
+  Iceberg table were syntax errors, and so were their DESCRIBE counterparts and `DESCRIBE EVENT TABLE t (a)`. The
+  account reads a signature after every kind's name but a stage's, where the parenthesis is the statement's one
+  line. `DESCRIBE MATERIALIZED VIEW mv ((a), b)` and `DESCRIBE DYNAMIC TABLE dt ((a), b)` report their third line.
+- **Places in the text of EXECUTE IMMEDIATE after a comment that opens the request.** `/* c */ EXECUTE IMMEDIATE
+  'SELECT 1 FROM'` reported its fault at position 5, the comment's width taken off; the text's places are its own
+  (13), for a syntax error and for a refusal placed while the text compiles (`error line 1 at position 7`).
+- **The braced star where a value stands.** `{*}` was read as a whole select item only, so `TO_JSON({*})`,
+  `ARRAY_CONSTRUCT({*})`, `{*}:ID`, `{*}::VARCHAR`, `CASE WHEN … THEN {*} END` and `{t.* EXCLUDE (a)}` inside a call
+  were syntax errors. It is now a value wherever one stands — the row as an OBJECT, `OBJECT_CONSTRUCT` over the
+  star's columns — named in the column as written (`TO_JSON({* EXCLUDE B})`), with one EXCLUDE or one ILIKE at most.
+  Like a star argument it stands in the select list and in GROUP BY: in a WHERE or an ORDER BY it is `Use of * as a
+  function argument is only allowed in the SELECT clause.`
+- **DROP … PURGE.** PURGE after a DROP was a syntax error at the word. It is read where CASCADE or RESTRICT stand —
+  one word of the three at most — and refused as the account refuses it, once the name has resolved: `SQL
+  Compilation Error: DROP TABLE ... PURGE is only supported for unmanaged Iceberg tables in Catalog-Linked Databases.
+  Table: 'TP'.`, the sentence speaking of a table whatever is dropped and showing the name as written. A missing
+  database or schema, a missing object that no IF EXISTS forgives and a relation of another kind are refused first;
+  with IF EXISTS on a missing object the sentence stands in place of the skipped drop. A file format, a contact, a
+  secret and a network rule are dropped as if the word were not there. Nothing is dropped by a refused PURGE.
+- **TABLE(…) items and structured types in a DROP's or a DESCRIBE's signature.** `DESCRIBE TABLE t (TABLE(a))`,
+  `(TABLE(a), TABLE(b))`, `(ARRAY(INT NOT NULL))`, `(OBJECT(a a))`, `(MAP(INT, INT NOT NULL))`, `(VECTOR(FLOAT,
+  -3))` and `(VECTOR(BIGINT, 3))` were refused and are read; a fault inside a structured type or a TABLE item
+  reports the lines the account stacks after it (`(ARRAY(1))` is the `1` and the signature's `)`, `(MAP(INT, 1))`
+  the `1` alone).
+- **Lines after a fault that follows an alias inside a derived table.** `SELECT a FROM (SELECT 1 x 'y') WHERE a b`
+  reported the `'y'` and stopped. The statement is read on as the account reads it: the `b` after a query that ends
+  at the token, the query's own `)` when more of it follows a value (`(SELECT 1 x NULL FROM t)`), the `b` again
+  after an AS, a path, a cast or a list in parentheses before the FROM of a one-table query, the token after a
+  comma read as the FROM clause's next table, and a WITH clause's query as if the token were not there.
+- **A cast around a FROM-form call inside another call.** `SELECT UPPER(CAST(EXTRACT('wks' FROM d) AS INT)) FROM t`
+  reported the FROM alone; the cast's closing parenthesis is refused after it, as for a SUBSTRING and a TRY_CAST.
+- **A syntax error names the token where the reading stopped.** Where no reading of the text held, the parser
+  fell back on one that a rule of the grammar forbids and named the token that reading starts with: a fault inside
+  `CASE WHEN 1 = 1 THEN x y END` was reported at the `CASE` and then at the `y`, and `SELECT a, UPPER(b FROM t` at
+  the select list's comma. A refused statement is now read without that fallback, so the first line is the `y`
+  and the `FROM`, as the account's is — after `TOP n` and in the text of EXECUTE IMMEDIATE too, which is read for
+  its faults as a statement of its own is.
+- **The lines after a fault inside a cast, a CASE and a FROM list.** A comma inside a `CAST` or `TRY_CAST` nested
+  in a call, a group, an IN list or a window's `OVER` is followed by the parenthesis left over once the cast's own
+  is given up (`SELECT UPPER(CAST(1, 2)) FROM t`: `','` at 19, `')'` at 23); any other fault inside a cast's
+  parentheses is followed by what the statement holds wrong once the cast is read past, and by nothing where that
+  is nothing (`SELECT CAST(1 2) FROM t` is `'2'` alone). A fault inside a CASE expression ends the report. In a
+  join's `ON` the fault of a bracket is the `ON` alone, and in a block's assignment the value's first token. A bare
+  `TRY_CAST` is refused at the token after it, as a bare `CAST` was. After a fault in a FROM list a `)` that closes
+  no group is read past and the next clause's fault reported.
 - **A parenthesized list of two or more values is a ROW value wherever a value may stand.** It was read only
   beside a comparison or before IN, and was a syntax error everywhere else. `ORDER BY (b, a) DESC` now orders by
   `b DESC, a DESC` and `GROUP BY (a, b)` groups by both — a number among the values is an ordinal, as on its own —
@@ -1264,8 +2208,70 @@ Changes since 0.2.0 accumulate here as they land.
   a table function's query reads its own schema's tables; and a name the body cannot resolve is the
   statement's own compilation error, without an `Error in SQL function body:` prefix.
 
+### Added
+
+- **Twenty-four more SHOW listings.** `SHOW EXPORTED KEYS`, `SHOW REGIONS`, `SHOW GRANTS ON ACCOUNT` and the
+  listings of the kinds the engine has no object of — `RESOURCE MONITORS`, `SHARES`, `CONNECTIONS`, `APPLICATIONS`,
+  `APPLICATION PACKAGES`, `INDEXES`, `CHANNELS`, `SNAPSHOTS`, `GIT REPOSITORIES`, `SEMANTIC VIEWS`, the `SESSION`,
+  `AUTHENTICATION`, `PACKAGES` and `PRIVACY POLICIES`, `EXTERNAL FUNCTIONS`, `DATA METRIC FUNCTIONS`, `REPLICATION
+  DATABASES`, `REPLICATION GROUPS`, `FAILOVER GROUPS`, `REPLICATION ACCOUNTS` and `DELEGATED AUTHORIZATIONS` — were
+  syntax errors or a class that does not exist. Each now answers the columns an account declares for it, with their
+  types, and reads the scopes and modifiers the account reads for that listing: the account's own things refuse a
+  database, schema or table scope by its shape, the schema's things name a schema or a database that does not
+  exist, `INDEXES` and `CHANNELS` take a table, the replication listings take a LIKE and an account, and
+  `DELEGATED AUTHORIZATIONS` takes `BY USER <name>` or `TO SECURITY INTEGRATION <name>`. The kinds themselves are
+  still not created here, so their listings are empty (see `docs/scope.md`). Three answer rows: `SHOW EXPORTED
+  KEYS` lists the foreign keys that reference the tables of its scope, as `SHOW IMPORTED KEYS` lists them from the
+  other side; `SHOW GRANTS ON ACCOUNT` lists the privileges granted on the account, named by its locator — the
+  word `ACCOUNT` there is the account and no longer a table of that name; and `SHOW REGIONS` lists the 48 public
+  regions, narrowed by LIKE over the region's identifier, and refuses any scope as an account does.
+- **TERSE on the grant listings.** `SHOW TERSE GRANTS`, `SHOW TERSE GRANTS ON …`, `… TO ROLE | USER …` and `… OF
+  ROLE …` were syntax errors; an account reads the word and answers the same columns, and so does the engine now.
+- **Session parameters on a user and on the account.** `ALTER USER <name> SET <parameter> = <value>` and `ALTER
+  ACCOUNT SET …` were syntax errors. Both are read now, with `UNSET` beside them. A user's parameters stand among
+  its properties, with or without commas (`ALTER USER u SET COMMENT = 'c' QUERY_TAG = 't'`), a text property takes a
+  word or NULL as well as a string, and `ALTER USER SET …` without a name alters the session's own user; the
+  account takes every parameter it lists. A session runs with its own setting, else its user's, else the account's,
+  and `SHOW PARAMETERS` names the level the value in force came from — SESSION, USER or ACCOUNT; `SHOW PARAMETERS
+  IN USER` reports a user's own settings and `SHOW PARAMETERS IN ACCOUNT` also lists the parameters only the
+  account carries. The settings survive a restart. A list is judged whole, as the account judges it — a name
+  written twice, a name that is no parameter's (`invalid property 'X' for 'USER'`, or `for 'ACCOUNT'`), a value of
+  the wrong kind, and for a user that exists a value its parameter does not take — and nothing of it applies when
+  any of it is refused. Not modelled yet: the MODIFY privilege an account asks for, and a new session starting
+  with its user's AUTOCOMMIT.
+
 ### Changed
 
+- **A CALL converts every argument to its parameter's type, for every language.** A SQL procedure's BOOLEAN
+  parameter given `'off'` or `0` holds FALSE (`a::VARCHAR` answered `off`), and a handler receives the converted
+  value in its language's own type: a JavaScript handler a number for a text given to a FLOAT parameter, a string
+  for a number given to a VARCHAR one, a `Date` for a DATE or a TIMESTAMP, a `Uint8Array` for a BINARY,
+  `undefined` for a SQL NULL and the number 1 or 0 for a BOOLEAN; a Python handler an `int`, a `Decimal`, a
+  `datetime.date`, `time` or `datetime`, a dict or a list, and `bytes`; a Java or a Scala handler the class its
+  method declares (`int`, `long`, `BigDecimal`, `String`, `boolean`, `java.sql.Date`, `String[]`, …), where any
+  value but one of exactly that class failed with `argument type mismatch`. A JavaScript procedure that tested
+  `A === true` or `A === null` now reads `A === 1` and `A === undefined`, as it does on an account.
+- **An ARRAY parameter wraps a variant that is no array.** `CALL p(PARSE_JSON('{"a":1}'))` into an ARRAY parameter
+  hands the body `[{"a":1}]`.
+- **A BEGIN in a procedure or a block run inside a transaction starts a transaction of its own.** It used to join
+  the caller's, and its COMMIT ended that. Its COMMIT and ROLLBACK now end what it wrote itself alone, it sees
+  nothing the caller has not committed, and the caller's transaction is open afterwards.
+- **Fewer statements end the transaction they are issued in.** Creating a sequence, a function, a procedure, a
+  schema, a stage, a file format, a stream, a tag, a masking or a row access policy, a task or a pipe no longer
+  commits the open transaction, and neither do ALTER STAGE, ALTER FILE FORMAT, USE and a `CREATE TABLE IF NOT
+  EXISTS` over a table that exists: the transaction is still open afterwards, as on an account. Creating a table
+  or a view, ALTER, DROP and COMMENT end it as before.
+- **What a failed CALL or block leaves in a transaction.** Inside an explicit transaction the statements a
+  procedure or a block ran before the one that failed keep their changes, each being a statement of its own;
+  the whole CALL or block used to be undone. The transaction's ROLLBACK removes them as before.
+- **A JavaScript, Python, Java or Scala procedure that runs with its owner's rights runs where it lives.** The
+  statements its handler issues ran in the caller's current database and schema: a bare `INSERT INTO audit_log`
+  wrote the caller's table, `CREATE TABLE made (…)` created in the caller's schema and `CALL helper()` found the
+  caller's procedure. They now run in the procedure's own database and schema, as a SQL body's statements do, and
+  the caller is back where it was when the CALL returns or fails. A handler called from a SQL body and a SQL body
+  called from a handler each run in their own home; one that runs with its caller's rights stays where the body
+  that called it runs. A handler that only worked because the caller's schema held its tables now misses them:
+  qualify the names, or declare the procedure `EXECUTE AS CALLER`.
 - **A CSV load reads escapes and the default NULL_IF.** Outside an enclosure a backslash — or whatever
   ESCAPE_UNENCLOSED_FIELD names — now takes the field delimiter, a line break or itself literally: `a\,b` loads
   as the one field `a,b` and `x\\y` as `x\y`, where each character was loaded as written. The text `\N` loads as

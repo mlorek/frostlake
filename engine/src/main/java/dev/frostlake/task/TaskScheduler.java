@@ -123,7 +123,7 @@ public class TaskScheduler {
      * {@link #start()}'s arming scan.
      */
     public static String schedulerKey(final String databaseName, final String schemaName, final String taskName) {
-        return (databaseName + "." + schemaName + "." + taskName).toUpperCase();
+        return (databaseName + "." + schemaName + "." + taskName).toUpperCase(Locale.ROOT);
     }
 
     /**
@@ -503,12 +503,12 @@ public class TaskScheduler {
     private void executeTask(final String qualifiedTaskName, final Task task, final Set<String> visited,
                              final TaskTrigger trigger) {
         // Each task runs at most once per DAG run; the set also guards against dependency cycles.
-        if (!visited.add(task.getName().toUpperCase())) {
+        if (!visited.add(task.getName().toUpperCase(Locale.ROOT))) {
             return;
         }
         // ALLOW_OVERLAPPING_EXECUTION = FALSE (the default): a run that would overlap an in-flight
         // run of the same task is skipped rather than executed concurrently.
-        final String runKey = qualifiedTaskName.toUpperCase();
+        final String runKey = qualifiedTaskName.toUpperCase(Locale.ROOT);
         final boolean overlapGuard = !task.isAllowOverlappingExecution();
         if (overlapGuard && !runningTasks.add(runKey)) {
             logger.debug("Task {} is already running and overlapping execution is not allowed — skipping",
@@ -898,6 +898,6 @@ public class TaskScheduler {
      * needs no in-flight bookkeeping, so it always reports false.
      */
     public boolean hasRunningExecutions(final String qualifiedTaskName) {
-        return runningTasks.contains(qualifiedTaskName.toUpperCase());
+        return runningTasks.contains(qualifiedTaskName.toUpperCase(Locale.ROOT));
     }
 }

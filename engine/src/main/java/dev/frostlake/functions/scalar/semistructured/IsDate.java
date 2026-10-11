@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.StructuredArgumentFunction;
+import dev.frostlake.functions.VariantArgumentFunction;
 import dev.frostlake.types.BooleanType;
 import java.time.LocalDate;
 import java.util.List;
 
 /** IS_DATE(v) — TRUE when the value is a DATE (variant members carry dates as text, so those are FALSE). */
-public class IsDate extends StructuredArgumentFunction {
+public class IsDate extends VariantArgumentFunction {
     public IsDate() { super("IS_DATE", BooleanType.BOOLEAN); }
 
     @Override

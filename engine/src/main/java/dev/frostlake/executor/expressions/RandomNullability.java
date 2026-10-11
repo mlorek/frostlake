@@ -18,6 +18,8 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.types.VariantType;
 
+import java.util.Locale;
+
 /**
  * Whether a value built on RANDOM can never be NULL, so that a null test over it is settled without reading it.
  * RANDOM never answers NULL, and live settles {@code RANDOM(NULL) IS NOT NULL} as TRUE although reading
@@ -73,7 +75,7 @@ public final class RandomNullability {
             return MAY_BE_NULL;
         }
         final FunctionCallExpression call = (FunctionCallExpression) expr;
-        final String name = call.getFunctionName().toUpperCase();
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
         final int arity = call.getArguments().size();
         switch (name) {
             case "RANDOM":

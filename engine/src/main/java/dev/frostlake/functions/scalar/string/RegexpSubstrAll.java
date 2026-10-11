@@ -43,6 +43,10 @@ public class RegexpSubstrAll extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
         if (args.get(0) == null || args.get(1) == null) {
             return null;
         }
@@ -55,6 +59,9 @@ public class RegexpSubstrAll extends TextArgumentFunction {
         RegexpHelper.requirePosition(position);
         RegexpHelper.requireOccurrence(occurrence);
         RegexpHelper.requireGroup(groupNum);
+        if (RegexpHelper.matchesNothing(pattern, parameters)) {
+            return null;
+        }
 
         final ArrayNode array = MAPPER.createArrayNode();
         // The position counts characters, a supplementary one included (live-verified).

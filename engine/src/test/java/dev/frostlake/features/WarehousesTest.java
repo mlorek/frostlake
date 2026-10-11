@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -36,7 +38,7 @@ public class WarehousesTest extends BaseDatabaseTest {
 
     private String warehouseCell(final String name, final String column) {
         final ResultSet warehouses = engine.executeQuery("SHOW WAREHOUSES LIKE '" + name + "'");
-        return cell(warehouses, soleRowWhere(warehouses, "name", name.toUpperCase()), column);
+        return cell(warehouses, soleRowWhere(warehouses, "name", name.toUpperCase(Locale.ROOT)), column);
     }
 
     /**

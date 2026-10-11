@@ -19,6 +19,7 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.SnowflakeBuiltinNames;
 import dev.frostlake.functions.window.WindowFunctionNames;
@@ -49,6 +50,9 @@ import java.util.Locale;
  *       {@code CREATE TABLE zz (a INT)}, {@code EXECUTE IMMEDIATE '…'} and {@code CALL someproc()};</li>
  *   <li>{@code … : select into statement} — {@code SELECT COUNT(*) INTO x FROM t};</li>
  *   <li>{@code … : cursor declaration} — {@code DECLARE c CURSOR FOR SELECT …};</li>
+ *   <li>{@code … : resultset declaration} — {@code DECLARE rs RESULTSET} and {@code LET rs RESULTSET}, with a
+ *       query, with a dynamic statement or with nothing: the declaration itself is refused, before anything its
+ *       query holds;</li>
  *   <li>{@code Unsupported expression for Snowscript UDF: <expr>} — any subquery
  *       ({@code RETURN (SELECT COUNT(*) FROM t)}, {@code EXISTS (SELECT …)}, {@code FOR r IN (SELECT …)},
  *       with a {@code :name} bind or a bare one alike), any call written with OVER, and any call of a function
@@ -56,11 +60,11 @@ import java.util.Locale;
  *       Snowscript UDF cannot recurse — and a name nothing declares.</li>
  * </ul>
  *
- * <p>An unsupported expression is named WHOLE, as the statement holds it, and re-printed from the plan rather
- * than echoed: {@code RETURN ABS(nosuch(1) + 1)} is {@code ABS((NOSUCH(1)) + 1)}, an IF's condition
- * {@code (NOSUCH(1)) > 0}, {@code RETURN (SELECT 1)} is {@code (SELECT 1 AS "1" FROM (VALUES (null)) DUAL)}.
- * The first such expression in the body is the one refused. A built-in called with a wrong count, an aggregate
- * and a name no variable carries are all created.
+ * <p>An unsupported expression is named WHOLE, as the statement holds it, and re-printed from the tree as parsed
+ * rather than echoed ({@link ParsedEchoPrinter}): {@code RETURN ABS(nosuch(1) + 1)} is
+ * {@code ABS((NOSUCH(1)) + 1)}, an IF's condition {@code (NOSUCH(1)) > 0}, {@code RETURN (SELECT 1)} is
+ * {@code (SELECT 1 AS "1" FROM (VALUES (null)) DUAL)}. The first such expression in the body is the one refused.
+ * A built-in called with a wrong count, an aggregate and a name no variable carries are all created.
  *
  * <p>Control flow is fully available and was live-verified to work: {@code DECLARE}/{@code LET}
  * variables, assignment, {@code IF}, {@code CASE}, {@code WHILE}, {@code REPEAT}, {@code FOR i IN a TO b},
@@ -174,6 +178,9 @@ final class ScriptingUdfBodyValidator {
             if (((FrostlakeParser.DeclarationItemContext) node).CURSOR() != null) {
                 throw unsupportedStatement("cursor declaration");
             }
+            if (((FrostlakeParser.DeclarationItemContext) node).RESULTSET() != null) {
+                throw unsupportedStatement("resultset declaration");
+            }
         }
         if (node instanceof FrostlakeParser.SelectStatementContext) {
             // Reached only from inside an expression or a declaration — a query STATEMENT was already
@@ -196,8 +203,14 @@ final class ScriptingUdfBodyValidator {
             // Both run arbitrary SQL, so Snowflake groups them with the plain statements it refuses.
             throw unsupportedStatement("query statement");
         }
-        if (stmt.openStatement() != null || stmt.fetchStatement() != null || stmt.closeStatement() != null) {
+        if (stmt.openStatement() != null || stmt.fetchStatement() != null || stmt.closeStatement() != null
+                || stmt.letStatement() != null && stmt.letStatement().CURSOR() != null) {
+            // A cursor a LET declares among the statements is one too.
             throw unsupportedStatement("cursor declaration");
+        }
+        if (stmt.letStatement() != null && stmt.letStatement().RESULTSET() != null) {
+            // Declared with a query, with a dynamic statement or with nothing at all.
+            throw unsupportedStatement("resultset declaration");
         }
     }
 
@@ -285,18 +298,14 @@ final class ScriptingUdfBodyValidator {
     }
 
     private RuntimeException unsupportedExpression(final ParserRuleContext ctx) {
-        return new RuntimeException("Unsupported expression for Snowscript UDF: " + planned(ctx));
+        return new RuntimeException("Unsupported expression for Snowscript UDF: " + echoed(ctx));
     }
 
-    /** An expression as the plan holds it, or its source text where it does not re-print. */
-    private String planned(final ParserRuleContext ctx) {
+    /** An expression as the tree as parsed prints it, or its source text where it does not re-print. */
+    private String echoed(final ParserRuleContext ctx) {
         final String written = text(ctx);
-        if (queryExecutor == null) {
-            return written;
-        }
         try {
-            return new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(), catalog, queryExecutor)
-                .plannedText(ExpressionEvaluator.parse(written));
+            return ParsedEchoPrinter.print(ExpressionEvaluator.parse(written));
         } catch (final RuntimeException notPrinted) {
             return written;
         }

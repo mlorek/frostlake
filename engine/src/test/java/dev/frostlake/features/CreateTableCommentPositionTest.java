@@ -23,6 +23,8 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -40,7 +42,7 @@ public class CreateTableCommentPositionTest extends BaseDatabaseTest {
     /** One SHOW TABLES cell for the given table in the current schema. */
     private String tableCell(final String table, final String column) {
         final ResultSet rs = engine.executeQuery("SHOW TABLES LIKE '" + table + "'");
-        return cell(rs, soleRowWhere(rs, "name", table.toUpperCase()), column);
+        return cell(rs, soleRowWhere(rs, "name", table.toUpperCase(Locale.ROOT)), column);
     }
 
     private String tableComment(final String table) {

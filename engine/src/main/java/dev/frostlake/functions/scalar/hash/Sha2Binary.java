@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.hash;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.values.BinaryValue;
@@ -28,9 +29,8 @@ public class Sha2Binary extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        final int bits = Sha2DigestSize.of(args);
         if (args.get(0) == null) return null;
-        final int bits = args.size() > 1 && args.get(1) != null
-            ? (int) Double.parseDouble(args.get(1).toString()) : 256;
         return BinaryValue.of(SharedFunctionHelpers.digest("SHA-" + bits,
             SharedFunctionHelpers.toUtf8(args.get(0))));
     }
@@ -39,4 +39,10 @@ public class Sha2Binary extends BuiltInFunction {
     public int getMinArgCount() { return 1; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /** A BOOLEAN is no digest size: the call is refused by its argument types (live-verified). */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 }

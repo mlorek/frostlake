@@ -43,6 +43,8 @@ public class WindowFunctionExpression implements Expression {
     private FunctionCallExpression starCall;
     private boolean ordered;
     private boolean rowsFramed;
+    /** Whether the frame written runs from the partition's first row to its last. */
+    private boolean wholeFramed;
     private boolean distinct;
     /** The OVER clause's keys, or null when the call was not described that far (a star call). */
     private List<Expression> partitionKeys;
@@ -106,6 +108,22 @@ public class WindowFunctionExpression implements Expression {
     /** Whether the OVER clause carries an ORDER BY. */
     public boolean isOrdered() {
         return ordered;
+    }
+
+    /**
+     * Whether the frame written is the whole partition, {@code BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED
+     * FOLLOWING}: an aggregate over one reads the same rows whatever the order, and the tree as parsed names an
+     * AVG over it without the ORDER BY (live-verified).
+     *
+     * @return true for a frame of the whole partition
+     */
+    public boolean isWholeFramed() {
+        return wholeFramed;
+    }
+
+    /** Mark the frame as the whole partition — see {@link #isWholeFramed()}. */
+    public void markWholeFramed() {
+        this.wholeFramed = true;
     }
 
     /**

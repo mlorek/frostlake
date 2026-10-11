@@ -104,6 +104,48 @@ public class CatalogObjectPersistenceTest {
                 "SHOW ACCOUNTS HISTORY", "SHOW MANAGED ACCOUNTS", "SHOW COMPUTE POOLS"));
     }
 
+    /** The parameters set on a user and on the account, a session's own beside them and the account's alone. */
+    @Test
+    public void userAndAccountParametersSurviveARestart() {
+        assertSurvivesRestart(Arrays.asList(
+            "CREATE USER pu",
+            "ALTER USER pu SET QUERY_TAG = 'ut' LOCK_TIMEOUT = 5, AUTOCOMMIT = FALSE",
+            "ALTER USER pu SET WEEK_START = 3",
+            "ALTER USER pu UNSET WEEK_START",
+            "ALTER ACCOUNT SET QUERY_TAG = 'at', TIMEZONE = 'Asia/Tokyo', DATA_RETENTION_TIME_IN_DAYS = 3",
+            "ALTER ACCOUNT SET JSON_INDENT = 4",
+            "ALTER ACCOUNT UNSET JSON_INDENT"),
+            Arrays.asList("SHOW PARAMETERS IN USER pu", "SHOW PARAMETERS IN ACCOUNT", "SHOW PARAMETERS",
+                "SELECT TO_CHAR(TO_TIMESTAMP_LTZ('2026-01-15 12:00:00 +00:00'), 'HH24:MI TZH:TZM')"));
+    }
+
+    /**
+     * A RETURNS TABLE column written with no width stays one of no width, and one written with the default width
+     * stays sized: what the routine's result declares and what its DDL writes back are the same after a restart.
+     */
+    @Test
+    public void aRoutinesUnsizedReturnColumnsSurviveARestart() {
+        assertSurvivesRestart(Arrays.asList(
+            "CREATE DATABASE rd",
+            "CREATE SCHEMA rd.rs",
+            "USE SCHEMA rd.rs",
+            """
+                CREATE PROCEDURE rp() RETURNS TABLE (a VARCHAR, b BINARY, c VARCHAR(16777216), d BINARY(8388608))
+                LANGUAGE SQL AS $$
+                DECLARE r RESULTSET DEFAULT (SELECT 'x'::VARCHAR AS a, TO_BINARY('00') AS b, 'y'::VARCHAR AS c,
+                    TO_BINARY('01') AS d);
+                BEGIN RETURN TABLE(r); END $$
+                """,
+            """
+                CREATE FUNCTION rf() RETURNS TABLE (a VARCHAR, b BINARY, c VARCHAR(16777216), d BINARY(8388608))
+                AS $$ SELECT 'x'::VARCHAR, TO_BINARY('00'), 'y'::VARCHAR, TO_BINARY('01') $$
+                """),
+            Arrays.asList(
+                "SELECT SYSTEM$TYPEOF(a), SYSTEM$TYPEOF(b), SYSTEM$TYPEOF(c), SYSTEM$TYPEOF(d) FROM TABLE(rd.rs.rp())",
+                "SELECT SYSTEM$TYPEOF(a), SYSTEM$TYPEOF(b), SYSTEM$TYPEOF(c), SYSTEM$TYPEOF(d) FROM TABLE(rd.rs.rf())",
+                "SELECT GET_DDL('PROCEDURE', 'rd.rs.rp()')", "SELECT GET_DDL('FUNCTION', 'rd.rs.rf()')"));
+    }
+
     /** An account created after a restart takes a locator no restored account holds. */
     @Test
     public void aNewAccountAfterARestartTakesAFreshLocator() {

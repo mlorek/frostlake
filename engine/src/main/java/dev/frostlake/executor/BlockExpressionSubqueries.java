@@ -54,6 +54,24 @@ final class BlockExpressionSubqueries {
      * @param expression the expression
      */
     static void compile(final ExpressionEvaluator evaluator, final Expression expression) {
+        for (final SubqueryExpression subquery : subqueriesOf(expression)) {
+            evaluator.compileSubquery(new SubqueryExpression(subquery.getSubquery()), null);
+        }
+    }
+
+    /**
+     * Whether a SQL expression of a block reads a query, which the session runs as a statement of its own: a
+     * session that runs none — its transaction was aborted — refuses the expression, where one of values and
+     * function calls alone is still evaluated (live-verified).
+     *
+     * @param expression the expression
+     * @return whether it holds a subquery
+     */
+    static boolean readsQuery(final Expression expression) {
+        return !subqueriesOf(expression).isEmpty();
+    }
+
+    private static List<SubqueryExpression> subqueriesOf(final Expression expression) {
         final List<SubqueryExpression> subqueries = new ArrayList<SubqueryExpression>();
         expression.accept(new AstPrinterVisitor() {
             @Override
@@ -67,9 +85,7 @@ final class BlockExpressionSubqueries {
                 return "";
             }
         });
-        for (final SubqueryExpression subquery : subqueries) {
-            evaluator.compileSubquery(new SubqueryExpression(subquery.getSubquery()), null);
-        }
+        return subqueries;
     }
 
     /**

@@ -57,10 +57,6 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         "DIV0NULL",                     // 0 when the divisor is NULL by definition
         "HASH",                         // hashes NULL to a number; never returns NULL
         "LAST_QUERY_ID", "RANDOM", "NORMAL", "UUID_STRING",  // context / generators
-        // Context functions with an OPTIONAL precision argument: the argument never gates the
-        // result, so a NULL precision still yields the current value (Snowflake signature
-        // CURRENT_TIMESTAMP([fract_sec_precision])).
-        "CURRENT_TIME", "CURRENT_TIMESTAMP",
         // The FILE classifiers. Live-measured, NOT inferred: over a NULL file —
         // both a literal NULL and a NULL FILE column — FL_GET_FILE_TYPE returns the STRING 'unknown'
         // and every FL_IS_* returns FALSE. The eight plain FL_GET_* accessors DO propagate NULL and are
@@ -72,6 +68,21 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
     /** Functions allowed to THROW on a NULL argument (a required identifier/name argument). */
     private static final Set<String> THROW_WHITELIST = new HashSet<>(Arrays.asList(
         "NEXTVAL", "CURRVAL",
+        // The clock functions' precision is a whole-number constant, and a NULL is none: live refuses
+        // CURRENT_TIMESTAMP(NULL) with "Invalid value [SYSTEM$NULL_TO_FIXED(null)] for function
+        // 'CURRENT_TIMESTAMP', parameter 1: must be an integer constant" (measured), CURRENT_TIME(NULL) alike.
+        "CURRENT_TIME", "CURRENT_TIMESTAMP",
+        // The casts of a VARIANT that take nothing else refuse the bare word NULL as they refuse any type that
+        // is none: AS_INTEGER(NULL) is "invalid type [NULL] for parameter 'AS_INTEGER(variantValue...)'"
+        // (measured, for AS_DECIMAL / AS_NUMBER and the three AS_TIMESTAMP casts alike).
+        "AS_DECIMAL", "AS_INTEGER", "AS_TIMESTAMP_LTZ", "AS_TIMESTAMP_NTZ", "AS_TIMESTAMP_TZ",
+        // NORMAL's mean and deviation must be there: "Invalid parameter value: NULL. Reason: mean must not be
+        // NULL" (measured). Only a NULL generator answers NULL.
+        "NORMAL",
+        // Planned over its values' date parts, which a NULL of no type has none of: MONTHS_BETWEEN(NULL, d) is
+        // "Function EXTRACT does not support NULL argument type" while it compiles (live-verified); a typed NULL
+        // answers NULL.
+        "MONTHS_BETWEEN",
         // The super-group markers answer for a GROUP BY's keys: called in a query that groups by nothing they
         // are refused, "GROUPING function without a GROUP BY." (measured).
         "GROUPING", "GROUPING_ID",

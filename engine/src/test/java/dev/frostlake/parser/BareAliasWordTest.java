@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -66,7 +68,7 @@ public class BareAliasWordTest extends BaseDatabaseTest {
             assertEquals(7, ((Number) fromTable.getValue(word)).intValue(), word);
             final ResultSet alone = engine.executeQuery("SELECT 1 " + word);
             assertTrue(alone.next());
-            assertEquals(word.toUpperCase(), alone.getColumns().get(0).getName());
+            assertEquals(word.toUpperCase(Locale.ROOT), alone.getColumns().get(0).getName());
         }
         final ResultSet several = engine.executeQuery("SELECT 1 CASE, 2 WHEN, 3 CAST");
         assertTrue(several.next());

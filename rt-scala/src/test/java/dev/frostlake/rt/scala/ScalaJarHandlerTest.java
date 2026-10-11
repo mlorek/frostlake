@@ -83,6 +83,26 @@ public class ScalaJarHandlerTest {
         assertEquals("scproc", rs.getRows().get(0).getValue(0).toString());
     }
 
+    @Test
+    public void scalaUdfAndProcedureFromAJarAnInternalStageKeeps() {
+        // The JAR is put on an internal named stage and IMPORTS names it there, as a Java routine's may.
+        engine.execute("CREATE STAGE jars");
+        engine.execute("PUT 'file://" + scalaJar + "' @jars AUTO_COMPRESS = FALSE");
+        engine.execute("CREATE FUNCTION st_double(x INTEGER) RETURNS INTEGER LANGUAGE SCALA "
+            + "RUNTIME_VERSION = '2.12' "
+            + "IMPORTS = ('@jars/handlers-scala.jar') HANDLER = 'ScUdf.doubleIt'");
+        assertEquals("42", engine.executeQuery("SELECT st_double(21)").getRows().get(0).getValue(0).toString());
+        engine.execute("CREATE PROCEDURE st_proc() RETURNS VARCHAR LANGUAGE SCALA "
+            + "RUNTIME_VERSION = '2.12' "
+            + "IMPORTS = ('@jars/handlers-scala.jar') HANDLER = 'ScProc.run'");
+        assertEquals("scproc", engine.executeQuery("CALL st_proc()").getRows().get(0).getValue(0).toString());
+        // A row at a time: the stage's file is found again for each call.
+        final ResultSet rows = engine.executeQuery(
+            "SELECT st_double(x) FROM (SELECT 1 AS x UNION ALL SELECT 2) ORDER BY 1");
+        assertEquals("2", rows.getRows().get(0).getValue(0).toString());
+        assertEquals("4", rows.getRows().get(1).getValue(0).toString());
+    }
+
     /** Compile a Scala UDF object + a procedure class in-process, then jar the resulting .class files. */
     private Path buildScalaJar() throws Exception {
         final Path out = Files.createDirectories(workDir.resolve("scalaOut"));

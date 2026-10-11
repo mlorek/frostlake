@@ -775,8 +775,8 @@ public final class CorrelatedSubqueryRule {
             return false;
         }
         final FrostlakeParser.ExprItemContext named = (FrostlakeParser.ExprItemContext) item;
-        final String alias = named.aliasName() != null ? ParseTreeText.getIdentifier(named.aliasName()).toUpperCase()
-            : named.identifier() != null ? ParseTreeText.getIdentifier(named.identifier()).toUpperCase()
+        final String alias = named.aliasName() != null ? ParseTreeText.getIdentifier(named.aliasName()).toUpperCase(Locale.ROOT)
+            : named.identifier() != null ? ParseTreeText.getIdentifier(named.identifier()).toUpperCase(Locale.ROOT)
             : named.bareAliasWord() != null ? ParseTreeText.getIdentifier(named.bareAliasWord()) : null;
         if (alias == null) {
             return false;
@@ -951,7 +951,7 @@ public final class CorrelatedSubqueryRule {
                 if (item instanceof FrostlakeParser.ExprItemContext
                         && ((FrostlakeParser.ExprItemContext) item).aliasName() != null
                         && name.equals(ParseTreeText.getIdentifier(
-                            ((FrostlakeParser.ExprItemContext) item).aliasName()).toUpperCase())) {
+                            ((FrostlakeParser.ExprItemContext) item).aliasName()).toUpperCase(Locale.ROOT))) {
                     return ((FrostlakeParser.ExprItemContext) item).booleanExpr();
                 }
             }
@@ -1280,7 +1280,7 @@ public final class CorrelatedSubqueryRule {
             return;
         }
         if (node instanceof TerminalNode) {
-            into.append(node.getText().toUpperCase()).append(' ');
+            into.append(node.getText().toUpperCase(Locale.ROOT)).append(' ');
             return;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -1311,7 +1311,7 @@ public final class CorrelatedSubqueryRule {
         // The least name the relation instance is reached by, so its alias and its table's name agree.
         String key = null;
         for (final Map.Entry<String, Table> relation : outerRelations.entrySet()) {
-            final String name = relation.getKey().toUpperCase();
+            final String name = relation.getKey().toUpperCase(Locale.ROOT);
             if (relation.getValue() == owner && (key == null || name.compareTo(key) < 0)) {
                 key = name;
             }
@@ -2021,7 +2021,7 @@ public final class CorrelatedSubqueryRule {
     }
 
     private static String canonical(final String written) {
-        return SqlIdentifiers.canonicalText(written).toUpperCase();
+        return SqlIdentifiers.canonicalText(written).toUpperCase(Locale.ROOT);
     }
 
     // ── scopes ────────────────────────────────────────────────────────────────────
@@ -2039,9 +2039,9 @@ public final class CorrelatedSubqueryRule {
             if (item instanceof FrostlakeParser.ExprItemContext) {
                 final FrostlakeParser.ExprItemContext exprItem = (FrostlakeParser.ExprItemContext) item;
                 if (exprItem.aliasName() != null) {
-                    scope.addAlias(ParseTreeText.getIdentifier(exprItem.aliasName()).toUpperCase());
+                    scope.addAlias(ParseTreeText.getIdentifier(exprItem.aliasName()).toUpperCase(Locale.ROOT));
                 } else if (exprItem.identifier() != null) {
-                    scope.addAlias(ParseTreeText.getIdentifier(exprItem.identifier()).toUpperCase());
+                    scope.addAlias(ParseTreeText.getIdentifier(exprItem.identifier()).toUpperCase(Locale.ROOT));
                 } else if (exprItem.bareAliasWord() != null) {
                     scope.addAlias(ParseTreeText.getIdentifier(exprItem.bareAliasWord()));
                 }
@@ -2077,8 +2077,8 @@ public final class CorrelatedSubqueryRule {
                 continue;
             }
             final String alias = aliasOf(relation);
-            final Table aliased = innerRelations.put(alias != null ? alias.toUpperCase() : table.getName().toUpperCase(), table);
-            final Table named = innerRelations.put(table.getName().toUpperCase(), table);
+            final Table aliased = innerRelations.put(alias != null ? alias.toUpperCase(Locale.ROOT) : table.getName().toUpperCase(Locale.ROOT), table);
+            final Table named = innerRelations.put(table.getName().toUpperCase(Locale.ROOT), table);
             if (aliased != table || named != table) {
                 filterFold = null;   // the statistics now hold one relation more
             }
@@ -2140,7 +2140,7 @@ public final class CorrelatedSubqueryRule {
             return;
         }
         for (final TableColumn column : table.getColumns()) {
-            scope.addColumn(column.getName().toUpperCase());
+            scope.addColumn(column.getName().toUpperCase(Locale.ROOT));
         }
     }
 
@@ -2158,7 +2158,7 @@ public final class CorrelatedSubqueryRule {
         if (relation.identifierList() != null) {
             final List<FrostlakeParser.IdentifierContext> names = relation.identifierList().identifier();
             for (int i = 0; i < names.size(); i++) {
-                final String name = ParseTreeText.getIdentifier(names.get(i)).toUpperCase();
+                final String name = ParseTreeText.getIdentifier(names.get(i)).toUpperCase(Locale.ROOT);
                 scope.addColumn(name);
                 if (bodyScopes != null && i < clause.selectList().selectItem().size()) {
                     markOuterDerived(scope, alias, name, clause.selectList().selectItem(i), bodyScopes);
@@ -2176,9 +2176,9 @@ public final class CorrelatedSubqueryRule {
             final FrostlakeParser.ExprItemContext exprItem = (FrostlakeParser.ExprItemContext) item;
             String name = null;
             if (exprItem.aliasName() != null) {
-                name = ParseTreeText.getIdentifier(exprItem.aliasName()).toUpperCase();
+                name = ParseTreeText.getIdentifier(exprItem.aliasName()).toUpperCase(Locale.ROOT);
             } else if (exprItem.identifier() != null) {
-                name = ParseTreeText.getIdentifier(exprItem.identifier()).toUpperCase();
+                name = ParseTreeText.getIdentifier(exprItem.identifier()).toUpperCase(Locale.ROOT);
             } else if (exprItem.bareAliasWord() != null) {
                 name = ParseTreeText.getIdentifier(exprItem.bareAliasWord());
             } else if (exprItem.booleanExpr() instanceof FrostlakeParser.ValueExprContext
@@ -2211,7 +2211,7 @@ public final class CorrelatedSubqueryRule {
 
     private String aliasOf(final FrostlakeParser.TableReferenceContext relation) {
         if (relation.aliasName() != null) {
-            return ParseTreeText.getIdentifier(relation.aliasName()).toUpperCase();
+            return ParseTreeText.getIdentifier(relation.aliasName()).toUpperCase(Locale.ROOT);
         }
         if (relation.nonJoinKeywordIdentifier() != null) {
             return canonical(relation.nonJoinKeywordIdentifier().getText());
@@ -2459,7 +2459,7 @@ public final class CorrelatedSubqueryRule {
     }
 
     private boolean isAggregateName(final FrostlakeParser.FunctionNameContext name) {
-        return functions.hasAggregateFunction(name.getText().toUpperCase());
+        return functions.hasAggregateFunction(name.getText().toUpperCase(Locale.ROOT));
     }
 
     /** Whether an aggregate in the select list, the HAVING or an ORDER BY reads the outer row in its argument. */
@@ -2594,7 +2594,7 @@ public final class CorrelatedSubqueryRule {
             return false;
         }
         final FrostlakeParser.FunctionCallExprContext function = (FrostlakeParser.FunctionCallExprContext) call;
-        final String name = function.functionName().getText().toUpperCase();
+        final String name = function.functionName().getText().toUpperCase(Locale.ROOT);
         if (function.withinGroupClause() != null || function.functionArgList() == null
                 || function.functionArgList().functionArg().size() != 1) {
             return false;
@@ -2632,7 +2632,7 @@ public final class CorrelatedSubqueryRule {
     private boolean foldsByStatistics(final ParserRuleContext condition, final Table table,
                                       final FrostlakeParser.SelectClauseContext clause, final String alias) {
         final Map<String, Table> aliases = new HashMap<>();
-        aliases.put(alias != null ? alias : table.getName().toUpperCase(), table);
+        aliases.put(alias != null ? alias : table.getName().toUpperCase(Locale.ROOT), table);
         try {
             return new CountStatisticsBound(executor, clause, table, aliases, null, false, null)
                 .verdictOver(ExpressionEvaluator.parse(ParseTreeText.getOriginalText(condition))) != null;
@@ -3414,7 +3414,7 @@ public final class CorrelatedSubqueryRule {
     private String canonicalPrintOf(final ParserRuleContext call) {
         try {
             return AstPrinterVisitor.print(
-                ExpressionEvaluator.parse(ParseTreeText.getOriginalText(call))).toUpperCase();
+                ExpressionEvaluator.parse(ParseTreeText.getOriginalText(call))).toUpperCase(Locale.ROOT);
         } catch (final RuntimeException unreadable) {
             return "";
         }

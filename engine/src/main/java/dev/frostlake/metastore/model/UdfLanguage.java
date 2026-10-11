@@ -16,6 +16,8 @@
 
 package dev.frostlake.metastore.model;
 
+import java.util.Locale;
+
 /**
  * The implementation language (runtime) of a UDF or stored procedure, as declared by {@code LANGUAGE …}. {@code SQL}
  * is the default (inline SQL / Snowflake Scripting); the others select an embedded runtime. {@link #name} is the
@@ -33,7 +35,7 @@ public enum UdfLanguage {
             return SQL;
         }
         try {
-            return valueOf(value.trim().toUpperCase());
+            return valueOf(value.trim().toUpperCase(Locale.ROOT));
         } catch (final IllegalArgumentException e) {
             return SQL;
         }

@@ -22,6 +22,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -50,7 +52,7 @@ public class AccountQualifiedNameTest extends BaseDatabaseTest {
 
     /** The four-part name of an object in schema ACS, the locator written bare in lower case. */
     private String four(final String object) {
-        return account.toLowerCase() + ".test_db.acs." + object;
+        return account.toLowerCase(Locale.ROOT) + ".test_db.acs." + object;
     }
 
     private String text(final String sql) {
@@ -84,7 +86,7 @@ public class AccountQualifiedNameTest extends BaseDatabaseTest {
         engine.execute("CREATE VIEW " + four("v1") + " AS SELECT 1 AS x");
         assertEquals("1", text("SELECT x FROM " + four("v1")));
         assertEquals("S", text("DESCRIBE TABLE " + four("two")));
-        final ResultSet tables = engine.executeQuery("SHOW TABLES IN SCHEMA " + account.toLowerCase() + ".test_db.acs");
+        final ResultSet tables = engine.executeQuery("SHOW TABLES IN SCHEMA " + account.toLowerCase(Locale.ROOT) + ".test_db.acs");
         boolean listed = false;
         for (int i = 0; i < tables.getRowCount(); i++) {
             listed = listed || "TWO".equals(String.valueOf(tables.getRows().get(i).getValue(tables.getColumnIndex("name"))));
@@ -94,7 +96,7 @@ public class AccountQualifiedNameTest extends BaseDatabaseTest {
         assertEquals("0", text("SELECT COUNT(*) FROM test_db.acs.two"));
         engine.execute("DROP TABLE " + four("three"));
         assertTrue(refusal("SELECT x FROM test_db.acs.three").contains("does not exist or not authorized"));
-        engine.execute("USE SCHEMA " + account.toLowerCase() + ".test_db.acs");
+        engine.execute("USE SCHEMA " + account.toLowerCase(Locale.ROOT) + ".test_db.acs");
         assertEquals("ACS", text("SELECT CURRENT_SCHEMA()"));
     }
 
@@ -102,7 +104,7 @@ public class AccountQualifiedNameTest extends BaseDatabaseTest {
     public void anyOtherLeadingPartNamesNothing() {
         assertEquals(MISSING, refusal("SELECT s FROM nosuch1.test_db.acs.two"));
         assertEquals(MISSING, refusal("INSERT INTO nosuch1.test_db.acs.two VALUES (1)"));
-        assertEquals(MISSING, refusal("SELECT s FROM \"" + account.toLowerCase() + "\".test_db.acs.two"));
+        assertEquals(MISSING, refusal("SELECT s FROM \"" + account.toLowerCase(Locale.ROOT) + "\".test_db.acs.two"));
         assertEquals(MISSING, refusal("SELECT s FROM " + four("two") + ".x"));
         // Past the account, a missing table is spelled without it.
         assertEquals(hinted("SQL compilation error:|Object 'TEST_DB.ACS.NOSUCHTAB' does not exist or not authorized."),
@@ -111,7 +113,7 @@ public class AccountQualifiedNameTest extends BaseDatabaseTest {
 
     @Test
     public void aColumnReferenceNeverTakesTheAccount() {
-        final String whole = account.toUpperCase() + ".TEST_DB.ACS.TWO.S";
+        final String whole = account.toUpperCase(Locale.ROOT) + ".TEST_DB.ACS.TWO.S";
         assertEquals("SQL compilation error: error line 1 at position 7|invalid identifier '" + whole + "'",
             refusal("SELECT " + four("two") + ".s FROM test_db.acs.two"));
         assertEquals("SQL compilation error: error line 1 at position 7|invalid identifier '" + whole + "'",

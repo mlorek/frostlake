@@ -22,6 +22,8 @@ import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -55,7 +57,7 @@ public class IntervalLiteralValueTest extends BaseDatabaseTest {
                 if (i > 0) {
                     out.append('|');
                 }
-                out.append(String.valueOf(row.getValue(i)).toUpperCase());
+                out.append(String.valueOf(row.getValue(i)).toUpperCase(Locale.ROOT));
             }
         }
         return out.toString();

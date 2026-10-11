@@ -39,6 +39,7 @@ import dev.frostlake.executor.expressions.IntervalLiteralSyntax;
 import dev.frostlake.executor.expressions.LateConstantRefusal;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
+import dev.frostlake.executor.expressions.MultiColumnScalarSubqueryException;
 import dev.frostlake.executor.expressions.NamedCallRewrite;
 import dev.frostlake.executor.expressions.PlannedCorrelations;
 import dev.frostlake.executor.expressions.QualifyWithoutWindow;
@@ -50,6 +51,7 @@ import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.executor.expressions.StructuredCast;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryTypeRanking;
+import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
 import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.executor.operators.AsofJoinOperator;
@@ -80,6 +82,12 @@ import dev.frostlake.executor.streaming.LimitRowStream;
 import dev.frostlake.executor.streaming.ListRowStream;
 import dev.frostlake.executor.streaming.RowPredicate;
 import dev.frostlake.executor.streaming.RowStream;
+import dev.frostlake.executor.udf.HandlerStateScope;
+import dev.frostlake.executor.udf.ImportLocalizer;
+import dev.frostlake.executor.udf.JarHandlerLoader;
+import dev.frostlake.executor.udf.JavaTableFunctions;
+import dev.frostlake.executor.udf.StatementHandlerStates;
+import dev.frostlake.executor.udf.TablePartitionRows;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
@@ -89,6 +97,7 @@ import dev.frostlake.functions.scalar.AutoTemporalParser;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.context.CurrentAccount;
 import dev.frostlake.functions.scalar.context.CurrentSchemas;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.functions.scalar.context.GetDdl;
 import dev.frostlake.functions.scalar.context.LastQueryId;
 import dev.frostlake.functions.scalar.context.PolicyBodyScope;
@@ -130,6 +139,7 @@ import dev.frostlake.metastore.RetentionChain;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.StatementKind;
 import dev.frostlake.metastore.StreamSources;
+import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.CheckConstraint;
@@ -205,6 +215,7 @@ import dev.frostlake.storage.TableStorage;
 import dev.frostlake.storage.TableVersion;
 import dev.frostlake.stream.StreamManager;
 import dev.frostlake.stream.StreamRowIds;
+import dev.frostlake.system.ObjectVisibility;
 import dev.frostlake.system.SystemViews;
 import dev.frostlake.system.UnmodeledSystemViews;
 import dev.frostlake.task.TaskScheduler;
@@ -298,7 +309,7 @@ import java.util.WeakHashMap;
 /**
  * Query Executor - Executes SQL statements using ANTLR-based parsing
  */
-public class QueryExecutor {
+public class QueryExecutor implements ImportLocalizer {
 
     private static final Logger logger = LoggerFactory.getLogger(QueryExecutor.class);
     /** The directory kind of a table's stage, below the internal stage root. */
@@ -341,7 +352,14 @@ public class QueryExecutor {
     private final SQLCommandVisitor visitor;
     // Re-entry depth for execute(): 0 means the next call is the outermost (true top-level) statement.
     // Used to clear leftover procedural cursor/exception state only at the top level, never mid-block.
-    private int executeReentryDepth = 0;
+    // Kept per thread, as the pins it decides are: one engine serves many sessions, and a statement of
+    // another session that starts while this one runs is the outermost statement of its own thread.
+    private final ThreadLocal<int[]> executeReentryDepth = new ThreadLocal<int[]>() {
+        @Override
+        protected int[] initialValue() {
+            return new int[1];
+        }
+    };
     /** Told where each top-level statement of a request of several begins and ends; see {@link StatementBoundaries}. */
     private final ThreadLocal<StatementBoundaries> statementBoundaries = new ThreadLocal<StatementBoundaries>();
     /** The plan of the last SELECT operand this thread planned, as text — see {@link #describeLastSelectPlan()}. */
@@ -424,6 +442,15 @@ public class QueryExecutor {
     // Caches whether a SQL-UDF body parses as a query statement (vs a bare scalar expression), so the
     // classifying parse — and its throw for expression bodies — happens once per distinct body, not per row.
     private static final BoundedParseCache<Boolean> QUERY_BODY_CACHE = new BoundedParseCache<>(256, 4096);
+
+    /**
+     * Whether a text is one scripting block, by the text: a SQL function's body is asked on every call, and a body
+     * that is no block - an expression - never parses as a script, so the answer was a failed parse each time.
+     */
+    private static final BoundedParseCache<Boolean> BLOCK_BODY_CACHE = new BoundedParseCache<>(256, 4096);
+
+    /** Whether a text's first token opens a scripting block, by the text, for the same callers. */
+    private static final BoundedParseCache<Boolean> BLOCK_OPENING_CACHE = new BoundedParseCache<>(256, 4096);
     // A view's, a materialized view's or a dynamic table's body parses once, however many statements read it.
     private static final BoundedParseCache<FrostlakeParser.SelectStatementContext> SELECT_CACHE =
         new BoundedParseCache<>(256, 4096);
@@ -440,6 +467,41 @@ public class QueryExecutor {
         this.engineConfig = config;
         this.s3PathResolver = config != null ? new S3PathResolver(config) : null;
         this.systemViews = new SystemViews(catalog, storageEngine);
+        this.systemViews.setDefinitionOwnership(new DefinitionOwnership() {
+            @Override
+            public boolean actsAsOwner(final String owner) {
+                return securityManager == null || securityManager.actsAsOwner(owner);
+            }
+        });
+        this.systemViews.setVisibility(new ObjectVisibility() {
+            @Override
+            public boolean entersSchema(final Database database, final Schema schema) {
+                return securityManager == null
+                    || securityManager.reaches("DATABASE", database.getName(), database.getOwner())
+                        && securityManager.reaches("SCHEMA", QualifiedName.join(database.getName(), schema.getName()),
+                            schema.getOwner());
+            }
+
+            @Override
+            public boolean lists(final String objectType, final Schema schema, final String name, final String owner) {
+                return securityManager == null
+                    || securityManager.reaches(objectType, schema.qualifiedName(name), owner);
+            }
+
+            @Override
+            public boolean listsFunction(final Schema schema, final Function function) {
+                final GrantedObject granted = functionGrant(schema, function);
+                return securityManager == null
+                    || securityManager.reaches(granted.getKind(), granted.getName(), granted.getOwner());
+            }
+
+            @Override
+            public boolean listsProcedure(final Schema schema, final Procedure procedure) {
+                final GrantedObject granted = procedureGrant(schema, procedure);
+                return securityManager == null
+                    || securityManager.reaches(granted.getKind(), granted.getName(), granted.getOwner());
+            }
+        });
         this.visitor = new SQLCommandVisitor(catalog, this);
         this.resultCache = new QueryResultCache(
             config != null ? config.getQueryResultCacheSize() : 100);
@@ -496,7 +558,18 @@ public class QueryExecutor {
         functionRegistry.registerTableFunction(new ToQuery(new QueryRunner() {
             @Override
             public ResultSet runQuery(final String sql) {
-                final List<ResultSet> results = executeUnrecorded(sql);
+                final String query = ToQueryText.requireQuery(sql);
+                if (query == null) {
+                    // A CALL: while a plan is asked for nothing is carried out, and it answers no rows.
+                    if (ExplainPlan.planning()) {
+                        final List<ResultSetColumn> shape = new ArrayList<>();
+                        shape.add(new ResultSetColumn("RESULT", VariantType.VARIANT));
+                        return new ResultSet(shape, new ArrayList<>());
+                    }
+                    final List<ResultSet> called = executeUnrecorded(sql);
+                    return called.isEmpty() ? null : called.get(called.size() - 1);
+                }
+                final List<ResultSet> results = executeUnrecorded(query);
                 return results.isEmpty() ? null : results.get(results.size() - 1);
             }
         }));
@@ -519,6 +592,11 @@ public class QueryExecutor {
             @Override
             public String resolve(final String written) {
                 return searchPathQualified(written);
+            }
+        }, new DefinitionOwnership() {
+            @Override
+            public boolean actsAsOwner(final String owner) {
+                return securityManager == null || securityManager.actsAsOwner(owner);
             }
         }));
 
@@ -621,6 +699,11 @@ public class QueryExecutor {
     /** The sessions of this engine that SYSTEM$ABORT_SESSION can end. */
     public SessionDirectory getSessionDirectory() {
         return sessionDirectory;
+    }
+
+    /** Whether the body of a procedure that runs with its owner's rights is executing. */
+    public boolean insideOwnersRightsProcedure() {
+        return visitor != null && visitor.insideOwnersRightsProcedure();
     }
 
     /** Evaluate a SYSTEM$FUNCNAME call from expression context (no ANTLR ctx available). */
@@ -727,13 +810,17 @@ public class QueryExecutor {
         // through execute(), so a statement reaching the engine by another entry point (or from another
         // thread on this shared engine, e.g. a scheduled task) could still look "outermost" and wipe the
         // exceptions/cursors/variable types of a procedure that is mid-flight.
-        final boolean outermost = executeReentryDepth == 0
-            && !visitor.getProceduralExecutor().isExecutingBlock();
+        final int[] reentryDepth = executeReentryDepth.get();
+        final boolean outermost = reentryDepth[0] == 0
+            && !visitor.getProceduralExecutor().isExecutingBlockOnThisThread();
+        // The procedural state is the engine's own, so a block running on ANY thread keeps it: only the pins,
+        // which are per thread, follow this thread's outermost statement.
+        final boolean clearsProceduralState = outermost && !visitor.getProceduralExecutor().isExecutingBlock();
         if (outermost) {
             // The subqueries an earlier statement compiled say nothing about this one's.
             ProjectionLineage.forgetSubqueries();
         }
-        executeReentryDepth++;
+        reentryDepth[0]++;
         // Read the clock ONCE for this statement, and only for the outermost one: Snowflake's
         // CURRENT_TIMESTAMP is statement-stable, so every row and every nested call inside a procedural
         // block sees the same instant. See StatementClock.
@@ -765,13 +852,13 @@ public class QueryExecutor {
         }
         pendingStatementInstant = null;
         try {
-            if (outermost) {
+            if (clearsProceduralState) {
                 visitor.getProceduralExecutor().clearCursorsAndExceptions();
             }
             final List<ResultSet> results = executeWithLateralContext(sql, null);
             return outermost ? ltzInSessionZone(results) : results;
         } finally {
-            executeReentryDepth--;
+            reentryDepth[0]--;
             if (outermost) {
                 // Read again before the pin goes: a statement that read the time may have moved past a commit.
                 lastStatementInstant = StatementClock.statementStart();
@@ -1031,16 +1118,26 @@ public class QueryExecutor {
             }
             return cached;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         SyntaxErrorListener errorListener = new SyntaxErrorListener(sql, quiet);
         errorListener.statementParse();
-        lexer.removeErrorListeners();
-        lexer.addErrorListener(errorListener);
-        CommonTokenStream tokens = new CommonTokenStream(lexer);
-        final FrostlakeParser parser = new FrostlakeParser(tokens);
-        parser.removeErrorListeners();
-        parser.addErrorListener(errorListener);
-        FrostlakeParser.SqlScriptContext tree = parser.sqlScript();
+        CommonTokenStream tokens;
+        FrostlakeParser.SqlScriptContext tree;
+        // Two stages: the quick prediction reads nearly every well-formed text, exactly as the full one does;
+        // a text it gives up on - every refused one among them - is read and worded by the full parse below.
+        final QuickScriptParse quick = QuickScriptParse.of(sql);
+        if (quick != null) {
+            tokens = quick.tokens();
+            tree = quick.tree();
+        } else {
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(errorListener);
+            tokens = new CommonTokenStream(lexer);
+            final FrostlakeParser parser = new FrostlakeParser(tokens);
+            parser.removeErrorListeners();
+            parser.addErrorListener(errorListener);
+            tree = parser.sqlScript();
+        }
         if (errorListener.hasErrors()) {
             // Where a refused statement's fault lands must not depend on what this JVM parsed before
             // it, and with ANTLR's shared prediction cache it does. Parse it again with a cache of its
@@ -1220,7 +1317,16 @@ public class QueryExecutor {
      * body to be a scripting block and rejects a bare statement outright.
      */
     public boolean isProceduralBlock(final String sql) {
-        return proceduralBlockOf(sql) != null;
+        if (sql == null) {
+            return false;
+        }
+        final Boolean known = BLOCK_BODY_CACHE.get(sql);
+        if (known != null) {
+            return known;
+        }
+        final boolean block = proceduralBlockOf(sql) != null;
+        BLOCK_BODY_CACHE.put(sql, block);
+        return block;
     }
 
     /**
@@ -1235,7 +1341,7 @@ public class QueryExecutor {
      * failure that produces.
      */
     public void reportBlockSyntaxError(final String sql) {
-        if (opensBlock(sql) && proceduralBlockOf(sql) == null) {
+        if (opensBlock(sql) && !isProceduralBlock(sql)) {
             parseScript(sql, false);
         }
     }
@@ -1255,7 +1361,9 @@ public class QueryExecutor {
         try {
             parseScript(sql, true);
         } catch (final RuntimeException e) {
-            if (e.getMessage() != null && e.getMessage().contains("'<EOF>'")) {
+            // An END where a DECLARE section's BEGIN belongs is as certain a fault as a block left open.
+            if (e.getMessage() != null && e.getMessage().contains("'<EOF>'")
+                    || e instanceof SqlSyntaxException && ((SqlSyntaxException) e).refusesDeclareSectionEnd()) {
                 throw e;
             }
         }
@@ -1266,6 +1374,16 @@ public class QueryExecutor {
         if (sql == null || sql.trim().isEmpty()) {
             return false;
         }
+        final Boolean known = BLOCK_OPENING_CACHE.get(sql);
+        if (known != null) {
+            return known;
+        }
+        final boolean opens = firstTokenOpensBlock(sql);
+        BLOCK_OPENING_CACHE.put(sql, opens);
+        return opens;
+    }
+
+    private static boolean firstTokenOpensBlock(final String sql) {
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         lexer.removeErrorListeners();
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
@@ -1381,6 +1499,44 @@ public class QueryExecutor {
      */
     public int requestStatementCountOf(final String sql) {
         return parseScript(sql, true, true, true, false).flowChain().size();
+    }
+
+    /**
+     * Whether the statement at hand is compiled for its plan alone, an EXPLAIN's: nothing it reads is carried
+     * out then — no procedure runs and no sequence moves.
+     *
+     * @return true while an EXPLAIN compiles its statement
+     */
+    public static boolean planningOnly() {
+        return ExplainPlan.planning();
+    }
+
+    /**
+     * The script a text parses to, as running it parses it; the tree is the one a run reuses.
+     *
+     * @param sql the text
+     * @return its script
+     * @throws RuntimeException the text's syntax error, when it does not parse
+     */
+    static FrostlakeParser.SqlScriptContext parsedScript(final String sql) {
+        return parseScript(sql, false);
+    }
+
+    /** As {@link #parsedScript}, for a judgement made of a text before it runs: its faults are the run's to report. */
+    static FrostlakeParser.SqlScriptContext parsedScriptQuietly(final String sql) {
+        return parseScript(sql, true);
+    }
+
+    /**
+     * How many statements a request's text holds — its script's top-level statements, a flow chain being one —
+     * read off the parse that running the text makes and keeps, so counting a text costs it no second parse.
+     *
+     * @param sql the request's text
+     * @return the count
+     * @throws RuntimeException the text's syntax error, when it does not parse
+     */
+    public static int parsedStatementCount(final String sql) {
+        return parseScript(sql, true).flowChain().size();
     }
 
     /**
@@ -1639,6 +1795,15 @@ public class QueryExecutor {
         }
     }
 
+    /** The handler states of the child statements running on this thread, by the row begun for each. */
+    private final ThreadLocal<Map<QueryHistory, HandlerStateScope>> childHandlerStates =
+        new ThreadLocal<Map<QueryHistory, HandlerStateScope>>() {
+            @Override
+            protected Map<QueryHistory, HandlerStateScope> initialValue() {
+                return new IdentityHashMap<>();
+            }
+        };
+
     /**
      * Begins the QUERY_HISTORY row of a statement a script runs itself: a statement of a block, of an exception
      * handler, of a procedure's body or of an EXECUTE IMMEDIATE's text. Each is a child statement of the session's -
@@ -1668,6 +1833,7 @@ public class QueryExecutor {
         if (statement != null) {
             row.setQueryType(statementKindOf(statement));
         }
+        childHandlerStates.get().put(row, StatementHandlerStates.begin());
         return row;
     }
 
@@ -1685,6 +1851,7 @@ public class QueryExecutor {
         if (row == null) {
             return null;
         }
+        StatementHandlerStates.end(childHandlerStates.get().remove(row));
         final String queryId = result != null ? resultCache.cacheResult(text, result) : resultCache.generateQueryId(text);
         row.setQueryId(queryId);
         // A statement that answered no rows answered its one status line, as it does sent on its own.
@@ -1712,6 +1879,7 @@ public class QueryExecutor {
         if (row == null) {
             return;
         }
+        StatementHandlerStates.end(childHandlerStates.get().remove(row));
         row.setQueryId(resultCache.generateFailedQueryId(text));
         row.markFailed(LocalDateTime.now(ZoneOffset.UTC), failure.getMessage());
         queryHistoryTracker.addQuery(row);
@@ -1781,8 +1949,10 @@ public class QueryExecutor {
             try {
                 transactionManager.resumeTransaction(aside);
             } finally {
-                // The session is over: its query-ID history goes with it rather than crowding out a live one's.
+                // The session is over: its query-ID history goes with it rather than crowding out a live one's,
+                // and so does what it created TEMPORARY.
                 resultCache.forgetSession(ownResults);
+                TemporaryObjects.drop(catalog, storageEngine, Long.valueOf(own.getSessionNumber()));
                 if (callerResults != null) {
                     resultCache.beginSessionScope(callerResults);
                 } else {
@@ -1893,7 +2063,7 @@ public class QueryExecutor {
 
             // A request of several statements runs each as a statement of its own: the owner of the
             // transaction commits one as it completes and undoes only the one that fails.
-            final StatementBoundaries boundaries = lateralContext == null && executeReentryDepth == 1
+            final StatementBoundaries boundaries = lateralContext == null && executeReentryDepth.get()[0] == 1
                 && tree.flowChain().size() > 1 ? statementBoundaries.get() : null;
 
             // Visit each flow chain (a chain is usually a single statement; with the ->> flow
@@ -1910,6 +2080,8 @@ public class QueryExecutor {
                 if (boundaries != null) {
                     boundaries.begin();
                 }
+                // What handler runtimes keep for a statement's calls lasts as long as the statement.
+                final HandlerStateScope handlerStates = recordsItself ? StatementHandlerStates.begin() : null;
                 try {
                     // A LIMIT or OFFSET string anywhere in the chain is its syntax error, before any stage runs,
                     // and so is an INTO clause no block's SELECT … INTO carries (see IntoClausePlacement).
@@ -1957,6 +2129,18 @@ public class QueryExecutor {
                         } else {
                             result = visitor.visit(stmtCtx);
                         }
+                    } else if (lateralContext == null && executeReentryDepth.get()[0] == 1
+                            && tree.flowChain().size() > 1) {
+                        // In a request of several statements each one's places are its own: a refusal raised
+                        // while it compiles counts its lines and positions from the statement's first token
+                        // (live-verified). The sentence that names the failing statement is the request's again.
+                        final SourcePosition requestOrigin = LeadingCommentOffset.begin(new SourcePosition(
+                            stmtCtx.getStart().getLine(), stmtCtx.getStart().getCharPositionInLine()));
+                        try {
+                            result = visitor.visit(stmtCtx);
+                        } finally {
+                            LeadingCommentOffset.end(requestOrigin);
+                        }
                     } else {
                         result = visitor.visit(stmtCtx);
                     }
@@ -1970,10 +2154,11 @@ public class QueryExecutor {
                     }
                     // A statement that fails inside a script of several is NAMED by the answer, the way
                     // the account names it; one sent on its own answers with its own error unadorned.
-                    throw MultiStatementFailure.wrapping(tree, failingStage, statementFailure,
+                    throw MultiStatementFailure.wrappingInRequest(tree, failingStage, statementFailure,
                         lateralContext == null);
                 } finally {
                     flowChainResults = priorFlowResults;
+                    StatementHandlerStates.end(handlerStates);
                 }
                 // An anonymous block run as a statement answers one row even when it finished without a
                 // RETURN: NULL, in the block's result column.
@@ -2002,7 +2187,7 @@ public class QueryExecutor {
                 // request of several, held in a RESULTSET or returned by a block, the answer is its own row alone
                 // (live-verified).
                 final boolean childAnswers = answer instanceof MultiStatementAnswer && lateralContext == null
-                    && executeReentryDepth == 1 && tree.flowChain().size() == 1 && stages.size() == 1
+                    && executeReentryDepth.get()[0] == 1 && tree.flowChain().size() == 1 && stages.size() == 1
                     && executedStatement.proceduralStatement() != null
                     && executedStatement.proceduralStatement().executeImmediateStatement() != null;
                 if (answer instanceof ResultSet) {
@@ -2115,6 +2300,17 @@ public class QueryExecutor {
             logger.error("Error executing SQL: {}", sql, e);
             if (e instanceof ProceduralException) throw (ProceduralException) e;
             throw StatementErrors.propagate(e);
+        } catch (final StackOverflowError overflow) {
+            // Nesting the stack could not hold — texts run inside texts without end, a cycle nothing refused —
+            // fails the statement as an ordinary failure with a row in the history (see StatementNesting).
+            final RuntimeException failure = new RuntimeException(StatementNesting.REFUSAL);
+            if (queryHistory != null) {
+                final String queryId = resultCache.generateFailedQueryId(sql, takeReserved(reservedId));
+                queryHistory.setQueryId(queryId);
+                queryHistory.markFailed(LocalDateTime.now(ZoneOffset.UTC), failure.getMessage());
+                queryHistoryTracker.addQuery(queryHistory);
+            }
+            throw failure;
         } finally {
             if (queryHistory != null) {
                 queryHistoryTracker.end(queryHistory);
@@ -2468,7 +2664,7 @@ public class QueryExecutor {
         final Map<String, ResultSet> cteResults = outerCtes == null ? new HashMap<>() : new HashMap<>(outerCtes);
 
         for (final FrostlakeParser.CteDefinitionContext cteCtx : withCtx.cteDefinition()) {
-            final String cteName = cteCtx.nameStartPart().getText().toUpperCase();
+            final String cteName = cteCtx.nameStartPart().getText().toUpperCase(Locale.ROOT);
             if (outerCtes != null && outerCtes.containsKey(cteName)) {
                 // The outer CTE of the same name wins; the inner definition is never executed.
                 continue;
@@ -2614,7 +2810,7 @@ public class QueryExecutor {
             if (mismatched != null) {
                 throw new RuntimeException(SqlCompilationError.of(
                     "Type mismatch between anchor and recursive term of column '" + mismatched
-                        + "' in Recursive CTE '" + RecursiveViewBody.spoken(cteName.toUpperCase()) + "'"));
+                        + "' in Recursive CTE '" + RecursiveViewBody.spoken(cteName.toUpperCase(Locale.ROOT)) + "'"));
             }
         }
         final List<List<Expression>> termItems = new ArrayList<>();
@@ -2627,7 +2823,7 @@ public class QueryExecutor {
             termItems.add(items);
             followed = followed && !readsThroughASubquery(term.tableExpression());
             final Set<String> names = new HashSet<>();
-            names.add(cteName.toUpperCase());
+            names.add(cteName.toUpperCase(Locale.ROOT));
             collectAliasesOf(cteName, term.tableExpression(), names);
             cteNames.add(names);
         }
@@ -2701,10 +2897,10 @@ public class QueryExecutor {
             final FrostlakeParser.TableReferenceContext reference = (FrostlakeParser.TableReferenceContext) from;
             if (reference.tableSource() != null && name.equalsIgnoreCase(reference.tableSource().getText())) {
                 if (reference.aliasName() != null) {
-                    aliases.add(SqlIdentifiers.canonicalText(reference.aliasName().getText()).toUpperCase());
+                    aliases.add(SqlIdentifiers.canonicalText(reference.aliasName().getText()).toUpperCase(Locale.ROOT));
                 } else if (reference.nonJoinKeywordIdentifier() != null) {
                     aliases.add(SqlIdentifiers.canonicalText(
-                        reference.nonJoinKeywordIdentifier().getText()).toUpperCase());
+                        reference.nonJoinKeywordIdentifier().getText()).toUpperCase(Locale.ROOT));
                 }
             }
         }
@@ -2793,9 +2989,10 @@ public class QueryExecutor {
         final List<ResultSetColumn> newCols = new ArrayList<>();
         for (int i = 0; i < original.getColumns().size(); i++) {
             final ResultSetColumn old = original.getColumns().get(i);
-            // A new name is the same column: it holds a NULL or none as it did.
+            // A new name is the same column: it holds a NULL or none as it did, within the interval it lay in.
             ResultSetColumn renamed = new ResultSetColumn(newNames.get(i), old.getDataType(), old.getTableName(),
-                old.getStaticType(), old.isNullable(), old.isNullabilityKnown());
+                old.getStaticType(), old.isNullable(), old.isNullabilityKnown(), old.getValueRange(),
+                old.getSpelledNumber());
             if (old.getCollation() != null) {
                 // A new name is the same column: it compares as it did.
                 renamed = renamed.withCollation(old.getCollation(), old.isCollationExplicit());
@@ -2806,7 +3003,10 @@ public class QueryExecutor {
             newCols.add(old.getProjectionPolicyName() != null
                 ? folded.withProjectionPolicy(old.getProjectionPolicyName()) : folded);
         }
-        return new ResultSet(newCols, original.getRows());
+        final ResultSet renamedResult = new ResultSet(newCols, original.getRows());
+        // Renaming keeps what the relation reads and the item each column stands for, position by position.
+        renamedResult.setRelationStatistics(original.getRelationStatistics());
+        return renamedResult;
     }
 
     /** A set operation's arm, planned: a nested statement, or a select clause under its own scopes. */
@@ -2965,7 +3165,8 @@ public class QueryExecutor {
             }
         }
         final List<List<NumericType>> literalMeasurements = stringLiteralMeasurements(operands);
-        final List<List<Boolean>> nullArms = withUntypedNullColumns(nullLiteralArms(operands), branchColumns);
+        final List<List<Boolean>> nullArms = withNullTextArms(
+            withUntypedNullColumns(nullLiteralArms(operands), branchColumns), operands, branchColumns);
         // Eager conversion applies to all-UNION chains only: a subtractive operator over an EMPTY
         // left side short-circuits WITHOUT converting the right side (live-verified in
         // SetOperations), so MINUS / EXCEPT / INTERSECT keep the lazy compare-time coercion.
@@ -3275,10 +3476,10 @@ public class QueryExecutor {
         final List<ResultSetColumn> merged = new ArrayList<>(left);
         final Set<String> present = new HashSet<>();
         for (final ResultSetColumn c : left) {
-            present.add(c.getName().toUpperCase());
+            present.add(c.getName().toUpperCase(Locale.ROOT));
         }
         for (final ResultSetColumn c : right) {
-            if (present.add(c.getName().toUpperCase())) {
+            if (present.add(c.getName().toUpperCase(Locale.ROOT))) {
                 merged.add(c);
             }
         }
@@ -3508,11 +3709,14 @@ public class QueryExecutor {
             if (securityManager != null && firstTableRef != null
                     && firstTableRef.tableSource().tableQualifiedName() != null) {
                 final String qualifiedTableName = ParseTreeText.getQualifiedName(firstTableRef.tableSource().tableQualifiedName());
+                final String[] firstParts =
+                    ParseTreeText.qualifiedNameParts(firstTableRef.tableSource().tableQualifiedName());
                 // A grant on a view is recorded under VIEW, whichever keyword the GRANT wrote, so reading a view asks
-                // for SELECT under VIEW.
-                securityManager.checkPermission(Privilege.SELECT,
-                    relationGrantKind(ParseTreeText.qualifiedNameParts(firstTableRef.tableSource().tableQualifiedName())),
-                    qualifiedTableName);
+                // for SELECT under VIEW. A view of INFORMATION_SCHEMA asks for nothing: every role reads those, and
+                // none can be granted a privilege on one (live-verified) - what they list is what the role reaches.
+                if (!namesInformationSchemaView(firstParts)) {
+                    securityManager.checkPermission(Privilege.SELECT, relationGrantKind(firstParts), qualifiedTableName);
+                }
             }
 
             // Track table aliases and tables for WHERE clause evaluation
@@ -3535,9 +3739,9 @@ public class QueryExecutor {
             final FrostlakeParser.WhereClauseContext plusWhere = getWhereClause(ctx);
             if (allTableRefs.size() == 2 && allJoins.isEmpty()
                     && plusWhere != null && containsOuterJoinMarker(plusWhere.booleanExpr())) {
-                final String alias0 = (tableData.alias != null ? tableData.alias : table.getName()).toUpperCase();
+                final String alias0 = (tableData.alias != null ? tableData.alias : table.getName()).toUpperCase(Locale.ROOT);
                 final TableData rightData0 = executeTableReference(allTableRefs.get(1), sourceContext(allTableRefs.get(1), lateralContext), cteResults);
-                final String alias1 = (rightData0.alias != null ? rightData0.alias : rightData0.table.getName()).toUpperCase();
+                final String alias1 = (rightData0.alias != null ? rightData0.alias : rightData0.table.getName()).toUpperCase(Locale.ROOT);
                 // A marked column names its relation by qualifier, or by carrying the column when written bare.
                 final Map<String, Table> plusRelations = new LinkedHashMap<>();
                 plusRelations.put(alias0, table);
@@ -4307,9 +4511,11 @@ public class QueryExecutor {
                 // DISTINCT narrows the ORDER BY to the SELECT list's own output, whatever else the
                 // query is. It is judged AFTER the checks above because live names an unresolvable
                 // key first, and before the window stage for the same reason they are.
-                if (planTime) {
+                if (planTime && !(hasAggregates && !hasGroupBy)) {
                     // A grouped or distinct query's ORDER BY holds no subquery at all, whatever it reads —
                     // ahead of the DISTINCT rule, which would otherwise name the subquery's own aggregate.
+                    // An aggregate query with no GROUP BY answers one row and its ORDER BY is dropped, so
+                    // neither rule is asked of it.
                     orderByExecutor.rejectSubqueryInGroupedOrderKey(stmtCtx, ctx, table, aliasToTable,
                         allTables);
                     orderByExecutor.validateDistinctOrderKeyScope(stmtCtx, ctx, table, aliasToTable,
@@ -4418,10 +4624,11 @@ public class QueryExecutor {
                         // the key from the row's own source group. Without a window the key is computed
                         // over that group here instead (the identity map still holds — nothing recreated
                         // the rows).
-                        if (hasAggregates && !hasGroupBy
-                                && windowEvaluator.hasWindowFunctionInTree(stmtCtx.orderByClause())) {
+                        if (hasAggregates && !hasGroupBy) {
                             // Implicit aggregation answers exactly ONE row, so no ordering of it can
-                            // change anything — live accepts a window key here, and sorting is a no-op.
+                            // change anything: once its keys' names and types have been judged, live
+                            // drops the clause and computes no key — ORDER BY MAX(id / 0), a subquery
+                            // of several rows and a window key all answer the one row (live-verified).
                             orderByApplied = true;
                         } else {
                             plan.add(groupedOrderByStage(stmtCtx, ctx, table, aliasToTable, allTables,
@@ -4627,8 +4834,8 @@ public class QueryExecutor {
             final ResultSet shape = new ResultSet(columns, new ArrayList<Row>());
             if (lateralContext == null && !hasPivotSource && keepsSourceStatistics(stmtCtx, ctx, firstTableRef,
                     clauseSource, allTableRefs.size() > 1 || !allJoins.isEmpty())) {
-                shape.setRelationStatistics(
-                    new DerivedStatistics(this, statisticsBound.get(), clauseSource, columnSources));
+                shape.setRelationStatistics(new DerivedStatistics(this, statisticsBound.get(), clauseSource,
+                    columnSources, sourceAlias(firstTableRef)));
             }
             final RuntimeException waitingRefusal = subqueryRefusal;
             final Set<String> refusedKeys = correlations != null ? correlations.refusedKeys() : null;
@@ -5048,6 +5255,49 @@ public class QueryExecutor {
      * Outside a relation body, a row that survives is read here, so a fault its item deferred is raised by
      * the statement itself, wherever its result goes next.
      */
+    /** Whether a clause reads a sequence — {@code s.NEXTVAL} — whose words are no column's. */
+    private static boolean readsASequence(final ParseTree node) {
+        if (node instanceof TerminalNode) {
+            final int type = ((TerminalNode) node).getSymbol().getType();
+            return type == FrostlakeParser.NEXTVAL || type == FrostlakeParser.CURRVAL;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (readsASequence(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The names of a select with no FROM, resolved before anything else of it is judged: every item's, each
+     * reading the names the items before it publish, then the WHERE's and the ORDER BY's, which read them all.
+     */
+    private void validateNamesWithoutFrom(final FrostlakeParser.SelectStatementContext stmtCtx,
+                                          final FrostlakeParser.SelectClauseContext ctx, final Table dual) {
+        validateSelectListNames(ctx, dual, null, null);
+        final Set<String> published = new HashSet<>();
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            final String alias = SelectItemAccessors.getItemAlias(item);
+            final ParserRuleContext expression = SelectItemAccessors.getItemExpression(item);
+            if (alias != null) {
+                published.add(alias);
+            } else if (expression != null) {
+                published.add(getOriginalText(expression).trim().toUpperCase(Locale.ROOT));
+            }
+        }
+        if (getWhereClause(ctx) != null) {
+            validateClauseColumnScope(getOriginalText(getWhereClause(ctx).booleanExpr()), dual, null, null,
+                published, getWhereClause(ctx).booleanExpr());
+        }
+        if (stmtCtx != null && stmtCtx.orderByClause() != null && stmtCtx.selectOperand().size() == 1) {
+            for (final FrostlakeParser.OrderItemContext key : stmtCtx.orderByClause().orderItem()) {
+                validateClauseColumnScope(getOriginalText(key.expression()), dual, null, null, published,
+                    key.expression());
+            }
+        }
+    }
+
     private PlannedQuery planSelectWithoutFrom(final FrostlakeParser.SelectStatementContext stmtCtx,
                                                final FrostlakeParser.SelectClauseContext ctx,
                                                final Map<String, Object> lateralContext) {
@@ -5082,7 +5332,31 @@ public class QueryExecutor {
                 if (ctx.havingClause() != null) {
                     items.add(ctx.havingClause().booleanExpr());
                 }
-                subqueryRefusal = compileSubqueriesIn(items, dummyTable, null, null, lateralContext);
+                if (lateralContext == null && !readsASequence(ctx)) {
+                    // A statement's own select is judged as one over a relation is: the names of every item, of
+                    // the WHERE and of the ORDER BY first, then each subquery whole, in the order written — the
+                    // ORDER BY's too, once its ordinals are judged — and only then the select's own types. The
+                    // first subquery refused for its types is the one that waits (live-verified).
+                    validateNamesWithoutFrom(stmtCtx, ctx, dummyTable);
+                    for (int i = 0; i < items.size() && subqueryRefusal == null; i++) {
+                        if (items.get(i) != null) {
+                            subqueryRefusal = compileSubqueriesIn(Collections.singletonList(items.get(i)),
+                                dummyTable, null, null, lateralContext);
+                        }
+                    }
+                    if (subqueryRefusal == null && stmtCtx != null && stmtCtx.orderByClause() != null
+                            && stmtCtx.selectOperand().size() == 1) {
+                        orderByExecutor.validateOrderOrdinals(stmtCtx, dummyTable, null);
+                        for (final FrostlakeParser.OrderItemContext key : stmtCtx.orderByClause().orderItem()) {
+                            if (subqueryRefusal == null) {
+                                subqueryRefusal = compileSubqueriesIn(Collections.singletonList(key.expression()),
+                                    dummyTable, null, null, lateralContext);
+                            }
+                        }
+                    }
+                } else {
+                    subqueryRefusal = compileSubqueriesIn(items, dummyTable, null, null, lateralContext);
+                }
             }
             final RuntimeException waitingSubqueryRefusal = subqueryRefusal;
             // The item names whose value is an aggregate — a WHERE may not read one of those.
@@ -5268,8 +5542,8 @@ public class QueryExecutor {
                 && SelectItemAccessors.unwrapParens(itemValue)
                     instanceof FrostlakeParser.QualifiedNameExprContext;
             final Object value;
-            if (referenceShaped && ownAliases.contains(exprText.toUpperCase())) {
-                value = selectAliasValues.get(exprText.toUpperCase());
+            if (referenceShaped && ownAliases.contains(exprText.toUpperCase(Locale.ROOT))) {
+                value = selectAliasValues.get(exprText.toUpperCase(Locale.ROOT));
             } else {
                 final Row dummyRow = new Row(values);
                 // A FROM-less projection computes the VALUE before anything types it, so a refusal
@@ -5305,7 +5579,7 @@ public class QueryExecutor {
             } else {
                 // A sequence read is named after its pseudo-column, as the FROM-bearing projection names it.
                 columnName = SelectItemAccessors.isSequenceRead(itemValue)
-                    ? selectItemColumnName(itemValue) : exprText.toUpperCase();
+                    ? selectItemColumnName(itemValue) : exprText.toUpperCase(Locale.ROOT);
             }
             // Same channel as the FROM-bearing projection: live types the two identically
             // (OBJECT/ARRAY/VARIANT reported, everything else recovered from the values).
@@ -5319,8 +5593,8 @@ public class QueryExecutor {
             columns.add(itemCollation == null ? projectedItem
                 : projectedItem.withCollation(itemCollation.getText(), itemHeld.getLevel() == CollationLevel.EXPLICIT));
             values.add(value);
-            selectAliasValues.put(columnName.toUpperCase(), value);
-            ownAliases.add(columnName.toUpperCase());
+            selectAliasValues.put(columnName.toUpperCase(Locale.ROOT), value);
+            ownAliases.add(columnName.toUpperCase(Locale.ROOT));
             if (projectedItem.getStaticType() != null) {
                 earlierItemTypes.put(columnName.toUpperCase(Locale.ROOT), projectedItem.getStaticType());
             }
@@ -5807,7 +6081,7 @@ public class QueryExecutor {
             // casts fine (live-verified — see AutoTemporalParser.hasOverWideIsoFields).
             if (value instanceof CharSequence
                     && AutoTemporalParser.hasOverWideIsoFields(value.toString())) {
-                throw new RuntimeException((type.getName().toUpperCase().startsWith("DATE")
+                throw new RuntimeException((type.getName().toUpperCase(Locale.ROOT).startsWith("DATE")
                     ? "Date '" : "Timestamp '") + value + "' is not recognized");
             }
             // A string (or other temporal) written into a DATE/TIME/TIMESTAMP column becomes a real
@@ -5817,7 +6091,7 @@ public class QueryExecutor {
             // fractional precision (live: '10:00:00.123456789' into a TIMESTAMP_NTZ(0) reads back
             // 10:00:00.000, into a TIMESTAMP_NTZ(3) 10:00:00.123).
             return SharedFunctionHelpers.atDeclaredPrecision(
-                SharedFunctionHelpers.toTemporalValue(type.getName().toUpperCase(), value),
+                SharedFunctionHelpers.toTemporalValue(type.getName().toUpperCase(Locale.ROOT), value),
                 ((DateTimeType) type).getPrecision());
         }
         if (type instanceof BinaryType) {
@@ -5873,7 +6147,7 @@ public class QueryExecutor {
                 return ((Number) value).doubleValue() != 0.0;
             }
             if (value instanceof String) {
-                final String text = ((String) value).trim().toLowerCase();
+                final String text = ((String) value).trim().toLowerCase(Locale.ROOT);
                 if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
                         || text.equals("on") || text.equals("1")) {
                     return Boolean.TRUE;
@@ -5910,7 +6184,7 @@ public class QueryExecutor {
     }
 
     private static boolean isFixedPointNumeric(final String name) {
-        final String upper = name.toUpperCase();
+        final String upper = name.toUpperCase(Locale.ROOT);
         return upper.equals("NUMBER") || upper.equals("DECIMAL") || upper.equals("NUMERIC")
             || upper.equals("INTEGER") || upper.equals("INT") || upper.equals("BIGINT")
             || upper.equals("SMALLINT") || upper.equals("TINYINT") || upper.equals("BYTEINT");
@@ -6028,7 +6302,7 @@ public class QueryExecutor {
         boolean autoCompress = true;
         boolean overwrite = false;
         for (final FrostlakeParser.StageFileOptionContext option : ctx.stageFileOption()) {
-            final String key = option.optionKey().getText().toUpperCase();
+            final String key = option.optionKey().getText().toUpperCase(Locale.ROOT);
             final boolean value = "TRUE".equalsIgnoreCase(option.copyOptionValue().getText());
             if ("AUTO_COMPRESS".equals(key)) {
                 autoCompress = value;
@@ -6053,7 +6327,7 @@ public class QueryExecutor {
             }
             for (final Path src : resolveLocalSources(localPath)) {
                 final String sourceName = src.getFileName().toString();
-                final boolean sourceCompressed = sourceName.toLowerCase().endsWith(".gz");
+                final boolean sourceCompressed = sourceName.toLowerCase(Locale.ROOT).endsWith(".gz");
                 final boolean compressing = autoCompress && !sourceCompressed;
                 final String targetName = compressing ? sourceName + ".gz" : sourceName;
                 final Path dest = putPrefix == null ? stageDir.resolve(targetName)
@@ -6239,7 +6513,7 @@ public class QueryExecutor {
         if (stagePart.startsWith("~") || stagePart.startsWith("%")) {
             return relative;
         }
-        return stagePart.toLowerCase() + "/" + relative;
+        return stagePart.toLowerCase(Locale.ROOT) + "/" + relative;
     }
 
     /** LIST @stage[/path] [PATTERN] — see {@link StageListing}. */
@@ -6407,6 +6681,7 @@ public class QueryExecutor {
      * @param imports the imports a routine keeps
      * @return the imports, in the same order
      */
+    @Override
     public List<String> localImports(final List<String> imports) {
         final List<String> local = new ArrayList<>();
         for (final String entry : imports) {
@@ -6975,7 +7250,7 @@ public class QueryExecutor {
     private static String stageDirectory(final String kind, final String name) {
         final String segment = sanitizeStageSegment(name);
         if ("users".equals(kind)) {
-            return segment.toUpperCase();
+            return segment.toUpperCase(Locale.ROOT);
         }
         if (segment.equals(segment.toUpperCase(Locale.ROOT))) {
             return segment;
@@ -7076,13 +7351,13 @@ public class QueryExecutor {
             body = body.substring(0, body.length() - 1);
         }
         if (body.startsWith("%")) {
-            return "tables/" + body.substring(1).toLowerCase() + "/";
+            return "tables/" + body.substring(1).toLowerCase(Locale.ROOT) + "/";
         }
         if (body.startsWith("~")) {
             final String rest = body.substring(1);
-            return "users/frostlake" + rest.toLowerCase() + "/";
+            return "users/frostlake" + rest.toLowerCase(Locale.ROOT) + "/";
         }
-        return "stages/" + body.toLowerCase() + "/";
+        return "stages/" + body.toLowerCase(Locale.ROOT) + "/";
     }
 
     /** Forget a table's COPY load history — TRUNCATE and CREATE OR REPLACE / DROP TABLE all do. */
@@ -7595,7 +7870,7 @@ public class QueryExecutor {
         if (named != null) {
             return named;
         }
-        return valueExpr != null ? getOriginalText(valueExpr).toUpperCase() : "";
+        return valueExpr != null ? getOriginalText(valueExpr).toUpperCase(Locale.ROOT) : "";
     }
 
     /**
@@ -7637,13 +7912,13 @@ public class QueryExecutor {
             return selectItemColumnName(valueExpr);
         }
         final ParserRuleContext full = SelectItemAccessors.getItemExpression(item);
-        return full != null ? getOriginalText(full).toUpperCase() : "";
+        return full != null ? getOriginalText(full).toUpperCase(Locale.ROOT) : "";
     }
 
     /** Whether a select-item value expression is a COUNT/SUM/AVG aggregate (numeric BIGINT result). */
     private static boolean isNumericAggregateItem(final FrostlakeParser.ExpressionContext valueExpr) {
         if (valueExpr instanceof FrostlakeParser.FunctionCallExprContext) {
-            final String n = ((FrostlakeParser.FunctionCallExprContext) valueExpr).functionName().getText().toUpperCase();
+            final String n = ((FrostlakeParser.FunctionCallExprContext) valueExpr).functionName().getText().toUpperCase(Locale.ROOT);
             return "COUNT".equals(n) || "SUM".equals(n) || "AVG".equals(n);
         }
         if (valueExpr instanceof FrostlakeParser.FunctionCallStarExprContext) {
@@ -7709,7 +7984,7 @@ public class QueryExecutor {
 
         // If it's a string, check if it's a function name or special value
         if (defaultValue instanceof String) {
-            final String expr = ((String) defaultValue).toUpperCase().trim();
+            final String expr = ((String) defaultValue).toUpperCase(Locale.ROOT).trim();
             switch (expr) {
                 // The statement's own UTC reading — a host-zone clock here diverges from the
                 // query-side CURRENT_* family around local midnight.
@@ -8008,6 +8283,32 @@ public class QueryExecutor {
      * @return what the body answers
      */
     public Object inRoutineHome(final Schema home, final RoutineBody body) {
+        return inRoutineHome(home, null, body);
+    }
+
+    /**
+     * {@link #inRoutineHome(Schema, RoutineBody)} for a SQL function's body, which reads what it names with its
+     * OWNER's privileges beside the caller's: a role that may only use the function reads through it a table the
+     * owner may read, as through a view, while CURRENT_ROLE() inside it is still the caller's. A table neither
+     * may read is refused in the caller's name (live-verified).
+     *
+     * @param home  the schema that holds the function, or null to run where the session is
+     * @param owner the role that owns the function, or null to run with the session's privileges alone
+     * @param body  the body
+     * @return what the body answers
+     */
+    public Object inRoutineHome(final Schema home, final String owner, final RoutineBody body) {
+        final String rights = securityManager != null && owner != null ? securityManager.enterOwnerRights(owner) : null;
+        try {
+            return inHome(home, body);
+        } finally {
+            if (securityManager != null && owner != null) {
+                securityManager.leaveOwnerRights(rights);
+            }
+        }
+    }
+
+    private Object inHome(final Schema home, final RoutineBody body) {
         if (home == null) {
             return body.run();
         }
@@ -8662,8 +8963,8 @@ public class QueryExecutor {
                 final Pipe pipe = catalog.requireOwningSchema(QualifiedName.of(parts)).getPipe(parts[parts.length - 1]);
                 // A running pipe keeps its owner: the account refuses the move until the pipe is paused.
                 if (!pipe.isPaused()) {
-                    throw new RuntimeException("SQL execution error:\nPipe " + pipe.getName().toUpperCase()
-                        + " not in paused state. To pause pipe run ALTER PIPE " + pipe.getName().toUpperCase()
+                    throw new RuntimeException("SQL execution error:\nPipe " + pipe.getName().toUpperCase(Locale.ROOT)
+                        + " not in paused state. To pause pipe run ALTER PIPE " + pipe.getName().toUpperCase(Locale.ROOT)
                         + " SET PIPE_EXECUTION_PAUSED=true");
                 }
                 pipe.setOwner(owner);
@@ -8845,7 +9146,7 @@ public class QueryExecutor {
                 && ((FrostlakeParser.TableSourceContext) node).tableQualifiedName() != null) {
             final String written = ParseTreeText.getQualifiedName(
                 ((FrostlakeParser.TableSourceContext) node).tableQualifiedName());
-            if (!cteNames.contains(written.toUpperCase())) {
+            if (!cteNames.contains(written.toUpperCase(Locale.ROOT))) {
                 requireSelect(searchPathQualified(written));
             }
         }
@@ -9115,12 +9416,12 @@ public class QueryExecutor {
         collectCteNames(tableExpr, cteNames);
         if (cteResults != null) {
             for (final String cte : cteResults.keySet()) {
-                cteNames.add(cte.toUpperCase());
+                cteNames.add(cte.toUpperCase(Locale.ROOT));
             }
         }
         if (getCurrentCteContext() != null) {
             for (final String cte : getCurrentCteContext().keySet()) {
-                cteNames.add(cte.toUpperCase());
+                cteNames.add(cte.toUpperCase(Locale.ROOT));
             }
         }
         requireRelationsIn(tableExpr, cteNames);
@@ -9232,7 +9533,7 @@ public class QueryExecutor {
     /** Whether a node holds a call of an aggregate function anywhere, through every query nested in it. */
     boolean holdsAggregateAnywhere(final ParseTree node) {
         if (node instanceof FrostlakeParser.FunctionNameContext) {
-            return functionRegistry.hasAggregateFunction(node.getText().toUpperCase());
+            return functionRegistry.hasAggregateFunction(node.getText().toUpperCase(Locale.ROOT));
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             if (holdsAggregateAnywhere(node.getChild(i))) {
@@ -9276,7 +9577,7 @@ public class QueryExecutor {
     public static void collectCteNames(final ParseTree node, final Set<String> into) {
         if (node instanceof FrostlakeParser.CteDefinitionContext) {
             into.add(ParseTreeText.namePartText(
-                ((FrostlakeParser.CteDefinitionContext) node).nameStartPart()).toUpperCase());
+                ((FrostlakeParser.CteDefinitionContext) node).nameStartPart()).toUpperCase(Locale.ROOT));
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             collectCteNames(node.getChild(i), into);
@@ -9300,7 +9601,7 @@ public class QueryExecutor {
             && name.namePart().isEmpty()
             && name.nameStartPart().identifier() != null
             && name.nameStartPart().identifier().QUOTED_IDENTIFIER() == null;
-        if (cteNames.contains(writtenName.toUpperCase()) || bareUnquotedDual
+        if (cteNames.contains(writtenName.toUpperCase(Locale.ROOT)) || bareUnquotedDual
                 || executeSystemViewIfApplicable(writtenName, null) != null) {
             return;
         }
@@ -9342,6 +9643,11 @@ public class QueryExecutor {
         }
     }
 
+    /** Whether a FROM names a relation of an INFORMATION_SCHEMA: by its schema part, or by the session's schema. */
+    private boolean namesInformationSchemaView(final String[] parts) {
+        return "INFORMATION_SCHEMA".equals(parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema());
+    }
+
     /**
      * Check if the view is an INFORMATION_SCHEMA system view and execute it using SystemViews
      * @return ResultSet if it's a system view, null otherwise
@@ -9355,17 +9661,17 @@ public class QueryExecutor {
         if (parts.length == 1) {
             database = catalog.getCurrentDatabase();
             schema = catalog.getCurrentSchema();
-            viewName = parts[0].toUpperCase();
+            viewName = parts[0].toUpperCase(Locale.ROOT);
         } else if (parts.length == 2) {
             // schema.view (using current database)
             database = catalog.getCurrentDatabase();
-            schema = parts[0].toUpperCase();
-            viewName = parts[1].toUpperCase();
+            schema = parts[0].toUpperCase(Locale.ROOT);
+            viewName = parts[1].toUpperCase(Locale.ROOT);
         } else if (parts.length == 3) {
             // database.schema.view — the database as resolved, since "db" and DB are two databases
             database = parts[0];
-            schema = parts[1].toUpperCase();
-            viewName = parts[2].toUpperCase();
+            schema = parts[1].toUpperCase(Locale.ROOT);
+            viewName = parts[2].toUpperCase(Locale.ROOT);
         }
 
         // Check if this is INFORMATION_SCHEMA schema
@@ -9449,7 +9755,7 @@ public class QueryExecutor {
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(table, functionRegistry, catalog, this);
         if (tableAlias != null && !tableAlias.equalsIgnoreCase(table.getName())) {
             final Map<String, Table> aliasToTable = new HashMap<>();
-            aliasToTable.put(tableAlias.toUpperCase(), table);
+            aliasToTable.put(tableAlias.toUpperCase(Locale.ROOT), table);
             final List<Table> allTables = new ArrayList<>();
             allTables.add(table);
             evaluator.setMultiTableContext(aliasToTable, allTables);
@@ -10049,32 +10355,11 @@ public class QueryExecutor {
      */
     private Operator planStreamFilterLimit(final Table table, final String whereExpr,
                                            final FrostlakeParser.LimitClauseContext limitClause) {
-        long limit = Long.MAX_VALUE;
-        long offset = 0;
-        // NULL and the empty string mean no limit (an empty OFFSET string means zero) — the same
-        // reading as limitWindow, kept long-typed for the stream.
-        boolean inOffset = false;
-        for (final ParseTree child : limitClause.children) {
-            if (!(child instanceof TerminalNode)) {
-                continue;
-            }
-            final Token token = ((TerminalNode) child).getSymbol();
-            if (token.getType() == FrostlakeParser.OFFSET) {
-                inOffset = true;
-            } else if (token.getType() == FrostlakeParser.INTEGER_LITERAL) {
-                // The slot takes a written literal straight from the token stream, so the literal
-                // reader's own width refusal has to be applied here too — otherwise the number reader
-                // throws its raw complaint in place of live's positioned sentence.
-                IntegerLiteralRange.reject(token);
-                if (inOffset) {
-                    offset = Long.parseLong(token.getText());
-                } else {
-                    limit = Long.parseLong(token.getText());
-                }
-            } else if (token.getType() == FrostlakeParser.STRING_LITERAL) {
-                requireEmptyLimitString(token);
-            }
-        }
+        // The one reading of the clause (limitWindow): a literal, with a fraction or without, NULL, the empty
+        // string, and a block's bind.
+        final int[] window = limitWindow(limitClause);
+        final long limit = window[0] == Integer.MAX_VALUE ? Long.MAX_VALUE : window[0];
+        final long offset = window[1];
         final long streamLimit = limit;
         final long streamOffset = offset;
         final boolean filtered = whereExpr != null && !whereExpr.trim().isEmpty();
@@ -10277,7 +10562,7 @@ public class QueryExecutor {
             for (final FrostlakeParser.StarModifierContext modifier : SelectItemAccessors.getStarModifiers(item)) {
                 if (modifier.RENAME() != null) {
                     for (final FrostlakeParser.StarRenameItemContext rename : modifier.starRenameItem()) {
-                        final String renamedTo = ParseTreeText.getIdentifier(rename.identifier(1)).toUpperCase();
+                        final String renamedTo = ParseTreeText.getIdentifier(rename.identifier(1)).toUpperCase(Locale.ROOT);
                         if (table == null || !table.hasColumn(renamedTo)) {
                             aliases.put(renamedTo, ParseTreeText.getIdentifier(rename.identifier(0)));
                         }
@@ -10291,7 +10576,7 @@ public class QueryExecutor {
             if (valueExpr == null || hasAggregateFunctionInExpression(valueExpr)) {
                 continue;
             }
-            final String alias = (SelectItemAccessors.getItemAlias(item)).toUpperCase();
+            final String alias = (SelectItemAccessors.getItemAlias(item)).toUpperCase(Locale.ROOT);
             // NB: Table.getColumnIndex THROWS for an unknown name — use hasColumn, which is the whole point
             // here (the alias we care about is precisely the one that is NOT a column).
             if (table != null && table.hasColumn(alias)) {
@@ -10390,9 +10675,9 @@ public class QueryExecutor {
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         for (Token t = lexer.nextToken(); t.getType() != Token.EOF; t = lexer.nextToken()) {
             if (t.getType() == FrostlakeLexer.IDENTIFIER) {
-                out.add(t.getText().toUpperCase());
+                out.add(t.getText().toUpperCase(Locale.ROOT));
             } else if (t.getType() == FrostlakeLexer.QUOTED_IDENTIFIER && t.getText().length() >= 2) {
-                out.add(t.getText().substring(1, t.getText().length() - 1).toUpperCase());
+                out.add(t.getText().substring(1, t.getText().length() - 1).toUpperCase(Locale.ROOT));
             }
         }
         return out;
@@ -11367,7 +11652,7 @@ public class QueryExecutor {
         for (final FrostlakeParser.FunctionCallExprContext call : calls) {
             final FrostlakeParser.WindowFrameContext frame = call.overClause().windowFrame();
             final String name =
-                SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase();
+                SqlIdentifiers.canonicalText(call.functionName().getText()).toUpperCase(Locale.ROOT);
             if (frame == null || !WindowFrameShape.isRange(frame)
                     || !WindowFrameShape.spansWholePartition(frame)
                     || !WholePartitionAggregates.coversWholePartitionOnly(name)
@@ -11450,13 +11735,13 @@ public class QueryExecutor {
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             final String alias = SelectItemAccessors.getItemAlias(item);
             if (alias != null) {
-                names.add(alias.toUpperCase());
+                names.add(alias.toUpperCase(Locale.ROOT));
                 continue;
             }
             if (SelectItemAccessors.isStarItem(item) || SelectItemAccessors.isQualifiedStarItem(item)) {
                 if (table != null) {
                     for (final StarColumn starColumn : starItemColumns(item, table, aliasToTable)) {
-                        names.add(starColumn.getOutputName().toUpperCase());
+                        names.add(starColumn.getOutputName().toUpperCase(Locale.ROOT));
                     }
                 }
                 continue;
@@ -11470,7 +11755,7 @@ public class QueryExecutor {
                 final List<FrostlakeParser.NamePartContext> tail = reference.namePart();
                 names.add((tail == null || tail.isEmpty()
                     ? reference.nameStartPart().getText()
-                    : tail.get(tail.size() - 1).getText()).toUpperCase());
+                    : tail.get(tail.size() - 1).getText()).toUpperCase(Locale.ROOT));
             }
         }
         return names;
@@ -11615,7 +11900,7 @@ public class QueryExecutor {
             return false;
         }
         for (final ParserRuleContext name : names) {
-            if (!lateralContext.containsKey(ParseTreeText.getOriginalText(name).toUpperCase())
+            if (!lateralContext.containsKey(ParseTreeText.getOriginalText(name).toUpperCase(Locale.ROOT))
                     || resolvesInOwnScope(name, table, aliasToTable)) {
                 return false;
             }
@@ -11873,7 +12158,7 @@ public class QueryExecutor {
             // with no OVER is refused for its arity, never for its absent window.
             throw new RuntimeException(SqlCompilationError.at(
                 miscounted.getStart().getLine(), miscounted.getStart().getCharPositionInLine(),
-                WindowFunctionArity.refusal(miscounted.functionName().getText().toUpperCase(),
+                WindowFunctionArity.refusal(miscounted.functionName().getText().toUpperCase(Locale.ROOT),
                     echo.printBareCall(miscounted), argumentCount(miscounted))));
         }
         rejectWindowFunctionsWithoutOver(ctx, stmtCtx.orderByClause(), echo);
@@ -12135,12 +12420,12 @@ public class QueryExecutor {
         }
         if (node instanceof FrostlakeParser.FunctionCallStarExprContext
                 && functionRegistry.hasAggregateFunction(
-                    ((FrostlakeParser.FunctionCallStarExprContext) node).functionName().getText().toUpperCase())) {
+                    ((FrostlakeParser.FunctionCallStarExprContext) node).functionName().getText().toUpperCase(Locale.ROOT))) {
             return true;
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext
                 && functionRegistry.hasAggregateFunction(
-                    ((FrostlakeParser.FunctionCallExprContext) node).functionName().getText().toUpperCase())) {
+                    ((FrostlakeParser.FunctionCallExprContext) node).functionName().getText().toUpperCase(Locale.ROOT))) {
             return true;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -12262,7 +12547,7 @@ public class QueryExecutor {
                 (FrostlakeParser.FunctionCallStarExprContext) node;
             // The star form carries no OVER clause of its own in this grammar, so there is no
             // windowed flavour of it to exclude here.
-            if (functionRegistry.hasAggregateFunction(star.functionName().getText().toUpperCase())) {
+            if (functionRegistry.hasAggregateFunction(star.functionName().getText().toUpperCase(Locale.ROOT))) {
                 out.add(star);
             }
         }
@@ -12270,7 +12555,7 @@ public class QueryExecutor {
             final FrostlakeParser.FunctionCallExprContext call =
                 (FrostlakeParser.FunctionCallExprContext) node;
             if (call.overClause() == null
-                    && functionRegistry.hasAggregateFunction(call.functionName().getText().toUpperCase())) {
+                    && functionRegistry.hasAggregateFunction(call.functionName().getText().toUpperCase(Locale.ROOT))) {
                 out.add(call);
             }
         }
@@ -12353,7 +12638,7 @@ public class QueryExecutor {
         if (clause instanceof FrostlakeParser.FunctionCallExprContext
                 && WindowFunctionArity.isMeasured(
                     ((FrostlakeParser.FunctionCallExprContext) clause)
-                        .functionName().getText().toUpperCase())) {
+                        .functionName().getText().toUpperCase(Locale.ROOT))) {
             out.add((FrostlakeParser.FunctionCallExprContext) clause);
         }
         for (int i = 0; i < clause.getChildCount(); i++) {
@@ -12365,7 +12650,7 @@ public class QueryExecutor {
     private FrostlakeParser.FunctionCallExprContext firstMiscountedCall(
             final List<FrostlakeParser.FunctionCallExprContext> calls) {
         for (final FrostlakeParser.FunctionCallExprContext call : calls) {
-            if (WindowFunctionArity.refusal(call.functionName().getText().toUpperCase(), "",
+            if (WindowFunctionArity.refusal(call.functionName().getText().toUpperCase(Locale.ROOT), "",
                     argumentCount(call)) != null) {
                 return call;
             }
@@ -12399,7 +12684,7 @@ public class QueryExecutor {
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
-            final String canonical = call.functionName().getText().toUpperCase();
+            final String canonical = call.functionName().getText().toUpperCase(Locale.ROOT);
             if (call.overClause() == null && isWindowOnlyName(canonical)) {
                 out.add(call);
             }
@@ -12415,7 +12700,7 @@ public class QueryExecutor {
                 || node instanceof FrostlakeParser.MatchRecognizeClauseContext) {
             return;
         }
-        if (node instanceof FrostlakeParser.FunctionCallExprContext
+        if (node instanceof FrostlakeParser.FunctionCallExprContext && !OverCallRules.isTableFunctionCall(node)
                 && ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null) {
             out.add((FrostlakeParser.FunctionCallExprContext) node);
         }
@@ -12519,6 +12804,26 @@ public class QueryExecutor {
         }
     }
 
+    /**
+     * A star's qualifier as its columns are spelled under it. CAST and TRY_CAST name a relation in a star's
+     * qualifier and nowhere a value is read — {@code cast.*} runs where {@code cast.a} is a syntax error — so a
+     * part that is one of the two words is quoted, which names the same relation.
+     */
+    private static String castWordsQuoted(final String qualifier) {
+        if (qualifier == null || qualifier.indexOf('"') >= 0) {
+            return qualifier;
+        }
+        final String[] parts = QualifiedName.parse(qualifier).parts();
+        boolean quoted = false;
+        for (int i = 0; i < parts.length; i++) {
+            if ("CAST".equalsIgnoreCase(parts[i]) || "TRY_CAST".equalsIgnoreCase(parts[i])) {
+                parts[i] = "\"" + parts[i].toUpperCase(Locale.ROOT) + "\"";
+                quoted = true;
+            }
+        }
+        return quoted ? String.join(".", parts) : qualifier;
+    }
+
     private PipelineStage planProjection(final Table table,
                                       final FrostlakeParser.SelectClauseContext ctx,
                                       final Map<String, Table> aliasToTable,
@@ -12556,7 +12861,7 @@ public class QueryExecutor {
             } else if (SelectItemAccessors.isQualifiedStarItem(item)) {
                 // Expand t.* or t.** to all columns of the referenced table/alias
                 final String[] qualifierParts = SelectItemAccessors.getItemQualifierParts(item);
-                final String qualifier = SelectItemAccessors.getItemQualifierSpelled(item);
+                final String qualifier = castWordsQuoted(SelectItemAccessors.getItemQualifierSpelled(item));
                 Table target = null;
                 for (final Map.Entry<String, Table> e : aliasToTable.entrySet()) {
                     if (starQualifierMatches(qualifierParts, e.getKey(), e.getValue(), isAliasKey(aliasToTable, e.getKey()))) {
@@ -13364,7 +13669,7 @@ public class QueryExecutor {
                 keyTexts.add(keyText);
                 keyPrints.add(AstPrinterVisitor.print(parsedKey));
                 keyColumns.add(parsedKey instanceof ColumnReferenceExpression
-                    ? ((ColumnReferenceExpression) parsedKey).getColumnName().toUpperCase() : null);
+                    ? ((ColumnReferenceExpression) parsedKey).getColumnName().toUpperCase(Locale.ROOT) : null);
             }
         }
         final ExpressionEvaluator keyEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
@@ -13395,7 +13700,7 @@ public class QueryExecutor {
                     if (canonicalKeys.get(i) != null) rc.put(canonicalKeys.get(i), v);
                     if (aliasKeys.get(i) != null) {
                         rc.put(aliasKeys.get(i), v);
-                        rc.put(aliasKeys.get(i).toUpperCase(), v);
+                        rc.put(aliasKeys.get(i).toUpperCase(Locale.ROOT), v);
                     }
                 }
                 // Aggregates in HAVING computed fresh over this row's group take precedence — they cover
@@ -13485,7 +13790,7 @@ public class QueryExecutor {
                 clause.havingClause(), table, aliasToTable, allTables));
         }
         for (final String key : groupByEvaluator.havingAggregateKeys(calls)) {
-            keys.add(key.toUpperCase());
+            keys.add(key.toUpperCase(Locale.ROOT));
         }
         return keys;
     }
@@ -13518,7 +13823,7 @@ public class QueryExecutor {
                 if (windowEvaluator.hasWindowFunctionInExpression(SelectItemAccessors.getItemValueExpr(item))) {
                     continue;
                 }
-                nonWindowAliasExprs.put((SelectItemAccessors.getItemAlias(item)).toUpperCase(),
+                nonWindowAliasExprs.put((SelectItemAccessors.getItemAlias(item)).toUpperCase(Locale.ROOT),
                     getOriginalText(SelectItemAccessors.getItemExpression(item)));
             }
         }
@@ -13577,7 +13882,7 @@ public class QueryExecutor {
                     for (int i = 0; i < qAliases.size(); i++) {
                         if (qAliases.get(i) != null && rowWindowResults.containsKey(i)) {
                             rc.put(qAliases.get(i), rowWindowResults.get(i));
-                            rc.put(qAliases.get(i).toUpperCase(), rowWindowResults.get(i));
+                            rc.put(qAliases.get(i).toUpperCase(Locale.ROOT), rowWindowResults.get(i));
                         }
                     }
                 }
@@ -13716,10 +14021,12 @@ public class QueryExecutor {
             if (db == null || sc == null) {
                 return new ArrayList<>();
             }
-            // By the exact canonical name: TABLE(tabcase()) does not reach "tabCase" (live-verified). A bare name
-            // is looked for along the session's SEARCH_PATH.
-            List<Function> overloads =
-                catalog.getDatabase(db).getSchema(sc).getFunctionOverloads(parts[parts.length - 1]);
+            // By the exact canonical name: TABLE(tabcase()) does not reach "tabCase", and a schema or a database
+            // the name writes is matched exactly too (live-verified). A bare name is looked for along the
+            // session's SEARCH_PATH.
+            final Database database = parts.length == 3 ? catalog.databaseExact(db) : catalog.getDatabase(db);
+            final Schema home = parts.length >= 2 ? database.schemaExact(sc) : database.getSchema(sc);
+            List<Function> overloads = home.getFunctionOverloads(parts[parts.length - 1]);
             if (overloads.isEmpty() && parts.length == 1) {
                 for (final Schema onPath : searchPathSchemas()) {
                     if (overloads.isEmpty()) {
@@ -13742,17 +14049,15 @@ public class QueryExecutor {
     private String substituteSqlParams(final String body,
                                         final List<Parameter> params,
                                         final List<Object> args) {
-        String sql = body;
+        final List<String> names = new ArrayList<>();
+        final List<String> bound = new ArrayList<>();
         for (int i = 0; i < params.size() && i < args.size(); i++) {
-            final String paramName = params.get(i).getName();
-            final Object value = args.get(i);
-            final String literal = value == null ? "NULL"
-                : value instanceof String ? "'" + value.toString().replace("'", "''") + "'"
-                : value.toString();
-            // Replace :name or just bare param name used as identifier
-            sql = SqlIdentifierSubstitution.substituteParameter(sql, paramName, literal);
+            names.add(params.get(i).getName());
+            // The argument as it is, of its own type: a table function converts nothing (see SqlArgumentText).
+            bound.add(SqlArgumentText.forTableParameter(args.get(i), params.get(i).getDataType()));
         }
-        return sql;
+        // Every parameter in one pass, and only where the body reads a value.
+        return ParameterReferences.bound(body, names, bound);
     }
 
     private boolean isSimpleStar(final FrostlakeParser.SelectClauseContext ctx) {
@@ -14002,7 +14307,13 @@ public class QueryExecutor {
                 itemTypes.setMultiTableContext(aliasToTable, allTables);
             }
             final ParserRuleContext origin = SelectItemAccessors.getItemExpression(item);
-            staticProjectionType(getOriginalText(expr), itemTypes, origin);
+            MultiColumnScalarSubqueryException typedAhead = null;
+            try {
+                staticProjectionType(getOriginalText(expr), itemTypes, origin);
+            } catch (final MultiColumnScalarSubqueryException severalColumns) {
+                // The call or the operator the subquery is an argument of refuses it as a ROW, below.
+                typedAhead = severalColumns;
+            }
             // The argument-family refusals too, from the same declared types and at the item's own
             // place — so SUM(bo) over an EMPTY table is refused at compile time, as live refuses it.
             final SourcePosition displaced = ExpressionSource.beginNested(origin == null ? null
@@ -14015,6 +14326,9 @@ public class QueryExecutor {
                 }
             } finally {
                 ExpressionSource.end(displaced);
+            }
+            if (typedAhead != null) {
+                throw typedAhead;
             }
         }
     }
@@ -14230,7 +14544,7 @@ public class QueryExecutor {
         for (int i = 0; i < selectItems.size(); i++) {
             final String alias = SelectItemAccessors.getItemAlias(selectItems.get(i));
             if (alias != null) {
-                aliasIndex.put(alias.toUpperCase(), i);
+                aliasIndex.put(alias.toUpperCase(Locale.ROOT), i);
             }
         }
         // A key reading an output name inside an aggregate's argument, or one a relation's column would
@@ -14300,7 +14614,7 @@ public class QueryExecutor {
     Object evaluateUpdateValue(final String expr, final Row row, final Table table, final String alias) {
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(table, functionRegistry, catalog, this);
         final Map<String, Table> aliasToTable = new HashMap<>();
-        aliasToTable.put((alias != null ? alias : table.getName()).toUpperCase(), table);
+        aliasToTable.put((alias != null ? alias : table.getName()).toUpperCase(Locale.ROOT), table);
         final List<Table> relations = new ArrayList<>();
         relations.add(table);
         evaluator.setDeclaredTypeBase(table, aliasToTable, relations);
@@ -14656,6 +14970,8 @@ public class QueryExecutor {
         if (sample == null) {
             return source;
         }
+        // The clause is judged while the statement compiles, whether or not a row reaches it.
+        SampleClauseRule.require(sample);
         return new TableData(source.table, new RowsProvider() {
             @Override
             public List<Row> rows() {
@@ -14680,7 +14996,7 @@ public class QueryExecutor {
         final List<String> names = new ArrayList<>();
         for (final FrostlakeParser.IdentifierContext idCtx : ctx.identifier()) {
             final String name = getIdentifier(idCtx);
-            names.add(idCtx.QUOTED_IDENTIFIER() == null ? name.toUpperCase() : name);
+            names.add(idCtx.QUOTED_IDENTIFIER() == null ? name.toUpperCase(Locale.ROOT) : name);
         }
         return names;
     }
@@ -14698,12 +15014,12 @@ public class QueryExecutor {
         final double sizeVal;
         if (sample.SESSION_VAR_REF() != null) {
             // SAMPLE BERNOULLI ($s): the size comes from a session variable set with SET s = ...
-            final String varName = sample.SESSION_VAR_REF().getText().substring(1).toUpperCase();
+            final String varName = sample.SESSION_VAR_REF().getText().substring(1).toUpperCase(Locale.ROOT);
             final Object varValue = securityManager != null
                 ? securityManager.getSessionContext().getSessionVariable(varName)
                 : sessionVariables.get(varName);
             if (varValue == null) {
-                throw new RuntimeException("Session variable not defined: $" + varName.toLowerCase());
+                throw new RuntimeException("Session variable not defined: $" + varName.toLowerCase(Locale.ROOT));
             }
             sizeVal = Double.parseDouble(String.valueOf(varValue));
         } else {
@@ -14758,7 +15074,15 @@ public class QueryExecutor {
      * types its result (ReturnedTable). Snowflake's documentation: they "determine the names and types of the
      * columns in the tabular results". A DATE column therefore stays a DATE in a UNION or under DATEADD, and a
      * CTAS or a view over the call declares the RETURNS TABLE types rather than what the body's literals
-     * measured. The rows are kept as the body produced them.
+     * measured.
+     *
+     * <p>A column declared an exact NUMBER holds its rows' values at the declared scale, rounded half away from
+     * zero as a write rounds them: {@code RETURNS TABLE (a INT) AS 'SELECT 10 / k'} answers 3, not 3.333333, and
+     * a NUMBER(5,2) column 1.26 for 1.257. A value with more digits than the declared precision holds is the
+     * column's fault, raised where a statement reads it and not where it reads the function's other columns:
+     * {@code Number out of representable range: type FIXED[SB2](3,1){nullable}, value 1234.5}. Every other
+     * family is the body's own - CREATE refuses a body whose column is of another - and a text keeps its
+     * characters whatever width the column declares (live-verified).
      */
     private ResultSet nameByDeclaredReturnColumns(final Function udtf, final ResultSet result) {
         final List<Parameter> declared = udtf.getReturnColumns();
@@ -14767,14 +15091,57 @@ public class QueryExecutor {
             return result;
         }
         final List<ResultSetColumn> renamed = new ArrayList<>();
+        boolean exactNumbers = false;
         for (int i = 0; i < declared.size(); i++) {
             final ResultSetColumn produced = result.getColumns().get(i);
             final DataType declaredType = declared.get(i).getDataType();
+            exactNumbers |= isDeclaredExactNumber(declaredType);
             renamed.add(new ResultSetColumn(SqlIdentifiers.canonicalText(declared.get(i).getName()),
                 declaredType != null ? declaredType : produced.getDataType(), null,
                 declaredType != null ? declaredType : produced.getStaticType()));
         }
-        return new ResultSet(renamed, result.getRows());
+        if (!exactNumbers) {
+            return new ResultSet(renamed, result.getRows());
+        }
+        final List<Row> rows = new ArrayList<>(result.getRows().size());
+        for (final Row produced : result.getRows()) {
+            final List<Object> values = new ArrayList<>(produced.getValues());
+            for (int i = 0; i < declared.size() && i < values.size(); i++) {
+                final DataType declaredType = declared.get(i).getDataType();
+                if (isDeclaredExactNumber(declaredType)) {
+                    values.set(i, atDeclaredScale(values.get(i), (NumericType) declaredType));
+                }
+            }
+            rows.add(new Row(values));
+        }
+        return new ResultSet(renamed, rows);
+    }
+
+    private static boolean isDeclaredExactNumber(final DataType declared) {
+        return declared instanceof NumericType && !NumericType.isApproximate(declared)
+            && ((NumericType) declared).getScale() >= 0 && isFixedPointNumeric(declared.getName());
+    }
+
+    /**
+     * A number a table function's body produced, held as its declared column holds it: at the column's scale, or
+     * the fault of a number the column's precision has no room for, which waits in the cell until it is read.
+     */
+    private static Object atDeclaredScale(final Object value, final NumericType declared) {
+        if (!(value instanceof Number)) {
+            return value;
+        }
+        final BigDecimal exact;
+        try {
+            exact = value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(value.toString());
+        } catch (final NumberFormatException notFinite) {
+            return value;
+        }
+        if (NumericRangeRefusal.exceeds(exact, declared.getPrecision(), declared.getScale())) {
+            return new DeferredFault(new RuntimeException(NumericRangeRefusal.typed(
+                SignedStorageWidth.tagOf(exact, declared.getScale()), declared.getPrecision(), declared.getScale(),
+                true, exact)));
+        }
+        return ExactValues.written(value, declared);
     }
 
     /** Whether the JOIN that owns this reference supplied the LATERAL keyword rather than the reference. */
@@ -14979,7 +15346,7 @@ public class QueryExecutor {
                 String colName = getIdentifier(idCtx);
                 // Uppercase unquoted identifiers (quoted identifiers keep their case)
                 if (idCtx.QUOTED_IDENTIFIER() == null) {
-                    colName = colName.toUpperCase();
+                    colName = colName.toUpperCase(Locale.ROOT);
                 }
                 columnAliases.add(colName);
             }
@@ -15028,7 +15395,7 @@ public class QueryExecutor {
                 validateTableFunctionCall("FLATTEN", "", source.FLATTEN().getSymbol(),
                     null, fal.namedArgumentList().namedArgument());
                 for (final FrostlakeParser.NamedArgumentContext argCtx : fal.namedArgumentList().namedArgument()) {
-                    final String argName = argCtx.identifier().getText().toUpperCase();
+                    final String argName = argCtx.identifier().getText().toUpperCase(Locale.ROOT);
                     final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                     namedArgs.put(argName, argValue);
                 }
@@ -15040,7 +15407,7 @@ public class QueryExecutor {
                     getOriginalText(fal.expression()), lateralContext);
                 namedArgs.put("INPUT", inputValue);
                 for (final FrostlakeParser.NamedArgumentContext argCtx : fal.namedArgument()) {
-                    final String argName = argCtx.identifier().getText().toUpperCase();
+                    final String argName = argCtx.identifier().getText().toUpperCase(Locale.ROOT);
                     final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                     namedArgs.put(argName, argValue);
                 }
@@ -15174,7 +15541,7 @@ public class QueryExecutor {
                     final FrostlakeParser.IdentifierContext quoted = partCtx.columnDefName() == null
                         ? null : partCtx.columnDefName().identifier();
                     if (quoted == null || quoted.QUOTED_IDENTIFIER() == null) {
-                        colName = colName.toUpperCase();
+                        colName = colName.toUpperCase(Locale.ROOT);
                     }
                     columnAliases.add(colName);
                 }
@@ -15188,6 +15555,10 @@ public class QueryExecutor {
             final List<List<DataType>> columnTypes = new ArrayList<>();
             final List<ValueRange> columnRanges = new ArrayList<>();
             final List<Boolean> columnNulls = new ArrayList<>();
+            // Every row's cell of each column, as written and as typed, a bare NULL's type being null: what the
+            // column folds from and each value is converted by (see ValuesColumnFold).
+            final List<List<Expression>> columnCells = new ArrayList<>();
+            final List<List<DataType>> columnCellTypes = new ArrayList<>();
 
             // Every item's own refusal comes before any is computed: a division or a math function live does
             // not fold is refused in VALUES (see ValuesFoldRule).
@@ -15236,10 +15607,22 @@ public class QueryExecutor {
                         columnTypes.add(new ArrayList<>());
                         columnRanges.add(ValueRange.EMPTY);
                         columnNulls.add(Boolean.FALSE);
+                        columnCells.add(new ArrayList<>());
+                        columnCellTypes.add(new ArrayList<>());
                     }
+                    final DataType cellType = isBareNullLiteral(exprText) ? null
+                        : valuesItemStaticType(exprText, evaluator);
                     if (!isBareNullLiteral(exprText)) {
-                        columnTypes.get(colIndex).add(valuesItemStaticType(exprText, evaluator));
+                        columnTypes.get(colIndex).add(cellType);
                     }
+                    Expression cell = null;
+                    try {
+                        cell = ExpressionEvaluator.parse(exprText);
+                    } catch (final RuntimeException notAnExpression) {
+                        cell = null;
+                    }
+                    columnCells.get(colIndex).add(cell);
+                    columnCellTypes.get(colIndex).add(cellType);
                     final BigDecimal exact = ValueRange.exactOf(value);
                     if (exact != null) {
                         columnRanges.set(colIndex, columnRanges.get(colIndex).including(exact));
@@ -15267,9 +15650,35 @@ public class QueryExecutor {
             }
 
             for (int i = 0; i < columns.size() && i < columnTypes.size(); i++) {
+                untypeNullTextCells(columnCells.get(i), columnCellTypes.get(i), columnTypes.get(i));
                 final DataType folded = columnTypes.get(i).isEmpty() ? null
-                    : DeclaredTypeFold.foldBranches(columnTypes.get(i));
+                    : foldedValuesColumn(columnCells.get(i), columnCellTypes.get(i), columnTypes.get(i));
                 if (folded != null) {
+                    // Every row's value is converted to the column's type, as an INSERT's VALUES converts it:
+                    // (1.50::NUMBER(10,2)), (1) answers 1.00, (TRUE), (0) FALSE, and (TRUE), (2) fails its row —
+                    // where the row's value is read: a value nothing reads raises nothing (see DeferredFault).
+                    // A UUID column's rows are presented below, which converts and checks them.
+                    for (int r = 0; !(folded instanceof UuidType) && r < rows.size()
+                            && r < columnCellTypes.get(i).size(); r++) {
+                        final Row row = rows.get(r);
+                        if (i < row.getValues().size()) {
+                            Object converted;
+                            try {
+                                converted = ValuesColumnFold.convert(row.getValue(i),
+                                    columnCellTypes.get(i).get(r), folded);
+                            } catch (final RuntimeException unconverted) {
+                                if (!DeferredFault.deferrable(unconverted)) {
+                                    throw unconverted;
+                                }
+                                converted = new DeferredFault(unconverted);
+                            }
+                            if (converted != row.getValue(i)) {
+                                final List<Object> replaced = new ArrayList<>(row.getValues());
+                                replaced.set(i, converted);
+                                rows.set(r, new Row(replaced));
+                            }
+                        }
+                    }
                     final TableColumn untyped = columns.get(i);
                     final TableColumn typed = new TableColumn(untyped.getName(), folded, true, null, false, false, false);
                     typed.setStaticallyTyped(true);
@@ -15307,8 +15716,8 @@ public class QueryExecutor {
         // Check if it's a CTE first (also check thread-local CTE context for UPDATE/DELETE)
         final Map<String, ResultSet> effectiveCtes = cteResults != null ? cteResults
             : (currentCteContext != null ? currentCteContext : null);
-        if (effectiveCtes != null && effectiveCtes.containsKey(writtenName.toUpperCase())) {
-            final ResultSet cteResult = effectiveCtes.get(writtenName.toUpperCase());
+        if (effectiveCtes != null && effectiveCtes.containsKey(writtenName.toUpperCase(Locale.ROOT))) {
+            final ResultSet cteResult = effectiveCtes.get(writtenName.toUpperCase(Locale.ROOT));
             final Table virtualTable = resultSetToTable(cteResult, alias != null ? alias : writtenName);
             // Make a defensive copy of the rows to avoid aliasing issues when CTE is used multiple times
             final List<Row> rowsCopy = new ArrayList<>(cteResult.getRows());
@@ -15659,6 +16068,30 @@ public class QueryExecutor {
             range = range.including(ValueRange.exactOf(value));
         }
         return range.withNullable(holdsNull);
+    }
+
+    /**
+     * Whether a stored column holds nothing but NULLs, or no row at all, as this transaction sees its table.
+     *
+     * @param owner      the catalog table, as the FROM clause resolved it
+     * @param columnName the column
+     * @return whether every value is NULL; false for a table this executor cannot read
+     */
+    public boolean columnHoldsOnlyNulls(final Table owner, final String columnName) {
+        final String qualifiedName = owner.getQualifiedName();
+        if (qualifiedName == null || !storageEngine.hasTable(qualifiedName)) {
+            return false;
+        }
+        final int index = owner.getColumnIndex(columnName);
+        if (index < 0) {
+            return false;
+        }
+        for (final Row row : readTableRowsForTransaction(qualifiedName)) {
+            if (index < row.size() && row.getValue(index) != null) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -16160,7 +16593,7 @@ public class QueryExecutor {
         final TransactionWriteSet writeSet = transactionManager.getCurrentTransaction().getWriteSet();
         final List<StreamRecord> buffered = new ArrayList<>();
         for (final String changedFqn : writeSet.changedTables()) {
-            final String bare = QualifiedName.parse(changedFqn).last().toUpperCase();
+            final String bare = QualifiedName.parse(changedFqn).last().toUpperCase(Locale.ROOT);
             if (!captureBareNames.contains(bare) || !storageEngine.hasTable(changedFqn)
                     || (ownTable != null && StreamSources.tableNamed(catalog, changedFqn) != ownTable)
                     || (viewStream && !StreamSources.capturesThroughView(catalog, stream,
@@ -16205,10 +16638,10 @@ public class QueryExecutor {
         final Set<String> names = new HashSet<>();
         if (stream.getSourceType() == StreamSourceType.VIEW && !stream.getBaseTableNames().isEmpty()) {
             for (final String baseName : stream.getBaseTableNames()) {
-                names.add(QualifiedName.parse(baseName).last().toUpperCase());
+                names.add(QualifiedName.parse(baseName).last().toUpperCase(Locale.ROOT));
             }
         } else {
-            names.add(QualifiedName.parse(stream.getSourceTableName()).last().toUpperCase());
+            names.add(QualifiedName.parse(stream.getSourceTableName()).last().toUpperCase(Locale.ROOT));
         }
         return names;
     }
@@ -16245,7 +16678,7 @@ public class QueryExecutor {
         final List<TableColumn> columns = viewStreamColumns(firstBranch, firstBase, view);
         if (view.hasExplicitColumnNames() && view.getColumnNames().size() == columns.size()) {
             for (int i = 0; i < columns.size(); i++) {
-                final TableColumn renamed = new TableColumn(view.getColumnNames().get(i).toUpperCase(),
+                final TableColumn renamed = new TableColumn(view.getColumnNames().get(i).toUpperCase(Locale.ROOT),
                     columns.get(i).getDataType(), true, null, false, false, false);
                 renamed.setStaticallyTyped(columns.get(i).isStaticallyTyped());
                 columns.set(i, renamed);
@@ -16264,7 +16697,7 @@ public class QueryExecutor {
             // A record is routed to a branch by BARE table name: branchTable keeps its full qualification for
             // catalog.resolveTable (cross-schema views), but trackInsert tags records with the bare mutated
             // table name, so the branch match must compare last segments.
-            final String branchTableBare = QualifiedName.parse(branchTable).last().toUpperCase();
+            final String branchTableBare = QualifiedName.parse(branchTable).last().toUpperCase(Locale.ROOT);
             final Table baseTable = viewStreamTable(stream, branchTable);
             final String whereText = branch.whereClause() == null
                 ? null : getOriginalText(branch.whereClause().booleanExpr());
@@ -16341,7 +16774,7 @@ public class QueryExecutor {
                 } else {
                     columnType = VariantType.VARIANT;
                 }
-                final TableColumn column = new TableColumn(columnName.toUpperCase(), columnType, true, null, false,
+                final TableColumn column = new TableColumn(columnName.toUpperCase(Locale.ROOT), columnType, true, null, false,
                     false, false);
                 // The VARIANT stand-in for a view with no resolved columns is no type any rule may read.
                 column.setStaticallyTyped(baseTable.hasColumn(exprText.trim()) || resolved != null);
@@ -16376,7 +16809,7 @@ public class QueryExecutor {
         for (int i = 0; i < curResult.getColumns().size(); i++) {
             final String name = view.hasExplicitColumnNames()
                     && view.getColumnNames().size() == curResult.getColumns().size()
-                ? view.getColumnNames().get(i).toUpperCase()
+                ? view.getColumnNames().get(i).toUpperCase(Locale.ROOT)
                 : curResult.getColumns().get(i).getName();
             final TableColumn column = new TableColumn(name, curResult.getColumns().get(i).getDataType(),
                 true, null, false, false, false);
@@ -16395,7 +16828,7 @@ public class QueryExecutor {
         // PRE state per base table, shadowing each table (bare and as-written spellings) as a CTE.
         final Map<String, ResultSet> preCtes = new HashMap<>();
         for (final String baseName : branchJoinTableNames(branch)) {
-            final String bare = QualifiedName.parse(baseName).last().toUpperCase();
+            final String bare = QualifiedName.parse(baseName).last().toUpperCase(Locale.ROOT);
             if (preCtes.containsKey(bare)) {
                 continue;   // self-join: one pre-relation serves every reference
             }
@@ -17086,7 +17519,7 @@ public class QueryExecutor {
             if (i > 0) {
                 qualified.append('.');
             }
-            qualified.append(parts[i].toUpperCase());
+            qualified.append(parts[i].toUpperCase(Locale.ROOT));
         }
         return qualified.toString();
     }
@@ -17104,7 +17537,7 @@ public class QueryExecutor {
             if (i > 0) {
                 qualified.append('.');
             }
-            qualified.append(parts[i].toUpperCase());
+            qualified.append(parts[i].toUpperCase(Locale.ROOT));
         }
         return qualified.toString();
     }
@@ -17131,14 +17564,23 @@ public class QueryExecutor {
      */
     public ResultSet executeCtasSourceSelect(final FrostlakeParser.SelectStatementContext ctx) {
         final boolean prev = consumingStreamContext;
+        final boolean declaring = declaresTableColumns;
         consumingStreamContext = true;
+        declaresTableColumns = true;
         ctasStreamsRead.clear();
         try {
             return executeSelectFromContext(ctx);
         } finally {
             consumingStreamContext = prev;
+            declaresTableColumns = declaring;
         }
     }
+
+    /**
+     * Whether the query executing declares a table's columns — a CTAS's source — so that each item keeps its declared
+     * type where the plan would report another width for it.
+     */
+    private boolean declaresTableColumns;
 
     /** Advance the offset of streams read by the last CTAS source SELECT. Call only after the CTAS succeeds. */
     public void consumeCtasStreams() {
@@ -17149,36 +17591,109 @@ public class QueryExecutor {
     }
 
     /**
+     * A VALUES column's cells written as a NULL of a text type lose their type where every other typed cell is an
+     * exact number, as the bare word has none: {@code VALUES (NULL::VARCHAR(10)), (5)} is a NUMBER(1,0) column
+     * (see UntypedNullFold#isNullTextConstant).
+     *
+     * @param cells     each row's cell as written, null where it is no expression
+     * @param cellTypes each row's type, null for a bare NULL; rewritten in place
+     * @param typed     the types of the cells that carry one; rewritten in place
+     */
+    private static void untypeNullTextCells(final List<Expression> cells, final List<DataType> cellTypes,
+                                            final List<DataType> typed) {
+        boolean sawNullText = false;
+        boolean sawNumber = false;
+        for (int r = 0; r < cells.size(); r++) {
+            final DataType type = cellTypes.get(r);
+            if (type == null) {
+                continue;
+            }
+            if (cells.get(r) != null && UntypedNullFold.isNullTextConstant(cells.get(r))) {
+                sawNullText = true;
+            } else if (type instanceof NumericType && !NumericType.isApproximate(type)) {
+                sawNumber = true;
+            } else {
+                return;
+            }
+        }
+        if (!sawNullText || !sawNumber) {
+            return;
+        }
+        typed.clear();
+        for (int r = 0; r < cells.size(); r++) {
+            if (cells.get(r) != null && UntypedNullFold.isNullTextConstant(cells.get(r))) {
+                cellTypes.set(r, null);
+            } else if (cellTypes.get(r) != null) {
+                typed.add(cellTypes.get(r));
+            }
+        }
+    }
+
+    /**
+     * The type a FROM-clause VALUES gives a column: the fold an INSERT's VALUES makes of the same rows, which joins
+     * a text to the number or the date beside it and refuses a row whose type does not fold, and the set
+     * operation's fold where a cell could not be read as an expression.
+     */
+    private static DataType foldedValuesColumn(final List<Expression> cells, final List<DataType> cellTypes,
+                                               final List<DataType> typed) {
+        if (cells.contains(null)) {
+            return DeclaredTypeFold.foldBranches(typed);
+        }
+        final DataType folded = ValuesColumnFold.fold(cells, cellTypes);
+        return folded != null ? folded : DeclaredTypeFold.foldBranches(typed);
+    }
+
+    /**
      * The LIMIT/OFFSET window: {@code {limit, offset}}. NULL and the EMPTY string mean "no limit" (and an
      * empty OFFSET string means zero) — any other string literal is refused at its own position exactly
-     * as the account refuses it; binds were inlined before parse.
+     * as the account refuses it. A count with a fraction keeps its whole part, and a bind still standing in the
+     * tree — a block's own statement keeps its {@code :names} — gives the count its variable holds (see
+     * {@link RowCountSlot}).
      */
-    private static int[] limitWindow(final FrostlakeParser.LimitClauseContext ctx) {
+    private int[] limitWindow(final FrostlakeParser.LimitClauseContext ctx) {
         int limit = Integer.MAX_VALUE;
         int offset = 0;
         boolean inOffset = false;
-        for (final ParseTree child : ctx.children) {
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            final ParseTree child = ctx.getChild(i);
             if (!(child instanceof TerminalNode)) {
                 continue;
             }
             final Token token = ((TerminalNode) child).getSymbol();
+            Integer count = null;
             if (token.getType() == FrostlakeParser.OFFSET) {
                 inOffset = true;
-            } else if (token.getType() == FrostlakeParser.INTEGER_LITERAL) {
-                if (inOffset) {
-                    offset = Integer.parseInt(token.getText());
-                } else {
-                    limit = Integer.parseInt(token.getText());
+            } else if (token.getType() == FrostlakeParser.INTEGER_LITERAL
+                    || token.getType() == FrostlakeParser.FLOAT_LITERAL) {
+                if (token.getType() == FrostlakeParser.INTEGER_LITERAL) {
+                    // The slot takes a written literal straight from the token stream, so the literal reader's
+                    // own width refusal is applied here too.
+                    IntegerLiteralRange.reject(token);
                 }
+                count = RowCountSlot.ofLiteral(token.getText(), inOffset);
+            } else if (token.getType() == FrostlakeParser.COLON && i + 1 < ctx.getChildCount()) {
+                count = boundRowCount(ctx.getChild(i + 1).getText(), inOffset);
             } else if (token.getType() == FrostlakeParser.STRING_LITERAL) {
                 requireEmptyLimitString(token);
+            }
+            if (count != null && inOffset) {
+                offset = count;
+            } else if (count != null) {
+                limit = count;
             }
         }
         return new int[] {limit, offset};
     }
 
+    /** The count a block's variable gives a LIMIT, OFFSET or FETCH slot, or null when it holds NULL. */
+    private Integer boundRowCount(final String name, final boolean offset) {
+        final ProceduralExecutor procedural = getProceduralExecutor();
+        return procedural == null || !procedural.hasVariable(name) ? null
+            : RowCountSlot.ofBind(name, procedural.getVariable(name), offset);
+    }
+
     /** The LIMIT/OFFSET window applied at once over {@code rows}. */
-    private static List<Row> applyLimitClause(final FrostlakeParser.LimitClauseContext ctx, final List<Row> rows) {
+    private List<Row> applyLimitClause(final FrostlakeParser.LimitClauseContext ctx, final List<Row> rows) {
         final int[] window = limitWindow(ctx);
         return new LimitOperator(window[0], window[1]).execute(rows, null);
     }
@@ -17193,7 +17708,7 @@ public class QueryExecutor {
     }
 
     /** The ANSI FETCH window as {@code {count, offset}}: an optional OFFSET-rows prefix, then the fetched count. */
-    private static int[] fetchWindow(final FrostlakeParser.FetchClauseContext ctx) {
+    private int[] fetchWindow(final FrostlakeParser.FetchClauseContext ctx) {
         // Each slot is read by WHERE IT SITS, not by counting INTEGER_LITERALs. NULL is legal in both
         // and means "no offset" / "no limit", so an index into the integer list silently read the FETCH
         // COUNT as the offset the moment the offset was written NULL.
@@ -17212,11 +17727,17 @@ public class QueryExecutor {
             } else if (slot.getType() == FrostlakeParser.FETCH) {
                 afterFetch = true;
                 afterOffset = false;
-            } else if (slot.getType() == FrostlakeParser.INTEGER_LITERAL) {
-                if (afterOffset) {
-                    offset = Integer.parseInt(slot.getText());
-                } else if (afterFetch) {
-                    fetch = Integer.parseInt(slot.getText());
+            } else if (slot.getType() == FrostlakeParser.INTEGER_LITERAL
+                    || slot.getType() == FrostlakeParser.FLOAT_LITERAL
+                    || slot.getType() == FrostlakeParser.COLON && i + 1 < ctx.getChildCount()) {
+                // A count with a fraction keeps its whole part, and a bind gives its variable's (RowCountSlot).
+                final Integer count = slot.getType() == FrostlakeParser.COLON
+                    ? boundRowCount(ctx.getChild(i + 1).getText(), afterOffset)
+                    : (Integer) RowCountSlot.ofLiteral(slot.getText(), afterOffset);
+                if (count != null && afterOffset) {
+                    offset = count;
+                } else if (count != null && afterFetch) {
+                    fetch = count;
                 }
                 afterOffset = false;
                 afterFetch = false;
@@ -17230,7 +17751,7 @@ public class QueryExecutor {
     }
 
     /** The FETCH window applied at once over {@code rows}. */
-    private static List<Row> applyFetchClause(final FrostlakeParser.FetchClauseContext ctx, final List<Row> rows) {
+    private List<Row> applyFetchClause(final FrostlakeParser.FetchClauseContext ctx, final List<Row> rows) {
         final int[] window = fetchWindow(ctx);
         return new LimitOperator(window[0], window[1]).execute(rows, null);
     }
@@ -17484,7 +18005,7 @@ public class QueryExecutor {
             }
         }
         final boolean appendOnly = changesAppendOnly(ctx);
-        final String targetBareName = table.getName().toUpperCase();
+        final String targetBareName = table.getName().toUpperCase(Locale.ROOT);
         final List<Row> rows = new ArrayList<>();
         final List<StreamRecord> changes = appendOnly
             ? unconsumedAppendRecords(stream) : unconsumedNetRecords(stream);
@@ -17512,7 +18033,7 @@ public class QueryExecutor {
         final String source = record.getSourceTable() != null
             ? record.getSourceTable() : stream.getSourceTableName();
         return source != null
-            && QualifiedName.parse(source).last().toUpperCase().equals(targetBareName);
+            && QualifiedName.parse(source).last().toUpperCase(Locale.ROOT).equals(targetBareName);
     }
 
     /** CHANGES (INFORMATION =&gt; APPEND_ONLY) keeps only the inserts; DEFAULT keeps the whole delta. */
@@ -17723,11 +18244,22 @@ public class QueryExecutor {
             CallArgumentTypes.checkTableSource(procedure.getName(), procedure.getParameters(), positional,
                 name.getStart(), new ExpressionEvaluator(null, functionRegistry, catalog, this));
         }
+        if (ExplainPlan.planning()) {
+            // A plan is asked for and nothing is carried out: the procedure's declared columns are its shape.
+            final List<ResultSetColumn> shape = new ArrayList<>(procedure.getReturnColumns().size());
+            for (final Parameter col : procedure.getReturnColumns()) {
+                final DataType type = ReturnColumnTypes.ofProcedure(col.getDataType());
+                shape.add(new ResultSetColumn(col.getName(), type, null, type));
+            }
+            return new ResultSet(shape, new ArrayList<>());
+        }
         // The procedure runs as PART of the enclosing statement (Snowflake: same transaction), so its
         // per-statement autocommit must not commit the enclosing INSERT/MERGE's implicit transaction.
         final List<ResultSet> results;
         // And it is the enclosing statement's own work, which records no CALL (see executeAsPartOfStatement).
         transactionManager.beginAtomicSection();
+        // Its statements are child jobs of the query, which may read and may not write.
+        FromClauseProcedureJobs.enter();
         try {
             results = executeAsPartOfStatement(call);
         } catch (final RuntimeException failed) {
@@ -17735,6 +18267,7 @@ public class QueryExecutor {
             throw new RuntimeException("Stored procedure execution error on line " + named.getLine() + " position "
                 + named.getCharPositionInLine() + ": " + failed.getMessage(), failed);
         } finally {
+            FromClauseProcedureJobs.exit();
             transactionManager.endAtomicSection();
         }
         final ResultSet callResult = results.isEmpty()
@@ -17746,7 +18279,9 @@ public class QueryExecutor {
         }
         final List<ResultSetColumn> renamed = new ArrayList<>(declared.size());
         for (final Parameter col : declared) {
-            renamed.add(new ResultSetColumn(col.getName(), col.getDataType()));
+            // The declared type is the column's, statically as well, as a table function's is.
+            final DataType type = ReturnColumnTypes.ofProcedure(col.getDataType());
+            renamed.add(new ResultSetColumn(col.getName(), type, null, type));
         }
         final List<Row> converted = new ArrayList<>(callResult.getRows().size());
         for (final Row returned : callResult.getRows()) {
@@ -17833,7 +18368,7 @@ public class QueryExecutor {
     private String functionSimpleName(final FrostlakeParser.FunctionNameContext nameCtx) {
         final List<FrostlakeParser.IdentifierContext> ids = nameCtx.identifier();
         if (ids == null || ids.isEmpty()) {
-            return nameCtx.getText().toUpperCase();
+            return nameCtx.getText().toUpperCase(Locale.ROOT);
         }
         return getIdentifier(ids.get(ids.size() - 1));
     }
@@ -17915,7 +18450,7 @@ public class QueryExecutor {
                     evaluateBareArg(ctx.expression(0), lateralContext));
             }
             for (final FrostlakeParser.NamedArgumentContext arg : ctx.namedArgument()) {
-                namedArgs.put(arg.identifier().getText().toUpperCase(),
+                namedArgs.put(arg.identifier().getText().toUpperCase(Locale.ROOT),
                     evaluateNamedTableFunctionArgument(arg, lateralContext));
             }
             return plannedCall(functionName, callText, tableFunc, namedArgs);
@@ -18032,6 +18567,21 @@ public class QueryExecutor {
                                            final Token nameToken,
                                            final List<FrostlakeParser.ExpressionContext> positional,
                                            final List<FrostlakeParser.NamedArgumentContext> named) {
+        validateTableFunctionCall(functionName, schemaQualifier, nameToken, positional, named,
+            positional == null ? 0 : positional.size());
+    }
+
+    /**
+     * {@link #validateTableFunctionCall(String, String, Token, List, List)} for a call whose arguments may hold a
+     * subquery written bare, which is the call's whole argument list and no expression among the positional ones.
+     *
+     * @param writtenCount the number of arguments the call writes, such a subquery counted
+     */
+    private void validateTableFunctionCall(final String functionName, final String schemaQualifier,
+                                           final Token nameToken,
+                                           final List<FrostlakeParser.ExpressionContext> positional,
+                                           final List<FrostlakeParser.NamedArgumentContext> named,
+                                           final int writtenCount) {
         TableFunctionArguments.validateQualification(functionName, schemaQualifier);
         final List<String> namesInOrder = new ArrayList<>();
         // A named argument as the call spells it, which is how a type refusal names it: 'input' for input => x.
@@ -18046,7 +18596,7 @@ public class QueryExecutor {
         }
         if (named != null) {
             for (final FrostlakeParser.NamedArgumentContext arg : named) {
-                namesInOrder.add(arg.identifier().getText().toUpperCase());
+                namesInOrder.add(arg.identifier().getText().toUpperCase(Locale.ROOT));
                 spelledNames.add(arg.identifier().getText());
                 argumentTexts.add(namedArgumentText(arg));
             }
@@ -18061,7 +18611,9 @@ public class QueryExecutor {
             ArgumentRows.refuse(functionName, positional == null ? 0 : positional.size(), named,
                 new ExpressionEvaluator(null, functionRegistry, catalog, this));
         }
-        if (named == null || named.isEmpty()) {
+        // FLATTEN's count is judged over the arguments as written: a bare subquery is one of them.
+        if ((named == null || named.isEmpty())
+                && !("FLATTEN".equals(functionName) && writtenCount != argumentTexts.size())) {
             TableFunctionArguments.validateArity(functionName, nameToken, argumentTexts);
         }
         for (int i = 0; i < namesInOrder.size(); i++) {
@@ -18071,6 +18623,15 @@ public class QueryExecutor {
                     : TableFunctionArguments.kindOfNamed(functionName, written),
                 written == null ? TableFunctionArguments.nameOfPositional(functionName, i) : spelledNames.get(i),
                 argumentTexts.get(i));
+        }
+        if (named != null) {
+            GeneratorBounds.requireConstants(functionName, named, lateralArgumentTypes.aliases(),
+                lateralArgumentTypes.tables(), new RowFreeValues() {
+                    @Override
+                    public Object valueOf(final ParserRuleContext expression) {
+                        return evaluateTableFunctionArgument(expression, getOriginalText(expression), null);
+                    }
+                });
         }
     }
 
@@ -18124,6 +18685,7 @@ public class QueryExecutor {
 
     /** The SAMPLE / TABLESAMPLE stage over a planned source's rows. */
     private Operator sampleStage(final FrostlakeParser.SampleClauseContext sample) {
+        SampleClauseRule.require(sample);
         return new StageOperator("SAMPLE[" + getOriginalText(sample) + "]") {
             @Override
             protected List<Row> apply(final List<Row> input) {
@@ -18155,15 +18717,15 @@ public class QueryExecutor {
                     writtenArguments(mixCtx), lateralContext);
             }
             final Map<String, Object> namedArgs = new HashMap<>();
-            validateTableFunctionCall(functionName.toUpperCase(), schemaQualifierOf(mixCtx.functionName()),
+            validateTableFunctionCall(functionName.toUpperCase(Locale.ROOT), schemaQualifierOf(mixCtx.functionName()),
                 mixCtx.functionName().getStart(),
                 mixCtx.expression(), mixCtx.namedArgument());
             // the one leading positional argument
             final Object posVal = evaluateTableFunctionArgument(mixCtx.expression(0),
                 getOriginalText(mixCtx.expression(0)), lateralContext);
-            namedArgs.put(TableFunctionArguments.firstPositionalParameter(functionName.toUpperCase()), posVal);
+            namedArgs.put(TableFunctionArguments.firstPositionalParameter(functionName.toUpperCase(Locale.ROOT)), posVal);
             for (final FrostlakeParser.NamedArgumentContext argCtx : mixCtx.namedArgument()) {
-                final String argName = argCtx.identifier().getText().toUpperCase();
+                final String argName = argCtx.identifier().getText().toUpperCase(Locale.ROOT);
                 final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                 namedArgs.put(argName, argValue);
             }
@@ -18198,12 +18760,12 @@ public class QueryExecutor {
             // Parse named arguments
             final Map<String, Object> namedArgs = new HashMap<>();
             if (funcCtx.namedArgumentList() != null) {
-                validateTableFunctionCall(functionName.toUpperCase(),
+                validateTableFunctionCall(functionName.toUpperCase(Locale.ROOT),
                     schemaQualifierOf(funcCtx.functionName()),
                     funcCtx.functionName().getStart(), null,
                     funcCtx.namedArgumentList().namedArgument());
                 for (final FrostlakeParser.NamedArgumentContext argCtx : funcCtx.namedArgumentList().namedArgument()) {
-                    final String argName = argCtx.identifier().getText().toUpperCase();
+                    final String argName = argCtx.identifier().getText().toUpperCase(Locale.ROOT);
                     // If lateral context is provided, column references resolve from it
                     final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                     namedArgs.put(argName, argValue);
@@ -18264,9 +18826,9 @@ public class QueryExecutor {
             // Check if it's a known built-in table function callable with no/positional args
             final TableFunction tableFunc = functionRegistry.getTableFunction(functionName);
             if (tableFunc != null) {
-                validateTableFunctionCall(functionName.toUpperCase(),
+                validateTableFunctionCall(functionName.toUpperCase(Locale.ROOT),
                     schemaQualifierOf(funcCtx.functionName()),
-                    funcCtx.functionName().getStart(), funcArgExprs(funcCtx), null);
+                    funcCtx.functionName().getStart(), funcArgExprs(funcCtx), null, funcArgTexts(funcCtx).size());
                 if (!funcArgTexts(funcCtx).isEmpty()) {
                     // Positional args, e.g. SPLIT_TO_TABLE('a,b', ',') or FLATTEN(col) — evaluate and pass through.
                     final List<Object> positionalArgs = new ArrayList<>();
@@ -18303,6 +18865,16 @@ public class QueryExecutor {
                         return procResult;
                     }
                 }), procResult.getColumns());
+            }
+            final String[] written = ParseTreeText.functionNameParts(funcCtx.functionName());
+            if (written != null && written.length > 1) {
+                // A name written with its schema misses as a user-defined table function, each part spelled as
+                // the reference resolved it (live-verified).
+                final StringBuilder spelled = new StringBuilder();
+                for (final String part : written) {
+                    spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+                }
+                throw new RuntimeException(SqlCompilationError.of("Unknown user-defined table function " + spelled));
             }
             throw new RuntimeException(SqlCompilationError.of("Unknown table function " + functionName));
         }
@@ -18353,14 +18925,30 @@ public class QueryExecutor {
         for (int i = 0; i < udtf.getParameters().size(); i++) {
             final int taken = match.argumentOf(i);
             if (taken >= 0) {
-                callArgs.add(udtfArgumentValue(written.get(taken), lateralContext));
+                try {
+                    callArgs.add(udtfArgumentValue(written.get(taken), lateralContext));
+                } catch (final UnsupportedSubqueryException refused) {
+                    // A subquery refused among a SQL function's arguments is refused in that function's name.
+                    throw refused.namesFunction() || udtf.getUdfLanguage() != UdfLanguage.SQL ? refused
+                        : UnsupportedSubqueryException.inside(udtf);
+                }
             } else if (udtf.getParameters().get(i).hasDefault()) {
                 callArgs.add(evaluateExpression(udtf.getParameters().get(i).getDefaultValue(), null, null));
             }
         }
+        final List<ResultSetColumn> handlerColumns = declaredHandlerColumns(udtf);
         return new PlannedTableFunction(functionName, callText, new MemoizedResultSet(new ResultSetProvider() {
             @Override
             public ResultSet getResultSet() {
+                if (handlerColumns != null) {
+                    // One call is one partition of one row: the rows written for it, then the partition's end.
+                    final List<List<Object>> partition = new ArrayList<>();
+                    partition.add(callArgs);
+                    final TablePartitionRows written = runHandlerPartition(udtf, partition);
+                    final List<Row> rows = new ArrayList<>(written.writtenFor(0));
+                    rows.addAll(written.atEnd());
+                    return new ResultSet(handlerColumns, rows);
+                }
                 if (udtf.getUdfLanguage() == UdfLanguage.PYTHON) {
                     return UdfRuntimes.require(UdfLanguage.PYTHON)
                         .executeTableFunction(udtf, callArgs);
@@ -18368,7 +18956,7 @@ public class QueryExecutor {
                 // A body that closes its own frame before a semicolon runs what the frame holds.
                 final String sql = substituteSqlParams(SqlUdfBodyFrame.executableBody(udtf.getBody()),
                     udtf.getParameters(), callArgs);
-                final Object answered = inRoutineHome(udtf.getHome(), new RoutineBody() {
+                final Object answered = inRoutineHome(udtf.getHome(), udtf.getOwner(), new RoutineBody() {
                     @Override
                     public Object run() {
                         // Inlined into the calling query, as a SQL UDF's body is: no query ID, no history row.
@@ -18379,7 +18967,246 @@ public class QueryExecutor {
                 return answered == null ? new ResultSet(new ArrayList<>(), new ArrayList<>())
                     : nameByDeclaredReturnColumns(udtf, (ResultSet) answered);
             }
-        }), null);
+        }), handlerColumns);
+    }
+
+    /** Runs a handler table function over one partition of its input, by its language's runtime. */
+    private TablePartitionRows runHandlerPartition(final Function udtf, final List<List<Object>> partition) {
+        if (udtf.getUdfLanguage() != UdfLanguage.JAVA) {
+            return UdfRuntimes.require(udtf.getUdfLanguage()).executeTablePartition(udtf, partition);
+        }
+        final ImportLocalizer outer = JarHandlerLoader.localizeWith(this);
+        try {
+            return JavaTableFunctions.run(udtf, partition, catalog, getS3PathResolver());
+        } finally {
+            JarHandlerLoader.restore(outer);
+        }
+    }
+
+    /**
+     * The stage of a FROM item that calls a table function written in a handler language beside the relations
+     * to its left, or null for any other item (live-verified). The function reads its input by PARTITIONS:
+     * one handler reads a partition's rows in turn - each row it writes is joined to the row it was reading -
+     * and is then told the partition is through, and the rows it writes then are joined to a row that holds the
+     * partition's own columns and NULL for every other. {@code OVER (PARTITION BY c ORDER BY k)} names the
+     * partitions and the order their rows are read in; a partitioning key is a column or a constant, and
+     * anything else is refused, {@code Invalid partitioning expression 'UPPER(EV.G)'; must be a column.}, as
+     * is a frame. {@code OVER ()} and an ORDER BY alone make one partition of the whole input. Written
+     * without OVER, a JavaScript function reads the whole input as one partition and a Java or a Python
+     * function each row as its own.
+     */
+    private PlannedRelation planHandlerTableFunctionJoin(final FrostlakeParser.TableReferenceContext rightTableRef,
+                                                         final Map<String, Table> scope,
+                                                         final List<Table> scopeTables) {
+        final FrostlakeParser.TableSourceContext source = rightTableRef.tableSource();
+        if (source == null) {
+            return null;
+        }
+        final FrostlakeParser.FunctionNameContext nameCtx;
+        final List<WrittenArgument> written;
+        final FrostlakeParser.OverClauseContext over;
+        final String callText;
+        if (source.TABLE() != null && source.expression() != null && namesATableFunction(source.expression())
+                && handlerCallName(source.expression()) != null) {
+            nameCtx = handlerCallName(source.expression());
+            written = writtenArguments(source.expression());
+            over = handlerCallOver(source.expression());
+            callText = getOriginalText(source.expression());
+        } else if (source.tableFunctionExpr() != null && (source.tableFunctionExpr().namedArgument() == null
+                || source.tableFunctionExpr().namedArgument().isEmpty())) {
+            nameCtx = source.tableFunctionExpr().functionName();
+            written = new ArrayList<>();
+            for (final FrostlakeParser.ExpressionContext argument : source.tableFunctionExpr().expression()) {
+                written.add(new WrittenArgument(null, getOriginalText(argument), argument));
+            }
+            over = null;
+            callText = getOriginalText(source.tableFunctionExpr());
+        } else {
+            return null;
+        }
+        final String functionName = functionSimpleName(nameCtx);
+        if (functionRegistry.getTableFunction(functionName) != null) {
+            return null;
+        }
+        final List<Function> overloads = udtfOverloads(nameCtx);
+        if (overloads.isEmpty()) {
+            return null;
+        }
+        final Function udtf;
+        lateralArgumentTypes.begin(scope, scopeTables);
+        try {
+            udtf = matchedUdtfOrNull(overloads, nameCtx.getStart(), written);
+        } finally {
+            lateralArgumentTypes.end();
+        }
+        final List<ResultSetColumn> columns = udtf == null ? null : declaredHandlerColumns(udtf);
+        if (columns == null) {
+            return null;
+        }
+        final TableFunctionMatch match;
+        lateralArgumentTypes.begin(scope, scopeTables);
+        try {
+            match = matchedUdtf(overloads, nameCtx.getStart(), written);
+        } finally {
+            lateralArgumentTypes.end();
+        }
+        final TablePartitioning partitioning = TablePartitioning.of(over, scope, scopeTables);
+        // The names the call and its partitioning read are judged while the statement compiles, with every
+        // column to the left bound to NULL and no handler run.
+        final Map<String, Object> nullRow = new HashMap<>();
+        for (final Map.Entry<String, Table> entry : scope.entrySet()) {
+            for (final TableColumn column : entry.getValue().getColumns()) {
+                nullRow.put(column.getName().toUpperCase(Locale.ROOT), null);
+                nullRow.put((entry.getValue().getName() + "." + column.getName()).toUpperCase(Locale.ROOT), null);
+                nullRow.put((entry.getKey() + "." + column.getName()).toUpperCase(Locale.ROOT), null);
+            }
+        }
+        final boolean previous = RelationShapeOnly.begin();
+        lateralArgumentTypes.begin(scope, scopeTables);
+        try {
+            handlerInput(udtf, match, written, partitioning, null, nullRow);
+        } finally {
+            lateralArgumentTypes.end();
+            RelationShapeOnly.end(previous);
+        }
+        final String alias = sourceAlias(rightTableRef);
+        Table shape = resultSetToTable(new ResultSet(columns, new ArrayList<Row>()),
+            alias != null ? alias : functionName.toUpperCase(Locale.ROOT));
+        final List<String> columnAliases = columnAliasList(rightTableRef.identifierList());
+        if (columnAliases != null) {
+            shape = applyColumnAliases(shape, columnAliases);
+        }
+        final int rightWidth = columns.size();
+        final boolean onePartition = over != null ? partitioning.isWholeInput()
+            : udtf.getUdfLanguage() == UdfLanguage.JAVASCRIPT;
+        final Operator stage = new StageOperator("TABLE[" + callText + "]") {
+            @Override
+            protected List<Row> apply(final List<Row> leftRows) {
+                final List<TableFunctionInput> inputs = new ArrayList<>();
+                lateralArgumentTypes.begin(scope, scopeTables);
+                try {
+                    for (final Row leftRow : leftRows) {
+                        inputs.add(handlerInput(udtf, match, written, partitioning, leftRow,
+                            lateralContextOf(leftRow, scope, scopeTables)));
+                    }
+                } finally {
+                    lateralArgumentTypes.end();
+                }
+                final List<Row> joined = new ArrayList<>();
+                for (final List<TableFunctionInput> partition
+                        : partitioning.partitions(inputs, over != null, onePartition)) {
+                    final List<List<Object>> arguments = new ArrayList<>();
+                    for (final TableFunctionInput input : partition) {
+                        arguments.add(input.arguments());
+                    }
+                    final TablePartitionRows out = runHandlerPartition(udtf, arguments);
+                    for (int i = 0; i < partition.size(); i++) {
+                        for (final Row row : out.writtenFor(i)) {
+                            final List<Object> values = new ArrayList<>(partition.get(i).leftRow().getValues());
+                            values.addAll(row.getValues());
+                            joined.add(new Row(values));
+                        }
+                    }
+                    for (final Row row : out.atEnd()) {
+                        final List<Object> values = partitioning.endRow(partition.get(0).leftRow());
+                        values.addAll(row.getValues());
+                        joined.add(new Row(values));
+                    }
+                }
+                return joined;
+            }
+        };
+        return new PlannedRelation(stage, shape, alias);
+    }
+
+    /** One input row of a handler table function: its arguments and its partitioning and ordering keys. */
+    private TableFunctionInput handlerInput(final Function udtf, final TableFunctionMatch match,
+                                            final List<WrittenArgument> written,
+                                            final TablePartitioning partitioning, final Row leftRow,
+                                            final Map<String, Object> lateralContext) {
+        final List<Object> arguments = new ArrayList<>();
+        for (int i = 0; i < udtf.getParameters().size(); i++) {
+            final int taken = match.argumentOf(i);
+            if (taken >= 0) {
+                arguments.add(udtfArgumentValue(written.get(taken), lateralContext));
+            } else if (udtf.getParameters().get(i).hasDefault()) {
+                arguments.add(evaluateExpression(udtf.getParameters().get(i).getDefaultValue(), null, null));
+            }
+        }
+        final List<Object> partitionKey = new ArrayList<>();
+        for (final FrostlakeParser.ExpressionContext key : partitioning.partitionKeys()) {
+            partitionKey.add(ValueComparisons.canonicalGroupKeyValue(
+                evaluateTableFunctionArgument(key, getOriginalText(key), lateralContext)));
+        }
+        final List<Object> orderKey = new ArrayList<>();
+        for (final FrostlakeParser.OrderItemContext item : partitioning.orderItems()) {
+            orderKey.add(evaluateTableFunctionArgument(item.expression(), getOriginalText(item.expression()),
+                lateralContext));
+        }
+        return new TableFunctionInput(leftRow, arguments, partitionKey, orderKey);
+    }
+
+    /** The overload a call matches, or null when its arguments match none - which the ordinary path refuses. */
+    private Function matchedUdtfOrNull(final List<Function> overloads, final Token nameToken,
+                                       final List<WrittenArgument> written) {
+        try {
+            return matchedUdtf(overloads, nameToken, written).getFunction();
+        } catch (final RuntimeException refused) {
+            return null;
+        }
+    }
+
+    /** The function a TABLE( … ) operand calls, or null for an operand of another shape. */
+    private static FrostlakeParser.FunctionNameContext handlerCallName(final FrostlakeParser.ExpressionContext call) {
+        if (call instanceof FrostlakeParser.FunctionCallExprContext) {
+            return ((FrostlakeParser.FunctionCallExprContext) call).functionName();
+        }
+        if (call instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallMixedArgsExprContext) call).functionName();
+        }
+        if (call instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallNamedArgsExprContext) call).functionName();
+        }
+        return null;
+    }
+
+    /** The OVER clause a TABLE( … ) operand's call is written with, or null. */
+    private static FrostlakeParser.OverClauseContext handlerCallOver(final FrostlakeParser.ExpressionContext call) {
+        if (call instanceof FrostlakeParser.FunctionCallExprContext) {
+            return ((FrostlakeParser.FunctionCallExprContext) call).overClause();
+        }
+        if (call instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallMixedArgsExprContext) call).overClause();
+        }
+        if (call instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallNamedArgsExprContext) call).overClause();
+        }
+        return null;
+    }
+
+    /**
+     * The columns a handler table function declares, which are the columns it answers: read for a lateral
+     * item's shape, its handler is not run - no row is behind its arguments, and a handler that refuses a NULL
+     * would leave the item without columns. Null for a SQL table function, whose body tells its own, and for a
+     * Python function declared with no column, which answers one of its own.
+     */
+    private static List<ResultSetColumn> declaredHandlerColumns(final Function udtf) {
+        if (udtf.getUdfLanguage() == null || udtf.getUdfLanguage() == UdfLanguage.SQL) {
+            return null;
+        }
+        final List<Parameter> declared = udtf.getReturnColumns();
+        if (declared.isEmpty() && udtf.getUdfLanguage() == UdfLanguage.PYTHON) {
+            return null;
+        }
+        final List<ResultSetColumn> columns = new ArrayList<>();
+        for (final Parameter column : declared) {
+            if (column.getDataType() == null) {
+                return null;
+            }
+            columns.add(new ResultSetColumn(SqlIdentifiers.canonicalText(column.getName()), column.getDataType(),
+                null, column.getDataType()));
+        }
+        return columns;
     }
 
     /**
@@ -18618,6 +19445,13 @@ public class QueryExecutor {
         final Map<String, Table> scope = snapshotScope(aliasToTable);
         final List<Table> scopeTables = allTables != null && !allTables.isEmpty()
             ? new ArrayList<Table>(allTables) : List.of(leftTable);
+        // A table function written in a handler language reads its input by partitions. Joined with an ON, it
+        // is still called row by row below, where the condition is judged.
+        final PlannedRelation handlerJoin = joinCtx != null && joinCtx.ON() != null ? null
+            : planHandlerTableFunctionJoin(rightTableRef, scope, scopeTables);
+        if (handlerJoin != null) {
+            return handlerJoin;
+        }
         // The right side's shape, read with every name it may reference bound to NULL and no row produced.
         final Map<String, Object> nullContext = new HashMap<>();
         for (final Map.Entry<String, Table> entry : scope.entrySet()) {
@@ -18625,9 +19459,9 @@ public class QueryExecutor {
             final Table t = entry.getValue();
             for (int i = 0; i < t.getColumns().size(); i++) {
                 final String colName = t.getColumns().get(i).getName();
-                nullContext.put(colName.toUpperCase(), null);
-                nullContext.put((t.getName() + "." + colName).toUpperCase(), null);
-                nullContext.put((alias + "." + colName).toUpperCase(), null);
+                nullContext.put(colName.toUpperCase(Locale.ROOT), null);
+                nullContext.put((t.getName() + "." + colName).toUpperCase(Locale.ROOT), null);
+                nullContext.put((alias + "." + colName).toUpperCase(Locale.ROOT), null);
             }
         }
         for (final String alias : selectAliases.keySet()) {
@@ -18720,33 +19554,7 @@ public class QueryExecutor {
                     }
                     inputRecord++;
                     // Create context with left row values accessible by column name
-                    final Map<String, Object> lateralContext = new HashMap<>();
-                    // Add columns from all tables in the context, walking the relations in COMBINED-ROW ORDER —
-                    // the offsets must follow the row layout. Iterating the alias map instead accumulated
-                    // offsets in HASH order, so after a JOIN the lateral read the wrong slots: FLATTEN(a.attrs)
-                    // after `f INNER JOIN a` got some other column (usually NULL) and expanded to nothing.
-                    // Two passes: the upper-cased keys first, each keeping the FIRST column that folds to it,
-                    // so a reference matches whatever case its alias and column were written in; then every
-                    // column's EXACT spelling, which overrides them — of "x" and "X" beside each other, a.x and
-                    // a."x" must read two different columns.
-                    for (int pass = 0; pass < 2; pass++) {
-                        int offset = 0;
-                        for (final Table t : scopeTables) {
-                            for (int i = 0; i < t.getColumns().size() && offset + i < leftRow.getValues().size(); i++) {
-                                final String colName = t.getColumns().get(i).getName();
-                                final Object value = leftRow.getValue(offset + i);
-                                bindLateral(lateralContext, colName, value, pass);
-                                // Also add with table prefix and every alias prefix that names this table
-                                bindLateral(lateralContext, t.getName() + "." + colName, value, pass);
-                                for (final Map.Entry<String, Table> entry : scope.entrySet()) {
-                                    if (entry.getValue() == t) {
-                                        bindLateral(lateralContext, entry.getKey() + "." + colName, value, pass);
-                                    }
-                                }
-                            }
-                            offset += t.getColumns().size();
-                        }
-                    }
+                    final Map<String, Object> lateralContext = lateralContextOf(leftRow, scope, scopeTables);
                     // A real column of the same name always wins, so the aliases go in only where nothing is
                     // bound. Aliases chain (an alias defined over another alias), so resolve iteratively: each
                     // pass offers everything computed so far and retries the rest, until a pass makes no
@@ -18811,6 +19619,39 @@ public class QueryExecutor {
         return new PlannedRelation(stage, rightTable, rightAlias);
     }
 
+    /**
+     * The values of the row to a lateral item's left, by every name its columns answer to. The relations are
+     * walked in COMBINED-ROW ORDER — the offsets must follow the row layout. Iterating the alias map instead
+     * accumulated offsets in HASH order, so after a JOIN the lateral read the wrong slots: FLATTEN(a.attrs)
+     * after `f INNER JOIN a` got some other column (usually NULL) and expanded to nothing. Two passes: the
+     * upper-cased keys first, each keeping the FIRST column that folds to it, so a reference matches whatever
+     * case its alias and column were written in; then every column's EXACT spelling, which overrides them — of
+     * "x" and "X" beside each other, a.x and a."x" must read two different columns.
+     */
+    private static Map<String, Object> lateralContextOf(final Row leftRow, final Map<String, Table> scope,
+                                                        final List<Table> scopeTables) {
+        final Map<String, Object> lateralContext = new HashMap<>();
+        for (int pass = 0; pass < 2; pass++) {
+            int offset = 0;
+            for (final Table t : scopeTables) {
+                for (int i = 0; i < t.getColumns().size() && offset + i < leftRow.getValues().size(); i++) {
+                    final String colName = t.getColumns().get(i).getName();
+                    final Object value = leftRow.getValue(offset + i);
+                    bindLateral(lateralContext, colName, value, pass);
+                    // Also add with table prefix and every alias prefix that names this table
+                    bindLateral(lateralContext, t.getName() + "." + colName, value, pass);
+                    for (final Map.Entry<String, Table> entry : scope.entrySet()) {
+                        if (entry.getValue() == t) {
+                            bindLateral(lateralContext, entry.getKey() + "." + colName, value, pass);
+                        }
+                    }
+                }
+                offset += t.getColumns().size();
+            }
+        }
+        return lateralContext;
+    }
+
     /** Whether a FROM item names a column anywhere outside the queries nested in it. */
     private static boolean namesAColumn(final ParseTree node) {
         if (node instanceof FrostlakeParser.SelectStatementContext) {
@@ -18844,17 +19685,17 @@ public class QueryExecutor {
         String tableName = null;
 
         if (parts.length == 2) {
-            tableName = parts[0].toUpperCase();
-            columnName = parts[1].toUpperCase();
+            tableName = parts[0].toUpperCase(Locale.ROOT);
+            columnName = parts[1].toUpperCase(Locale.ROOT);
         } else {
-            columnName = qualifiedName.toUpperCase();
+            columnName = qualifiedName.toUpperCase(Locale.ROOT);
         }
 
         // Search in left table first
         for (int i = 0; i < leftTable.getColumns().size(); i++) {
             final TableColumn col = leftTable.getColumns().get(i);
-            if (col.getName().toUpperCase().equals(columnName)) {
-                if (tableName == null || leftTable.getName().toUpperCase().contains(tableName)) {
+            if (col.getName().toUpperCase(Locale.ROOT).equals(columnName)) {
+                if (tableName == null || leftTable.getName().toUpperCase(Locale.ROOT).contains(tableName)) {
                     return combinedRow.getValue(i);
                 }
             }
@@ -18864,8 +19705,8 @@ public class QueryExecutor {
         final int offset = leftTable.getColumns().size();
         for (int i = 0; i < rightTable.getColumns().size(); i++) {
             final TableColumn col = rightTable.getColumns().get(i);
-            if (col.getName().toUpperCase().equals(columnName)) {
-                if (tableName == null || rightTable.getName().toUpperCase().contains(tableName)) {
+            if (col.getName().toUpperCase(Locale.ROOT).equals(columnName)) {
+                if (tableName == null || rightTable.getName().toUpperCase(Locale.ROOT).contains(tableName)) {
                     return combinedRow.getValue(offset + i);
                 }
             }
@@ -19511,6 +20352,79 @@ public class QueryExecutor {
     }
 
     /**
+     * The NULL arms with those written as a NULL of a text type, {@code NULL::VARCHAR(10)}, in a column whose every
+     * other typed arm is an exact number: the number decides the type there, as beside the bare word (see
+     * UntypedNullFold#isNullTextConstant). {@code SELECT NULL::VARCHAR(10) UNION ALL SELECT 5} is a NUMBER(1,0)
+     * column; beside a text, a date or a BOOLEAN the arm keeps its own type.
+     *
+     * @param nullArms per arm, per column, whether the arm names no type there
+     * @param operands the arms as written
+     * @param branches every arm's columns
+     * @return the flags, with the text NULLs that meet only exact numbers added
+     */
+    private List<List<Boolean>> withNullTextArms(final List<List<Boolean>> nullArms,
+                                                 final List<FrostlakeParser.SelectOperandContext> operands,
+                                                 final List<List<ResultSetColumn>> branches) {
+        final List<List<Boolean>> nullText = new ArrayList<>();
+        boolean any = false;
+        for (final FrostlakeParser.SelectOperandContext operand : operands) {
+            final List<Boolean> flags = new ArrayList<>();
+            if (operand.selectClause() != null && operand.selectClause().selectList() != null) {
+                for (final FrostlakeParser.SelectItemContext item : operand.selectClause().selectList().selectItem()) {
+                    final boolean text = isNullTextItem(item);
+                    any = any || text;
+                    flags.add(Boolean.valueOf(text));
+                }
+            }
+            nullText.add(flags);
+        }
+        if (!any) {
+            return nullArms;
+        }
+        final List<List<Boolean>> merged = new ArrayList<>();
+        for (int k = 0; k < branches.size(); k++) {
+            final List<Boolean> flags = new ArrayList<>();
+            for (int i = 0; i < branches.get(k).size(); i++) {
+                boolean isNull = isNullArm(nullArms, k, i);
+                if (!isNull && isNullArm(nullText, k, i)) {
+                    boolean sawNumber = false;
+                    boolean onlyNumbers = true;
+                    for (int other = 0; other < branches.size() && onlyNumbers; other++) {
+                        if (other == k || i >= branches.get(other).size() || isNullArm(nullArms, other, i)
+                                || isNullArm(nullText, other, i)) {
+                            continue;
+                        }
+                        final DataType type = branches.get(other).get(i).getStaticType();
+                        onlyNumbers = type instanceof NumericType && !NumericType.isApproximate(type);
+                        sawNumber = sawNumber || onlyNumbers;
+                    }
+                    isNull = sawNumber && onlyNumbers;
+                }
+                flags.add(Boolean.valueOf(isNull));
+            }
+            merged.add(flags);
+        }
+        return merged;
+    }
+
+    /** Whether a select item is a NULL cast to a text type and nothing else. */
+    private boolean isNullTextItem(final FrostlakeParser.SelectItemContext item) {
+        if (!SelectItemAccessors.isExprItem(item)) {
+            return false;
+        }
+        final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
+        if (valueExpr == null) {
+            return false;
+        }
+        try {
+            return UntypedNullFold.isNullTextConstant(
+                ExpressionEvaluator.parse(ParseTreeText.getOriginalText(valueExpr)));
+        } catch (final RuntimeException notACast) {
+            return false;
+        }
+    }
+
+    /**
      * {@link #nullLiteralArms} with the arms' columns that hold nothing but an untyped NULL — DUAL's COLUMN1, a
      * VALUES column written as NULL in every row, a derived column over the bare word — which contribute no type
      * to the fold either, however the arm's item reads them ({@code SELECT column1 UNION ALL SELECT 1} is
@@ -19738,11 +20652,16 @@ public class QueryExecutor {
                                             final boolean nullable, final boolean nullabilityKnown,
                                             final ParserRuleContext origin) {
         final DataType staticType = staticProjectionType(expressionText, projectionTypes, origin);
+        // The result's own column carries the width the plan computes the item at; what a CTAS, a view or an
+        // enclosing query declares from it stays the item's declared type.
+        final DataType plannedType = staticType == null || projectionTypes == null || expressionText == null
+            || declaresTableColumns ? staticType
+            : planReportedProjectionType(expressionText, projectionTypes, staticType);
         final ResultSetColumn column = new ResultSetColumn(name,
             staticType == null && (isBareNullLiteral(expressionText)
                     || projectsUntypedNullColumn(expressionText, projectionTypes))
                 ? new StringType("VARCHAR", 0)
-                : semiStructuredReportedType(reportedType, staticType),
+                : semiStructuredReportedType(reportedType, plannedType),
             sourceTableName, staticType, nullable, nullabilityKnown,
             staticType != null ? staticProjectionRange(expressionText, projectionTypes) : null,
             staticType != null ? staticSpelledNumber(expressionText, projectionTypes) : null);
@@ -19750,6 +20669,17 @@ public class QueryExecutor {
             ? column.withUncheckedConstant() : column;
         return staticType != null && projectsFoldedDouble(expressionText, projectionTypes)
             ? checked.withFoldedDouble() : checked;
+    }
+
+    /** The type the plan reports for a select item, or its declared type where the two do not differ. */
+    private static DataType planReportedProjectionType(final String expressionText,
+                                                       final ExpressionEvaluator projectionTypes,
+                                                       final DataType declared) {
+        try {
+            return projectionTypes.planReportedType(ExpressionEvaluator.parse(expressionText), declared);
+        } catch (final RuntimeException notAnExpression) {
+            return declared;
+        }
     }
 
     /** Whether a select item is a reference to a column holding nothing but an untyped NULL. */
@@ -20292,7 +21222,7 @@ public class QueryExecutor {
         } else {
             columnPart = qualifiedName;
         }
-        columnName = columnPart.toUpperCase();
+        columnName = columnPart.toUpperCase(Locale.ROOT);
         // The column part names ONE spelling: a quoted part its content verbatim, and nothing else; an
         // unquoted part its upper-cased fold, and — for this resolver's lenient callers — failing that,
         // any column spelled the same ignoring case.
@@ -20330,7 +21260,7 @@ public class QueryExecutor {
                 // TYPED only for a genuine dotted reference: this resolver also receives raw
                 // EXPRESSION texts (GROUP BY / ORDER BY keys like COALESCE(a.b, c)) whose parens
                 // were stripped above — those must soft-fail so the caller's expression path runs.
-                throw new InvalidQualifierException((quotedQualifier ? tableName : tableName.toUpperCase()) + "."
+                throw new InvalidQualifierException((quotedQualifier ? tableName : tableName.toUpperCase(Locale.ROOT)) + "."
                     + columnName);
             }
         }
@@ -20425,7 +21355,7 @@ public class QueryExecutor {
     private static void bindLateral(final Map<String, Object> context, final String key, final Object value,
                                     final int pass) {
         if (pass == 0) {
-            context.putIfAbsent(key.toUpperCase(), value);
+            context.putIfAbsent(key.toUpperCase(Locale.ROOT), value);
         } else {
             context.put(key, value);
         }
@@ -20491,13 +21421,26 @@ public class QueryExecutor {
 
     private Object evaluateTableFunctionArgument(final SourcePosition origin, final String text,
                                                  final Map<String, Object> lateralContext) {
+        // Read for a lateral item's shape, the argument has no row behind it: the names it reads are judged, a
+        // handler it calls is not run, and a fault of the NULLs it is given is not the statement's (see
+        // LateralShapeArguments) - the item keeps the columns its function declares.
+        final boolean forShape = lateralContext != null && RelationShapeOnly.isActive();
+        final boolean outerShape = forShape && LateralShapeArguments.begin();
         final SourcePosition displaced = ExpressionSource.beginNested(origin);
         try {
             return lateralContext != null && !lateralContext.isEmpty()
                 ? evaluateExpressionWithLateralContextSimple(text, lateralContext)
                 : evaluateExpression(text, null, (Table) null);
+        } catch (final RuntimeException fault) {
+            if (forShape && !SqlCompilationError.isCompilationError(fault.getMessage())) {
+                return null;
+            }
+            throw fault;
         } finally {
             ExpressionSource.end(displaced);
+            if (forShape) {
+                LateralShapeArguments.end(outerShape);
+            }
         }
     }
 
@@ -20546,7 +21489,7 @@ public class QueryExecutor {
         expr = expr.trim();
 
         // Try direct lookup in lateral context (e.g., "n" or "N")
-        final String upperExpr = expr.toUpperCase();
+        final String upperExpr = expr.toUpperCase(Locale.ROOT);
         if (lateralContext.containsKey(upperExpr)) {
             return lateralContext.get(upperExpr);
         }
@@ -20573,11 +21516,11 @@ public class QueryExecutor {
             evaluator.setOuterLateralContext(lateralContext);
             lateralArgumentTypes.typeArgumentsOf(evaluator);
             return evaluator.evaluate(expr, dummyRow);
+        } catch (final RuntimeException fault) {
+            // A name the arguments cannot resolve is the statement's compilation error, and what a row's values
+            // raise is the statement's fault: each in its own words, as anywhere else.
+            throw fault;
         } catch (final Exception e) {
-            // A name the arguments cannot resolve is the statement's compilation error, in its own words.
-            if (e instanceof RuntimeException && SqlCompilationError.isCompilationError(e.getMessage())) {
-                throw (RuntimeException) e;
-            }
             throw new RuntimeException("Unable to evaluate expression '" + expr + "' in LATERAL context: " + e.getMessage(), e);
         }
     }

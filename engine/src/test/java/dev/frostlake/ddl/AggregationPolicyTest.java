@@ -23,6 +23,8 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -246,7 +248,7 @@ public class AggregationPolicyTest extends BaseDatabaseTest {
                     engine.executeQuery("SELECT " + call + " FROM ag_t");
                 }
             });
-            assertEquals("SQL compilation error: " + call.toUpperCase() + " violated Aggregation Policy.",
+            assertEquals("SQL compilation error: " + call.toUpperCase(Locale.ROOT) + " violated Aggregation Policy.",
                 ex.getMessage());
         }
     }

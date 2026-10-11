@@ -27,6 +27,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -208,10 +209,10 @@ final class CorrelatedAggregatePlace {
 
     private static void addColumns(final Set<String> names, final String qualifier, final Table relation) {
         for (final TableColumn column : relation.getColumns()) {
-            final String name = column.getName().toUpperCase();
+            final String name = column.getName().toUpperCase(Locale.ROOT);
             names.add(name);
             if (qualifier != null) {
-                names.add(qualifier.toUpperCase() + "." + name);
+                names.add(qualifier.toUpperCase(Locale.ROOT) + "." + name);
             }
         }
     }

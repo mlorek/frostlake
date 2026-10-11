@@ -18,7 +18,6 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.GrantedObject;
 import dev.frostlake.executor.InformationSchemaGuard;
-import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
@@ -81,6 +80,41 @@ public class GrantRevokeHandler implements CommandHandler {
         return queryExecutor;
     }
 
+    private String principal(final FrostlakeParser.PrincipalNameContext name) {
+        return PrincipalNames.of(name, queryExecutor);
+    }
+
+    /** The canonical parts of the object a statement names, an IDENTIFIER() reference resolved. */
+    private String[] objectParts(final FrostlakeParser.GrantedObjectNameContext name) {
+        if (name.wholeObjectName() == null) {
+            // The word IDENTIFIER standing as the object's own name.
+            return new String[] {name.getText().toUpperCase(Locale.ROOT)};
+        }
+        return queryExecutor.resolveWholeObjectNameParts(name.wholeObjectName());
+    }
+
+    /**
+     * A database and a warehouse are named by one part: an IDENTIFIER() reference spelling a path names neither,
+     * and is answered by the sentence that names nothing (live-verified).
+     */
+    private static void requireReferencedPath(final String objectType,
+                                              final FrostlakeParser.GrantedObjectNameContext name,
+                                              final String[] parts) {
+        final boolean reference = name.wholeObjectName() != null
+            && name.wholeObjectName().identifierArgument() != null;
+        if (reference && parts.length > 1 && ("DATABASE".equals(objectType) || "WAREHOUSE".equals(objectType))) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
+    }
+
+    /** {@link #objectParts}, as one name. */
+    private String objectText(final FrostlakeParser.GrantedObjectNameContext name) {
+        if (name.wholeObjectName() == null) {
+            return name.getText().toUpperCase(Locale.ROOT);
+        }
+        return queryExecutor.resolveWholeObjectName(name.wholeObjectName());
+    }
+
     /** No privilege is granted on, or revoked from, INFORMATION_SCHEMA or one of its views (live-verified). */
     private void refuseSystemObject(final String writtenType, final String[] parts) {
         if ("TABLE".equals(writtenType) || "VIEW".equals(writtenType)) {
@@ -93,7 +127,8 @@ public class GrantRevokeHandler implements CommandHandler {
     public Object handleGrant(final FrostlakeParser.GrantStatementContext ctx) {
         try {
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
-                : AccessControlHandler.databaseRole(catalog, ctx.databaseRoleGrantee().qualifiedName());
+                : AccessControlHandler.databaseRole(catalog,
+                    PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
             final boolean grantOption = ctx.withGrantOption() != null;
             if (ctx.bulkObjectType() != null) {
                 // GRANT privs ON ALL/FUTURE <types> IN DATABASE/SCHEMA/ACCOUNT <name> TO USER/ROLE/DATABASE ROLE target
@@ -104,18 +139,19 @@ public class GrantRevokeHandler implements CommandHandler {
                 final String scopeType = scope.DATABASE() != null ? "DATABASE"
                     : "SCHEMA";
                 // The scope must exist before anything is granted in it (live-verified).
-                final String scopeName = AccessControlHandler.scopeName(catalog, scope);
+                final String[] scopeParts = PrincipalNames.parts(scope.referencedName(), queryExecutor);
+                final String scopeName = AccessControlHandler.scopeName(catalog, scope.SCHEMA() != null, scopeParts);
                 if (scope.SCHEMA() != null) {
-                    InformationSchemaGuard.refuseSchemaGrant(ParseTreeText.qualifiedNameParts(scope.qualifiedName()));
+                    InformationSchemaGuard.refuseSchemaGrant(scopeParts);
                 }
                 if (!isFuture && "PIPE".equals(objectKind)) {
                     throw new RuntimeException(SqlCompilationError.of("Bulk grant on objects of type PIPE to "
                         + bulkGranteeKind(ctx.USER() != null, ctx.databaseRoleGrantee() != null) + " is restricted."));
                 }
                 final List<String> privileges = bulkPrivileges(ctx.privilegeList(), objectKind);
-                final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
+                final List<FrostlakeParser.PrincipalNameContext> ids = ctx.principalName();
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
-                    : ids != null && !ids.isEmpty() ? visitor.getText(ids.get(ids.size() - 1)) : "";
+                    : ids != null && !ids.isEmpty() ? principal(ids.get(ids.size() - 1)) : "";
                 final boolean isUser = ctx.USER() != null;
                 if (databaseGrantee == null) {
                     requireGrantee(isUser, targetName);
@@ -129,7 +165,8 @@ public class GrantRevokeHandler implements CommandHandler {
                     final int inScope = AccessControlHandler.objectsInScope(catalog, objectKind, scopeType, scopeName)
                         .size();
                     if (new OwnershipTransfer(catalog, queryExecutor)
-                            .transferAll(objectType, scope, targetName, ctx.currentGrants())) {
+                            .transferAll(objectType, scope.SCHEMA() != null, scopeParts, targetName,
+                                ctx.currentGrants())) {
                         logger.trace("Transferred ownership of all {} in {} {} to {}", objectType, scopeType,
                             scopeName, targetName);
                         return objectsAffected(inScope);
@@ -163,8 +200,8 @@ public class GrantRevokeHandler implements CommandHandler {
                     && databaseGrantee == null) {
                 // GRANT ROLE role_name TO USER/ROLE target_name
                 // identifiers: 0=role_name, 1=target_name
-                final String roleName = visitor.getText(ctx.identifier(0));
-                final String targetName2 = visitor.getText(ctx.identifier(1));
+                final String roleName = principal(ctx.principalName(0));
+                final String targetName2 = principal(ctx.principalName(1));
 
                 if ("PUBLIC".equals(roleName)) {
                     // Every user and role holds PUBLIC already: the grant changes nothing, and says so once the
@@ -188,7 +225,7 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.globalPrivilegeList() != null) {
                 // GRANT global_privileges TO ROLE role_name
                 // identifiers: 0=role_name
-                final String roleName = visitor.getText(ctx.identifier(0));
+                final String roleName = principal(ctx.principalName(0));
 
                 for (final FrostlakeParser.GlobalPrivilegeContext privCtx : ctx.globalPrivilegeList().globalPrivilege()) {
                     final String privilege = privilegeName(privCtx);
@@ -199,7 +236,7 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.ACCOUNT() != null) {
                 // GRANT privileges ON ACCOUNT TO USER/ROLE target_name
                 // identifiers: 0=target_name
-                final String targetName = visitor.getText(ctx.identifier(0));
+                final String targetName = principal(ctx.principalName(0));
                 final boolean isUser = ctx.USER() != null;
 
                 if (ctx.privilegeList().ALL() != null) {
@@ -220,13 +257,15 @@ public class GrantRevokeHandler implements CommandHandler {
                 // A table or a view the current schema does not hold is looked for along the session's
                 // SEARCH_PATH, and the grant is recorded on the one found there (live-verified).
                 final boolean relation = "TABLE".equals(writtenType) || "VIEW".equals(writtenType);
-                final String writtenName = visitor.getText(ctx.qualifiedName());
-                final String objectName = relation ? queryExecutor.searchPathQualified(writtenName) : writtenName;
+                // A grantee written as a reference is read before the object's own reference (live-verified).
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
-                    : visitor.getText(ctx.identifier(0));
+                    : principal(ctx.principalName(0));
+                final String writtenName = objectText(ctx.grantedObjectName());
+                final String objectName = relation ? queryExecutor.searchPathQualified(writtenName) : writtenName;
                 final boolean isUser = ctx.USER() != null;
                 final String[] parts = objectName.equals(writtenName)
-                    ? ParseTreeText.qualifiedNameParts(ctx.qualifiedName()) : QualifiedName.parse(objectName).parts();
+                    ? objectParts(ctx.grantedObjectName()) : QualifiedName.parse(objectName).parts();
+                requireReferencedPath(writtenType, ctx.grantedObjectName(), parts);
                 final Integer arity = ctx.LPAREN() == null ? null
                     : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size());
                 requireArgumentTypes(writtenType, parts, ctx.LPAREN() != null);
@@ -307,7 +346,8 @@ public class GrantRevokeHandler implements CommandHandler {
     public Object handleRevoke(final FrostlakeParser.RevokeStatementContext ctx) {
         try {
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
-                : AccessControlHandler.databaseRole(catalog, ctx.databaseRoleGrantee().qualifiedName());
+                : AccessControlHandler.databaseRole(catalog,
+                    PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
             final boolean optionOnly = ctx.grantOptionFor() != null;
             if (ctx.bulkObjectType() != null) {
                 // REVOKE [GRANT OPTION FOR] privs ON ALL/FUTURE <types> IN <scope> FROM ROLE/DATABASE ROLE target
@@ -316,15 +356,16 @@ public class GrantRevokeHandler implements CommandHandler {
                 final FrostlakeParser.BulkScopeContext scope = ctx.bulkScope();
                 final String scopeType = scope.DATABASE() != null ? "DATABASE"
                     : "SCHEMA";
-                final String scopeName = AccessControlHandler.scopeName(catalog, scope);
+                final String scopeName = AccessControlHandler.scopeName(catalog, scope.SCHEMA() != null,
+                    PrincipalNames.parts(scope.referencedName(), queryExecutor));
                 if (!isFuture && "PIPE".equals(objectKind)) {
                     throw new RuntimeException(SqlCompilationError.of("Bulk revoke on objects of type PIPE from "
                         + bulkGranteeKind(ctx.USER() != null, ctx.databaseRoleGrantee() != null) + " is restricted."));
                 }
                 final List<String> privileges = bulkPrivileges(ctx.privilegeList(), objectKind);
-                final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
+                final List<FrostlakeParser.PrincipalNameContext> ids = ctx.principalName();
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
-                    : ids != null && !ids.isEmpty() ? visitor.getText(ids.get(ids.size() - 1)) : "";
+                    : ids != null && !ids.isEmpty() ? principal(ids.get(ids.size() - 1)) : "";
                 final boolean isUser = ctx.USER() != null;
                 if (databaseGrantee == null) {
                     requireGrantee(isUser, targetName);
@@ -354,8 +395,8 @@ public class GrantRevokeHandler implements CommandHandler {
                     && databaseGrantee == null) {
                 // REVOKE ROLE role_name FROM USER/ROLE target_name
                 // identifiers: 0=role_name, 1=target_name
-                final String roleName = visitor.getText(ctx.identifier(0));
-                final String targetName = visitor.getText(ctx.identifier(1));
+                final String roleName = principal(ctx.principalName(0));
+                final String targetName = principal(ctx.principalName(1));
 
                 if (ctx.USER() != null) {
                     catalog.revokeRoleFromUser(roleName, targetName);
@@ -369,7 +410,7 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.globalPrivilegeList() != null) {
                 // REVOKE global_privileges FROM ROLE role_name
                 // identifiers: 0=role_name
-                final String roleName = visitor.getText(ctx.identifier(0));
+                final String roleName = principal(ctx.principalName(0));
 
                 boolean revoked = false;
                 for (final FrostlakeParser.GlobalPrivilegeContext privCtx : ctx.globalPrivilegeList().globalPrivilege()) {
@@ -381,7 +422,7 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.ACCOUNT() != null) {
                 // REVOKE privileges ON ACCOUNT FROM USER/ROLE target_name
                 // identifiers: 0=target_name
-                final String targetName = visitor.getText(ctx.identifier(0));
+                final String targetName = principal(ctx.principalName(0));
                 final boolean isUser = ctx.USER() != null;
 
                 boolean revoked = false;
@@ -400,11 +441,12 @@ public class GrantRevokeHandler implements CommandHandler {
                 // identifiers: 0=target_name
                 // An object named without its kind is a table or a view (live-verified).
                 final String writtenType = ctx.objectType() == null ? "TABLE" : SecurableKinds.of(ctx.objectType());
-                final String objectName = visitor.getText(ctx.qualifiedName());
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
-                    : visitor.getText(ctx.identifier(0));
+                    : principal(ctx.principalName(0));
+                final String objectName = objectText(ctx.grantedObjectName());
                 final boolean isUser = ctx.USER() != null;
-                final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
+                final String[] parts = objectParts(ctx.grantedObjectName());
+                requireReferencedPath(writtenType, ctx.grantedObjectName(), parts);
                 final Integer arity = ctx.LPAREN() == null ? null
                     : Integer.valueOf(ctx.identifierList() == null ? 0 : ctx.identifierList().identifier().size());
                 requireArgumentTypes(writtenType, parts, ctx.LPAREN() != null);
@@ -553,7 +595,7 @@ public class GrantRevokeHandler implements CommandHandler {
             return;
         }
         final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRole(targetName);
-        final Privilege granted = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege granted = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         holder.grantPrivilege(objectType, objectName, granted, grantor != null ? grantor : catalog.currentRoleForOwner());
         if (grantOption) {
             holder.setGrantOption(objectType, objectName, granted, true);
@@ -568,7 +610,7 @@ public class GrantRevokeHandler implements CommandHandler {
                                final String privilege, final String objectType, final String written,
                                final boolean optionOnly) {
         final String objectName = GrantNames.of(catalog, objectType, written);
-        final Privilege revoked = Privilege.valueOf(privilege.toUpperCase());
+        final Privilege revoked = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         if (isUser) {
             if (optionOnly) {
                 return false;
@@ -841,6 +883,6 @@ public class GrantRevokeHandler implements CommandHandler {
             }
             sb.append(privCtx.getChild(i).getText());
         }
-        return sb.toString().toUpperCase();
+        return sb.toString().toUpperCase(Locale.ROOT);
     }
 }

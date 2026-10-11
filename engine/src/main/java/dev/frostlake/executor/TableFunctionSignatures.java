@@ -135,7 +135,11 @@ final class TableFunctionSignatures {
             return argument instanceof StringType;
         }
         if (parameter instanceof DateTimeType) {
-            return argument instanceof DateTimeType && flavour(parameter).equals(flavour(argument));
+            // The flavour and the digits both: a TIME(3) is no argument of a TIME parameter, nor a
+            // TIMESTAMP_NTZ(3) of a TIMESTAMP_NTZ one (live-verified).
+            return argument instanceof DateTimeType && flavour(parameter).equals(flavour(argument))
+                && (flavour(parameter).equals("DATE")
+                    || ((DateTimeType) parameter).getPrecision() == ((DateTimeType) argument).getPrecision());
         }
         return parameter.getClass() == argument.getClass();
     }

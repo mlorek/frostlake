@@ -1486,7 +1486,7 @@ final class SubqueryPlanPrint {
     }
 
     /** The subquery's text as a SELECT statement, or null when it is not one whole statement. */
-    private static FrostlakeParser.SelectStatementContext parsed(final String text) {
+    static FrostlakeParser.SelectStatementContext parsed(final String text) {
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));

@@ -31,6 +31,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Stateless accessors over SELECT-item parse-tree nodes — star / qualified-star / braced-star / expression
@@ -407,7 +408,7 @@ public final class SelectItemAccessors {
             parts.addAll(star.starQualifiedName().namePart());
             for (int i = 0; i < parts.size(); i++) {
                 final String written = parts.get(i).getText();
-                label.append(i > 0 ? "." : "").append(written.startsWith("\"") ? written : written.toUpperCase());
+                label.append(i > 0 ? "." : "").append(written.startsWith("\"") ? written : written.toUpperCase(Locale.ROOT));
             }
             label.append('.');
         }
