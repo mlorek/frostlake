@@ -389,7 +389,7 @@ final class ParsedQueryEcho {
         for (final FrostlakeParser.NamedArgumentContext argument : named) {
             unmodelled = unmodelled || argument.expression() == null;
             if (argument.expression() != null) {
-                text.append(text.length() > 0 ? ", " : "").append(ParseTreeText.getIdentifier(argument.identifier()))
+                text.append(text.length() > 0 ? ", " : "").append(ParseTreeText.getIdentifier(argument.variableName()))
                     .append(" => ").append(value(argument.expression(), printer));
             }
         }

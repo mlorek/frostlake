@@ -143,6 +143,8 @@ public final class CorrelatedSubqueryRule {
     private final Map<String, Table> outerRelations;
     private final Map<String, Table> innerRelations = new HashMap<>();
     private final OuterNameConstancy constancy;
+    /** Names bound to one value for the whole statement (see {@link #withFixedNames}). */
+    private Set<String> fixedNames = Collections.emptySet();
     private CorrelatedFilterFold filterFold;
     private boolean sawOuter;
     /** The subquery being judged, and the deepest level it reads the outer row from (see {@link #outerReadDepth}). */
@@ -215,6 +217,21 @@ public final class CorrelatedSubqueryRule {
     }
 
     /**
+     * Names bound to one value for the whole statement: the parameters of a SQL function's body that its call passed
+     * no row's value. Such a name correlates nothing and is placed, so the body stays judgeable; unlike an outer name
+     * the statistics pin, it is never read as its value, so a condition over it stays a condition. A body {@code
+     * SELECT a + b WHERE a > 0} called as {@code nd(1, o.k)} is refused, as it is called as {@code nd(o.k, 1)}
+     * (live-verified).
+     *
+     * @param names the names, upper-cased
+     * @return this rule
+     */
+    public CorrelatedSubqueryRule withFixedNames(final Set<String> names) {
+        this.fixedNames = names;
+        return this;
+    }
+
+    /**
      * Whether the value subquery judged last is refused for an aggregate of its own that reads the outer row beside
      * the subquery's own columns — {@code (SELECT MAX(fz.id + g.v) FROM g)}. The account refuses that shape in an
      * earlier pass than every other one, which decides which of several refusals a statement reports (see
@@ -261,6 +278,10 @@ public final class CorrelatedSubqueryRule {
         if (clause == null) {
             return true;
         }
+        final FrostlakeParser.SelectStatementContext passed = passedOn(subquery, clause);
+        if (passed != null) {
+            return judgesScalar(passed);
+        }
         if (innerRelationEmpty(clause) || limitedToNoRow(subquery, clause)) {
             return false;
         }
@@ -299,30 +320,107 @@ public final class CorrelatedSubqueryRule {
     }
 
     /**
-     * Whether a select's FROM holds nothing but derived tables of exactly one row — FROM-less selects with no
-     * filter, grouping or LIMIT, or selects over such tables — so it reads one row as a FROM-less select does:
-     * {@code (SELECT x FROM (SELECT fz.id + 1 AS x))} is answered.
+     * Whether a select's FROM holds nothing but derived tables or common table expressions of exactly one row —
+     * FROM-less selects with no filter, grouping or LIMIT, or selects over such tables — so it reads one row as a
+     * FROM-less select does: {@code (SELECT x FROM (SELECT fz.id + 1 AS x))} is answered, and so is a SQL function's
+     * {@code WITH d AS (SELECT p AS v) SELECT v FROM d} called over a column (live-verified).
      */
     private static boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause) {
+        return readsOneRowRelationsOnly(clause, new HashSet<FrostlakeParser.CteDefinitionContext>());
+    }
+
+    private static boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause,
+                                                    final Set<FrostlakeParser.CteDefinitionContext> entered) {
         final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
         if (from == null || !from.joinClause().isEmpty()) {
             return false;
         }
         for (final FrostlakeParser.TableReferenceContext relation : from.tableReference()) {
-            final FrostlakeParser.TableSourceContext source = relation.tableSource();
-            if (source == null || source.selectStatement() == null || relation.LATERAL() != null
-                    || relation.pivotClause() != null || relation.unpivotClause() != null || relation.matchRecognizeClause() != null
-                    || relation.sampleClause() != null || limited(source.selectStatement())) {
+            // A common table expression is read as one row only where it is the FROM's one relation: live refuses
+            // WITH d AS (SELECT p AS v), e AS (SELECT 'k' AS k) SELECT v || k FROM d, e (live-verified).
+            if (from.tableReference().size() > 1 && relation.tableSource() != null
+                    && relation.tableSource().selectStatement() == null) {
                 return false;
             }
-            final FrostlakeParser.SelectClauseContext body = mainClause(source.selectStatement());
+            final FrostlakeParser.SelectStatementContext query = relationQuery(relation, entered);
+            if (query == null || relation.LATERAL() != null
+                    || relation.pivotClause() != null || relation.unpivotClause() != null || relation.matchRecognizeClause() != null
+                    || relation.sampleClause() != null || limited(query)) {
+                return false;
+            }
+            final FrostlakeParser.SelectClauseContext body = mainClause(query);
             if (body == null || body.whereClause() != null || body.groupByClause() != null
                     || body.havingClause() != null || body.qualifyClause() != null || body.topClause() != null
-                    || body.tableExpression() != null && !readsOneRowRelationsOnly(body)) {
+                    || body.tableExpression() != null && !readsOneRowRelationsOnly(body, entered)) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * The query a FROM relation reads: a derived table's, or the body of the common table expression its name reads —
+     * once, so a definition that reads itself is no query of one row. Null for a table, a view or any other source.
+     */
+    private static FrostlakeParser.SelectStatementContext relationQuery(
+            final FrostlakeParser.TableReferenceContext relation,
+            final Set<FrostlakeParser.CteDefinitionContext> entered) {
+        final FrostlakeParser.TableSourceContext source = relation.tableSource();
+        if (source == null) {
+            return null;
+        }
+        if (source.selectStatement() != null) {
+            return source.selectStatement();
+        }
+        final FrostlakeParser.CteDefinitionContext cte = CommonTableExpressions.named(source);
+        return cte == null || !entered.add(cte) ? null : cte.selectStatement();
+    }
+
+    /**
+     * The query a subquery merely passes on: one select over a single derived table or common table expression that
+     * adds nothing of its own — no filter, grouping, ordering, limit or DISTINCT, and items that read the outer row,
+     * aggregate, window or query nothing — answers from that query's rows, and is judged as it. {@code WITH d AS
+     * (SELECT MAX(w) AS m FROM t WHERE t.id = p) SELECT m + 1 FROM d} is the aggregate it reads (live-verified). Null
+     * for any other subquery.
+     */
+    private FrostlakeParser.SelectStatementContext passedOn(final FrostlakeParser.SelectStatementContext subquery,
+                                                            final FrostlakeParser.SelectClauseContext clause) {
+        final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
+        if (from == null || !from.joinClause().isEmpty() || from.tableReference().size() != 1
+                || clause.whereClause() != null || clause.groupByClause() != null || clause.havingClause() != null
+                || clause.qualifyClause() != null || clause.topClause() != null || clause.DISTINCT() != null
+                || limited(subquery) || ordered(subquery)) {
+            return null;
+        }
+        final FrostlakeParser.TableReferenceContext relation = from.tableReference(0);
+        if (relation.LATERAL() != null || relation.pivotClause() != null || relation.unpivotClause() != null
+                || relation.matchRecognizeClause() != null || relation.sampleClause() != null) {
+            return null;
+        }
+        if (!aggregateCalls(clause.selectList()).isEmpty() || holdsWindowCall(clause.selectList())
+                || holdsQuery(clause.selectList())
+                || readsOuterBesideAggregates(clause.selectList(), scopeOfAlone(clause))) {
+            return null;
+        }
+        for (final FrostlakeParser.SelectItemContext item : clause.selectList().selectItem()) {
+            if (SelectItemAccessors.getItemExpression(item) == null) {
+                return null;
+            }
+        }
+        return relationQuery(relation, new HashSet<FrostlakeParser.CteDefinitionContext>());
+    }
+
+    /** Whether a part of a select holds a query of its own. */
+    private static boolean holdsQuery(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsQuery(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether live refuses {@code subquery} under EXISTS. */
@@ -2188,6 +2286,9 @@ public final class CorrelatedSubqueryRule {
                     return judging && scopes.get(i).outerDerivedReads(null, column) != null
                         ? CorrelationSide.OUTER : CorrelationSide.INNER;
                 }
+            }
+            if (fixedNames.contains(column)) {
+                return CorrelationSide.CONSTANT;
             }
             if (!outerNames.contains(column)) {
                 return CorrelationSide.UNKNOWN;

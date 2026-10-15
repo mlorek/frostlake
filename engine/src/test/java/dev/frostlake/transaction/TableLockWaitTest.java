@@ -32,6 +32,7 @@ import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Two sessions over one table: an open transaction that has written a row of a table holds it against the other
@@ -175,6 +176,91 @@ public class TableLockWaitTest extends BaseDatabaseTest {
         waiting.join(60000L);
         assertTrue(answered[0] != null && !answered[0].startsWith("REFUSED"), String.valueOf(answered[0]));
         assertEquals("1|102 ;; 2|2", say("A", "SELECT id, v FROM lk ORDER BY id"));
+    }
+
+    @Test
+    public void aRenameOrASwapRunsAtOnceAndTheTransactionFollowsTheTable() {
+        try {
+            say("A", "CREATE OR REPLACE TABLE w2 (id INT, v INT)");
+            say("A", "INSERT INTO w2 VALUES (7, 7)");
+            say("A", "CREATE OR REPLACE TABLE lk3 (id INT, v INT)");
+            say("A", "INSERT INTO lk3 VALUES (1, 1)");
+            say("B", "ALTER SESSION SET LOCK_TIMEOUT = 1");
+            say("A", "BEGIN");
+            say("A", "UPDATE lk SET v = 100 WHERE id = 1");
+            say("A", "INSERT INTO lk2 VALUES (9, 9)");
+            say("A", "DELETE FROM lk3 WHERE id = 1");
+            // Another session's DDL does not wait for the transaction; what the transaction changed, it changed in
+            // the table it named, whatever the table is called when it commits.
+            assertTrue(!say("B", "ALTER TABLE lk RENAME TO lk_renamed").startsWith("REFUSED"));
+            assertTrue(!say("B", "ALTER TABLE lk2 SWAP WITH w2").startsWith("REFUSED"));
+            assertTrue(!say("B", "ALTER TABLE lk3 ADD COLUMN w INT").startsWith("REFUSED"));
+            say("A", "COMMIT");
+            assertEquals("1|100 ;; 2|2", say("B", "SELECT id, v FROM lk_renamed ORDER BY id"));
+            assertEquals("7|7", say("B", "SELECT id, v FROM lk2 ORDER BY id"));
+            assertEquals("1|1 ;; 9|9", say("B", "SELECT id, v FROM w2 ORDER BY id"));
+            assertEquals("0", say("B", "SELECT COUNT(*) FROM lk3"));
+            say("A", "BEGIN");
+            say("A", "UPDATE w2 SET v = 100 WHERE id = 9");
+            assertTrue(!say("B", "CREATE OR REPLACE TABLE w2 (id INT, v INT)").startsWith("REFUSED"));
+            say("A", "COMMIT");
+            assertEquals("", say("B", "SELECT id, v FROM w2 ORDER BY id"));
+        } finally {
+            say("A", "ROLLBACK");
+            say("A", "ALTER TABLE IF EXISTS lk_renamed RENAME TO lk");
+            say("A", "DROP TABLE IF EXISTS w2");
+            say("A", "DROP TABLE IF EXISTS lk3");
+        }
+    }
+
+    @Test
+    public void aSchemaRenameOrAMoveRunsAtOnceAndTheTransactionFollowsTheTable() {
+        try {
+            say("A", "CREATE OR REPLACE SCHEMA test_db.lk_from");
+            say("A", "CREATE OR REPLACE SCHEMA test_db.lk_to");
+            say("A", "USE SCHEMA test_db.test_schema");
+            say("A", "CREATE OR REPLACE TABLE test_db.lk_from.m1 (id INT, v INT)");
+            say("A", "INSERT INTO test_db.lk_from.m1 VALUES (1, 1)");
+            say("A", "CREATE OR REPLACE TABLE mv (id INT, v INT)");
+            say("A", "INSERT INTO mv VALUES (1, 1)");
+            say("A", "BEGIN");
+            say("A", "UPDATE test_db.lk_from.m1 SET v = 100 WHERE id = 1");
+            say("A", "INSERT INTO mv VALUES (9, 9)");
+            final String renamed = say("B", "ALTER SCHEMA test_db.lk_from RENAME TO test_db.lk_renamed");
+            assertTrue(!renamed.startsWith("REFUSED"), renamed);
+            final String moved = say("B", "ALTER TABLE mv RENAME TO test_db.lk_to.mv");
+            assertTrue(!moved.startsWith("REFUSED"), moved);
+            say("A", "COMMIT");
+            assertEquals("1|100", say("B", "SELECT id, v FROM test_db.lk_renamed.m1 ORDER BY id"));
+            assertEquals("1|1 ;; 9|9", say("B", "SELECT id, v FROM test_db.lk_to.mv ORDER BY id"));
+        } finally {
+            say("A", "ROLLBACK");
+            say("A", "USE SCHEMA test_db.test_schema");
+            say("A", "DROP SCHEMA IF EXISTS test_db.lk_from");
+            say("A", "DROP SCHEMA IF EXISTS test_db.lk_renamed");
+            say("A", "DROP SCHEMA IF EXISTS test_db.lk_to");
+            say("A", "DROP TABLE IF EXISTS mv");
+        }
+    }
+
+    /** Embedded only: it renames a database of its own, which the tests on a real account keep to test_db for. */
+    @Test
+    public void aDatabaseRenameRunsAtOnceAndTheTransactionFollowsTheTable() {
+        assumeTrue(!isLiveSnowflake(), "renames a database");
+        try {
+            say("A", "CREATE OR REPLACE DATABASE lk_db");
+            say("A", "CREATE OR REPLACE TABLE lk_db.PUBLIC.m (id INT, v INT)");
+            say("A", "INSERT INTO lk_db.PUBLIC.m VALUES (1, 1)");
+            say("A", "BEGIN");
+            say("A", "UPDATE lk_db.PUBLIC.m SET v = 100 WHERE id = 1");
+            assertTrue(!say("B", "ALTER DATABASE lk_db RENAME TO lk_db2").startsWith("REFUSED"));
+            say("A", "COMMIT");
+            assertEquals("1|100", say("B", "SELECT id, v FROM lk_db2.PUBLIC.m ORDER BY id"));
+        } finally {
+            say("A", "ROLLBACK");
+            say("A", "DROP DATABASE IF EXISTS lk_db");
+            say("A", "DROP DATABASE IF EXISTS lk_db2");
+        }
     }
 
     @Test

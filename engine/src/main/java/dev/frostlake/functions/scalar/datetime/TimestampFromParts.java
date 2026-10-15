@@ -73,7 +73,7 @@ public class TimestampFromParts extends BuiltInFunction {
         final int hour   = DateFromParts.part(args.get(3));
         final int minute = DateFromParts.part(args.get(4));
         final int second = DateFromParts.part(args.get(5));
-        final int nanos  = args.size() > 6 && args.get(6) != null ? DateFromParts.part(args.get(6)) : 0;
+        final long nanos = args.size() > 6 && args.get(6) != null ? DateFromParts.nanosPart(args.get(6)) : 0L;
         // A part out of its range rolls over into the next one, as a date's parts do.
         final LocalDateTime wall = DateFromParts.rolledOver(year, month, day).atStartOfDay()
             .plusHours(hour).plusMinutes(minute).plusSeconds(second).plusNanos(nanos);

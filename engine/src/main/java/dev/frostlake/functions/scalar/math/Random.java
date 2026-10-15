@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.math;
 
+import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
@@ -30,7 +31,6 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * RANDOM([seed]) — a pseudo-random signed 64-bit integer (not a fraction in [0, 1)). Without a seed
@@ -63,7 +63,8 @@ public class Random extends BuiltInFunction {
             // The row's place (see RowOrdinal) moves the seed by an odd step, so no two rows share one.
             return new java.util.Random(seedOf(args.get(0)) + RowOrdinal.current() * ROW_STEP).nextLong();
         }
-        return ThreadLocalRandom.current().nextLong();
+        // Drawn from the statement's own stream, so the write-ahead log's replay draws the same one.
+        return StatementTokens.nextLong();
     }
 
     /**

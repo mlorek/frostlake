@@ -17,11 +17,11 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.IntegerResultWidths;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.util.List;
 
 public class Factorial extends NumericArgumentFunction {
@@ -30,8 +30,9 @@ public class Factorial extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        // A fraction goes to the nearest whole number; 33 is the last whose factorial a NUMBER holds.
-        final long n = new BigDecimal(args.get(0).toString()).setScale(0, RoundingMode.HALF_UP).longValue();
+        // A fraction goes to the nearest whole number, a NaN, an infinity and a number past 64 bits are refused
+        // (WholeNumberArgument), and 33 is the last whose factorial a NUMBER holds.
+        final long n = WholeNumberArgument.int64(args.get(0), WholeNumberArgument.FACTORIAL);
         if (n < 0) {
             throw new RuntimeException("Numeric value is out of range, error: Input of factorial function can't be"
                 + " negative. " + n + " is invalid.");

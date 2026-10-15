@@ -34,6 +34,8 @@ import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.CodePointText;
 
+import org.antlr.v4.runtime.ParserRuleContext;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -107,11 +109,11 @@ final class DeclaredReturnJudge {
 
     private void let(final FrostlakeParser.LetStatementContext let) {
         if (let.dataTypeName() != null) {
-            record(let.identifier(), writtenType(let.dataTypeName(), let.typeParameters(), false));
+            record(let.variableName(), writtenType(let.dataTypeName(), let.typeParameters(), false));
         } else if (let.CURSOR() == null && let.RESULTSET() == null && let.booleanExpr() != null) {
-            record(let.identifier(), initialiserType(let.booleanExpr()));
+            record(let.variableName(), initialiserType(let.booleanExpr()));
         } else {
-            record(let.identifier(), null);
+            record(let.variableName(), null);
         }
     }
 
@@ -194,7 +196,7 @@ final class DeclaredReturnJudge {
     /** A bare name's or a bind's declared type, or null for anything else. */
     private DataType nameType(final FrostlakeParser.ExpressionContext value) {
         if (value instanceof FrostlakeParser.BindVarExprContext) {
-            final FrostlakeParser.IdentifierContext bound = ((FrostlakeParser.BindVarExprContext) value).identifier();
+            final FrostlakeParser.VariableNameContext bound = ((FrostlakeParser.BindVarExprContext) value).variableName();
             return bound == null ? null : typedNames.get(ScriptingNameValidator.canonical(bound.getText()));
         }
         if (value instanceof FrostlakeParser.QualifiedNameExprContext) {
@@ -248,7 +250,7 @@ final class DeclaredReturnJudge {
         }
     }
 
-    private void record(final FrostlakeParser.IdentifierContext name, final DataType type) {
+    private void record(final ParserRuleContext name, final DataType type) {
         if (name == null) {
             return;
         }

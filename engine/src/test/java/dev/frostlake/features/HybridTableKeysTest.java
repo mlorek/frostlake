@@ -26,6 +26,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A hybrid table holds its PRIMARY KEY, UNIQUE and FOREIGN KEY constraints row by row on INSERT, whatever the engine's
@@ -108,6 +109,38 @@ public class HybridTableKeysTest {
         assertEquals(violated, refusal("INSERT INTO player VALUES (301, 3)"));
         assertEquals(violated, refusal("INSERT INTO player VALUES (200, NULL)"));
         assertEquals("100, 1", rows("SELECT player_id, team_id FROM player"));
+    }
+
+    @Test
+    public void aForeignKeyDeclaredOnItsColumnHoldsToo() {
+        engine.execute("CREATE HYBRID TABLE h (id INT PRIMARY KEY)");
+        engine.execute("INSERT INTO h VALUES (1)");
+        engine.execute("CREATE HYBRID TABLE hf (id INT PRIMARY KEY, hid INT FOREIGN KEY REFERENCES h (id))");
+        engine.execute("CREATE HYBRID TABLE hg (id INT PRIMARY KEY, hid INT CONSTRAINT fk_hg REFERENCES h (id))");
+        engine.execute("CREATE HYBRID TABLE hr (id INT PRIMARY KEY, hid INT REFERENCES h)");
+        assertEquals("Foreign key constraint \"SYS_INDEX_HF_FOREIGN_KEY_HID_H_ID\" was violated.",
+            refusal("INSERT INTO hf VALUES (1, 99)"));
+        assertEquals("Foreign key constraint \"SYS_INDEX_HG_FOREIGN_KEY_HID_H_ID\" was violated.",
+            refusal("INSERT INTO hg VALUES (1, 99)"));
+        assertEquals("Foreign key constraint \"SYS_INDEX_HR_FOREIGN_KEY_HID_H_ID\" was violated.",
+            refusal("INSERT INTO hr VALUES (1, 99)"));
+        engine.execute("INSERT INTO hf VALUES (2, 1)");
+        engine.execute("INSERT INTO hg VALUES (2, 1)");
+        engine.execute("INSERT INTO hr VALUES (2, 1)");
+        assertEquals("2, 1", rows("SELECT id, hid FROM hf"));
+        assertEquals("2, 1", rows("SELECT id, hid FROM hg"));
+        assertEquals("2, 1", rows("SELECT id, hid FROM hr"));
+    }
+
+    @Test
+    public void aForeignKeyKeepsItsParentThroughARename() {
+        engine.execute("CREATE HYBRID TABLE hp (k NUMBER PRIMARY KEY)");
+        engine.execute("CREATE HYBRID TABLE hc (id NUMBER PRIMARY KEY, k NUMBER, FOREIGN KEY (k) REFERENCES hp (k))");
+        engine.execute("INSERT INTO hp VALUES (1)");
+        engine.execute("ALTER TABLE hp RENAME TO hp_old");
+        engine.execute("INSERT INTO hc VALUES (1, 1)");
+        assertEquals("1, 1", rows("SELECT id, k FROM hc"));
+        assertTrue(refusal("INSERT INTO hc VALUES (2, 2)").startsWith("Foreign key constraint \"SYS_INDEX_HC_"));
     }
 
     @Test

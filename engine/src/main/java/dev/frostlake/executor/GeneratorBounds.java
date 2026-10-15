@@ -91,7 +91,7 @@ final class GeneratorBounds {
         }
         final GeneratorBounds bounds = new GeneratorBounds(scope, scopeTables, values);
         for (final FrostlakeParser.NamedArgumentContext argument : named) {
-            final String name = argument.identifier().getText().toUpperCase(Locale.ROOT);
+            final String name = argument.variableName().getText().toUpperCase(Locale.ROOT);
             final int position = "ROWCOUNT".equals(name) ? 1 : "TIMELIMIT".equals(name) ? 2 : 0;
             if (position == 0 || argument.expression() == null || bounds.readsNoRow(argument.expression())) {
                 continue;

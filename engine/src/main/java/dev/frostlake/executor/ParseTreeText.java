@@ -71,6 +71,16 @@ public final class ParseTreeText {
             : ctx.getText().toUpperCase(Locale.ROOT);
     }
 
+    /** The canonical text of a variable's or an argument's name (see {@link SqlIdentifiers#canonical}). */
+    public static String getIdentifier(final FrostlakeParser.VariableNameContext ctx) {
+        return SqlIdentifiers.canonical(ctx);
+    }
+
+    /** The canonical text of an assignment's target: an identifier folds as any does, a word upper-cases. */
+    public static String getIdentifier(final FrostlakeParser.AssignedNameContext ctx) {
+        return ctx.identifier() != null ? getIdentifier(ctx.identifier()) : ctx.getText().toUpperCase(Locale.ROOT);
+    }
+
     /** The canonical text of an alias word written bare: a keyword, unquoted by construction. */
     public static String getIdentifier(final FrostlakeParser.BareAliasWordContext ctx) {
         return ctx.getText().toUpperCase(Locale.ROOT);

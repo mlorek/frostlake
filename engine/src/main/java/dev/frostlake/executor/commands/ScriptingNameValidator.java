@@ -314,15 +314,15 @@ final class ScriptingNameValidator {
      */
     private static void requireHandlerNames(final FrostlakeParser.ExceptionHandlerContext handler) {
         for (final FrostlakeParser.ExceptionConditionContext condition : handler.exceptionCondition()) {
-            if (condition.identifier() == null) {
+            if (condition.variableName() == null) {
                 continue;
             }
-            final String written = text(condition.identifier());
+            final String written = text(condition.variableName());
             final String name = canonical(written);
             if (BUILT_IN_EXCEPTIONS.contains(name) || DeclarationLookup.exceptionSeenFrom(condition, name) != null) {
                 continue;
             }
-            final Token at = condition.identifier().getStart();
+            final Token at = condition.variableName().getStart();
             throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                 invalidIdentifier(written, false)));
         }
@@ -391,7 +391,7 @@ final class ScriptingNameValidator {
         if (node instanceof FrostlakeParser.LetStatementContext) {
             final FrostlakeParser.LetStatementContext let = (FrostlakeParser.LetStatementContext) node;
             if (let.dataTypeName() == null && let.CURSOR() == null && let.RESULTSET() == null) {
-                rejectUntypableInitialiser(let.booleanExpr(), let.identifier(), let.getStart(), scope, records,
+                rejectUntypableInitialiser(let.booleanExpr(), let.variableName(), let.getStart(), scope, records,
                     compiler);
             }
             if (let.resultSetSource() != null) {
@@ -401,15 +401,15 @@ final class ScriptingNameValidator {
             } else {
                 checkExpressions(let, scope);
             }
-            if (compiler != null && let.identifier() != null) {
+            if (compiler != null && let.variableName() != null) {
                 // Its type is compiled with the block: the one written, or the one its initialiser infers.
                 if (let.dataTypeName() != null) {
-                    compiler.declare(canonical(text(let.identifier())), let.dataTypeName(), let.typeParameters());
+                    compiler.declare(canonical(text(let.variableName())), let.dataTypeName(), let.typeParameters());
                 } else if (let.CURSOR() == null && let.RESULTSET() == null && let.booleanExpr() != null) {
-                    compiler.infer(canonical(text(let.identifier())), let.booleanExpr(), let.getStart());
+                    compiler.infer(canonical(text(let.variableName())), let.booleanExpr(), let.getStart());
                 }
             }
-            declare(let.identifier(), scope, counters);
+            declare(let.variableName(), scope, counters);
             return;
         }
         if (node instanceof FrostlakeParser.SetStatementContext
@@ -425,9 +425,9 @@ final class ScriptingNameValidator {
             final FrostlakeParser.AssignmentStatementContext set =
                 (FrostlakeParser.AssignmentStatementContext) node;
             final Token assign = set.COLON_EQ().getSymbol();
-            requireName(text(set.identifier()), assign, scope);
-            refuseCounterAssignment(set.identifier(), assign, counters);
-            final String target = canonical(text(set.identifier()));
+            requireName(text(set.assignedName()), assign, scope);
+            refuseCounterAssignment(set.assignedName(), assign, counters);
+            final String target = canonical(text(set.assignedName()));
             final ParserRuleContext declaration = DeclarationLookup.declarationOf(set, target);
             if (declaration == null && (DECLARED_FOR_THE_BODY.contains(target) || "ACTIVITY_COUNT".equals(target))) {
                 // What the script supplies is its to set: no statement assigns it, unless the block declared a
@@ -435,7 +435,7 @@ final class ScriptingNameValidator {
                 throw new RuntimeException(SqlCompilationError.at(assign.getLine(), assign.getCharPositionInLine(),
                     " Assignment to variable '" + target + "' is not permitted."));
             }
-            refuseUnassignable(set.identifier(), assign, declaration);
+            refuseUnassignable(set.assignedName(), assign, declaration);
             final boolean resultSet = DeclarationLookup.RESULTSET.equals(DeclarationLookup.misuse(declaration));
             if (set.asyncJob() != null) {
                 // A job's statement binds the block's variables as a statement the block runs does.
@@ -489,8 +489,8 @@ final class ScriptingNameValidator {
             final Set<String> bodyCounters = nested(counters);
             final Set<String> bodyRecords = nested(records);
             openScope(compiler);
-            if (loop.identifier() != null) {
-                final String counter = canonical(text(loop.identifier()));
+            if (loop.variableName() != null) {
+                final String counter = canonical(text(loop.variableName()));
                 body.add(counter);
                 // An integer range's counter is read-only inside its loop; a cursor loop's record is
                 // not, and hides any counter of the same name.
@@ -624,12 +624,12 @@ final class ScriptingNameValidator {
      */
     private static void requireNamedTargets(final ParseTree node, final Set<String> scope) {
         if (node instanceof FrostlakeParser.OpenStatementContext) {
-            require(((FrostlakeParser.OpenStatementContext) node).identifier(), scope);
+            require(((FrostlakeParser.OpenStatementContext) node).variableName(), scope);
         } else if (node instanceof FrostlakeParser.CloseStatementContext) {
-            require(((FrostlakeParser.CloseStatementContext) node).identifier(), scope);
+            require(((FrostlakeParser.CloseStatementContext) node).variableName(), scope);
         } else if (node instanceof FrostlakeParser.FetchStatementContext) {
             final FrostlakeParser.FetchStatementContext fetch = (FrostlakeParser.FetchStatementContext) node;
-            require(fetch.identifier(), scope);
+            require(fetch.variableName(), scope);
             if (fetch.identifierList() != null) {
                 for (final FrostlakeParser.IdentifierContext target : fetch.identifierList().identifier()) {
                     require(target, scope);
@@ -637,7 +637,7 @@ final class ScriptingNameValidator {
             }
         } else if (node instanceof FrostlakeParser.RaiseStatementContext) {
             final FrostlakeParser.RaiseStatementContext raise = (FrostlakeParser.RaiseStatementContext) node;
-            if (raise.identifier() == null && !DeclarationLookup.insideExceptionHandler(raise)) {
+            if (raise.variableName() == null && !DeclarationLookup.insideExceptionHandler(raise)) {
                 // A RAISE that names nothing raises again what a handler is handling, and stands nowhere else.
                 throw new RuntimeException(SqlCompilationError.at(raise.getStart().getLine(),
                     raise.getStart().getCharPositionInLine(),
@@ -645,11 +645,11 @@ final class ScriptingNameValidator {
             }
             // The two exceptions a script has without declaring them are raised by name, in any case unless
             // the name is written in quotes (live-verified).
-            if (raise.identifier() != null) {
+            if (raise.variableName() != null) {
                 // An exception no block declares is named as it is known, a quoted name without its quotes.
-                final String name = canonical(text(raise.identifier()));
+                final String name = canonical(text(raise.variableName()));
                 if (!BUILT_IN_EXCEPTIONS.contains(name) && !scope.contains(name)) {
-                    final Token at = raise.identifier().getStart();
+                    final Token at = raise.variableName().getStart();
                     throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                         "invalid identifier '" + name + "'"));
                 }
@@ -795,8 +795,8 @@ final class ScriptingNameValidator {
      * "invalid identifier '1'" (live-verified), in a block's own expression and in a query written in one.
      */
     private static void requireBind(final FrostlakeParser.BindVarExprContext bind, final Set<String> scope) {
-        if (bind.identifier() != null) {
-            requireName(text(bind.identifier()), bind, scope, true);
+        if (bind.variableName() != null) {
+            requireName(text(bind.variableName()), bind, scope, true);
         } else if (bind.INTEGER_LITERAL() != null) {
             requireName(bind.INTEGER_LITERAL().getText(), bind, scope, true);
         }
@@ -848,13 +848,13 @@ final class ScriptingNameValidator {
                                                 final ParseTree node, final Set<String> scope) {
         if (node instanceof FrostlakeParser.BindVarExprContext) {
             final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) node;
-            if (bind.identifier() == null || scope.contains(canonical(text(bind.identifier())))) {
+            if (bind.variableName() == null || scope.contains(canonical(text(bind.variableName())))) {
                 return;
             }
             final Token at = bind.getStart();
             throw new RuntimeException(SqlCompilationError.at(at.getLine(),
                 at.getCharPositionInLine() - intoClauseWidthBefore(into, at),
-                invalidIdentifier(text(bind.identifier()), false)));
+                invalidIdentifier(text(bind.variableName()), false)));
         }
         if (node instanceof FrostlakeParser.IdentifierArgumentContext) {
             final FrostlakeParser.IdentifierArgumentContext argument = (FrostlakeParser.IdentifierArgumentContext) node;
@@ -883,8 +883,8 @@ final class ScriptingNameValidator {
         }
         if (node instanceof FrostlakeParser.BindVarExprContext) {
             final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) node;
-            if (bind.identifier() != null) {
-                requireName(text(bind.identifier()), bind, scope, false);
+            if (bind.variableName() != null) {
+                requireName(text(bind.variableName()), bind, scope, false);
             }
             return;
         }
@@ -1015,7 +1015,7 @@ final class ScriptingNameValidator {
      * @param assign      the {@code :=}
      * @param declaration the target's declaration in sight, or null
      */
-    private static void refuseUnassignable(final FrostlakeParser.IdentifierContext target, final Token assign,
+    private static void refuseUnassignable(final ParserRuleContext target, final Token assign,
                                            final ParserRuleContext declaration) {
         if (DeclarationLookup.isException(declaration)) {
             throw new RuntimeException(SqlCompilationError.at(assign.getLine(), assign.getCharPositionInLine(),
@@ -1103,7 +1103,7 @@ final class ScriptingNameValidator {
                 (FrostlakeParser.SelectIntoStatementContext) ctx;
             final Set<String> seen = new HashSet<String>();
             for (final FrostlakeParser.IntoTargetContext target : into.intoTargetList().intoTarget()) {
-                final String name = canonical(target.identifier().getText());
+                final String name = canonical(target.variableName().getText());
                 if (!seen.add(name)) {
                     final Token select = into.SELECT().getSymbol();
                     throw new RuntimeException(SqlCompilationError.at(select.getLine(),
@@ -1178,7 +1178,7 @@ final class ScriptingNameValidator {
         requireName(text(name.nameStartPart()), name.nameStartPart(), scope);
     }
 
-    private static void require(final FrostlakeParser.IdentifierContext identifier,
+    private static void require(final ParserRuleContext identifier,
                                 final Set<String> scope) {
         if (identifier != null) {
             requireName(text(identifier), identifier, scope);
@@ -1234,7 +1234,7 @@ final class ScriptingNameValidator {
      * Refuse an assignment to a FOR counter, at the ':=', naming the counter as it is known:
      * {@code 'I'}, or {@code 'i'} for a quoted {@code "i"}.
      */
-    private static void refuseCounterAssignment(final FrostlakeParser.IdentifierContext target,
+    private static void refuseCounterAssignment(final ParserRuleContext target,
                                                 final Token at, final Set<String> counters) {
         final String name = canonical(text(target));
         if (counters.contains(name)) {
@@ -1244,7 +1244,7 @@ final class ScriptingNameValidator {
     }
 
     /** Declare a name in {@code scope}; a declaration of a counter's name hides the counter. */
-    private static void declare(final FrostlakeParser.IdentifierContext identifier,
+    private static void declare(final ParserRuleContext identifier,
                                 final Set<String> scope, final Set<String> counters) {
         if (identifier != null) {
             scope.add(canonical(text(identifier)));
@@ -1367,7 +1367,7 @@ final class ScriptingNameValidator {
         if (node instanceof FrostlakeParser.LetStatementContext) {
             if (!declarationsOnly) {
                 final FrostlakeParser.LetStatementContext let = (FrostlakeParser.LetStatementContext) node;
-                introduce(names, let.identifier(), let.getStart());
+                introduce(names, let.variableName(), let.getStart());
             }
             return;
         }
@@ -1391,7 +1391,7 @@ final class ScriptingNameValidator {
      * and a bind no variable declares is refused ahead of all of them (live-verified).
      */
     private static void rejectUntypableInitialiser(final FrostlakeParser.BooleanExprContext initialiser,
-                                                   final FrostlakeParser.IdentifierContext name,
+                                                   final ParserRuleContext name,
                                                    final Token at, final Set<String> scope,
                                                    final Set<String> records,
                                                    final InferredInitialiserCompiler compiler) {
@@ -1524,7 +1524,7 @@ final class ScriptingNameValidator {
     /** Whether a named {@code :bind} stands anywhere under {@code node}. */
     private static boolean holdsABind(final ParseTree node) {
         if (node instanceof FrostlakeParser.BindVarExprContext) {
-            return ((FrostlakeParser.BindVarExprContext) node).identifier() != null;
+            return ((FrostlakeParser.BindVarExprContext) node).variableName() != null;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             if (holdsABind(node.getChild(i))) {
@@ -1658,7 +1658,7 @@ final class ScriptingNameValidator {
         }
     }
 
-    private static void introduce(final Set<String> names, final FrostlakeParser.IdentifierContext identifier,
+    private static void introduce(final Set<String> names, final ParserRuleContext identifier,
                                   final Token at) {
         if (identifier == null) {
             return;

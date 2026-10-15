@@ -42,14 +42,14 @@ public final class QuotedBindName {
      * @return the quoted name's token, or null
      */
     public static Token of(final ParseTree node) {
-        FrostlakeParser.IdentifierContext name = null;
+        FrostlakeParser.VariableNameContext name = null;
         if (node instanceof FrostlakeParser.IntoTargetContext) {
             final FrostlakeParser.IntoTargetContext target = (FrostlakeParser.IntoTargetContext) node;
             if (target.COLON() != null) {
-                name = target.identifier();
+                name = target.variableName();
             }
         } else if (node instanceof FrostlakeParser.BindVarExprContext) {
-            name = ((FrostlakeParser.BindVarExprContext) node).identifier();
+            name = ((FrostlakeParser.BindVarExprContext) node).variableName();
         }
         if (name == null) {
             return null;

@@ -82,6 +82,35 @@ public final class SqlIdentifiers {
     }
 
     /**
+     * {@link #canonical(FrostlakeParser.IdentifierContext)} for a variable's or an argument's name, which may also be
+     * one of the words such a name takes (CASE, JOIN, DEFAULT …): such a word is unquoted by construction and folds to
+     * upper case.
+     *
+     * @param ctx the name, or null
+     * @return its canonical text, or null
+     */
+    public static String canonical(final FrostlakeParser.VariableNameContext ctx) {
+        if (ctx == null) {
+            return null;
+        }
+        return ctx.identifier() != null ? canonical(ctx.identifier()) : ctx.getText().toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * {@link #verbatim(FrostlakeParser.IdentifierContext)} for a variable's or an argument's name: one of the words such
+     * a name takes is given as it is written.
+     *
+     * @param ctx the name, or null
+     * @return its text as written, quotes stripped, or null
+     */
+    public static String verbatim(final FrostlakeParser.VariableNameContext ctx) {
+        if (ctx == null) {
+            return null;
+        }
+        return ctx.identifier() != null ? verbatim(ctx.identifier()) : ctx.getText();
+    }
+
+    /**
      * Canonicalise an object name that arrived as a runtime STRING rather than as parse-tree text —
      * {@code IDENTIFIER('t')}, {@code GET_DDL('TABLE','t')}, {@code SYSTEM$GET_TAG(...)} and the other
      * places a name is a value the statement computed.

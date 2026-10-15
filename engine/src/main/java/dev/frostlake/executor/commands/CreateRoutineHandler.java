@@ -662,7 +662,7 @@ public class CreateRoutineHandler implements CommandHandler {
         final Set<String> names = new HashSet<>();
         if (list != null) {
             for (final FrostlakeParser.ParameterDefContext def : list.parameterDef()) {
-                names.add(ScriptingNameValidator.canonical(def.identifier().getText()));
+                names.add(ScriptingNameValidator.canonical(def.variableName().getText()));
             }
         }
         return names;
@@ -1089,7 +1089,7 @@ public class CreateRoutineHandler implements CommandHandler {
         final Set<String> names = new LinkedHashSet<>();
         if (ctx.parameterList() != null) {
             for (final FrostlakeParser.ParameterDefContext parameter : ctx.parameterList().parameterDef()) {
-                names.add(getText(parameter.identifier()).toUpperCase(Locale.ROOT));
+                names.add(getText(parameter.variableName()).toUpperCase(Locale.ROOT));
             }
         }
         return names;
@@ -1211,7 +1211,7 @@ public class CreateRoutineHandler implements CommandHandler {
         final Set<String> arguments = new LinkedHashSet<>();
         if (ctx.parameterList() != null) {
             for (final FrostlakeParser.ParameterDefContext parameter : ctx.parameterList().parameterDef()) {
-                final String name = getText(parameter.identifier());
+                final String name = getText(parameter.variableName());
                 if (!arguments.add(name)) {
                     throw new RuntimeException("Argument '" + name + "' repeats in the function signature.");
                 }

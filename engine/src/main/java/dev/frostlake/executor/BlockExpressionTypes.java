@@ -220,8 +220,8 @@ public final class BlockExpressionTypes {
 
                 @Override
                 public Expression visitBindVarExpr(final FrostlakeParser.BindVarExprContext ctx) {
-                    final Expression value = ctx.identifier() == null ? null
-                        : renderingOf(ctx.identifier().getText(), types, values, planned);
+                    final Expression value = ctx.variableName() == null ? null
+                        : renderingOf(ctx.variableName().getText(), types, values, planned);
                     return value != null ? value : super.visitBindVarExpr(ctx);
                 }
             }.visit(expression);
@@ -358,10 +358,10 @@ public final class BlockExpressionTypes {
         }
         if (node instanceof FrostlakeParser.BindVarExprContext) {
             final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) node;
-            if (bind.identifier() == null) {
+            if (bind.variableName() == null) {
                 return 0;
             }
-            final String written = bind.identifier().getText();
+            final String written = bind.variableName().getText();
             return shiftOf(bind.getStart(), line, column, types.get(SqlIdentifiers.canonicalText(written)),
                 written.length() + 1, "?");
         }

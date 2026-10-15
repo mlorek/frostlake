@@ -62,8 +62,8 @@ final class DeclarationLookup {
                 }
             } else if (up instanceof FrostlakeParser.ForStatementContext) {
                 final FrostlakeParser.ForStatementContext loop = (FrostlakeParser.ForStatementContext) up;
-                if (child == loop.statementList() && loop.identifier() != null
-                        && name.equals(ScriptingNameValidator.canonical(loop.identifier().getText()))) {
+                if (child == loop.statementList() && loop.variableName() != null
+                        && name.equals(ScriptingNameValidator.canonical(loop.variableName().getText()))) {
                     return loop;
                 }
             } else if (up instanceof FrostlakeParser.BeginEndBlockContext) {
@@ -175,7 +175,7 @@ final class DeclarationLookup {
             final FrostlakeParser.StatementContext earlier = statements.get(i);
             final FrostlakeParser.LetStatementContext let = earlier.proceduralStatement() == null ? null
                 : earlier.proceduralStatement().letStatement();
-            if (let != null && name.equals(ScriptingNameValidator.canonical(let.identifier().getText()))) {
+            if (let != null && name.equals(ScriptingNameValidator.canonical(let.variableName().getText()))) {
                 return let;
             }
         }

@@ -55,6 +55,7 @@ import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.executor.expressions.StrayArguments;
 import dev.frostlake.executor.expressions.StructuredCast;
+import dev.frostlake.executor.expressions.StructuredLeaf;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryTypeRanking;
 import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
@@ -235,6 +236,7 @@ import dev.frostlake.system.ObjectVisibility;
 import dev.frostlake.system.SystemViews;
 import dev.frostlake.system.UnmodeledSystemViews;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.transaction.LockWaitStop;
 import dev.frostlake.transaction.SetAsideTransaction;
 import dev.frostlake.transaction.StreamReadScope;
 import dev.frostlake.transaction.TableLockGate;
@@ -251,12 +253,14 @@ import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.FileType;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.GeometryType;
+import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StatementResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredLeafWidths;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
@@ -498,6 +502,11 @@ public class QueryExecutor implements ImportLocalizer {
             public boolean actsAsOwner(final String owner) {
                 return securityManager == null || securityManager.actsAsOwner(owner);
             }
+
+            @Override
+            public boolean sees(final String objectType, final String objectName, final String owner) {
+                return securityManager == null || securityManager.sees(objectType, objectName, owner);
+            }
         });
         this.systemViews.setVisibility(new ObjectVisibility() {
             @Override
@@ -624,6 +633,11 @@ public class QueryExecutor implements ImportLocalizer {
             @Override
             public boolean actsAsOwner(final String owner) {
                 return securityManager == null || securityManager.actsAsOwner(owner);
+            }
+
+            @Override
+            public boolean sees(final String objectType, final String objectName, final String owner) {
+                return securityManager == null || securityManager.sees(objectType, objectName, owner);
             }
         }));
 
@@ -1748,16 +1762,26 @@ public class QueryExecutor implements ImportLocalizer {
         if (sql == null || sql.trim().isEmpty()) {
             return null;
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         final SyntaxErrorListener errorListener = new SyntaxErrorListener(sql, true);
         errorListener.statementParse();
-        lexer.removeErrorListeners();
-        lexer.addErrorListener(errorListener);
-        final CommonTokenStream tokens = new CommonTokenStream(lexer);
-        final FrostlakeParser parser = new FrostlakeParser(tokens);
-        parser.removeErrorListeners();
-        parser.addErrorListener(errorListener);
-        final FrostlakeParser.SqlScriptContext tree = parser.sqlScript();
+        final CommonTokenStream tokens;
+        final FrostlakeParser.SqlScriptContext tree;
+        // Two stages, as every script parse: a body the quick prediction reads cleanly is read exactly as the full
+        // parse reads it, with no fault for the listener to hold, and only a body it gives up on is parsed again.
+        final QuickScriptParse quick = QuickScriptParse.of(sql);
+        if (quick != null) {
+            tokens = quick.tokens();
+            tree = quick.tree();
+        } else {
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(errorListener);
+            tokens = new CommonTokenStream(lexer);
+            final FrostlakeParser parser = new FrostlakeParser(tokens);
+            parser.removeErrorListeners();
+            parser.addErrorListener(errorListener);
+            tree = parser.sqlScript();
+        }
         try {
             SignatureTailLine.requireBefore(tree, sql, errorListener);
             if (!errorListener.hasErrors()) {
@@ -1994,7 +2018,19 @@ public class QueryExecutor implements ImportLocalizer {
      * @param waitingSince when the statement first waited ({@link System#nanoTime()})
      */
     public void awaitTableLock(final TableLockWait held, final long waitingSince) {
-        held.await(transactionManager, lockTimeoutSeconds(), waitingSince);
+        held.await(transactionManager, lockTimeoutSeconds(), waitingSince, new LockWaitStop() {
+            @Override
+            public void check() {
+                // What ends a running statement ends a waiting one: its timeout or a cancel, its session's abort,
+                // the engine shutting down.
+                StatementCancellation.check();
+                final SessionContext context = securityManager != null ? securityManager.getSessionContext() : null;
+                final SessionSettings session = context != null ? context.getBoundSettings() : null;
+                if ((session != null && session.isAborted()) || transactionManager.isShutDown()) {
+                    throw StatementCanceledException.canceled();
+                }
+            }
+        });
     }
 
     /** The session's LOCK_TIMEOUT, in seconds: 43200 unless it is set. */
@@ -2364,6 +2400,7 @@ public class QueryExecutor implements ImportLocalizer {
                                     judged.getStart().getCharPositionInLine()));
                             try {
                                 LimitValueSyntax.requireNumericValues(judged, sql);
+                                BareDefaultKeys.refuse(judged);
                             } finally {
                                 if (ownPlaces) {
                                     LeadingCommentOffset.end(requestOrigin);
@@ -7208,6 +7245,47 @@ public class QueryExecutor implements ImportLocalizer {
     }
 
     /**
+     * The file format a stage keeps for its files, as its options: a named stage's FILE_FORMAT with its TYPE, a table
+     * stage's STAGE_FILE_FORMAT, each with the FORMAT_NAME it may give. The user's stage, a stage that keeps no format
+     * and a location that names no stage keep none.
+     *
+     * @param location the location as {@link #stageRefToLocation} encodes it
+     * @return the options, empty when the stage keeps none
+     */
+    public Map<String, String> stageFileFormat(final String location) {
+        final StagePrefix staged = resolveStagePrefix(location);
+        final Map<String, String> options = new LinkedHashMap<>();
+        if (staged == null || staged.kind() == StageKind.USER) {
+            return options;
+        }
+        final int slash = location.indexOf('/');
+        final String stagePart = slash >= 0 ? location.substring(1, slash) : location.substring(1);
+        try {
+            if (staged.kind() == StageKind.TABLE) {
+                final QualifiedName written = QualifiedName.parse(stagePart.substring(1));
+                final Table table = catalog.requireOwningSchema(written).tableExact(written.last());
+                if (table != null) {
+                    options.putAll(table.getStageFileFormat());
+                }
+                return options;
+            }
+            final Stage stage = catalog.getStage(stagePart);
+            if (stage != null) {
+                options.putAll(stage.getFileFormatOptions());
+                // A stage that names its format keeps the name where the type would stand.
+                if (!options.containsKey("TYPE") && !options.containsKey("FORMAT_NAME")
+                        && stage.getFileFormat() != null) {
+                    options.put("TYPE", stage.getFileFormat());
+                }
+            }
+        } catch (final RuntimeException unresolved) {
+            // A stage the location does not reach keeps no format; reading it is refused where its files are listed.
+            options.clear();
+        }
+        return options;
+    }
+
+    /**
      * A {@code @…} stage location split into the stage's root and the path written after it, which selects
      * files as a PREFIX of their stage-relative names (see {@link StagePrefix}). Answers null for any other
      * location — a URL or a local path keeps its own reading.
@@ -7671,6 +7749,85 @@ public class QueryExecutor implements ImportLocalizer {
     }
 
     /**
+     * Copies this engine's internal stages — every user, table and named stage's files, and the stages set aside for
+     * UNDROP — into {@code target}, as a copy of the engine's state carries them besides its catalog and rows: an
+     * engine clone's own stages, or a checkpoint's. Each file keeps its modification time, which LIST reports. A root
+     * shared with other engines holds their own roots too; those are not this engine's and are left out.
+     *
+     * @param target the directory to copy into, made when missing
+     * @throws IOException when a file cannot be copied
+     */
+    public void copyInternalStagesTo(final Path target) throws IOException {
+        final Path root;
+        synchronized (setAsideLock) {
+            root = droppedVersionsOutliveEngine() ? internalStageRoot() : ownStageRoot;
+        }
+        if (root != null && Files.isDirectory(root)) {
+            copyStageFiles(root, target, true);
+        }
+    }
+
+    /**
+     * Puts the internal stages a copy of an engine's state carries ({@link #copyInternalStagesTo}) into this engine's
+     * own, a file of the same name replaced.
+     *
+     * @param source the directory the copy holds them in; nothing is copied when it is missing
+     * @throws IOException when a file cannot be copied
+     */
+    public void copyInternalStagesFrom(final Path source) throws IOException {
+        if (Files.isDirectory(source)) {
+            copyStageFiles(source, internalStageRoot(), true);
+            adoptCopiedSetAsideStages();
+        }
+    }
+
+    /**
+     * Copies another engine's internal stages into this engine's own: the files an engine clone starts with.
+     *
+     * @param source the engine copied
+     * @throws IOException when a file cannot be copied
+     */
+    public void copyInternalStagesOf(final QueryExecutor source) throws IOException {
+        source.copyInternalStagesTo(internalStageRoot());
+        adoptCopiedSetAsideStages();
+    }
+
+    /**
+     * The stages a copy set aside wait in this engine's own root now, where an UNDROP of their schema or database looks
+     * for them ({@link #setAsideRoot}).
+     */
+    private void adoptCopiedSetAsideStages() {
+        if (droppedVersionsOutliveEngine()) {
+            return;
+        }
+        synchronized (setAsideLock) {
+            final Path copied = internalStageRoot().resolve("dropped");
+            if (ownSetAsideRoot == null && Files.isDirectory(copied)) {
+                ownSetAsideRoot = copied;
+            }
+        }
+    }
+
+    private static void copyStageFiles(final Path from, final Path to, final boolean top) throws IOException {
+        Files.createDirectories(to);
+        try (DirectoryStream<Path> entries = Files.newDirectoryStream(from)) {
+            for (final Path entry : entries) {
+                final String name = entry.getFileName().toString();
+                if (top && name.startsWith("engine-")) {
+                    // Another engine's own root, inside the root it shares with this one.
+                    continue;
+                }
+                final Path copy = to.resolve(name);
+                if (Files.isDirectory(entry)) {
+                    copyStageFiles(entry, copy, false);
+                } else {
+                    Files.copy(entry, copy, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                }
+            }
+        }
+    }
+
+    /**
      * Engine shutdown: an engine whose data ends with it deletes its own stage root — every internal stage's files and
      * the stages it set aside. One whose data outlives it keeps them for the engine that restarts on its data.
      */
@@ -8054,7 +8211,14 @@ public class QueryExecutor implements ImportLocalizer {
         if (!catalog.swapTables(tableA, tableB)) {
             return;
         }
-        storageEngine.swapTables(getFullyQualifiedTableName(tableA), getFullyQualifiedTableName(tableB));
+        final String keyA = getFullyQualifiedTableName(tableA);
+        final String keyB = getFullyQualifiedTableName(tableB);
+        storageEngine.swapTables(keyA, keyB);
+        // What an open transaction changed in either table it changed in that table, now under the other key.
+        final Map<String, String> traded = new HashMap<>();
+        traded.put(keyA, keyB);
+        traded.put(keyB, keyA);
+        transactionManager.tablesMoved(traded);
         // Both are of one persistence: a temporary table swaps with a temporary one alone.
         swapInternalStageDirs(tableStageKind(stagedTable(tableA)), getFullyQualifiedTableName(tableA),
             getFullyQualifiedTableName(tableB));
@@ -8272,6 +8436,8 @@ public class QueryExecutor implements ImportLocalizer {
         final String[] parts = QualifiedName.parse(oldQualified).parts();
         parts[parts.length - 1] = newShortName;
         storageEngine.renameTable(oldQualified, QualifiedName.key(parts));
+        // What an open transaction changed in it, it changed in the renamed table.
+        transactionManager.tablesMoved(Collections.singletonMap(oldQualified, QualifiedName.key(parts)));
         // Its stage goes with it, to the directory of its stored names.
         moveInternalStageDir(tableStageKind(stagedTable(QualifiedName.key(parts))), oldQualified,
             tableStageOwner(QualifiedName.key(parts)));
@@ -8280,6 +8446,15 @@ public class QueryExecutor implements ImportLocalizer {
     /** Re-key a renamed database's row storage to its new name (ALTER DATABASE RENAME TO). */
     public void renameDatabaseStorage(final String oldDatabase, final String newDatabase) {
         storageEngine.renameDatabase(oldDatabase, newDatabase);
+        final Map<String, String> moved = new HashMap<>();
+        for (final Schema schema : catalog.databaseExact(newDatabase).getAllSchemas()) {
+            for (final Table table : schema.getTables()) {
+                moved.put(QualifiedName.key(oldDatabase, schema.getName(), table.getName()),
+                    QualifiedName.key(newDatabase, schema.getName(), table.getName()));
+            }
+        }
+        // What an open transaction changed in its tables, it changed in them under the database's new name.
+        transactionManager.tablesMoved(moved);
         // So are its tables' and stages' files.
         for (final Schema schema : catalog.databaseExact(newDatabase).getAllSchemas()) {
             moveSchemaStageDirs(schema, oldDatabase, schema.getName());
@@ -8290,6 +8465,13 @@ public class QueryExecutor implements ImportLocalizer {
     public void renameSchemaStorage(final String oldDatabase, final String oldSchema, final String newDatabase,
                                     final String newSchema) {
         storageEngine.renameSchema(oldDatabase, oldSchema, newDatabase, newSchema);
+        final Map<String, String> moved = new HashMap<>();
+        for (final Table table : catalog.databaseExact(newDatabase).schemaExact(newSchema).getTables()) {
+            moved.put(QualifiedName.key(oldDatabase, oldSchema, table.getName()),
+                QualifiedName.key(newDatabase, newSchema, table.getName()));
+        }
+        // What an open transaction changed in its tables, it changed in them under the schema's new name.
+        transactionManager.tablesMoved(moved);
         // So are its tables' and stages' files.
         moveSchemaStageDirs(catalog.databaseExact(newDatabase).schemaExact(newSchema), oldDatabase, oldSchema);
     }
@@ -8300,6 +8482,8 @@ public class QueryExecutor implements ImportLocalizer {
         final String oldQualified = getFullyQualifiedTableName(oldName);
         storageEngine.renameTable(oldQualified, QualifiedName.key(targetDatabase, targetSchema, newShortName));
         final String moved = QualifiedName.key(targetDatabase, targetSchema, newShortName);
+        // What an open transaction changed in it, it changed in the moved table.
+        transactionManager.tablesMoved(Collections.singletonMap(oldQualified, moved));
         moveInternalStageDir(tableStageKind(stagedTable(moved)), oldQualified, tableStageOwner(moved));
     }
 
@@ -8625,7 +8809,8 @@ public class QueryExecutor implements ImportLocalizer {
                 case "CURRENT_TIME()":
                     return StatementClock.now().toLocalTime();
                 case "UUID_STRING()":
-                    return UUID.randomUUID().toString();
+                    // Drawn from the statement's own stream, as the function draws, so a replay draws the same one.
+                    return StatementTokens.randomUuid();
                 case "NULL":
                     return null;
                 case "TRUE":
@@ -9917,12 +10102,34 @@ public class QueryExecutor implements ImportLocalizer {
                 || privilege == Privilege.MODIFY && securityManager.holdsPrivilege(Privilege.ALTER,
                     granted.getKind(), granted.getName(), granted.getOwner());
         if (held) {
+            requireUsedContainers(granted);
             return;
         }
         throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired(granted.getKind(), granted.getBareName(),
             securityManager.getSessionContext().getCurrentRole(),
             securityManager.getSessionContext().isSecondaryRolesInUse(),
             privilege == null ? null : privilege.name().replace('_', ' '), granted.getName()));
+    }
+
+    /**
+     * Refuse a privilege on an object of a schema held without USAGE on the schema or its database: the object is out
+     * of the role's reach, and is refused as a container that is not there is — the database first (documented:
+     * a role uses an object of a schema only with USAGE on the database and the schema). An object an asked role
+     * owns is reached as before.
+     */
+    private void requireUsedContainers(final GrantedObject granted) {
+        final String[] parts = QualifiedName.parse(granted.getName()).parts();
+        if (parts.length != 3 || securityManager.ownedByAskedRole(granted.getOwner())) {
+            return;
+        }
+        final String missed = securityManager.missedContainer(parts[0], parts[1]);
+        if ("DATABASE".equals(missed)) {
+            throw new PrivilegeRefusal(SqlCompilationError.doesNotExist("Database", parts[0]));
+        }
+        if ("SCHEMA".equals(missed)) {
+            throw new PrivilegeRefusal(SqlCompilationError.doesNotExist("Schema",
+                QualifiedName.join(parts[0], parts[1])));
+        }
     }
 
     /**
@@ -15986,7 +16193,7 @@ public class QueryExecutor implements ImportLocalizer {
         }
         final Random random = sample.sampleSeed() != null
             ? new Random(Long.parseLong(sample.sampleSeed().INTEGER_LITERAL().getText()))
-            : new Random();
+            : new Random(StatementTokens.nextLong());
 
         if (sample.ROWS() != null) {
             final int n = Math.min((int) sizeVal, rows.size());
@@ -16374,7 +16581,7 @@ public class QueryExecutor implements ImportLocalizer {
                 validateTableFunctionCall("FLATTEN", "", source.FLATTEN().getSymbol(),
                     null, fal.namedArgumentList().namedArgument());
                 for (final FrostlakeParser.NamedArgumentContext argCtx : fal.namedArgumentList().namedArgument()) {
-                    final String argName = argCtx.identifier().getText().toUpperCase(Locale.ROOT);
+                    final String argName = argCtx.variableName().getText().toUpperCase(Locale.ROOT);
                     final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                     namedArgs.put(argName, argValue);
                 }
@@ -16386,15 +16593,17 @@ public class QueryExecutor implements ImportLocalizer {
                     getOriginalText(fal.expression()), lateralContext);
                 namedArgs.put("INPUT", inputValue);
                 for (final FrostlakeParser.NamedArgumentContext argCtx : fal.namedArgument()) {
-                    final String argName = argCtx.identifier().getText().toUpperCase(Locale.ROOT);
+                    final String argName = argCtx.variableName().getText().toUpperCase(Locale.ROOT);
                     final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                     namedArgs.put(argName, argValue);
                 }
             }
             final TableFunction flattenFunc = functionRegistry.getTableFunction("FLATTEN");
             if (flattenFunc == null) throw new RuntimeException("FLATTEN function not available");
-            return tableFunctionSource(plannedCall("FLATTEN", getOriginalText(source), flattenFunc, namedArgs),
-                alias, "flatten", columnAliases);
+            final String inputText = fal.namedArgumentList() != null
+                ? namedInputText(fal.namedArgumentList().namedArgument()) : getOriginalText(fal.expression());
+            return tableFunctionSource(plannedCall("FLATTEN", getOriginalText(source), flattenFunc, namedArgs,
+                inputText, lateralContext), alias, "flatten", columnAliases);
         }
 
         // Handle a bare table function used directly as a FROM source (no TABLE() wrapper):
@@ -17021,6 +17230,66 @@ public class QueryExecutor implements ImportLocalizer {
             }
         }, alias, "TABLE[" + call.callText + "]");
         return resolvedByRunning ? planned.readWhilePlanning() : planned;
+    }
+
+    /**
+     * A structured catalog column's statistics over the numbers a read of it reaches: the interval between the least
+     * and the greatest of them in the WHOLE table, as {@link #columnValueRange} reads a column's own.
+     *
+     * @param owner      the catalog table, as the FROM clause resolved it
+     * @param columnName the column
+     * @param steps      the read's steps from the column: a field name, or null for every element or MAP value
+     * @return the interval, or null when the table's rows are not reachable
+     */
+    public ValueRange columnLeafRange(final Table owner, final String columnName, final List<String> steps) {
+        final String qualifiedName = owner.getQualifiedName();
+        if (qualifiedName == null || !storageEngine.hasTable(qualifiedName)) {
+            return null;
+        }
+        final int index = owner.getColumnIndex(columnName);
+        if (index < 0) {
+            return null;
+        }
+        ValueRange range = ValueRange.EMPTY;
+        boolean holdsNull = false;
+        for (final Row row : statisticsRowsFor(qualifiedName)) {
+            final Object value = index < row.size() ? row.getValue(index) : null;
+            final List<JsonNode> leaves = new ArrayList<>();
+            if (value != null) {
+                collectLeaves(ArrayFunctionHelper.parseNode(value), steps, 0, leaves);
+            }
+            holdsNull |= value == null || leaves.isEmpty();
+            for (final JsonNode leaf : leaves) {
+                if (leaf.isNumber()) {
+                    range = range.including(ValueRange.exactOf(leaf.decimalValue()));
+                } else {
+                    holdsNull = true;
+                }
+            }
+        }
+        return range.withNullable(holdsNull);
+    }
+
+    /** The nodes a read's steps reach from {@code node}, from the step at {@code at} on. */
+    private static void collectLeaves(final JsonNode node, final List<String> steps, final int at,
+                                      final List<JsonNode> out) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return;
+        }
+        if (at == steps.size()) {
+            out.add(node);
+            return;
+        }
+        final String step = steps.get(at);
+        if (step != null) {
+            collectLeaves(node.get(step), steps, at + 1, out);
+            return;
+        }
+        if (node.isArray() || node.isObject()) {
+            for (final JsonNode child : node) {
+                collectLeaves(child, steps, at + 1, out);
+            }
+        }
     }
 
     /**
@@ -19567,10 +19836,12 @@ public class QueryExecutor implements ImportLocalizer {
                     evaluateBareArg(ctx.expression(0), lateralContext));
             }
             for (final FrostlakeParser.NamedArgumentContext arg : ctx.namedArgument()) {
-                namedArgs.put(arg.identifier().getText().toUpperCase(Locale.ROOT),
+                namedArgs.put(arg.variableName().getText().toUpperCase(Locale.ROOT),
                     evaluateNamedTableFunctionArgument(arg, lateralContext));
             }
-            return plannedCall(functionName, callText, tableFunc, namedArgs);
+            final String inputText = ctx.expression() != null && !ctx.expression().isEmpty()
+                ? getOriginalText(ctx.expression(0)) : namedInputText(ctx.namedArgument());
+            return plannedCall(functionName, callText, tableFunc, namedArgs, inputText, lateralContext);
         }
         validateTableFunctionCall(functionName, schemaQualifierOf(ctx.functionName()),
             ctx.functionName().getStart(), ctx.expression(), null);
@@ -19582,12 +19853,14 @@ public class QueryExecutor implements ImportLocalizer {
             positionalArgs.add(evaluateBareArg(argExpr, lateralContext));
         }
         // The function's columns do not depend on which parameters the positional arguments fill.
-        return new PlannedTableFunction(functionName, callText, new MemoizedResultSet(new ResultSetProvider() {
-            @Override
-            public ResultSet getResultSet() {
-                return tableFunc.execute(positionalArgs);
-            }
-        }), tableFunc.outputColumns(new HashMap<String, Object>()));
+        final PlannedTableFunction positional = new PlannedTableFunction(functionName, callText,
+            new MemoizedResultSet(new ResultSetProvider() {
+                @Override
+                public ResultSet getResultSet() {
+                    return tableFunc.execute(positionalArgs);
+                }
+            }), tableFunc.outputColumns(new HashMap<String, Object>()));
+        return typedFlatten(positional, getOriginalText(ctx.expression(0)), positionalArgs, lateralContext);
     }
 
     /**
@@ -19689,7 +19962,7 @@ public class QueryExecutor implements ImportLocalizer {
             written.add(new WrittenArgument(null, getOriginalText(argument), argument));
         }
         for (final FrostlakeParser.NamedArgumentContext argument : call.namedArgument()) {
-            written.add(new WrittenArgument(ParseTreeText.getIdentifier(argument.identifier()),
+            written.add(new WrittenArgument(ParseTreeText.getIdentifier(argument.variableName()),
                 namedArgumentText(argument), argument));
         }
         addTrailingArguments(call.strayArguments(), written);
@@ -19754,8 +20027,8 @@ public class QueryExecutor implements ImportLocalizer {
         }
         if (named != null) {
             for (final FrostlakeParser.NamedArgumentContext arg : named) {
-                namesInOrder.add(arg.identifier().getText().toUpperCase(Locale.ROOT));
-                spelledNames.add(arg.identifier().getText());
+                namesInOrder.add(arg.variableName().getText().toUpperCase(Locale.ROOT));
+                spelledNames.add(arg.variableName().getText());
                 argumentTexts.add(namedArgumentText(arg));
             }
         }
@@ -19891,11 +20164,12 @@ public class QueryExecutor implements ImportLocalizer {
                 getOriginalText(mixCtx.expression(0)), lateralContext);
             namedArgs.put(TableFunctionArguments.firstPositionalParameter(functionName.toUpperCase(Locale.ROOT)), posVal);
             for (final FrostlakeParser.NamedArgumentContext argCtx : mixCtx.namedArgument()) {
-                final String argName = argCtx.identifier().getText().toUpperCase(Locale.ROOT);
+                final String argName = argCtx.variableName().getText().toUpperCase(Locale.ROOT);
                 final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                 namedArgs.put(argName, argValue);
             }
-            return plannedCall(functionName, callText, tableFunc, namedArgs);
+            return plannedCall(functionName, callText, tableFunc, namedArgs, getOriginalText(mixCtx.expression(0)),
+                lateralContext);
         }
         // Check if it's a function call with named arguments (e.g., GENERATOR)
         if (expr instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
@@ -19937,13 +20211,14 @@ public class QueryExecutor implements ImportLocalizer {
                     funcCtx.functionName().getStart(), null,
                     funcCtx.namedArgumentList().namedArgument());
                 for (final FrostlakeParser.NamedArgumentContext argCtx : funcCtx.namedArgumentList().namedArgument()) {
-                    final String argName = argCtx.identifier().getText().toUpperCase(Locale.ROOT);
+                    final String argName = argCtx.variableName().getText().toUpperCase(Locale.ROOT);
                     // If lateral context is provided, column references resolve from it
                     final Object argValue = evaluateNamedTableFunctionArgument(argCtx, lateralContext);
                     namedArgs.put(argName, argValue);
                 }
             }
-            return plannedCall(functionName, callText, tableFunc, namedArgs);
+            return plannedCall(functionName, callText, tableFunc, namedArgs, funcCtx.namedArgumentList() == null
+                ? null : namedInputText(funcCtx.namedArgumentList().namedArgument()), lateralContext);
         }
         // Check if it's a regular function call (e.g., RESULT_SCAN)
         if (expr instanceof FrostlakeParser.FunctionCallExprContext) {
@@ -20010,13 +20285,17 @@ public class QueryExecutor implements ImportLocalizer {
                         }
                     }
                     // A function whose columns do not depend on its arguments tells them for no arguments too.
-                    return new PlannedTableFunction(functionName, callText,
+                    final PlannedTableFunction positional = new PlannedTableFunction(functionName, callText,
                         new MemoizedResultSet(new ResultSetProvider() {
                             @Override
                             public ResultSet getResultSet() {
                                 return tableFunc.execute(positionalArgs);
                             }
                         }), tableFunc.outputColumns(new HashMap<String, Object>()));
+                    final FrostlakeParser.FunctionArgContext first = funcCtx.functionArgList().functionArg(0);
+                    return typedFlatten(positional, first.booleanExpr() instanceof FrostlakeParser.ValueExprContext
+                        ? getOriginalText(((FrostlakeParser.ValueExprContext) first.booleanExpr()).expression()) : null,
+                        positionalArgs, lateralContext);
                 }
                 return plannedCall(functionName, callText, tableFunc, new HashMap<String, Object>());
             }
@@ -20465,7 +20744,7 @@ public class QueryExecutor implements ImportLocalizer {
             named.addAll(((FrostlakeParser.FunctionCallNamedArgsExprContext) call).namedArgumentList().namedArgument());
         }
         for (final FrostlakeParser.NamedArgumentContext argument : named) {
-            written.add(new WrittenArgument(ParseTreeText.getIdentifier(argument.identifier()),
+            written.add(new WrittenArgument(ParseTreeText.getIdentifier(argument.variableName()),
                 namedArgumentText(argument), argument));
         }
         addTrailingArguments(StrayArguments.of(call), written);
@@ -20480,7 +20759,7 @@ public class QueryExecutor implements ImportLocalizer {
         for (final ParserRuleContext argument : trailing) {
             if (argument instanceof FrostlakeParser.NamedArgumentContext) {
                 final FrostlakeParser.NamedArgumentContext byName = (FrostlakeParser.NamedArgumentContext) argument;
-                written.add(new WrittenArgument(ParseTreeText.getIdentifier(byName.identifier()),
+                written.add(new WrittenArgument(ParseTreeText.getIdentifier(byName.variableName()),
                     namedArgumentText(byName), byName));
             } else {
                 written.add(new WrittenArgument(null, getOriginalText(argument), argument));
@@ -20547,6 +20826,120 @@ public class QueryExecutor implements ImportLocalizer {
         }
         return evaluateTableFunctionArgument((FrostlakeParser.ExpressionContext) node, argument.getText(),
             lateralContext);
+    }
+
+    /**
+     * As {@link #plannedCall(String, String, TableFunction, Map)}, a FLATTEN typed by its input (see
+     * {@link #typedFlatten(PlannedTableFunction, DataType, boolean)}).
+     *
+     * @param inputText      the text of the call's INPUT, or null when it writes none or writes a query
+     * @param lateralContext the LATERAL row the arguments are read over, or null
+     */
+    private PlannedTableFunction plannedCall(final String functionName, final String callText,
+                                             final TableFunction tableFunc, final Map<String, Object> namedArgs,
+                                             final String inputText, final Map<String, Object> lateralContext) {
+        final PlannedTableFunction planned = plannedCall(functionName, callText, tableFunc, namedArgs);
+        if (!"FLATTEN".equalsIgnoreCase(functionName) || inputText == null) {
+            return planned;
+        }
+        return typedFlatten(planned, tableFunctionArgumentType(inputText, lateralContext),
+            isTrueArgument(namedArgs.get("RECURSIVE")));
+    }
+
+    /** A FLATTEN called by position, typed by its input as a named one is: RECURSIVE is its fourth argument. */
+    private PlannedTableFunction typedFlatten(final PlannedTableFunction planned, final String inputText,
+                                              final List<Object> positionalArgs,
+                                              final Map<String, Object> lateralContext) {
+        if (!"FLATTEN".equalsIgnoreCase(planned.name) || inputText == null) {
+            return planned;
+        }
+        return typedFlatten(planned, tableFunctionArgumentType(inputText, lateralContext),
+            positionalArgs.size() > 3 && isTrueArgument(positionalArgs.get(3)));
+    }
+
+    /**
+     * A FLATTEN of a structured ARRAY or MAP that is not RECURSIVE: VALUE has the type the input declares for its
+     * elements or values (documented), each value held as that type holds it. A structured OBJECT's fields may each
+     * have a type of their own, so its VALUE stays VARIANT, as a RECURSIVE one's does (live-verified).
+     *
+     * @param planned   the planned call
+     * @param inputType the static type of its INPUT, or null when it cannot be told
+     * @param recursive whether the call is RECURSIVE
+     * @return the call, its VALUE typed
+     */
+    private static PlannedTableFunction typedFlatten(final PlannedTableFunction planned, final DataType inputType,
+                                                     final boolean recursive) {
+        final DataType element = recursive ? null
+            : inputType instanceof StructuredArrayType ? ((StructuredArrayType) inputType).getElementType()
+            : inputType instanceof MapType ? ((MapType) inputType).getValueType() : null;
+        if (element == null || planned.columns == null) {
+            return planned;
+        }
+        final List<ResultSetColumn> columns = new ArrayList<>(planned.columns);
+        int valueAt = -1;
+        for (int i = 0; i < columns.size(); i++) {
+            if ("VALUE".equals(columns.get(i).getName())) {
+                valueAt = i;
+            }
+        }
+        if (valueAt < 0) {
+            return planned;
+        }
+        columns.set(valueAt, new ResultSetColumn("VALUE", element, null, element));
+        final int at = valueAt;
+        final MemoizedResultSet untyped = planned.result;
+        return new PlannedTableFunction(planned.name, planned.callText, new MemoizedResultSet(new ResultSetProvider() {
+            @Override
+            public ResultSet getResultSet() {
+                final List<Row> rows = new ArrayList<>();
+                for (final Row row : untyped.getResultSet().getRows()) {
+                    final List<Object> values = new ArrayList<>(row.getValues());
+                    if (at < values.size()) {
+                        values.set(at, StructuredLeaf.typed(values.get(at), element));
+                    }
+                    rows.add(new Row(values));
+                }
+                return new ResultSet(columns, rows);
+            }
+        }), columns);
+    }
+
+    /** Whether a table function's argument value says TRUE. */
+    private static boolean isTrueArgument(final Object value) {
+        return value instanceof Boolean ? ((Boolean) value).booleanValue()
+            : value != null && "TRUE".equalsIgnoreCase(value.toString().trim());
+    }
+
+    /** The text of the INPUT a call names, or null when it names none or names it with a query. */
+    private String namedInputText(final List<FrostlakeParser.NamedArgumentContext> arguments) {
+        for (final FrostlakeParser.NamedArgumentContext argument : arguments) {
+            if ("INPUT".equalsIgnoreCase(argument.variableName().getText()) && argument.expression() != null) {
+                return namedArgumentText(argument);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The static type of a table function's argument, read where its value is read: over the LATERAL row's relations,
+     * or over none. Null when it cannot be told.
+     *
+     * @param text           the argument as written
+     * @param lateralContext the LATERAL row, or null
+     * @return the type, or null
+     */
+    private DataType tableFunctionArgumentType(final String text, final Map<String, Object> lateralContext) {
+        try {
+            final ExpressionEvaluator evaluator = new ExpressionEvaluator(new Table("DUMMY", new ArrayList<>(), false),
+                functionRegistry, catalog, this);
+            if (lateralContext != null && !lateralContext.isEmpty()) {
+                evaluator.setOuterLateralContext(lateralContext);
+                lateralArgumentTypes.typeArgumentsOf(evaluator);
+            }
+            return evaluator.inferStaticType(ExpressionEvaluator.parse(text));
+        } catch (final RuntimeException untold) {
+            return null;
+        }
     }
 
     /** A built-in call over named arguments: run when first asked, its columns known when the function tells them. */

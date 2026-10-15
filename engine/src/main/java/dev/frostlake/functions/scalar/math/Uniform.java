@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.math;
 
+import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * UNIFORM(min, max, gen) — a uniformly random value in the range. With exact bounds the result is drawn
@@ -62,7 +62,7 @@ public class Uniform extends NumericArgumentFunction {
         if (args.size() >= 3 && args.get(2) == null) return null;
         final long entropy = args.size() >= 3
             ? ((Number) args.get(2)).longValue()
-            : ThreadLocalRandom.current().nextLong();
+            : StatementTokens.nextLong();
 
         if (isFloatBound(loArg) || isFloatBound(hiArg)) {
             final double lo = ((Number) loArg).doubleValue();

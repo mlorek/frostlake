@@ -80,6 +80,8 @@ public class QueryResultCache {
     private final long maxCachedCells;
     /** Every result held, by query ID. Guarded, with every map here, by this cache's own monitor. */
     private final Map<String, CachedResult> cache = new HashMap<String, CachedResult>();
+    /** Query IDs a former engine answered with, each naming the result the write-ahead log's replay of it gave. */
+    private final Map<String, String> replayedIds = new HashMap<String, String>();
     /** The cells each held result counts, by query ID, oldest first. */
     private final LinkedHashMap<String, Long> cellsHeld = new LinkedHashMap<String, Long>();
     /** The cells all held results count together. */
@@ -284,8 +286,33 @@ public class QueryResultCache {
      */
     public ResultSet getResult(final String queryId) {
         synchronized (this) {
-            final CachedResult cached = cache.get(queryId);
+            final CachedResult cached = cached(queryId);
             return cached != null ? cached.getResult() : null;
+        }
+    }
+
+    /** The result a query ID names: its own, or the one its replay gave (see {@link #alias}). */
+    private CachedResult cached(final String queryId) {
+        final CachedResult own = cache.get(queryId);
+        if (own != null || queryId == null || !replayedIds.containsKey(queryId)) {
+            return own;
+        }
+        return cache.get(replayedIds.get(queryId));
+    }
+
+    /**
+     * Lets the query ID a former engine answered a query with name the result the write-ahead log's replay of that
+     * query gave, so a logged RESULT_SCAN of that ID reads it again.
+     *
+     * @param originalId the ID the query first answered with
+     * @param replayedId the ID its replay answered with
+     */
+    public void alias(final String originalId, final String replayedId) {
+        if (originalId == null || replayedId == null || originalId.equals(replayedId)) {
+            return;
+        }
+        synchronized (this) {
+            replayedIds.put(originalId, replayedId);
         }
     }
 
@@ -296,7 +323,7 @@ public class QueryResultCache {
      */
     public String getSql(final String queryId) {
         synchronized (this) {
-            final CachedResult cached = cache.get(queryId);
+            final CachedResult cached = cached(queryId);
             return cached != null ? cached.getSql() : null;
         }
     }

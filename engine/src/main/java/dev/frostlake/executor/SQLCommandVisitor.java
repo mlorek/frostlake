@@ -991,11 +991,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             final FrostlakeParser.CursorSourceContext src = ctx.cursorSource();
             final DeclareCursorStatement stmt;
             if (src.selectStatement() != null) {
-                stmt = new DeclareCursorStatement(cursorName, getOriginalText(src.selectStatement()));
+                // The query's text with its FOR UPDATE, which the cursor's OPEN refuses as the query statement does.
+                stmt = new DeclareCursorStatement(cursorName, getOriginalText(src));
             } else {
-                stmt = new DeclareCursorStatement(cursorName, null, getText(src.identifier()));
-                stmt.setResultSetAt(src.identifier().getStart().getLine(),
-                    src.identifier().getStart().getCharPositionInLine());
+                stmt = new DeclareCursorStatement(cursorName, null, getText(src.variableName()));
+                stmt.setResultSetAt(src.variableName().getStart().getLine(),
+                    src.variableName().getStart().getCharPositionInLine());
             }
             proceduralExecutor.executeStatement(stmt);
 
@@ -1265,18 +1266,18 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitLetStatement(final FrostlakeParser.LetStatementContext ctx) {
-        final String varName = getText(ctx.identifier());
+        final String varName = getText(ctx.variableName());
 
         // Check if this is a cursor declaration (LET cursor_name CURSOR FOR SELECT...)
         if (ctx.CURSOR() != null) {
             // Over a SELECT query or the name of a RESULTSET variable, as the DECLARE section takes it.
             final FrostlakeParser.CursorSourceContext src = ctx.cursorSource();
             final DeclareCursorStatement stmt = src.selectStatement() != null
-                ? new DeclareCursorStatement(varName, getOriginalText(src.selectStatement()))
-                : new DeclareCursorStatement(varName, null, getText(src.identifier()));
-            if (src.identifier() != null) {
-                stmt.setResultSetAt(src.identifier().getStart().getLine(),
-                    src.identifier().getStart().getCharPositionInLine());
+                ? new DeclareCursorStatement(varName, getOriginalText(src))
+                : new DeclareCursorStatement(varName, null, getText(src.variableName()));
+            if (src.variableName() != null) {
+                stmt.setResultSetAt(src.variableName().getStart().getLine(),
+                    src.variableName().getStart().getCharPositionInLine());
             }
             proceduralExecutor.executeStatement(stmt);
             logger.trace("Let cursor: {}", varName);
@@ -1334,7 +1335,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitAssignmentStatement(final FrostlakeParser.AssignmentStatementContext ctx) {
-        final String varName = getText(ctx.identifier());
+        final String varName = getText(ctx.assignedName());
 
         // Handle: rs := ASYNC (<statement>) — a job that fills the RESULTSET when it is awaited. To any other
         // target the word is a function no one defined, refused as the value it is written as (live-verified).
@@ -1430,7 +1431,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitOpenStatement(final FrostlakeParser.OpenStatementContext ctx) {
-        final String cursorName = getText(ctx.identifier());
+        final String cursorName = getText(ctx.variableName());
         final Cursor cursor = proceduralExecutor.getCursor(cursorName);
 
         if (cursor == null) {
@@ -1457,10 +1458,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         if (!binds.isEmpty()) {
             selectSql = JdbcMarshaling.bindUsing(selectSql, binds, new HashSet<Integer>());
         }
-        // Execute the SELECT query to populate the cursor
-        final ResultSet resultSet = queryExecutor.executeSelectFromContext(
-            parseSelectStatement(selectSql)
-        );
+        // Execute the SELECT query to populate the cursor; one written with FOR UPDATE is refused as the query
+        // statement is, when the cursor opens (live-verified).
+        final FrostlakeParser.QueryStatementContext query = parseCursorQuery(selectSql);
+        if (query.forUpdateClause() != null) {
+            queryHandler.handleQueryStatement(query);
+        }
+        final ResultSet resultSet = queryExecutor.executeSelectFromContext(query.selectStatement());
         cursor.open(resultSet);
 
         logger.trace("Opened cursor: {}", cursorName);
@@ -1469,7 +1473,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitFetchStatement(final FrostlakeParser.FetchStatementContext ctx) {
-        final String cursorName = getText(ctx.identifier());
+        final String cursorName = getText(ctx.variableName());
         final List<String> targetVars = new ArrayList<>();
 
         for (final FrostlakeParser.IdentifierContext idCtx : ctx.identifierList().identifier()) {
@@ -1485,7 +1489,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitCloseStatement(final FrostlakeParser.CloseStatementContext ctx) {
-        final String cursorName = getText(ctx.identifier());
+        final String cursorName = getText(ctx.variableName());
 
         final CloseStatement stmt = new CloseStatement(cursorName);
         proceduralExecutor.executeStatement(stmt);
@@ -1513,9 +1517,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         if (rowCount == 0) {
             for (final FrostlakeParser.IntoTargetContext target : targets) {
-                assignSelectIntoTarget(ctx, getText(target.identifier()), null);
+                assignSelectIntoTarget(ctx, getText(target.variableName()), null);
                 if (proceduralExecutor != null) {
-                    proceduralExecutor.markEmptySelectTarget(getText(target.identifier()));
+                    proceduralExecutor.markEmptySelectTarget(getText(target.variableName()));
                 }
             }
             logger.trace("SELECT INTO: zero rows — assigned NULL to {} variable(s)", targets.size());
@@ -1527,7 +1531,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 + ") does not match the number of selected columns (" + firstRow.getValues().size() + ")");
         }
         for (int i = 0; i < targets.size(); i++) {
-            assignSelectIntoTarget(ctx, getText(targets.get(i).identifier()), firstRow.getValue(i));
+            assignSelectIntoTarget(ctx, getText(targets.get(i).variableName()), firstRow.getValue(i));
         }
         logger.trace("SELECT INTO: assigned {} variable(s)", targets.size());
         return null;
@@ -1568,7 +1572,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
     }
 
-    private FrostlakeParser.SelectStatementContext parseSelectStatement(final String sql) {
+    private FrostlakeParser.QueryStatementContext parseCursorQuery(final String sql) {
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
         final SyntaxErrorListener errorListener = new SyntaxErrorListener(sql);
         lexer.removeErrorListeners();
@@ -1579,11 +1583,11 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         parser.removeErrorListeners();
         parser.addErrorListener(errorListener);
 
-        final FrostlakeParser.SelectStatementContext selectStatementContext = parser.selectStatement();
+        final FrostlakeParser.QueryStatementContext query = parser.queryStatement();
         errorListener.throwIfErrors();
-        NamedCallRewrite.apply(selectStatementContext);
+        NamedCallRewrite.apply(query.selectStatement());
 
-        return selectStatementContext;
+        return query;
     }
 
     @Override
@@ -1733,9 +1737,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     public Object visitRaiseStatement(final FrostlakeParser.RaiseStatementContext ctx) {
         final RaiseStatement stmt;
 
-        if (ctx.identifier() != null && ctx.STRING_LITERAL() == null) {
+        if (ctx.variableName() != null && ctx.STRING_LITERAL() == null) {
             // RAISE exception_name - must be a user-defined exception
-            final String name = getText(ctx.identifier());
+            final String name = getText(ctx.variableName());
             // Check if it's a user-defined exception
             if (proceduralExecutor.hasException(name)) {
                 stmt = new RaiseStatement(name);
@@ -1887,7 +1891,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final LiteralExpression assigned = new LiteralExpression(ProceduralExecutor.procedureReturnValue(result));
         assigned.setSourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
         proceduralExecutor.executeStatement(
-            new SetStatement(getText(ctx.intoTargetList().intoTarget(0).identifier()), assigned));
+            new SetStatement(getText(ctx.intoTargetList().intoTarget(0).variableName()), assigned));
         return result;
     }
 
@@ -2212,7 +2216,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 ctx.callArguments().callArgument(), sawNamed, typer);
             for (final FrostlakeParser.CallArgumentContext argCtx : ctx.callArguments().callArgument()) {
                 if (argCtx.namedArgument() != null) {
-                    final String argName = getText(argCtx.namedArgument().identifier());
+                    final String argName = getText(argCtx.namedArgument().variableName());
                     final int idx = indexOfParameter(params, argName);
                     if (idx < 0) {
                         throw new RuntimeException("Unknown argument '" + argName + "' for procedure: " + qualifiedName);
@@ -2964,6 +2968,27 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     public String getText(final FrostlakeParser.IdentifierContext ctx) {
         return SqlIdentifiers.canonical(ctx);
+    }
+
+    /**
+     * The canonical text of an argument's or a script variable's name: an identifier folds as any identifier does, one
+     * of the words such a name takes upper-cases.
+     *
+     * @param ctx the name
+     * @return its canonical text
+     */
+    public String getText(final FrostlakeParser.VariableNameContext ctx) {
+        return SqlIdentifiers.canonical(ctx);
+    }
+
+    /**
+     * The canonical text of an assignment's target.
+     *
+     * @param ctx the target
+     * @return its canonical text
+     */
+    public String getText(final FrostlakeParser.AssignedNameContext ctx) {
+        return ParseTreeText.getIdentifier(ctx);
     }
 
     /**

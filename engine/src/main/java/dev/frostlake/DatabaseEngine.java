@@ -31,6 +31,8 @@ import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CounterDraw;
+import dev.frostlake.metastore.StatementDraws;
 import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
@@ -46,6 +48,7 @@ import dev.frostlake.persistence.WriteAheadLog;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.security.SessionContext;
 import dev.frostlake.security.SessionDirectory;
+import dev.frostlake.security.SessionSettings;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.stream.StreamManager;
@@ -54,6 +57,7 @@ import dev.frostlake.task.TaskExecutor;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.transaction.WalSink;
+import dev.frostlake.transaction.WalStatementContext;
 import dev.frostlake.transaction.WriteSetSavepoint;
 import dev.frostlake.values.VariantJsonFormat;
 import org.slf4j.Logger;
@@ -66,10 +70,12 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Main Database SQL Engine
@@ -260,16 +266,18 @@ public class DatabaseEngine {
         transactionManager.setWalSink(new WalSink() {
             @Override
             public void appendTransaction(final List<String> statements,
-                                          final List<Instant> instants) {
-                appendTransactionToWal(statements, instants);
+                                          final List<Instant> instants,
+                                          final List<WalStatementContext> contexts) {
+                appendTransactionToWal(statements, instants, contexts);
             }
         });
     }
 
     private void appendTransactionToWal(final List<String> statements,
-                                        final List<Instant> instants) {
+                                        final List<Instant> instants,
+                                        final List<WalStatementContext> contexts) {
         try {
-            wal.appendTransaction(statements, instants);
+            wal.appendTransaction(statements, instants, contexts);
             txnsSinceCheckpoint++;
         } catch (final Exception e) {
             throw new RuntimeException("WAL append failed: " + e.getMessage(), e);
@@ -286,6 +294,9 @@ public class DatabaseEngine {
         // A replayed USE ROLE or USE SECONDARY ROLES changes the context itself, not the replay's own settings.
         final String roleBefore = sessionContext.getCurrentRole();
         final Set<String> activeRolesBefore = sessionContext.getActiveRoles();
+        // So does each logged session's user, database and schema, which the replay puts back statement by statement.
+        final String userBefore = sessionContext.getCurrentUser();
+        final String[] scopeBefore = catalog.currentSessionScope();
         try {
             final List<WalRecord> records = wal.readAll();
             if (records.isEmpty()) {
@@ -311,31 +322,40 @@ public class DatabaseEngine {
                 start = lastCheckpoint + 1;
             }
 
-            // The log replays as a session of its own, the whole log in one so a SET or an ALTER SESSION a record
-            // made is still in force for the records after it. The session ends with the replay: the statements a
-            // former engine ran are not the new one's, so the session it starts with holds none of their query
-            // IDs, history rows, variables or parameters.
+            // Each session of the log replays as a session of its own, so a SET, an ALTER SESSION, a USE or a USE ROLE
+            // one session made is in force for that session's later statements and for no other session's; a
+            // record from a log before v4 names no session and replays in the recovery's own. The sessions end
+            // with the replay: the statements a former engine ran are not the new one's, so the session it starts
+            // with holds none of their query IDs, history rows, variables or parameters.
             final int from = start;
             final int[] replayed = {0};
-            final long[] replaySession = {-1L};
+            final List<Long> replaySessions = new ArrayList<Long>();
             try {
                 queryExecutor.runInOwnSession(new Runnable() {
                     @Override
                     public void run() {
-                        replaySession[0] = sessionContext.getSessionNumber();
-                        for (int i = from; i < records.size(); i++) {
-                            final WalRecord rec = records.get(i);
-                            if (rec.getType() != WalRecordType.TRANSACTION) {
-                                continue;
+                        final SessionSettings own = sessionContext.getBoundSettings();
+                        final Map<String, SessionSettings> sessions = new HashMap<String, SessionSettings>();
+                        replaySessions.add(Long.valueOf(sessionContext.getSessionNumber()));
+                        try {
+                            for (int i = from; i < records.size(); i++) {
+                                final WalRecord rec = records.get(i);
+                                if (rec.getType() != WalRecordType.TRANSACTION) {
+                                    continue;
+                                }
+                                replayTransaction(rec.getStatements(), rec, i, own, sessions);
+                                replayed[0]++;
                             }
-                            replayTransaction(rec.getStatements(), rec, i);
-                            replayed[0]++;
+                        } finally {
+                            for (final SessionSettings session : sessions.values()) {
+                                replaySessions.add(Long.valueOf(session.getSessionNumber()));
+                            }
                         }
                     }
                 });
             } finally {
-                if (replaySession[0] >= 0) {
-                    queryExecutor.getQueryHistoryTracker().forgetSession(replaySession[0]);
+                for (final Long session : replaySessions) {
+                    queryExecutor.getQueryHistoryTracker().forgetSession(session.longValue());
                 }
             }
             if (!walReplayFailures.isEmpty()) {
@@ -355,6 +375,8 @@ public class DatabaseEngine {
         } finally {
             if (replaying) {
                 sessionContext.setSecurityEnabled(securityWasEnabled);
+                sessionContext.setCurrentUser(userBefore);
+                catalog.restoreSessionScope(scopeBefore);
                 sessionContext.setCurrentRole(roleBefore);
                 sessionContext.clearActiveRoles();
                 for (final String role : activeRolesBefore) {
@@ -362,6 +384,50 @@ public class DatabaseEngine {
                 }
             }
             replaying = false;
+        }
+    }
+
+    /**
+     * Puts a logged statement's context back before it replays: its session's own settings — variables, parameters,
+     * roles, query IDs — its user, roles, database and schema. A statement from a log before v4 carries none and
+     * replays in the recovery's own session.
+     */
+    private void enterReplayContext(final WalStatementContext context, final SessionSettings own,
+                                    final Map<String, SessionSettings> sessions) {
+        if (context == null) {
+            sessionContext.bindSettings(own);
+            queryExecutor.getResultCache().beginSessionScope(String.valueOf(own.getSessionNumber()));
+            return;
+        }
+        SessionSettings settings = sessions.get(context.getSession());
+        if (settings == null) {
+            settings = new SessionSettings();
+            sessions.put(context.getSession(), settings);
+        }
+        sessionContext.bindSettings(settings);
+        queryExecutor.getResultCache().beginSessionScope(String.valueOf(settings.getSessionNumber()));
+        sessionContext.setCurrentUser(context.getUser());
+        sessionContext.clearActiveRoles();
+        sessionContext.setCurrentRole(context.getRole());
+        for (final String role : context.getActiveRoles()) {
+            sessionContext.addActiveRole(role);
+        }
+        catalog.beginSessionScope(context.getDatabase(), context.getSchema());
+    }
+
+    /**
+     * Replays one logged statement, handing it the values it first drew from counters, and lets the query ID it first
+     * answered with name what it answers now (see {@code QueryResultCache.alias}).
+     */
+    private void replayStatement(final String sql, final WalStatementContext context) {
+        StatementDraws.beginReplay(context == null ? Collections.<CounterDraw>emptyList() : context.getDraws());
+        try {
+            execute(sql);
+        } finally {
+            StatementDraws.endReplay();
+        }
+        if (context != null && context.getQueryId() != null) {
+            queryExecutor.getResultCache().alias(context.getQueryId(), queryExecutor.getResultCache().getLastQueryId());
         }
     }
 
@@ -373,24 +439,28 @@ public class DatabaseEngine {
      * to the recovery time. A record from a pre-v3 log carries no instant and replays at the wall clock,
      * which is what it did before.
      */
-    private void replayTransaction(final List<String> statements, final WalRecord record, final int index) {
+    private void replayTransaction(final List<String> statements, final WalRecord record, final int index,
+                                   final SessionSettings own, final Map<String, SessionSettings> sessions) {
         // While replaying, a procedural block's inner statements must NOT advance the clock —
         // the log recorded one instant per outer statement, and replay keeps it.
         StatementClock.setReplay(true);
         String running = null;
         try {
             if (statements.size() == 1) {
+                enterReplayContext(record.getStatementContext(0), own, sessions);
                 queryExecutor.setNextStatementInstant(record.getStatementInstant(0));
                 running = statements.get(0);
-                execute(running);
+                replayStatement(running, record.getStatementContext(0));
                 return;
             }
+            enterReplayContext(record.getStatementContext(0), own, sessions);
             running = "BEGIN";
             execute(running);
             for (int i = 0; i < statements.size(); i++) {
+                enterReplayContext(record.getStatementContext(i), own, sessions);
                 queryExecutor.setNextStatementInstant(record.getStatementInstant(i));
                 running = statements.get(i);
-                execute(running);
+                replayStatement(running, record.getStatementContext(i));
             }
             running = "COMMIT";
             execute(running);
@@ -425,6 +495,15 @@ public class DatabaseEngine {
      * explicit BEGIN…COMMIT blocks); without one (e.g. a DDL/USE that starts no transaction) it is appended
      * immediately as a one-statement record. Reads and transaction-control statements are not logged.
      */
+    /** This engine's run, telling its sessions' log records apart from another run's in one log. */
+    private final String lifetime = UUID.randomUUID().toString();
+
+    /** What the calling thread's outermost statement started under (see {@link #beginWalStatement}). */
+    private final ThreadLocal<WalStatementContext> walStatementStart = new ThreadLocal<WalStatementContext>();
+
+    /** The query the calling thread's session answered before its outermost statement started. */
+    private final ThreadLocal<String> walPreviousQuery = new ThreadLocal<String>();
+
     /** How many statements the calling thread is running through {@link #execute}, one inside the other. */
     private final ThreadLocal<Integer> statementDepth = new ThreadLocal<Integer>() {
         @Override
@@ -473,21 +552,81 @@ public class DatabaseEngine {
         }
     }
 
+    /**
+     * Notes what an outermost statement starts under — its session, user, roles, database and schema, and the query
+     * its session answered last — and starts recording what it draws from counters, for its write-ahead log record
+     * (see {@link WalStatementContext}).
+     */
+    private void beginWalStatement() {
+        if (wal == null || replaying || statementDepth.get().intValue() != 1) {
+            return;
+        }
+        walStatementStart.set(new WalStatementContext(lifetime + ":" + sessionContext.getSessionNumber(),
+            sessionContext.getCurrentUser(), sessionContext.getCurrentRole(),
+            new ArrayList<String>(sessionContext.getActiveRoles()), catalog.getCurrentDatabase(),
+            catalog.getCurrentSchema(), null, Collections.<CounterDraw>emptyList()));
+        walPreviousQuery.set(queryExecutor.getResultCache().getLastQueryId());
+        StatementDraws.beginRecording();
+    }
+
+    /** Lets go of what {@link #beginWalStatement} noted, once the outermost statement is over. */
+    private void endWalStatement() {
+        walStatementStart.remove();
+        walPreviousQuery.remove();
+        StatementDraws.endRecording();
+    }
+
     private void recordStatementForWal(final String sql) {
         // A statement that ran a task, an alert or a pipe's load (EXECUTE TASK, EXECUTE ALERT, ALTER PIPE …
         // REFRESH) committed that work in a session of its own, so it is logged at once rather than inside the
         // caller's transaction: a ROLLBACK there leaves the work in place, and must leave its record too.
         final boolean ranOwnSession = queryExecutor.takeRanInOwnSession();
+        final WalStatementContext started = statementDepth.get().intValue() == 1 ? walStatementStart.get() : null;
+        final String previousQuery = walPreviousQuery.get();
+        final List<CounterDraw> drawn =
+            started != null ? StatementDraws.endRecording() : Collections.<CounterDraw>emptyList();
+        if (started != null) {
+            walStatementStart.remove();
+            walPreviousQuery.remove();
+        }
         if (wal == null || replaying || !isLoggableStatement(sql)) {
             return;
         }
-        if (transactionManager.hasActiveTransaction() && !ranOwnSession) {
-            transactionManager.getCurrentTransaction()
-                .logStatementForWal(sql, queryExecutor.currentStatementInstant());
-        } else {
-            appendTransactionToWal(Collections.singletonList(sql),
-                Collections.singletonList(queryExecutor.currentStatementInstant()));
+        final List<String> statements = new ArrayList<String>();
+        final List<Instant> instants = new ArrayList<Instant>();
+        final List<WalStatementContext> contexts = new ArrayList<WalStatementContext>();
+        // A statement reading a result by RESULT_SCAN has the query that answered it logged just before it, when that
+        // is the query its session answered last and the log does not hold it: the replay runs it again where
+        // nothing has changed since, and its first query ID names what the replay answers.
+        final String producer = started == null ? null : resultProducer(sql, previousQuery);
+        if (producer != null) {
+            statements.add(producer);
+            instants.add(null);
+            contexts.add(started.finished(previousQuery, Collections.<CounterDraw>emptyList()));
         }
+        statements.add(sql);
+        instants.add(queryExecutor.currentStatementInstant());
+        contexts.add(started == null ? null : started.finished(null, drawn));
+        if (transactionManager.hasActiveTransaction() && !ranOwnSession) {
+            for (int i = 0; i < statements.size(); i++) {
+                transactionManager.getCurrentTransaction()
+                    .logStatementForWal(statements.get(i), instants.get(i), contexts.get(i));
+            }
+        } else {
+            appendTransactionToWal(statements, instants, contexts);
+        }
+    }
+
+    /**
+     * The text of the query a statement reads by RESULT_SCAN, when that query is the one its session answered last
+     * and the log does not hold it; null otherwise.
+     */
+    private String resultProducer(final String sql, final String previousQuery) {
+        if (previousQuery == null || !WalStatementKinds.readsResultScan(sql)) {
+            return null;
+        }
+        final String text = queryExecutor.getResultCache().getSql(previousQuery);
+        return text == null || isLoggableStatement(text) ? null : text;
     }
 
     /**
@@ -498,7 +637,7 @@ public class DatabaseEngine {
      * next restart.
      */
     private boolean isLoggableStatement(final String sql) {
-        return queryExecutor.isDurableStatement(sql);
+        return queryExecutor.isDurableStatement(sql) || WalStatementKinds.writesDurably(sql);
     }
 
     /** The loggability decision, exposed so tests can assert it family by family. */
@@ -717,6 +856,7 @@ public class DatabaseEngine {
             public void begin() {
                 statementByStatement[0] = true;
                 queryExecutor.takeRanInOwnSession();
+                beginWalStatement();
                 statementSavepoint[0] = config.isDeferredApply() && transactionManager.isExplicitTransaction()
                     ? transactionManager.getCurrentTransaction().getWriteSet().beginStatementSavepoint() : null;
             }
@@ -745,6 +885,7 @@ public class DatabaseEngine {
             persistenceManager.noteStatementExecuted();
             // What an earlier statement on this thread ran in a session of its own is no concern of this one's.
             queryExecutor.takeRanInOwnSession();
+            beginWalStatement();
             final List<ResultSet> results = queryExecutor.execute(sql);
 
             // Record this statement for the WAL before the autocommit commit, so the commit logs it as part
@@ -809,6 +950,7 @@ public class DatabaseEngine {
             queryExecutor.restoreStatementBoundaries(displacedBoundaries);
             statementDepth.set(Integer.valueOf(statementDepth.get().intValue() - 1));
             if (statementDepth.get().intValue() == 0) {
+                endWalStatement();
                 checkpointAfterRun();
             }
         }
@@ -975,12 +1117,15 @@ public class DatabaseEngine {
     /**
      * Write this engine's complete state — every database with its schemas, tables and rows, views,
      * sequences (at their current positions), functions, procedures, streams with pending records,
-     * tasks, stages, roles and policies — to {@code dir}, from which {@link #restoreStateFrom(Path)}
-     * can rebuild an equivalent engine. Holds the engine monitor, so it is mutually exclusive with
-     * statements running on direct connections. Works regardless of {@code persistence.enabled}.
+     * tasks, stages with the files of the internal ones, roles and policies — to {@code dir}, from which
+     * {@link #restoreStateFrom(Path)} can rebuild an equivalent engine. Holds the engine monitor, so it is
+     * mutually exclusive with statements running on direct connections. Works regardless of
+     * {@code persistence.enabled}.
      */
     public synchronized void checkpointStateTo(final Path dir) throws IOException {
         persistenceManager.checkpointTo(dir, catalog, storageEngine);
+        // The files of its internal stages are part of its state, as the rows of its tables are.
+        queryExecutor.copyInternalStagesTo(dir.resolve("stages"));
     }
 
     /**
@@ -990,23 +1135,27 @@ public class DatabaseEngine {
      */
     public synchronized void restoreStateFrom(final Path dir) throws IOException, ClassNotFoundException {
         persistenceManager.restoreFrom(dir, catalog, storageEngine);
+        queryExecutor.copyInternalStagesFrom(dir.resolve("stages"));
     }
 
     /**
      * A new, fully independent engine carrying a copy of this engine's complete state — databases,
      * schemas, tables with rows, views, sequences at their current positions, functions, procedures,
      * streams with pending records, tasks, stages, roles and policies. Writes to either engine are
-     * invisible to the other. The copy happens entirely in memory (no filesystem involvement); use
+     * invisible to the other. The copy happens in memory, but for the files of the internal stages, which
+     * the clone's own stages start with copies of; use
      * {@link #checkpointStateTo(Path)} / {@link #restoreStateFrom(Path)} instead when the clone must
      * cross a process boundary — a serialized checkpoint is the only form of this engine that can.
      */
     public DatabaseEngine cloneInstance() throws IOException, ClassNotFoundException {
         final MemoryTableDataStore tableData = new MemoryTableDataStore();
         final CatalogSnapshot state;
+        final DatabaseEngine clone = new DatabaseEngine();
         synchronized (this) {
             state = persistenceManager.buildState(catalog, storageEngine, tableData);
+            // The clone's internal stages start with copies of this engine's files, taken with its rows.
+            clone.queryExecutor.copyInternalStagesOf(queryExecutor);
         }
-        final DatabaseEngine clone = new DatabaseEngine();
         clone.persistenceManager.applyState(state, tableData, clone.catalog, clone.storageEngine);
         return clone;
     }
@@ -1169,6 +1318,8 @@ public class DatabaseEngine {
 
     public void shutdown() {
         logger.info("Shutting down Frostlake SQL Engine");
+        // A statement waiting for another session's table lock ends rather than waiting on (TableLockWait).
+        transactionManager.shutDown();
 
         // Stop task scheduler
         if (taskScheduler.isRunning()) {

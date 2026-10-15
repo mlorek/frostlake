@@ -93,7 +93,7 @@ final class ArgumentRows {
             }
             if ("TO_QUERY".equals(functionName)) {
                 throw new RuntimeException(SqlCompilationError.of("argument 0 to function -1 needs to be constant, found '"
-                    + argument.identifier().getText() + "'"));
+                    + argument.variableName().getText() + "'"));
             }
             if ("RESULT_SCAN".equals(functionName)) {
                 final Token opening = argument.argumentRow().getStart();
@@ -101,7 +101,7 @@ final class ArgumentRows {
                     "Invalid result query ID, found '('"));
             }
             throw new RuntimeException(SqlCompilationError.of("invalid type [" + typeText(argument.argumentRow(),
-                evaluator) + "] for parameter '" + argument.identifier().getText().toUpperCase(Locale.ROOT) + "'"));
+                evaluator) + "] for parameter '" + argument.variableName().getText().toUpperCase(Locale.ROOT) + "'"));
         }
     }
 

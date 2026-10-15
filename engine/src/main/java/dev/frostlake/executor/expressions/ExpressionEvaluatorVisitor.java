@@ -118,7 +118,9 @@ import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredLeafWidths;
+import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
@@ -1585,6 +1587,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // type's leaf a cast wrote with none (StructuredLeafWidths).
         final String typeText = planned instanceof BinaryType ? ((BinaryType) planned).typeofText()
             : planned instanceof WidthlessStringType ? "VARCHAR"
+            : planned instanceof StringType && ((StringType) planned).isUnsized() ? "VARCHAR"
             : StructuredTypes.isStructured(planned) ? StructuredLeafWidths.typeOfText(planned)
             : planned == declared ? strictArgTypeText(typed) : SqlTypeNames.canonical(planned);
         return SystemTypeOfDescription.of(planned, typeText, inferStaticRange(typed),
@@ -2980,6 +2983,74 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     @Override
     public Object visitFunctionCall(final FunctionCallExpression written) {
+        final Object result = evaluateFunctionCall(written);
+        if (written instanceof RowExpression || written.getNameExpression() != null) {
+            return result;
+        }
+        return inDeclaredOrder(written, typedStructuredGet(written, result));
+    }
+
+    /**
+     * A structured OBJECT a function answers, its fields in the order its type declares them: OBJECT_PICK over a
+     * structured OBJECT answers the fields in the order picked (live-verified: {@code {"state":"CA","city":"San
+     * Mateo"}}), where a plain OBJECT keeps its keys sorted.
+     *
+     * @param call   the call
+     * @param result its value
+     * @return the value, its fields in their declared order
+     */
+    private Object inDeclaredOrder(final FunctionCallExpression call, final Object result) {
+        if (!(result instanceof VariantValue) || !((VariantValue) result).node().isObject()) {
+            return result;
+        }
+        final DataType declared = typeInferencer.infer(call);
+        if (!(declared instanceof StructuredObjectType)) {
+            return result;
+        }
+        final JsonNode held = ((VariantValue) result).node();
+        final ObjectNode ordered = ArrayFunctionHelper.MAPPER.createObjectNode();
+        for (final StructuredField field : ((StructuredObjectType) declared).getFields()) {
+            final JsonNode value = held.get(field.getName());
+            if (value != null) {
+                ordered.set(field.getName(), value);
+            }
+        }
+        return ordered.size() == held.size() ? VariantValue.ofNode(ordered) : result;
+    }
+
+    /**
+     * GET, GET_IGNORE_CASE and GET_PATH over a structured value: what they read has the type the value declares
+     * there, and a field a structured OBJECT does not declare is refused as a path to it is (see
+     * {@link #requireDeclaredFields}). Any other call's value is handed back as it is.
+     *
+     * @param call   the call
+     * @param result its value
+     * @return the value, as its declared type holds it
+     */
+    private Object typedStructuredGet(final FunctionCallExpression call, final Object result) {
+        final String funcName = call.getFunctionName().toUpperCase(Locale.ROOT);
+        if (!("GET".equals(funcName) || "GET_IGNORE_CASE".equals(funcName) || "GET_PATH".equals(funcName))
+                || call.getArguments().size() != 2) {
+            return result;
+        }
+        final DataType base = typeInferencer.infer(call.getArguments().get(0));
+        if (!StructuredTypes.isStructured(base)) {
+            return result;
+        }
+        final Object key = TypeInferencer.constantKey(call.getArguments().get(1));
+        if (key instanceof String) {
+            final List<Object> steps = "GET_PATH".equals(funcName) ? StructuredLeaf.pathSteps((String) key)
+                : Collections.<Object>singletonList(key);
+            final String undeclared = steps == null ? null
+                : StructuredLeaf.undeclaredField(base, steps, "GET_IGNORE_CASE".equals(funcName));
+            if (undeclared != null && call.getArguments().get(0).accept(this) != null) {
+                throw StructuredLeaf.missingField(undeclared);
+            }
+        }
+        return StructuredLeaf.typed(result, typeInferencer.structuredGetType(funcName, call));
+    }
+
+    private Object evaluateFunctionCall(final FunctionCallExpression written) {
         if (written instanceof RowExpression && !(written instanceof ArgumentRowExpression)) {
             // A ROW value reaches evaluation only where a function reads its values one by one, as an array.
             return new FunctionCallExpression("ARRAY_CONSTRUCT", written.getArguments()).accept(this);
@@ -11626,6 +11697,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             throw new RuntimeException(SqlCompilationError.of("incompatible types: [" + semiStructuredTypeName(file)
                 + "] and [NUMBER(9,0)]"));
         }
+        // So does a VECTOR: PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v) is "incompatible types:
+        // [VECTOR(FLOAT, 2)] and [NUMBER(9,0)]" (live-verified).
+        final DataType vector = vectorArgumentType(expr);
+        if (vector != null) {
+            throw new RuntimeException(SqlCompilationError.of("incompatible types: [" + semiStructuredTypeName(vector)
+                + "] and [NUMBER(9,0)]"));
+        }
         // A GEOSPATIAL value reaches the same sentence, and only for the percentiles: live,
         // PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY g) and the PERCENTILE_DISC spelling are
         // "incompatible types: [GEOGRAPHY] and [NUMBER(9,0)]" while LISTAGG(s, ',') WITHIN GROUP
@@ -13339,6 +13417,91 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
+     * The interval the numbers a read of a stored structured column lie in, by the column's statistics over every
+     * element, field or MAP value the read can reach — an element's subscript and a MAP's key reach all of them,
+     * a structured OBJECT's field name its own: what SYSTEM$TYPEOF tags the read by. Null for a read of anything
+     * else, or of a leaf that is no exact number.
+     *
+     * @param access the read, an {@link ObjectAccessExpression} or an {@link ArrayAccessExpression}
+     * @return the interval, or null when none is known
+     */
+    ValueRange structuredLeafRange(final Expression access) {
+        final DataType leaf = typeInferencer.infer(access);
+        if (!(leaf instanceof NumericType) || NumericType.isApproximate(leaf)) {
+            return null;
+        }
+        final List<Expression> chain = new ArrayList<>();
+        Expression root = access;
+        while (root instanceof ObjectAccessExpression || root instanceof ArrayAccessExpression
+                || isStructuredGet(root)) {
+            chain.add(root);
+            root = root instanceof ObjectAccessExpression ? ((ObjectAccessExpression) root).getBase()
+                : root instanceof ArrayAccessExpression ? ((ArrayAccessExpression) root).getArray()
+                : ((FunctionCallExpression) root).getArguments().get(0);
+        }
+        if (!(root instanceof ColumnReferenceExpression)) {
+            return null;
+        }
+        Collections.reverse(chain);
+        // Each step a field name, or null for every element or MAP value.
+        final List<String> steps = new ArrayList<>();
+        DataType type = typeInferencer.infer(root);
+        for (final Expression step : chain) {
+            if (step instanceof ObjectAccessExpression) {
+                for (final String part : ((ObjectAccessExpression) step).getPathParts()) {
+                    steps.add(type instanceof StructuredObjectType ? part : null);
+                    type = StructuredLeaf.ofSubscript(type, part, false);
+                }
+            } else if (step instanceof ArrayAccessExpression) {
+                final Object key = TypeInferencer.constantKey(((ArrayAccessExpression) step).getIndex());
+                steps.add(type instanceof StructuredObjectType && key instanceof String ? (String) key : null);
+                type = StructuredLeaf.ofSubscript(type, key, false);
+            } else {
+                final FunctionCallExpression get = (FunctionCallExpression) step;
+                final boolean ignoreCase = "GET_IGNORE_CASE".equalsIgnoreCase(get.getFunctionName());
+                final Object key = TypeInferencer.constantKey(get.getArguments().get(1));
+                final List<Object> path = "GET_PATH".equalsIgnoreCase(get.getFunctionName()) && key instanceof String
+                    ? StructuredLeaf.pathSteps((String) key) : Collections.singletonList(key);
+                if (path == null) {
+                    return null;
+                }
+                for (final Object part : path) {
+                    final StructuredField field = type instanceof StructuredObjectType && part instanceof String
+                        ? StructuredLeaf.fieldOf((StructuredObjectType) type, (String) part, ignoreCase) : null;
+                    steps.add(field != null ? field.getName() : null);
+                    type = StructuredLeaf.ofSubscript(type, part, ignoreCase);
+                    if (type == null) {
+                        return null;
+                    }
+                }
+            }
+            if (type == null) {
+                return null;
+            }
+        }
+        final ColumnReferenceExpression ref = (ColumnReferenceExpression) root;
+        final Table owner = resolveDeclaredOwner(ref);
+        if (owner == null || owner.residentSource() == null || queryExecutor == null) {
+            return null;
+        }
+        return queryExecutor.columnLeafRange(owner.residentSource(), ref.getColumnName(), steps);
+    }
+
+    /** Whether an expression is a GET, GET_IGNORE_CASE or GET_PATH that reads a structured value as it declares. */
+    private boolean isStructuredGet(final Expression expr) {
+        if (!(expr instanceof FunctionCallExpression) || ((FunctionCallExpression) expr).getNameExpression() != null) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) expr;
+        return typeInferencer.structuredGetType(call.getFunctionName().toUpperCase(Locale.ROOT), call) != null;
+    }
+
+    /** The inferencer of this scope's static types. */
+    TypeInferencer typeInferencer() {
+        return typeInferencer;
+    }
+
+    /**
      * The interval a column reference's values lie in: a derived relation's column carries the one its
      * projection propagated, and a catalog column reads its statistics — the whole table's rows, as
      * the account's do. Null when nothing is known.
@@ -14758,6 +14921,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (baseValue == null) {
             return null;
         }
+        // A structured value is read by the names it declares: one it lacks is refused, and what is read has the type
+        // the value declares for it.
+        final DataType baseType = typeInferencer.infer(expr.getBase());
+        requireDeclaredFields(baseType, expr.getPathParts());
+        final DataType leaf = StructuredLeaf.ofPath(baseType, expr.getPathParts());
 
         // Traverse the property chain using the path segments from the parse tree (data:a.b.c → [a,b,c]).
         // Once inside a parsed tree, INTERMEDIATE steps walk raw JsonNodes — converting per step
@@ -14788,7 +14956,21 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // result stays VARIANT; the engine returns the unwrapped string. Wrapping here double-encodes
         // the structural-string idioms (OBJECT_CONSTRUCT/ARRAY_AGG re-embedding, VARCHAR-cast
         // round-trips), so the unwrapped shape is kept deliberately.
-        return current;
+        return leaf != null ? StructuredLeaf.typed(current, leaf) : current;
+    }
+
+    /**
+     * Refuses a path that names a field a structured OBJECT does not declare, for any row it is read over
+     * (live-verified: {@code o:missing}).
+     *
+     * @param base  the type of the value the path reads
+     * @param parts the path's names, in order
+     */
+    private static void requireDeclaredFields(final DataType base, final List<String> parts) {
+        final String undeclared = StructuredLeaf.undeclaredField(base, parts, false);
+        if (undeclared != null) {
+            throw StructuredLeaf.missingField(undeclared);
+        }
     }
 
     @Override
@@ -14801,7 +14983,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // A VECTOR is no container a subscript reaches into (live-verified: v[0] is NULL).
             return null;
         }
+        final DataType baseType = typeInferencer.infer(expr.getArray());
+        if (baseType instanceof StructuredObjectType && !(indexValue instanceof Number)) {
+            requireDeclaredFields(baseType, Collections.singletonList(indexValue.toString()));
+        }
+        final Object read = readSubscript(arrayValue, indexValue);
+        final DataType leaf = StructuredLeaf.ofSubscript(baseType,
+            indexValue instanceof Number ? indexValue : indexValue.toString(), false);
+        return leaf != null ? StructuredLeaf.typed(read, leaf) : read;
+    }
 
+    /** What a subscript reads: a number indexes an array, a text names an object's member. */
+    private Object readSubscript(final Object arrayValue, final Object indexValue) {
         // A numeric subscript indexes into a JSON array; a string subscript (col['key']) is object member
         // access — Snowflake's bracket notation, equivalent to col:key. A typed wrapper extracts from
         // its parsed tree (see visitObjectAccess).

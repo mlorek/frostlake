@@ -16,7 +16,14 @@
 
 package dev.frostlake.persistence;
 
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.parser.SqlCharStream;
+
+import java.util.List;
+
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.Token;
 
 /**
  * Which statements belong in the write-ahead log, decided from the PARSE TREE.
@@ -59,6 +66,50 @@ public final class WalStatementKinds {
             }
         }
         return false;
+    }
+
+    /**
+     * Whether a statement of a family the log leaves out writes what it must carry all the same: a sequence's
+     * NEXTVAL, however it is spelled, moves the sequence; a TO_QUERY may run a CALL; and SYSTEM$TASK_DEPENDENTS_ENABLE
+     * resumes a task graph. Read off the statement's tokens, as {@code ReadOnlyRequest} judges a read-only request.
+     *
+     * @param sql the statement's text
+     * @return true when it writes durable state
+     */
+    public static boolean writesDurably(final String sql) {
+        for (final Token token : tokens(sql)) {
+            final String text = token.getText();
+            if (token.getType() == FrostlakeLexer.NEXTVAL || "\"NEXTVAL\"".equalsIgnoreCase(text)
+                    || "TO_QUERY".equalsIgnoreCase(text) || "\"TO_QUERY\"".equalsIgnoreCase(text)
+                    || token.getType() == FrostlakeLexer.SYSTEM_FUNC
+                        && "SYSTEM$TASK_DEPENDENTS_ENABLE".equalsIgnoreCase(text)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a statement reads a result by RESULT_SCAN, so the query that answered it must run before it on replay.
+     *
+     * @param sql the statement's text
+     * @return true when it calls RESULT_SCAN
+     */
+    public static boolean readsResultScan(final String sql) {
+        for (final Token token : tokens(sql)) {
+            if ("RESULT_SCAN".equalsIgnoreCase(token.getText())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<Token> tokens(final String sql) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        return stream.getTokens();
     }
 
     /** Whether one statement mutates anything the log would have to replay. */

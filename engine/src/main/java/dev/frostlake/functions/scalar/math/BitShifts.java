@@ -38,12 +38,13 @@ final class BitShifts {
      * @param left  whether to the left
      * @return the shifted number
      */
-    static Object shifted(final long value, final long count, final boolean left) {
+    static Object shifted(final BigInteger value, final long count, final boolean left) {
         if (count < 0) {
             throw new RuntimeException("Invalid parameter value: " + count
                 + ". Reason: shift parameter must be greater or equal to zero");
         }
-        final BigInteger whole = BigInteger.valueOf(value);
+        // The whole number, past 64 bits too: BITSHIFTRIGHT(BITSHIFTLEFT(1, 100), 99) is 2 (live-verified).
+        final BigInteger whole = value;
         final BigInteger moved;
         if (!left) {
             moved = whole.shiftRight((int) Math.min(count, WIDTH));

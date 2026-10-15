@@ -1645,11 +1645,15 @@ public class Schema extends SqlObject {
                 policy.getReturnType(), policy.getBody());
             clonedPolicy.setReturnDataType(policy.getReturnDataType());
             clonedPolicy.setReturnSpelling(policy.getReturnSpelling());
+            clonedPolicy.setExemptOtherPolicies(policy.isExemptOtherPolicies());
             clonedSchema.maskingPolicies.put(policy.getName().toUpperCase(Locale.ROOT), withPolicyDetails(policy, clonedPolicy));
         }
         for (final RowAccessPolicy policy : rowAccessPolicies.values()) {
+            final RowAccessPolicy clonedPolicy =
+                new RowAccessPolicy(policy.getName(), policy.getParameters(), policy.getBody());
+            clonedPolicy.setExemptOtherPolicies(policy.isExemptOtherPolicies());
             clonedSchema.rowAccessPolicies.put(policy.getName().toUpperCase(Locale.ROOT),
-                withPolicyDetails(policy, new RowAccessPolicy(policy.getName(), policy.getParameters(), policy.getBody())));
+                withPolicyDetails(policy, clonedPolicy));
         }
 
         // Clone stages — the DEFINITION carries over (Snowflake's CLONE keeps stage definitions), its

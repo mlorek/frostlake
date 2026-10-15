@@ -44,14 +44,17 @@ public final class TableLockWait extends RuntimeException {
     }
 
     /**
-     * Waits for the holder to commit or roll back, the engine's lock given up meanwhile.
+     * Waits for the holder to commit or roll back, the engine's lock given up meanwhile. The wait ends early, with the
+     * statement, when its timeout passes, it is canceled, its session is aborted or the engine shuts down.
      *
      * @param transactions   the engine's transactions
      * @param timeoutSeconds the session's LOCK_TIMEOUT
      * @param waitingSince   when the statement first waited ({@link System#nanoTime()}), which bounds its waits
      *                       however often it runs again
+     * @param stop           what ends the statement before the holder does
      */
-    public void await(final TransactionManager transactions, final long timeoutSeconds, final long waitingSince) {
+    public void await(final TransactionManager transactions, final long timeoutSeconds, final long waitingSince,
+                      final LockWaitStop stop) {
         if (timeoutSeconds <= 0) {
             throw refusal("is currently not allowed.");
         }
@@ -60,6 +63,7 @@ public final class TableLockWait extends RuntimeException {
         release.release();
         try {
             while (stillHeld(transactions) && System.nanoTime() < deadline) {
+                stop.check();
                 Thread.sleep(Math.max(1L, Math.min(POLL_MILLIS,
                     TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()))));
             }

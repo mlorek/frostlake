@@ -50,6 +50,9 @@ public class GrantsFollowTheirObjectTest {
         engine.execute("CREATE ROLE reader_role");
         engine.execute("CREATE USER reader");
         engine.execute("GRANT ROLE reader_role TO USER reader");
+        // A role reaches an object of a schema only with USAGE on its database and its schema.
+        engine.execute("GRANT USAGE ON DATABASE g TO ROLE reader_role");
+        engine.execute("GRANT USAGE ON SCHEMA g.PUBLIC TO ROLE reader_role");
         engine.execute("CREATE TABLE t (a INT)");
         engine.execute("INSERT INTO t VALUES (1)");
     }
@@ -111,6 +114,7 @@ public class GrantsFollowTheirObjectTest {
         assertFalse(readerMay("SELECT * FROM t"), "a new T under the old name is not granted");
 
         engine.execute("CREATE SCHEMA moved");
+        engine.execute("GRANT USAGE ON SCHEMA g.moved TO ROLE reader_role");
         engine.execute("USE SCHEMA g.PUBLIC");
         engine.execute("ALTER TABLE t2 RENAME TO g.moved.t3");
         assertTrue(readerMay("SELECT * FROM g.moved.t3"));

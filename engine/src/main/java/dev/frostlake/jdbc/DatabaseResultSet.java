@@ -44,6 +44,7 @@ import java.sql.SQLXML;
 import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
@@ -287,9 +288,7 @@ public class DatabaseResultSet implements ResultSet {
             intervalNumber(columnIndex);
             return IntervalColumnReads.getDate(interval);
         }
-        final Object value = getValue(columnIndex);
-        wasNull = (value == null);
-        return JdbcMarshaling.toDate(value);
+        return JdbcMarshaling.toDate(temporalCell(columnIndex, "date"));
     }
 
     @Override
@@ -299,9 +298,7 @@ public class DatabaseResultSet implements ResultSet {
             intervalNumber(columnIndex);
             return IntervalColumnReads.getTime(interval);
         }
-        final Object value = getValue(columnIndex);
-        wasNull = (value == null);
-        return JdbcMarshaling.toTime(value);
+        return JdbcMarshaling.toTime(temporalCell(columnIndex, "time"), getMetaData().getColumnType(columnIndex));
     }
 
     @Override
@@ -311,9 +308,8 @@ public class DatabaseResultSet implements ResultSet {
             intervalNumber(columnIndex);
             return IntervalColumnReads.getTimestamp(interval);
         }
-        final Object value = getValue(columnIndex);
-        wasNull = (value == null);
-        return JdbcMarshaling.toTimestamp(value);
+        return JdbcMarshaling.toTimestamp(temporalCell(columnIndex, "timestamp"),
+            getMetaData().getColumnType(columnIndex));
     }
 
     @Override
@@ -938,9 +934,7 @@ public class DatabaseResultSet implements ResultSet {
             return getDate(columnIndex);
         }
         // The day's midnight in the Calendar's zone.
-        final Object value = getValue(columnIndex);
-        wasNull = (value == null);
-        return JdbcMarshaling.toDate(value, cal);
+        return JdbcMarshaling.toDate(temporalCell(columnIndex, "date"), cal);
     }
 
     @Override
@@ -964,10 +958,11 @@ public class DatabaseResultSet implements ResultSet {
         if (cal == null || intervalKind(columnIndex) != null) {
             return getTimestamp(columnIndex);
         }
-        // A wall clock with no zone is read in the Calendar's zone; a zoned cell keeps its moment (live-verified).
-        final Object value = getValue(columnIndex);
-        wasNull = (value == null);
-        return JdbcMarshaling.toTimestamp(value, cal);
+        final Object cell = temporalCell(columnIndex, "timestamp");
+        // A TIME is read without the Calendar; a wall clock with no zone is read in the Calendar's zone; a zoned cell
+        // keeps its moment (live-verified).
+        return getMetaData().getColumnType(columnIndex) == Types.TIME ? JdbcMarshaling.toTimestamp(cell, Types.TIME)
+            : JdbcMarshaling.toTimestamp(cell, cal);
     }
 
     @Override
@@ -1339,6 +1334,23 @@ public class DatabaseResultSet implements ResultSet {
             }
         }
         return cell;
+    }
+
+    /**
+     * The cell getDate, getTime or getTimestamp reads, its nullness recorded for {@link #wasNull()}; a cell of a
+     * column that getter does not read is refused as the account's driver refuses it (see
+     * {@link JdbcMarshaling#readsTemporal}).
+     */
+    private Object temporalCell(final int columnIndex, final String target) throws SQLException {
+        final Object value = getValue(columnIndex);
+        wasNull = value == null;
+        final ResultSetMetaData described = getMetaData();
+        final int type = described.getColumnType(columnIndex);
+        if (value != null && !JdbcMarshaling.readsTemporal(type, target)) {
+            throw JdbcMarshaling.unconvertible(type, target,
+                JdbcMarshaling.quotedCell(value, type, described.getScale(columnIndex), getString(columnIndex)));
+        }
+        return value;
     }
 
     /** The double a wire word for a non-finite FLOAT names, or null for any other text. */

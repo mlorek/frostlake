@@ -47,6 +47,9 @@ public class NonTableDdlPrivilegeEnforcementTest {
         engine.execute("CREATE ROLE other_role");
         engine.execute("CREATE USER app_user");
         engine.execute("GRANT ROLE app_role TO USER app_user");
+        // A role reaches an object of a schema only with USAGE on its database and its schema.
+        engine.execute("GRANT USAGE ON DATABASE db TO ROLE app_role");
+        engine.execute("GRANT USAGE ON SCHEMA db.PUBLIC TO ROLE app_role");
     }
 
     @AfterEach

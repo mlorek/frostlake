@@ -20,6 +20,7 @@ import dev.frostlake.executor.ExpressionColumns;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StatementDraws;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.SnapshotSequence;
 import dev.frostlake.types.DataType;
@@ -608,8 +609,14 @@ public class Table extends SqlObject {
         final TableColumn identity = identityColumn();
         final long current = nextIdentityValue != null ? nextIdentityValue
             : identity != null ? identity.getIdentityStart() : 1L;
-        nextIdentityValue = current + (identity != null ? identity.getIdentityIncrement() : 1L);
-        return current;
+        final long step = identity != null ? identity.getIdentityIncrement() : 1L;
+        // A statement replayed from the write-ahead log takes the value it first drew (StatementDraws).
+        final String counter = "IDENTITY:" + getName();
+        final Long replayed = StatementDraws.replayed(counter);
+        final long drawn = replayed != null ? replayed.longValue() : current;
+        nextIdentityValue = replayed != null ? StatementDraws.nextAfter(current, drawn, step) : current + step;
+        StatementDraws.record(counter, drawn);
+        return drawn;
     }
 
     /**

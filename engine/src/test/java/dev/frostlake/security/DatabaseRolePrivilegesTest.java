@@ -49,6 +49,9 @@ public class DatabaseRolePrivilegesTest {
         engine.execute("CREATE ROLE reader_role");
         engine.execute("CREATE USER reader");
         engine.execute("GRANT ROLE reader_role TO USER reader");
+        // A role reaches an object of a schema only with USAGE on its database and its schema.
+        engine.execute("GRANT USAGE ON DATABASE g TO ROLE reader_role");
+        engine.execute("GRANT USAGE ON SCHEMA g.PUBLIC TO ROLE reader_role");
         engine.execute("CREATE DATABASE ROLE g.dr");
         engine.execute("CREATE DATABASE ROLE g.dr_low");
     }

@@ -75,4 +75,9 @@ public class Sum extends AggregateFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
+    /** A VECTOR is refused as a semi-structured value is (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return semiStructuredRejection(position);
+    }
 }

@@ -1331,7 +1331,7 @@ public class ColumnDefinitionParser implements CommandHandler {
     private static final int POLICY_VARCHAR_LENGTH = 134217728;
 
     public Parameter parseParameterDef(final FrostlakeParser.ParameterDefContext p) {
-        final String name = getText(p.identifier());
+        final String name = getText(p.variableName());
         final DataType type = parseDataType(p.dataTypeName(), p.typeParameters());
         final String defaultVal = p.expression() != null ? getOriginalText(p.expression()) : null;
         return new Parameter(name, type, defaultVal, p.typeParameters() == null && Parameter.holdsDefaultLength(type));

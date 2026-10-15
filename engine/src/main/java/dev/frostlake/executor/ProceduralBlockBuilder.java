@@ -189,9 +189,9 @@ public class ProceduralBlockBuilder {
         }
 
         if (ctx.raiseStatement() != null) {
-            if (ctx.raiseStatement().identifier() != null && ctx.raiseStatement().STRING_LITERAL() == null) {
+            if (ctx.raiseStatement().variableName() != null && ctx.raiseStatement().STRING_LITERAL() == null) {
                 // RAISE exception_name - must be a user-defined exception
-                final String name = visitor.getText(ctx.raiseStatement().identifier());
+                final String name = visitor.getText(ctx.raiseStatement().variableName());
                 // Check if it's a user-defined exception
                 if (visitor.getProceduralExecutor().hasException(name)) {
                     final RaiseStatement raise = new RaiseStatement(name);
@@ -221,7 +221,7 @@ public class ProceduralBlockBuilder {
             // returns to the variable.
             final FrostlakeParser.CallStatementContext call = ctx.callIntoStatement().callStatement();
             final String target = visitor.getText(
-                ctx.callIntoStatement().intoTargetList().intoTarget(0).identifier());
+                ctx.callIntoStatement().intoTargetList().intoTarget(0).variableName());
             return new CallStatement(visitor.getOriginalText(call), target);
         }
         if (ctx.callStatement() != null && ctx.callStatement().systemFunctionName() != null) {
@@ -243,7 +243,7 @@ public class ProceduralBlockBuilder {
 
         if (ctx.assignmentStatement() != null) {
             final FrostlakeParser.AssignmentStatementContext aCtx = ctx.assignmentStatement();
-            final String varName = visitor.getText(aCtx.identifier());
+            final String varName = visitor.getText(aCtx.assignedName());
             if (aCtx.callStatement() != null) {
                 // The CALL keeps its :names as written, each judged by its variable's declared type.
                 return new SqlStatement(visitor.getOriginalText(ctx), false, true);
@@ -269,7 +269,7 @@ public class ProceduralBlockBuilder {
 
         if (ctx.letStatement() != null) {
             final FrostlakeParser.LetStatementContext lCtx = ctx.letStatement();
-            final String varName = visitor.getText(lCtx.identifier());
+            final String varName = visitor.getText(lCtx.variableName());
             if (lCtx.booleanExpr() != null) {
                 // An untyped LET's initialiser is judged while the block compiles; a typed one when it is reached.
                 final BaseExpression expr = lCtx.dataTypeName() == null ? visitor.buildExpression(lCtx.booleanExpr())
@@ -374,7 +374,7 @@ public class ProceduralBlockBuilder {
 
     Statement buildForStatement(final FrostlakeParser.ForStatementContext ctx) {
         // The identifier is the loop variable; a trailing loopLabel, if any, is the loop's label.
-        final String varName = visitor.getText(ctx.identifier());
+        final String varName = visitor.getText(ctx.variableName());
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final ForStatement stmt;
         if (ctx.TO() != null) {

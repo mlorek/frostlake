@@ -58,6 +58,7 @@ import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.StreamType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.TableStructure;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
@@ -70,6 +71,7 @@ import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.metastore.model.WarehouseState;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.SnapshotSequence;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskTrigger;
@@ -93,6 +95,7 @@ import java.io.ObjectInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -135,11 +138,14 @@ final class CatalogSnapshotReader {
                               final S3PathResolver s3Resolver,
                               final Catalog catalog, final StorageEngine storageEngine)
             throws IOException, ClassNotFoundException {
+        // Whatever the restore draws — a table's creation, a stream's offset — follows every history it restores.
+        SnapshotSequence.advancePast(snapshot.snapshotSequence);
         // Load databases and schemas
         for (final DatabaseSnapshot dbSnapshot : snapshot.databases) {
             // Skip system database (will be created automatically)
             if ("SNOWFLAKE".equals(dbSnapshot.name)) {
                 final Database db = catalog.getDatabase("SNOWFLAKE");
+                db.restoreCreatedTime(dbSnapshot.createdAt);
                 loadDatabaseContent(tableData, catalog, db, dbSnapshot, s3Resolver, storageEngine);
                 continue;
             }
@@ -245,9 +251,11 @@ final class CatalogSnapshotReader {
             // Roles will be granted after all roles are loaded
         }
 
-        // Load custom roles (system roles already exist)
+        // Load custom roles (system roles already exist, and keep the creation time they had)
         for (final RoleSnapshot roleSnapshot : snapshot.roles) {
-            if (!catalog.isSystemRole(roleSnapshot.name)) {
+            if (catalog.isSystemRole(roleSnapshot.name)) {
+                catalog.getRole(roleSnapshot.name).restoreCreatedTime(roleSnapshot.createdAt);
+            } else {
                 catalog.createRole(roleSnapshot.name);
                 final Role role = catalog.getRole(roleSnapshot.name);
                 role.setComment(roleSnapshot.comment);
@@ -399,9 +407,10 @@ final class CatalogSnapshotReader {
                 if (schemaSnapshot.owner != null) {
                     schema.setOwner(schemaSnapshot.owner);
                 }
-                schema.restoreCreatedTime(schemaSnapshot.createdAt);
                 schema.restoreLastDdlTime(schemaSnapshot.lastDdlAt);
             }
+            // The seeded INFORMATION_SCHEMA keeps the creation time it had too.
+            schema.restoreCreatedTime(schemaSnapshot.createdAt);
             
             // Load tables
             for (final TableSnapshot tableSnapshot : schemaSnapshot.tables) {
@@ -413,7 +422,8 @@ final class CatalogSnapshotReader {
                     final long identityIncrement = colSnapshot.autoIncrement ? colSnapshot.identityIncrement : 1L;
                     // Re-wrap an expression default so INSERT evaluates it again; a literal stays a plain value.
                     final Object columnDefault = colSnapshot.defaultIsExpression && colSnapshot.defaultValue != null
-                        ? new DefaultValueExpression(colSnapshot.defaultValue) : colSnapshot.defaultValue;
+                        ? new DefaultValueExpression(colSnapshot.defaultValue)
+                        : colSnapshot.defaultLiteral != null ? colSnapshot.defaultLiteral : colSnapshot.defaultValue;
                     final TableColumn col = new TableColumn(
                         colSnapshot.name,
                         restoredColumnType(colSnapshot),
@@ -813,6 +823,7 @@ final class CatalogSnapshotReader {
                     policy.setReturnDataType(policySnapshot.returnDataType);
                     policy.setReturnSpelling(policySnapshot.returnSpelling);
                     policy.setComment(policySnapshot.comment);
+                    policy.setExemptOtherPolicies(policySnapshot.exemptOtherPolicies);
                     if (policySnapshot.owner != null) {
                         policy.setOwner(policySnapshot.owner);
                     }
@@ -954,6 +965,12 @@ final class CatalogSnapshotReader {
                     if (dtSnapshot.refreshedRows != null) {
                         dt.setRefreshedRows(dtSnapshot.refreshedRows.longValue());
                     }
+                    if (dtSnapshot.lastRefreshedTime != null) {
+                        dt.restoreRefreshState(dtSnapshot.lastRefreshedTime,
+                            dtSnapshot.firstRefreshedSequence != null ? dtSnapshot.firstRefreshedSequence : 0L,
+                            dtSnapshot.firstRefreshedMillis != null ? dtSnapshot.firstRefreshedMillis : 0L,
+                            dtSnapshot.refreshImage);
+                    }
                     if (dtSnapshot.resolvedColumns != null) {
                         dt.setResolvedColumns(derivedColumns(dtSnapshot.resolvedColumns));
                     }
@@ -1006,6 +1023,7 @@ final class CatalogSnapshotReader {
                     final RowAccessPolicy policy = new RowAccessPolicy(policySnapshot.name,
                         restoreParameters(policySnapshot.parameters), policySnapshot.body);
                     policy.setComment(policySnapshot.comment);
+                    policy.setExemptOtherPolicies(policySnapshot.exemptOtherPolicies);
                     if (policySnapshot.owner != null) {
                         policy.setOwner(policySnapshot.owner);
                     }
@@ -1093,8 +1111,64 @@ final class CatalogSnapshotReader {
         for (final List<Object> rowValues : dataSnapshot.rows) {
             storage.insert(new Row(new ArrayList<>(rowValues)));
         }
+        if (dataSnapshot.history != null) {
+            restoreHistory(storage, table, dataSnapshot.history);
+        }
         logger.debug("Loaded table data: {}.{}.{} ({} rows)",
                     database, schema, table.getName(), dataSnapshot.rows.size());
+    }
+
+    /**
+     * Puts a table's time-travel history back on its storage, just filled with the saved rows. A saved identity keeps
+     * one new identity: a snapshot's row that is stored now is that stored row, and a past row an UPDATE rewrote
+     * shares its identity with the row stored now. The snapshots hold their rows in the table's current columns, as
+     * the saved ones did, so their shape is the one the table has now.
+     *
+     * @param storage the table's storage, holding the saved rows in their saved order
+     * @param table   the table
+     * @param history the saved history
+     */
+    static void restoreHistory(final TableStorage storage, final Table table, final TableHistorySnapshot history) {
+        final List<Long> ids = new ArrayList<>();
+        final List<Row> current = storage.scanWithIds(ids);
+        if (current.size() != history.currentRowIds.size()) {
+            logger.warn("History of table {} does not match its rows; it is not restored", table.getName());
+            return;
+        }
+        final Map<Long, Long> renumbered = new HashMap<>();
+        for (int i = 0; i < current.size(); i++) {
+            renumbered.put(history.currentRowIds.get(i), ids.get(i));
+        }
+        final List<Row> past = new ArrayList<>(history.pastRows.size());
+        final List<Long> pastIds = new ArrayList<>(history.pastRows.size());
+        for (int p = 0; p < history.pastRows.size(); p++) {
+            final Long saved = history.pastRowIds.get(p);
+            Long id = renumbered.get(saved);
+            if (id == null) {
+                id = storage.freshRowId();
+                renumbered.put(saved, id);
+            }
+            past.add(new Row(new ArrayList<>(history.pastRows.get(p))));
+            pastIds.add(id);
+        }
+        final TableStructure layout = table.currentStructure();
+        final List<dev.frostlake.storage.TableSnapshot> restored = new ArrayList<>(history.points.size());
+        for (final TableHistoryPoint point : history.points) {
+            final List<Row> rows = new ArrayList<>(point.rows.size());
+            final List<Long> rowIds = new ArrayList<>(point.rows.size());
+            for (final Integer place : point.rows) {
+                if (place < 0) {
+                    rows.add(current.get(-place - 1));
+                    rowIds.add(ids.get(-place - 1));
+                } else {
+                    rows.add(past.get(place));
+                    rowIds.add(pastIds.get(place));
+                }
+            }
+            restored.add(new dev.frostlake.storage.TableSnapshot(point.epochMillis, point.sequence, rows, rowIds,
+                layout, null));
+        }
+        storage.restoreHistory(history.startMillis, history.startSequence, history.evicted, restored);
     }
 
     /**
@@ -1110,6 +1184,7 @@ final class CatalogSnapshotReader {
             final TableColumn column = new TableColumn(colSnapshot.name, restoredColumnType(colSnapshot),
                 colSnapshot.nullable, null, false, false, false);
             column.setComment(colSnapshot.comment);
+            column.setCollation(colSnapshot.collation);
             columns.add(column);
         }
         return columns;

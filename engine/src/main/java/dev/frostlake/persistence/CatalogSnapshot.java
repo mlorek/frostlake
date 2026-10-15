@@ -52,4 +52,9 @@ public class CatalogSnapshot implements Serializable {
     public List<ExternalVolumeSnapshot> droppedExternalVolumes = new ArrayList<>();
     /** The dropped tables, dynamic tables, tags, schemas and databases UNDROP can still restore, alike. */
     public List<DroppedObjectSnapshot> droppedObjects = new ArrayList<>();
+    /**
+     * The last number the order time-travel snapshots are taken in had drawn, so what a restore draws follows every
+     * history it restores; zero on a snapshot written before histories were kept.
+     */
+    public long snapshotSequence;
 }

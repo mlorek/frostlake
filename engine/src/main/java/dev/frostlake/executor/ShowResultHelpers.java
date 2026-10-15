@@ -111,7 +111,7 @@ public final class ShowResultHelpers {
     static Schema scopeSchemaReportedGenerically(final Catalog catalog, final String databaseName,
                                                  final String schemaName) {
         try {
-            return catalog.getDatabase(databaseName).getSchema(schemaName);
+            return catalog.databaseExact(databaseName).schemaExact(schemaName);
         } catch (final RuntimeException missing) {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
@@ -123,14 +123,14 @@ public final class ShowResultHelpers {
      */
     public static Database scopeDatabaseReportedGenerically(final Catalog catalog, final String databaseName) {
         try {
-            return catalog.getDatabase(databaseName);
+            return catalog.databaseExact(databaseName);
         } catch (final RuntimeException missing) {
             throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
         }
     }
 
     static Schema resolveDescribeSchema(final Catalog catalog) {
-        return catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+        return catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema());
     }
 
     /**

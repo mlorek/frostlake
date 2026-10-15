@@ -1536,6 +1536,15 @@ final class GroupByAggregateEvaluator {
     }
 
     /** Apply a resolved {@link AggregatePlan} to one group's rows (scan only — no parsing/resolution). */
+    /**
+     * A cell as COUNT, SUM and AVG read it, as the general path does ({@link VariantJsonNulls#asAggregateInput}): a
+     * VARIANT JSON null is missing input, like SQL NULL (live-verified: grouped over {JSON null, 3}, COUNT is 1 and SUM
+     * and AVG are 3).
+     */
+    private static Object planInput(final AggregatePlan plan, final Object cell) {
+        return VariantJsonNulls.asAggregateInput(plan.kind.name(), cell);
+    }
+
     private Object applyAggregatePlan(final AggregatePlan plan, final List<Row> groupRows) {
         // Every plan reads its column's cells, so a cell a relation deferred raises its fault here.
         switch (plan.kind) {
@@ -1547,7 +1556,7 @@ final class GroupByAggregateEvaluator {
                 if (plan.distinct) {
                     final Set<Object> seen = new HashSet<>();
                     for (final Row r : groupRows) {
-                        final Object v = DeferredFault.read(r.getValue(plan.colIndex));
+                        final Object v = planInput(plan, DeferredFault.read(r.getValue(plan.colIndex)));
                         if (v != null) {
                             seen.add(ValueComparisons.normalizeValueForDistinct(v));
                         }
@@ -1556,7 +1565,7 @@ final class GroupByAggregateEvaluator {
                 }
                 long count = 0;
                 for (final Row r : groupRows) {
-                    if (DeferredFault.read(r.getValue(plan.colIndex)) != null) {
+                    if (planInput(plan, DeferredFault.read(r.getValue(plan.colIndex))) != null) {
                         count++;
                     }
                 }
@@ -1566,7 +1575,7 @@ final class GroupByAggregateEvaluator {
                 final Set<Object> seen = plan.distinct ? new HashSet<>() : null;
                 final List<Object> values = new ArrayList<>();
                 for (final Row r : groupRows) {
-                    final Object v = DeferredFault.read(r.getValue(plan.colIndex));
+                    final Object v = planInput(plan, DeferredFault.read(r.getValue(plan.colIndex)));
                     if (v != null && (seen == null || seen.add(ValueComparisons.normalizeValueForDistinct(v)))) {
                         values.add(v);
                     }
@@ -1579,7 +1588,7 @@ final class GroupByAggregateEvaluator {
                 final Set<Object> seen = plan.distinct ? new HashSet<>() : null;
                 final List<Object> values = new ArrayList<>();
                 for (final Row r : groupRows) {
-                    final Object v = DeferredFault.read(r.getValue(plan.colIndex));
+                    final Object v = planInput(plan, DeferredFault.read(r.getValue(plan.colIndex)));
                     if (v != null && (seen == null || seen.add(ValueComparisons.normalizeValueForDistinct(v)))) {
                         values.add(v);
                     }
@@ -1670,8 +1679,10 @@ final class GroupByAggregateEvaluator {
                 // read through are bare over a single relation, whose alias may hide its name.
                 rejectStarArity(starCall, starName, star.expand(table, aliasToTable, allTables, true),
                     star.isBare() && "COUNT".equalsIgnoreCase(starName));
+                // Qualified over a join only: a single unaliased VALUES list or derived table registers under a
+                // moniker such as VALUES, which reads back as no relation name.
                 final List<String> starArgs = star.expand(table, aliasToTable, allTables,
-                    allTables != null && !allTables.isEmpty());
+                    allTables != null && allTables.size() > 1);
                 if ("COUNT".equalsIgnoreCase(starName)) {
                     // A qualified or filtered star is the written-out column list, and COUNT over a
                     // list counts the rows in which EVERY column is non-NULL (live: COUNT(t.*) over

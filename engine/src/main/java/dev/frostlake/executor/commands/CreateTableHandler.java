@@ -618,6 +618,8 @@ public class CreateTableHandler implements CommandHandler {
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
+                DefaultDdlCollation.apply(table, table.getColumns(), schema, catalog);
+                MaskedArguments.requireNotMaskedAndConditional(catalog, table);
                 table.setHybrid(isHybrid);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
@@ -1088,7 +1090,7 @@ public class CreateTableHandler implements CommandHandler {
                 }
                 policyCols.add(colName);
             }
-            RowAccessPolicyAttachment.check(policy, table, table.getName(), written, policyCols);
+            RowAccessPolicyAttachment.check(catalog, policy, table, table.getName(), written, policyCols, true);
             // Recorded in full, as every policy attachment is (see PolicyReferences).
             table.setRowAccessPolicyName(catalog.qualifiedObjectName(written));
             table.setRowAccessPolicyColumns(policyCols);

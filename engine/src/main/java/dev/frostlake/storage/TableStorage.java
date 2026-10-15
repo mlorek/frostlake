@@ -44,18 +44,18 @@ public class TableStorage {
     // (StorageEngine#nextRowId). Lets a transaction reference a specific row across other mutations WITHOUT
     // positional indices — the foundation for the write-set / deferred-apply transaction model (see
     // transaction.TransactionWriteSet) — and is what a stream and a CHANGES clause spell as METADATA$ROW_ID
-    // (see StreamRowIds). Never persisted: reassigned on reload.
+    // (see StreamRowIds). Reassigned on reload, the restored snapshots' along with the rows'.
     private final List<Long> rowIds = Collections.synchronizedList(new ArrayList<>());
 
     // When this storage came into being — the lower bound of its time-travel history. A real
-    // account refuses AT/BEFORE points before the object's creation; snapshots are in-memory
-    // only, so a restored engine's history starts at restore, exactly like its snapshots. It is the
-    // creating statement's instant, as the snapshots' stamps are: a replayed statement that reads the table
-    // at its recorded CURRENT_TIMESTAMP() then finds it there, as the original statement did.
-    private final long createdMillis = StatementClock.instant().toEpochMilli();
+    // account refuses AT/BEFORE points before the object's creation. It is the creating statement's
+    // instant, as the snapshots' stamps are: a replayed statement that reads the table at its recorded
+    // CURRENT_TIMESTAMP() then finds it there, as the original statement did. A restored engine puts back
+    // the one its snapshot saved, with the snapshots (restoreHistory).
+    private volatile long createdMillis = StatementClock.instant().toEpochMilli();
     // Where this storage's creation falls in the order snapshots are taken in: a point with a lower number
     // came before the table.
-    private final long createdSequence = SnapshotSequence.next();
+    private volatile long createdSequence = SnapshotSequence.next();
 
     /**
      * The rolling window of time-travel snapshots, at most {@link #MAX_SNAPSHOTS} of them. The retention period is not
@@ -68,6 +68,56 @@ public class TableStorage {
     private static final int MAX_SNAPSHOTS = 200;
     /** Set once the window dropped a snapshot: the history before the oldest one kept is gone. */
     private volatile boolean historyEvicted;
+
+    /** The snapshots of the table's time-travel window, oldest first: what a snapshot of the engine's state keeps. */
+    public List<TableSnapshot> historySnapshots() {
+        return new ArrayList<>(snapshots);
+    }
+
+    /** When the table's history starts: no point before it reads the table. */
+    public long historyStartMillis() {
+        return createdMillis;
+    }
+
+    /** Where the table's history starts in the order snapshots are taken in. */
+    public long historyStartSequence() {
+        return createdSequence;
+    }
+
+    /** Whether the window dropped snapshots, so the history before the oldest one kept is gone. */
+    public boolean isHistoryEvicted() {
+        return historyEvicted;
+    }
+
+    /** A row identity no row of the engine has had, for a row only the restored history holds. */
+    public long freshRowId() {
+        return engine.nextRowId();
+    }
+
+    /**
+     * Puts back the time-travel history a snapshot of an engine's state carried, on storage just filled with the
+     * table's rows: a clone, a checkpoint's restore and a write-ahead log's recovery read the table at a point
+     * before the copy as the engine they copy did. Numbers drawn after the restore follow the history's own.
+     *
+     * @param startMillis   when the table's history starts
+     * @param startSequence where it starts in the order snapshots are taken in
+     * @param evicted       whether the window had dropped snapshots
+     * @param restored      the snapshots, oldest first, their row identities those of the rows stored now
+     */
+    public void restoreHistory(final long startMillis, final long startSequence, final boolean evicted,
+                               final List<TableSnapshot> restored) {
+        synchronized (snapshots) {
+            createdMillis = startMillis;
+            createdSequence = startSequence;
+            historyEvicted = evicted;
+            snapshots.clear();
+            snapshots.addAll(restored);
+        }
+        SnapshotSequence.advancePast(startSequence);
+        for (final TableSnapshot snapshot : restored) {
+            SnapshotSequence.advancePast(snapshot.sequence);
+        }
+    }
 
     /**
      * Force a snapshot now (called after each DML operation).
@@ -380,6 +430,20 @@ public class TableStorage {
 
     public List<Row> scan() {
         return new ArrayList<>(rows);
+    }
+
+    /**
+     * The rows stored now and, index-aligned, their identities, taken together: what a snapshot of the engine's
+     * state saves.
+     *
+     * @param ids receives each row's identity
+     * @return the rows
+     */
+    public List<Row> scanWithIds(final List<Long> ids) {
+        synchronized (rows) {
+            ids.addAll(rowIds);
+            return new ArrayList<>(rows);
+        }
     }
 
     /** Install a REPLACEMENT row at {@code index} — UPDATE never mutates a stored row in place,

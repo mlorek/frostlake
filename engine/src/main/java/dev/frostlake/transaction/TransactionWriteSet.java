@@ -672,6 +672,30 @@ public class TransactionWriteSet {
         }
     }
 
+    /**
+     * Follows tables whose storage moved to another key — a rename, a move, a schema's or a database's rename, a
+     * swap — so the changes buffered for each, and the lock it holds, are the table's under its new key, and a COMMIT
+     * applies them to the table they were made to, whatever another session calls it meanwhile (live-verified).
+     *
+     * @param moved the old key of each moved table, mapped to its new one
+     */
+    public void retarget(final Map<String, String> moved) {
+        MovedTables.rekey(inserts, moved);
+        MovedTables.rekey(updates, moved);
+        MovedTables.rekey(deletes, moved);
+        MovedTables.rekey(tableLocks, MovedTables.upperCased(moved));
+        lockNotedRaw.clear();
+        if (activeSavepoint != null) {
+            activeSavepoint.retarget(moved);
+        }
+        for (final WriteSetSavepoint savepoint : enclosing) {
+            savepoint.retarget(moved);
+        }
+        for (final WriteSetSavepoint savepoint : completed) {
+            savepoint.retarget(moved);
+        }
+    }
+
     /** The fully-qualified names of every table this write set holds a buffered insert, update, or delete for. */
     public Set<String> changedTables() {
         final Set<String> out = new LinkedHashSet<>();

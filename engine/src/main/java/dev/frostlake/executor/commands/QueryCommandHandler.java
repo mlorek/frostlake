@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.CommonTableExpressions;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
@@ -26,7 +27,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Handler for Query commands:
@@ -71,7 +74,7 @@ public class QueryCommandHandler implements CommandHandler {
      * compatible with 'not selecting from a table'.} (live-verified).
      */
     private RuntimeException refusedLock(final FrostlakeParser.SelectStatementContext query) {
-        if (!readsARelation(query)) {
+        if (!readsATable(query, new HashSet<FrostlakeParser.CteDefinitionContext>())) {
             return new RuntimeException(
                 "A 'FOR UPDATE' clause is not compatible with 'not selecting from a table'.");
         }
@@ -81,60 +84,72 @@ public class QueryCommandHandler implements CommandHandler {
     }
 
     /**
-     * Whether a query has a FROM clause of its own, at any depth of its set operations, that reads more than a
-     * common table expression of the statement.
+     * Whether a query reads a table, at any depth of its set operations: a FROM of its own that names a table or a
+     * view, calls a table function or reads a stage — directly, through a derived table that reads one, or through
+     * a common table expression of the statement that does. A FROM of VALUES, of a derived table that reads no
+     * table or of a common table expression that reads none reads no table (live-verified: {@code SELECT * FROM
+     * (VALUES (1)) v FOR UPDATE} and {@code WITH c AS (SELECT 1 AS x) SELECT * FROM c FOR UPDATE} are 'not
+     * selecting from a table', {@code SELECT * FROM (SELECT id FROM t) FOR UPDATE} and {@code WITH c AS (SELECT id
+     * FROM t) SELECT * FROM c FOR UPDATE} the unsupported feature).
+     *
+     * @param node    the query, or a part of it
+     * @param entered the common table expressions already entered, so a recursive one is read once
      */
-    private static boolean readsARelation(final ParseTree node) {
+    private static boolean readsATable(final ParseTree node, final Set<FrostlakeParser.CteDefinitionContext> entered) {
         if (node instanceof FrostlakeParser.SelectClauseContext) {
             final FrostlakeParser.SelectClauseContext clause = (FrostlakeParser.SelectClauseContext) node;
-            return clause.FROM() != null && !readsOnlyACommonTableExpression(clause);
+            if (clause.FROM() == null) {
+                return false;
+            }
+            final List<FrostlakeParser.TableSourceContext> sources = new ArrayList<>();
+            collectSources(clause.tableExpression(), sources);
+            for (final FrostlakeParser.TableSourceContext source : sources) {
+                if (sourceReadsATable(source, entered)) {
+                    return true;
+                }
+            }
+            return false;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             final ParseTree child = node.getChild(i);
             if ((child instanceof FrostlakeParser.SelectOperandContext
                     || child instanceof FrostlakeParser.SelectStatementContext
-                    || child instanceof FrostlakeParser.SelectClauseContext) && readsARelation(child)) {
+                    || child instanceof FrostlakeParser.SelectClauseContext) && readsATable(child, entered)) {
                 return true;
             }
         }
         return false;
     }
 
-    /** Whether a query's FROM is one name, and that name one of its statement's common table expressions. */
-    private static boolean readsOnlyACommonTableExpression(final FrostlakeParser.SelectClauseContext clause) {
-        final List<FrostlakeParser.TableReferenceContext> relations = new ArrayList<>();
-        collectRelations(clause.tableExpression(), relations);
-        if (relations.size() != 1 || relations.get(0).tableSource() == null
-                || relations.get(0).tableSource().tableQualifiedName() == null) {
+    /** Whether one source of a FROM reads a table (see {@link #readsATable}). */
+    private static boolean sourceReadsATable(final FrostlakeParser.TableSourceContext source,
+                                             final Set<FrostlakeParser.CteDefinitionContext> entered) {
+        if (source.VALUES() != null) {
             return false;
         }
-        final String name = relations.get(0).tableSource().tableQualifiedName().getText();
-        ParseTree up = clause.getParent();
-        while (up != null) {
-            if (up instanceof FrostlakeParser.SelectStatementContext
-                    && ((FrostlakeParser.SelectStatementContext) up).withClause() != null) {
-                for (final FrostlakeParser.CteDefinitionContext cte
-                        : ((FrostlakeParser.SelectStatementContext) up).withClause().cteDefinition()) {
-                    if (cte.getStart().getText().equalsIgnoreCase(name)) {
-                        return true;
-                    }
-                }
-            }
-            up = up.getParent();
+        if (source.selectStatement() != null) {
+            return readsATable(source.selectStatement(), entered);
         }
-        return false;
+        if (source.tableQualifiedName() != null) {
+            final FrostlakeParser.CteDefinitionContext cte = CommonTableExpressions.named(source);
+            if (cte == null) {
+                return true;
+            }
+            return entered.add(cte) && readsATable(cte.selectStatement(), entered);
+        }
+        return source.tableReference() == null;
     }
 
-    private static void collectRelations(final ParseTree node,
-                                         final List<FrostlakeParser.TableReferenceContext> into) {
+    /** The sources of a FROM, a parenthesized group's included, and none of a query nested in it. */
+    private static void collectSources(final ParseTree node, final List<FrostlakeParser.TableSourceContext> into) {
         if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
             return;
         }
-        if (node instanceof FrostlakeParser.TableReferenceContext) {
-            into.add((FrostlakeParser.TableReferenceContext) node);
+        if (node instanceof FrostlakeParser.TableSourceContext) {
+            into.add((FrostlakeParser.TableSourceContext) node);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            collectRelations(node.getChild(i), into);
+            collectSources(node.getChild(i), into);
         }
     }
 

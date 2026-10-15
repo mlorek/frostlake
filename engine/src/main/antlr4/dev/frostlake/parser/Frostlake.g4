@@ -1389,11 +1389,11 @@ createStatement
     | CREATE or_replace? (TEMPORARY | TEMP | VOLATILE)? SECURE? PROCEDURE if_not_exists? qualifiedName LPAREN parameterList? RPAREN copyGrants? RETURNS returnType functionOption* (executeAsClause (functionOption | executeAsClause)*)? (AS bodyDefinition)?  SEMI?
     | CREATE or_replace? USER if_not_exists? identifier userProperties? SEMI?
     | CREATE or_replace? ROLE if_not_exists? identifier commentClause? SEMI?
-    | CREATE or_replace? MASKING POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
-    | CREATE or_replace? ROW ACCESS POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS BOOLEAN THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
+    | CREATE or_replace? MASKING POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
+    | CREATE or_replace? ROW ACCESS POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS BOOLEAN THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? CONTACT if_not_exists? qualifiedName contactProperty* SEMI?
-    | CREATE or_replace? PROJECTION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
-    | CREATE or_replace? AGGREGATION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
+    | CREATE or_replace? PROJECTION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
+    | CREATE or_replace? AGGREGATION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? JOIN POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
     ;
 
@@ -1492,6 +1492,21 @@ contactAssignment
 // COMMENT = 'x' is a syntax error at the '='. The two rules below carry that split.
 commentClause
     : COMMENT EQ (STRING_LITERAL | DOLLAR_QUOTED_STRING)
+    ;
+
+// A policy's properties after its body, in any order. A repeated one, a value other than TRUE or FALSE, and
+// EXEMPT_OTHER_POLICIES on a kind that takes none are read here and refused by the statement (see PolicyProperties).
+policyCreateProperty
+    : commentClause
+    | EXEMPT_OTHER_POLICIES EQ policyFlagValue
+    ;
+
+policyFlagValue
+    : TRUE
+    | FALSE
+    | identifier
+    | STRING_LITERAL
+    | INTEGER_LITERAL
     ;
 
 columnCommentClause
@@ -2288,8 +2303,10 @@ parameterList
     : parameterDef (COMMA parameterDef)*
     ;
 
+// An argument's name takes the words a variable's does (see variableName): live creates f(case INT), f(join INT)
+// and a masking policy over (join VARCHAR) alike (live-verified).
 parameterDef
-    : identifier dataTypeName typeParameters? ((DEFAULT | COLON_EQ) expression)?
+    : variableName dataTypeName typeParameters? ((DEFAULT | COLON_EQ) expression)?
     ;
 
 // The argument types naming one overload. An argument may be written with its name, as a CREATE writes it, and a
@@ -4950,9 +4967,11 @@ untypedDeclarationItem
 
 // A cursor's source is either a SELECT query or the name of a RESULTSET variable
 // (Snowflake: `c CURSOR FOR res;` where `res RESULTSET DEFAULT (…)`).
+// A cursor's query takes a FOR UPDATE as a statement's own query does, refused when the cursor is opened
+// (live-verified).
 cursorSource
-    : selectStatement
-    | identifier
+    : selectStatement forUpdateClause?
+    | variableName
     ;
 
 cursorDeclaration
@@ -4964,27 +4983,38 @@ variableDeclaration
     ;
 
 letStatement
-    : LET identifier CURSOR FOR cursorSource SEMI?
-    | LET identifier RESULTSET ((COLON_EQ | DEFAULT) (LPAREN resultSetSource RPAREN | asyncJob))? SEMI?
-    | LET identifier dataTypeName typeParameters? (COLON_EQ | DEFAULT) booleanExpr SEMI?
-    | LET identifier (COLON_EQ | DEFAULT) booleanExpr SEMI?
+    : LET variableName CURSOR FOR cursorSource SEMI?
+    | LET variableName RESULTSET ((COLON_EQ | DEFAULT) (LPAREN resultSetSource RPAREN | asyncJob))? SEMI?
+    | LET variableName dataTypeName typeParameters? (COLON_EQ | DEFAULT) booleanExpr SEMI?
+    | LET variableName (COLON_EQ | DEFAULT) booleanExpr SEMI?
+    ;
+
+// An assignment's target: a name, DEFAULT or CONSTRAINT (live: `default := default + 1` assigns). The other words a
+// variable may be named by are left out, though live assigns them too: a statement may begin with them as a join's,
+// an expression's or a CASE statement's word, and as an assignment's first word they move where the syntax errors of
+// such statements are reported.
+assignedName
+    : identifier
+    | DEFAULT | CONSTRAINT
     ;
 
 assignmentStatement
-    : identifier COLON_EQ asyncJob SEMI?                                  // rs := ASYNC (…) — a RESULTSET an asynchronous job fills
-    | identifier COLON_EQ booleanExpr SEMI?
-    | identifier COLON_EQ LPAREN callStatement RPAREN SEMI?
-    | identifier COLON_EQ LPAREN executeImmediateStatement RPAREN SEMI?   // rs := (EXECUTE IMMEDIATE :stmt) — documented Snowflake RESULTSET form
-    | identifier COLON_EQ LPAREN resultSetBlock RPAREN SEMI?              // rs := (BEGIN … END) — an anonymous block's answer
-    | identifier COLON_EQ LPAREN resultSetStatement RPAREN SEMI?          // rs := (SHOW …), (INSERT …), … — the RESULTSET form of any other statement
+    : assignedName COLON_EQ asyncJob SEMI?                                  // rs := ASYNC (…) — a RESULTSET an asynchronous job fills
+    | assignedName COLON_EQ booleanExpr SEMI?
+    | assignedName COLON_EQ LPAREN callStatement RPAREN SEMI?
+    | assignedName COLON_EQ LPAREN executeImmediateStatement RPAREN SEMI?   // rs := (EXECUTE IMMEDIATE :stmt) — documented Snowflake RESULTSET form
+    | assignedName COLON_EQ LPAREN resultSetBlock RPAREN SEMI?              // rs := (BEGIN … END) — an anonymous block's answer
+    | assignedName COLON_EQ LPAREN resultSetStatement RPAREN SEMI?          // rs := (SHOW …), (INSERT …), … — the RESULTSET form of any other statement
     ;
 
 // What a RESULTSET is filled from, where it is declared or assigned: a statement the account runs as SQL, whose
 // answer the RESULTSET then holds — a query's rows, a DML statement's counts, a DDL statement's status, a SHOW or
 // DESCRIBE listing, a CALL's result, an anonymous block's answer — and never a scripting statement or a bare VALUES
 // list (live-verified).
+// A query here takes a FOR UPDATE as a statement's own query does, and is refused for it when the RESULTSET is filled
+// (live-verified: (SELECT id FROM t FOR UPDATE) fails then, placed at its SELECT).
 resultSetSource
-    : selectStatement
+    : selectStatement forUpdateClause?
     | executeImmediateStatement
     | callStatement
     | resultSetBlock
@@ -5049,15 +5079,15 @@ sessionUnsetStatement
     ;
 
 openStatement
-    : OPEN identifier (USING LPAREN expressionList RPAREN)? SEMI?
+    : OPEN variableName (USING LPAREN expressionList RPAREN)? SEMI?
     ;
 
 fetchStatement
-    : FETCH identifier INTO identifierList SEMI?
+    : FETCH variableName INTO identifierList SEMI?
     ;
 
 closeStatement
-    : CLOSE identifier SEMI?
+    : CLOSE variableName SEMI?
     ;
 
 // The IF / ELSEIF condition is PARENTHESIZED in Snowflake (live-verified: `IF 1 = 1 THEN` is a
@@ -5105,9 +5135,9 @@ whileStatement
 // A FOR's body opens with DO and closes with END FOR, or opens with LOOP and closes with END LOOP, as a WHILE's
 // does; the two spellings do not mix (live-verified).
 forStatement
-    : FOR identifier IN REVERSE? expression TO expression
+    : FOR variableName IN REVERSE? expression TO expression
         (DO statementList END FOR | LOOP statementList END LOOP) loopLabel? SEMI?   // integer range
-    | FOR identifier IN expression
+    | FOR variableName IN expression
         (DO statementList END FOR | LOOP statementList END LOOP) loopLabel? SEMI?   // cursor / list
     ;
 
@@ -5136,7 +5166,7 @@ continueStatement
     ;
 
 raiseStatement
-    : RAISE (identifier STRING_LITERAL?)? SEMI?
+    : RAISE (variableName STRING_LITERAL?)? SEMI?
     ;
 
 // A CALL names a stored procedure or one of the account's SYSTEM$ functions, which answers one row in a column
@@ -5228,7 +5258,7 @@ exceptionHandler
 
 exceptionCondition
     : OTHER
-    | identifier
+    | variableName
     ;
 
 // SELECT expr1, expr2 INTO var1, var2 FROM table [WHERE ...]
@@ -5247,8 +5277,8 @@ intoTargetList
     ;
 
 intoTarget
-    : COLON identifier   // :varname  (bind variable)
-    | identifier         // plain variable name
+    : COLON variableName // :varname  (bind variable)
+    | variableName       // plain variable name
     ;
 
 nullStatement
@@ -5311,7 +5341,7 @@ expression
     // Only a stage function's first argument and a CALL's argument take one: StageArgumentSyntax refuses
     // it anywhere else, once the text has parsed and as its statement compiles.
     | stageRef                                                   # StageReferenceExpr
-    | COLON (identifier | INTEGER_LITERAL)                       # BindVarExpr
+    | COLON (variableName | INTEGER_LITERAL)                     # BindVarExpr
     | QUESTION                                                   # PositionalBindExpr
     // A column or a function named by an IDENTIFIER() reference that is not whole: never parses, see
     // openedIdentifierReference. A call's own argument list after it is read whole with it.
@@ -5653,7 +5683,7 @@ strayArguments
 namedArgument
     // The list in parentheses stands first: it is the argument's ROW, where the value alternative would read the
     // same text as a ROW value of its own.
-    : identifier ARROW (argumentRow | expression | selectStatement)   // Snowflake allows a bare subquery value: INPUT => SELECT ...
+    : variableName ARROW (argumentRow | expression | selectStatement)   // Snowflake allows a bare subquery value: INPUT => SELECT ...
     ;
 
 // Two or more parenthesized values as a named argument's value, which the account reads as one ROW value:
@@ -5735,6 +5765,16 @@ aliasName
     | CASE | CAST | CONSTRAINT | CROSS | DEFAULT | INNER | JOIN | WHEN
     ;
 
+// The name of a routine's or a policy's argument, of a call's named argument and of a script's variable, cursor,
+// RESULTSET or exception: an identifier, or one of the eight words live takes there although each leads a construct
+// of its own elsewhere — `CREATE FUNCTION f(case INT, when VARCHAR)`, `f(when => 'a', case => 2)`, `LET join := 1`,
+// `FOR inner IN 1 TO 3`, `:join` (live-verified). Where a value is read the words keep their constructs, so `RETURN
+// case;` stays a syntax error. A rule of its own and not namePart, whose follow set a new use would widen.
+variableName
+    : identifier
+    | CASE | WHEN | CAST | DEFAULT | CONSTRAINT | JOIN | INNER | CROSS
+    ;
+
 // A name being READ rather than defined: the part after a dot, a column list's entries, an UPDATE
 // SET target. Measured word by word against the account, and the vocabulary here is the column
 // DEFINITION's plus exactly one word — CONSTRAINT, which live reads as `t.constraint`,
@@ -5773,6 +5813,7 @@ identifier
     | CONNECT_BY_ROOT   // Allow CONNECT_BY_ROOT as identifier (the pseudo-column needs a following name)
     | AFTER         // Allow AFTER as identifier
     | ALLOW_OVERLAPPING_EXECUTION
+    | EXEMPT_OTHER_POLICIES
     | BEFORE        // Allow BEFORE as identifier
     | CALLER        // Allow CALLER as identifier
     | CLOSE         // Allow CLOSE as identifier (e.g. a qualified fn name like tools.stats.close(); the
@@ -6529,6 +6570,7 @@ ENABLE: E N A B L E;
 SCHEDULE: S C H E D U L E;
 AFTER: A F T E R;
 ALLOW_OVERLAPPING_EXECUTION: A L L O W '_' O V E R L A P P I N G '_' E X E C U T I O N;
+EXEMPT_OTHER_POLICIES: E X E M P T '_' O T H E R '_' P O L I C I E S;
 USER_TASK_TIMEOUT_MS: U S E R '_' T A S K '_' T I M E O U T '_' M S;
 SUSPEND_TASK_AFTER_NUM_FAILURES: S U S P E N D '_' T A S K '_' A F T E R '_' N U M '_' F A I L U R E S;
 TASK_AUTO_RETRY_ATTEMPTS: T A S K '_' A U T O '_' R E T R Y '_' A T T E M P T S;

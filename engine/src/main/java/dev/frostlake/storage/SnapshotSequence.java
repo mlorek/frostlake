@@ -35,6 +35,21 @@ public final class SnapshotSequence {
     }
 
     /**
+     * Makes every number drawn from now on follow {@code sequence}: a history a snapshot of an engine's state carried
+     * keeps its order among what is taken after it, whichever process drew its numbers.
+     *
+     * @param sequence a number a restored snapshot drew
+     */
+    public static void advancePast(final long sequence) {
+        while (true) {
+            final long last = LAST.get();
+            if (last >= sequence || LAST.compareAndSet(last, sequence)) {
+                return;
+            }
+        }
+    }
+
+    /**
      * The number the latest snapshot drew: every snapshot taken so far is at or below it.
      *
      * @return the latest number drawn

@@ -17,6 +17,7 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.StatementDraws;
 
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicLong;
@@ -57,18 +58,25 @@ public class Sequence {
      * range in sequence object S.} — so the last value inside the range is never handed out (live-verified).
      */
     public long nextVal() {
+        // A statement replayed from the write-ahead log takes the value it first drew (StatementDraws).
+        final String counter = "SEQUENCE:" + name;
+        final Long replayed = StatementDraws.replayed(counter);
         while (true) {
             final long value = nextValue.get();
+            final long served = replayed != null ? replayed.longValue() : value;
             final long after;
             try {
-                after = Math.addExact(value, increment);
+                final long afterServed = Math.addExact(served, increment);
+                after = replayed == null ? afterServed
+                    : increment >= 0 ? Math.max(value, afterServed) : Math.min(value, afterServed);
             } catch (final ArithmeticException outOfRange) {
                 throw new RuntimeException("Sequence value has exceeded valid range in sequence object " + name + ".");
             }
             if (nextValue.compareAndSet(value, after)) {
-                lastValue = value;
+                lastValue = served;
                 drawn = true;
-                return value;
+                StatementDraws.record(counter, served);
+                return served;
             }
         }
     }

@@ -196,6 +196,9 @@ public class GrantsFollowEveryKindTest {
 
     @Test
     public void aRoleGrantedSelectOnAViewMayReadIt() {
+        // A role reaches an object of a schema only with USAGE on its database and its schema.
+        engine.execute("GRANT USAGE ON DATABASE g TO ROLE reader_role");
+        engine.execute("GRANT USAGE ON SCHEMA g.PUBLIC TO ROLE reader_role");
         engine.execute("CREATE TABLE t (a INT)");
         engine.execute("INSERT INTO t VALUES (1)");
         engine.execute("CREATE VIEW v AS SELECT a FROM t");

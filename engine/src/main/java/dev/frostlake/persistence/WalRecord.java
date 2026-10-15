@@ -16,6 +16,8 @@
 
 package dev.frostlake.persistence;
 
+import dev.frostlake.transaction.WalStatementContext;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -33,13 +35,15 @@ public final class WalRecord {
     private final List<String> statements;
     private final String checkpointRef;
     private final List<Instant> statementInstants;
+    private final List<WalStatementContext> statementContexts;
 
     private WalRecord(final WalRecordType type, final List<String> statements, final String checkpointRef,
-                      final List<Instant> statementInstants) {
+                      final List<Instant> statementInstants, final List<WalStatementContext> statementContexts) {
         this.type = type;
         this.statements = statements;
         this.checkpointRef = checkpointRef;
         this.statementInstants = statementInstants;
+        this.statementContexts = statementContexts;
     }
 
     /** A committed-transaction record holding the given statements (in execution order). */
@@ -57,14 +61,23 @@ public final class WalRecord {
      */
     public static WalRecord transaction(final List<String> statements,
                                         final List<Instant> statementInstants) {
+        return transaction(statements, statementInstants, Collections.<WalStatementContext>emptyList());
+    }
+
+    /**
+     * A committed-transaction record that also remembers what each statement ran under (see
+     * {@link WalStatementContext}); a record from a log before v4 carries none and replays as it did.
+     */
+    public static WalRecord transaction(final List<String> statements, final List<Instant> statementInstants,
+                                        final List<WalStatementContext> statementContexts) {
         return new WalRecord(WalRecordType.TRANSACTION, new ArrayList<>(statements), null,
-            new ArrayList<>(statementInstants));
+            new ArrayList<>(statementInstants), new ArrayList<>(statementContexts));
     }
 
     /** A checkpoint marker referencing a durable state snapshot. */
     public static WalRecord checkpoint(final String checkpointRef) {
         return new WalRecord(WalRecordType.CHECKPOINT, Collections.<String>emptyList(), checkpointRef,
-            Collections.<Instant>emptyList());
+            Collections.<Instant>emptyList(), Collections.<WalStatementContext>emptyList());
     }
 
     /**
@@ -73,6 +86,14 @@ public final class WalRecord {
      */
     public Instant getStatementInstant(final int index) {
         return index < statementInstants.size() ? statementInstants.get(index) : null;
+    }
+
+    /**
+     * What the statement at {@code index} ran under, or null when the record predates v4 and carried none — those
+     * replay in the recovery's own session, as they did before.
+     */
+    public WalStatementContext getStatementContext(final int index) {
+        return index < statementContexts.size() ? statementContexts.get(index) : null;
     }
 
     public WalRecordType getType() {

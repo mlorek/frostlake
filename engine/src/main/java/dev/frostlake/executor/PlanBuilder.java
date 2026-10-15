@@ -726,7 +726,7 @@ final class PlanBuilder {
     private static Long rowCountOf(final ParseTree node) {
         if (node instanceof FrostlakeParser.NamedArgumentContext) {
             final FrostlakeParser.NamedArgumentContext argument = (FrostlakeParser.NamedArgumentContext) node;
-            if (argument.expression() != null && "ROWCOUNT".equalsIgnoreCase(argument.identifier().getText())) {
+            if (argument.expression() != null && "ROWCOUNT".equalsIgnoreCase(argument.variableName().getText())) {
                 return numberOfText(argument.expression().getText());
             }
             return null;

@@ -33,6 +33,7 @@ import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.metastore.HybridKeys;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.SecurableObjectType;
@@ -744,11 +745,11 @@ final class InsertExecutor {
      * A hybrid table's foreign keys hold row by row (documented): a row whose key no row of the parent holds, a NULL
      * key included, is refused, the parent rows this transaction has written counted.
      */
-    private void refuseOrphanRow(final Table table, final Row row) {
+    private void refuseOrphanRow(final Table table, final String fullyQualifiedName, final Row row) {
         if (!table.isHybrid()) {
             return;
         }
-        for (final ForeignKeyConstraint key : table.getForeignKeys()) {
+        for (final ForeignKeyConstraint key : foreignKeysOf(table, fullyQualifiedName)) {
             final List<Object> values = new ArrayList<>();
             boolean missing = false;
             for (final String column : key.getColumnNames()) {
@@ -761,6 +762,48 @@ final class InsertExecutor {
                 throw new RuntimeException(HybridKeys.foreignKeyViolated(table, key));
             }
         }
+    }
+
+    /**
+     * Every foreign key a table holds: those declared on the table, and the one-column key each column declares with
+     * REFERENCES - the same key, spelled on the column (documented). A column's parent is read from the table's
+     * schema, and its referenced column is the parent's primary key where the column names none.
+     */
+    private List<ForeignKeyConstraint> foreignKeysOf(final Table table, final String fullyQualifiedName) {
+        final List<ForeignKeyConstraint> keys = new ArrayList<>(table.getForeignKeys());
+        final String[] home = QualifiedName.parse(fullyQualifiedName).parts();
+        for (final TableColumn column : table.getColumns()) {
+            if (column.getReferencedTable() == null || home.length != 3) {
+                continue;
+            }
+            final String[] written = QualifiedName.parse(column.getReferencedTable()).parts();
+            final String parent = written.length >= 3 ? column.getReferencedTable()
+                : written.length == 2 ? QualifiedName.join(home[0], written[0], written[1])
+                : QualifiedName.join(home[0], home[1], written[0]);
+            final String referenced = column.getReferencedColumn() != null ? column.getReferencedColumn()
+                : primaryKeyColumn(parent);
+            if (referenced != null) {
+                keys.add(new ForeignKeyConstraint(table.columnForeignKeyConstraintName(column.getName()),
+                    Arrays.asList(column.getName()), parent, Arrays.asList(referenced), null, null));
+            }
+        }
+        return keys;
+    }
+
+    /** The first primary-key column of a parent table, or null when it has none or is gone. */
+    private String primaryKeyColumn(final String parentName) {
+        final Table parent;
+        try {
+            parent = executor.getCatalog().resolveTable(parentName);
+        } catch (final RuntimeException gone) {
+            return null;
+        }
+        for (final TableColumn column : parent.getColumns()) {
+            if (column.isPrimaryKey()) {
+                return column.getName();
+            }
+        }
+        return null;
     }
 
     /** Whether a row of the key's parent holds these values in its referenced columns. */
@@ -794,7 +837,7 @@ final class InsertExecutor {
     /** Write a row whose constraints have been enforced: buffered in the transaction's write set, or at once. */
     private void storeInsertedRow(final Table table, final String fullyQualifiedName, final Row row,
                                   final DeferredInsertGuard guard) {
-        refuseOrphanRow(table, row);
+        refuseOrphanRow(table, fullyQualifiedName, row);
         if (executor.isDeferredApply()) {
             final TableStorage base = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
             final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();

@@ -178,7 +178,7 @@ public class BeginEndBlockHandler implements CommandHandler {
                 }
                 BlockExpressionTypes.judgeCompiled(initialiser, declaredSoFar, queryExecutor);
                 // A bind written alone hands on its variable's type.
-                final FrostlakeParser.IdentifierContext bound = bindWrittenAlone(initialiser);
+                final FrostlakeParser.VariableNameContext bound = bindWrittenAlone(initialiser);
                 DataType inferred;
                 try {
                     inferred = bound != null ? declaredSoFar.get(SqlIdentifiers.canonical(bound))
@@ -609,12 +609,12 @@ public class BeginEndBlockHandler implements CommandHandler {
     }
 
     /** The variable a value names as a bind written alone, parenthesised or not, or null for any other value. */
-    private static FrostlakeParser.IdentifierContext bindWrittenAlone(final FrostlakeParser.BooleanExprContext value) {
+    private static FrostlakeParser.VariableNameContext bindWrittenAlone(final FrostlakeParser.BooleanExprContext value) {
         FrostlakeParser.BooleanExprContext written = value;
         while (written instanceof FrostlakeParser.ValueExprContext) {
             final FrostlakeParser.ExpressionContext expression = ((FrostlakeParser.ValueExprContext) written).expression();
             if (expression instanceof FrostlakeParser.BindVarExprContext) {
-                return ((FrostlakeParser.BindVarExprContext) expression).identifier();
+                return ((FrostlakeParser.BindVarExprContext) expression).variableName();
             }
             if (!(expression instanceof FrostlakeParser.ParenExprContext)) {
                 return null;
@@ -731,7 +731,7 @@ public class BeginEndBlockHandler implements CommandHandler {
         for (final FrostlakeParser.StatementContext statement : block.statementList().statement()) {
             final FrostlakeParser.ProceduralStatementContext procedural = statement.proceduralStatement();
             if (procedural != null && procedural.letStatement() != null) {
-                names.add(visitor.getText(procedural.letStatement().identifier()).toUpperCase(Locale.ROOT));
+                names.add(visitor.getText(procedural.letStatement().variableName()).toUpperCase(Locale.ROOT));
             }
         }
         return names;
@@ -883,8 +883,8 @@ public class BeginEndBlockHandler implements CommandHandler {
         }
 
         // Check if it's a named exception handler
-        if (condition.identifier() != null) {
-            final String exceptionName = visitor.getText(condition.identifier()).toUpperCase(Locale.ROOT);
+        if (condition.variableName() != null) {
+            final String exceptionName = visitor.getText(condition.variableName()).toUpperCase(Locale.ROOT);
             return matchesSnowflakeException(exceptionName, e, exceptionDepth);
         }
 

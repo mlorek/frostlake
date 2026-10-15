@@ -16,6 +16,9 @@
 
 package dev.frostlake.persistence;
 
+import dev.frostlake.metastore.CounterDraw;
+import dev.frostlake.transaction.WalStatementContext;
+
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -49,16 +52,19 @@ import org.slf4j.LoggerFactory;
  * growth. The marker is the atomic pivot: a crash before it leaves an ignored orphan snapshot (no
  * double-apply), a crash after it recovers from the snapshot. See {@code docs/acid-snowflake-plan.md}.
  *
- * <p>Logical (statement) logging means replay RE-EXECUTES the SQL, so non-deterministic constructs
- * (CURRENT_TIMESTAMP, RANDOM, sequence NEXTVAL) can differ on recovery — acceptable for this engine's
- * local/CI-testing purpose.
+ * <p>Logical (statement) logging means replay RE-EXECUTES the SQL. What a statement computes at run time is put
+ * back where the log can carry it: each statement's instant, the session it ran in and that session's context
+ * (see {@link WalStatementContext}), the values it drew from IDENTITY columns and sequences, and the stream its
+ * RANDOM, UUID_STRING and SAMPLE draw from, which the instant seeds. What a statement READ is read again: a
+ * transaction that committed after another session's writes reads them on replay.
  */
 public class WriteAheadLog {
 
     private static final Logger logger = LoggerFactory.getLogger(WriteAheadLog.class);
 
     private static final int MAGIC = 0x53465731;          // "SFW1"
-    private static final byte VERSION = 3;                // v3: v2 + each transaction's statement instant
+    private static final byte VERSION = 4;                // v4: v3 + what each statement ran under
+    private static final byte VERSION_WITH_INSTANT = 3;   // still readable; its records replay in one session
     private static final byte VERSION_WITHOUT_INSTANT = 2;   // still readable; those records replay at the wall clock
     private static final byte REC_TRANSACTION = 1;
     /** Sentinel for "this record recorded no instant" — replay falls back to the wall clock. */
@@ -67,6 +73,8 @@ public class WriteAheadLog {
     private static final long NANOS_PER_SECOND = 1_000_000_000L;
     /** False while reading a v2 log, whose transaction records have no instant field. */
     private boolean readsInstants = true;
+    /** False while reading a log before v4, whose statements carry no context. */
+    private boolean readsContexts = true;
     private static final byte REC_CHECKPOINT = 2;
     private static final int MAX_STRING_BYTES = 1 << 28;  // 256 MB sanity cap — a larger length means a torn record
 
@@ -80,6 +88,20 @@ public class WriteAheadLog {
             Files.createDirectories(path.getParent());
         }
         openForAppend();
+        // A log of an earlier version is rewritten in this one, so the records appended to it read as written.
+        if (writtenVersion() < VERSION) {
+            rewrite(readAll());
+        }
+    }
+
+    /** The version the log's header names, the current one for a log with no header yet. */
+    private byte writtenVersion() throws IOException {
+        if (!Files.exists(path) || Files.size(path) < Integer.BYTES + 1L) {
+            return VERSION;
+        }
+        try (DataInputStream in = new DataInputStream(new FileInputStream(path.toFile()))) {
+            return in.readInt() == MAGIC ? in.readByte() : VERSION;
+        }
     }
 
     private void openForAppend() throws IOException {
@@ -110,19 +132,102 @@ public class WriteAheadLog {
     public synchronized void appendTransaction(final List<String> statements,
                                                final List<Instant> statementInstants)
             throws IOException {
+        appendTransaction(statements, statementInstants, Collections.<WalStatementContext>emptyList());
+    }
+
+    /**
+     * As {@link #appendTransaction(List, List)}, recording what each statement ran under so replay can put it back
+     * (see {@link WalStatementContext}).
+     */
+    public synchronized void appendTransaction(final List<String> statements,
+                                               final List<Instant> statementInstants,
+                                               final List<WalStatementContext> statementContexts)
+            throws IOException {
         if (statements == null || statements.isEmpty()) {
             return;
         }
-        out.writeByte(REC_TRANSACTION);
-        out.writeInt(statements.size());
-        for (int i = 0; i < statements.size(); i++) {
-            final Instant instant =
-                statementInstants != null && i < statementInstants.size() ? statementInstants.get(i) : null;
-            out.writeLong(instant == null ? NO_INSTANT : toNanos(instant));
-            writeString(out, statements.get(i));
-        }
+        writeTransaction(out, WalRecord.transaction(statements,
+            statementInstants == null ? Collections.<Instant>emptyList() : statementInstants,
+            statementContexts == null ? Collections.<WalStatementContext>emptyList() : statementContexts));
         out.flush();
         fileOut.getFD().sync();
+    }
+
+    /** One transaction record in the current version's layout: per statement its instant, context and text. */
+    private static void writeTransaction(final DataOutputStream o, final WalRecord rec) throws IOException {
+        o.writeByte(REC_TRANSACTION);
+        o.writeInt(rec.getStatements().size());
+        for (int i = 0; i < rec.getStatements().size(); i++) {
+            final Instant instant = rec.getStatementInstant(i);
+            o.writeLong(instant == null ? NO_INSTANT : toNanos(instant));
+            writeContext(o, rec.getStatementContext(i));
+            writeString(o, rec.getStatements().get(i));
+        }
+    }
+
+    private static void writeContext(final DataOutputStream o, final WalStatementContext context) throws IOException {
+        o.writeBoolean(context != null);
+        if (context == null) {
+            return;
+        }
+        writeNullable(o, context.getSession());
+        writeNullable(o, context.getUser());
+        writeNullable(o, context.getRole());
+        o.writeInt(context.getActiveRoles().size());
+        for (final String active : context.getActiveRoles()) {
+            writeString(o, active);
+        }
+        writeNullable(o, context.getDatabase());
+        writeNullable(o, context.getSchema());
+        writeNullable(o, context.getQueryId());
+        o.writeInt(context.getDraws().size());
+        for (final CounterDraw draw : context.getDraws()) {
+            writeString(o, draw.getCounter());
+            o.writeLong(draw.getValue());
+        }
+    }
+
+    private static WalStatementContext readContext(final DataInputStream in) throws IOException {
+        if (!in.readBoolean()) {
+            return null;
+        }
+        final String session = readNullable(in);
+        final String user = readNullable(in);
+        final String role = readNullable(in);
+        final List<String> activeRoles = new ArrayList<>();
+        final int roles = readCount(in);
+        for (int i = 0; i < roles; i++) {
+            activeRoles.add(readString(in));
+        }
+        final String database = readNullable(in);
+        final String schema = readNullable(in);
+        final String queryId = readNullable(in);
+        final List<CounterDraw> draws = new ArrayList<>();
+        final int drawn = readCount(in);
+        for (int i = 0; i < drawn; i++) {
+            final String counter = readString(in);
+            draws.add(new CounterDraw(counter, in.readLong()));
+        }
+        return new WalStatementContext(session, user, role, activeRoles, database, schema, queryId, draws);
+    }
+
+    private static void writeNullable(final DataOutputStream o, final String s) throws IOException {
+        o.writeBoolean(s != null);
+        if (s != null) {
+            writeString(o, s);
+        }
+    }
+
+    private static String readNullable(final DataInputStream in) throws IOException {
+        return in.readBoolean() ? readString(in) : null;
+    }
+
+    private static int readCount(final DataInputStream in) throws IOException {
+        final int count = in.readInt();
+        if (count < 0 || count > MAX_STRING_BYTES) {
+            throw new EOFException("implausible count " + count + " (torn record)");
+        }
+        return count;
     }
 
     /** Append a checkpoint marker referencing a durable state snapshot, and force it to disk. */
@@ -149,8 +254,10 @@ public class WriteAheadLog {
                 logger.warn("Write-ahead log at {} has an unrecognized header; ignoring it", path);
                 return new ArrayList<>();
             }
-            // v2 records carry no instant; v3 onwards prefix each transaction with one.
-            readsInstants = in.readByte() >= VERSION;
+            // v2 records carry no instant; v3 onwards prefix each statement with one, and v4 with its context.
+            final byte version = in.readByte();
+            readsInstants = version >= VERSION_WITH_INSTANT;
+            readsContexts = version >= VERSION;
             while (true) {
                 final WalRecord rec = readRecord(in);
                 if (rec == null) {
@@ -189,11 +296,13 @@ public class WriteAheadLog {
                 }
                 final List<String> statements = new ArrayList<>(count);
                 final List<Instant> instants = new ArrayList<>(count);
+                final List<WalStatementContext> contexts = new ArrayList<>(count);
                 for (int i = 0; i < count; i++) {
                     instants.add(readsInstants ? instantFrom(in.readLong()) : null);
+                    contexts.add(readsContexts ? readContext(in) : null);
                     statements.add(readString(in));
                 }
-                return WalRecord.transaction(statements, instants);
+                return WalRecord.transaction(statements, instants, contexts);
             } else if (type == REC_CHECKPOINT) {
                 return WalRecord.checkpoint(readString(in));
             } else {
@@ -252,11 +361,8 @@ public class WriteAheadLog {
             tmpOut.writeByte(VERSION);
             for (final WalRecord rec : keep) {
                 if (rec.getType() == WalRecordType.TRANSACTION) {
-                    tmpOut.writeByte(REC_TRANSACTION);
-                    tmpOut.writeInt(rec.getStatements().size());
-                    for (final String sql : rec.getStatements()) {
-                        writeString(tmpOut, sql);
-                    }
+                    // In this version's layout, which the header names: the instants and contexts kept too.
+                    writeTransaction(tmpOut, rec);
                 } else {
                     tmpOut.writeByte(REC_CHECKPOINT);
                     writeString(tmpOut, rec.getCheckpointRef());

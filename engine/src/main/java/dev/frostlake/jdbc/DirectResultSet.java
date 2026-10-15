@@ -49,6 +49,7 @@ import java.sql.SQLXML;
 import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
@@ -363,6 +364,22 @@ public class DirectResultSet implements java.sql.ResultSet {
         return value;
     }
 
+    /**
+     * The cell getDate, getTime or getTimestamp reads, its nullness recorded for {@link #wasNull()}; a cell of a
+     * column that getter does not read is refused as the account's driver refuses it (see
+     * {@link JdbcMarshaling#readsTemporal}).
+     */
+    private Object temporalCell(final int columnIndex, final String target) throws SQLException {
+        final Object value = readValue(columnIndex);
+        final ResultSetMetaData described = getMetaData();
+        final int type = described.getColumnType(columnIndex);
+        if (value != null && !JdbcMarshaling.readsTemporal(type, target)) {
+            throw JdbcMarshaling.unconvertible(type, target,
+                JdbcMarshaling.quotedCell(value, type, described.getScale(columnIndex), getString(columnIndex)));
+        }
+        return value;
+    }
+
     @Override
     public boolean getBoolean(final int columnIndex) throws SQLException {
         final IntervalKind interval = intervalKindAt(columnIndex - 1);
@@ -465,7 +482,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             intervalNumberAt(columnIndex - 1);
             return IntervalColumnReads.getDate(interval);
         }
-        return JdbcMarshaling.toDate(engineResultSet.getValue(columnIndex - 1));
+        return JdbcMarshaling.toDate(temporalCell(columnIndex, "date"));
     }
 
     @Override
@@ -476,7 +493,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             intervalNumberAt(columnIndex - 1);
             return IntervalColumnReads.getTime(interval);
         }
-        return JdbcMarshaling.toTime(engineResultSet.getValue(columnIndex - 1));
+        return JdbcMarshaling.toTime(temporalCell(columnIndex, "time"));
     }
 
     @Override
@@ -487,7 +504,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             intervalNumberAt(columnIndex - 1);
             return IntervalColumnReads.getTimestamp(interval);
         }
-        return JdbcMarshaling.toTimestamp(engineResultSet.getValue(columnIndex - 1));
+        return JdbcMarshaling.toTimestamp(temporalCell(columnIndex, "timestamp"));
     }
 
     @Override
@@ -604,34 +621,19 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public Date getDate(final String columnLabel) throws SQLException {
         checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            intervalNumberAt(indexOf(columnLabel));
-            return IntervalColumnReads.getDate(interval);
-        }
-        return JdbcMarshaling.toDate(engineResultSet.getValue(columnLabel));
+        return getDate(engineResultSet.getColumnIndex(columnLabel) + 1);
     }
 
     @Override
     public Time getTime(final String columnLabel) throws SQLException {
         checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            intervalNumberAt(indexOf(columnLabel));
-            return IntervalColumnReads.getTime(interval);
-        }
-        return JdbcMarshaling.toTime(engineResultSet.getValue(columnLabel));
+        return getTime(engineResultSet.getColumnIndex(columnLabel) + 1);
     }
 
     @Override
     public Timestamp getTimestamp(final String columnLabel) throws SQLException {
         checkClosed();
-        final IntervalKind interval = intervalKindAt(indexOf(columnLabel));
-        if (interval != null) {
-            intervalNumberAt(indexOf(columnLabel));
-            return IntervalColumnReads.getTimestamp(interval);
-        }
-        return JdbcMarshaling.toTimestamp(engineResultSet.getValue(columnLabel));
+        return getTimestamp(engineResultSet.getColumnIndex(columnLabel) + 1);
     }
 
     @Override
@@ -1371,7 +1373,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             return getDate(columnIndex);
         }
         // The day's midnight in the Calendar's zone.
-        return JdbcMarshaling.toDate(engineResultSet.getValue(columnIndex - 1), cal);
+        return JdbcMarshaling.toDate(temporalCell(columnIndex, "date"), cal);
     }
 
     @Override
@@ -1397,8 +1399,11 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (cal == null || intervalKindAt(columnIndex - 1) != null) {
             return getTimestamp(columnIndex);
         }
-        // A wall clock with no zone is read in the Calendar's zone; a zoned cell keeps its moment (live-verified).
-        return JdbcMarshaling.toTimestamp(engineResultSet.getValue(columnIndex - 1), cal);
+        final Object cell = temporalCell(columnIndex, "timestamp");
+        // A TIME is read without the Calendar; a wall clock with no zone is read in the Calendar's zone; a zoned cell
+        // keeps its moment (live-verified).
+        return getMetaData().getColumnType(columnIndex) == Types.TIME ? JdbcMarshaling.toTimestamp(cell, Types.TIME)
+            : JdbcMarshaling.toTimestamp(cell, cal);
     }
 
     @Override

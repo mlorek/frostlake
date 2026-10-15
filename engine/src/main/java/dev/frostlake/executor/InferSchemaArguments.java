@@ -180,7 +180,7 @@ final class InferSchemaArguments {
      * table-function rules refuse it first ({@code unexpected argument ["LOCATION"] at position 1,}).
      */
     static String parameterName(final FrostlakeParser.NamedArgumentContext argument) {
-        return argument.identifier().getText().toUpperCase(Locale.ROOT);
+        return argument.variableName().getText().toUpperCase(Locale.ROOT);
     }
 
     private void requirePresent(final FrostlakeParser.NamedArgumentContext argument, final String name,

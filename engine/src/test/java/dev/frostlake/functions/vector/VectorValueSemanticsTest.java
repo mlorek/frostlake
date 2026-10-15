@@ -42,12 +42,12 @@ public class VectorValueSemanticsTest extends BaseVectorFunctionTest {
     }
 
     @Test
-    public void intElementsAre32BitAndWrap() {
-        // Live: [2147483647,0,0] is kept, [2147483648,0,0] becomes [-2147483648,0,0], and
-        // [9007199254740993,0,0] (2^53+1) becomes [1,0,0] — the low 32 bits.
+    public void intElementsAre32BitAndAWiderOneIsRefused() {
+        // Live: [2147483647,0,0] is kept, while [2147483648,0,0] and [9007199254740993,0,0] (2^53+1) are
+        // "Array-like value being cast to an integer vector has elements that overflow".
         assertVector("[2147483647,0,0]", "SELECT [2147483647,0,0]::VECTOR(INT,3)");
-        assertVector("[-2147483648,0,0]", "SELECT [2147483648,0,0]::VECTOR(INT,3)");
-        assertVector("[1,0,0]", "SELECT [9007199254740993,0,0]::VECTOR(INT,3)");
+        assertRejected("SELECT [2147483648,0,0]::VECTOR(INT,3)");
+        assertRejected("SELECT [9007199254740993,0,0]::VECTOR(INT,3)");
     }
 
     @Test

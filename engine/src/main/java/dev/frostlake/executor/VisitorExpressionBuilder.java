@@ -186,7 +186,7 @@ public class VisitorExpressionBuilder {
 
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
             // :varname — procedural variable binding, treat as variable reference
-            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
+            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).variableName());
             return new VariableExpression(varName, true);
         }
 
@@ -479,7 +479,7 @@ public class VisitorExpressionBuilder {
 
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
             // :varname — procedural variable binding, treat as variable reference
-            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
+            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).variableName());
             if (visitor.getProceduralExecutor() != null) {
                 final Object v = visitor.getProceduralExecutor().readVariable(varName);
                 if (v != null) return v;

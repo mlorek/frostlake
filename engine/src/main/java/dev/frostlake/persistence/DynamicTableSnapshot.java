@@ -69,4 +69,11 @@ public class DynamicTableSnapshot implements Serializable {
     public Instant createdAt;
     /** INFORMATION_SCHEMA's LAST_DDL. Null on snapshots written before it was saved, which report the CREATE. */
     public Instant lastDdlAt;
+    /** When the table last refreshed (its data_timestamp); null before any refresh and on older snapshots. */
+    public Instant lastRefreshedTime;
+    /** Where and when its first refresh fell; null on older snapshots. */
+    public Long firstRefreshedSequence;
+    public Long firstRefreshedMillis;
+    /** The rows its last refresh read, for the next refresh to tell what changed; null when there are none. */
+    public List<List<Object>> refreshImage;
 }

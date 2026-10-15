@@ -65,6 +65,16 @@ public class TransactionManager {
         }
     };
 
+    /** The engine is shutting down: statements waiting for table locks end. */
+    public void shutDown() {
+        shutDown = true;
+    }
+
+    /** Whether the engine is shutting down. */
+    public boolean isShutDown() {
+        return shutDown;
+    }
+
     public TransactionManager(final Catalog catalog, final StorageEngine storageEngine) {
         this.transactionIdGenerator = new AtomicLong(1);
         this.activeTransactions = new ConcurrentHashMap<>();
@@ -201,6 +211,8 @@ public class TransactionManager {
     // run at EVERY statement chokepoint — top-level execute() and each statement inside a stored
     // procedure, which Snowflake commits individually unless an explicit BEGIN is open.
     private volatile boolean autoCommit = true;
+    /** Set once the engine shuts down: a statement waiting for a table lock ends instead of waiting on. */
+    private volatile boolean shutDown;
     // Per-thread session override, mirroring Catalog's session scope: the concurrent front-end applies
     // each session's autocommit mode around its statement so parallel read-locked statements from
     // different sessions cannot see (or capture back) each other's mode. No entry → the shared field.
@@ -268,6 +280,21 @@ public class TransactionManager {
         final int depth = atomicSectionDepth.get();
         if (depth > 0) {
             atomicSectionDepth.set(depth - 1);
+        }
+    }
+
+    /**
+     * Follows tables whose storage moved to another key in every open transaction's buffered changes, whichever
+     * session's they are (see {@link TransactionWriteSet#retarget}).
+     *
+     * @param moved the old key of each moved table, mapped to its new one
+     */
+    public void tablesMoved(final Map<String, String> moved) {
+        if (moved.isEmpty()) {
+            return;
+        }
+        for (final Transaction txn : getActiveTransactions()) {
+            txn.getWriteSet().retarget(moved);
         }
     }
 
@@ -399,6 +426,7 @@ public class TransactionManager {
         // Captured before the txn is cleared below so the WAL append (after a successful apply) can use it.
         final List<String> walStatements = txn.getWalStatements();
         final List<Instant> walInstants = txn.getWalInstants();
+        final List<WalStatementContext> walContexts = txn.getWalContexts();
         try {
             // Apply all changes
             txn.commit();
@@ -421,7 +449,7 @@ public class TransactionManager {
         // Durability: the commit has applied successfully — now append it to the WAL and fsync (a failure
         // here surfaces to the caller). Done after apply so the log only ever holds committed work.
         if (walSink != null && !walStatements.isEmpty()) {
-            walSink.appendTransaction(walStatements, walInstants);
+            walSink.appendTransaction(walStatements, walInstants, walContexts);
         }
     }
 

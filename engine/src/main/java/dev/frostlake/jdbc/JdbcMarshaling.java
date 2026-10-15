@@ -344,10 +344,99 @@ public final class JdbcMarshaling {
         if (v instanceof LocalDate) {
             return Timestamp.valueOf(((LocalDate) v).atStartOfDay());
         }
+        if (v instanceof LocalTime) {
+            // A TIME is read as its time of day on 1970-01-01 (live-verified).
+            return Timestamp.valueOf(LocalDate.EPOCH.atTime((LocalTime) v));
+        }
         if (v instanceof java.util.Date) {
             return new Timestamp(((java.util.Date) v).getTime());
         }
         return Timestamp.valueOf(parseDateTime(v.toString()));
+    }
+
+    /**
+     * A cell of a column of the given JDBC type read by {@code getTimestamp}: a TIME's text — the wire's spelling of
+     * one — is its time of day on 1970-01-01, as a TIME cell is.
+     *
+     * @param v          the cell
+     * @param columnType the column's JDBC type
+     * @return the Timestamp
+     */
+    public static Timestamp toTimestamp(final Object v, final int columnType) {
+        if (columnType == Types.TIME && v instanceof CharSequence) {
+            return toTimestamp(LocalTime.parse(v.toString().trim()));
+        }
+        return toTimestamp(v);
+    }
+
+    /**
+     * Whether {@code getDate}, {@code getTime} or {@code getTimestamp} reads a column of the given JDBC type, as the
+     * account's driver reads it: a DATE by getDate and getTimestamp, a TIME by getTime and getTimestamp, a timestamp
+     * of every flavour by all three, and nothing else by any of them — a text column holding a date's own text, a
+     * number and a BOOLEAN are refused alike (live-verified).
+     *
+     * @param columnType the column's JDBC type
+     * @param target     what the getter reads: {@code date}, {@code time} or {@code timestamp}
+     * @return whether the getter reads the column
+     */
+    public static boolean readsTemporal(final int columnType, final String target) {
+        switch (columnType) {
+            case Types.DATE:
+                return !"time".equals(target);
+            case Types.TIME:
+                return !"date".equals(target);
+            case Types.TIMESTAMP:
+            case Types.TIMESTAMP_WITH_TIMEZONE:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * The account's driver's refusal of a getter its column's type does not convert to, worded as it words it:
+     * {@code Cannot convert value in the driver from type:91 to type:time, value=19724.}, SQLSTATE {@code 0A000},
+     * vendor code 200038 (live-verified).
+     *
+     * @param columnType the column's JDBC type
+     * @param target     what the getter reads: {@code date}, {@code time} or {@code timestamp}
+     * @param value      the cell as the refusal quotes it (see {@link #quotedCell})
+     * @return the refusal to throw
+     */
+    public static SQLException unconvertible(final int columnType, final String target, final String value) {
+        return new SQLException("Cannot convert value in the driver from type:" + columnType + " to type:" + target
+            + ", value=" + value + ".", "0A000", 200038);
+    }
+
+    /**
+     * A cell as the driver's refusal quotes it: the account's wire form of it — a DATE as its day number since
+     * 1970-01-01, a TIME as its seconds since midnight to the column's scale ({@code 36672.345000000} for a
+     * TIME(9), {@code 36672} for a TIME(0)), a BOOLEAN as 1 or 0 — and any other cell as its text (live-verified).
+     *
+     * @param cell       the cell, not null
+     * @param columnType the column's JDBC type
+     * @param scale      the column's scale
+     * @param text       the cell's text, as getString reads it
+     * @return the quoted value
+     */
+    public static String quotedCell(final Object cell, final int columnType, final int scale, final String text) {
+        if (columnType == Types.DATE) {
+            final LocalDate day = cell instanceof LocalDate ? (LocalDate) cell : parseDate(cell.toString());
+            return Long.toString(day.toEpochDay());
+        }
+        if (columnType == Types.TIME) {
+            final LocalTime time = cell instanceof LocalTime ? (LocalTime) cell
+                : LocalTime.parse(cell.toString().trim());
+            final StringBuilder seconds = new StringBuilder(Integer.toString(time.toSecondOfDay()));
+            if (scale > 0) {
+                seconds.append('.').append(String.format(Locale.ROOT, "%09d", time.getNano()), 0, Math.min(scale, 9));
+            }
+            return seconds.toString();
+        }
+        if (cell instanceof Boolean) {
+            return ((Boolean) cell) ? "1" : "0";
+        }
+        return text;
     }
 
     /**
@@ -522,23 +611,54 @@ public final class JdbcMarshaling {
         return digits.length() > 4 ? "+" + text : text;
     }
 
+    /**
+     * A cell read as a Time: its time of day — a timestamp's wall clock, a TIMESTAMP_LTZ's at the session's offset
+     * as getString shows it — with its milliseconds, which the account's driver keeps (live-verified).
+     *
+     * @param v the cell
+     * @return the Time
+     */
     public static Time toTime(final Object v) {
         if (v == null || v instanceof Time) {
             return (Time) v;
         }
         if (v instanceof LocalTime) {
-            return Time.valueOf((LocalTime) v);
+            return timeOf((LocalTime) v);
         }
         if (v instanceof LocalDateTime) {
-            return Time.valueOf(((LocalDateTime) v).toLocalTime());
+            return timeOf(((LocalDateTime) v).toLocalTime());
         }
         if (v instanceof ZonedDateTime) {
-            return Time.valueOf(((ZonedDateTime) v).toLocalTime());
+            return timeOf(((ZonedDateTime) v).toLocalTime());
+        }
+        if (v instanceof OffsetDateTime) {
+            return timeOf(((OffsetDateTime) v).toLocalTime());
         }
         if (v instanceof java.util.Date) {
             return new Time(((java.util.Date) v).getTime());
         }
-        return Time.valueOf(LocalTime.parse(v.toString()));
+        return timeOf(LocalTime.parse(v.toString().trim()));
+    }
+
+    /**
+     * A cell of a column of the given JDBC type read by {@code getTime}: a timestamp's text — the wire's spelling of
+     * one, with or without its offset — is its wall clock's time of day, as a timestamp cell is.
+     *
+     * @param v          the cell
+     * @param columnType the column's JDBC type
+     * @return the Time
+     */
+    public static Time toTime(final Object v, final int columnType) {
+        final boolean timestamp = columnType == Types.TIMESTAMP || columnType == Types.TIMESTAMP_WITH_TIMEZONE;
+        if (timestamp && v instanceof CharSequence) {
+            return timeOf(parseDateTime(v.toString()).toLocalTime());
+        }
+        return toTime(v);
+    }
+
+    /** A time of day as a Time in this JVM's zone, its milliseconds kept. */
+    private static Time timeOf(final LocalTime time) {
+        return new Time(Time.valueOf(time).getTime() + time.getNano() / 1000000);
     }
 
     public static byte[] toBytes(final Object v) {

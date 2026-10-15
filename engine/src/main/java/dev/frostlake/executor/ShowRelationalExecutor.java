@@ -152,7 +152,7 @@ final class ShowRelationalExecutor {
 
     private Database databaseOrNull(final String name) {
         try {
-            return name == null ? null : catalog.getDatabase(name);
+            return name == null ? null : catalog.databaseExact(name);
         } catch (final RuntimeException missing) {
             return null;
         }
@@ -189,19 +189,27 @@ final class ShowRelationalExecutor {
         return storageEngine.storedRowCount(QualifiedName.key(database, schema.getName(), table.getName()), false);
     }
 
+    /**
+     * Whether a listing carries an object of a schema, and DESCRIBE answers it: only when the session sees it — its
+     * roles own the object or hold a privilege on it, or hold MANAGE GRANTS, which sees every object (documented).
+     */
+    private boolean seen(final String objectType, final Schema schema, final String name, final String owner) {
+        return ownership.sees(objectType, schema.qualifiedName(name), owner);
+    }
+
     // Copied from QueryExecutor (catalog-only helper) so describeView stays self-contained here.
     private View resolveView(final String viewName) {
         final String[] parts = QualifiedName.parse(viewName).parts();
         final Schema schema;
         final String actualViewName;
         if (parts.length == 1) {
-            schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema());
+            schema = catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema());
             actualViewName = viewName;
         } else if (parts.length == 2) {
-            schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
+            schema = catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(parts[0]);
             actualViewName = parts[1];
         } else {
-            schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
+            schema = catalog.databaseExact(parts[0]).schemaExact(parts[1]);
             actualViewName = parts[2];
         }
         return schema.getView(actualViewName);
@@ -323,7 +331,7 @@ final class ShowRelationalExecutor {
         if (dbName == null) throw new RuntimeException("No database selected");
         final String curSchema = catalog.getCurrentSchema();
         final List<Row> rows = new ArrayList<>();
-        final Database database = catalog.getDatabase(dbName);
+        final Database database = catalog.databaseExact(dbName);
         for (final Schema schema : database.getAllSchemas()) {
             // The current schema is tracked by its stored name; names are unique ignoring case.
             rows.add(schemaRow(database.getName(), schema, schema.getName().equalsIgnoreCase(curSchema), history,
@@ -567,6 +575,9 @@ final class ShowRelationalExecutor {
             final String scName = schema.getName();
             if (!hybridOnly) {
                 for (final DynamicTable dt : schema.getDynamicTables()) {
+                    if (!seen("DYNAMIC_TABLE", schema, dt.getName(), dt.getOwner())) {
+                        continue;
+                    }
                     byName.put(scName + "." + dt.getName(), withDroppedOn(history, null, Arrays.asList(
                         ShowResultHelpers.createdOn(dt.getCreatedTime()),
                         dt.getName(),
@@ -588,7 +599,7 @@ final class ShowRelationalExecutor {
                 }
             }
             for (final Table table : schema.getTables()) {
-                if (hybridOnly && !table.isHybrid()) {
+                if (hybridOnly && !table.isHybrid() || !seen("TABLE", schema, table.getName(), table.getOwner())) {
                     continue;
                 }
                 byName.put(history ? versionKey(scName, table.getName(), table.getCreatedTime(), null, 0)
@@ -603,6 +614,9 @@ final class ShowRelationalExecutor {
                 for (int i = 0; i < dropped.size(); i++) {
                     final DroppedObject version = dropped.get(i);
                     final Table table = (Table) version.getObject();
+                    if (!seen("TABLE", schema, table.getName(), table.getOwner())) {
+                        continue;
+                    }
                     // The versions come newest first, so within one millisecond the older one keeps the earlier place.
                     byName.put(versionKey(scName, table.getName(), table.getCreatedTime(), version.getDroppedOn(),
                             dropped.size() - 1 - i),
@@ -706,7 +720,7 @@ final class ShowRelationalExecutor {
                                              final boolean reportMissingGenerically) {
         try {
             if (databaseName != null) {
-                return catalog.getDatabase(databaseName).getAllSchemas();
+                return catalog.databaseExact(databaseName).getAllSchemas();
             }
             if (schemaName != null && schemaName.indexOf('.') >= 0) {
                 // A db.schema scope (SHOW ... IN db1.schema1) — resolve it as a qualified name.
@@ -717,7 +731,7 @@ final class ShowRelationalExecutor {
             if (db == null || sc == null) {
                 throw new RuntimeException("No database or schema selected");
             }
-            return Arrays.asList(catalog.getDatabase(db).getSchema(sc));
+            return Arrays.asList(catalog.databaseExact(db).schemaExact(sc));
         } catch (final RuntimeException missing) {
             if (reportMissingGenerically) {
                 throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
@@ -757,6 +771,9 @@ final class ShowRelationalExecutor {
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, true)) {
             final String scName = schema.getName();
             for (final View view : schema.getViews()) {
+                if (!seen("VIEW", schema, view.getName(), view.getOwner())) {
+                    continue;
+                }
                 byName.put(scName + "." + view.getName(), new Row(Arrays.asList(
                     ShowResultHelpers.createdOn(view.getCreatedTime()),
                     view.getName(),
@@ -776,6 +793,9 @@ final class ShowRelationalExecutor {
                 )));
             }
             for (final MaterializedView mv : schema.getMaterializedViews()) {
+                if (!seen("MATERIALIZED_VIEW", schema, mv.getName(), mv.getOwner())) {
+                    continue;
+                }
                 byName.put(scName + "." + mv.getName(), new Row(Arrays.asList(
                     ShowResultHelpers.createdOn(mv.getCreatedTime()),
                     mv.getName(),
@@ -844,6 +864,9 @@ final class ShowRelationalExecutor {
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, false)) {
             final String scName = schema.getName();
             for (final MaterializedView mv : schema.getMaterializedViews()) {
+                if (!seen("MATERIALIZED_VIEW", schema, mv.getName(), mv.getOwner())) {
+                    continue;
+                }
                 // The times and the lag describe the data the view materialized, not the view itself.
                 final Object refreshedOn = MaterializedViewRefresh.refreshedOn(mv);
                 rows.add(new Row(Arrays.asList(
@@ -913,20 +936,32 @@ final class ShowRelationalExecutor {
         // Ordered by RELATION NAME across the three kinds, not kind by kind (live-verified).
         final Map<String, List<Row>> byRelation = new TreeMap<>();
         for (final Table table : schema.getTables()) {
+            if (!seen("TABLE", schema, table.getName(), table.getOwner())) {
+                continue;
+            }
             final List<Row> relationRows = new ArrayList<>();
             addTableColumnRows(relationRows, table, schema.getName(), databaseName);
             byRelation.put(table.getName(), relationRows);
         }
         for (final View v : schema.getViews()) {
+            if (!seen("VIEW", schema, v.getName(), v.getOwner())) {
+                continue;
+            }
             byRelation.put(v.getName(), viewColumnRows(v.getName(), v.getResolvedColumns(),
                 v.getColumnNames(), databaseName, schema.getName()));
         }
         for (final MaterializedView mv : schema.getMaterializedViews()) {
+            if (!seen("MATERIALIZED_VIEW", schema, mv.getName(), mv.getOwner())) {
+                continue;
+            }
             byRelation.put(mv.getName(), viewColumnRows(mv.getName(), mv.getResolvedColumns(),
                 mv.getColumnNames(), databaseName, schema.getName()));
         }
         // A dynamic table's columns are listed too, as they resolved when it was created.
         for (final DynamicTable dt : schema.getDynamicTables()) {
+            if (!seen("DYNAMIC_TABLE", schema, dt.getName(), dt.getOwner())) {
+                continue;
+            }
             byRelation.put(dt.getName(), viewColumnRows(dt.getName(), dt.getResolvedColumns(),
                 new ArrayList<String>(), databaseName, schema.getName()));
         }
@@ -941,21 +976,20 @@ final class ShowRelationalExecutor {
      * <p>The schema must be named by its FULL search path, exactly as the VIEW spelling requires and
      * with the same sentence; an unqualified name is refused BEFORE the schema is looked up, so a
      * missing schema named without its database earns the qualification complaint rather than the
-     * does-not-exist one (live-verified).
+     * does-not-exist one, naming the schema as it resolves: {@code "ss"} is ss (live-verified).
      */
     public ResultSet showColumnsInSchema(final String name) {
         final QualifiedName qualified = QualifiedName.parse(name);
         if (qualified.size() < 2) {
             throw new RuntimeException(SqlCompilationError.of(
-                "Must specify the full search path starting from database for "
-                    + qualified.last().toUpperCase(Locale.ROOT)));
+                "Must specify the full search path starting from database for " + qualified.last()));
         }
         final String[] parts = qualified.parts();
         final String databaseName = parts[parts.length - 2];
         final String schemaName = parts[parts.length - 1];
         final Schema schema = resolveSchemaOrRefuse(databaseName, schemaName);
         final List<Row> rows = new ArrayList<>();
-        addSchemaColumnRows(rows, schema, catalog.getDatabase(databaseName).getName());
+        addSchemaColumnRows(rows, schema, catalog.databaseExact(databaseName).getName());
         return new ResultSet(describeColumnsShape(), rows);
     }
 
@@ -985,20 +1019,18 @@ final class ShowRelationalExecutor {
         // A missing database is refused as one, before its schema is looked for.
         final Database database = resolveDatabaseOrRefuse(databaseName);
         try {
-            return database.getSchema(schemaName);
+            return database.schemaExact(schemaName);
         } catch (final RuntimeException missing) {
-            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Schema",
-                databaseName.toUpperCase(Locale.ROOT) + "." + schemaName.toUpperCase(Locale.ROOT)));
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", databaseName + "." + schemaName));
         }
     }
 
     /** The database, or live's refusal naming it. */
     private Database resolveDatabaseOrRefuse(final String databaseName) {
         try {
-            return catalog.getDatabase(databaseName);
+            return catalog.databaseExact(databaseName);
         } catch (final RuntimeException missing) {
-            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Database",
-                databaseName.toUpperCase(Locale.ROOT)));
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Database", databaseName));
         }
     }
 
@@ -1026,27 +1058,34 @@ final class ShowRelationalExecutor {
         // The named kind is NOT a filter: TABLE, VIEW and the bare form each resolve a table, a view
         // or a materialized view alike, exactly as DESCRIBE does. The keyword decides only the
         // wording when nothing by that name exists (live-verified).
+        final String kind = view ? "View" : "Table";
         final View named = findViewOrNull(name);
         if (named != null) {
+            requireSeen("VIEW", catalog.resolveOwningSchema(name), named.getName(), named.getOwner(), name, kind);
             rows.addAll(viewColumnRows(named.getName(), named.getResolvedColumns(),
                 named.getColumnNames(), relationDatabase(name), relationSchema(name)));
             return new ResultSet(columns, rows);
         }
         final MaterializedView materialized = findMaterializedViewOrNull(name);
         if (materialized != null) {
+            requireSeen("MATERIALIZED_VIEW", catalog.resolveOwningSchema(name), materialized.getName(),
+                materialized.getOwner(), name, kind);
             rows.addAll(viewColumnRows(materialized.getName(), materialized.getResolvedColumns(),
                 materialized.getColumnNames(), relationDatabase(name), relationSchema(name)));
             return new ResultSet(columns, rows);
         }
         final DynamicTable dynamic = findDynamicTableOrNull(name);
         if (dynamic != null) {
+            requireSeen("DYNAMIC_TABLE", catalog.resolveOwningSchema(name), dynamic.getName(), dynamic.getOwner(), name,
+                kind);
             rows.addAll(viewColumnRows(dynamic.getName(), dynamic.getResolvedColumns(), new ArrayList<String>(),
                 relationDatabase(name), relationSchema(name)));
             return new ResultSet(columns, rows);
         }
         // Nothing derived by that name: the table path owns the lookup and its refusal, which echoes
         // the name as the statement WROTE it and speaks the named kind.
-        final Table table = catalog.resolveTableAsWritten(name, view ? "View" : "Table");
+        final Table table = catalog.resolveTableAsWritten(name, kind);
+        requireSeen("TABLE", catalog.resolveOwningSchema(name), table.getName(), table.getOwner(), name, kind);
         addTableColumnRows(rows, table, relationSchema(name), relationDatabase(name));
         return new ResultSet(columns, rows);
     }
@@ -1071,7 +1110,7 @@ final class ShowRelationalExecutor {
     /** The owning database of a named relation: the qualified name's own, else the current one. */
     private String relationDatabase(final String name) {
         final String[] parts = QualifiedName.parse(name).parts();
-        return parts.length == 3 ? catalog.getDatabase(parts[0]).getName() : catalog.getCurrentDatabase();
+        return parts.length == 3 ? catalog.databaseExact(parts[0]).getName() : catalog.getCurrentDatabase();
     }
 
     /** The owning schema of a named relation: the qualified name's own, else the current one. */
@@ -1081,7 +1120,7 @@ final class ShowRelationalExecutor {
             return ShowResultHelpers.resolveDescribeSchema(catalog).getName();
         }
         final String database = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
-        return catalog.getDatabase(database).getSchema(parts[parts.length - 2]).getName();
+        return catalog.databaseExact(database).schemaExact(parts[parts.length - 2]).getName();
     }
 
     /** One row per column of a table, in the SHOW COLUMNS shape. */
@@ -1207,6 +1246,9 @@ final class ShowRelationalExecutor {
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName, true)) {
             final String scName = schema.getName();
             for (final Table t : schema.getTables()) {
+                if (!seen("TABLE", schema, t.getName(), t.getOwner())) {
+                    continue;
+                }
                 // Live reports transient tables as plain TABLE here, unlike SHOW TABLES.
                 byName.put(scName + "." + t.getName(),
                     objectRow(ShowResultHelpers.createdOn(t.getCreatedTime()), t.getName(),
@@ -1216,6 +1258,9 @@ final class ShowRelationalExecutor {
                     effectiveRetention(databaseOrNull(dbName), schema, t), t.isHybrid(), false));
             }
             for (final View v : schema.getViews()) {
+                if (!seen("VIEW", schema, v.getName(), v.getOwner())) {
+                    continue;
+                }
                 byName.put(scName + "." + v.getName(),
                     objectRow(ShowResultHelpers.createdOn(v.getCreatedTime()), v.getName(),
                     dbName, scName, "VIEW", ShowResultHelpers.text(v.getComment()),
@@ -1223,6 +1268,9 @@ final class ShowRelationalExecutor {
                     effectiveRetention(databaseOrNull(dbName), schema, null), false, false));
             }
             for (final MaterializedView mv : schema.getMaterializedViews()) {
+                if (!seen("MATERIALIZED_VIEW", schema, mv.getName(), mv.getOwner())) {
+                    continue;
+                }
                 byName.put(scName + "." + mv.getName(),
                     objectRow(ShowResultHelpers.createdOn(mv.getCreatedTime()), mv.getName(),
                     dbName, scName, "VIEW", ShowResultHelpers.text(mv.getComment()),
@@ -1230,6 +1278,9 @@ final class ShowRelationalExecutor {
                     effectiveRetention(databaseOrNull(dbName), schema, null), false, false));
             }
             for (final DynamicTable dt : schema.getDynamicTables()) {
+                if (!seen("DYNAMIC_TABLE", schema, dt.getName(), dt.getOwner())) {
+                    continue;
+                }
                 byName.put(scName + "." + dt.getName(),
                     objectRow(ShowResultHelpers.createdOn(dt.getCreatedTime()), dt.getName(),
                     // As for a transient TABLE, this listing reports a transient dynamic table as
@@ -1262,18 +1313,38 @@ final class ShowRelationalExecutor {
     public ResultSet describeRelation(final String name, final String reportedKind) {
         final View view = findViewOrNull(name);
         if (view != null) {
-            if ("INFORMATION_SCHEMA".equals(catalog.resolveOwningSchema(name).getName())) {
+            final Schema schema = catalog.resolveOwningSchema(name);
+            if ("INFORMATION_SCHEMA".equals(schema.getName())) {
                 return describeSystemView(view.getName());
             }
+            requireSeen("VIEW", schema, view.getName(), view.getOwner(), name, reportedKind);
             return describeDerivedColumns(view.getResolvedColumns(), view.getColumnNames());
         }
         final MaterializedView materialized = findMaterializedViewOrNull(name);
         if (materialized != null) {
+            requireSeen("MATERIALIZED_VIEW", catalog.resolveOwningSchema(name), materialized.getName(),
+                materialized.getOwner(), name, reportedKind);
             return describeDerivedColumns(materialized.getResolvedColumns(), null);
         }
         // Nothing derived by that name: the table path owns the lookup and its refusal, which is
         // where the named kind is spoken.
-        return describeTableColumns(catalog.resolveTableAsWritten(name, reportedKind));
+        final Table table = catalog.resolveTableAsWritten(name, reportedKind);
+        requireSeen("TABLE", catalog.resolveOwningSchema(name), table.getName(), table.getOwner(), name, reportedKind);
+        return describeTableColumns(table);
+    }
+
+    /**
+     * Refuses a relation the session does not see as one that does not exist, in the named kind's words: a bare
+     * name echoed as it resolved, a qualified one in full, as the missing name's refusal reads.
+     */
+    private void requireSeen(final String objectType, final Schema schema, final String found, final String owner,
+                             final String written, final String reportedKind) {
+        if (seen(objectType, schema, found, owner)) {
+            return;
+        }
+        final String echoed = QualifiedName.parse(written).size() == 1 ? QualifiedName.join(found)
+            : QualifiedName.join(schema.getDatabaseName(), schema.getName(), found);
+        throw new RuntimeException(SqlCompilationError.doesNotExist(reportedKind, echoed));
     }
 
     /**
@@ -1326,7 +1397,7 @@ final class ShowRelationalExecutor {
     /** See {@link ShowCommandExecutor#describeDatabase}. */
     ResultSet describeDatabase(final String databaseName) {
         final Map<String, Row> byName = new TreeMap<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             final Object created = "INFORMATION_SCHEMA".equals(schema.getName())
                 ? ShowResultHelpers.createdOn(StatementClock.instant())
                 : ShowResultHelpers.createdOn(schema.getCreatedTime());
@@ -1356,10 +1427,10 @@ final class ShowRelationalExecutor {
         try {
             final String[] parts = QualifiedName.parse(name).parts();
             final Schema schema = parts.length == 1
-                ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema())
+                ? catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema())
                 : parts.length == 2
-                    ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                    : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    ? catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(parts[0])
+                    : catalog.databaseExact(parts[0]).schemaExact(parts[1]);
             return schema.hasDynamicTable(parts[parts.length - 1])
                 ? schema.getDynamicTable(parts[parts.length - 1]) : null;
         } catch (final RuntimeException notDynamic) {
@@ -1371,10 +1442,10 @@ final class ShowRelationalExecutor {
         try {
             final String[] parts = QualifiedName.parse(name).parts();
             final Schema schema = parts.length == 1
-                ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema())
+                ? catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema())
                 : parts.length == 2
-                    ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
-                    : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    ? catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(parts[0])
+                    : catalog.databaseExact(parts[0]).schemaExact(parts[1]);
             return schema.getMaterializedView(parts[parts.length - 1]);
         } catch (final RuntimeException notMaterialized) {
             return null;

@@ -69,6 +69,10 @@ public class GetIgnoreCase extends BuiltInFunction {
         if (held.isLong() || held.isInt()) {
             return Long.valueOf(held.asLong());
         }
+        if (held.isBigInteger()) {
+            // A whole number past 64 bits keeps every digit, as a NUMBER(38,0) holds it.
+            return new BigDecimal(held.bigIntegerValue());
+        }
         if (!held.isBigDecimal()) {
             final double approximate = held.asDouble();
             return approximate == Math.rint(approximate) && Math.abs(approximate) < WHOLE_LIMIT

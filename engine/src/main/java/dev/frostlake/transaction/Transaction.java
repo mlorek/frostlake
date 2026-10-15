@@ -51,6 +51,8 @@ public class Transaction {
     private final Map<QueryHistory, Long> ordinals = new IdentityHashMap<>();
     /** What each buffered statement called "now" — one per entry of walStatements, same order. */
     private final List<Instant> walInstants = new ArrayList<>();
+    /** What each buffered statement ran under — one per entry of walStatements, same order. */
+    private final List<WalStatementContext> walContexts = new ArrayList<>();
     // CDC streams read by this txn's DML, each with the scope of what the read SAW (committed cut +
     // this txn's then-buffered changes) so commit advances past exactly that. Latest read governs.
     private final Map<Stream, StreamReadScope> streamsToConsume = new LinkedHashMap<>();
@@ -184,11 +186,13 @@ public class Transaction {
     /**
      * Record a mutating statement to be written to the WAL (as part of this transaction) on commit,
      * together with the instant it called "now" — statements of one transaction get DIFFERENT
-     * instants, so the log keeps one per statement rather than one per record.
+     * instants, so the log keeps one per statement rather than one per record — and what it ran under, or null
+     * where nothing was noted.
      */
-    public void logStatementForWal(final String sql, final Instant instant) {
+    public void logStatementForWal(final String sql, final Instant instant, final WalStatementContext context) {
         walStatements.add(sql);
         walInstants.add(instant);
+        walContexts.add(context);
     }
 
     /** The mutating statements buffered for the WAL, in execution order (empty when the WAL is off). */
@@ -199,6 +203,11 @@ public class Transaction {
     /** The instants of {@link #getWalStatements}, in the same order. */
     public List<Instant> getWalInstants() {
         return walInstants;
+    }
+
+    /** What the statements of {@link #getWalStatements} ran under, in the same order. */
+    public List<WalStatementContext> getWalContexts() {
+        return walContexts;
     }
 
     /**

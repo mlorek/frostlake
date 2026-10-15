@@ -156,6 +156,23 @@ public class DynamicTable extends SqlObject {
     /** Keeps the rows a refresh read, for the next refresh to tell what changed. */
     public void setRefreshImage(final List<List<Object>> image) { this.refreshImage = image; }
 
+    /**
+     * Puts back the refresh state a snapshot of the engine's state saved, as it was: when the table last refreshed,
+     * where and when its first refresh fell, and the rows its last refresh read.
+     *
+     * @param lastRefreshed  when the table last refreshed
+     * @param firstSequence  where its first refresh fell in the order table snapshots are taken in, or 0
+     * @param firstMillis    when its first refresh ran, or 0
+     * @param image          the rows of its last refresh, or null
+     */
+    public void restoreRefreshState(final Instant lastRefreshed, final long firstSequence, final long firstMillis,
+                                    final List<List<Object>> image) {
+        this.lastRefreshedTime = lastRefreshed;
+        this.firstRefreshedSequence = firstSequence;
+        this.firstRefreshedMillis = firstMillis;
+        this.refreshImage = image;
+    }
+
     public boolean isTransient() { return transientTable; }
     public void setTransient(final boolean transientTable) { this.transientTable = transientTable; }
     public String getSchedulingState() { return schedulingState; }

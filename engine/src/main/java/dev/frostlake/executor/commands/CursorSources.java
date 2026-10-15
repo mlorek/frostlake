@@ -79,7 +79,7 @@ final class CursorSources {
             if (let.CURSOR() != null) {
                 requireResultSet(let.cursorSource(), resultSets);
             } else if (let.RESULTSET() != null) {
-                resultSets.add(SqlIdentifiers.canonical(let.identifier()));
+                resultSets.add(SqlIdentifiers.canonical(let.variableName()));
             }
             return;
         }
@@ -90,11 +90,11 @@ final class CursorSources {
 
     private static void requireResultSet(final FrostlakeParser.CursorSourceContext source,
                                          final Set<String> resultSets) {
-        if (source == null || source.identifier() == null
-                || resultSets.contains(SqlIdentifiers.canonical(source.identifier()))) {
+        if (source == null || source.variableName() == null
+                || resultSets.contains(SqlIdentifiers.canonical(source.variableName()))) {
             return;
         }
-        final Token name = source.identifier().getStart();
+        final Token name = source.variableName().getStart();
         final String written = name.getText();
         throw new RuntimeException(SqlCompilationError.at(name.getLine(), name.getCharPositionInLine(),
             "invalid identifier '" + (written.startsWith("\"") ? written : written.toUpperCase(Locale.ROOT)) + "'"));

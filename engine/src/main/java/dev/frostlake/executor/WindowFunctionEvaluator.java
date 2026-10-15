@@ -1766,14 +1766,14 @@ final class WindowFunctionEvaluator {
             try {
                 if (argsAsWritten != null) {
                     checker.validateStrictWindowed(
-                        ExpressionEvaluator.parse(walkedName(name) + "(" + argsAsWritten + ")"));
+                        ExpressionEvaluator.parse(walkedName(name, call) + "(" + argsAsWritten + ")"));
                 } else {
                     final List<String> argTexts = new ArrayList<>();
                     for (final FrostlakeParser.BooleanExprContext arg : args) {
                         argTexts.add(ParseTreeText.getOriginalText(arg));
                     }
                     checker.validateStrictWindowed(ExpressionEvaluator.parse(
-                        walkedName(name) + "(" + String.join(", ", argTexts) + ")"));
+                        walkedName(name, call) + "(" + String.join(", ", argTexts) + ")"));
                 }
             } finally {
                 ExpressionSource.end(displacedCall);
@@ -1793,6 +1793,17 @@ final class WindowFunctionEvaluator {
      * @param written the function name as written
      * @return the name to walk it under, padded to the written width
      */
+    private static String walkedName(final String written, final FrostlakeParser.FunctionCallExprContext call) {
+        // AVG over an ORDERED window runs as a running SUM over a COUNT, and is refused in SUM's words: live,
+        // AVG(o) OVER (ORDER BY n) over an OBJECT or a VECTOR is "Invalid argument types for function 'SUM': …",
+        // where AVG(o) OVER () keeps 'AVG' (live-verified).
+        if ("AVG".equalsIgnoreCase(written) && call.overClause() != null
+                && call.overClause().orderByClause() != null) {
+            return "SUM";
+        }
+        return walkedName(written);
+    }
+
     private static String walkedName(final String written) {
         if (!"RATIO_TO_REPORT".equalsIgnoreCase(written)) {
             return written;

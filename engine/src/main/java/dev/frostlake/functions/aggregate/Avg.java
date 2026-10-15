@@ -77,4 +77,10 @@ public class Avg extends AggregateFunction {
     public SemiStructuredRejection binaryRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
+
+    /** A VECTOR is refused as a semi-structured value is (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return semiStructuredRejection(position);
+    }
 }

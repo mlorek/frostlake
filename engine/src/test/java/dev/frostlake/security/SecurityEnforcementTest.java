@@ -61,6 +61,12 @@ public class SecurityEnforcementTest {
         engine.execute("GRANT ROLE readonly_role TO USER readonly_user");
         engine.execute("GRANT ROLE data_writer_role TO USER writer_user");
         engine.execute("GRANT ROLE no_access_role TO USER blocked_user");
+
+        // A role reaches an object of a schema only with USAGE on its database and its schema.
+        for (final String role : new String[] {"readonly_role", "data_writer_role", "no_access_role"}) {
+            engine.execute("GRANT USAGE ON DATABASE security_test_db TO ROLE " + role);
+            engine.execute("GRANT USAGE ON SCHEMA security_test_db.PUBLIC TO ROLE " + role);
+        }
     }
 
     @AfterEach

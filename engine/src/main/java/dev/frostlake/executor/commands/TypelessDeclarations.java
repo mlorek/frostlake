@@ -54,7 +54,7 @@ final class TypelessDeclarations {
         }
     }
 
-    private static RuntimeException refusal(final FrostlakeParser.IdentifierContext name, final Token at) {
+    private static RuntimeException refusal(final ParseTree name, final Token at) {
         return new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
             " variable '" + ScriptingNameValidator.canonical(name.getText())
                 + "' must have either a type or an initializer to infer a type from"));

@@ -110,10 +110,10 @@ final class IntoTargetDeclarations {
 
     private static void requireVariable(final ParserRuleContext into,
                                         final FrostlakeParser.IntoTargetContext target, final Set<String> seeded) {
-        final String written = target.identifier().getText();
+        final String written = target.variableName().getText();
         final String name = ScriptingNameValidator.canonical(written);
         final ParserRuleContext declaration = DeclarationLookup.declarationOf(into, name);
-        final Token at = target.identifier().getStart();
+        final Token at = target.variableName().getStart();
         final boolean declared = declaration != null ? !DeclarationLookup.isException(declaration)
             : seeded.contains(name) || ScriptingNameValidator.isScriptSupplied(name);
         if (!declared) {

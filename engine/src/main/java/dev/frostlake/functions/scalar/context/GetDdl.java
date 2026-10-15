@@ -179,6 +179,15 @@ public class GetDdl extends BuiltInFunction {
         }
     }
 
+    /**
+     * Whether the session sees an object of a schema: its roles own it or hold a privilege on it, or hold MANAGE
+     * GRANTS. GET_DDL needs what DESCRIBE and SHOW need to show the object (documented), and answers one the
+     * session does not see as one that does not exist.
+     */
+    private boolean sees(final String grantKind, final Schema schema, final String name, final String objectOwner) {
+        return ownership == null || ownership.sees(grantKind, schema.qualifiedName(name), objectOwner);
+    }
+
     @Override
     public Object evaluate(final List<Object> args) {
         // A definition compiled to be kept computes nothing: the lookup waits for whoever runs it.
@@ -338,6 +347,7 @@ public class GetDdl extends BuiltInFunction {
         final String name = parts[parts.length - 1];
         final Table table = owner.tableExact(name);
         if (table != null) {
+            requireSeen(objectType, "TABLE", parts, owner, table.getOwner());
             return lookupOnly ? null : tableDdl(table, owner, names);
         }
         if (owner.hasView(name) && named(owner.getView(name).getName(), name)) {
@@ -346,25 +356,42 @@ public class GetDdl extends BuiltInFunction {
                 // (live-verified).
                 throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
             }
+            requireSeen(objectType, "VIEW", parts, owner, owner.getView(name).getOwner());
             requireShown(owner.getView(name).isSecure(), owner.getView(name).getOwner());
             return lookupOnly ? null : viewDdl(owner.getView(name), owner, names);
         }
         if (owner.hasMaterializedView(name) && named(owner.getMaterializedView(name).getName(), name)) {
+            requireSeen(objectType, "MATERIALIZED_VIEW", parts, owner, owner.getMaterializedView(name).getOwner());
             requireShown(owner.getMaterializedView(name).isSecure(), owner.getMaterializedView(name).getOwner());
             return lookupOnly ? null : materializedViewDdl(owner.getMaterializedView(name), owner, names);
         }
         if (owner.hasDynamicTable(name) && named(owner.getDynamicTable(name).getName(), name)) {
+            requireSeen(objectType, "DYNAMIC_TABLE", parts, owner, owner.getDynamicTable(name).getOwner());
             return lookupOnly ? null : dynamicTableDdl(owner.getDynamicTable(name), owner, names);
         }
+        throw missingRelation(objectType, parts, owner);
+    }
+
+    /** Refuses a relation the session does not see as the missing one of the kind asked for. */
+    private void requireSeen(final String objectType, final String grantKind, final String[] parts,
+                             final Schema owner, final String objectOwner) {
+        if (!sees(grantKind, owner, parts[parts.length - 1], objectOwner)) {
+            throw missingRelation(objectType, parts, owner);
+        }
+    }
+
+    /** The refusal for a relation that is not there, in the words of the kind asked for. */
+    private static RuntimeException missingRelation(final String objectType, final String[] parts,
+                                                    final Schema owner) {
         switch (objectType) {
             case "VIEW":
-                throw missing(parts, owner, "View", false);
+                return missing(parts, owner, "View", false);
             case "MATERIALIZED_VIEW":
-                throw missing(parts, owner, "Materialized view", false);
+                return missing(parts, owner, "Materialized view", false);
             case "DYNAMIC_TABLE":
-                throw missing(parts, owner, "Dynamic table", true);
+                return missing(parts, owner, "Dynamic table", true);
             default:
-                throw missing(parts, owner, "Table", false);
+                return missing(parts, owner, "Table", false);
         }
     }
 
@@ -376,13 +403,14 @@ public class GetDdl extends BuiltInFunction {
         final String name = parts[parts.length - 1];
         switch (objectType) {
             case "SEQUENCE":
-                if (!owner.hasSequenceExact(name)) {
+                if (!owner.hasSequenceExact(name)
+                        || !sees("SEQUENCE", owner, name, owner.getSequence(name).getOwner())) {
                     throw missing(parts, owner, "Sequence", false);
                 }
                 return sequenceDdl(owner.getSequence(name), names.object(owner, name));
             case "STREAM": {
                 final Stream stream = find(owner, name, objectType);
-                if (stream == null) {
+                if (stream == null || !sees("STREAM", owner, name, stream.getOwner())) {
                     throw missing(parts, owner, "Stream", false);
                 }
                 final boolean gone = stream.getSourceType() == StreamSourceType.TABLE
@@ -392,14 +420,14 @@ public class GetDdl extends BuiltInFunction {
             }
             case "TASK": {
                 final Task task = find(owner, name, objectType);
-                if (task == null) {
+                if (task == null || !sees("TASK", owner, name, task.getOwner())) {
                     throw missing(parts, owner, "Task", false);
                 }
                 return ObjectDdl.task(task, owner, names.object(owner, name), tagAssignments(task, owner));
             }
             case "PIPE": {
                 final Pipe pipe = find(owner, name, objectType);
-                if (pipe == null) {
+                if (pipe == null || !sees("PIPE", owner, name, pipe.getOwner())) {
                     throw missing(parts, owner, "Pipe", true);
                 }
                 return ObjectDdl.pipe(pipe, names.object(owner, name));
@@ -952,8 +980,9 @@ public class GetDdl extends BuiltInFunction {
     }
 
     /**
-     * {@code create or replace [secure ]materialized view M(\n\tX\n)[ COMMENT='…'\n] as SELECT …;} — the column
-     * list as a view's, from the declared names or the columns the definition resolved to.
+     * {@code create or replace [secure ]materialized view M(\n\tX COMMENT 'c'\n)[ COMMENT='…'\n] as SELECT …;}
+     * — the column list as a view's, from the declared names or the columns the definition resolved to, each with
+     * the comment it declares (live-verified).
      */
     String materializedViewDdl(final MaterializedView view, final Schema schema, final DdlNames names) {
         final String name = names.object(schema, view.getName());
@@ -974,7 +1003,12 @@ public class GetDdl extends BuiltInFunction {
         if (view.isSecure()) {
             sb.append("secure ");
         }
-        sb.append("materialized view ").append(name).append(columnList(columns)).append(commentClause(view.getComment()));
+        sb.append("materialized view ").append(name).append("(");
+        for (int i = 0; i < columns.size(); i++) {
+            sb.append(i == 0 ? "\n\t" : ",\n\t").append(SqlIdentifiers.spellCanonicalEscaped(columns.get(i)))
+              .append(columnComment(view.getResolvedColumns(), columns.get(i)));
+        }
+        sb.append("\n)").append(commentClause(view.getComment()));
         if (!view.getClusterKeys().isEmpty()) {
             sb.append(" cluster by (").append(String.join(", ", view.getClusterKeys())).append(")");
         }

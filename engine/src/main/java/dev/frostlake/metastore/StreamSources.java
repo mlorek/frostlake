@@ -359,8 +359,11 @@ public final class StreamSources {
         return stream.getSourceTable();
     }
 
-    /** The table a recorded name reads from the stream's schema, or null when it reads none. */
-    private static Table named(final Catalog catalog, final Schema home, final String recorded) {
+    /**
+     * The table a recorded name reads from {@code home} - a stream's schema, or the schema of a table whose foreign
+     * key records it - or null when it reads none.
+     */
+    static Table named(final Catalog catalog, final Schema home, final String recorded) {
         final Schema schema = schemaNamed(catalog, home, recorded);
         if (schema == null) {
             return null;

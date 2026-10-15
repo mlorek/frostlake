@@ -38,6 +38,16 @@ public interface CommandHandler {
         return SqlIdentifiers.canonical(ctx);
     }
 
+    /**
+     * The canonical text of an argument's or a script variable's name, which may be one of the words such a name takes.
+     *
+     * @param ctx the name's parse tree
+     * @return the canonical name
+     */
+    default String getText(final FrostlakeParser.VariableNameContext ctx) {
+        return SqlIdentifiers.canonical(ctx);
+    }
+
     default String getText(final FrostlakeParser.QualifiedNameContext ctx) {
         if (ctx == null) return null;
         return ParseTreeText.getQualifiedName(ctx);

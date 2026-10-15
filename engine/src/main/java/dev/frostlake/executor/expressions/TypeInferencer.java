@@ -223,6 +223,43 @@ final class TypeInferencer {
         return interval.getLiteral() == null ? null : interval.getLiteral().getType();
     }
 
+    /** The functions that read into a value as its subscripts and paths do. */
+    private static final Set<String> STRUCTURED_GETS = Set.of("GET", "GET_IGNORE_CASE", "GET_PATH");
+
+    /**
+     * What GET, GET_IGNORE_CASE and GET_PATH read from a structured value: the type the value declares there
+     * (documented). Null for any other call, and for a read of a semi-structured value, which is a VARIANT.
+     *
+     * @param funcName the function's name, upper-cased
+     * @param call     the call
+     * @return the type read, or null
+     */
+    DataType structuredGetType(final String funcName, final FunctionCallExpression call) {
+        if (!STRUCTURED_GETS.contains(funcName) || call.getArguments().size() != 2) {
+            return null;
+        }
+        final DataType base = infer(call.getArguments().get(0));
+        if (!StructuredTypes.isStructured(base)) {
+            return null;
+        }
+        final Object key = constantKey(call.getArguments().get(1));
+        if ("GET_PATH".equals(funcName)) {
+            return key instanceof String ? StructuredLeaf.ofPathText(base, (String) key) : null;
+        }
+        return StructuredLeaf.ofSubscript(base, key, "GET_IGNORE_CASE".equals(funcName));
+    }
+
+    /**
+     * A subscript's or a key's value when it is written as a constant — a text or a number — or null for anything
+     * else.
+     *
+     * @param key the subscript or key
+     * @return its constant value, or null
+     */
+    static Object constantKey(final Expression key) {
+        return key instanceof LiteralExpression ? ((LiteralExpression) key).getValue() : null;
+    }
+
     /** Whether an operand is the quoted-string interval form, {@code INTERVAL '1 day'}, which has no type. */
     private static boolean isQuotedInterval(final Expression operand) {
         return operand instanceof IntervalExpression && ((IntervalExpression) operand).getLiteral() == null;
@@ -556,6 +593,16 @@ final class TypeInferencer {
             // A comparing function's own collation after the one it hands on: a DECODE whose results
             // and whose search values both disagree is refused for its results (live-verified).
             visitor.validateComparingCollation(call);
+            // GET, GET_IGNORE_CASE and GET_PATH over a structured value read the type it declares there (documented).
+            final DataType structuredRead = structuredGetType(funcName, call);
+            if (structuredRead != null) {
+                return structuredRead;
+            }
+            // The array and object functions over a structured value answer a structured type (live-verified).
+            final DataType structuredResult = StructuredFunctionTypes.of(this, funcName, call.getArguments());
+            if (structuredResult != null) {
+                return structuredResult;
+            }
             // SYSTEM$TYPEOF answers a string of no width: its result column is VARCHAR(134217728), typed
             // again it reads VARCHAR, and a table built over it stores VARCHAR(16777216) (live-verified).
             // SYSTEM$WAIT's sentence is a result column of that width too.
@@ -782,9 +829,18 @@ final class TypeInferencer {
         if (expr instanceof JsonArrayExpression) {
             return ArrayType.ARRAY;
         }
-        if (expr instanceof ObjectAccessExpression || expr instanceof ArrayAccessExpression) {
-            // Path extraction (v:field, v['key'], arr[0]) yields VARIANT.
-            return VariantType.VARIANT;
+        if (expr instanceof ObjectAccessExpression) {
+            // A path into a structured OBJECT or MAP reads the type the value declares there (documented); a path
+            // into a semi-structured value yields VARIANT.
+            final ObjectAccessExpression access = (ObjectAccessExpression) expr;
+            final DataType leaf = StructuredLeaf.ofPath(infer(access.getBase()), access.getPathParts());
+            return leaf != null ? leaf : VariantType.VARIANT;
+        }
+        if (expr instanceof ArrayAccessExpression) {
+            final ArrayAccessExpression access = (ArrayAccessExpression) expr;
+            final DataType leaf = StructuredLeaf.ofSubscript(infer(access.getArray()),
+                constantKey(access.getIndex()), false);
+            return leaf != null ? leaf : VariantType.VARIANT;
         }
         if (expr instanceof IsNullExpression || expr instanceof InExpression
                 || expr instanceof BetweenExpression || expr instanceof TupleInExpression
@@ -2679,6 +2735,11 @@ final class TypeInferencer {
             // The approximate count declares the counter's eighteen digits whatever it counts — one
             // argument or a tuple of them (live: NUMBER(18,0)[SB8] over (n102, n380)).
             return IntegerResultWidths.COUNTER;
+        }
+        if (funcName.equals("HASH_AGG")) {
+            // The aggregate hash declares the width HASH does, whatever it hashes (live: NUMBER(19,0)[SB8], and a
+            // CTAS over it stores NUMBER(19,0)).
+            return IntegerResultWidths.WIDE_COUNTER;
         }
         if (funcName.equals("BOOLOR_AGG") || funcName.equals("BOOLAND_AGG")
                 || funcName.equals("BOOLXOR_AGG")) {

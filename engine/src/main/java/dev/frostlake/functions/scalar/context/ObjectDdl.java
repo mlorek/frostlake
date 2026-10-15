@@ -18,6 +18,8 @@ package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.executor.FileFormatSurfaces;
 import dev.frostlake.executor.FormatProperty;
+import dev.frostlake.executor.SessionParameterCatalog;
+import dev.frostlake.executor.SessionParameterRow;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
@@ -46,6 +48,7 @@ import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -324,6 +327,16 @@ final class ObjectDdl {
                 sb.append('\t').append(parameter).append('=').append(taskParameterValue(task, parameter)).append('\n');
             }
         }
+        // The session parameters set on the task follow, each on its own line, in the order the account keeps them:
+        // a hash order of their names, not the order they were set (live-verified).
+        final Map<String, String> sessionParameters = new HashMap<String, String>();
+        for (final Map.Entry<String, String> parameter : task.getSessionParameters().entrySet()) {
+            sessionParameters.put(parameter.getKey(), parameter.getValue());
+        }
+        for (final Map.Entry<String, String> parameter : sessionParameters.entrySet()) {
+            sb.append('\t').append(parameter.getKey()).append('=')
+                .append(sessionParameterValue(parameter.getKey(), parameter.getValue())).append('\n');
+        }
         if (hasText(task.getComment())) {
             sb.append("\tCOMMENT=").append(quoted(task.getComment())).append('\n');
         }
@@ -355,6 +368,19 @@ final class ObjectDdl {
             default:
                 return String.valueOf(task.getTaskAutoRetryAttempts());
         }
+    }
+
+    /**
+     * A task's session parameter as its DDL writes it: a text between single quotes, as it was set and not escaped,
+     * a boolean in lower case, a number bare (live-verified).
+     */
+    private static String sessionParameterValue(final String name, final String value) {
+        final SessionParameterRow row = SessionParameterCatalog.find(name);
+        final String type = row == null ? "STRING" : row.getType();
+        if ("BOOLEAN".equals(type)) {
+            return value.toLowerCase(Locale.ROOT);
+        }
+        return "NUMBER".equals(type) ? value : "'" + value + "'";
     }
 
     /** A predecessor as the account names one: database, schema and task, completed from the task's own schema. */
@@ -394,40 +420,45 @@ final class ObjectDdl {
             : policy.getReturnDataType() != null ? SqlTypeNames.routineType(policy.getReturnDataType())
             : policyTypeName(policy.getReturnType());
         return policyDdl("masking policy", name, policySignature(policy.getParameters()), returns,
-            policy.getBody(), policy.getComment());
+            policy.getBody(), policy.getComment(), policy.isExemptOtherPolicies());
     }
 
     /** {@code create or replace row access policy P as (A VARCHAR) \nreturns BOOLEAN ->\nbody\n;}. */
     static String rowAccessPolicy(final RowAccessPolicy policy, final String name) {
         return policyDdl("row access policy", name, policySignature(policy.getParameters()), "BOOLEAN",
-            policy.getBody(), policy.getComment());
+            policy.getBody(), policy.getComment(), policy.isExemptOtherPolicies());
     }
 
     static String aggregationPolicy(final AggregationPolicy policy, final String name) {
         return policyDdl("aggregation policy", name, "()", "AGGREGATION_CONSTRAINT", policy.getBody(),
-            policy.getComment());
+            policy.getComment(), false);
     }
 
     static String projectionPolicy(final ProjectionPolicy policy, final String name) {
         return policyDdl("projection policy", name, "()", "PROJECTION_CONSTRAINT", policy.getBody(),
-            policy.getComment());
+            policy.getComment(), false);
     }
 
     static String joinPolicy(final JoinPolicy policy, final String name) {
-        return policyDdl("join policy", name, "()", "JOIN_CONSTRAINT", policy.getBody(), policy.getComment());
+        return policyDdl("join policy", name, "()", "JOIN_CONSTRAINT", policy.getBody(), policy.getComment(), false);
     }
 
     /**
      * The shape every expression policy shares: the signature followed by a space and a line break, the RETURNS
-     * line ending in the arrow, the body as written, the COMMENT on a line of its own, and the semicolon last.
+     * line ending in the arrow, the body as written, the COMMENT on a line of its own, EXEMPT_OTHER_POLICIES=TRUE
+     * on the next where it is set - FALSE is not written - and the semicolon last (live-verified).
      */
     private static String policyDdl(final String kind, final String name, final String signature,
-                                    final String returns, final String body, final String comment) {
+                                    final String returns, final String body, final String comment,
+                                    final boolean exempt) {
         final StringBuilder sb = new StringBuilder("create or replace ").append(kind).append(' ').append(name)
             .append(" as ").append(signature).append(" \nreturns ").append(returns).append(" ->\n")
             .append(body == null ? "" : body.trim()).append('\n');
         if (hasText(comment)) {
             sb.append("COMMENT=").append(quoted(comment)).append('\n');
+        }
+        if (exempt) {
+            sb.append("EXEMPT_OTHER_POLICIES=TRUE\n");
         }
         return sb.append(';').toString();
     }

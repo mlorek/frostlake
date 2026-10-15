@@ -27,6 +27,10 @@ import java.util.List;
  */
 public interface WalSink {
 
-    /** Append one committed transaction's statements to the log and force them to disk (fsync). */
-    void appendTransaction(final List<String> statements, final List<Instant> instants);
+    /**
+     * Append one committed transaction's statements to the log and force them to disk (fsync), each with the
+     * instant it called "now" and what it ran under.
+     */
+    void appendTransaction(final List<String> statements, final List<Instant> instants,
+                           final List<WalStatementContext> contexts);
 }

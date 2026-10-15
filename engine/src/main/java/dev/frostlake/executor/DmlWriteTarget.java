@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.values.VectorCastRefusal;
 
 /**
  * The envelope live wraps a DML write failure in — {@code DML operation to table T failed on column C
@@ -49,6 +50,10 @@ public final class DmlWriteTarget {
     public static boolean isRowTimeFailure(final RuntimeException failure) {
         if (failure instanceof NoCurrentDatabaseRefusal) {
             // Refused while compiling, like any prefixed sentence; live's wording simply has no prefix.
+            return false;
+        }
+        if (failure instanceof VectorCastRefusal) {
+            // A cast to a VECTOR is refused in its own words, whatever row it stops (live-verified).
             return false;
         }
         final String message = failure.getMessage();

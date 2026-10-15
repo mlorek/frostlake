@@ -24,6 +24,7 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StageDirectoryRefresh;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StorageIntegrationReference;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
@@ -925,9 +926,12 @@ public class CreateInfrastructureHandler implements CommandHandler {
             created.setEncryptionKey(encryptionKey);
             if (directory != null) {
                 directory.applyTo(created);
-                if (directory.enables() && directory.refreshesOnCreate()) {
-                    // A directory table enabled at creation registers the files its stage already holds, unless
-                    // REFRESH_ON_CREATE says otherwise; one enabled later registers none before its first refresh.
+                // A directory table enabled at creation registers the files its stage already holds, unless
+                // REFRESH_ON_CREATE says otherwise; one enabled later registers none before its first refresh. A new
+                // internal stage holds none, so its replayed CREATE registers none either: the files on disk then are
+                // the ones the statements after it staged.
+                final boolean replayedInternal = url == null && StatementClock.isReplay();
+                if (directory.enables() && directory.refreshesOnCreate() && !replayedInternal) {
                     final Schema owner = catalog.resolveOwningSchema(stageName);
                     StageDirectoryRefresh.refresh(queryExecutor, created, owner.getDatabaseName(),
                         owner.getDatabaseName() + "." + owner.getName() + "." + created.getName(), "");

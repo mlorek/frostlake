@@ -54,8 +54,11 @@ import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.TreeMap;
 
 /**
@@ -92,7 +95,15 @@ final class StageQueryExecutor {
         final CsvFormatOptions csvOptions = new CsvFormatOptions();
 
         final StageQueryArguments arguments = StageQueryArguments.read(executor, params);
-        final FileFormat named = arguments.format();
+        FileFormat named = arguments.format();
+        // A query that writes no FILE_FORMAT reads the files by the format their stage keeps — a named stage's
+        // FILE_FORMAT, a table stage's STAGE_FILE_FORMAT — the format that one names first and its own options after.
+        // FILE_FORMAT => NULL names none and reads them by the default (live-verified).
+        final Map<String, String> kept = arguments.formatWritten() ? new HashMap<String, String>()
+            : executor.stageFileFormat(location);
+        if (named == null && kept.get("FORMAT_NAME") != null) {
+            named = InferSchemaArguments.resolveFileFormat(executor.getCatalog(), kept.get("FORMAT_NAME"));
+        }
         if (named != null) {
             fileFormat = named.getType();
             csvOptions.takeAll(named.getOptions());
@@ -100,6 +111,14 @@ final class StageQueryExecutor {
             if (named.getOption("SKIP_HEADER") != null) {
                 skipHeader = Integer.parseInt(named.getOption("SKIP_HEADER"));
             }
+        }
+        if (kept.get("TYPE") != null) {
+            fileFormat = kept.get("TYPE").toUpperCase(Locale.ROOT);
+        }
+        csvOptions.takeAll(kept);
+        csvOptions.takeListedNullIf(kept.get("NULL_IF"));
+        if (kept.get("SKIP_HEADER") != null) {
+            skipHeader = Integer.parseInt(kept.get("SKIP_HEADER"));
         }
         final String pattern = arguments.pattern();
 

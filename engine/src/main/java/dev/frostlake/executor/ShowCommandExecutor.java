@@ -75,9 +75,14 @@ public class ShowCommandExecutor {
             public boolean actsAsOwner(final String owner) {
                 return securityManager == null || securityManager.actsAsOwner(owner);
             }
+
+            @Override
+            public boolean sees(final String objectType, final String objectName, final String owner) {
+                return securityManager == null || securityManager.sees(objectType, objectName, owner);
+            }
         };
         this.relationalExecutor = new ShowRelationalExecutor(catalog, storageEngine, ownership);
-        this.pipelineExecutor = new ShowPipelineExecutor(catalog);
+        this.pipelineExecutor = new ShowPipelineExecutor(catalog, ownership);
         this.routineExecutor = new ShowRoutineExecutor(catalog, functionRegistry, ownership);
         this.infraExecutor = new ShowInfraExecutor(catalog);
         // The security and session families read securityManager live through this facade, so they receive

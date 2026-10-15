@@ -210,13 +210,52 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
+        return holdAny(reachingRoles(), objectType, objectName, owner);
+    }
+
+    /**
+     * Whether the rights a statement runs with see an object, which is what SHOW lists, and what DESCRIBE and
+     * GET_DDL answer: they reach it (see {@link #reaches}), or hold MANAGE GRANTS, which sees every object of the
+     * account. ACCOUNTADMIN and SECURITYADMIN hold it from the start (documented).
+     *
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name in full
+     * @param owner      the role that owns the object, or null when none is recorded
+     * @return whether the object is one the rights see
+     */
+    public boolean sees(final String objectType, final String objectName, final String owner) {
+        if (!sessionContext.isSecurityEnabled() || owner == null) {
+            return true;
+        }
+        final Set<String> roles = reachingRoles();
+        return holdAny(roles, objectType, objectName, owner) || managesGrants(roles);
+    }
+
+    /**
+     * The roles {@link #reaches} asks: the session's, or inside a stored procedure that runs with owner's rights the
+     * owner's alone, with PUBLIC beside them.
+     */
+    private Set<String> reachingRoles() {
         final String executableOwner = sessionContext.getExecutableOwner();
         if (executableOwner == null) {
-            return holdAny(askedRoles(), objectType, objectName, owner);
+            return askedRoles();
         }
         final Set<String> roles = rolesUnder(executableOwner.toUpperCase(Locale.ROOT));
         roles.add("PUBLIC");
-        return holdAny(roles, objectType, objectName, owner);
+        return roles;
+    }
+
+    /** Whether one of the roles holds MANAGE GRANTS: ACCOUNTADMIN and SECURITYADMIN, or a role it was granted to. */
+    private boolean managesGrants(final Set<String> roles) {
+        if (roles.contains("ACCOUNTADMIN") || roles.contains("SECURITYADMIN")) {
+            return true;
+        }
+        for (final Role holder : holdersUnder(roles)) {
+            if (holder.hasPrivilege("ACCOUNT", "ACCOUNT", Privilege.MANAGE_GRANTS)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean holdAny(final Set<String> roles, final String objectType, final String objectName,
@@ -296,6 +335,46 @@ public class SecurityManager {
         roles.add("PUBLIC");
         return roles.contains(ownerRole) || holds(holdersUnder(roles), containerType,
             GrantNames.of(catalog, containerType, containerName), createPrivilege);
+    }
+
+    /**
+     * Whether the session reaches an object through one of the roles a privilege is asked of owning it (see
+     * {@link #holdsPrivilege}).
+     *
+     * @param owner the role that owns the object, or null when none is recorded
+     * @return whether an asked role owns it
+     */
+    public boolean ownedByAskedRole(final String owner) {
+        return owner == null || !sessionContext.isSecurityEnabled() || askedRoles().contains(owner.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * The first container of a schema's object the session cannot use: a role uses an object of a schema only with
+     * USAGE on the database and on the schema that contain it, whatever it holds on the object itself (documented).
+     * Owning the container, ALL and OWNERSHIP grants count as USAGE.
+     *
+     * @param databaseName the object's database
+     * @param schemaName   the object's schema
+     * @return "DATABASE" or "SCHEMA" for the first one missed, or null when both are used
+     */
+    public String missedContainer(final String databaseName, final String schemaName) {
+        if (!sessionContext.isSecurityEnabled()) {
+            return null;
+        }
+        final Set<String> roles = askedRoles();
+        if (!uses(roles, "DATABASE", databaseName)) {
+            return "DATABASE";
+        }
+        return uses(roles, "SCHEMA", databaseName + "." + schemaName) ? null : "SCHEMA";
+    }
+
+    private boolean uses(final Set<String> roles, final String containerType, final String containerName) {
+        final String owner = catalog.getObjectOwnerRole(containerType, containerName);
+        if (owner == null || roles.contains(owner.toUpperCase(Locale.ROOT))) {
+            return true;
+        }
+        return holds(holdersUnder(roles), containerType, GrantNames.of(catalog, containerType, containerName),
+            Privilege.USAGE);
     }
 
     /** Whether one of {@code holders} holds a privilege on an object: the privilege itself, ALL or OWNERSHIP. */

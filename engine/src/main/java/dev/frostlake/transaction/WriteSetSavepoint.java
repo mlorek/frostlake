@@ -121,4 +121,18 @@ public final class WriteSetSavepoint {
     Map<String, TableLock> locksBefore() {
         return locksBefore;
     }
+
+    /** Follows tables whose storage moved (see {@link TransactionWriteSet#retarget}). */
+    void retarget(final Map<String, String> moved) {
+        final Set<String> touchedNow = new HashSet<>();
+        for (final String table : touched) {
+            touchedNow.add(moved.containsKey(table) ? moved.get(table) : table);
+        }
+        touched.clear();
+        touched.addAll(touchedNow);
+        MovedTables.rekey(insertsBefore, moved);
+        MovedTables.rekey(updatesBefore, moved);
+        MovedTables.rekey(deletesBefore, moved);
+        MovedTables.rekey(locksBefore, MovedTables.upperCased(moved));
+    }
 }

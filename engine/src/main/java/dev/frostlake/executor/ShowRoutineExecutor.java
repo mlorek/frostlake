@@ -84,7 +84,7 @@ final class ShowRoutineExecutor {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName != null && scName != null) {
-            appendUserProcedureRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+            appendUserProcedureRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         }
 
         // SHOW PROCEDURES = the built-in catalog plus the user procedures in scope, and SHOW USER
@@ -145,7 +145,7 @@ final class ShowRoutineExecutor {
     public ResultSet showProceduresInDatabase(final String databaseName) {
         final List<ResultSetColumn> columns = procedureColumns();
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             appendUserProcedureRows(schema, databaseName, rows);
         }
         appendBuiltinProcedureRows(rows);
@@ -155,7 +155,7 @@ final class ShowRoutineExecutor {
     /** SHOW USER PROCEDURES IN DATABASE &lt;db&gt;: the same listing with the built-in half dropped. */
     public ResultSet showUserProceduresInDatabase(final String databaseName) {
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             appendUserProcedureRows(schema, databaseName, rows);
         }
         return new ResultSet(procedureColumns(), rows);
@@ -254,7 +254,7 @@ final class ShowRoutineExecutor {
         final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName != null && scName != null) {
-            appendUserFunctionRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+            appendUserFunctionRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         }
 
         // Built-in (system-defined) functions. SHOW FUNCTIONS lists these alongside user functions
@@ -285,7 +285,7 @@ final class ShowRoutineExecutor {
         if (dbName == null || scName == null) {
             return declarations;
         }
-        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+        final Schema schema = catalog.databaseExact(dbName).schemaExact(scName);
         if (procedures) {
             for (final Procedure procedure : schema.getProcedures()) {
                 declarations.put(procedure.getName() + listedArgumentsText(procedure.getParameters()),
@@ -357,7 +357,7 @@ final class ShowRoutineExecutor {
     public ResultSet showFunctionsInDatabase(final String databaseName) {
         final List<ResultSetColumn> columns = functionColumns();
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             appendUserFunctionRows(schema, databaseName, rows);
         }
         appendBuiltinFunctionRows(rows);
@@ -367,7 +367,7 @@ final class ShowRoutineExecutor {
     /** SHOW USER FUNCTIONS IN DATABASE &lt;db&gt;: the same listing with the built-in half dropped. */
     public ResultSet showUserFunctionsInDatabase(final String databaseName) {
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
             appendUserFunctionRows(schema, databaseName, rows);
         }
         return new ResultSet(functionColumns(), rows);
@@ -586,7 +586,7 @@ final class ShowRoutineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(tagColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendTagRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendTagRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(tagColumns(), rows);
     }
 
@@ -606,7 +606,7 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(tagColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendTagRows(schema, dbName, rows);
         }
         return new ResultSet(tagColumns(), rows);
@@ -938,7 +938,7 @@ final class ShowRoutineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendMaskingPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendMaskingPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(policyColumns(), rows);
     }
 
@@ -958,7 +958,7 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendMaskingPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(policyColumns(), rows);
@@ -975,7 +975,7 @@ final class ShowRoutineExecutor {
                 mp.getOwner(),
                 ShowResultHelpers.text(mp.getComment()),
                 "ROLE",
-                ""
+                policyOptions(mp.isExemptOtherPolicies())
             )));
         }
     }
@@ -985,7 +985,7 @@ final class ShowRoutineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendRowAccessPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendRowAccessPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(policyColumns(), rows);
     }
 
@@ -1005,7 +1005,7 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendRowAccessPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(policyColumns(), rows);
@@ -1022,9 +1022,14 @@ final class ShowRoutineExecutor {
                 rap.getOwner(),
                 ShowResultHelpers.text(rap.getComment()),
                 "ROLE",
-                ""
+                policyOptions(rap.isExemptOtherPolicies())
             )));
         }
+    }
+
+    /** A policy's options cell: {@code {"EXEMPT_OTHER_POLICIES":true}} where it is set, else empty (live-verified). */
+    private static String policyOptions(final boolean exempt) {
+        return exempt ? "{\"EXEMPT_OTHER_POLICIES\":true}" : "";
     }
 
     /** Shared column shape for SHOW MASKING POLICIES and SHOW ROW ACCESS POLICIES. */
@@ -1063,7 +1068,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        appendJoinPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendJoinPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(projectionPolicyColumns(), rows);
     }
 
@@ -1073,7 +1078,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendJoinPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(projectionPolicyColumns(), rows);
@@ -1130,7 +1135,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        appendAggregationPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendAggregationPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(projectionPolicyColumns(), rows);
     }
 
@@ -1140,7 +1145,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendAggregationPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(projectionPolicyColumns(), rows);
@@ -1197,7 +1202,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        appendProjectionPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendProjectionPolicyRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(projectionPolicyColumns(), rows);
     }
 
@@ -1207,7 +1212,7 @@ final class ShowRoutineExecutor {
             return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
         }
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendProjectionPolicyRows(schema, dbName, rows);
         }
         return new ResultSet(projectionPolicyColumns(), rows);
@@ -1276,7 +1281,7 @@ final class ShowRoutineExecutor {
         final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(contactColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendContactRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendContactRows(catalog.databaseExact(dbName).schemaExact(scName), dbName, rows);
         return new ResultSet(contactColumns(), rows);
     }
 
@@ -1284,7 +1289,7 @@ final class ShowRoutineExecutor {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(contactColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+        for (final Schema schema : catalog.databaseExact(dbName).getAllSchemas()) {
             appendContactRows(schema, dbName, rows);
         }
         return new ResultSet(contactColumns(), rows);
@@ -1397,8 +1402,8 @@ final class ShowRoutineExecutor {
             return resolveDescribeSchema();
         }
         final String db = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
-        final Database database = db == null ? null : catalog.getDatabase(db);
-        return database == null ? null : database.getSchema(parts[parts.length - 2]);
+        final Database database = db == null ? null : catalog.databaseExact(db);
+        return database == null ? null : database.schemaExact(parts[parts.length - 2]);
     }
 
     /** Current database.schema for describe lookups. */

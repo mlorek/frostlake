@@ -30,10 +30,12 @@ import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.TreeSet;
 
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -63,7 +65,24 @@ public final class CalledRoutineSources {
      */
     public static void require(final ParseTree tree, final QueryExecutor executor) {
         if (tree != null) {
-            walk(tree, executor, new HashSet<Function>());
+            walk(tree, executor, new HashSet<String>(), Collections.<String>emptySet(),
+                Collections.<String>emptySet());
+        }
+    }
+
+    /**
+     * {@link #require} for a SQL function's own body as it is created: the body's parameters stand for the values a
+     * call passes, so a call inside the body that hands one on reads no row until a call of the function passes it
+     * one (live: {@code CREATE FUNCTION w(a NUMBER) … AS 'sq_where(a) * 10'} is created and {@code w(5)} answers).
+     *
+     * @param body       the body, as parsed
+     * @param executor   the executor compiling it
+     * @param parameters the function's parameter names, canonical
+     */
+    public static void requireInBody(final ParseTree body, final QueryExecutor executor,
+                                     final Set<String> parameters) {
+        if (body != null) {
+            walk(body, executor, new HashSet<String>(), parameters, Collections.<String>emptySet());
         }
     }
 
@@ -85,7 +104,12 @@ public final class CalledRoutineSources {
         }
     }
 
-    private static void walk(final ParseTree node, final QueryExecutor executor, final Set<Function> judged) {
+    /**
+     * Judges the calls under a tree. Inside a function's body, a name that is one of {@code parameters} reads a row
+     * only when it is one of {@code rowParameters} — a parameter the call of that function passed a row's value.
+     */
+    private static void walk(final ParseTree node, final QueryExecutor executor, final Set<String> judged,
+                             final Set<String> parameters, final Set<String> rowParameters) {
         final FrostlakeParser.FunctionNameContext called = CalledRoutineSecrets.calledBy(node);
         if (called != null && !called.identifier().isEmpty()) {
             final List<String> parts = new ArrayList<String>();
@@ -104,46 +128,115 @@ public final class CalledRoutineSources {
                 }
             }
             if (candidates == 1) {
-                requireEvaluableBody(node, reached, executor);
-                if (judged.add(reached)) {
-                    requireSourcesOf(reached, executor, judged);
+                final Set<String> rowRead = rowReadParameters(node, reached, parameters, rowParameters);
+                requireEvaluableBody(node, reached, executor, rowRead);
+                if (judged.add(Integer.toHexString(System.identityHashCode(reached)) + new TreeSet<String>(rowRead))) {
+                    requireSourcesOf(reached, executor, judged, rowRead);
                 }
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            walk(node.getChild(i), executor, judged);
+            walk(node.getChild(i), executor, judged, parameters, rowParameters);
         }
     }
 
     /**
-     * A SQL function whose body is a query is expanded into the statement as the scalar subquery it is, each
-     * parameter read from the call's argument: where an argument reads the row, the body is a subquery correlated
-     * through that parameter, and a shape the account cannot evaluate correlated is refused as written inside the
-     * function. {@code SELECT a + 1 WHERE a > 0} called over a column is "Unsupported subquery type cannot be
-     * evaluated inside Function object: SQ_WHERE", and over a constant it answers (live-verified).
+     * The parameters of a call's function whose arguments read the row (see {@link #walk}): a positional argument
+     * binds the parameter of its place, and a named one the parameter of its name.
      */
-    private static void requireEvaluableBody(final ParseTree call, final Function function,
-                                             final QueryExecutor executor) {
-        if (!(call instanceof FrostlakeParser.FunctionCallExprContext) || function.getUdfLanguage() != UdfLanguage.SQL
-                || function.isTableFunction() || function.getBody() == null || typedOnly(call)) {
-            return;
+    private static Set<String> rowReadParameters(final ParseTree call, final Function function,
+                                                 final Set<String> parameters, final Set<String> rowParameters) {
+        final List<ParseTree> positional = new ArrayList<ParseTree>();
+        final List<FrostlakeParser.NamedArgumentContext> named = new ArrayList<FrostlakeParser.NamedArgumentContext>();
+        if (call instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionArgListContext arguments =
+                ((FrostlakeParser.FunctionCallExprContext) call).functionArgList();
+            if (arguments != null) {
+                positional.addAll(arguments.functionArg());
+            }
+        } else if (call instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            positional.addAll(((FrostlakeParser.FunctionCallMixedArgsExprContext) call).expression());
+            named.addAll(((FrostlakeParser.FunctionCallMixedArgsExprContext) call).namedArgument());
+        } else if (call instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            named.addAll(((FrostlakeParser.FunctionCallNamedArgsExprContext) call).namedArgumentList()
+                .namedArgument());
         }
-        final FrostlakeParser.FunctionArgListContext arguments =
-            ((FrostlakeParser.FunctionCallExprContext) call).functionArgList();
         final Set<String> rowRead = new HashSet<String>();
-        for (int i = 0; arguments != null && i < arguments.functionArg().size()
-                && i < function.getParameters().size(); i++) {
-            if (readsAColumn(arguments.functionArg(i))) {
-                rowRead.add(function.getParameters().get(i).getName().toUpperCase(Locale.ROOT));
+        final List<Parameter> declared = function.getParameters();
+        for (int i = 0; i < positional.size() && i < declared.size(); i++) {
+            if (readsAColumn(positional.get(i), parameters, rowParameters)) {
+                rowRead.add(declared.get(i).getName().toUpperCase(Locale.ROOT));
             }
         }
-        final String body = SqlUdfBodyFrame.executableBody(function.getBody());
-        if (rowRead.isEmpty() || body == null || executor.queryStatementOf(body.trim()) == null) {
+        for (final FrostlakeParser.NamedArgumentContext argument : named) {
+            final String name = SqlIdentifiers.canonical(argument.variableName());
+            for (final Parameter parameter : declared) {
+                if (parameter.getName().equalsIgnoreCase(name) && readsAColumn(argument, parameters, rowParameters)) {
+                    rowRead.add(parameter.getName().toUpperCase(Locale.ROOT));
+                }
+            }
+        }
+        return rowRead;
+    }
+
+    /**
+     * A SQL function whose body is a query is expanded into the statement as the scalar subquery it is, each
+     * parameter read from the call's argument, and a body that is an expression brings its own scalar subqueries:
+     * where an argument reads the row, such a query is a subquery correlated through that parameter, and a shape the
+     * account cannot evaluate correlated is refused as written inside the function, however the call passes its
+     * arguments, by place or by name. {@code SELECT a + 1 WHERE a > 0} called over a column is "Unsupported subquery
+     * type cannot be evaluated inside Function object: SQ_WHERE", as {@code (SELECT a + 1 WHERE a > 0) * 10} is
+     * inside its own function, and over a constant both answer (live-verified).
+     */
+    private static void requireEvaluableBody(final ParseTree call, final Function function,
+                                             final QueryExecutor executor, final Set<String> rowRead) {
+        if (CalledRoutineSecrets.calledBy(call) == null || function.getUdfLanguage() != UdfLanguage.SQL
+                || function.isTableFunction() || function.getBody() == null || rowRead.isEmpty() || typedOnly(call)) {
             return;
         }
-        final FrostlakeParser.SelectStatementContext statement = executor.subqueryStatement(body.trim());
-        if (statement != null && new CorrelatedSubqueryRule(executor, rowRead).refusesScalar(statement)) {
-            throw UnsupportedSubqueryException.inside(function);
+        final String body = SqlUdfBodyFrame.executableBody(function.getBody());
+        if (body == null) {
+            return;
+        }
+        final List<FrostlakeParser.SelectStatementContext> queries =
+            new ArrayList<FrostlakeParser.SelectStatementContext>();
+        if (executor.queryStatementOf(body.trim()) != null) {
+            final FrostlakeParser.SelectStatementContext statement = executor.subqueryStatement(body.trim());
+            if (statement != null) {
+                queries.add(statement);
+            }
+        } else {
+            try {
+                scalarSubqueries(AntlrExpressionParser.parseTree(body.trim()), queries);
+            } catch (final RuntimeException noExpression) {
+                // A block's statements are judged as they run.
+                return;
+            }
+        }
+        // The parameters the call passed no row's value hold one value for the whole statement.
+        final Set<String> fixed = new HashSet<String>();
+        for (final Parameter parameter : function.getParameters()) {
+            final String name = parameter.getName().toUpperCase(Locale.ROOT);
+            if (!rowRead.contains(name)) {
+                fixed.add(name);
+            }
+        }
+        for (final FrostlakeParser.SelectStatementContext query : queries) {
+            if (new CorrelatedSubqueryRule(executor, rowRead).withFixedNames(fixed).refusesScalar(query)) {
+                throw UnsupportedSubqueryException.inside(function);
+            }
+        }
+    }
+
+    /** The scalar subqueries of an expression, the outermost of each nest. */
+    private static void scalarSubqueries(final ParseTree node,
+                                         final List<FrostlakeParser.SelectStatementContext> queries) {
+        if (node instanceof FrostlakeParser.ScalarSubqueryExprContext) {
+            queries.add(((FrostlakeParser.ScalarSubqueryExprContext) node).selectStatement());
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            scalarSubqueries(node.getChild(i), queries);
         }
     }
 
@@ -166,13 +259,19 @@ public final class CalledRoutineSources {
         return false;
     }
 
-    /** Whether an argument names a column anywhere in it. */
-    private static boolean readsAColumn(final ParseTree node) {
+    /**
+     * Whether an argument names a column anywhere in it. Inside a function's body a name that is one of its
+     * parameters is the value the call passed, which reads a row only where the call's argument did.
+     */
+    private static boolean readsAColumn(final ParseTree node, final Set<String> parameters,
+                                        final Set<String> rowParameters) {
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
-            return true;
+            final String[] parts =
+                ParseTreeText.qualifiedNameParts(((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            return parts.length != 1 || !parameters.contains(parts[0]) || rowParameters.contains(parts[0]);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (readsAColumn(node.getChild(i))) {
+            if (readsAColumn(node.getChild(i), parameters, rowParameters)) {
                 return true;
             }
         }
@@ -242,9 +341,33 @@ public final class CalledRoutineSources {
         }
     }
 
+    /**
+     * Judges the calls of a function's body with the parameters its call passed a row's value. Where the body is a
+     * query, a call inside it that the account cannot evaluate correlated is refused as the function itself: the
+     * query is the subquery the call expands into, so {@code SELECT w(o.k) FROM o} over {@code w(a) AS 'SELECT
+     * sq_where(a) * 10'} names W, where an expression body leaves the name of the function it calls
+     * (live-verified).
+     */
+    private static void walkBody(final ParseTree parsed, final Function function, final QueryExecutor executor,
+                                 final Set<String> judged, final Set<String> rowRead) {
+        final Set<String> parameters = new HashSet<String>();
+        for (final Parameter parameter : function.getParameters()) {
+            parameters.add(parameter.getName().toUpperCase(Locale.ROOT));
+        }
+        try {
+            walk(parsed, executor, judged, parameters, rowRead);
+        } catch (final UnsupportedSubqueryException refused) {
+            if (!rowRead.isEmpty() && refused.namesFunction()
+                    && parsed instanceof FrostlakeParser.SqlScriptContext) {
+                throw UnsupportedSubqueryException.inside(function);
+            }
+            throw refused;
+        }
+    }
+
     /** The relations a SQL function's body reads, looked for where the function lives, and those of its calls. */
     private static void requireSourcesOf(final Function function, final QueryExecutor executor,
-                                         final Set<Function> judged) {
+                                         final Set<String> judged, final Set<String> rowRead) {
         if (function.getUdfLanguage() != UdfLanguage.SQL || function.getBody() == null) {
             return;
         }
@@ -272,7 +395,7 @@ public final class CalledRoutineSources {
                     new StatementSourceCheck(executor, parsed).checkQueriesIn(parsed);
                     requireDdlObjectsIn(parsed, executor);
                     executor.expandViewsIn(parsed);
-                    walk(parsed, executor, judged);
+                    walkBody(parsed, function, executor, judged, rowRead);
                 } finally {
                     ViewExpansion.end(outer);
                 }

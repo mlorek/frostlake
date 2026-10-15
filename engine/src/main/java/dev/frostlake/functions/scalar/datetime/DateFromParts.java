@@ -17,12 +17,11 @@
 package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -49,19 +48,18 @@ public class DateFromParts extends BuiltInFunction {
      * @return the whole number
      */
     static int part(final Object value) {
-        final BigDecimal exact;
-        if (value instanceof String) {
-            try {
-                exact = new BigDecimal(((String) value).trim());
-            } catch (final NumberFormatException notANumber) {
-                throw new RuntimeException("Numeric value '" + value + "' is not recognized");
-            }
-        } else if (value instanceof BigDecimal || value instanceof Double || value instanceof Float) {
-            exact = new BigDecimal(value.toString());
-        } else {
-            return ((Number) value).intValue();
-        }
-        return exact.setScale(0, RoundingMode.HALF_UP).intValue();
+        // A NaN, an infinity and a number past 32 bits are refused rather than cut (WholeNumberArgument).
+        return WholeNumberArgument.int32(value);
+    }
+
+    /**
+     * A nanosecond part, which is read in 64 bits: 4294967296 nanoseconds are 4.294967296 seconds (live-verified).
+     *
+     * @param value the part's value
+     * @return the whole number
+     */
+    static long nanosPart(final Object value) {
+        return WholeNumberArgument.int64(value, WholeNumberArgument.WIDE);
     }
 
     /**

@@ -253,6 +253,12 @@ final class ValueRangeInferencer {
                 visitor.sessionVariableValue(((SessionVarExpression) expr).getVarName()));
             return held != null ? ValueRange.of(held) : null;
         }
+        if (expr instanceof ObjectAccessExpression || expr instanceof ArrayAccessExpression) {
+            // An element of a stored structured column is told by the column's statistics over every element the
+            // read can reach, whatever its subscript (live-verified: a[0] and a[5] over an ARRAY(NUMBER(38,0)) column
+            // holding 9007199254740993 are both [SB8]); any other read by its declared width.
+            return visitor.structuredLeafRange(expr);
+        }
         if (expr instanceof ColumnReferenceExpression) {
             if (visitor.readsUntypedNull((ColumnReferenceExpression) expr)) {
                 // Nothing but an untyped NULL: the empty interval, as the bare word is.
@@ -698,6 +704,10 @@ final class ValueRangeInferencer {
     private ValueRange rangeOfCall(final FunctionCallExpression call) {
         final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
         final List<Expression> args = call.getArguments();
+        if (call.getNameExpression() == null && visitor.typeInferencer().structuredGetType(name, call) != null) {
+            // A GET of a stored structured column is told as the subscript it reads as (see the access rule above).
+            return visitor.structuredLeafRange(call);
+        }
         if ((name.equals("MOD") || name.equals("DIV0") || name.equals("DIV0NULL"))
                 && !args.isEmpty() && (isBareNull(args.get(0)) || (args.size() > 1 && isBareNull(args.get(1))))) {
             // The function forms of the operators tag a bare NULL argument as the operators do — an
@@ -892,6 +902,7 @@ final class ValueRangeInferencer {
                 final Long held = visitor.countableRows();
                 return anyAlwaysNull(args) || held != null && held < KURTOSIS_LEAST_ROWS ? ValueRange.EMPTY : null;
             case "HASH":
+            case "HASH_AGG":
             case "SEQ8":
             case "RANDOM":
                 // A signed 64-bit integer, whatever the declared digits say: RANDOM() declares

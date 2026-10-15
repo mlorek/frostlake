@@ -164,11 +164,11 @@ final class ShowListingScope {
                     schemas.addAll(database.getAllSchemas());
                 }
             } else if (isDatabase()) {
-                schemas.addAll(catalog.getDatabase(name).getAllSchemas());
+                schemas.addAll(catalog.databaseExact(name).getAllSchemas());
             } else if (name != null) {
                 schemas.add(catalog.resolveSchema(name));
             } else {
-                schemas.add(catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(catalog.getCurrentSchema()));
+                schemas.add(catalog.databaseExact(catalog.getCurrentDatabase()).schemaExact(catalog.getCurrentSchema()));
             }
         } catch (final RuntimeException missing) {
             if (reportedGenerically) {

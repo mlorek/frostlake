@@ -242,8 +242,8 @@ final class CallArgumentTypes {
             for (final FrostlakeParser.NamedArgumentContext argument : named) {
                 final FrostlakeParser.ExpressionContext value = argument.expression();
                 final boolean bare = value != null && isUntypedNull(value, typer);
-                names.add(SqlIdentifiers.canonical(argument.identifier()));
-                writtenNames.add(argument.identifier().getText());
+                names.add(SqlIdentifiers.canonical(argument.variableName()));
+                writtenNames.add(argument.variableName().getText());
                 namedTypes.add(value == null || bare ? null : atValueScale(value, staticType(value, typer)));
                 untypedNull.add(Boolean.valueOf(bare));
             }
@@ -293,9 +293,9 @@ final class CallArgumentTypes {
             if (argument.namedArgument() == null) {
                 return;
             }
-            final String name = SqlIdentifiers.canonical(argument.namedArgument().identifier());
+            final String name = SqlIdentifiers.canonical(argument.namedArgument().variableName());
             if (seen.contains(name)) {
-                final Token at = argument.namedArgument().identifier().getStart();
+                final Token at = argument.namedArgument().variableName().getStart();
                 throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                     "duplicate named argument " + name + " for function " + procName));
             }
@@ -328,7 +328,7 @@ final class CallArgumentTypes {
             if (argument.namedArgument() == null) {
                 return;
             }
-            written.add(argument.namedArgument().identifier().getText());
+            written.add(argument.namedArgument().variableName().getText());
         }
         if (written.isEmpty() || new HashSet<String>(written).size() != written.size()
                 || NamedArguments.fit(params, written)) {
@@ -354,7 +354,7 @@ final class CallArgumentTypes {
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
             final FrostlakeParser.NamedArgumentContext named = argument.namedArgument();
             if (named != null) {
-                written.add(named.identifier().getText());
+                written.add(named.variableName().getText());
                 row = row || named.argumentRow() != null;
             }
         }
@@ -372,7 +372,7 @@ final class CallArgumentTypes {
         final List<String> written = new ArrayList<String>();
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
             if (argument.namedArgument() != null) {
-                written.add(argument.namedArgument().identifier().getText());
+                written.add(argument.namedArgument().variableName().getText());
             }
         }
         boolean refused = false;
@@ -401,8 +401,8 @@ final class CallArgumentTypes {
             final List<FrostlakeParser.CallArgumentContext> arguments, final String name) {
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
             final FrostlakeParser.NamedArgumentContext named = argument.namedArgument();
-            if (named != null && named.identifier() != null
-                    && named.identifier().getText().equalsIgnoreCase(name)) {
+            if (named != null && named.variableName() != null
+                    && named.variableName().getText().equalsIgnoreCase(name)) {
                 return named.expression();
             }
         }
@@ -436,8 +436,8 @@ final class CallArgumentTypes {
                                     final ExpressionEvaluator typer) {
         final List<String> names = new ArrayList<String>();
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
-            if (argument.namedArgument() != null && argument.namedArgument().identifier() != null) {
-                names.add(argument.namedArgument().identifier().getText());
+            if (argument.namedArgument() != null && argument.namedArgument().variableName() != null) {
+                names.add(argument.namedArgument().variableName().getText());
             }
         }
         final List<String> argumentFamilies = new ArrayList<String>();

@@ -59,10 +59,12 @@ final class StageQueryArguments {
 
     private final FileFormat format;
     private final String pattern;
+    private final boolean formatWritten;
 
-    private StageQueryArguments(final FileFormat format, final String pattern) {
+    private StageQueryArguments(final FileFormat format, final String pattern, final boolean formatWritten) {
         this.format = format;
         this.pattern = pattern;
+        this.formatWritten = formatWritten;
     }
 
     /**
@@ -74,7 +76,7 @@ final class StageQueryArguments {
      */
     static StageQueryArguments read(final QueryExecutor executor, final FrostlakeParser.StageQueryParamsContext params) {
         if (params == null) {
-            return new StageQueryArguments(null, null);
+            return new StageQueryArguments(null, null, false);
         }
         final List<FrostlakeParser.StageQueryParamContext> written = params.stageQueryParam();
         final List<Expression> values = new ArrayList<>();
@@ -96,10 +98,12 @@ final class StageQueryArguments {
         }
         String formatName = null;
         String pattern = null;
+        boolean formatWritten = false;
         for (int i = 0; i < written.size(); i++) {
             final String told = nameTold(values.get(i));
             if (written.get(i).FILE_FORMAT() != null) {
                 formatName = told;
+                formatWritten = true;
             } else {
                 pattern = told;
             }
@@ -114,12 +118,20 @@ final class StageQueryArguments {
                     "Failure using stage area. Cause: [Invalid regular expression pattern '" + pattern + "'.]");
             }
         }
-        return new StageQueryArguments(format, pattern);
+        return new StageQueryArguments(format, pattern, formatWritten);
     }
 
     /** The format the list names, or null where it names none. */
     FileFormat format() {
         return format;
+    }
+
+    /**
+     * Whether the list writes a FILE_FORMAT at all. One that names none — {@code FILE_FORMAT => NULL} — reads the
+     * files by the default format; a list that writes none reads them by the format their stage keeps.
+     */
+    boolean formatWritten() {
+        return formatWritten;
     }
 
     /** The pattern the list gives, or null where it gives none. */

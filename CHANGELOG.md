@@ -8,7 +8,7 @@ fix, not a regression**: SQL that Snowflake rejects and Frostlake accepted was a
 closing it can break code that relied on the leniency. Those changes are listed first in every release
 for exactly that reason.
 
-## 0.2.1 — unreleased
+## 0.3.0 — unreleased
 
 Changes since 0.2.0 accumulate here as they land.
 
@@ -1243,6 +1243,171 @@ Changes since 0.2.0 accumulate here as they land.
 
 ### Fixed
 
+- **The JDBC temporal getters read what the account's driver reads and refuse the rest with an SQLException.**
+  getTime on a TIMESTAMP_LTZ, getTimestamp or getDate on a TIME, and getTime on a DATE threw an unchecked
+  `DateTimeParseException`, in process and over HTTP. getTime now reads every timestamp's wall clock and keeps the
+  milliseconds, and getTimestamp reads a TIME on 1970-01-01. A getter the column's type does not convert to is
+  refused as the account's driver refuses it: SQLSTATE `0A000`, code 200038, `Cannot convert value in the driver
+  from type:91 to type:time, value=19724.` That covers getDate on a TIME, getTime on a DATE, and every temporal getter
+  on a text, number, BOOLEAN or VARIANT column, including text that spells a date, which was parsed before. In
+  process, the three getters now set wasNull on a NULL.
+- **Creating a SQL procedure no longer parses its body twice with full prediction.** The check for what the account
+  refuses in a body (a DROP's or a DESCRIBE's signature, a call in a FROM form) re-read the whole body with LL
+  prediction, which tripled the cost of CREATE PROCEDURE on a large body. It now uses the quick SLL stage first, as
+  every other parse does, and falls back to LL only for a body that stage gives up on. The answers are unchanged.
+- **The newer date and time format elements are read and written.** H24, H12, MO, ME, S, P, UUUU and FF0 were
+  printed as literal text or split wrongly by TO_CHAR (17:08 as `1724`), and failed to parse in TO_DATE,
+  TO_TIMESTAMP, TO_TIME and their TRY_ forms. They now render the unpadded hour, month, minute and second, the
+  meridiem's letter, the year and no fraction digits, and parse the same way. `Y` prints the year's last two digits
+  unpadded, so `YYY` is `YY` then `Y`.
+- **HASH_AGG has a static type.** Its column was declared VARCHAR and SYSTEM$TYPEOF said `NULL[LOB]`. It is now
+  `NUMBER(19,0)`, as HASH is, and a CTAS over it stores that type.
+- **The array and object functions keep a structured type.** ARRAY_CAT, ARRAY_APPEND, ARRAY_SLICE, ARRAY_COMPACT,
+  ARRAY_EXCEPT, OBJECT_DELETE, OBJECT_INSERT, OBJECT_PICK and OBJECT_KEYS over a structured value answered a plain
+  ARRAY or OBJECT. They now answer the structured type the account declares, and OBJECT_PICK answers the picked
+  fields in the order picked.
+- **A star-argument aggregate reads an unaliased VALUES list or derived table.** `HASH_AGG(*)`, `ARRAY_AGG(*)`,
+  `OBJECT_AGG(*)` and `COUNT(* EXCLUDE …)` over such a source failed with a ParseCancellationException carrying no
+  message, grouped or not. They now read its columns as the written-out call does.
+- **The numeric aggregates refuse a VECTOR.** SUM, AVG, MEDIAN, the percentiles, the deviations and variances,
+  KURTOSIS, SKEW, MIN and MAX accepted a VECTOR and answered 0.0 (MIN and MAX answered one of the vectors). They now
+  refuse it as the statement compiles, each in the words the account uses. An AVG over an ordered window is now
+  refused in SUM's name, as an ungrouped AVG is.
+- **A cast to a VECTOR refuses an element too wide for its type.** An element past float32's greatest value was stored
+  as an infinity, and one past 32 bits in a `VECTOR(INT, n)` was wrapped. Both are now refused as elements that
+  "overflow". A NaN or an infinite FLOAT element is kept and reads as `"NaN"` or `"Infinity"` instead of failing
+  every read of its row. A refused vector cast keeps its own sentence when it stops an INSERT.
+- **A grouped COUNT, SUM or AVG skips a VARIANT JSON null.** Under GROUP BY over a plain column, COUNT and
+  COUNT(DISTINCT) counted a JSON null, and SUM and AVG failed with "Failed to cast variant value null to REAL". They
+  now read it as missing input, as the ungrouped and windowed aggregates do.
+- **BITSHIFTLEFT and BITSHIFTRIGHT shift the whole 128-bit operand.** A first operand of 2^63 or more was cut to its
+  low 64 bits before the shift, so a left shift undone by a right one gave 0, and shifting 2^63 right flipped its sign.
+- **FACTORIAL, CHR and the FROM_PARTS functions read NaN, infinite and wide arguments as the account does.** A FLOAT
+  NaN or infinity leaked Java's NumberFormatException text; it is now refused as "Number out of representable range".
+  A date or time part past 32 bits, and FACTORIAL's argument past 64 bits, were cut to their low bits; they are now
+  refused. A nanosecond part is read in 64 bits, and CHR reads the low 32 bits of its code.
+- **A read of a structured value has the type the value declares.** An element of a structured ARRAY, a field of a
+  structured OBJECT and a value of a MAP - read by subscript, by path, by GET, GET_IGNORE_CASE or GET_PATH, or as the
+  VALUE of a FLATTEN that is not RECURSIVE - was a VARIANT, so arithmetic over it ran in floating point and lost
+  digits, a CTAS declared VARIANT columns, and a DATE element could not be shifted. It now has the declared type, its
+  arithmetic is exact, and SYSTEM$TYPEOF tags it as the account does; a field the OBJECT does not declare is refused.
+  GET_IGNORE_CASE keeps every digit of a whole number past 64 bits.
+- **A copy of an engine keeps the files of its internal stages.** An engine clone and a checkpoint's restore had every
+  named, table and user stage empty, so a COPY from one loaded nothing. The copy now starts with copies of the files,
+  and an UNDROP of a dropped schema or database brings its stages' files back.
+- **A copy of an engine keeps more of its objects' metadata.** A view's, a materialized view's and a dynamic table's
+  column collations, a literal DEFAULT as the value it is (a number no longer comes back as text), a dynamic table's
+  last refresh - its data_timestamp, and what its next refresh inserts - and the creation times of the system roles,
+  INFORMATION_SCHEMA and the SNOWFLAKE database. A write-ahead log's replay of a CREATE STAGE with a directory table
+  no longer registers files that the statements after it staged.
+- **A copy of an engine keeps each table's time-travel history.** An engine clone, a checkpoint's restore and the
+  checkpoint a write-ahead log recovers from kept only each table's current rows, so the copy refused AT and BEFORE
+  points from before it was made, and a logged write that read such a point - after an EXECUTE TASK, which takes a
+  checkpoint, say - failed on replay and was lost. A snapshot now keeps each table's history with its rows, row
+  identities included, so an AT or BEFORE point and a CHANGES clause read the copy as they read the engine it copies.
+- **A transaction's writes follow a table another session renames or swaps.** Another session's ALTER TABLE ...
+  RENAME TO or SWAP WITH, and a rename of the table's schema or database, run at once beside a transaction that has
+  written the table, as they do on a real account; but the transaction's buffered changes kept the old name, so its
+  COMMIT reported success and dropped an UPDATE, or put an INSERT into the table swapped in. The changes now follow
+  the table to its new name.
+- **A statement waiting for another session's table lock can be stopped.** Its session's
+  STATEMENT_TIMEOUT_IN_SECONDS, SYSTEM$CANCEL_QUERY, SYSTEM$ABORT_SESSION and an engine shutdown left it waiting
+  until the holder's transaction ended, and the statement of an aborted session then committed its write. The wait
+  now ends as a running statement does, and an aborted statement writes nothing.
+- **Write-ahead log recovery replays each session in a session of its own.** The log kept statement texts and
+  instants only, and recovery ran them all as one session, so after a restart one session's USE, SET, ALTER SESSION
+  or USE ROLE applied to another session's statements: a row went into another schema's table or was lost, values
+  came from another session's variables and time zone, and new tables were owned by another session's role. Each
+  logged statement now carries its session, user, roles, database and schema (log format v4), and recovery puts them
+  back statement by statement; a log of an earlier version is upgraded when it is opened.
+- **A replayed statement draws what it first drew.** RANDOM(), UNIFORM over it, UUID_STRING() - also as a column
+  DEFAULT - and the rows SAMPLE picks came out different on every restart; they now come from a stream the
+  statement's recorded instant seeds. IDENTITY and sequence values a statement drew are logged with it and handed
+  out again on replay, so a transaction that committed after another session's insert keeps its ids and the counter
+  goes on past both.
+- **Queries that change durable state are logged.** A SELECT of a sequence's NEXTVAL, a TO_QUERY that may run a CALL
+  and SYSTEM$TASK_DEPENDENTS_ENABLE were left out of the write-ahead log, so a restart reissued sequence values and
+  suspended the task graph again; they are logged. A statement reading the query its session ran just before by
+  RESULT_SCAN has that query logged ahead of it, so the replay reads the same rows instead of failing.
+- **A write-ahead log compacted at a checkpoint keeps its records readable.** The compaction wrote the records it
+  kept without their instants under a header that promised them.
+- **CREATE MASKING POLICY takes EXEMPT_OTHER_POLICIES.** `EXEMPT_OTHER_POLICIES = TRUE | FALSE` was a syntax error;
+  a masking or a row access policy takes it beside its COMMENT, in either order, and GET_DDL and SHOW ... POLICIES
+  report it. A row access policy or a conditional masking policy may read a column masked by an exempt policy, in
+  whichever order the two are attached; masking a column another policy already reads is refused as the account
+  refuses it (`Column 'S' cannot be masked because it is used as argument by one or more masking/row-access
+  policies.`), so the rule no longer depends on the order of the statements. A repeated property, a value other
+  than TRUE or FALSE, and the property on a projection or an aggregation policy are refused with the account's
+  sentences.
+- **GET_DDL of a task writes its session parameters.** TIMEZONE, QUERY_TAG and every other session parameter set on
+  a task were left out, so replaying the text ran the task under the account's settings; each is written on its own
+  line.
+- **A table's DEFAULT_DDL_COLLATION reaches its columns.** A string column created by CREATE TABLE or ADD COLUMN
+  without a collation of its own now takes the DEFAULT_DDL_COLLATION of its table, schema or database, as the
+  account gives it - in its comparisons, DESCRIBE and GET_DDL alike.
+- **GET_DDL of a materialized view keeps its column comments,** as a view's DDL does.
+- **A foreign key stays on the table it was declared against.** Renaming, moving or swapping the parent table, or
+  renaming or swapping its schema or database, left the key naming the old name: SHOW IMPORTED KEYS,
+  REFERENTIAL_CONSTRAINTS and GET_DDL named a missing or wrong table, `DROP ... RESTRICT` dropped the real parent
+  and refused one nothing referenced, a new table taking the old name became the parent, and a hybrid child checked
+  its rows against the wrong table. The key now follows its parent under the new name, as streams and grants do.
+- **A hybrid table's column-level FOREIGN KEY is enforced.** `col INT REFERENCES p (id)`, with or without the
+  FOREIGN KEY words or a constraint name, let an orphan row in where the same key declared on the table refused it;
+  both are now checked on INSERT, the referenced column defaulting to the parent's primary key.
+- **The correlated-body refusal judges every call of a SQL function.** A call passing a row's value by name -
+  `nw(b => 1, a => o.k)` - or mixing positional and named arguments, and a call of a function whose body is an
+  expression holding a correlated subquery - `(SELECT a + 1 WHERE a > 0) * 10` - answered where the positional
+  call of a query body is refused; each is refused the same way, the expression body naming its own function. A
+  body's other parameters, given constants, no longer leave it unjudged: `nd(1, o.k)` over `SELECT a + b WHERE
+  a > 0` is refused as `nd(o.k, 1)` is.
+- **SHOW lists only the objects the role sees.** SHOW TABLES, VIEWS, MATERIALIZED VIEWS, OBJECTS, COLUMNS,
+  SEQUENCES, STREAMS, TASKS, PIPES and DYNAMIC TABLES listed every object of their scope to any role - row counts
+  and a view's whole `text` among them; each lists only what the role owns or holds a privilege on, as
+  INFORMATION_SCHEMA does, while a role holding MANAGE GRANTS - ACCOUNTADMIN and SECURITYADMIN from the start - still
+  sees every object.
+- **DESCRIBE and GET_DDL answer an object the role does not see as one that does not exist.** DESCRIBE TABLE and
+  DESCRIBE VIEW, SHOW COLUMNS IN a named relation, and GET_DDL of a table, a view, a materialized view, a dynamic
+  table, a sequence, a stream, a task or a pipe gave the columns or the DDL to a role holding no privilege on the
+  object; each is refused as a missing name is, `Table 'SECRET' does not exist or not authorized.`
+- **A SQL function that hands its own parameter to a query-bodied SQL function is judged by what its call passes.**
+  A wrapper such as `SELECT sq_where(a) * 10` was refused on every call, constants included, and one whose body is
+  an expression could not be created; over a constant each answers again, while a call that passes a row's value is
+  refused naming the wrapper where its body is a query, and the function it calls where its body is an expression.
+- **An unload of a table needs SELECT on it.** `COPY INTO @stage FROM <table>` read and wrote a table the role holds
+  no SELECT on - the user's stage always takes the files - where its query form `FROM (SELECT * FROM <table>)` was
+  refused; it is refused the same way.
+- **A privilege on an object reaches it only through USAGE on its database and schema.** A role granted SELECT, or
+  any other privilege, on an object of a schema it holds no USAGE on - or whose database it holds no USAGE on - is
+  refused as for a container that is not there, `Database 'P' does not exist or not authorized.` first, then the
+  schema's; owning the container or the object reaches it as before.
+- **A query that reads the outer row through a common table expression is judged as the query it passes on.** A SQL
+  function whose body reads its parameter in a WITH clause - `WITH d AS (SELECT p AS v) SELECT v FROM d`, or a
+  definition that counts or aggregates the rows matching the parameter - called over a column is answered again, as
+  is a correlated scalar subquery of that shape, where both were refused as unsupported subqueries; a filter or a
+  grouping of the outer value and two such definitions read together stay refused.
+- **CASE, WHEN, CAST, DEFAULT, CONSTRAINT, JOIN, INNER and CROSS name arguments and script variables.** Each names a
+  function's, a procedure's and a masking or row access policy's argument, a call's named argument
+  (`f(when => 'a', case => 2)`), and a script's variable, cursor or RESULTSET as LET, FOR (`FOR inner IN 1 TO 3`),
+  OPEN, INTO and a bind (`:join`) name it, where each was a syntax error at the word; DEFAULT and CONSTRAINT are
+  assigned too. Where a value is read CASE, CAST and WHEN still lead their own constructs, and an unquoted DEFAULT
+  names nothing.
+- **An ORDER BY or GROUP BY key written DEFAULT reads nothing.** `SELECT 1 AS default ORDER BY default` and
+  `SELECT 1 AS d GROUP BY default` are refused `invalid identifier 'DEFAULT'` at the key, where the first sorted by
+  the item aliased DEFAULT and the second answered.
+- **FOR UPDATE is judged by what the query reads.** A query that reads a table only through a derived table, a common
+  table expression or a set operation's arm is refused `Unsupported feature 'FOR UPDATE clause'.`, and one whose FROM
+  reads VALUES or a derived table of no table `A 'FOR UPDATE' clause is not compatible with 'not selecting from a
+  table'.`, where each got the other sentence. A RESULTSET's and a cursor's query take the clause, refused when the
+  RESULTSET is filled or the cursor opens, where both were syntax errors.
+- **A SHOW listing's scope names its schema and its database exactly.** `SHOW TABLES IN SCHEMA "ss"` and
+  `SHOW SEQUENCES IN DATABASE "test_db"` no longer list the schema SS or the database TEST_DB: they are refused as
+  for a scope that names nothing, in the generic sentence or naming the schema or the database, kind by kind.
+  `SHOW COLUMNS IN SCHEMA "ss"` names `ss` in its full-path sentence, and `SHOW COLUMNS IN DATABASE "test_db"` quotes
+  the database it misses.
+- **A staged-file query reads its files by the format their stage keeps.** A query that writes no FILE_FORMAT reads
+  a named stage's files by its FILE_FORMAT, inline or naming a format, SKIP_HEADER and NULL_IF included, and a table
+  stage's by its STAGE_FILE_FORMAT, where every stage was read as default CSV; `FILE_FORMAT => NULL` reads them by
+  the default.
 - **The array functions read their arguments on the row as the account does.** A VARIANT that holds no array is
   read as a one-element array by ARRAY_SLICE, ARRAY_CONTAINS, ARRAY_POSITION, ARRAY_APPEND, ARRAY_PREPEND,
   ARRAY_DISTINCT, ARRAY_INSERT, ARRAY_REMOVE, ARRAY_REVERSE, ARRAY_SORT, ARRAYS_OVERLAP, ARRAY_INTERSECTION,

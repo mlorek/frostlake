@@ -39,7 +39,9 @@ final class AbortableHttpSession implements AbortableSession {
 
     @Override
     public void abort() {
-        // Nothing to mark: the session ends as soon as the aborting request is over.
+        // The session ends as soon as the aborting request is over; a statement it is waiting in for a table lock
+        // ends now, rather than going on once the lock is free (see TableLockWait).
+        session.getSettings().markAborted();
     }
 
     @Override

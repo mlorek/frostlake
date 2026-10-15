@@ -42,6 +42,8 @@ public class MaskingPolicySnapshot implements Serializable {
     public String body;
     public String comment;
     public String owner;
+    /** EXEMPT_OTHER_POLICIES as the CREATE set it; false on snapshots written before it was saved. */
+    public boolean exemptOtherPolicies;
     public List<MaskingPolicyParameterSnapshot> parameters = new ArrayList<>();
     // When the object was created. Null on snapshots written before it was saved, which restore it as new.
     public Instant createdAt;

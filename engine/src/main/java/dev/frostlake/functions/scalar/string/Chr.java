@@ -18,10 +18,10 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.StringType;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
+import java.math.BigInteger;
 import java.util.List;
 
 public class Chr extends TextArgumentFunction {
@@ -30,14 +30,17 @@ public class Chr extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        // A fraction goes to the nearest code point, and a number that is none is refused (live-verified).
-        final long codePoint = new BigDecimal(args.get(0).toString()).setScale(0, RoundingMode.HALF_UP).longValue();
+        // A fraction goes to the nearest code point, and a NaN or an infinity is refused (WholeNumberArgument). The
+        // code is the number's low 32 bits, read signed: CHR(4294967361) is 'A', CHR(4294967296) a NUL and
+        // CHR(2147483713) refused, the refusal naming the number written (live-verified).
+        final BigInteger written = WholeNumberArgument.rounded(args.get(0), WholeNumberArgument.WIDE);
+        final int codePoint = written.intValue();
         // A surrogate is half of a character and names none.
         if (codePoint < 0 || codePoint > Character.MAX_CODE_POINT
                 || codePoint >= Character.MIN_SURROGATE && codePoint <= Character.MAX_SURROGATE) {
-            throw new RuntimeException("Invalid character code " + codePoint + " in the CHR input");
+            throw new RuntimeException("Invalid character code " + written + " in the CHR input");
         }
-        return new String(Character.toChars((int) codePoint));
+        return new String(Character.toChars(codePoint));
     }
 
     @Override

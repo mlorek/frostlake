@@ -34,6 +34,8 @@ public class RowAccessPolicySnapshot implements Serializable {
     public String body;
     public String comment;
     public String owner;
+    /** EXEMPT_OTHER_POLICIES as the CREATE set it; false on snapshots written before it was saved. */
+    public boolean exemptOtherPolicies;
     // When the object was created. Null on snapshots written before it was saved, which restore it as new.
     public Instant createdAt;
 }

@@ -27,7 +27,7 @@ public class BitShiftLeft extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        return BitShifts.shifted(BitwiseOperand.whole(args.get(0)), BitwiseOperand.whole(args.get(1)), true);
+        return BitShifts.shifted(BitwiseOperand.wide(args.get(0)), BitwiseOperand.whole(args.get(1)), true);
     }
 
     @Override

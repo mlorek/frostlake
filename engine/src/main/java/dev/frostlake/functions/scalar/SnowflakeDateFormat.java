@@ -29,6 +29,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
 import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -41,7 +42,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Formats a temporal value with a subset of Snowflake's date/time format model (TO_CHAR / TO_VARCHAR
  * with a date format). Snowflake elements are translated to a {@link DateTimeFormatter} pattern:
- * YYYY/YY/Y, MMMM/MON/MM, DD/DY/D, HH24/HH12/HH/H, MI, SS, FF[1-9], AM/PM, TZH/TZM pairs, TZD. The scan is greedy
+ * YYYY/UUUU/YY/Y, MMMM/MON/MM/MO, DD/DY/D, HH24/HH12/H24/H12/HH/H, MI/ME, SS/S, FF[0-9], AM/PM/P, TZH/TZM pairs,
+ * TZD. The scan is greedy
  * longest-match at each position; any UNMATCHED character is emitted as a quoted literal, so
  * separators (-, /, :, spaces) pass through unchanged and unsupported elements degrade to literal
  * text rather than throwing. Snowflake has NO full-name 'DAY'/'MONTH' elements (live-verified on
@@ -80,22 +82,37 @@ public final class SnowflakeDateFormat {
         {"TZD", "\uE000"},
         // ★ YYYY IS NO JAVA PATTERN: 'yyyy' signs a year past 9999 (+20201) where live prints the digits,
         // so the pattern carries a sentinel (YEAR_SENTINEL) that formatterFor builds as the era year.
-        {"YYYY", "\uE001"}, {"HH24", "HH"}, {"HH12", "hh"}, {"MMMM", "MMMM"},
+        {"YYYY", "\uE001"}, {"UUUU", "uuuu"}, {"HH24", "HH"}, {"HH12", "hh"},
+        // The unpadded elements (live-verified on 2005-04-05 17:08:09): H24:ME:S is 17:8:9, H12 is 5, MO is 4.
+        {"H24", "H"}, {"H12", "h"}, {"MMMM", "MMMM"},
         {"FF9", "SSSSSSSSS"}, {"FF8", "SSSSSSSS"}, {"FF7", "SSSSSSS"}, {"FF6", "SSSSSS"},
         {"FF5", "SSSSS"}, {"FF4", "SSSS"}, {"FF3", "SSS"}, {"FF2", "SS"}, {"FF1", "S"},
+        // FF0 asks for no fraction digits: SS.FF0 is 09. (live-verified).
+        {"FF0", ""},
         {"MON", "MMM"}, {"MMM", "MMM"},
         {"YY", "yy"}, {"MM", "MM"}, {"DD", "dd"}, {"DY", "EEE"}, {"HH", "HH"},
         {"MI", "mm"}, {"SS", "ss"}, {"FF", "SSSSSSSSS"}, {"AM", "a"}, {"PM", "a"},
-        // Single-letter elements (live-verified): Y = 2-digit year ('Y' on 2020-01-15 → "20"),
-        // D = day-of-month UNPADDED ('D' → "15"), H = hour UNPADDED (the H in 'MONTH' rendered "0"
-        // for a DATE). These are what make 'DAY' and 'MONTH' come out as "15A20" / "JanT0".
-        {"Y", "yy"}, {"D", "d"}, {"H", "H"},
+        {"MO", "M"}, {"ME", "m"},
+        // Single-letter elements (live-verified): Y = the year's last two digits UNPADDED ('Y' on 2020-01-15 →
+        // "20", on 2005-04-05 → "5", so 'YYY' is YY then Y, "055"), D = day-of-month UNPADDED ('D' → "15"),
+        // H = hour UNPADDED (the H in 'MONTH' rendered "0" for a DATE), S = second UNPADDED, and P = the
+        // meridiem's letter, A or P. These are what make 'DAY' and 'MONTH' come out as "15A20" / "JanT0".
+        {"Y", "\uE003"}, {"D", "d"}, {"H", "H"}, {"S", "s"}, {"P", "\uE002"},
     };
 
     private static final char TZD_SENTINEL = '\uE000';
 
     /** Where a YYYY element sits in a Java pattern, built as the era year by {@link #withEraYears}. */
     private static final char YEAR_SENTINEL = '\uE001';
+
+    /** Where a P element sits in a Java pattern, built as the meridiem's letter by {@link #withEraYears}. */
+    private static final char MERIDIEM_LETTER_SENTINEL = '\uE002';
+
+    /** Where a Y element sits in a Java pattern, built as the unpadded last two year digits. */
+    private static final char SHORT_YEAR_SENTINEL = '\uE003';
+
+    /** The meridiem's letters, as P renders and reads them. */
+    private static final Map<Long, String> MERIDIEM_LETTERS = Map.of(0L, "A", 1L, "P");
 
     /**
      * A Java pattern whose YYYY elements are built as the era year \u2014 four digits at least, never signed \u2014
@@ -106,19 +123,37 @@ public final class SnowflakeDateFormat {
     private static DateTimeFormatter withEraYears(final String javaPattern) {
         final DateTimeFormatterBuilder builder = new DateTimeFormatterBuilder();
         int from = 0;
-        int at = javaPattern.indexOf(YEAR_SENTINEL);
+        int at = nextBuiltElement(javaPattern, 0);
         while (at >= 0) {
             if (at > from) {
                 builder.appendPattern(javaPattern.substring(from, at));
             }
-            TemporalText.appendEraYear(builder);
+            final char sentinel = javaPattern.charAt(at);
+            if (sentinel == YEAR_SENTINEL) {
+                TemporalText.appendEraYear(builder);
+            } else if (sentinel == MERIDIEM_LETTER_SENTINEL) {
+                builder.appendText(ChronoField.AMPM_OF_DAY, MERIDIEM_LETTERS);
+            } else {
+                builder.appendValueReduced(ChronoField.YEAR, 1, 2, 2000);
+            }
             from = at + 1;
-            at = javaPattern.indexOf(YEAR_SENTINEL, from);
+            at = nextBuiltElement(javaPattern, from);
         }
         if (from < javaPattern.length()) {
             builder.appendPattern(javaPattern.substring(from));
         }
         return builder.toFormatter(Locale.US);
+    }
+
+    /** Where the next element built by the builder rather than a pattern letter sits, or -1. */
+    private static int nextBuiltElement(final String javaPattern, final int from) {
+        for (int i = from; i < javaPattern.length(); i++) {
+            final char c = javaPattern.charAt(i);
+            if (c == YEAR_SENTINEL || c == MERIDIEM_LETTER_SENTINEL || c == SHORT_YEAR_SENTINEL) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     public static String format(final Object value, final String snowflakeFormat) {
@@ -183,7 +218,7 @@ public final class SnowflakeDateFormat {
             return existing;
         }
         final String javaPattern = toJavaPattern(snowflakeFormat);
-        final DateTimeFormatter built = javaPattern.indexOf(YEAR_SENTINEL) < 0
+        final DateTimeFormatter built = nextBuiltElement(javaPattern, 0) < 0
             ? DateTimeFormatter.ofPattern(javaPattern, Locale.US) : withEraYears(javaPattern);
         if (FORMATTER_CACHE.size() >= FORMATTER_CACHE_CAPACITY) {
             final Iterator<String> it = FORMATTER_CACHE.keySet().iterator();

@@ -83,7 +83,7 @@ final class RoutineStatementRules {
         if (leaf && misplaced != null) {
             final Token starts = node instanceof TerminalNode ? ((TerminalNode) node).getSymbol()
                 : ((FrostlakeParser.DataTypeNameContext) node).getStart();
-            if (starts.getTokenIndex() >= misplaced.identifier().getStart().getTokenIndex()) {
+            if (starts.getTokenIndex() >= misplaced.variableName().getStart().getTokenIndex()) {
                 throw requiredAfterOptionalRefusal(statement, misplaced);
             }
         }
@@ -125,12 +125,12 @@ final class RoutineStatementRules {
                 break;
             }
             if (parameter.DEFAULT() != null || parameter.COLON_EQ() != null) {
-                optional = SqlIdentifiers.canonical(parameter.identifier());
+                optional = SqlIdentifiers.canonical(parameter.variableName());
             }
         }
-        final Token at = required.identifier().getStart();
+        final Token at = required.variableName().getStart();
         return new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
-            "required argument " + SqlIdentifiers.canonical(required.identifier())
+            "required argument " + SqlIdentifiers.canonical(required.variableName())
                 + " cannot follow optional argument " + optional));
     }
 
@@ -202,7 +202,7 @@ final class RoutineStatementRules {
         }
     }
 
-    private static void introduce(final Set<String> names, final FrostlakeParser.IdentifierContext identifier,
+    private static void introduce(final Set<String> names, final ParseTree identifier,
                                   final Token at) {
         if (identifier == null) {
             return;

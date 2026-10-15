@@ -1995,7 +1995,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             places.add(keywordPosition(positional.getStart()));
         }
         for (final FrostlakeParser.NamedArgumentContext na : ctx.namedArgument()) {
-            names.add(na.identifier().getText());
+            names.add(na.variableName().getText());
             args.add(namedArgumentValue(na));
             places.add(namedArgumentPlace(na));
         }
@@ -2056,8 +2056,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     @Override
     public Expression visitBindVarExpr(final FrostlakeParser.BindVarExprContext ctx) {
         // From the CONTEXT's start, not the identifier's: live reports the colon's offset.
-        return new BindVariableExpression(ctx.identifier() != null
-            ? ctx.identifier().getText()
+        return new BindVariableExpression(ctx.variableName() != null
+            ? ctx.variableName().getText()
             : ctx.INTEGER_LITERAL().getText(),
             new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
     }
@@ -2132,7 +2132,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final List<String> names = new ArrayList<>();
         final List<SourcePosition> places = new ArrayList<>();
         for (final FrostlakeParser.NamedArgumentContext na : ctx.namedArgumentList().namedArgument()) {
-            names.add(na.identifier().getText());
+            names.add(na.variableName().getText());
             args.add(namedArgumentValue(na));
             places.add(namedArgumentPlace(na));
         }

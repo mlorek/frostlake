@@ -774,6 +774,7 @@ public class AlterCommandHandler implements CommandHandler {
                             added.add(newColumn);
                             addedNames.add(colName);
                         }
+                        DefaultDdlCollation.apply(table, added, catalog.resolveOwningSchema(tableName), catalog);
                         for (final TableColumn newColumn : added) {
                             table.addColumn(newColumn);
                             queryExecutor.backfillColumn(storageName, table, newColumn);
@@ -1057,16 +1058,17 @@ public class AlterCommandHandler implements CommandHandler {
                                     + " policies. Please drop the current association in order to attach a"
                                     + " new masking policy.");
                             }
+                            // A column another policy reads is masked only by an exempt policy (MaskedArguments).
+                            MaskedArguments.requireMaskable(table, col, catalog.findMaskingPolicy(policyName));
                             if (ctx.tableAction().identifierList() != null) {
                                 // Conditional policy: a USING argument column that is itself masked is
-                                // rejected (live-verified error shape).
+                                // rejected, unless its own policy is exempt (live-verified).
                                 for (final FrostlakeParser.IdentifierContext argCtx
                                         : ctx.tableAction().identifierList().identifier()) {
                                     final String argName = visitor.getText(argCtx);
                                     final TableColumn argCol = table.hasColumn(argName) ? table.getColumn(argName) : null;
-                                    if (argCol != null && argCol != col && argCol.getMaskingPolicyName() != null) {
-                                        throw new RuntimeException("Column '" + argName.toUpperCase(Locale.ROOT)
-                                            + "' cannot be used as policy argument because it is masked by another policy");
+                                    if (argCol != null && argCol != col) {
+                                        MaskedArguments.requireReadable(catalog, argCol);
                                     }
                                 }
                             }
@@ -3425,7 +3427,7 @@ public class AlterCommandHandler implements CommandHandler {
             }
             cols.add(colName);
         }
-        RowAccessPolicyAttachment.check(policy, table, objectName, policyName, cols);
+        RowAccessPolicyAttachment.check(catalog, policy, table, objectName, policyName, cols, false);
         if (attached) {
             throw new RuntimeException("Object " + objectName.toUpperCase(Locale.ROOT)
                 + " already has a ROW_ACCESS_POLICY. Only one ROW_ACCESS_POLICY is allowed at a time.");

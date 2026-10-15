@@ -59,8 +59,8 @@ public final class InfiniteBindRefusal {
         }
         if (statement instanceof FrostlakeParser.BindVarExprContext) {
             final FrostlakeParser.BindVarExprContext bind = (FrostlakeParser.BindVarExprContext) statement;
-            if (bind.identifier() != null && scope.hasVariable(bind.identifier().getText())) {
-                final RuntimeException refusal = of(scope.getVariable(bind.identifier().getText()));
+            if (bind.variableName() != null && scope.hasVariable(bind.variableName().getText())) {
+                final RuntimeException refusal = of(scope.getVariable(bind.variableName().getText()));
                 if (refusal != null) {
                     throw refusal;
                 }

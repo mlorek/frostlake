@@ -51,6 +51,8 @@ public final class SessionSettings {
     private volatile String lastTransactionId;
     /** The session's own roles once it has set any; null while it still takes the engine's. */
     private volatile SessionRoles roles;
+    /** Whether SYSTEM$ABORT_SESSION ended the session: what it runs now ends, and it runs nothing more. */
+    private volatile boolean aborted;
 
     /** A new session's settings. */
     public SessionSettings() {
@@ -71,6 +73,16 @@ public final class SessionSettings {
     /** Give the session roles of its own. */
     public void setRoles(final SessionRoles roles) {
         this.roles = roles;
+    }
+
+    /** Marks the session aborted (see SYSTEM$ABORT_SESSION); a statement it is waiting in ends. */
+    public void markAborted() {
+        aborted = true;
+    }
+
+    /** Whether the session was aborted. */
+    public boolean isAborted() {
+        return aborted;
     }
 
     public long getSessionNumber() {

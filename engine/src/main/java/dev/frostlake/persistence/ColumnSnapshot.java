@@ -55,6 +55,11 @@ public class ColumnSnapshot implements Serializable {
     // True when defaultValue is a DEFAULT *expression* text (evaluate per row) rather than a literal.
     // Primitive → old snapshots deserialize it as false (a literal), preserving prior behavior.
     public boolean defaultIsExpression;
+    /**
+     * A literal default's value itself, which {@link #defaultValue} holds only as text; null for an expression, and
+     * on a snapshot written before it was kept, which restores the text.
+     */
+    public Serializable defaultLiteral;
     public String comment;
     // Qualified name of an attached masking policy, or null. Old snapshots predate this field (null on load).
     public String maskingPolicyName;

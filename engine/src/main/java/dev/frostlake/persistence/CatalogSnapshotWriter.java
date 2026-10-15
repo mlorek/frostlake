@@ -56,6 +56,7 @@ import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.SnapshotSequence;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.types.BinaryType;
@@ -67,12 +68,14 @@ import org.slf4j.LoggerFactory;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.ObjectOutputStream;
+import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -190,6 +193,8 @@ final class CatalogSnapshotWriter {
             snapshot.roles.add(RestCatalogSnapshots.saveRole(role));
         }
 
+        // Every history saved above drew its numbers by now.
+        snapshot.snapshotSequence = SnapshotSequence.current();
         return snapshot;
     }
 
@@ -282,6 +287,10 @@ final class CatalogSnapshotWriter {
                 colSnapshot.primaryKey = col.isPrimaryKey();
                 colSnapshot.defaultValue = col.getDefaultValue() != null ? col.getDefaultValue().toString() : null;
                 colSnapshot.defaultIsExpression = col.getDefaultValue() instanceof DefaultValueExpression;
+                if (!colSnapshot.defaultIsExpression && col.getDefaultValue() instanceof Serializable) {
+                    // A literal keeps its value, so a number stays a number rather than coming back as its text.
+                    colSnapshot.defaultLiteral = (Serializable) col.getDefaultValue();
+                }
                 colSnapshot.comment = col.getComment();
                 colSnapshot.maskingPolicyName = col.getMaskingPolicyName();
                 colSnapshot.maskingPolicyArguments = col.getMaskingPolicyArguments();
@@ -608,6 +617,7 @@ final class CatalogSnapshotWriter {
             policySnapshot.body = policy.getBody();
             policySnapshot.comment = policy.getComment();
             policySnapshot.owner = policy.getOwner();
+            policySnapshot.exemptOtherPolicies = policy.isExemptOtherPolicies();
             policySnapshot.createdAt = policy.getCreatedTime();
             for (final Parameter param : policy.getParameters()) {
                 final MaskingPolicyParameterSnapshot paramSnapshot = new MaskingPolicyParameterSnapshot();
@@ -732,6 +742,15 @@ final class CatalogSnapshotWriter {
             dtSnapshot.lastDdlBy = dt.getLastDdlBy();
             dtSnapshot.clusterKeys = dt.getClusterKeys();
             dtSnapshot.refreshedRows = Long.valueOf(dt.getRefreshedRows());
+            dtSnapshot.lastRefreshedTime = dt.getLastRefreshedTime();
+            dtSnapshot.firstRefreshedSequence = Long.valueOf(dt.getFirstRefreshedSequence());
+            dtSnapshot.firstRefreshedMillis = Long.valueOf(dt.getFirstRefreshedMillis());
+            if (dt.getRefreshImage() != null) {
+                dtSnapshot.refreshImage = new ArrayList<>();
+                for (final List<Object> row : dt.getRefreshImage()) {
+                    dtSnapshot.refreshImage.add(new ArrayList<>(row));
+                }
+            }
             if (dt.getResolvedColumns() != null) {
                 dtSnapshot.resolvedColumns = derivedColumnSnapshots(dt.getResolvedColumns());
             }
@@ -767,6 +786,7 @@ final class CatalogSnapshotWriter {
             policySnapshot.body = policy.getBody();
             policySnapshot.comment = policy.getComment();
             policySnapshot.owner = policy.getOwner();
+            policySnapshot.exemptOtherPolicies = policy.isExemptOtherPolicies();
             policySnapshot.createdAt = policy.getCreatedTime();
             schemaSnapshot.rowAccessPolicies.add(policySnapshot);
         }
@@ -852,6 +872,8 @@ final class CatalogSnapshotWriter {
             colSnapshot.nullable = col.isNullable();
             // A view column declared with a COMMENT (CREATE VIEW v (c COMMENT '...') AS ...) keeps it.
             colSnapshot.comment = col.getComment();
+            // And the collation it read from its source, which DESCRIBE and SHOW COLUMNS report.
+            colSnapshot.collation = col.getCollation();
             snapshots.add(colSnapshot);
         }
         return snapshots;
@@ -904,9 +926,55 @@ final class CatalogSnapshotWriter {
         dataSnapshot.database = database;
         dataSnapshot.schema = schema;
         dataSnapshot.table = table.getName();
-        for (final Row row : storage.scan()) {
+        final List<Long> ids = new ArrayList<>();
+        final List<Row> current = storage.scanWithIds(ids);
+        for (final Row row : current) {
             dataSnapshot.rows.add(new ArrayList<>(row.getValues()));
         }
+        dataSnapshot.history = buildHistory(storage, current, ids);
         return dataSnapshot;
+    }
+
+    /**
+     * A table's time-travel history as a snapshot value. A snapshot's row that is stored now is saved as its place
+     * among the rows; any other is saved once however many snapshots hold it, with its identity, so the restored
+     * snapshots tell an updated row from a deleted one as these do.
+     *
+     * @param storage the table's storage
+     * @param current the rows stored now, in the order they are saved
+     * @param ids     their identities
+     * @return the history
+     */
+    static TableHistorySnapshot buildHistory(final TableStorage storage, final List<Row> current,
+                                             final List<Long> ids) {
+        final TableHistorySnapshot history = new TableHistorySnapshot();
+        history.startMillis = storage.historyStartMillis();
+        history.startSequence = storage.historyStartSequence();
+        history.evicted = storage.isHistoryEvicted();
+        history.currentRowIds.addAll(ids);
+        // A row is found by the object it is: snapshots share row objects with the stored rows and one another.
+        final Map<Row, Integer> places = new IdentityHashMap<>();
+        for (int i = 0; i < current.size(); i++) {
+            places.put(current.get(i), -(i + 1));
+        }
+        for (final dev.frostlake.storage.TableSnapshot snapshot : storage.historySnapshots()) {
+            final TableHistoryPoint point = new TableHistoryPoint();
+            point.epochMillis = snapshot.epochMillis;
+            point.sequence = snapshot.sequence;
+            for (int r = 0; r < snapshot.rows.size(); r++) {
+                final Row row = snapshot.rows.get(r);
+                final Long id = snapshot.rowIds.get(r);
+                Integer place = places.get(row);
+                if (place == null || !id.equals(place < 0 ? ids.get(-place - 1) : history.pastRowIds.get(place))) {
+                    place = history.pastRows.size();
+                    history.pastRowIds.add(id);
+                    history.pastRows.add(new ArrayList<>(row.getValues()));
+                    places.put(row, place);
+                }
+                point.rows.add(place);
+            }
+            history.points.add(point);
+        }
+        return history;
     }
 }

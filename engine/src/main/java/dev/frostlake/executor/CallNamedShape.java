@@ -59,9 +59,9 @@ public final class CallNamedShape {
                 continue;
             }
             named = true;
-            final String name = SqlIdentifiers.canonical(argument.namedArgument().identifier());
+            final String name = SqlIdentifiers.canonical(argument.namedArgument().variableName());
             if (!seen.add(name)) {
-                final Token at = argument.namedArgument().identifier().getStart();
+                final Token at = argument.namedArgument().variableName().getStart();
                 throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                     "duplicate named argument " + name + " for function " + procedure));
             }

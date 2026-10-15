@@ -31,6 +31,7 @@ public class RowAccessPolicy extends SqlObject {
 
     private final List<Parameter> parameters;  // columns from the table passed as args
     private String body;                       // SQL boolean expression
+    private boolean exemptOtherPolicies;
 
     public RowAccessPolicy(final String name, final List<Parameter> parameters, final String body) {
         super(name);
@@ -41,6 +42,14 @@ public class RowAccessPolicy extends SqlObject {
     public List<Parameter> getParameters() { return new ArrayList<>(parameters); }
     public String getBody() { return body; }
     public void setBody(final String body) { this.body = body; }
+
+    /** Whether the CREATE set EXEMPT_OTHER_POLICIES TRUE, which a row access policy takes and its DDL writes. */
+    public boolean isExemptOtherPolicies() { return exemptOtherPolicies; }
+
+    /** Records EXEMPT_OTHER_POLICIES as the CREATE set it. */
+    public void setExemptOtherPolicies(final boolean exemptOtherPolicies) {
+        this.exemptOtherPolicies = exemptOtherPolicies;
+    }
 
     @Override
     public String getObjectType() { return "ROW ACCESS POLICY"; }

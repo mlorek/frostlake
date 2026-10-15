@@ -2741,6 +2741,9 @@ public final class CopyCommandExecutor {
             data = executor.executeSelectFromContext(fromSelect);
         } else if (fromTable != null) {
             final Table sourceTable = executor.getCatalog().resolveTable(fromTable);
+            // An unload reads its table as a query does, so it needs SELECT on it as the query form does
+            // (documented: COPY INTO <location> requires SELECT on the table it unloads).
+            executor.requireSelect(fromTable);
             if (hasMaskedColumns(sourceTable) || hasProjectionPolicies(sourceTable)) {
                 // An unload reads the table as a query does, so its masking and projection policies apply: the raw
                 // scan below wrote the unmasked values to the stage, and a column no query may project. Read through

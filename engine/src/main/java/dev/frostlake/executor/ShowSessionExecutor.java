@@ -1222,8 +1222,8 @@ final class ShowSessionExecutor {
             }
         } else if ("DATABASE".equals(scopeKind)) {
             final Database db = scopeName != null
-                ? catalog.getDatabase(scopeName)
-                : catalog.getDatabase(catalog.getCurrentDatabase());
+                ? catalog.databaseExact(scopeName)
+                : catalog.databaseExact(catalog.getCurrentDatabase());
             if (db != null) {
                 schemas.addAll(db.getAllSchemas());
             }

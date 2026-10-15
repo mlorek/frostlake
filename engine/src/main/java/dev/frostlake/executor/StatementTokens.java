@@ -21,6 +21,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.SplittableRandom;
+import java.util.UUID;
 
 /**
  * The tokens a statement hands out to what it creates — a notebook's URL id, a generated job service name, an
@@ -36,6 +38,9 @@ public final class StatementTokens {
     /** The statement the draw count below belongs to. */
     private static final ThreadLocal<Instant> DRAWN_FOR = new ThreadLocal<Instant>();
     private static final ThreadLocal<int[]> DRAWN = new ThreadLocal<int[]>();
+    /** The statement the random stream below belongs to, and the stream. */
+    private static final ThreadLocal<Instant> STREAM_FOR = new ThreadLocal<Instant>();
+    private static final ThreadLocal<SplittableRandom> STREAM = new ThreadLocal<SplittableRandom>();
 
     private StatementTokens() {
     }
@@ -49,6 +54,43 @@ public final class StatementTokens {
     public static void restart() {
         DRAWN_FOR.remove();
         DRAWN.remove();
+        STREAM_FOR.remove();
+        STREAM.remove();
+    }
+
+    /**
+     * A random 64-bit value, drawn from a stream the statement's start seeds: what RANDOM(), UNIFORM over it, a
+     * SAMPLE without a SEED and UUID_STRING() draw from, so a statement replayed from the write-ahead log draws what
+     * it first drew, in the order it drew it. Outside a statement the value is random.
+     *
+     * @return the value
+     */
+    public static long nextLong() {
+        final Instant statement = StatementClock.observedStatementStart();
+        if (statement == null) {
+            return RANDOM.nextLong();
+        }
+        if (!statement.equals(STREAM_FOR.get())) {
+            final byte[] seed = sha256().digest((statement + "#stream").getBytes(StandardCharsets.UTF_8));
+            long bits = 0L;
+            for (int i = 0; i < Long.BYTES; i++) {
+                bits = bits << Byte.SIZE | (seed[i] & 0xFFL);
+            }
+            STREAM_FOR.set(statement);
+            STREAM.set(new SplittableRandom(bits));
+        }
+        return STREAM.get().nextLong();
+    }
+
+    /**
+     * A version-4 UUID drawn from the statement's stream (see {@link #nextLong}).
+     *
+     * @return the UUID, spelled as UUID_STRING() answers one
+     */
+    public static String randomUuid() {
+        final long high = nextLong() & 0xFFFFFFFFFFFF0FFFL | 0x0000000000004000L;
+        final long low = nextLong() & 0x3FFFFFFFFFFFFFFFL | 0x8000000000000000L;
+        return new UUID(high, low).toString();
     }
 
     /**

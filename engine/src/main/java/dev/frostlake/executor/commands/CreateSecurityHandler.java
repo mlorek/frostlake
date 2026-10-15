@@ -227,6 +227,8 @@ public class CreateSecurityHandler implements CommandHandler {
         final String qn = getText(ctx.qualifiedName(0));
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         final boolean orReplace = ctx.or_replace() != null;
+        final PolicyProperties properties =
+            PolicyProperties.read(ddl, ctx.policyCreateProperty(), "MASKING_POLICY", true);
         try {
             final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
@@ -279,8 +281,10 @@ public class CreateSecurityHandler implements CommandHandler {
             policy.setReturnDataType(declaredReturnType);
             policy.setReturnSpelling(declaredReturnType == null ? null
                 : SqlTypeNames.declaredSpelling(declaredReturnType, ctx.typeParameters() != null));
-            final String comment = ddl.extractCommentFromList(ctx.commentClause());
-            if (comment != null) policy.setComment(comment);
+            if (properties.comment() != null) {
+                policy.setComment(properties.comment());
+            }
+            policy.setExemptOtherPolicies(properties.exempt());
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addMaskingPolicy(policy);
             logger.trace("Created masking policy: {}", qn);
@@ -292,6 +296,8 @@ public class CreateSecurityHandler implements CommandHandler {
         final String qn = getText(ctx.qualifiedName(0));
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         final boolean orReplace = ctx.or_replace() != null;
+        final PolicyProperties properties =
+            PolicyProperties.read(ddl, ctx.policyCreateProperty(), "ROW_ACCESS_POLICY", true);
         try {
             final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
@@ -321,8 +327,10 @@ public class CreateSecurityHandler implements CommandHandler {
             PolicyBodyCheck.compile(queryExecutor, catalog, policyName, BooleanType.BOOLEAN,
                 params, body, schema);
             final RowAccessPolicy policy = new RowAccessPolicy(policyName, params, body);
-            final String comment = ddl.extractCommentFromList(ctx.commentClause());
-            if (comment != null) policy.setComment(comment);
+            if (properties.comment() != null) {
+                policy.setComment(properties.comment());
+            }
+            policy.setExemptOtherPolicies(properties.exempt());
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addRowAccessPolicy(policy);
             logger.trace("Created row access policy: {}", qn);
@@ -391,6 +399,8 @@ public class CreateSecurityHandler implements CommandHandler {
         final String qn = getText(ctx.qualifiedName(0));
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         final boolean orReplace = ctx.or_replace() != null;
+        final PolicyProperties properties =
+            PolicyProperties.read(ddl, ctx.policyCreateProperty(), "AGGREGATION_POLICY", false);
         if (ctx.parameterList() != null && !ctx.parameterList().parameterDef().isEmpty()) {
             throw new RuntimeException("Aggregation policy must have exactly zero arguments, got "
                 + ctx.parameterList().parameterDef().size() + " arguments.");
@@ -427,9 +437,8 @@ public class CreateSecurityHandler implements CommandHandler {
             PolicyObjectTagCalls.refuseIn(written, PolicyObjectTagCalls.ON_CURRENT_TABLE);
             PolicyObjectTagCalls.refuseIn(written, PolicyObjectTagCalls.ON_CURRENT_COLUMN);
             final AggregationPolicy policy = new AggregationPolicy(policyName, body);
-            final String comment = ddl.extractCommentFromList(ctx.commentClause());
-            if (comment != null) {
-                policy.setComment(comment);
+            if (properties.comment() != null) {
+                policy.setComment(properties.comment());
             }
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addAggregationPolicy(policy);
@@ -448,6 +457,8 @@ public class CreateSecurityHandler implements CommandHandler {
         final String qn = getText(ctx.qualifiedName(0));
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         final boolean orReplace = ctx.or_replace() != null;
+        final PolicyProperties properties =
+            PolicyProperties.read(ddl, ctx.policyCreateProperty(), "PROJECTION_POLICY", false);
         if (ctx.parameterList() != null && !ctx.parameterList().parameterDef().isEmpty()) {
             throw new RuntimeException("Projection policy must have exactly zero arguments, got "
                 + ctx.parameterList().parameterDef().size() + " arguments.");
@@ -483,9 +494,8 @@ public class CreateSecurityHandler implements CommandHandler {
             PolicyObjectTagCalls.refuseIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
                 PolicyObjectTagCalls.ON_CURRENT_TABLE);
             final ProjectionPolicy policy = new ProjectionPolicy(policyName, body);
-            final String comment = ddl.extractCommentFromList(ctx.commentClause());
-            if (comment != null) {
-                policy.setComment(comment);
+            if (properties.comment() != null) {
+                policy.setComment(properties.comment());
             }
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addProjectionPolicy(policy);

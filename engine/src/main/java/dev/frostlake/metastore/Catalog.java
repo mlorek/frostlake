@@ -305,10 +305,12 @@ public class Catalog {
         }
         final String[] from = {source.getName(), schema.getName()};
         StreamSources.bindAll(this);
+        final ForeignKeyParents parents = ForeignKeyParents.bind(this);
         source.detachSchema(schema.getName());
         schema.rename(newName);
         target.attachSchema(schema);
         StreamSources.respellAll(this);
+        parents.respell(this);
         GrantNames.containerRenamed(this, from, new String[] {target.getName(), schema.getName()});
         // The policies it holds go with it, and so do the attachments that name them, wherever those are.
         PolicyReferences.repoint(allSchemas(), null, from, new String[] {target.getName(), schema.getName()});
@@ -2023,10 +2025,12 @@ public class Catalog {
         }
         final String[] from = {db.getName()};
         StreamSources.bindAll(this);
+        final ForeignKeyParents parents = ForeignKeyParents.bind(this);
         databases.remove(db.getName());
         db.rename(newName);
         databases.put(newName, db);
         StreamSources.respellAll(this);
+        parents.respell(this);
         GrantNames.containerRenamed(this, from, new String[] {newName});
         // Its policies' attachments, in this database or any other, name them under the new name.
         PolicyReferences.repoint(allSchemas(), null, from, new String[] {newName});
@@ -2047,11 +2051,13 @@ public class Catalog {
         }
         // Its streams stay on it (StreamSources): bound while their recorded names still find it, re-spelled after.
         StreamSources.bindAll(this);
+        final ForeignKeyParents parents = ForeignKeyParents.bind(this);
         final String was = schema.qualifiedName(table.getName());
         schema.dropTable(table.getName());
         table.rename(newName);
         schema.addTable(table);
         StreamSources.respellAll(this);
+        parents.respell(this);
         // Its privileges go with it (GrantNames).
         GrantNames.renamed(this, "TABLE", was, schema.qualifiedName(table.getName()));
     }
@@ -2084,6 +2090,7 @@ public class Catalog {
         final String bareA = a.getName();
         final String bareB = b.getName();
         StreamSources.bindAll(this);
+        final ForeignKeyParents parents = ForeignKeyParents.bind(this);
         final String fullA = schemaA.qualifiedName(bareA);
         final String fullB = schemaB.qualifiedName(bareB);
         schemaA.dropTable(bareA);
@@ -2094,6 +2101,7 @@ public class Catalog {
         schemaA.addTable(b);
         // Each table's streams and privileges follow the table, not the name it gave up.
         StreamSources.respellAll(this);
+        parents.respell(this);
         GrantNames.swapped(this, "TABLE", fullA, fullB);
         return true;
     }
@@ -2144,11 +2152,13 @@ public class Catalog {
             throw new NameTakenException(alreadyExists(newName));
         }
         StreamSources.bindAll(this);
+        final ForeignKeyParents parents = ForeignKeyParents.bind(this);
         final String was = source.qualifiedName(table.getName());
         source.dropTable(table.getName());
         table.rename(newName);
         target.addTable(table);
         StreamSources.respellAll(this);
+        parents.respell(this);
         GrantNames.renamed(this, "TABLE", was, target.qualifiedName(table.getName()));
     }
 

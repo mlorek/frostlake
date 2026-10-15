@@ -68,6 +68,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -693,8 +694,12 @@ final class RoutineBodyCompiler {
             declared);
         SqlUdfBodyCalls.reject(queryExecutor, expression, trimmed, routineName, scopeDatabase, scopeSchema);
         // A SQL function the body calls is expanded into it: a relation that function reads that is gone refuses
-        // the CREATE.
-        CalledRoutineSources.require(expression, queryExecutor);
+        // the CREATE. The body's own parameters are the values a call passes, read from no row here.
+        final Set<String> parameterNames = new HashSet<String>();
+        for (final String name : declared) {
+            parameterNames.add(name.toUpperCase(Locale.ROOT));
+        }
+        CalledRoutineSources.requireInBody(expression, queryExecutor, parameterNames);
     }
 
     /**
