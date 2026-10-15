@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
@@ -83,14 +84,10 @@ public class DroppedObjectStagesTest {
         return out.toString();
     }
 
-    /** The stage directories set aside under the stage root, by their names. */
+    /** The stage directories set aside anywhere under the stage root, an engine's own included, by their names. */
     private List<String> setAside() throws IOException {
         final List<String> found = new ArrayList<>();
-        final Path dropped = stages.resolve("dropped");
-        if (!Files.isDirectory(dropped)) {
-            return found;
-        }
-        try (final java.util.stream.Stream<Path> walk = Files.walk(dropped)) {
+        try (final java.util.stream.Stream<Path> walk = Files.walk(stages)) {
             final Iterator<Path> paths = walk.iterator();
             while (paths.hasNext()) {
                 final String name = paths.next().getFileName().toString();
@@ -100,6 +97,19 @@ public class DroppedObjectStagesTest {
             }
         }
         return found;
+    }
+
+    /** The names directly under a directory, sorted. */
+    private static List<String> entries(final Path dir) {
+        final List<String> names = new ArrayList<>();
+        final File[] files = dir.toFile().listFiles();
+        if (files != null) {
+            for (final File file : files) {
+                names.add(file.getName());
+            }
+        }
+        Collections.sort(names);
+        return names;
     }
 
     private static void stageFile(final DatabaseEngine engine, final String stage, final int value) {
@@ -224,5 +234,7 @@ public class DroppedObjectStagesTest {
         assertEquals("D.PUBLIC.T", new String(Files.readAllBytes(stages.resolve("set-aside.txt")),
             StandardCharsets.UTF_8));
         assertEquals(List.of(), setAside());
+        // Nor of the engine's own stage root, the live table stage's file included.
+        assertEquals(List.of("set-aside.txt"), entries(stages));
     }
 }

@@ -135,6 +135,14 @@ public final class AccessControlHandler {
      * database, and a TERSE one, are features the account does not have (live-verified).
      */
     private ResultSet showDatabaseRoles(final FrostlakeParser.AccessControlStatementContext ctx) {
+        if (!ctx.rolesDatabasePath.isEmpty()) {
+            // A database is one part: a path names nothing, which is told after the page size and before anything
+            // else.
+            if (ctx.LIMIT() != null) {
+                ShowPageSize.require(ctx.INTEGER_LITERAL().getText());
+            }
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
         if (ctx.TERSE() != null) {
             throw new RuntimeException("Unsupported feature 'SHOW TERSE DATABASE ROLES'.");
         }
@@ -293,12 +301,17 @@ public final class AccessControlHandler {
 
     /**
      * DROP DATABASE ROLE: {@code DB.R successfully dropped.}, the role named with its database; a missing role under
-     * IF EXISTS keeps the kind-blind sentence, which names it as written.
+     * IF EXISTS keeps the kind-blind sentence, which names it as written. CASCADE and RESTRICT after the name change
+     * nothing, and a PURGE is refused once the database has resolved and the role is there or IF EXISTS forgives its
+     * absence (see {@link DropPurge}; live-verified).
      */
     private ResultSet dropDatabaseRole(final FrostlakeParser.AccessControlStatementContext ctx) {
         final String[] parts = databaseRoleName(catalog, ctx.qualifiedName());
         final Database database = catalog.databaseExact(parts[0]);
         final DatabaseRole role = database.getDatabaseRole(parts[1]);
+        if (DropPurge.written(ctx.dropBehavior()) && (role != null || ctx.if_exists() != null)) {
+            throw DropPurge.refusal(ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
+        }
         if (role == null) {
             if (ctx.if_exists() != null) {
                 ConditionalDdlOutcome.dropSkipped();

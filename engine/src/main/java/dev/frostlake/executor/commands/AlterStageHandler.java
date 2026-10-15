@@ -111,6 +111,13 @@ final class AlterStageHandler {
         if (action.RENAME() != null) {
             queryExecutor.requireOwnership("STAGE", ParseTreeText.qualifiedNameParts(ctx.qualifiedName()), null);
             final String newName = visitor.getText(action.qualifiedName());
+            // A renamed stage is created under its new name: a name a stage of that schema holds is refused
+            // first, and the schema is then asked for CREATE STAGE (live-verified).
+            final String[] newParts = ParseTreeText.qualifiedNameParts(action.qualifiedName());
+            final Schema target = newParts.length == 1 ? catalog.resolveOwningSchema(stageName)
+                : catalog.resolveOwningSchema(newName);
+            DDLCommandHandler.refuseTakenName(true, target.hasStageExact(newParts[newParts.length - 1]), newParts);
+            queryExecutor.requireCreatePrivilege(Privilege.CREATE_STAGE, target);
             catalog.renameStage(stageName, newName);
             logger.trace("Renamed stage {} to {}", stageName, newName);
         } else {
@@ -139,6 +146,7 @@ final class AlterStageHandler {
     private void set(final Stage stage, final FrostlakeParser.StageSettingContext setting, final boolean apply) {
         if (setting.URL() != null) {
             refuseOnInternalStage(stage);
+            CloudStageUrls.require(visitor.extractStringLiteral(setting.STRING_LITERAL()));
             if (apply) {
                 stage.setUrl(visitor.extractStringLiteral(setting.STRING_LITERAL()));
             }

@@ -302,17 +302,20 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
 
     @Override
     public void setDate(final int parameterIndex, final Date x, final Calendar cal) throws SQLException {
-        setDate(parameterIndex, x);
+        // The day the value's moment falls on in the Calendar's zone (live-verified).
+        parameters.put(parameterIndex, JdbcMarshaling.dateAtCalendar(x, cal));
     }
 
     @Override
     public void setTime(final int parameterIndex, final Time x, final Calendar cal) throws SQLException {
-        setTime(parameterIndex, x);
+        // The account's driver reads no Calendar here: the time its moment shows in UTC (live-verified).
+        parameters.put(parameterIndex, JdbcMarshaling.timeAtUtc(x));
     }
 
     @Override
     public void setTimestamp(final int parameterIndex, final Timestamp x, final Calendar cal) throws SQLException {
-        setTimestamp(parameterIndex, x);
+        // The Calendar's wall clock, bound as the account's driver binds it (see CalendarBoundInstant).
+        parameters.put(parameterIndex, JdbcMarshaling.boundAtCalendar(x, cal));
     }
 
     @Override

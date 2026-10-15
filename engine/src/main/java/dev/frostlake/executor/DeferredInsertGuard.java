@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.metastore.HybridKeys;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.storage.Row;
@@ -45,6 +46,8 @@ import java.util.Set;
 public final class DeferredInsertGuard {
 
     private final TableStorage base;
+    /** The table, whose kind decides how a duplicate is refused: a hybrid table names the index it breaks. */
+    private final Table table;
     private final boolean checkPrimaryKey;
     private final Set<Object> pendingPrimaryKeys;
     private final int[] uniqueColumnIndexes;
@@ -55,7 +58,9 @@ public final class DeferredInsertGuard {
                                final TransactionWriteSet writeSet, final String fullyQualifiedName,
                                final boolean enforcePrimaryKey, final boolean enforceUniqueKey) {
         this.base = base;
-        this.checkPrimaryKey = enforcePrimaryKey && !table.getPrimaryKeys().isEmpty();
+        this.table = table;
+        // A hybrid table holds its keys whatever the engine's switches say (documented).
+        this.checkPrimaryKey = (enforcePrimaryKey || table.isHybrid()) && !table.getPrimaryKeys().isEmpty();
         if (checkPrimaryKey) {
             pendingPrimaryKeys = new HashSet<>();
             for (final Row pending : writeSet.pendingInserts(fullyQualifiedName)) {
@@ -69,7 +74,7 @@ public final class DeferredInsertGuard {
         }
         uniqueColumns = new ArrayList<>();
         uniqueSeenValues = new ArrayList<>();
-        if (!enforceUniqueKey) {
+        if (!enforceUniqueKey && !table.isHybrid()) {
             uniqueColumnIndexes = new int[0];
             return;
         }
@@ -114,7 +119,8 @@ public final class DeferredInsertGuard {
             final Object pk = base.primaryKeyOf(row);
             if (pk != null) {
                 if (base.getRowByPrimaryKey(pk) != null || !pendingPrimaryKeys.add(pk)) {
-                    throw new RuntimeException("Duplicate primary key: " + pk);
+                    throw new RuntimeException(table.isHybrid() ? HybridKeys.primaryKeyExists()
+                        : "Duplicate primary key: " + pk);
                 }
             }
         }
@@ -128,8 +134,9 @@ public final class DeferredInsertGuard {
                 continue;
             }
             if (!uniqueSeenValues.get(u).add(value)) {
-                throw new RuntimeException("Duplicate unique key on column '"
-                    + uniqueColumns.get(u).getName() + "': " + value);
+                throw new RuntimeException(table.isHybrid()
+                    ? HybridKeys.uniqueViolated(table, uniqueColumns.get(u).getName())
+                    : "Duplicate unique key on column '" + uniqueColumns.get(u).getName() + "': " + value);
             }
         }
     }

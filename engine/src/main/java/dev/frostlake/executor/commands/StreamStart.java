@@ -97,6 +97,7 @@ final class StreamStart {
             }
             atPoint = queryExecutor.tableSnapshotAtSequence(table, storage, source.getOffsetSequence());
         } else {
+            queryExecutor.requireAnchoredPoint(point, table);
             requirePointValue(point, table.getName());
             atPoint = queryExecutor.tableSnapshotAtStreamPoint(table, storage, point);
         }
@@ -280,7 +281,7 @@ final class StreamStart {
      */
     private void requirePointValue(final FrostlakeParser.StreamPointContext point, final String tableName) {
         final FrostlakeParser.TimeTravelPointContext ptCtx = point.timeTravelPoint();
-        if (queryExecutor.evaluateStandalone(ptCtx.expression()) != null) {
+        if (queryExecutor.pointValue(ptCtx) != null) {
             return;
         }
         if (ptCtx.TIMESTAMP() != null) {

@@ -93,6 +93,48 @@ final class PlanTextNumber {
      * @return the width, or null for any other operand
      */
     static NumericType typeOfSettled(final Expression operand) {
+        final List<Expression> results = settledResults(operand);
+        if (results == null) {
+            return null;
+        }
+        int precision = DIGITS;
+        int scale = 0;
+        for (final Expression result : results) {
+            final NumericType read = type(String.valueOf(((LiteralExpression) result).getValue()));
+            precision = Math.max(precision, read.getPrecision());
+            scale = Math.max(scale, read.getScale());
+        }
+        return new NumericType("NUMBER", precision, scale);
+    }
+
+    /**
+     * The width the numbers such a conditional's results spell need between them — the most whole digits and the
+     * widest scale: {@code IFF(TRUE, '1.50', '2')} NUMBER(2,1). A term beside the conditional is raised to its
+     * scale as beside a number of this width, {@code … + 0} casting the 0 to NUMBER(3,1) (live-verified).
+     *
+     * @param operand the operand
+     * @return the width, or null for any other operand and for a result that spells no number
+     */
+    static NumericType spelledWidthOfSettled(final Expression operand) {
+        final List<Expression> results = settledResults(operand);
+        if (results == null) {
+            return null;
+        }
+        int whole = 1;
+        int scale = 0;
+        for (final Expression result : results) {
+            final BigDecimal number = spelled(String.valueOf(((LiteralExpression) result).getValue()));
+            if (number == null) {
+                return null;
+            }
+            whole = Math.max(whole, number.precision() - number.scale());
+            scale = Math.max(scale, Math.max(0, number.scale()));
+        }
+        return new NumericType("NUMBER", Math.min(MAX_PRECISION, whole + scale), scale);
+    }
+
+    /** The results of an IFF, or of a CASE with an ELSE, when every one is a text literal; null otherwise. */
+    private static List<Expression> settledResults(final Expression operand) {
         final List<Expression> results = new ArrayList<Expression>();
         if (operand instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) operand;
@@ -113,17 +155,12 @@ final class PlanTextNumber {
         } else {
             return null;
         }
-        int precision = DIGITS;
-        int scale = 0;
         for (final Expression result : results) {
             if (!ImpliedTextNumber.isTextLiteral(result)) {
                 return null;
             }
-            final NumericType read = type(String.valueOf(((LiteralExpression) result).getValue()));
-            precision = Math.max(precision, read.getPrecision());
-            scale = Math.max(scale, read.getScale());
         }
-        return new NumericType("NUMBER", precision, scale);
+        return results;
     }
 
     /**

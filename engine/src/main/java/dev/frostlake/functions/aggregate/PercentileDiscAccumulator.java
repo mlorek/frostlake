@@ -50,9 +50,35 @@ public class PercentileDiscAccumulator implements AggregateFunction.Accumulator,
 
     @Override
     public Object getResult() {
+        final double upwards = upwardsFraction();
         return coercedArgument
-            ? AggregateNumerics.percentileDiscOverCoerced(values, percentile)
-            : AggregateNumerics.percentileDisc(values, percentile);
+            ? AggregateNumerics.percentileDiscOverCoerced(values, upwards)
+            : AggregateNumerics.percentileDisc(values, upwards);
+    }
+
+    /** Whether the group is ordered downwards: the value picked is then counted from the greatest. */
+    private boolean descending;
+
+    /**
+     * @param ordersDown whether WITHIN GROUP orders the values DESC
+     */
+    public void setDescending(final boolean ordersDown) {
+        this.descending = ordersDown;
+    }
+
+    /** The fraction that picks, counting upwards, the value the given one picks in the group's own order. */
+    private double upwardsFraction() {
+        int present = 0;
+        for (final Object value : values) {
+            if (value != null) {
+                present++;
+            }
+        }
+        if (!descending || present == 0) {
+            return percentile;
+        }
+        final int fromTheTop = Math.max(1, (int) Math.ceil(percentile * present));
+        return (present - fromTheTop + 0.5) / present;
     }
 
     @Override

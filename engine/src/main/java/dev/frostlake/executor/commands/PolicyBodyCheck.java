@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.functions.scalar.context.PolicyBodyScope;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Schema;
@@ -68,6 +69,9 @@ final class PolicyBodyCheck {
         if (queryExecutor == null || body == null || body.trim().isEmpty()) {
             return;
         }
+        // The body compiles as a policy's: what only a policy may call is not refused here.
+        final boolean inside = PolicyBodyScope.isInside();
+        PolicyBodyScope.enter();
         try {
             RoutineBodyCompiler.compileFunctionBody(queryExecutor, UdfLanguage.SQL, body, false,
                 policyName, parameterNames(parameters),
@@ -80,6 +84,10 @@ final class PolicyBodyCheck {
                 return;
             }
             throw refused;
+        } finally {
+            if (!inside) {
+                PolicyBodyScope.leave();
+            }
         }
     }
 

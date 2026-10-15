@@ -16,6 +16,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
@@ -35,6 +36,7 @@ import dev.frostlake.metastore.model.SecurityObjectStore;
 import dev.frostlake.metastore.model.SecurityPropertySpec;
 import dev.frostlake.metastore.model.SecurityPropertySpecs;
 import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -42,7 +44,9 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.time.LocalDate;
@@ -182,17 +186,23 @@ public final class SecurityObjectCommandHandler {
             throw new RuntimeException(SqlCompilationError.of("options IF NOT EXISTS and OR REPLACE are incompatible."));
         }
         final Schema schema = kind.isSchemaObject() ? owningSchema(ctx.qualifiedName(0)) : null;
-        if (schema != null) {
-            queryExecutor.requireCreatePrivilege(Privilege.valueOf("CREATE_" + kind.name()), schema);
-        }
         final String name = kind.isSchemaObject() ? lastPart(ctx.qualifiedName(0))
             : SqlIdentifiers.canonical(ctx.identifier(0));
+        final SecurityObjectStore store = store(kind, schema);
+        final SecurityObject existing = store.get(kind, name);
+        // A password policy shares its name with the schema's other policies (live-verified).
+        final String otherPolicy = schema != null && kind == SecurityObjectKind.PASSWORD_POLICY && existing == null
+            ? schema.policyKindHolding(name) : null;
+        // A plain CREATE over a name that is taken is refused for the name before the privilege is asked.
+        final boolean plainOverTaken = ctx.or_replace() == null && ctx.if_not_exists() == null
+            && ctx.or_alter() == null && (existing != null || otherPolicy != null);
+        if (schema != null && !plainOverTaken) {
+            queryExecutor.requireCreatePrivilege(Privilege.valueOf("CREATE_" + kind.name()), schema);
+        }
         final Map<String, Object> properties = read(kind, ctx.securityProperty());
         if (kind == SecurityObjectKind.NETWORK_POLICY) {
             requireIngressRules(properties, name);
         }
-        final SecurityObjectStore store = store(kind, schema);
-        final SecurityObject existing = store.get(kind, name);
         if (existing != null && ctx.or_alter() != null) {
             recreateInPlace(existing, properties);
             // An object found is altered, and the statement answers as an ALTER does.
@@ -207,7 +217,11 @@ public final class SecurityObjectCommandHandler {
                 && isAttached(PASSWORD_POLICY_PREFIX, display(kind, schema, name))) {
             throw policyInUse(name);
         }
-        if (existing != null && ctx.or_replace() == null) {
+        if (otherPolicy != null && ctx.or_replace() != null) {
+            throw new RuntimeException(SqlCompilationError.PREFIX + " Object found is of type '" + otherPolicy
+                + "', not specified type '" + kind.name() + "'.");
+        }
+        if ((existing != null || otherPolicy != null) && ctx.or_replace() == null) {
             if (ctx.if_not_exists() != null) {
                 ConditionalDdlOutcome.createSkipped();
                 return null;
@@ -514,14 +528,10 @@ public final class SecurityObjectCommandHandler {
         final String name = kind.isSchemaObject() ? lastPart(ctx.qualifiedName(0))
             : SqlIdentifiers.canonical(ctx.identifier(0));
         final SecurityObjectStore store = store(kind, schema);
-        if (DropPurge.written(ctx.dropBehavior())) {
-            // A secret and a network rule take the word; a network policy is not known to read it.
-            if (kind == SecurityObjectKind.NETWORK_POLICY) {
-                throw DropPurge.unexpected(ctx.dropBehavior());
-            }
-            if (kind == SecurityObjectKind.PASSWORD_POLICY && (ctx.if_exists() != null || store.get(kind, name) != null)) {
-                throw DropPurge.refusal(ParseTreeText.qualifiedNameParts(ctx.qualifiedName(0)));
-            }
+        if (DropPurge.written(ctx.dropBehavior()) && kind == SecurityObjectKind.PASSWORD_POLICY
+                && (ctx.if_exists() != null || store.get(kind, name) != null)) {
+            // A secret, a network rule and a network policy take the word and drop as if it were not there.
+            throw DropPurge.refusal(ParseTreeText.qualifiedNameParts(ctx.qualifiedName(0)));
         }
         if (store.get(kind, name) == null) {
             if (ctx.if_exists() != null) {
@@ -671,9 +681,14 @@ public final class SecurityObjectCommandHandler {
         final Schema into = owningSchema(ctx.qualifiedName(1));
         into.requireCreatable(Privilege.valueOf("CREATE_" + kind.name()));
         final String renamed = lastPart(ctx.qualifiedName(1));
-        if (into.getSecurityObjects().get(kind, renamed) != null) {
-            throw new RuntimeException(SqlCompilationError.of("Object '" + renamed + "' already exists."));
+        // A name that is taken — by any policy of the schema, for a password policy — is refused as the statement
+        // wrote it, and the schema is then asked for the privilege to create the object (live-verified).
+        if (into.getSecurityObjects().get(kind, renamed) != null
+                || kind == SecurityObjectKind.PASSWORD_POLICY && into.policyKindHolding(renamed) != null) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + SqlIdentifiers.spellAlreadyCanonicalPath(
+                String.join(".", ParseTreeText.qualifiedNameParts(ctx.qualifiedName(1)))) + "' already exists."));
         }
+        queryExecutor.requireCreatePrivilege(Privilege.valueOf("CREATE_" + kind.name()), into);
         final String grantedBefore = schema.qualifiedName(target.getName());
         store.remove(kind, target.getName());
         target.rename(renamed);
@@ -793,10 +808,16 @@ public final class SecurityObjectCommandHandler {
             return describe(ctx, kind);
         }
         if (kind == SecurityObjectKind.NETWORK_POLICY) {
-            return filter(showNetworkPolicies(), ctx.LIKE() == null ? null
-                : ParseTreeText.stringValue(ctx.stringText(0)));
+            requireAccountScope(ctx.securityListingScope());
+            // The listing reads STARTS WITH and LIMIT … FROM as the others do (live-verified for the reading).
+            return paged(ctx, kind, filter(showNetworkPolicies(), ctx.LIKE() == null ? null
+                : ParseTreeText.stringValue(ctx.stringText(0))));
         }
         if (kind == SecurityObjectKind.PASSWORD_POLICY && ctx.ON() != null) {
+            if (ctx.holderDatabase != null) {
+                // A database holds no password policy of its own, and the account says so its own way.
+                throw new RuntimeException("Unsupported feature 'SHOW PASSWORD POLICIES ON DATABASE'.");
+            }
             return showPasswordPoliciesOn(ctx);
         }
         final List<Row> rows = new ArrayList<>();
@@ -805,11 +826,17 @@ public final class SecurityObjectCommandHandler {
                 rows.add(showRow(kind, schema, object, null));
             }
         }
-        ResultSet listing = new ResultSet(showColumns(kind, false), rows);
+        final ResultSet listing = new ResultSet(showColumns(kind, false), rows);
         final FrostlakeParser.StringTextContext like = ctx.LIKE() != null ? ctx.stringText(0) : null;
-        listing = sorted(filter(listing, like == null ? null : ParseTreeText.stringValue(like)));
+        return paged(ctx, kind, sorted(filter(listing, like == null ? null : ParseTreeText.stringValue(like))));
+    }
+
+    /** A listing cut down by the statement's STARTS WITH and LIMIT … FROM. */
+    private ResultSet paged(final FrostlakeParser.SecurityObjectListingContext ctx, final SecurityObjectKind kind,
+                            final ResultSet filtered) {
+        ResultSet listing = filtered;
         if (ctx.STARTS() != null) {
-            final String prefix = ParseTreeText.stringValue(ctx.stringText(like == null ? 0 : 1));
+            final String prefix = ParseTreeText.stringValue(ctx.stringText(ctx.LIKE() == null ? 0 : 1));
             listing = startingWith(listing, prefix);
         }
         if (ctx.LIMIT() != null) {
@@ -824,11 +851,84 @@ public final class SecurityObjectCommandHandler {
     }
 
     /**
+     * The kind of object a scope names that holds no object of these kinds — a table, a view, a class — or null:
+     * {@code SHOW SECRETS IN TABLE t} is {@code Cannot show objects of type SECRET in TABLE}, with the name or
+     * without it (live-verified).
+     */
+    private static String holderKind(final FrostlakeParser.SecurityListingScopeContext scope) {
+        if (scope == null) {
+            return null;
+        }
+        if (scope.scopeKind != null) {
+            return scope.scopeKind.getText().toUpperCase(Locale.ROOT);
+        }
+        return scope.scopeClass != null ? "CLASS" : null;
+    }
+
+    /** The syntax-error line for what follows a scope that ends too early: the next word, or the statement's end. */
+    private static String lineAfter(final FrostlakeParser.SecurityListingScopeContext scope) {
+        final ParserRuleContext listing = scope.getParent();
+        final int at = listing.children.indexOf(scope);
+        if (at + 1 < listing.getChildCount()) {
+            final ParseTree after = listing.getChild(at + 1);
+            final Token next = after instanceof ParserRuleContext ? ((ParserRuleContext) after).getStart()
+                : ((TerminalNode) after).getSymbol();
+            final int[] shown = LeadingCommentOffset.rebase(next.getLine(), next.getCharPositionInLine());
+            return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + next.getText()
+                + "'.";
+        }
+        final Token last = scope.getStop();
+        final int[] shown = LeadingCommentOffset.rebase(last.getLine(),
+            last.getCharPositionInLine() + last.getText().length());
+        return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '<EOF>'.";
+    }
+
+    /**
+     * A network policy is the account's: a scope that names a kind of object holds none, and a bare name is another
+     * account's.
+     */
+    private static void requireAccountScope(final FrostlakeParser.SecurityListingScopeContext scope) {
+        if (scope == null || scope.ACCOUNT() != null) {
+            return;
+        }
+        final String holder = holderKind(scope) != null ? holderKind(scope)
+            : scope.DATABASE() != null ? "DATABASE" : scope.SCHEMA() != null ? "SCHEMA"
+            : scope.scopeApplication == null ? null : scope.PACKAGE() != null ? "APPLICATION PACKAGE" : "APPLICATION";
+        if (holder != null) {
+            throw ShowScopeKindRefusal.cannotShow("NETWORK POLICY", holder);
+        }
+        // A bare name is an account's, and no other account is known here.
+        final String[] account = ParseTreeText.qualifiedNameParts(scope.qualifiedName());
+        throw new RuntimeException(account.length > 1 ? SqlCompilationError.objectDoesNotExist()
+            : SqlCompilationError.doesNotExistAsSpelled("Account", SqlIdentifiers.spellCanonical(account[0])));
+    }
+
+    /**
      * The schemas a listing of {@code kind} covers. A network rule listing does not name the schema or the database
      * its scope misses (live-verified); the other kinds do.
      */
     private List<Schema> scopeOf(final SecurityObjectKind kind,
                                  final FrostlakeParser.SecurityListingScopeContext scope) {
+        final String holder = holderKind(scope);
+        if (holder != null) {
+            throw ShowScopeKindRefusal.cannotShow(kind.name().replace('_', ' '), holder);
+        }
+        if (scope != null && scope.scopeApplication != null) {
+            final FrostlakeParser.QualifiedNameContext written = scope.qualifiedName();
+            if (scope.PACKAGE() == null && written.getStart() == written.getStop()
+                    && written.getStart().getType() == FrostlakeLexer.PACKAGE) {
+                // APPLICATION PACKAGE with no name after it: the package's name is missing.
+                throw new RuntimeException(SqlCompilationError.of(lineAfter(scope)));
+            }
+            // An application is looked up, and none is modelled; a network rule listing names no scope it misses.
+            final String[] application = ParseTreeText.qualifiedNameParts(scope.qualifiedName());
+            if (kind == SecurityObjectKind.NETWORK_RULE || application.length > 1) {
+                throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
+            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled(
+                scope.PACKAGE() != null ? "Application package" : "Application",
+                SqlIdentifiers.spellCanonical(application[0])));
+        }
         if (scope != null && scope.DATABASE() != null && scope.qualifiedName() != null) {
             // A database is one part: a path after IN DATABASE asks for a full search path (live-verified).
             final String[] parts = ParseTreeText.qualifiedNameParts(scope.qualifiedName());
@@ -872,8 +972,9 @@ public final class SecurityObjectCommandHandler {
             }
             return schemasOf(catalog.databaseExact(parts[parts.length - 1]));
         }
-        if (scope.SCHEMA() == null && parts.length == 1
-                && (currentDatabase == null || !catalog.databaseExact(currentDatabase).hasSchemaExact(parts[0]))) {
+        if (scope.SCHEMA() == null && parts.length == 1 && currentDatabase == null) {
+            // With no current database a bare name can only be a database's; with one it is a schema of it,
+            // and a database of that name is not looked for.
             return schemasOf(catalog.databaseExact(parts[0]));
         }
         if (parts.length == 0) {
@@ -1113,6 +1214,9 @@ public final class SecurityObjectCommandHandler {
     }
 
     private ResultSet describe(final FrostlakeParser.SecurityObjectListingContext ctx, final SecurityObjectKind kind) {
+        // The properties are judged before the object is looked up, as after any other kind: a TYPE changes
+        // nothing here and any other name is refused.
+        DescribeProperties.describesStage(ctx, queryExecutor);
         if (kind == SecurityObjectKind.NETWORK_POLICY) {
             final String name = SqlIdentifiers.canonical(ctx.identifier());
             final SecurityObject policy = catalog.getSecurityObjects().get(kind, name);

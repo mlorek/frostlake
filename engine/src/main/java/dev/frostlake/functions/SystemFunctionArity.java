@@ -51,13 +51,19 @@ public final class SystemFunctionArity {
         declare("SYSTEM$WAIT", 1, 2);
         declare("SYSTEM$CANCEL_QUERY", 1, -1);
         declare("SYSTEM$STREAM_HAS_DATA", 1, 1);
+        declare("SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS", 1, 1);
+        declare("SYSTEM$CURRENT_USER_TASK_NAME", 0, 0);
         declare("SYSTEM$PIPE_STATUS", 1, -1);
         declare("SYSTEM$CLUSTERING_DEPTH", 1, -1);
+        declare("SYSTEM$CLUSTERING_INFORMATION", 1, -1);
+        declare("SYSTEM$CLUSTERING_RATIO", 1, -1);
         declare("SYSTEM$ABORT_SESSION", 1, 1);
         declare("SYSTEM$ABORT_TRANSACTION", 1, 1);
-        declare("SYSTEM$LAST_CHANGE_COMMIT_TIME", 1, -1);
+        declare("SYSTEM$LAST_CHANGE_COMMIT_TIME", 1, 1);
         declare("SYSTEM$GET_TAG", 3, -1);
         declare("SYSTEM$GET_TAG_ALLOWED_VALUES", 1, 1);
+        declare("SYSTEM$GET_TAG_ON_CURRENT_TABLE", 1, 1);
+        declare("SYSTEM$GET_TAG_ON_CURRENT_COLUMN", 1, 1);
         declare("SYSTEM$GET_TASK_GRAPH_CONFIG", 0, 1);
     }
 

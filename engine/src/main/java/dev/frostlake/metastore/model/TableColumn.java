@@ -72,6 +72,10 @@ public class TableColumn implements Taggable {
     // projection rather than guessed. Catalog columns leave this false — their table is trusted by
     // identity instead — so the flag only ever ADDS a column the type rules may read, never removes one.
     private boolean staticallyTyped;
+    private boolean heldToDeclaredWidth;
+
+    /** Whether the column belongs to a relation the plan has no statistics of: a VALUES clause's. */
+    private boolean withoutStatistics;
 
     // A DERIVED relation's column's interval of values, propagated from the inner projection the way
     // the account propagates statistics; null when none is known. A catalog column never carries one —
@@ -91,6 +95,9 @@ public class TableColumn implements Taggable {
     private boolean foldedDouble;
     // Whether the column holds nothing but an untyped NULL (see isUntypedNull); false for every other column.
     private boolean untypedNull;
+    // Whether a DERIVED relation's column projects the word NULL cast to a text type (see isNullText); false for
+    // every other column.
+    private boolean nullText;
 
     // Whether a DERIVED relation's column holds its collation because a COLLATE named it (see
     // isCollationExplicit); false for every other column, a catalog column's among them.
@@ -156,6 +163,36 @@ public class TableColumn implements Taggable {
         return valueRange;
     }
 
+    /**
+     * Whether this is a view's column, whose values a reader holds to the column's declared width: read through
+     * the view, a NUMBER(18,2) column is told at most eighteen digits wide whatever its body could add up to
+     * (live-verified). An aggregate over the column reads the body's own interval.
+     *
+     * @return true for a view's column
+     */
+    public boolean isHeldToDeclaredWidth() {
+        return heldToDeclaredWidth;
+    }
+
+    public void setHeldToDeclaredWidth(final boolean heldToDeclaredWidth) {
+        this.heldToDeclaredWidth = heldToDeclaredWidth;
+    }
+
+    /**
+     * Whether the plan has no statistics of the column's relation — a VALUES clause's. Such a column carries no
+     * value interval, so an exact number read from it is tagged by its declared precision alone, and the plan
+     * takes it to vary whatever its rows hold (live-verified).
+     *
+     * @return true for a VALUES clause's column
+     */
+    public boolean isWithoutStatistics() {
+        return withoutStatistics;
+    }
+
+    public void setWithoutStatistics(final boolean withoutStatistics) {
+        this.withoutStatistics = withoutStatistics;
+    }
+
     public void setValueRange(final ValueRange valueRange) {
         this.valueRange = valueRange;
     }
@@ -214,6 +251,21 @@ public class TableColumn implements Taggable {
 
     public void setUntypedNull(final boolean untypedNull) {
         this.untypedNull = untypedNull;
+    }
+
+    /**
+     * Whether this DERIVED relation's column projects the word NULL cast to a text type, {@code NULL::VARCHAR(10)}:
+     * the column is the text type it names, and an exact number beside a reference to it reads it as the bare word
+     * NULL, as it reads the cast itself (live-verified).
+     *
+     * @return true for such a column
+     */
+    public boolean isNullText() {
+        return nullText;
+    }
+
+    public void setNullText(final boolean nullText) {
+        this.nullText = nullText;
     }
 
     public boolean isFoldedDouble() {
@@ -289,6 +341,7 @@ public class TableColumn implements Taggable {
         copy.maskingPolicyArguments = new ArrayList<>(maskingPolicyArguments);
         copy.projectionPolicyName = projectionPolicyName;
         copy.tags.putAll(tags);
+        copy.withoutStatistics = withoutStatistics;
         copy.hiddenFromStar = hiddenFromStar;
         copy.staticallyTyped = staticallyTyped;
         copy.valueRange = valueRange;
@@ -296,6 +349,7 @@ public class TableColumn implements Taggable {
         copy.uncheckedConstant = uncheckedConstant;
         copy.foldedDouble = foldedDouble;
         copy.untypedNull = untypedNull;
+        copy.nullText = nullText;
         return copy;
     }
 
@@ -328,6 +382,7 @@ public class TableColumn implements Taggable {
         copy.uncheckedConstant = uncheckedConstant;
         copy.foldedDouble = foldedDouble;
         copy.untypedNull = untypedNull;
+        copy.nullText = nullText;
         return copy;
     }
 

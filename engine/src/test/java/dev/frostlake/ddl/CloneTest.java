@@ -35,9 +35,9 @@ public class CloneTest extends BaseDatabaseTest {
     private static final String LOCAL_FILE_STAGE =
         "builds a file:// stage, which Snowflake refuses as an invalid URL prefix";
 
-    /** An inline Java handler compiles on the ACCOUNT, where it needs PACKAGES = snowpark declared. */
+    /** A Java procedure called through the clone of its database was not run on an account. */
     private static final String ACCOUNT_JAVA_HANDLER =
-        "an inline Java handler needs PACKAGES = ('com.snowflake:snowpark:latest') on the account";
+        "a Java procedure's CALL through a cloned database is not live-verified";
 
     @Test
     public void testCloneDatabase() {
@@ -472,6 +472,7 @@ public class CloneTest extends BaseDatabaseTest {
             CREATE OR REPLACE PROCEDURE pr_src.utils.java_proc()
             RETURNS VARCHAR
             LANGUAGE JAVA
+            PACKAGES = ('com.snowflake:snowpark:latest')
             HANDLER='CloneProc.run'
             AS
             $$

@@ -60,7 +60,7 @@ public class HexEncode extends BuiltInFunction {
 
     /** The digit table the case flag selects; anything but 0 or 1 is out of range. */
     private char[] digitsFor(final Object caseFlag) {
-        final int chosen = new java.math.BigDecimal(caseFlag.toString()).intValue();
+        final int chosen = SharedFunctionHelpers.numberArgument(caseFlag).intValue();
         if (chosen == 1) {
             return HEX_UPPER;
         }

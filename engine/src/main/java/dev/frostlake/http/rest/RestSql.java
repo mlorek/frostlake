@@ -69,6 +69,9 @@ public final class RestSql {
     /** The account's code for an ALTER ICEBERG TABLE action the table's kind does not take. */
     public static final String CODE_ICEBERG_TABLE_KIND = "091352";
     /** The prefix a compilation error's message starts with. */
+    /** A statement that needs a current database the session does not have. */
+    public static final String CODE_NO_CURRENT_DATABASE = "090105";
+
     public static final String COMPILATION_ERROR = "SQL compilation error:";
 
     private final ConcurrentDatabaseEngine engine;
@@ -189,6 +192,9 @@ public final class RestSql {
             return new RestException(500, "Internal error", null);
         }
         final String relayed = message(message);
+        if (message.contains("This session does not have a current database")) {
+            return new RestException(400, relayed, CODE_NO_CURRENT_DATABASE);
+        }
         if (message.contains("does not exist or not authorized") || message.contains("does not exist")) {
             return new RestException(404, relayed, CODE_DOES_NOT_EXIST);
         }

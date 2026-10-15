@@ -17,8 +17,8 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.NumericType;
-import java.math.BigDecimal;
 import java.util.List;
 
 /** NEGATE(n) — the negative of the numeric input. */
@@ -31,7 +31,7 @@ public class Negate extends BuiltInFunction {
         if (args.get(0) instanceof Long || args.get(0) instanceof Integer) {
             return -((Number) args.get(0)).longValue();
         }
-        return new BigDecimal(args.get(0).toString()).negate();
+        return SharedFunctionHelpers.numberArgument(args.get(0)).negate();
     }
 
     @Override

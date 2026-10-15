@@ -20,6 +20,7 @@ import com.snowflake.snowpark_java.types.Variant;
 import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 
@@ -196,8 +197,9 @@ public final class HandlerArguments {
     }
 
     private static String text(final JsonNode element) {
+        // A container's own JSON, a NULL element inside it told as null (live-verified).
         return element == null || element.isNull() ? null : element.isTextual() ? element.asText()
-            : element.toString();
+            : VariantUndefined.withNulls(element).toString();
     }
 
     private static JsonNode json(final Object value) {

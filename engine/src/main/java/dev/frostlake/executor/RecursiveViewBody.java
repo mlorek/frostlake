@@ -58,6 +58,17 @@ final class RecursiveViewBody {
     }
 
     /**
+     * Whether a recursive CTE is the body of the recursive view being planned.
+     *
+     * @param cteName the CTE's name
+     * @return whether it is that view's body
+     */
+    static boolean isViewBody(final String cteName) {
+        final String view = VIEW.get();
+        return view != null && view.equalsIgnoreCase(cteName);
+    }
+
+    /**
      * The name a recursive CTE is spoken of by: its own, or the view's with the account's suffix when the CTE is a
      * recursive view's body.
      *

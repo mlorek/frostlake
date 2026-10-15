@@ -140,12 +140,12 @@ public final class CodePointText {
     }
 
     /**
-     * Where a text's leading run of trimmed characters ends: every character in {@code set}, or whitespace
+     * Where a text's leading run of trimmed characters ends: every character in {@code set}, or the blank
      * when the set is null. Compared by character, so a supplementary one is never split — '😁' shares its
      * first UTF-16 unit with '😀', and {@code TRIM('😁a', '😀')} keeps it whole (live-verified).
      *
      * @param text the text
-     * @param set  the characters trimmed, or null for whitespace
+     * @param set  the characters trimmed, or null for the blank
      * @return the UTF-16 offset the kept text starts at
      */
     public static int trimmedStart(final String text, final String set) {
@@ -161,7 +161,7 @@ public final class CodePointText {
      * {@link #trimmedStart}.
      *
      * @param text  the text
-     * @param set   the characters trimmed, or null for whitespace
+     * @param set   the characters trimmed, or null for the blank
      * @param floor the UTF-16 offset the cut never passes
      * @return the UTF-16 offset the kept text ends at
      */
@@ -174,7 +174,8 @@ public final class CodePointText {
     }
 
     private static boolean inTrimSet(final int point, final String set) {
-        return set == null ? Character.isWhitespace(point) : set.indexOf(point) >= 0;
+        // Without a set only the blank is trimmed: a tab and a line end stay (live-verified).
+        return set == null ? point == ' ' : set.indexOf(point) >= 0;
     }
 
     /**

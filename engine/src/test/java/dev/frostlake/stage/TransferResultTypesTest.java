@@ -101,24 +101,24 @@ public class TransferResultTypesTest extends BaseDatabaseTest {
             shape("SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"));
     }
 
-    /** A GET carries the client's own widths: a ten-digit size and a 20480-wide text. */
+    /** A GET carries the client's own types: a ten-digit DECIMAL size and a 20480-wide text. */
     @Test
     public void aGetCarriesTheClientsOwnWidths() {
         engine.execute("COPY INTO @sp/summary FROM (SELECT 1) FILE_FORMAT = (TYPE = CSV)");
-        assertEquals("file:VARCHAR(20480), size:NUMBER(10,0), status:VARCHAR(20480), "
+        assertEquals("file:VARCHAR(20480), size:DECIMAL(10,0), status:VARCHAR(20480), "
             + "encryption:VARCHAR(20480), message:VARCHAR(20480)",
             shape("GET @sp/summary 'file:///tmp/fl-get-types'"));
     }
 
-    /** A PUT carries the same widths as a GET. */
+    /** A PUT carries the same types as a GET, both of its sizes the client's DECIMAL. */
     @Test
     public void aPutCarriesTheSameWidths() throws IOException {
         // The file the PUT uploads; written here so the test does not depend on a leftover on the machine.
         final Path source = Paths.get("/tmp/fl-put-probe/a.csv");
         Files.createDirectories(source.getParent());
         Files.writeString(source, "1,x\n");
-        assertEquals("source:VARCHAR(20480), target:VARCHAR(20480), source_size:NUMBER(10,0), "
-            + "target_size:NUMBER(10,0), source_compression:VARCHAR(20480), "
+        assertEquals("source:VARCHAR(20480), target:VARCHAR(20480), source_size:DECIMAL(10,0), "
+            + "target_size:DECIMAL(10,0), source_compression:VARCHAR(20480), "
             + "target_compression:VARCHAR(20480), status:VARCHAR(20480), encryption:VARCHAR(20480), "
             + "message:VARCHAR(20480)",
             shape("PUT 'file:///tmp/fl-put-probe/a.csv' @sp AUTO_COMPRESS = FALSE"));

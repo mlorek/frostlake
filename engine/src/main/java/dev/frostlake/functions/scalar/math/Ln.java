@@ -29,7 +29,7 @@ public class Ln extends NumericArgumentFunction {
         if (args.get(0) == null) return null;
         final double num = ((Number) args.get(0)).doubleValue();
         if (num <= 0) {
-            throw new RuntimeException("LN requires a positive number");
+            throw FloatingPointRefusal.of("log(e," + FloatingPointRefusal.number(num) + ")");
         }
         return Math.log(num);
     }

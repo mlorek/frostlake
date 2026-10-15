@@ -172,7 +172,7 @@ final class ClockPrecisionRule {
                 return heldCast(cast.getExpression(), target, context);
             }
         }
-        return context.strictText(argument);
+        return context.strictPlanText(argument);
     }
 
     /** A cast as the plan holds it: one that changes nothing is its operand, and a NULL is a NULL of the type. */
@@ -197,6 +197,6 @@ final class ClockPrecisionRule {
     }
 
     private static boolean isFloat(final DataType type) {
-        return "FLOAT".equalsIgnoreCase(type.getName());
+        return NumericType.isApproximate(type);
     }
 }

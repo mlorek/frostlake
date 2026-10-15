@@ -20,8 +20,8 @@ import java.util.Objects;
 
 /**
  * What a handler runtime's state belongs to within one statement: a routine, the place in the statement that
- * calls it, and whatever else of the session the state was made for. The routine and the place are told apart by
- * identity — two calls of one function written in one statement are two places — and the rest by value.
+ * calls it, and whatever else of the session the state was made for. The routine is told apart by identity, the
+ * place as a {@link CallSite} tells places apart, and the rest by value.
  */
 final class HandlerStateKey {
 
@@ -41,11 +41,11 @@ final class HandlerStateKey {
             return false;
         }
         final HandlerStateKey that = (HandlerStateKey) other;
-        return owner == that.owner && site == that.site && Objects.equals(variant, that.variant);
+        return owner == that.owner && Objects.equals(site, that.site) && Objects.equals(variant, that.variant);
     }
 
     @Override
     public int hashCode() {
-        return 31 * (31 * System.identityHashCode(owner) + System.identityHashCode(site)) + Objects.hashCode(variant);
+        return 31 * (31 * System.identityHashCode(owner) + Objects.hashCode(site)) + Objects.hashCode(variant);
     }
 }

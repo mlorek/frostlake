@@ -98,9 +98,20 @@ public abstract class BuiltInFunction {
             return ImpliedTextNumber.read((CharSequence) value);
         }
         if (value instanceof VariantValue) {
-            // A VARIANT gives the number it holds, or the one its text spells.
+            // A VARIANT gives the number it holds, or the one its text spells; one that spells none is refused as
+            // the VARIANT's cast: "Failed to cast variant value "abc" to FIXED" (live-verified).
             final JsonNode held = ((VariantValue) value).node();
-            return held.isNumber() ? held.decimalValue() : ImpliedTextNumber.read(held.asText());
+            if (held.isNumber()) {
+                return held.decimalValue();
+            }
+            try {
+                return ImpliedTextNumber.read(held.asText());
+            } catch (final RuntimeException spellsNoNumber) {
+                if (held.isTextual()) {
+                    throw new RuntimeException("Failed to cast variant value " + held + " to FIXED");
+                }
+                throw spellsNoNumber;
+            }
         }
         if (value instanceof BigDecimal) {
             return (BigDecimal) value;
@@ -456,6 +467,38 @@ public abstract class BuiltInFunction {
      * @return true when that count is refused by the argument types; false by default
      */
     public boolean refusesArgumentCountByType(final int count) {
+        return false;
+    }
+
+    /**
+     * The signature a call with {@code count} arguments is judged against, for a function that has more than one:
+     * its name as the account's refusals spell it — live judges {@code TIMESTAMP_FROM_PARTS(2024, 3, 15)} as
+     * TIMESTAMP_NTZ_FROM_PARTS and a call of two arguments as TIMESTAMP_NTZ_FROM_DATE_TIME.
+     *
+     * @param count how many arguments the call carries
+     * @return the signature's name, or null for a function of one signature
+     */
+    public String signatureName(final int count) {
+        return null;
+    }
+
+    /**
+     * The fewest arguments of the signature a call with {@code count} arguments falls short of.
+     *
+     * @param count how many arguments the call carries
+     * @return that signature's least count, or -1 when the count falls short of none
+     */
+    public int signatureMinimum(final int count) {
+        return -1;
+    }
+
+    /**
+     * Whether the signature a call of these argument types is judged against takes no such types.
+     *
+     * @param types the declared types of the call's arguments, in order
+     * @return true when the signature refuses them; false by default
+     */
+    public boolean refusesSignatureTypes(final List<DataType> types) {
         return false;
     }
 

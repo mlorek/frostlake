@@ -39,10 +39,11 @@ public final class SessionZone {
 
     /**
      * The zone names the account knows that the JDK's zone list leaves out, each beside the zone it means: the
-     * three fixed-offset abbreviations, the old name of Asia/Taipei and the zone database's placeholder.
+     * three fixed-offset abbreviations, the old name of Asia/Taipei, the zone database's placeholder and its two
+     * signed names of GMT.
      */
     private static final String[][] LEGACY_ZONES = {{"EST", "-05:00"}, {"MST", "-07:00"}, {"HST", "-10:00"},
-        {"ROC", "Asia/Taipei"}, {"Factory", "UTC"}};
+        {"ROC", "Asia/Taipei"}, {"Factory", "UTC"}, {"GMT+0", "Etc/GMT+0"}, {"GMT-0", "Etc/GMT-0"}};
     /** A family of names the JDK keeps that the account does not. */
     private static final String UNKNOWN_FAMILY = "SystemV/";
 
@@ -78,8 +79,9 @@ public final class SessionZone {
     /**
      * Whether the account knows a time zone by this name (live-verified). The name is a zone's own, matched
      * exactly: {@code UTC}, {@code Europe/Warsaw}, {@code Etc/GMT+2}, {@code US/Pacific} and the old names the
-     * zone database still links are known, while {@code utc}, an offset ({@code +02:00}, {@code GMT+2},
-     * {@code Z}) and an abbreviation outside the four the database keeps ({@code PST}) are not.
+     * zone database still links are known - {@code GMT+0} and {@code GMT-0} among them - while {@code utc}, an
+     * offset ({@code +02:00}, {@code GMT+2}, {@code Z}) and an abbreviation outside the four the database keeps
+     * ({@code PST}) are not.
      *
      * @param name the name as the parameter would hold it
      * @return whether a TIMEZONE parameter takes it

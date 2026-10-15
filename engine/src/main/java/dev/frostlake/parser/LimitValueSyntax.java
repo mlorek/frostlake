@@ -119,6 +119,8 @@ public final class LimitValueSyntax {
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
+        // Where this parse reports a fault is read: it must not depend on what was parsed before.
+        ColdPrediction.arm(parser);
         parser.removeErrorListeners();
         parser.setErrorHandler(new BailErrorStrategy());
         final FrostlakeParser.SqlScriptContext script;

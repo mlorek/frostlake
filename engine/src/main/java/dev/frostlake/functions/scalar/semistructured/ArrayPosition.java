@@ -34,7 +34,7 @@ public class ArrayPosition extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         final Object value = args.get(0);
-        final ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(1));
+        final ArrayNode arr = ArrayFunctionHelper.parseArrayOrSingle(args.get(1));
         if (arr == null) return null;
         // A SQL NULL needle looks for the VARIANT `undefined` element — live:
         // ARRAY_POSITION(NULL::VARIANT, ARRAY_CONSTRUCT(1,NULL,2)) is 1, while over

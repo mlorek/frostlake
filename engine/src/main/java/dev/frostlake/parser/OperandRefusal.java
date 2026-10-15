@@ -43,8 +43,12 @@ public final class OperandRefusal {
         return message;
     }
 
-    /** Where the refused operand stands among the statement's tokens. */
-    int order() {
+    /**
+     * Where the refused operand stands among the statement's tokens.
+     *
+     * @return the index of the token the refusal is ordered by
+     */
+    public int order() {
         return order;
     }
 

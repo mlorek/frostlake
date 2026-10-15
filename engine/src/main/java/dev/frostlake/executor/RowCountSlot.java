@@ -26,12 +26,16 @@ import java.math.RoundingMode;
  * there, whatever its scale: a NUMBER(10,2) holding 2.5 limits to two rows. A variable that holds NULL is no limit.
  * Any other bind is refused while the statement compiles, with the bind as it is written: a negative number, a
  * text (one that spells a number too), a FLOAT and a BOOLEAN are {@code Invalid row count ':s' in limit clause},
- * and {@code … in result offset clause} where an OFFSET's count stands. A count written with more digits than 64
- * bits hold is refused the same way, as written (live-verified).
+ * and {@code … in result offset clause} where an OFFSET's count stands. A count past 2^62 - 1
+ * (4611686018427387903) is refused the same way, as written, wherever it stands — LIMIT, OFFSET, FETCH and TOP
+ * (live-verified).
  */
 final class RowCountSlot {
 
     private static final BigInteger MOST_ROWS = BigInteger.valueOf(Integer.MAX_VALUE);
+
+    /** The widest count taken: 2^62 - 1, whose 62 bits are the most a count may need. */
+    private static final int MOST_COUNT_BITS = 62;
 
     private RowCountSlot() {
     }
@@ -42,7 +46,7 @@ final class RowCountSlot {
      */
     static int ofLiteral(final String literal, final boolean offset) {
         final BigDecimal count = new BigDecimal(literal);
-        if (count.setScale(0, RoundingMode.DOWN).toBigInteger().bitLength() > Long.SIZE - 1) {
+        if (count.setScale(0, RoundingMode.DOWN).toBigInteger().bitLength() > MOST_COUNT_BITS) {
             throw invalid("'" + literal + "'", offset);
         }
         return whole(count);

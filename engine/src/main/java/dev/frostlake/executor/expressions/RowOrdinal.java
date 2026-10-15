@@ -16,6 +16,10 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.storage.Row;
+
+import java.util.Map;
+
 /**
  * Which row, counting from 0, the operator is currently evaluating expressions for — what the
  * {@code SEQ1} / {@code SEQ2} / {@code SEQ4} / {@code SEQ8} family reads.
@@ -39,6 +43,7 @@ package dev.frostlake.executor.expressions;
 public final class RowOrdinal {
 
     private static final ThreadLocal<Long> CURRENT = new ThreadLocal<Long>();
+    private static final ThreadLocal<Map<Row, Long>> SCAN = new ThreadLocal<Map<Row, Long>>();
 
     private RowOrdinal() {
     }
@@ -66,5 +71,41 @@ public final class RowOrdinal {
     public static long current() {
         final Long ordinal = CURRENT.get();
         return ordinal == null ? 0L : ordinal.longValue();
+    }
+
+    /**
+     * Note where each row of a grouping's input stood in that input, while the aggregates of its groups are
+     * computed: an aggregated SEQ numbers the rows by the scan the grouping read, not by their place in their group
+     * (live-verified: SUM(SEQ4()) over the groups of i % 3 in 0..8 is 9, 12 and 15). Returns what it displaced.
+     *
+     * @param positions each input row's place, by identity
+     * @return the positions it displaced, for {@link #endScan}
+     */
+    public static Map<Row, Long> beginScan(final Map<Row, Long> positions) {
+        final Map<Row, Long> previous = SCAN.get();
+        SCAN.set(positions);
+        return previous;
+    }
+
+    /** Put back whatever {@link #beginScan} displaced; null clears. */
+    public static void endScan(final Map<Row, Long> previous) {
+        if (previous == null) {
+            SCAN.remove();
+        } else {
+            SCAN.set(previous);
+        }
+    }
+
+    /**
+     * Where {@code row} stood in the input of the grouping whose aggregates are being computed.
+     *
+     * @param row    the row
+     * @param within its place in the rows at hand, answered when no grouping noted the row
+     * @return its place in the scan
+     */
+    public static long scanPosition(final Row row, final long within) {
+        final Map<Row, Long> positions = SCAN.get();
+        final Long position = positions == null ? null : positions.get(row);
+        return position == null ? within : position.longValue();
     }
 }

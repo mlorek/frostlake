@@ -38,11 +38,13 @@ public class ArrayInsert extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         if (args.get(1) == null) return null;
         final int n = src.size();
-        final int pos = ((Number) args.get(1)).intValue();
+        // A text or a VARIANT position is read as the whole number it holds (see wholeNumber).
+        final int pos = args.get(1) instanceof Number ? ((Number) args.get(1)).intValue()
+            : wholeNumber(args.get(1));
         // Live: ARRAY_INSERT([1], 4, 9) is [1,undefined,undefined,undefined,9] — both the
         // inserted SQL NULL and the padding are VARIANT `undefined`, whose TYPEOF is SQL NULL.
         final JsonNode element = ArrayFunctionHelper.toElementNode(ArrayFunctionHelper.MAPPER, args.get(2));

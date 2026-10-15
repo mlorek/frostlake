@@ -32,8 +32,10 @@ import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -74,7 +76,9 @@ final class RowPatternRelation {
     private static final Pattern UNRESOLVED = Pattern.compile("invalid identifier '([^']+)'");
     /** A refusal that carries a place, and the function such a refusal names. */
     private static final Pattern PLACED = Pattern.compile("error line \\d+ at position -?\\d+\\n(.*)", Pattern.DOTALL);
-    private static final Pattern FUNCTION = Pattern.compile("function ([A-Za-z_][A-Za-z0-9_$]*)");
+    private static final Pattern FUNCTION = Pattern.compile("function \\[?([A-Za-z_][A-Za-z0-9_$]*)");
+    /** The operator a refusal of its operands' types names. */
+    private static final Pattern OPERATOR = Pattern.compile("^Invalid argument types for function '([^A-Za-z']+)'");
 
     private final QueryExecutor executor;
 
@@ -283,8 +287,9 @@ final class RowPatternRelation {
     }
 
     /**
-     * A name one of the clause's queries could not resolve, placed where the clause itself writes it: the queries
-     * are the clause's own, and a place in them is none the statement has.
+     * A name one of the clause's queries could not resolve, a call it refused and an operator refused for its
+     * operands, placed where the clause itself writes it: the queries are the clause's own, and a place in them
+     * is none the statement has.
      */
     private static RuntimeException placedInClause(final RuntimeException refused,
                                                    final FrostlakeParser.MatchRecognizeClauseContext clause) {
@@ -298,11 +303,32 @@ final class RowPatternRelation {
         final Matcher placed = PLACED.matcher(message);
         if (placed.find()) {
             final Matcher function = FUNCTION.matcher(placed.group(1));
-            final Token called = function.find() ? firstCall(clause, function.group(1)) : null;
+            Token called = function.find() ? firstCall(clause, function.group(1)) : null;
+            if (called == null) {
+                // An operator refused for its operands is placed at the operator a measure or a definition writes.
+                final Matcher operator = OPERATOR.matcher(placed.group(1));
+                called = operator.find() ? firstOperator(clause, operator.group(1)) : null;
+            }
             return called == null ? refused : new RuntimeException(SqlCompilationError.at(called.getLine(),
                 called.getCharPositionInLine(), placed.group(1)));
         }
         return refused;
+    }
+
+    /** The first operator of that spelling standing between two operands of the clause, or null. */
+    private static Token firstOperator(final ParseTree node, final String symbol) {
+        if (node.getChildCount() == 3 && node.getChild(1) instanceof TerminalNode
+                && symbol.equals(node.getChild(1).getText())
+                && node.getChild(0) instanceof ParserRuleContext && node.getChild(2) instanceof ParserRuleContext) {
+            return ((TerminalNode) node.getChild(1)).getSymbol();
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final Token found = firstOperator(node.getChild(i), symbol);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     private static Token firstCall(final ParseTree node, final String name) {

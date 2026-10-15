@@ -36,6 +36,10 @@ public class Strtok extends TextArgumentFunction {
         final String str = args.get(0).toString();
         final String delimiters = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : " ";
         final int partNum = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
+        if (delimiters.isEmpty()) {
+            // With no delimiter the whole text is its one token (live-verified).
+            return partNum == 1 && !str.isEmpty() ? str : null;
+        }
         final String regex = "[" + Pattern.quote(delimiters) + "]+";
         final String[] tokens = str.split(regex, -1);
         final List<String> nonEmpty = new ArrayList<>();

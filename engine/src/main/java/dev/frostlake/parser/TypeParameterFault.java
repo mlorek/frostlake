@@ -29,15 +29,25 @@ public final class TypeParameterFault extends IdentifierReferenceFault {
 
     private static final long serialVersionUID = 1L;
 
+    private final boolean repeated;
+
     /**
      * @param parser        the parser that read the list
      * @param list          the list's parse node
      * @param named         the token the line names
      * @param endsTheReport whether nothing after this line is reported for the statement
+     * @param repeated      whether the line names the token of the line before it once more, as the account does
+     *                      for the first token inside an ARRAY's or an OBJECT's parentheses
      */
     public TypeParameterFault(final Parser parser, final ParserRuleContext list, final Token named,
-                              final boolean endsTheReport) {
+                              final boolean endsTheReport, final boolean repeated) {
         super(parser, list, endsTheReport);
         setOffendingToken(named);
+        this.repeated = repeated;
+    }
+
+    /** Whether this line repeats the one before it on purpose, which the listener must not fold into it. */
+    public boolean repeatsTheLineBefore() {
+        return repeated;
     }
 }

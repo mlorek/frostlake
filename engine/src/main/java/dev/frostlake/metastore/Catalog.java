@@ -21,6 +21,7 @@ import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.model.AccountTags;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.Contact;
@@ -33,6 +34,7 @@ import dev.frostlake.metastore.model.ObjectParameters;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.ProjectionPolicy;
+import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
@@ -70,6 +72,8 @@ public class Catalog {
     private final Map<String, Warehouse> warehouses;
     private final Map<String, ComputePool> computePools = new ConcurrentHashMap<>();
     private final IntegrationRegistry integrations = new IntegrationRegistry();
+    /** The files COPY has loaded, for LOAD_HISTORY and COPY_HISTORY. */
+    private final LoadHistory loadHistory = new LoadHistory();
     private final ExternalVolumeRegistry externalVolumes = new ExternalVolumeRegistry();
     private final Map<String, User> users;
     private final Map<String, Role> roles;
@@ -90,10 +94,17 @@ public class Catalog {
     private SessionContext sessionContext;
     /** The parameters set on the account, which every user and session inherits. */
     private final ObjectParameters accountParameters = new ObjectParameters();
+    /** The tags set on the account itself. */
+    private final AccountTags accountTags = new AccountTags();
 
     /** The parameters set on the account (its users and their sessions inherit them). */
     public ObjectParameters getAccountParameters() {
         return accountParameters;
+    }
+
+    /** The tags set on the account itself. */
+    public AccountTags getAccountTags() {
+        return accountTags;
     }
 
     // Dropped-object retention for UNDROP (Time Travel restore): "KIND:fqName" → every dropped version of that name,
@@ -998,6 +1009,11 @@ public class Catalog {
     /** The account's integrations. */
     public IntegrationRegistry getIntegrations() {
         return integrations;
+    }
+
+    /** The files COPY has loaded into the account's tables. */
+    public LoadHistory getLoadHistory() {
+        return loadHistory;
     }
 
     /** The account's external volumes. */
@@ -2045,9 +2061,20 @@ public class Catalog {
      * columns, constraints and comment but answers to the other's name (and schema). Both must
      * exist; resolution failures throw before anything mutates.
      */
-    public void swapTables(final String nameA, final String nameB) {
+    /**
+     * ALTER TABLE a SWAP WITH b: the two tables trade names. A name the statement gives a view or another relation is
+     * refused by its kind; a table swapped with itself, however either name is spelled, stays as it was
+     * (live-verified).
+     *
+     * @return whether two tables traded names
+     */
+    public boolean swapTables(final String nameA, final String nameB) {
         final Table a = resolveTable(nameA);
+        refuseOtherRelationKind(nameB);
         final Table b = resolveTable(nameB);
+        if (a == b) {
+            return false;
+        }
         if (a.isTemporary() != b.isTemporary()) {
             // Live-verified, and so for a temporary table that hides a permanent one of its name.
             throw new RuntimeException("Swapping of a temporary table with another non-temporary table is not allowed.");
@@ -2068,6 +2095,35 @@ public class Catalog {
         // Each table's streams and privileges follow the table, not the name it gave up.
         StreamSources.respellAll(this);
         GrantNames.swapped(this, "TABLE", fullA, fullB);
+        return true;
+    }
+
+    /**
+     * Refuse a name a relation other than a table holds, as {@code Object found is of type 'VIEW', not specified type
+     * 'TABLE'.} (live-verified for SWAP WITH).
+     *
+     * @param name the name as the statement writes it
+     */
+    public void refuseOtherRelationKind(final String name) {
+        // A name the session cannot place, or whose database or schema is missing, is refused where the statement
+        // resolves the table, in its own words.
+        final String[] parts = QualifiedName.parse(name).parts();
+        if (parts.length < 3 && getCurrentDatabase() == null || parts.length == 1 && getCurrentSchema() == null) {
+            return;
+        }
+        final Schema schema;
+        try {
+            schema = resolveSchemaForTable(name);
+        } catch (final RuntimeException unplaced) {
+            return;
+        }
+        if (schema == null) {
+            return;
+        }
+        final RelationKind kind = schema.relationKindOf(objectName(name));
+        if (kind != null && kind != RelationKind.TABLE) {
+            throw new RuntimeException(SqlCompilationError.objectOfOtherType(kind.spelling(), "TABLE"));
+        }
     }
 
     /**

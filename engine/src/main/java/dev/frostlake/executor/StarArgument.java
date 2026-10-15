@@ -99,6 +99,16 @@ public final class StarArgument {
         return qualifier;
     }
 
+    /** The EXCLUDE names, in their canonical spelling. */
+    public List<String> getExcludes() {
+        return excludes;
+    }
+
+    /** The ILIKE pattern between its quotes, or null. */
+    public String getIlike() {
+        return ilike;
+    }
+
     /** Whether this is the bare {@code *} — no qualifier and no filter — that COUNT counts rows by. */
     public boolean isBare() {
         return qualifier == null && excludes.isEmpty() && ilike == null;

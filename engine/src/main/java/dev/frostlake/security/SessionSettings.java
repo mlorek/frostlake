@@ -49,6 +49,8 @@ public final class SessionSettings {
     private volatile String currentStatement;
     /** The public id of this session's last committed or rolled-back transaction, for LAST_TRANSACTION(). */
     private volatile String lastTransactionId;
+    /** The session's own roles once it has set any; null while it still takes the engine's. */
+    private volatile SessionRoles roles;
 
     /** A new session's settings. */
     public SessionSettings() {
@@ -61,6 +63,16 @@ public final class SessionSettings {
      *
      * @return the session's 16-digit number
      */
+    /** The session's own roles, or null while it takes the engine's (see {@link SessionContext#getCurrentRole}). */
+    public SessionRoles getRoles() {
+        return roles;
+    }
+
+    /** Give the session roles of its own. */
+    public void setRoles(final SessionRoles roles) {
+        this.roles = roles;
+    }
+
     public long getSessionNumber() {
         return sessionNumber;
     }
@@ -111,5 +123,6 @@ public final class SessionSettings {
         parameters.clear();
         parameters.put("MULTI_STATEMENT_COUNT", 1);
         variables.clear();
+        roles = null;
     }
 }

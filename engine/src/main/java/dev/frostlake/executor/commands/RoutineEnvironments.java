@@ -362,10 +362,7 @@ final class RoutineEnvironments {
                     "Secret values must be specified using object identifier."));
             }
             final String name = ParseTreeText.extractStringLiteral(variable.STRING_LITERAL());
-            if (variables.contains(name)) {
-                throw new RuntimeException(SqlCompilationError.inline("Duplicate secret name '" + name
-                    + "' passed in."));
-            }
+            refuseRepeated(variables, name);
             variables.add(name);
         }
         for (int i = 0; i < variables.size(); i++) {
@@ -380,6 +377,39 @@ final class RoutineEnvironments {
             named.put(variables.get(i), owner.qualifiedName(last));
         }
         return named;
+    }
+
+    /**
+     * Refuse a secrets list that names a variable twice. Two names are one when they differ in case alone, and the
+     * later spelling is the one told: {@code ('a' = s, 'A' = s)} is {@code Duplicate secret name 'A' passed in.}
+     * An ALTER judges this before it looks its routine up, so the sentence comes for a routine that is not there
+     * and under IF EXISTS too (live-verified).
+     *
+     * @param written the value written after SECRETS
+     */
+    static void refuseRepeatedSecret(final FrostlakeParser.RoutineSecretListContext written) {
+        if (written.routineSecrets() == null) {
+            return;
+        }
+        final List<String> variables = new ArrayList<>();
+        for (final FrostlakeParser.RoutineSecretContext secret : written.routineSecrets().routineSecret()) {
+            final FrostlakeParser.RoutineSecretPartContext variable = secret.routineSecretPart(0);
+            if (variable.STRING_LITERAL() == null) {
+                continue;
+            }
+            final String name = ParseTreeText.extractStringLiteral(variable.STRING_LITERAL());
+            refuseRepeated(variables, name);
+            variables.add(name);
+        }
+    }
+
+    private static void refuseRepeated(final List<String> variables, final String name) {
+        for (final String earlier : variables) {
+            if (earlier.equalsIgnoreCase(name)) {
+                throw new RuntimeException(SqlCompilationError.inline("Duplicate secret name '" + name
+                    + "' passed in."));
+            }
+        }
     }
 
     /** A value that is no secret list or no pair of one: echoed as written, a string by what it holds. */

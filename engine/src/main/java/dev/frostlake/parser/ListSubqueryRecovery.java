@@ -68,7 +68,7 @@ final class ListSubqueryRecovery {
      */
     static List<String> refusal(final String sql, final List<Token> spoken, final int[] firstFault,
                                 final boolean statementParse) {
-        if (sql == null || firstFault == null || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null || firstFault == null) {
             return null;
         }
         final int keyword = firstLaterElementSubquery(spoken);
@@ -196,6 +196,8 @@ final class ListSubqueryRecovery {
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
         lexer.removeErrorListeners();
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(lexer));
+        // Where this parse reports a fault is read: it must not depend on what was parsed before.
+        ColdPrediction.arm(parser);
         parser.removeErrorListeners();
         parser.addErrorListener(new BaseErrorListener() {
             @Override

@@ -17,30 +17,50 @@
 package dev.frostlake.parser;
 
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 /**
  * The plain words among those of the object kinds the account drops and describes that Frostlake models no object
- * of. {@code SNAPSHOT} and {@code CONNECTION} name a kind alone, and {@code PROFILE}, {@code LIFECYCLE} and
+ * of. {@code SNAPSHOT}, {@code CONNECTION}, {@code DATASET} and {@code MODEL} name a kind alone, and
+ * {@code PROFILE}, {@code LIFECYCLE} and
  * {@code PROJECT} follow the keywords {@code ORGANIZATION}, {@code STORAGE} and {@code DBT} in the grammar's
  * {@code unmodelledKind}. A word is matched whatever its case and never in quotes (live-verified).
  */
 public final class UnmodelledKindWords {
 
-    /** The kinds one plain word names. */
-    private static final String[] ONE_WORD = {"SNAPSHOT", "CONNECTION"};
+    /**
+     * The kinds one plain word names: a DESCRIBE reads a signature and properties after their object's name, as it
+     * does after a kind named by keywords, and a DROP a signature.
+     */
+    private static final String[] DESCRIBED = {"SNAPSHOT", "CONNECTION", "DATASET", "MODEL"};
 
     private UnmodelledKindWords() {
     }
 
     /**
-     * Whether a plain word names a kind alone.
+     * Whether the class a DROP names is a kind the account reads a signature after the instance of: the words a
+     * DESCRIBE reads its tail after.
      *
-     * @param word the token
+     * @param name the class name, or null
+     * @return whether a signature may follow the instance's name
+     */
+    public static boolean takesSignature(final FrostlakeParser.ClassNameContext name) {
+        return name != null && readsDescribeTail(name.IDENTIFIER());
+    }
+
+    /**
+     * Whether the plain word a DESCRIBE names its kind by is one the account reads a signature and properties
+     * after.
+     *
+     * @param word the word's node, or null
      * @return whether it is such a word
      */
-    public static boolean isOneWord(final Token word) {
-        for (final String kind : ONE_WORD) {
-            if (is(word, kind)) {
+    public static boolean readsDescribeTail(final TerminalNode word) {
+        if (word == null) {
+            return false;
+        }
+        for (final String kind : DESCRIBED) {
+            if (is(word.getSymbol(), kind)) {
                 return true;
             }
         }

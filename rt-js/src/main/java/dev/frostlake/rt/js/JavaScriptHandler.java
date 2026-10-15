@@ -460,8 +460,10 @@ final class JavaScriptHandler {
         final String none = "if (result === null || result === undefined) { return null; }\n";
         final String absent = "if (result === undefined) { return null; }\n";
         final String late = "refuse('Late exception in return value conversion')";
-        final String copied = "try { return toJson(copy(result, false, [])); } catch (thrown) { return " + late
-            + "; }\n";
+        // A value that holds itself is no JSON: the account refuses it in a sentence of its own (live-verified).
+        final String copied = "try { return toJson(copy(result, false, [])); } catch (thrown) { "
+            + "return thrown instanceof TypeError && thrown.message === 'cyclic' ? '"
+            + JavaScriptReturn.BARE_REFUSAL_IN_SOURCE + "Object contains cyclic references' : " + late + "; }\n";
         if (returns instanceof StringType) {
             return none + "if (typeof result === 'symbol') { return " + late + "; }\n"
                 + "try { var text = String(result); return text.charCodeAt(0) === 1 ? '"

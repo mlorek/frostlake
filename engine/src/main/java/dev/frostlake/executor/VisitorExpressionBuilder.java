@@ -47,8 +47,6 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -65,8 +63,6 @@ import java.util.UUID;
  * engine state through {@code queryExecutor}.
  */
 public class VisitorExpressionBuilder {
-
-    private static final Logger logger = LoggerFactory.getLogger(VisitorExpressionBuilder.class);
 
     private final SQLCommandVisitor visitor;
     private final QueryExecutor queryExecutor;
@@ -424,7 +420,14 @@ public class VisitorExpressionBuilder {
         }
         if (ctx instanceof FrostlakeParser.SystemUserTaskCancelExprContext) {
             final FrostlakeParser.SystemUserTaskCancelExprContext sctx = (FrostlakeParser.SystemUserTaskCancelExprContext) ctx;
-            final Object nameVal = evaluateExpression(sctx.expression(), scriptingNamesVisible);
+            final int given = sctx.expressionList() == null ? 0 : sctx.expressionList().expression().size();
+            if (given != 1) {
+                throw UserTaskCancellation.wrongCount(sctx.getStart().getLine(),
+                    sctx.getStart().getCharPositionInLine(),
+                    given == 0 ? sctx.SYSTEM_USER_TASK_CANCEL().getText().toUpperCase(Locale.ROOT) + "()"
+                        : ParseTreeText.getOriginalText(sctx), given);
+            }
+            final Object nameVal = evaluateExpression(sctx.expressionList().expression(0), scriptingNamesVisible);
             return UserTaskCancellation.cancel(queryExecutor.getCatalog(),
                 queryExecutor.getTaskScheduler(), nameVal == null ? null : nameVal.toString());
         }
@@ -658,6 +661,9 @@ public class VisitorExpressionBuilder {
         // SYSTEM$ family, shared with SHOW FUNCTIONS via FunctionRegistry.allDispatchableNames(). This
         // parse-tree path and the expression-AST path both consult it, so neither switch can grow a name
         // the listing does not know about.
+        if (SystemFunctionNames.isLoggingStatement(rawName)) {
+            throw SystemFunctionNames.unknownLoggingFunction(rawName);
+        }
         if (!SystemFunctionNames.contains(rawName)) {
             throw new RuntimeException("Unsupported system function: " + rawName);
         }
@@ -681,7 +687,8 @@ public class VisitorExpressionBuilder {
             // ── Task / scheduling ──────────────────────────────────────────────
             case "SYSTEM$CURRENT_USER_TASK_NAME": {
                 final Task currentTask = TaskScheduler.currentTask();
-                return currentTask != null ? currentTask.getName() : null;
+                // Outside a task the name is empty, not NULL (live-verified).
+                return currentTask != null ? currentTask.getName() : "";
             }
 
             case "SYSTEM$SET_RETURN_VALUE": {
@@ -772,16 +779,13 @@ public class VisitorExpressionBuilder {
                 return "Query cancelled.";
 
             // ── Clustering ─────────────────────────────────────────────────────
-            case "SYSTEM$CLUSTERING_DEPTH": {
-                final String tblName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
-                return "{\"average_depth\": 1.0, \"table_name\": \"" + tblName + "\"}";
-            }
-            case "SYSTEM$CLUSTERING_INFORMATION": {
-                final String tblName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
-                return "{\"clustering_key\": null, \"total_partition_count\": 1, \"average_depth\": 1.0, \"table_name\": \"" + tblName + "\"}";
-            }
+            case "SYSTEM$CLUSTERING_DEPTH":
+                return ClusteringStatistics.depth(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), args);
+            case "SYSTEM$CLUSTERING_INFORMATION":
+                return ClusteringStatistics.information(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
+                    args);
             case "SYSTEM$CLUSTERING_RATIO":
-                return 1.0;
+                return ClusteringStatistics.ratio(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), args);
 
             // ── Tags ───────────────────────────────────────────────────────────
             case "SYSTEM$GET_TAG":
@@ -826,28 +830,6 @@ public class VisitorExpressionBuilder {
 
             case "SYSTEM$REFERENCE":
                 return args.isEmpty() ? null : args.get(0);
-
-            // ── Logging ────────────────────────────────────────────────────────
-            case "SYSTEM$LOG": {
-                // SYSTEM$LOG(level, message) — emit to logger, return null
-                if (args.size() >= 2) {
-                    logger.info("SYSTEM$LOG [{}]: {}", args.get(0), args.get(1));
-                } else if (!args.isEmpty()) {
-                    logger.info("SYSTEM$LOG: {}", args.get(0));
-                }
-                return null;
-            }
-            case "SYSTEM$LOG_TRACE":
-            case "SYSTEM$LOG_DEBUG":
-            case "SYSTEM$LOG_INFO":
-            case "SYSTEM$LOG_WARN":
-            case "SYSTEM$LOG_ERROR":
-            case "SYSTEM$LOG_FATAL":
-                // SYSTEM$LOG with the level in its name: SYSTEM$LOG_INFO(message)
-                if (!args.isEmpty()) {
-                    logger.info("{}: {}", rawName, args.get(0));
-                }
-                return null;
 
             // ── Wait ───────────────────────────────────────────────────────────
             case "SYSTEM$WAIT":

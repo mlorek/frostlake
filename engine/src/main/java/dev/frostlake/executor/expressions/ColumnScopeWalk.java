@@ -74,6 +74,11 @@ final class ColumnScopeWalk extends AstPrinterVisitor {
         final FunctionCallExpression expr = context.splicedStarArguments(written);
         // A bind variable naming the column or the function is refused ahead of the names inside the call.
         context.rejectUnboundIdentifierBind(expr);
+        if ("SYSTEM$GET_TAG".equalsIgnoreCase(expr.getFunctionName()) && expr.getNameExpression() == null
+                && expr.getArguments().size() >= 3) {
+            // Its arguments are read before a name in them is resolved (see SystemConstantArguments).
+            SystemConstantArguments.judge("SYSTEM$GET_TAG", expr.getArguments(), context);
+        }
         final String walked;
         final int slot = DateTimeUnitSlot.positionIn(
             expr.getFunctionName().toUpperCase(Locale.ROOT));

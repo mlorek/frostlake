@@ -26,6 +26,8 @@ public final class JavaSourceKey {
     private final String className;
     private final String sourceCode;
     private final int release;
+    /** Whether Snowpark's classes were on the class path (see {@link SnowparkPackage}). */
+    private final boolean snowpark;
 
     /**
      * @param className  the class the handler names
@@ -41,9 +43,20 @@ public final class JavaSourceKey {
      * @param release    the language level, or 0 for the JDK's own
      */
     public JavaSourceKey(final String className, final String sourceCode, final int release) {
+        this(className, sourceCode, release, true);
+    }
+
+    /**
+     * @param className  the class the handler names
+     * @param sourceCode the source's whole text
+     * @param release    the language level, or 0 for the JDK's own
+     * @param snowpark   whether Snowpark's classes are on the class path
+     */
+    public JavaSourceKey(final String className, final String sourceCode, final int release, final boolean snowpark) {
         this.className = className;
         this.sourceCode = sourceCode;
         this.release = release;
+        this.snowpark = snowpark;
     }
 
     @Override
@@ -52,11 +65,12 @@ public final class JavaSourceKey {
             return false;
         }
         final JavaSourceKey that = (JavaSourceKey) other;
-        return release == that.release && className.equals(that.className) && sourceCode.equals(that.sourceCode);
+        return release == that.release && snowpark == that.snowpark && className.equals(that.className)
+            && sourceCode.equals(that.sourceCode);
     }
 
     @Override
     public int hashCode() {
-        return 31 * (31 * className.hashCode() + sourceCode.hashCode()) + release;
+        return 2 * (31 * (31 * className.hashCode() + sourceCode.hashCode()) + release) + (snowpark ? 1 : 0);
     }
 }

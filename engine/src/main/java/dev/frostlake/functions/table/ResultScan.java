@@ -16,11 +16,19 @@
 
 package dev.frostlake.functions.table;
 
+import dev.frostlake.executor.ColumnLengthException;
+import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.QueryResultCache;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantJsonText;
+import dev.frostlake.values.VariantValue;
+import tools.jackson.databind.node.StringNode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -80,7 +88,60 @@ public class ResultScan extends TableFunction {
                     column.getDataType(), column.isNullable(), column.isNullabilityKnown(),
                     column.getValueRange()));
         }
-        return new ResultSet(declared, result.getRows());
+        return new ResultSet(declared, withinDeclaredWidths(declared, result.getRows()));
+    }
+
+    /**
+     * A procedure's one answer held against the width its RETURNS declared. A handler may answer a text longer
+     * than {@code RETURNS VARCHAR(2)} allows: the CALL hands it out, and the scan of that CALL refuses to read
+     * it — {@code String 'abc' is too long and would be truncated} — where a count of the scan's rows, which
+     * reads no value, answers (live-verified). The refusal waits in the cell for whatever reads it.
+     */
+    private static List<Row> withinDeclaredWidths(final List<ResultSetColumn> columns, final List<Row> rows) {
+        if (columns.size() != 1 || rows == null || rows.size() != 1 || rows.get(0) == null) {
+            return rows;
+        }
+        if (columns.get(0).getDataType() instanceof ObjectType) {
+            return asObjects(rows);
+        }
+        if (!(columns.get(0).getDataType() instanceof StringType)) {
+            return rows;
+        }
+        final int width = ((StringType) columns.get(0).getDataType()).getMaxLength();
+        final Object answer = rows.get(0).getValues().isEmpty() ? null : rows.get(0).getValues().get(0);
+        if (width <= 0 || !(answer instanceof String)
+                || ((String) answer).codePointCount(0, ((String) answer).length()) <= width) {
+            return rows;
+        }
+        final List<Row> held = new ArrayList<>();
+        held.add(new Row(new DeferredFault(new ColumnLengthException(width, (String) answer))));
+        return held;
+    }
+
+    /**
+     * A procedure's one OBJECT answer held to its type. A JavaScript handler may answer what is no object for
+     * {@code RETURNS OBJECT} — a Uint8Array's hex, a String object's text, a Date's timestamp — and the CALL hands
+     * it out, while a statement that reads it from the CALL's scan is refused: {@code Failed to cast variant value
+     * "01" to OBJECT} (live-verified). The refusal waits in the cell for whatever reads it.
+     */
+    private static List<Row> asObjects(final List<Row> rows) {
+        final Object answer = rows.get(0).getValues().isEmpty() ? null : rows.get(0).getValues().get(0);
+        final String text;
+        if (answer instanceof VariantValue) {
+            final VariantValue value = (VariantValue) answer;
+            if (value.node() == null || value.node().isObject() || value.node().isNull()) {
+                return rows;
+            }
+            text = VariantJsonText.clientTextOf(value);
+        } else if (answer instanceof String) {
+            text = StringNode.valueOf((String) answer).toString();
+        } else {
+            return rows;
+        }
+        final List<Row> held = new ArrayList<>();
+        held.add(new Row(new DeferredFault(
+            new RuntimeException("Failed to cast variant value " + text + " to OBJECT"))));
+        return held;
     }
 
     @Override

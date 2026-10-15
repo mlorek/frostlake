@@ -96,6 +96,7 @@ final class RestCatalogSnapshots {
             saved.properties = saveProperties(integration.getProperties());
             saved.tags = new HashMap<>(integration.getTagValues());
             saved.createdOn = integration.getCreatedTime();
+            saved.identitySeed = integration.getIdentitySeed();
             snapshot.integrations.add(saved);
         }
         for (final ExternalVolume volume : catalog.getExternalVolumes().all()) {
@@ -162,6 +163,7 @@ final class RestCatalogSnapshots {
                 final Integration integration = new Integration(saved.name, IntegrationKind.valueOf(saved.kind),
                     orNow(saved.createdOn));
                 integration.setEnabled(saved.enabled);
+                integration.setIdentitySeed(saved.identitySeed);
                 restoreOwnership(integration, saved.owner, saved.comment, saved.tags);
                 integration.getProperties().putAll(restoreProperties(saved.properties));
                 catalog.getIntegrations().put(integration);
@@ -1018,12 +1020,14 @@ final class RestCatalogSnapshots {
         saved.tags = new HashMap<>(volume.getTagValues());
         saved.createdOn = volume.getCreatedTime();
         saved.droppedOn = volume.getDroppedOn();
+        saved.identitySeed = volume.getIdentitySeed();
         return saved;
     }
 
     private static ExternalVolume restoreVolume(final ExternalVolumeSnapshot saved) {
         final ExternalVolume volume = new ExternalVolume(saved.name, orNow(saved.createdOn));
         volume.setAllowWrites(saved.allowWrites);
+        volume.setIdentitySeed(saved.identitySeed);
         restoreOwnership(volume, saved.owner, saved.comment, saved.tags);
         if (saved.storageLocations != null) {
             for (final LinkedHashMap<String, PropertyValueSnapshot> location : saved.storageLocations) {

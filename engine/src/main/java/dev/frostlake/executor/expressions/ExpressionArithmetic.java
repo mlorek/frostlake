@@ -323,6 +323,9 @@ public final class ExpressionArithmetic {
         if (ZonedTimestampShift.isZoned(left) && right instanceof IntervalValue) {
             return applyZonedInterval(left, (IntervalValue) right, 1);
         }
+        if (left instanceof LocalTime && right instanceof IntervalValue) {
+            return applyTimeInterval((LocalTime) left, (IntervalValue) right, 1);
+        }
         // Date/time addition (commutative): temporal + integer (days) or temporal + INTERVAL. Normalize so
         // `temporal` is the DATE/TIMESTAMP operand and `other` is the integer/interval being added.
         final Object temporal = asTemporal(left) != null ? left : (asTemporal(right) != null ? right : null);
@@ -421,6 +424,9 @@ public final class ExpressionArithmetic {
         }
         if (ZonedTimestampShift.isZoned(left) && right instanceof IntervalValue) {
             return applyZonedInterval(left, (IntervalValue) right, -1);
+        }
+        if (left instanceof LocalTime && right instanceof IntervalValue) {
+            return applyTimeInterval((LocalTime) left, (IntervalValue) right, -1);
         }
         // Date/time subtraction (NOT commutative — the left operand must be the DATE/TIMESTAMP):
         // temporal - integer (days), temporal - INTERVAL, or temporal - temporal (difference in days).
@@ -578,6 +584,9 @@ public final class ExpressionArithmetic {
         if (value instanceof LocalDate) {
             return "DATE";
         }
+        if (value instanceof LocalTime) {
+            return "TIME(9)";
+        }
         if (value instanceof LocalDateTime) {
             return "TIMESTAMP_NTZ(9)";
         }
@@ -588,6 +597,63 @@ public final class ExpressionArithmetic {
             return "TIMESTAMP_TZ(9)";
         }
         return null;
+    }
+
+    /**
+     * A TIME moved by an INTERVAL, one part after another in written order, around the clock: 23:30 plus an hour is
+     * 00:30 and 25 hours are one. A part of a day or longer is no part of a time (see {@link #timeComponentRefusal};
+     * the statement's typing refuses it first, while it compiles).
+     *
+     * @param time     the time
+     * @param interval the interval, its parts chained through {@link IntervalValue#getRest()}
+     * @param sign     1 to add, -1 to subtract
+     * @return the moved time
+     */
+    private static LocalTime applyTimeInterval(final LocalTime time, final IntervalValue interval, final int sign) {
+        LocalTime moved = time;
+        for (IntervalValue part = interval; part != null; part = part.getRest()) {
+            requireCountable(part, sign);
+            final long amount = sign * part.getValueAsLong();
+            switch (part.getUnit()) {
+                case HOUR:
+                    moved = moved.plusHours(amount);
+                    break;
+                case MINUTE:
+                    moved = moved.plusMinutes(amount);
+                    break;
+                case SECOND:
+                    moved = moved.plusSeconds(amount);
+                    break;
+                case MILLISECOND:
+                    moved = moved.plusNanos(amount * 1_000_000L);
+                    break;
+                case MICROSECOND:
+                    moved = moved.plusNanos(amount * 1_000L);
+                    break;
+                case NANOSECOND:
+                    moved = moved.plusNanos(amount);
+                    break;
+                default:
+                    throw timeComponentRefusal(part.getUnit(), part.getRest() == null, sign > 0);
+            }
+        }
+        return moved;
+    }
+
+    /**
+     * The refusal of an interval part a TIME cannot move by — a day or longer — on one line, as the account words it:
+     * the last part is applied by the operator itself and named so, an earlier one by DATEADD — {@code t + INTERVAL
+     * '1 day, 2 hours'} names DATEADD and {@code t + INTERVAL '2 hours, 1 day'} the {@code +} (live-verified).
+     *
+     * @param unit     the part's unit
+     * @param lastPart whether it is the interval's last part
+     * @param adds     whether the operator adds
+     * @return the refusal
+     */
+    static RuntimeException timeComponentRefusal(final IntervalUnit unit, final boolean lastPart, final boolean adds) {
+        return new RuntimeException(SqlCompilationError.inline("['" + unit.name()
+            + "'] is not a valid date/time component for function " + (lastPart ? adds ? "+" : "-" : "DATEADD")
+            + " and type TIME(9)."));
     }
 
     private static Object applyIntervalPart(final Object temporal, final IntervalValue interval, final int sign) {
@@ -1210,7 +1276,11 @@ public final class ExpressionArithmetic {
         } catch (final NumberFormatException notANumericString) {
             // Against a FLOAT the text converts to FLOAT, where a hexadecimal number reads too.
             final Object number = text == right ? left : right;
-            final Number asFloat = ApproximateValues.isApproximate(number) ? floatText(text) : null;
+            Number asFloat = ApproximateValues.isApproximate(number) ? floatText(text) : null;
+            if (asFloat == null && ApproximateValues.isApproximate(number)) {
+                // …as do the words a cast to FLOAT reads: inf, -inf, NaN.
+                asFloat = NonFiniteDoubles.parseForCast(text.toString());
+            }
             if (asFloat != null) {
                 return text == right
                     ? ApproximateValues.compare(((Number) left).doubleValue(), asFloat.doubleValue())

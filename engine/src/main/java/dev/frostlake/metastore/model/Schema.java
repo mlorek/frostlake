@@ -28,10 +28,13 @@ import dev.frostlake.metastore.Taggable;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.WrittenSignatureType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -55,9 +58,6 @@ public class Schema extends SqlObject {
         this.dataRetentionTimeInDays = dataRetentionTimeInDays;
     }
 
-
-    /** The fractional-second digits a TIME or a TIMESTAMP written bare carries. */
-    private static final int DEFAULT_FRACTION_DIGITS = 9;
 
     private final Map<String, Table> tables;
     /**
@@ -990,35 +990,81 @@ public class Schema extends SqlObject {
      * <pre>
      *   f(code CHAR(2))      VARCHAR, STRING, TEXT, CHAR(2), VARCHAR(2)     not CHAR, CHARACTER, NCHAR, VARCHAR(3)
      *   f(code VARCHAR(1))   CHAR — a bare CHAR is a text of length 1
-     *   f(code VARCHAR)      VARCHAR                                        not CHAR, VARCHAR(5)
-     *   f(n NUMBER(5,2))     NUMBER, INT                                    not NUMBER(10,0)
-     *   f(b BINARY(4))       BINARY                                         not BINARY(5)
-     *   f(t TIMESTAMP_NTZ(3)) TIMESTAMP_NTZ                                 not TIMESTAMP_NTZ(6)
+     *   f(code VARCHAR)      VARCHAR, VARCHAR(134217728)                    not CHAR, VARCHAR(5), VARCHAR(16777216)
+     *   f(code VARCHAR(16777216))   VARCHAR, VARCHAR(16777216)              not VARCHAR(134217728)
+     *   f(n NUMBER(5,2))     NUMBER, INT, NUMBER(38,0), NUMBER(5,2)         not NUMBER(10,0)
+     *   f(b BINARY(4))       BINARY, BINARY(4)                              not BINARY(5), BINARY(8388608)
+     *   f(b BINARY)          BINARY, BINARY(67108864)                       not BINARY(8388608)
+     *   f(t TIMESTAMP_NTZ(3)) TIMESTAMP_NTZ, TIMESTAMP_NTZ(3)               not TIMESTAMP_NTZ(6), TIMESTAMP_NTZ(9)
+     *   f(t TIME)            TIME, TIME(9)                                  not TIME(3)
      * </pre>
      *
-     * <p>A type written with its family's own default — NUMBER(38,0), TIMESTAMP_NTZ(9) — reads as written bare.
+     * <p>A parameter declared without a length is as wide as a text or a binary gets, which is not the width a
+     * column of that spelling has: it is named by the written maximum and by no other length. A number is the one
+     * family whose default written out — NUMBER(38,0) — reads as written bare.
      */
     private boolean matchesWrittenSignature(final List<Parameter> params, final List<DataType> argumentTypes) {
         if (!matchesSignature(params, argumentTypes)) {
             return false;
         }
         for (int i = 0; i < params.size(); i++) {
-            if (!namesDeclaredWidth(params.get(i).getDataType(), argumentTypes.get(i))) {
+            if (!namesDeclaredWidth(params.get(i), argumentTypes.get(i))
+                    || !signatureShape(params.get(i).getDataType()).equals(signatureShape(argumentTypes.get(i)))) {
                 return false;
             }
         }
         return true;
     }
 
-    /** Whether a written type's length, precision and scale are its family's default or the declared type's own. */
-    private static boolean namesDeclaredWidth(final DataType declared, final DataType written) {
+    /**
+     * What of a type a written signature has to repeat to name a parameter of it, beyond its family: a structured
+     * type's shape — its fields by name and in order, each field's and element's own family, and a field's NOT
+     * NULL — while the widths inside a shape count for nothing: {@code f(OBJECT(a NUMBER, b VARCHAR(5)))} names a
+     * parameter declared {@code OBJECT(a INT, b VARCHAR(10))}, and neither {@code OBJECT(b VARCHAR(10), a INT)},
+     * {@code OBJECT(a VARCHAR)} nor a shape without a field's NOT NULL does (live-verified). Empty for a type
+     * that has no shape.
+     */
+    private static String signatureShape(final DataType type) {
+        if (type instanceof StructuredObjectType) {
+            final StringBuilder shape = new StringBuilder("OBJECT(");
+            for (final StructuredField field : ((StructuredObjectType) type).getFields()) {
+                shape.append(field.getName()).append(' ').append(shapeMember(field.getDataType()))
+                    .append(field.isNotNull() ? " NOT NULL" : "").append(',');
+            }
+            return shape.append(')').toString();
+        }
+        if (type instanceof MapType) {
+            return "MAP(" + shapeMember(((MapType) type).getKeyType()) + ","
+                + shapeMember(((MapType) type).getValueType()) + ")";
+        }
+        if (type instanceof StructuredArrayType) {
+            return "ARRAY(" + shapeMember(((StructuredArrayType) type).getElementType()) + ")";
+        }
+        return "";
+    }
+
+    /** A member of a shape: its own shape when it has one, else its family. */
+    private static String shapeMember(final DataType type) {
+        final String shape = signatureShape(type);
+        return shape.isEmpty() ? signatureFamily(type) : shape;
+    }
+
+    /** The length of a text parameter declared without one, as a written signature names it. */
+    private static final int UNSIZED_TEXT_LENGTH = 134217728;
+
+    /**
+     * Whether a written type's length, precision and scale are the parameter's own, or were not written at all
+     * (see {@link WrittenSignatureType}).
+     */
+    private static boolean namesDeclaredWidth(final Parameter parameter, final DataType written) {
+        final DataType declared = parameter.getDataType();
         if (written instanceof StringType && declared instanceof StringType) {
-            final int length = ((StringType) written).getMaxLength();
-            return length >= StringType.VARCHAR.getMaxLength() || length == ((StringType) declared).getMaxLength();
+            return WrittenSignatureType.isBare(written) || ((StringType) written).getMaxLength()
+                == (parameter.isUnsized() ? UNSIZED_TEXT_LENGTH : ((StringType) declared).getMaxLength());
         }
         if (written instanceof BinaryType && declared instanceof BinaryType) {
-            final int length = ((BinaryType) written).getMaxLength();
-            return length >= BinaryType.BINARY.getMaxLength() || length == ((BinaryType) declared).getMaxLength();
+            return WrittenSignatureType.isBare(written) || ((BinaryType) written).getMaxLength()
+                == (parameter.isUnsized() ? BinaryType.NOMINAL_MAXIMUM : ((BinaryType) declared).getMaxLength());
         }
         if (written instanceof NumericType && declared instanceof NumericType
                 && "NUMBER".equals(signatureFamily(written))) {
@@ -1029,8 +1075,8 @@ public class Schema extends SqlObject {
                     && asWritten.getScale() == asDeclared.getScale();
         }
         if (written instanceof DateTimeType && declared instanceof DateTimeType) {
-            final int precision = ((DateTimeType) written).getPrecision();
-            return precision == DEFAULT_FRACTION_DIGITS || precision == ((DateTimeType) declared).getPrecision();
+            return WrittenSignatureType.isBare(written)
+                || ((DateTimeType) written).getPrecision() == ((DateTimeType) declared).getPrecision();
         }
         return true;
     }
@@ -1436,6 +1482,7 @@ public class Schema extends SqlObject {
                     proc.getPackages()
                 );
                 clonedProc.setComment(proc.getComment());
+                clonedProc.setReturnSized(proc.getReturnSized());
                 clonedProc.setImports(proc.getImports());
                 clonedProc.setEnvironment(proc.getEnvironment().copy());
                 clonedProc.setReturnsTable(proc.returnsTable());
@@ -1473,6 +1520,7 @@ public class Schema extends SqlObject {
                     func.getRuntimeVersion()
                 );
                 clonedFunc.setComment(func.getComment());
+                clonedFunc.setReturnSized(func.getReturnSized());
                 clonedFunc.setNullHandling(func.getNullHandling());
                 clonedFunc.setVolatility(func.getVolatility());
                 clonedFunc.setSecure(func.isSecure());
@@ -1817,18 +1865,63 @@ public class Schema extends SqlObject {
      * @param temporary whether the create says TEMPORARY
      */
     public void rejectNameHeldByOtherKind(final String name, final RelationKind kind, final boolean temporary) {
+        rejectNameHeldByOtherKind(name, kind, temporary, false);
+    }
+
+    /**
+     * {@link #rejectNameHeldByOtherKind(String, RelationKind, boolean)} for a table that may be an event table:
+     * a table and an event table are two kinds of the one namespace, {@code Object 'ET' already exists as
+     * EVENT_TABLE} for a table created over an event table and {@code as TABLE} the other way round
+     * (live-verified).
+     *
+     * @param name       the name being created
+     * @param kind       the kind being created
+     * @param temporary  whether the create says TEMPORARY
+     * @param eventTable whether the table being created is an event table
+     */
+    public void rejectNameHeldByOtherKind(final String name, final RelationKind kind, final boolean temporary,
+                                          final boolean eventTable) {
         // A PERMANENT create looks past a temporary holder of the name and is judged against the
         // permanent object underneath, naming ITS kind. A temporary create sees the temporary holder,
         // and so does a stream, whose name check reaches the session's own objects (live-verified).
         final boolean seesTemporary = temporary || kind == RelationKind.STREAM;
         for (final RelationKind holder : RelationKind.values()) {
-            if (holder == kind || !holds(holder, name, seesTemporary)
+            final boolean heldEventTable = holder == RelationKind.TABLE && tables.containsKey(name)
+                && tables.get(name).isEventTable();
+            if (holder == kind && heldEventTable == eventTable || !holds(holder, name, seesTemporary)
                     || yieldsTo(holder, kind, temporary, holderIsTemporary(holder, name))) {
                 continue;
             }
             throw new RuntimeException(SqlCompilationError.of(
-                "Object '" + name + "' already exists as " + holder.spelling()));
+                "Object '" + name + "' already exists as " + (heldEventTable ? "EVENT_TABLE" : holder.spelling())));
         }
+    }
+
+    /**
+     * The kind of the policy that holds a name, as a refusal spells it, or null when no policy does: the
+     * policies of a schema — masking, row access, join, aggregation, projection and password policies — share
+     * one namespace (live-verified).
+     *
+     * @param name the policy's name
+     * @return the holder's kind, e.g. {@code MASKING_POLICY}, or null
+     */
+    public String policyKindHolding(final String name) {
+        if (hasMaskingPolicy(name)) {
+            return "MASKING_POLICY";
+        }
+        if (hasRowAccessPolicy(name)) {
+            return "ROW_ACCESS_POLICY";
+        }
+        if (hasJoinPolicy(name)) {
+            return "JOIN_POLICY";
+        }
+        if (hasAggregationPolicy(name)) {
+            return "AGGREGATION_POLICY";
+        }
+        if (hasProjectionPolicy(name)) {
+            return "PROJECTION_POLICY";
+        }
+        return getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY, name) != null ? "PASSWORD_POLICY" : null;
     }
 
     /**

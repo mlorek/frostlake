@@ -73,7 +73,7 @@ final class SelectListResync {
      */
     static List<String> lines(final String sql, final List<Token> spoken, final int faultIndex,
                               final boolean statementParse, final boolean firstOnly) {
-        if (sql == null || !statementParse || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null || !statementParse) {
             return null;
         }
         int fault = -1;

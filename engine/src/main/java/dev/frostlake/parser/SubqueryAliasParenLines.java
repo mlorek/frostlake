@@ -54,7 +54,7 @@ final class SubqueryAliasParenLines {
      * @return the lines, or null
      */
     static List<String> lines(final String sql, final List<Token> spoken) {
-        if (sql == null || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null) {
             return null;
         }
         for (int open = 2; open < spoken.size(); open++) {

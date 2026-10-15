@@ -86,13 +86,10 @@ public class RandomUniformTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void uniformWithConstantSeedGeneratorRepeatsAcrossRows() {
-        Assumptions.assumeFalse(isLiveSnowflake(), "RNG algorithm is Snowflake-internal");
-        final ResultSet rs = engine.executeQuery("SELECT UNIFORM(1, 100, RANDOM(7)) AS r FROM t ORDER BY id");
-        final Object first = rs.getRows().get(0).getValue(0);
-        for (final Row row : rs.getRows()) {
-            assertEquals(first, row.getValue(0), "a constant-seed generator should give the same value each row");
-        }
+    public void uniformWithASeededGeneratorVariesAcrossRows() {
+        // A seeded RANDOM draws each row's own value, so the generator it feeds varies too (live-verified).
+        assertEquals("true", String.valueOf(one("SELECT COUNT(DISTINCT UNIFORM(1, 1000000, RANDOM(7))) > 1"
+            + " FROM TABLE(GENERATOR(ROWCOUNT => 20))")));
     }
 
     @Test

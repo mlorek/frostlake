@@ -56,12 +56,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Locale;
 import java.util.TreeMap;
 
 /**
  * Query staged files directly — {@code SELECT $1, $2, metadata$filename FROM @stage[/path]
- * [(FILE_FORMAT => 'name', PATTERN => 'regex')]} — and the {@code DIRECTORY(@stage)} directory
+ * [(FILE_FORMAT => name, PATTERN => 'regex')]}, its arguments read by {@link StageQueryArguments} — and the
+ * {@code DIRECTORY(@stage)} directory
  * table (file-level metadata). Reuses the COPY loader's plumbing: stage resolution, file listing
  * with PATTERN, the {@link StageFileReader} SPI for record formats, and the CSV field splitter.
  *
@@ -84,7 +84,6 @@ final class StageQueryExecutor {
     TableData queryStage(final String location,
                          final FrostlakeParser.StageQueryParamsContext params, final String alias) {
         String fileFormat = "CSV";
-        String pattern = null;
         int skipHeader = 0;
         // The CSV options reach the stage-query path at their defaults, a named format's in their place: an
         // unenclosed empty field reads as SQL NULL (EMPTY_FIELD_AS_NULL), so does the text \N (NULL_IF), and a
@@ -92,37 +91,17 @@ final class StageQueryExecutor {
         // a control beside it — the same file read through a format that turns the option off.
         final CsvFormatOptions csvOptions = new CsvFormatOptions();
 
-        if (params != null) {
-            for (final FrostlakeParser.StageQueryParamContext param : params.stageQueryParam()) {
-                final String key = param.FILE_FORMAT() != null ? "FILE_FORMAT"
-                    : param.PATTERN() != null ? "PATTERN"
-                    : ParseTreeText.getIdentifier(param.identifier()).toUpperCase(Locale.ROOT);
-                final String value = param.STRING_LITERAL() != null
-                    ? ParseTreeText.extractStringLiteral(param.STRING_LITERAL())
-                    : ParseTreeText.getQualifiedName(param.qualifiedName());
-                if ("FILE_FORMAT".equals(key)) {
-                    // FILE_FORMAT => 'name' (or an unquoted, possibly qualified name) names a CREATE
-                    // FILE FORMAT object; fall back to treating the value as a bare TYPE (CSV/JSON/...)
-                    // so ad-hoc queries stay convenient.
-                    FileFormat named = lookupFileFormat(value);
-                    if (named == null && value.contains(".")) {
-                        named = lookupFileFormat(value.substring(value.lastIndexOf('.') + 1));
-                    }
-                    if (named != null) {
-                        fileFormat = named.getType();
-                        csvOptions.takeAll(named.getOptions());
-                        csvOptions.takeNullIf(named.getNullIfValues());
-                        if (named.getOption("SKIP_HEADER") != null) {
-                            skipHeader = Integer.parseInt(named.getOption("SKIP_HEADER"));
-                        }
-                    } else {
-                        fileFormat = value.toUpperCase(Locale.ROOT);
-                    }
-                } else if ("PATTERN".equals(key)) {
-                    pattern = value;
-                }
+        final StageQueryArguments arguments = StageQueryArguments.read(executor, params);
+        final FileFormat named = arguments.format();
+        if (named != null) {
+            fileFormat = named.getType();
+            csvOptions.takeAll(named.getOptions());
+            csvOptions.takeNullIf(named.getNullIfValues());
+            if (named.getOption("SKIP_HEADER") != null) {
+                skipHeader = Integer.parseInt(named.getOption("SKIP_HEADER"));
             }
         }
+        final String pattern = arguments.pattern();
 
         // A delimiter of NONE splits nothing: the stand-in is a character no file holds.
         final char delimiter = csvOptions.getFieldDelimiter() == null || csvOptions.getFieldDelimiter().isEmpty()
@@ -346,15 +325,6 @@ final class StageQueryExecutor {
         final TableColumn column = new TableColumn(name, type, true, null, false, false, false);
         column.setStaticallyTyped(true);
         return column;
-    }
-
-    /** The named CREATE FILE FORMAT object, or null when no such format exists. */
-    private FileFormat lookupFileFormat(final String name) {
-        try {
-            return executor.getCatalog().getFileFormat(name);
-        } catch (final RuntimeException e) {
-            return null;
-        }
     }
 
     /** A staged file's whole text, decompressed when the file is gzipped. */

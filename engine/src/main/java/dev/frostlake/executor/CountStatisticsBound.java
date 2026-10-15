@@ -462,7 +462,7 @@ final class CountStatisticsBound {
     private List<Row> tableRows() {
         if (tableRows == null) {
             tableRows = sourceRows != null ? sourceRows
-                : executor.readTableRowsForTransaction(table.getQualifiedName());
+                : executor.statisticsRowsFor(table.getQualifiedName());
         }
         return tableRows;
     }

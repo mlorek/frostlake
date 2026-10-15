@@ -104,7 +104,7 @@ final class IcebergColumnTypes {
                              final FrostlakeParser.TypeParametersContext parameters, final DataType parsed,
                              final String column) {
         final DataType held = written(name, parameters, parsed);
-        refuseUnheld(held, held, column, true);
+        refuseUnheld(held, column, true);
         return held;
     }
 
@@ -118,27 +118,75 @@ final class IcebergColumnTypes {
      */
     static DataType selected(final DataType result, final String column) {
         final DataType held = widened(result);
-        refuseUnheld(held, held, column, false);
+        refuseUnheld(held, column, false);
         return held;
     }
 
-    /** Refuses a column list whose types an Iceberg table does not take, column by column in the order written. */
+    /** Refuses a column list whose types an Iceberg table does not take (see {@link #validate(List, ColumnDefinitionParser, boolean)}). */
     static void validate(final FrostlakeParser.ColumnListContext columns, final ColumnDefinitionParser parser) {
         if (columns == null) {
             return;
         }
+        final List<FrostlakeParser.ColumnDefContext> written = new ArrayList<>();
         for (final FrostlakeParser.ColumnOrConstraintContext item : columns.columnOrConstraint()) {
             if (item.columnDef() != null) {
-                validate(item.columnDef(), parser);
+                written.add(item.columnDef());
+            }
+        }
+        validate(written, parser, false);
+    }
+
+    /**
+     * Refuses the columns an Iceberg table does not take. The list is judged in steps, each over every column in
+     * the order written before the next is asked (live-verified):
+     *
+     * <pre>
+     *   what a type is written as        a length, a NUMBER without digits, a name the format has no type for
+     *   OBJECT, ARRAY, TIMESTAMP_TZ      Unsupported data type 'OBJECT' for iceberg tables.
+     *   a time or timestamp scale        Invalid time type scale specified for column 'C' ...
+     *   VARIANT, GEOGRAPHY and the rest  Unsupported data type 'VARIANT' for iceberg tables.
+     * </pre>
+     *
+     * So {@code (v VARIANT, c CHAR)} is refused for the CHAR, {@code (v VARIANT, t TIME(3))} for the scale and
+     * {@code (t TIME(3), o OBJECT)} for the OBJECT. Columns added to a table are judged for their scales first,
+     * and then for every type the format does not hold in the order written: {@code ADD COLUMN x OBJECT, y TIME(3)}
+     * is refused for the scale, {@code x VARIANT, y OBJECT} for the VARIANT.
+     *
+     * @param columns the column definitions, in the order written
+     * @param parser  the parser a column's type is read with
+     * @param added   whether the columns are added to a table that exists
+     */
+    static void validate(final List<FrostlakeParser.ColumnDefContext> columns, final ColumnDefinitionParser parser,
+                         final boolean added) {
+        final List<DataType> held = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        for (final FrostlakeParser.ColumnDefContext column : columns) {
+            held.add(written(column.dataTypeName(), column.typeParameters(),
+                parser.parseDataType(column.dataTypeName(), column.typeParameters())));
+            names.add(ParseTreeText.namePartText(column.columnDefName()));
+        }
+        final UnheldStep[][] order = added
+            ? new UnheldStep[][] {{UnheldStep.SCALE}, {UnheldStep.CONTAINER, UnheldStep.VALUE}}
+            : new UnheldStep[][] {{UnheldStep.CONTAINER}, {UnheldStep.SCALE}, {UnheldStep.VALUE}};
+        for (final UnheldStep[] together : order) {
+            for (int i = 0; i < held.size(); i++) {
+                for (final UnheldStep step : together) {
+                    refuseUnheld(held.get(i), held.get(i), names.get(i), true, step);
+                }
             }
         }
     }
 
-    /** Refuses a column definition whose type an Iceberg table does not take. */
-    static void validate(final FrostlakeParser.ColumnDefContext column, final ColumnDefinitionParser parser) {
-        declared(column.dataTypeName(), column.typeParameters(),
-            parser.parseDataType(column.dataTypeName(), column.typeParameters()),
-            ParseTreeText.namePartText(column.columnDefName()));
+    /**
+     * Reads one column's type as an Iceberg table's column list reads it, refusing what its name or its width
+     * says before anything else is asked of it.
+     *
+     * @param column the column definition
+     * @param parser the parser its type is read with
+     */
+    static void judgeAsWritten(final FrostlakeParser.ColumnDefContext column, final ColumnDefinitionParser parser) {
+        written(column.dataTypeName(), column.typeParameters(),
+            parser.parseDataType(column.dataTypeName(), column.typeParameters()));
     }
 
     private static DataType written(final FrostlakeParser.DataTypeNameContext name,
@@ -242,41 +290,55 @@ final class IcebergColumnTypes {
      * type. A written TIMESTAMP_TZ is refused as a type whatever its scale; a query's is refused for its scale
      * first, as every time type is.
      */
+    private static void refuseUnheld(final DataType whole, final String column, final boolean declared) {
+        for (final UnheldStep step : UnheldStep.values()) {
+            refuseUnheld(whole, whole, column, declared, step);
+        }
+    }
+
+    /** {@link #refuseUnheld(DataType, String, boolean)} for the refusals of one step alone. */
     private static void refuseUnheld(final DataType whole, final DataType member, final String column,
-                                     final boolean declared) {
+                                     final boolean declared, final UnheldStep step) {
         if (member instanceof MapType) {
-            refuseUnheld(whole, ((MapType) member).getKeyType(), column, declared);
-            refuseUnheld(whole, ((MapType) member).getValueType(), column, declared);
+            refuseUnheld(whole, ((MapType) member).getKeyType(), column, declared, step);
+            refuseUnheld(whole, ((MapType) member).getValueType(), column, declared, step);
             return;
         }
         if (member instanceof StructuredArrayType) {
-            refuseUnheld(whole, ((StructuredArrayType) member).getElementType(), column, declared);
+            refuseUnheld(whole, ((StructuredArrayType) member).getElementType(), column, declared, step);
             return;
         }
         if (member instanceof StructuredObjectType) {
             for (final StructuredField field : ((StructuredObjectType) member).getFields()) {
-                refuseUnheld(whole, field.getDataType(), column, declared);
+                refuseUnheld(whole, field.getDataType(), column, declared, step);
             }
             return;
         }
         if (isTime(member)) {
             if (isZoned(member) && declared) {
-                throw unsupported(spelled(whole));
+                if (step == UnheldStep.CONTAINER) {
+                    throw unsupported(spelled(whole));
+                }
+                return;
             }
-            if (((DateTimeType) member).getPrecision() != TIME_SCALE) {
+            if (step == UnheldStep.SCALE && ((DateTimeType) member).getPrecision() != TIME_SCALE) {
                 throw new RuntimeException(PREFIX + "Invalid time type scale specified for column '" + column
                     + "' with data type '" + spelled(whole) + "'. Please consult the Snowflake documentation for"
                     + " supported scales of TIME and TIMESTAMP types in Iceberg tables.");
             }
-            if (isZoned(member)) {
+            if (step == UnheldStep.VALUE && isZoned(member)) {
                 throw unsupported(spelled(whole));
             }
             return;
         }
-        if (member instanceof VariantType || member instanceof ObjectType || member instanceof ArrayType
+        final boolean container = member instanceof ObjectType || member instanceof ArrayType;
+        if (container && step == UnheldStep.CONTAINER) {
+            throw unsupported(spelled(whole));
+        }
+        if (!container && step == UnheldStep.VALUE && (member instanceof VariantType
                 || member instanceof GeographyType || member instanceof GeometryType || member instanceof VectorType
                 || member instanceof FileType || member instanceof IntervalDayTimeType
-                || member instanceof IntervalYearMonthType) {
+                || member instanceof IntervalYearMonthType)) {
             throw unsupported(spelled(whole));
         }
     }

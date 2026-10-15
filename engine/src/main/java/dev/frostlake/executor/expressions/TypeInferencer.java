@@ -188,6 +188,16 @@ final class TypeInferencer {
             return null;
         }
         final DataType left = infer(binary.getLeft());
+        if (left instanceof DateTimeType && "TIME".equals(((DateTimeType) left).getName())) {
+            // A TIME moves by parts of a day only: a day or longer is refused while the statement compiles.
+            for (IntervalExpression part = (IntervalExpression) binary.getRight(); part != null;
+                    part = part.getRest()) {
+                if (part.getUnit().isWholeDay()) {
+                    throw ExpressionArithmetic.timeComponentRefusal(part.getUnit(), part.getRest() == null,
+                        binary.getOperator() == BinaryOperator.ADD);
+                }
+            }
+        }
         if (left instanceof DateTimeType && !"DATE".equals(((DateTimeType) left).getName())) {
             // A timestamp keeps its own flavour, at the family's full nine digits.
             return atFullPrecision((DateTimeType) left);
@@ -247,6 +257,9 @@ final class TypeInferencer {
             return intervalLiteralType((IntervalExpression) expr);
         }
         if (expr instanceof SystemStreamHasDataExpression) {
+            // Its name is judged while the statement compiles, whatever rows it then reads.
+            SystemConstantArguments.judgeStreamName("SYSTEM$STREAM_HAS_DATA",
+                ((SystemStreamHasDataExpression) expr).getStreamNameExpr(), visitor);
             return BooleanType.BOOLEAN;
         }
         if (expr instanceof FoldedConstantExpression) {
@@ -548,12 +561,19 @@ final class TypeInferencer {
             // SYSTEM$WAIT's sentence is a result column of that width too.
             // SYSTEM$GET_TAG's value is one more: VARCHAR in SYSTEM$TYPEOF, VARCHAR(134217728) as a column.
             // SYSTEM$ABORT_TRANSACTION's sentence reads VARCHAR too, whatever its argument.
-            if ("SYSTEM$TYPEOF".equals(funcName) || "SYSTEM$WAIT".equals(funcName)
-                    || "SYSTEM$GET_TAG".equals(funcName) || "SYSTEM$ABORT_TRANSACTION".equals(funcName)) {
+            // So do the tag's list, the clustering report, the allow list, the platform's description and a
+            // task's own name. SYSTEM$CLUSTERING_DEPTH is a FLOAT and SYSTEM$LAST_CHANGE_COMMIT_TIME a NUMBER(38,0).
+            if (WIDTHLESS_SYSTEM_CALLS.contains(funcName)) {
                 return WidthlessStringType.WIDTHLESS;
             }
+            if ("SYSTEM$CLUSTERING_DEPTH".equals(funcName)) {
+                return NumericType.FLOAT;
+            }
+            if ("SYSTEM$LAST_CHANGE_COMMIT_TIME".equals(funcName)) {
+                return new NumericType("NUMBER", 38, 0);
+            }
             if (CONDITIONAL_FUNCTIONS.contains(funcName)) {
-                return conditionalFoldType(funcName, conditionalBranches(funcName, call.getArguments()));
+                return conditionalFoldType(funcName, foldedBranches(funcName, call.getArguments()));
             }
             // A BINARY argument survives the constructs that hand it back or reshape it. Restricted to
             // binaries on purpose: an aggregate's declared type is NOMINAL in the registry, so reading
@@ -730,8 +750,10 @@ final class TypeInferencer {
                 // width from the arguments. See StringResultWidths for the measured table.
                 final List<DataType> argumentTypes = argumentTypes(call.getArguments());
                 final DataType width = StringResultWidths.forFunction(funcName, argumentTypes);
-                if (width != null && funcName.equals("BASE64_ENCODE") && call.getArguments().size() >= 2) {
-                    // The line length adds its breaks to the width when it is written as an integer literal.
+                if (width != null && funcName.equals("BASE64_ENCODE") && call.getArguments().size() >= 2
+                        && !(argumentTypes.get(0) instanceof BinaryType)) {
+                    // The line length adds its breaks to the width when it is written as an integer literal — over a
+                    // text; a binary source's width takes none (live-verified).
                     final Expression lineLength = call.getArguments().get(1);
                     final Object written = lineLength instanceof LiteralExpression
                         && ((LiteralExpression) lineLength).getType() == LiteralType.INTEGER
@@ -772,6 +794,12 @@ final class TypeInferencer {
         }
         return null;
     }
+
+    /** The SYSTEM$ functions that answer a string of no width. */
+    private static final Set<String> WIDTHLESS_SYSTEM_CALLS = Set.of(
+        "SYSTEM$TYPEOF", "SYSTEM$WAIT", "SYSTEM$GET_TAG", "SYSTEM$GET_TAG_ALLOWED_VALUES",
+        "SYSTEM$ABORT_TRANSACTION", "SYSTEM$CLUSTERING_INFORMATION", "SYSTEM$ALLOWLIST", "SYSTEM$WHITELIST",
+        "SYSTEM$GET_SNOWFLAKE_PLATFORM_INFO", "SYSTEM$CURRENT_USER_TASK_NAME");
 
     /**
      * The value-choosing functions, whose result is one of their branches rather than a fixed type.
@@ -823,6 +851,22 @@ final class TypeInferencer {
             branches.add(args.get(args.size() - 1));
         }
         return branches;
+    }
+
+    /**
+     * The branches a conditional's TYPE is folded over. A DECODE without a default has one more than it writes:
+     * no default is a default of NULL, read as a CASE's missing ELSE is, so a text DECODE without one declares
+     * VARCHAR(134217728) whatever width its results carry — {@code DECODE(n, 1, 'x')} and {@code DECODE(n, 1, v)}
+     * alike — while a NUMBER one keeps its own type (live-verified).
+     */
+    private static List<Expression> foldedBranches(final String funcName, final List<Expression> args) {
+        final List<Expression> branches = conditionalBranches(funcName, args);
+        if (!funcName.equals("DECODE") || args.size() < 3 || args.size() % 2 == 0) {
+            return branches;
+        }
+        final List<Expression> withDefault = new ArrayList<>(branches);
+        withDefault.add(new LiteralExpression(null, LiteralType.NULL));
+        return withDefault;
     }
 
     /** A CASE expression's value branches: each WHEN's result, plus the ELSE when present. */
@@ -1202,9 +1246,17 @@ final class TypeInferencer {
     }
 
     /** Whether an operand is a NULL of a text type standing beside an exact number (see UntypedNullFold). */
-    private static boolean isNullTextBesideNumber(final Expression operand, final DataType other) {
-        return other instanceof NumericType && !NumericType.isApproximate(other)
-            && UntypedNullFold.isNullTextConstant(operand);
+    private boolean isNullTextBesideNumber(final Expression operand, final DataType other) {
+        return other instanceof NumericType && !NumericType.isApproximate(other) && isNullText(operand);
+    }
+
+    /**
+     * Whether an expression is the word NULL cast to a text type, or a derived relation's column that projects
+     * one: a derived table, a common table expression and a view carry it to the query above (live-verified).
+     */
+    private boolean isNullText(final Expression expr) {
+        return UntypedNullFold.isNullTextConstant(expr)
+            || expr instanceof ColumnReferenceExpression && visitor.readsNullText((ColumnReferenceExpression) expr);
     }
 
     /**
@@ -1215,7 +1267,7 @@ final class TypeInferencer {
         boolean sawNumber = false;
         boolean sawNullText = false;
         for (final Expression branch : branches) {
-            if (UntypedNullFold.isNullTextConstant(branch)) {
+            if (isNullText(branch)) {
                 sawNullText = true;
                 continue;
             }
@@ -1241,7 +1293,7 @@ final class TypeInferencer {
         // A NULL of a text type is the bare word where every typed branch is an exact number.
         final boolean nullTextIsNull = everyOtherBranchIsAnExactNumber(branches);
         for (final Expression branch : branches) {
-            if (isNullLiteral(branch) || nullTextIsNull && UntypedNullFold.isNullTextConstant(branch)) {
+            if (isNullLiteral(branch) || nullTextIsNull && isNullText(branch)) {
                 sawNullBranch = true;
                 continue;
             }
@@ -1341,7 +1393,10 @@ final class TypeInferencer {
      * with a FLOAT or a text counting eighteen. BITNOT and BITSHIFTRIGHT keep the argument's width, at
      * least two; BITSHIFTLEFT is always thirty-eight. Null for an argument of any other kind.
      */
-    private DataType bitwiseResultType(final String funcName, final List<Expression> args) {
+    private DataType bitwiseResultType(final String written, final List<Expression> args) {
+        // BIT_AND, BIT_OR, BIT_XOR and BIT_NOT are the same functions under a second spelling.
+        final String funcName = written.equals("BIT_AND") || written.equals("BIT_OR") || written.equals("BIT_XOR")
+            || written.equals("BIT_NOT") ? "BIT" + written.substring(4) : written;
         final boolean or = funcName.equals("BITOR");
         final boolean twoOperands = or || funcName.equals("BITAND") || funcName.equals("BITXOR");
         if (!twoOperands && !funcName.equals("BITNOT") && !funcName.equals("BITSHIFTRIGHT")
@@ -2630,8 +2685,27 @@ final class TypeInferencer {
             // The three boolean aggregates declare BOOLEAN whatever they are given, as live does.
             return BooleanType.BOOLEAN;
         }
-        if (isStandardDeviation(funcName)) {
+        if (isStandardDeviation(funcName) || PAIR_STATISTICS.contains(funcName) || funcName.equals("SKEW")) {
+            // The deviation, the skewness and the statistics of pairs answer FLOAT whatever they read.
             return new NumericType("FLOAT", 38, 9);
+        }
+        if (funcName.equals("KURTOSIS")) {
+            // The one statistic computed as an exact number (live: NUMBER(38,12)).
+            return new NumericType("NUMBER", 38, 12);
+        }
+        if (funcName.equals("REGR_COUNT")) {
+            return IntegerResultWidths.COUNTER;
+        }
+        if (BIT_AGGREGATES.contains(funcName)) {
+            // The whole digits of what is aggregated: NUMBER(38,0) over an INT, NUMBER(8,0) over a NUMBER(10,2) —
+            // and NUMBER(2,0) over a FLOAT, as the scalar bitwise functions declare one.
+            final DataType read = call.getArguments().size() == 1 ? infer(call.getArguments().get(0)) : null;
+            if (NumericType.isApproximate(read)) {
+                return new NumericType("NUMBER", 2, 0);
+            }
+            final boolean exact = read instanceof NumericType;
+            return new NumericType("NUMBER", exact
+                ? Math.max(1, ((NumericType) read).getPrecision() - Math.max(0, ((NumericType) read).getScale())) : 38, 0);
         }
         if (funcName.equals("LISTAGG")) {
             return new StringType("VARCHAR", 134217728);
@@ -2675,7 +2749,34 @@ final class TypeInferencer {
         if (!isComputingAggregate(funcName) || call.getArguments().isEmpty()) {
             return null;
         }
-        return computingAggregateType(funcName, infer(call.getArguments().get(0)));
+        final DataType argument = infer(call.getArguments().get(0));
+        if (funcName.equals("AVG") && call.isDistinct() && argument instanceof NumericType) {
+            // AVG(DISTINCT x) declares three more decimals than its argument, not six, as an AVG over a frame of
+            // its own does: NUMBER(10,2) gives NUMBER(25,5), an INT NUMBER(38,3) (live-verified).
+            return threeDecimalAverage((NumericType) argument);
+        }
+        return computingAggregateType(funcName, argument);
+    }
+
+    /**
+     * What AVG declares where it averages three decimals past its argument — over a window that is not
+     * cumulative and as AVG(DISTINCT x): precision fifteen wider to a cap of 38, scale three wider. The
+     * intermediate is not capped, and live refuses it in the percentiles' words once its scale passes 38 — over
+     * NUMBER(36,36) the intermediate live names is NUMBER(41,39): the capped precision this shape declares, plus
+     * three. A FLOAT stays a FLOAT.
+     *
+     * @param numeric the argument's type
+     * @return the declared type
+     */
+    private static DataType threeDecimalAverage(final NumericType numeric) {
+        if (NumericType.isApproximate(numeric)) {
+            return numeric;
+        }
+        final int declaredPrecision = Math.min(38, numeric.getPrecision() + 15);
+        if (numeric.getScale() + 3 > 38) {
+            throw new RuntimeException(invalidIntermediate(declaredPrecision + 3, numeric.getScale() + 3));
+        }
+        return new NumericType("NUMBER", declaredPrecision, numeric.getScale() + 3);
     }
 
     /** Whether the aggregate computes its answer from its argument's values: SUM, AVG, MEDIAN or a variance. */
@@ -2843,28 +2944,21 @@ final class TypeInferencer {
         if (passesItsArgumentThrough(funcName)) {
             return infer(args.get(0));
         }
-        if (funcName.equals("AVG") && !(window.isOrdered() && !window.isRowsFramed())) {
+        if (funcName.equals("AVG") && !(window.isOrdered() && !window.isOwnFramed())) {
             final DataType argument = infer(args.get(0));
-            if (!(argument instanceof NumericType)) {
-                return null;
-            }
-            final NumericType numeric = (NumericType) argument;
-            if (NumericType.isApproximate(numeric)) {
-                return numeric;
-            }
-            // The whole-partition window has the same uncapped three-decimal intermediate the
-            // percentiles have, refused in the same words once its scale passes 38 — over
-            // NUMBER(36,36) the intermediate live names is NUMBER(41,39): the capped precision this
-            // shape declares, plus three.
-            final int declaredPrecision = Math.min(38, numeric.getPrecision() + 15);
-            if (numeric.getScale() + 3 > 38) {
-                throw new RuntimeException(
-                    invalidIntermediate(declaredPrecision + 3, numeric.getScale() + 3));
-            }
-            return new NumericType("NUMBER", declaredPrecision, numeric.getScale() + 3);
+            return argument instanceof NumericType ? threeDecimalAverage((NumericType) argument) : null;
         }
         return aggregateResultType(funcName, new FunctionCallExpression(funcName, args));
     }
+
+    /** The aggregates over pairs that answer FLOAT: the correlation, the covariances and a regression's terms. */
+    private static final Set<String> PAIR_STATISTICS = new HashSet<>(Arrays.asList("CORR", "COVAR_POP", "COVAR_SAMP",
+        "REGR_SLOPE", "REGR_INTERCEPT", "REGR_R2", "REGR_AVGX", "REGR_AVGY", "REGR_SXX", "REGR_SYY", "REGR_SXY"));
+
+    /** Every spelling of the three bitwise aggregates. */
+    private static final Set<String> BIT_AGGREGATES = new HashSet<>(Arrays.asList("BITAND_AGG", "BITANDAGG",
+        "BIT_AND_AGG", "BIT_ANDAGG", "BITOR_AGG", "BITORAGG", "BIT_OR_AGG", "BIT_ORAGG", "BITXOR_AGG", "BITXORAGG",
+        "BIT_XOR_AGG", "BIT_XORAGG"));
 
     /** The three spellings that answer FLOAT for an exact input, unlike the variance they root. */
     private static boolean isStandardDeviation(final String funcName) {

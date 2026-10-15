@@ -50,7 +50,7 @@ final class JoinMarkerListLines {
      */
     static List<String> refusal(final String sql, final List<Token> spoken, final int namedIndex,
                                 final boolean statementParse) {
-        if (sql == null || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null) {
             return null;
         }
         int named = -1;

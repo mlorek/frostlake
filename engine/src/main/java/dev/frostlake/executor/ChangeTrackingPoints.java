@@ -16,12 +16,24 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.executor.expressions.ColumnReferenceCollectWalk;
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
+import dev.frostlake.executor.expressions.ExpressionPlace;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -42,6 +54,12 @@ import java.util.Map;
  *   AT (TIMESTAMP =&gt; TO_TIMESTAMP_LTZ('2020-01-01 00:00:00'))      read
  *   AT (OFFSET =&gt; -60 + 60), AT (OFFSET =&gt; (SELECT 0))             read
  * </pre>
+ *
+ * <p>A point reads no row. In a query a name it writes is no column of anything, and is refused where it stands:
+ * {@code invalid identifier 'ID'}. A stream's point and a clone's are read over the table they are taken of, so a
+ * column of that table is a column — and no constant, which the point must be: {@code argument TIMESTAMP to
+ * function AT needs to be constant, found 'CAST(CT.ID AS TIMESTAMP_LTZ(0))'}, the argument named OFFSET for an
+ * offset and JOBID for a statement, the function BEFORE for a BEFORE point (live-verified).
  */
 final class ChangeTrackingPoints {
 
@@ -91,6 +109,112 @@ final class ChangeTrackingPoints {
         }
         throw new RuntimeException(SqlCompilationError.atLine(moving.getLine(), moving.getCharPositionInLine(),
             detail));
+    }
+
+    /**
+     * Refuses a stream's or a clone's point that reads a column of the table it is taken of: the point must be a
+     * constant. A point that reads none is left to its evaluation, which refuses a name where it stands.
+     *
+     * @param point     the point
+     * @param before    whether it is a BEFORE point
+     * @param source    the table the stream or the clone is taken of
+     * @param functions the function registry, for printing the point as the plan holds it
+     * @param catalog   the catalog
+     */
+    static void requireConstant(final FrostlakeParser.TimeTravelPointContext point, final boolean before,
+                                final Table source, final FunctionRegistry functions, final Catalog catalog) {
+        if (point == null || point.STREAM() != null || point.expression() == null || source == null) {
+            return;
+        }
+        final Expression parsed;
+        try {
+            parsed = AntlrExpressionParser.parse(ParseTreeText.getOriginalText(point.expression()));
+        } catch (final RuntimeException unreadable) {
+            // What cannot be read is refused where it is evaluated.
+            return;
+        }
+        boolean readsSource = false;
+        for (final ColumnReferenceExpression reference : references(parsed)) {
+            readsSource |= (!reference.isQualified() || source.getName().equalsIgnoreCase(reference.getTableName()))
+                && source.hasColumn(reference.getColumnName());
+        }
+        if (!readsSource) {
+            // Nothing of the table is read: the point is evaluated as any point is, a name refused where it stands.
+            return;
+        }
+        // Every name is resolved over the table before the point is judged: one that is no column is refused first.
+        final Token first = point.expression().getStart();
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(first.getLine(), first.getCharPositionInLine()));
+        try {
+            new ExpressionEvaluator(source, functions, catalog).validateColumnScope(parsed);
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+        final String argument = point.TIMESTAMP() != null ? "TIMESTAMP" : point.OFFSET() != null ? "OFFSET" : "JOBID";
+        final String found = new ExpressionEvaluatorVisitor(source, null, functions, catalog).strictPlanText(parsed);
+        throw new RuntimeException(SqlCompilationError.of("argument " + argument + " to function "
+            + (before ? "BEFORE" : "AT") + " needs to be constant, found '" + found + "'"));
+    }
+
+    /**
+     * A query's point that could not be read because it writes a name: the refusal told where the name stands.
+     * Any other failure is handed back as it is.
+     *
+     * @param expression the point's expression
+     * @param unreadable what reading it threw
+     * @return the refusal to throw
+     */
+    static RuntimeException placed(final FrostlakeParser.ExpressionContext expression,
+                                   final RuntimeException unreadable) {
+        final String told = unreadable.getMessage();
+        if (expression == null || told == null || !told.equals(SqlCompilationError.invalidIdentifier(named(told)))) {
+            return unreadable;
+        }
+        final Expression parsed;
+        try {
+            parsed = AntlrExpressionParser.parse(ParseTreeText.getOriginalText(expression));
+        } catch (final RuntimeException unparsed) {
+            return unreadable;
+        }
+        final List<ColumnReferenceExpression> references = references(parsed);
+        for (final ColumnReferenceExpression reference : references) {
+            if (spelled(reference).equals(named(told))) {
+                return placedAt(expression, reference);
+            }
+        }
+        return references.isEmpty() ? unreadable : placedAt(expression, references.get(0));
+    }
+
+    /** The name an invalid-identifier sentence tells, or the empty text. */
+    private static String named(final String told) {
+        final int open = told.indexOf('\'');
+        final int close = told.lastIndexOf('\'');
+        return open >= 0 && close > open ? told.substring(open + 1, close) : "";
+    }
+
+    private static List<ColumnReferenceExpression> references(final Expression parsed) {
+        final ColumnReferenceCollectWalk walk = new ColumnReferenceCollectWalk();
+        parsed.accept(walk);
+        return walk.references();
+    }
+
+    private static String spelled(final ColumnReferenceExpression reference) {
+        return (reference.isQualified() ? reference.getTableName() + "." : "").toUpperCase(Locale.ROOT)
+            + reference.getColumnName().toUpperCase(Locale.ROOT);
+    }
+
+    /** The invalid-identifier refusal of a name, placed where it stands in the statement. */
+    private static RuntimeException placedAt(final FrostlakeParser.ExpressionContext expression,
+                                             final ColumnReferenceExpression reference) {
+        final Token first = expression.getStart();
+        final SourcePosition origin = ExpressionSource.place(first.getLine(), first.getCharPositionInLine());
+        final SourcePosition within = ExpressionPlace.of(reference);
+        final int line = within == null ? origin.getLine() : origin.getLine() + within.getLine() - 1;
+        final int column = within == null ? origin.getCharPositionInLine()
+            : within.getLine() == 1 ? origin.getCharPositionInLine() + within.getCharPositionInLine()
+            : within.getCharPositionInLine();
+        return new RuntimeException(SqlCompilationError.invalidIdentifier(line, column, spelled(reference)));
     }
 
     /** The first word under a tree that names a moving function, or null. */

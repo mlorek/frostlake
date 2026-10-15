@@ -36,6 +36,16 @@ public class PercentileContAccumulator implements AggregateFunction.Accumulator,
 
     public PercentileContAccumulator(final double p) { this.percentile = p; }
 
+    /** Whether the group is ordered downwards: the fraction is then counted from its greatest value. */
+    private boolean descending;
+
+    /**
+     * @param ordersDown whether WITHIN GROUP orders the values DESC
+     */
+    public void setDescending(final boolean ordersDown) {
+        this.descending = ordersDown;
+    }
+
     /** The fraction, for the window path where the accumulator is built before the call is read. */
     public void setPercentile(final double p) { this.percentile = p; }
 
@@ -56,9 +66,11 @@ public class PercentileContAccumulator implements AggregateFunction.Accumulator,
 
     @Override
     public Object getResult() {
+        // Interpolation reads the same from either end: a fraction counted downwards is its complement upwards.
+        final double upwards = descending ? 1 - percentile : percentile;
         return coercedArgument
-            ? AggregateNumerics.percentileContOverCoerced(values, percentile)
-            : AggregateNumerics.percentileCont(values, percentile, approximateArgument);
+            ? AggregateNumerics.percentileContOverCoerced(values, upwards)
+            : AggregateNumerics.percentileCont(values, upwards, approximateArgument);
     }
 
     @Override

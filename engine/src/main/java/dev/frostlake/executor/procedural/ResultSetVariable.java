@@ -23,9 +23,25 @@ public class ResultSetVariable {
     private ResultSet resultSet;
     private AsyncJob job;
     private String name;
+    private int[] parenthesisLead;
 
     public ResultSetVariable(final String selectQuery) {
         this.selectQuery = selectQuery;
+    }
+
+    /**
+     * How far a query assigned in parentheses, {@code res := (SELECT …)}, stands from its opening parenthesis: the
+     * lines between the two, and the columns the places of its first line count before the query's own. Null for a
+     * RESULTSET that is declared with its query, whose places are the query's.
+     *
+     * @return the lines and the columns, or null
+     */
+    public int[] getParenthesisLead() {
+        return parenthesisLead;
+    }
+
+    public void setParenthesisLead(final int[] parenthesisLead) {
+        this.parenthesisLead = parenthesisLead;
     }
 
     /** The name the RESULTSET was declared or assigned under, upper-cased, or null. */

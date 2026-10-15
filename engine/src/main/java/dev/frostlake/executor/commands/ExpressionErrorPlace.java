@@ -73,6 +73,15 @@ final class ExpressionErrorPlace {
             assignsAValue(expression) ? ASSIGNED_VALUE_LEAD : EXPRESSION_LEAD);
     }
 
+    /**
+     * Whether the expression that starts at a place of the block is a value a variable takes: a LET's, an
+     * assignment's or a declaration's.
+     */
+    static boolean assignsAValueAt(final ParseTree block, final int line, final int column) {
+        final ParserRuleContext expression = expressionAt(block, line, column);
+        return expression != null && assignsAValue(expression);
+    }
+
     /** The outermost expression that starts at the place, or null. */
     private static ParserRuleContext expressionAt(final ParseTree node, final int line, final int column) {
         if (node instanceof FrostlakeParser.BooleanExprContext || node instanceof FrostlakeParser.ExpressionContext) {

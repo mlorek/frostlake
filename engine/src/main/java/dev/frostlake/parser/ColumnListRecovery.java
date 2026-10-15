@@ -358,6 +358,8 @@ public final class ColumnListRecovery {
             : (CommonToken) placeholder(tokens.get(0), Token.EOF, "<EOF>");
         tokens.add(eof);
         final FrostlakeParser parser = new FrostlakeParser(new CommonTokenStream(new ListTokenSource(tokens)));
+        // Where this parse reports a fault is read: it must not depend on what was parsed before.
+        ColdPrediction.arm(parser);
         parser.removeErrorListeners();
         final int[] count = new int[1];
         parser.addErrorListener(new BaseErrorListener() {

@@ -119,7 +119,7 @@ final class RankingFrameRules {
         if (bound.UNBOUNDED() != null) {
             return bound.PRECEDING() != null ? UNBOUNDED_PRECEDING : UNBOUNDED_FOLLOWING;
         }
-        return ParseTreeText.getOriginalText(bound.expression()).toUpperCase(Locale.ROOT)
+        return ParseTreeText.getOriginalText(bound.frameOffset()).toUpperCase(Locale.ROOT)
             + (bound.PRECEDING() != null ? " PRECEDING" : " FOLLOWING");
     }
 }

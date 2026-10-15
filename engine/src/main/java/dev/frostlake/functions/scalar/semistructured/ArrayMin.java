@@ -37,7 +37,7 @@ public class ArrayMin extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         JsonNode best = null;
         for (final JsonNode el : src) {

@@ -76,9 +76,10 @@ public final class AnonymousBlockResult {
 
     /**
      * The type the result column declares for a value of {@code type}: a text at the unknown 128MB length
-     * and a binary unsized, whatever width was written (live-verified: a VARCHAR(10) value reads
+     * and a binary at the type's maximum, whatever width was written (live-verified: a VARCHAR(10) value reads
      * VARCHAR(134217728) through the driver and in SYSTEM$TYPEOF over its RESULT_SCAN, and a table created
-     * over that scan stores VARCHAR(16777216); a BINARY(10) stores BINARY(8388608)); any other type as it is.
+     * over that scan stores VARCHAR(16777216); a BINARY(10) reads BINARY(67108864) there and stores
+     * BINARY(8388608)); any other type as it is.
      *
      * @param type the value's type, or null
      * @return the column's type, or null when there is none
@@ -87,7 +88,7 @@ public final class AnonymousBlockResult {
         if (type instanceof StringType && !(type instanceof UuidType)) {
             return TEXT;
         }
-        return type instanceof BinaryType ? BinaryType.UNSIZED : type;
+        return type instanceof BinaryType ? BinaryType.AT_MAXIMUM : type;
     }
 
     /**

@@ -55,6 +55,11 @@ public final class SqlTypeNames {
         if (type instanceof LengthlessStringType) {
             return canonical(new StringType(type.getName(), ((StringType) type).getMaxLength()));
         }
+        if (type instanceof BinaryType && ((BinaryType) type).getWidthSpelling() != BinaryWidthSpelling.DECLARED) {
+            // A binary no width was written for reads at the type's maximum: TO_BINARY's and a procedure's BINARY
+            // answer are BINARY(67108864), where a column's own width is its own.
+            return ((BinaryType) type).refusalText();
+        }
         return canonical(type);
     }
 
@@ -162,6 +167,62 @@ public final class SqlTypeNames {
             return "VARCHAR";
         }
         return canonical(type);
+    }
+
+    /**
+     * A routine's RETURNS type as its DDL and its description spell it, when it is known whether the type was
+     * written with its width: a text or a binary written bare reads bare, one written with its width keeps it —
+     * {@code VARCHAR} beside {@code VARCHAR(16777216)}, {@code BINARY} beside {@code BINARY(8388608)} — and every
+     * other type reads as {@link #routineType(DataType)} spells it (live-verified).
+     *
+     * @param type  the declared type
+     * @param sized whether the declaration carried type parameters, or null when that is not known
+     * @return the spelling
+     */
+    public static String routineType(final DataType type, final Boolean sized) {
+        if (sized == null) {
+            return routineType(type);
+        }
+        if (type instanceof BinaryType) {
+            return sized.booleanValue() || ((BinaryType) type).getMaxLength() != BinaryType.BINARY.getMaxLength()
+                ? canonical(type) : "BINARY";
+        }
+        if (type instanceof StringType && !(type instanceof LengthlessStringType)
+                && ((StringType) type).getMaxLength() == DESCRIBED_STRING_MAXIMUM) {
+            return sized.booleanValue() ? canonical(type) : "VARCHAR";
+        }
+        return canonical(type);
+    }
+
+    /**
+     * {@link #routineDataType(DataType)} when it is known whether the type was written with its width: a text or
+     * a binary written with it keeps it — {@code VARCHAR(16777216)}, {@code BINARY(8388608)} — where one written
+     * bare reads at the widest a value can be (live-verified).
+     *
+     * @param type  the declared return type
+     * @param sized whether the declaration carried type parameters, or null when that is not known
+     * @return the spelling
+     */
+    public static String routineDataType(final DataType type, final Boolean sized) {
+        if (sized == null || !sized.booleanValue() || type instanceof LengthlessStringType) {
+            return routineDataType(type);
+        }
+        return type instanceof StringType || type instanceof BinaryType ? canonical(type) : routineDataType(type);
+    }
+
+    /**
+     * {@link #routineTextLength(DataType)} when it is known whether the type was written with its width.
+     *
+     * @param type  the declared return type
+     * @param sized whether the declaration carried type parameters, or null when that is not known
+     * @return the length in characters, or null
+     */
+    public static Integer routineTextLength(final DataType type, final Boolean sized) {
+        if (sized == null || !sized.booleanValue() || !(type instanceof StringType)
+                || type instanceof LengthlessStringType) {
+            return routineTextLength(type);
+        }
+        return Integer.valueOf(((StringType) type).getMaxLength());
     }
 
     /**

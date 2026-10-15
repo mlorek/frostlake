@@ -16,12 +16,17 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Handler for Query commands:
@@ -51,9 +56,86 @@ public class QueryCommandHandler implements CommandHandler {
 
     public ResultSet handleQueryStatement(final FrostlakeParser.QueryStatementContext ctx) {
         if (ctx.selectStatement() != null) {
+            if (ctx.forUpdateClause() != null) {
+                throw refusedLock(ctx.selectStatement());
+            }
             return handleSelectStatement(ctx.selectStatement());
         }
         throw new RuntimeException("Unsupported query statement");
+    }
+
+    /**
+     * The refusal of a query written with FOR UPDATE, which locks the rows of a hybrid table and of nothing else:
+     * {@code Unsupported feature 'FOR UPDATE clause'.} once the query itself has compiled — a relation or a column
+     * it misses is told first — and, for a query that reads no table, {@code A 'FOR UPDATE' clause is not
+     * compatible with 'not selecting from a table'.} (live-verified).
+     */
+    private RuntimeException refusedLock(final FrostlakeParser.SelectStatementContext query) {
+        if (!readsARelation(query)) {
+            return new RuntimeException(
+                "A 'FOR UPDATE' clause is not compatible with 'not selecting from a table'.");
+        }
+        // The query is compiled as an EXPLAIN compiles it: its names are resolved and nothing is run.
+        queryExecutor.execute("EXPLAIN " + ParseTreeText.getOriginalText(query));
+        return new RuntimeException("Unsupported feature 'FOR UPDATE clause'.");
+    }
+
+    /**
+     * Whether a query has a FROM clause of its own, at any depth of its set operations, that reads more than a
+     * common table expression of the statement.
+     */
+    private static boolean readsARelation(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectClauseContext) {
+            final FrostlakeParser.SelectClauseContext clause = (FrostlakeParser.SelectClauseContext) node;
+            return clause.FROM() != null && !readsOnlyACommonTableExpression(clause);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final ParseTree child = node.getChild(i);
+            if ((child instanceof FrostlakeParser.SelectOperandContext
+                    || child instanceof FrostlakeParser.SelectStatementContext
+                    || child instanceof FrostlakeParser.SelectClauseContext) && readsARelation(child)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a query's FROM is one name, and that name one of its statement's common table expressions. */
+    private static boolean readsOnlyACommonTableExpression(final FrostlakeParser.SelectClauseContext clause) {
+        final List<FrostlakeParser.TableReferenceContext> relations = new ArrayList<>();
+        collectRelations(clause.tableExpression(), relations);
+        if (relations.size() != 1 || relations.get(0).tableSource() == null
+                || relations.get(0).tableSource().tableQualifiedName() == null) {
+            return false;
+        }
+        final String name = relations.get(0).tableSource().tableQualifiedName().getText();
+        ParseTree up = clause.getParent();
+        while (up != null) {
+            if (up instanceof FrostlakeParser.SelectStatementContext
+                    && ((FrostlakeParser.SelectStatementContext) up).withClause() != null) {
+                for (final FrostlakeParser.CteDefinitionContext cte
+                        : ((FrostlakeParser.SelectStatementContext) up).withClause().cteDefinition()) {
+                    if (cte.getStart().getText().equalsIgnoreCase(name)) {
+                        return true;
+                    }
+                }
+            }
+            up = up.getParent();
+        }
+        return false;
+    }
+
+    private static void collectRelations(final ParseTree node,
+                                         final List<FrostlakeParser.TableReferenceContext> into) {
+        if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.TableReferenceContext) {
+            into.add((FrostlakeParser.TableReferenceContext) node);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectRelations(node.getChild(i), into);
+        }
     }
 
     public ResultSet handleSelectStatement(final FrostlakeParser.SelectStatementContext ctx) {

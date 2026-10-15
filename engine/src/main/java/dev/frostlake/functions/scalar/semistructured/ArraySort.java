@@ -20,7 +20,9 @@ import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.conversion.BooleanWords;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantBooleans;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
@@ -45,7 +47,7 @@ public class ArraySort extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         final boolean ascending = args.size() < 2 || args.get(1) == null || toBoolean(args.get(1));
         final boolean nullsFirst = (args.size() < 3 || args.get(2) == null) ? !ascending : toBoolean(args.get(2));
@@ -82,7 +84,21 @@ public class ArraySort extends BuiltInFunction {
 
     private static boolean toBoolean(final Object value) {
         if (value instanceof Boolean) return (Boolean) value;
-        return Boolean.parseBoolean(value.toString());
+        // A VARIANT converts as TO_BOOLEAN converts one, and a text names TRUE or FALSE or is refused on the row:
+        // 'abc' is "Boolean value 'abc' is not recognized" and TO_VARIANT(1) "Failed to cast variant value 1 to
+        // BOOLEAN" (live-verified).
+        if (value instanceof VariantValue) {
+            final Boolean converted = VariantBooleans.convert((VariantValue) value);
+            return converted != null && converted.booleanValue();
+        }
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue() != 0.0;
+        }
+        final Boolean read = BooleanWords.read(value.toString());
+        if (read == null) {
+            throw new RuntimeException("Boolean value '" + value + "' is not recognized");
+        }
+        return read.booleanValue();
     }
 
     @Override

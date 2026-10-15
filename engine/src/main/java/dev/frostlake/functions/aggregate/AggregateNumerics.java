@@ -215,15 +215,15 @@ public final class AggregateNumerics {
 
     /**
      * AVG over a NON-CUMULATIVE window — a bare {@code OVER ()}, a PARTITION BY, or an ORDER BY carrying
-     * a ROWS frame. Live declares three decimals wider than the input there rather than six, and
+     * a frame of its own. Live declares three decimals wider than the input there rather than six, and
      * TRUNCATES to that scale instead of rounding.
      *
      * <p>Both halves are measured. Over NUMBER(10,2) the declared type is NUMBER(25,5) against the
      * cumulative NUMBER(28,8); and seven rows summing to 1.00 average to 0.14285, where a half-up round
      * of 0.142857142857… would give 0.14286. Rounding here would produce the wrong last digit.
      *
-     * <p>A RANGE frame is CUMULATIVE and does not come here — see
-     * {@code WindowFunctionExpression.isRowsFramed}.
+     * <p>The running RANGE frame is CUMULATIVE and does not come here — see
+     * {@code WindowFunctionExpression.isOwnFramed}.
      *
      * @param values the aggregated argument values, in partition order
      * @param variantArgument whether the argument is statically VARIANT, which keeps the double path

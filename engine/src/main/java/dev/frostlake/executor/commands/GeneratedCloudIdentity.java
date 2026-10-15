@@ -28,8 +28,10 @@ import java.util.Base64;
  * (live-verified: {@code API_AWS_IAM_USER_ARN} and {@code API_AWS_EXTERNAL_ID}, the {@code GLUE_AWS_}, the
  * {@code SF_AWS_} and the {@code STORAGE_AWS_} pairs; for Google Cloud a service account, {@code API_GCP_SERVICE_ACCOUNT}
  * and {@code STORAGE_GCP_SERVICE_ACCOUNT}). Frostlake reaches no cloud account, so the user is a fixed
- * one and the external ID is derived from the object's kind and name: an ID of the account's shape,
- * {@code <ACCOUNT>_SFCRole=1_<28 characters>}, that stays what it is for as long as the object keeps its name.
+ * one and the external ID is derived from the object's kind, its name and the creation it comes from: an ID of
+ * the account's shape, {@code <ACCOUNT>_SFCRole=1_<28 characters>}, that stays what it is for as long as the
+ * object stands — through an ALTER and through a DROP undone — and is another once the object is created again,
+ * by CREATE OR REPLACE or after a DROP (live-verified).
  */
 final class GeneratedCloudIdentity {
 
@@ -50,12 +52,14 @@ final class GeneratedCloudIdentity {
      * @param account the account's locator, or null
      * @param kind    the kind of object the ID is generated for
      * @param name    the object's name
+     * @param seed    what tells this creation of the object from another, or null when none was kept
      * @return the ID
      */
-    static String externalId(final String account, final String kind, final String name) {
+    static String externalId(final String account, final String kind, final String name, final String seed) {
         final byte[] digest;
         try {
-            digest = MessageDigest.getInstance("SHA-1").digest((kind + ':' + name).getBytes(StandardCharsets.UTF_8));
+            digest = MessageDigest.getInstance("SHA-1").digest((kind + ':' + name + (seed == null ? "" : ':' + seed))
+                .getBytes(StandardCharsets.UTF_8));
         } catch (final NoSuchAlgorithmException missing) {
             throw new IllegalStateException(missing);
         }

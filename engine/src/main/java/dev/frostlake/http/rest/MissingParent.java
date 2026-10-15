@@ -17,6 +17,7 @@
 package dev.frostlake.http.rest;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.Database;
 
 /**
@@ -54,7 +55,9 @@ final class MissingParent {
             return RestException.missing("Database", RestIdentifier.display(databaseName));
         }
         final Database database = catalog.databaseExact(databaseName);
-        if (schemaName != null && !database.hasSchemaExact(schemaName)) {
+        // A schema the system database serves without holding it is there: what is missing is the object.
+        if (schemaName != null && !database.hasSchemaExact(schemaName)
+                && SystemSchema.of(databaseName, schemaName) == null) {
             return RestException.missing("Schema", RestIdentifier.display(databaseName) + "."
                 + RestIdentifier.display(schemaName));
         }

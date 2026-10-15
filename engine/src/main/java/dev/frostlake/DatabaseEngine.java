@@ -767,7 +767,13 @@ public class DatabaseEngine {
                 transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint(stmtSavepoint);
             }
 
-            return new ExecutionResult(true, results, null, queryId);
+            // The caller's rows are its own: a SELECT that reads a table's columns as they are would otherwise hand
+            // out the stored rows themselves, and a change to one would rewrite the table and its history.
+            final List<ResultSet> detached = new ArrayList<>(results.size());
+            for (final ResultSet result : results) {
+                detached.add(result == null ? null : result.detachedCopy());
+            }
+            return new ExecutionResult(true, detached, null, queryId);
 
         } catch (final SqlSyntaxException e) {
             // Log syntax errors with the failed query
@@ -1195,7 +1201,7 @@ public class DatabaseEngine {
             }
         }
 
-        // An engine whose dropped versions end with it deletes the stages it set aside for them.
+        // An engine whose data ends with it deletes its own stage root: its stages' files and those it set aside.
         queryExecutor.releaseSetAsideStages();
 
         logger.info("Frostlake SQL Engine shut down");

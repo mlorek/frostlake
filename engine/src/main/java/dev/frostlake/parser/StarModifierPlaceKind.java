@@ -29,5 +29,8 @@ enum StarModifierPlaceKind {
     NESTED,
 
     /** The star's call stands in a WHERE, GROUP BY, HAVING, QUALIFY or ORDER BY. */
-    CLAUSE
+    CLAUSE,
+
+    /** The star's call stands in a clause of a derived table's query. */
+    DERIVED_CLAUSE
 }

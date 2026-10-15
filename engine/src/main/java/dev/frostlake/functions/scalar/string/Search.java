@@ -28,11 +28,19 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * SEARCH(data, query [, ANALYZER =&gt; '…'] [, SEARCH_MODE =&gt; 'OR'|'AND'|'PHRASE']) — full-text token search.
- * Both sides are cut into tokens by the analyzer; OR mode (the default) is TRUE when ANY query token occurs
- * among the data's, AND mode when ALL of them do, and PHRASE mode when they occur side by side in the query's
- * order. {@code data} may be a single value or — for the {@code SEARCH((col1, col2), …)} form — a tuple, which
- * matches across every element. A NULL data or query yields NULL; a query with no token yields FALSE.
+ * SEARCH(data, query [, ANALYZER =&gt; '…'] [, SEARCH_MODE =&gt; 'OR'|'AND'|'PHRASE'|'EXACT']) — full-text token
+ * search. Both sides are cut into tokens by the analyzer; OR mode (the default) is TRUE when ANY query token
+ * occurs among the data's, AND mode when ALL of them do, and PHRASE mode when they occur side by side in the
+ * query's order. {@code data} may be a single value or — for the {@code SEARCH((col1, col2), …)} form — a tuple,
+ * which matches across every element. A NULL data or query yields NULL; a query with no token yields FALSE.
+ *
+ * <p>EXACT mode finds the query as it is written, the characters between its tokens included: the query must
+ * stand in one element of the data, case apart, with no token running on before it or after it. So
+ * {@code 'a, b'} is found in {@code 'x a, b!'} and not by {@code 'a,b'}, {@code 'a b'} or {@code ', b'}, a query's
+ * trailing delimiter must be there too ({@code 'a,'} finds {@code 'a, b'} and {@code 'a '} does not find
+ * {@code 'a b'}, the {@code b} running on), and an empty query finds a text with no token alone. Under the
+ * NO_OP_ANALYZER the whole text is the one token, so the two must be equal; the UNICODE_ANALYZER does not take
+ * the mode (all live-verified).
  *
  * <p>The analyzers, each live-verified:
  * <ul>
@@ -45,8 +53,8 @@ import java.util.Set;
  *       {@code 'x y'} is found by {@code 'x y'} alone, and not by {@code 'x'} or {@code 'X Y'}.</li>
  * </ul>
  *
- * <p>Named arguments reach the evaluation positionally: a trailing string equal to AND, OR or PHRASE selects
- * the mode, any other trailing string names an analyzer. The names are judged while the statement compiles (see
+ * <p>Named arguments reach the evaluation positionally: a trailing string equal to AND, OR, PHRASE or EXACT
+ * selects the mode, any other trailing string names an analyzer. The names are judged while the statement compiles (see
  * {@code ExpressionEvaluatorVisitor}); an unknown one that reaches here is refused in the same words.
  */
 public class Search extends BuiltInFunction {
@@ -56,7 +64,9 @@ public class Search extends BuiltInFunction {
         Arrays.asList("DEFAULT_ANALYZER", "UNICODE_ANALYZER", "NO_OP_ANALYZER"));
 
     /** The search modes the account takes. */
-    private static final Set<String> MODES = new HashSet<>(Arrays.asList("OR", "AND", "PHRASE"));
+    private static final Set<String> MODES = new HashSet<>(Arrays.asList("OR", "AND", "PHRASE", "EXACT"));
+
+    private static final String EXACT = "EXACT";
 
     public Search() {
         super("SEARCH", BooleanType.BOOLEAN);
@@ -103,6 +113,22 @@ public class Search extends BuiltInFunction {
                 + "'' does not exist or not authorized."));
     }
 
+    /**
+     * The refusal of EXACT mode under an analyzer that does not take it, or null: the Unicode analyzer's words
+     * are no stretches of the text a query could be found in as written.
+     *
+     * @param mode     the mode as written, or null for none
+     * @param analyzer the analyzer as written, or null for none
+     * @return the refusal, or null
+     */
+    public static RuntimeException exactModeRefusal(final String mode, final String analyzer) {
+        return mode != null && analyzer != null && EXACT.equalsIgnoreCase(mode.trim())
+            && "UNICODE_ANALYZER".equalsIgnoreCase(analyzer.trim())
+            ? new RuntimeException(SqlCompilationError.of(
+                "Search mode 'EXACT' is not supported with the 'UNICODE_ANALYZER' analyzer."))
+            : null;
+    }
+
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.size() < 2 || args.get(0) == null || args.get(1) == null) {
@@ -127,6 +153,13 @@ public class Search extends BuiltInFunction {
             }
         }
 
+        if (EXACT.equals(mode)) {
+            final RuntimeException refused = exactModeRefusal(mode, analyzer);
+            if (refused != null) {
+                throw refused;
+            }
+            return Boolean.valueOf(holdsAsWritten(args.get(0), args.get(1).toString(), analyzer));
+        }
         final List<String> queryTokens = tokens(args.get(1).toString(), analyzer);
         if (queryTokens.isEmpty()) {
             return Boolean.FALSE;
@@ -163,6 +196,51 @@ public class Search extends BuiltInFunction {
         return Boolean.valueOf(all);
     }
 
+    /** Whether an element of the data holds the query as it is written (EXACT mode). */
+    private static boolean holdsAsWritten(final Object data, final String query, final String analyzer) {
+        if (data instanceof List) {
+            for (final Object element : (List<?>) data) {
+                if (element != null && holdsAsWritten(element.toString(), query, analyzer)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return holdsAsWritten(data.toString(), query, analyzer);
+    }
+
+    /**
+     * Whether a text holds the query as written: equal to it where the analyzer does not cut, and otherwise
+     * standing in it — both in the analyzer's lower case — where no token runs on before or after. An empty query
+     * is held by a text with no token in it.
+     */
+    private static boolean holdsAsWritten(final String text, final String query, final String analyzer) {
+        if ("NO_OP_ANALYZER".equals(analyzer)) {
+            return text.equals(query);
+        }
+        final String written = query.toLowerCase(Locale.ROOT);
+        final String read = text.toLowerCase(Locale.ROOT);
+        if (written.isEmpty()) {
+            // Nothing is asked for, and a text that holds no token holds it.
+            return tokens(text, analyzer).isEmpty();
+        }
+        for (int at = read.indexOf(written); at >= 0; at = read.indexOf(written, at + 1)) {
+            final int end = at + written.length();
+            if ((at == 0 || !isTokenCharacter(read.charAt(at - 1)))
+                    && (end == read.length() || !isTokenCharacter(read.charAt(end)))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether the default analyzer keeps a character in a token: a letter or a number. */
+    private static boolean isTokenCharacter(final char c) {
+        final int type = Character.getType(c);
+        return Character.isLetter(c) || type == Character.DECIMAL_DIGIT_NUMBER || type == Character.LETTER_NUMBER
+            || type == Character.OTHER_NUMBER;
+    }
+
     /** Whether {@code phrase} stands in {@code text}, token beside token. */
     private static boolean holdsInOrder(final List<String> text, final List<String> phrase) {
         for (int start = 0; start + phrase.size() <= text.size(); start++) {
@@ -197,8 +275,9 @@ public class Search extends BuiltInFunction {
 
     /**
      * The words of a text as the Unicode word boundaries cut them, for the cases measured: letters, digits and
-     * the underscore run together; a point or an apostrophe between two letters joins them, and a point between
-     * two digits; everything else — a blank, a hyphen, an at sign, a slash, a comma — ends the word.
+     * the underscore run together; a point, an apostrophe, a colon or a middle dot between two letters joins
+     * them, and a point or a comma between two digits; everything else — a blank, a hyphen, an at sign, a slash,
+     * a comma between letters, a colon between digits — ends the word.
      */
     private static void unicodeWords(final String text, final List<String> into) {
         final StringBuilder word = new StringBuilder();
@@ -220,6 +299,9 @@ public class Search extends BuiltInFunction {
         return Character.isLetterOrDigit(c) || c == '_';
     }
 
+    /** The middle dot, which joins two letters as a colon does. */
+    private static final char MIDDLE_DOT = '\u00b7';
+
     /** Whether the character at {@code at} stands between two letters or two digits it joins into one word. */
     private static boolean joinsItsNeighbours(final String text, final int at) {
         if (at == 0 || at + 1 >= text.length()) {
@@ -228,10 +310,10 @@ public class Search extends BuiltInFunction {
         final char c = text.charAt(at);
         final char before = text.charAt(at - 1);
         final char after = text.charAt(at + 1);
-        if (c == '.' && Character.isDigit(before) && Character.isDigit(after)) {
+        if ((c == '.' || c == ',') && Character.isDigit(before) && Character.isDigit(after)) {
             return true;
         }
-        return (c == '.' || c == '\'') && isLetterLike(before) && isLetterLike(after);
+        return (c == '.' || c == '\'' || c == ':' || c == MIDDLE_DOT) && isLetterLike(before) && isLetterLike(after);
     }
 
     private static boolean isLetterLike(final char c) {

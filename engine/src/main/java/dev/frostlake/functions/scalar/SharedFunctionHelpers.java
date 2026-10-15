@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar;
 
 import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SessionInputFormats;
 import dev.frostlake.executor.SessionOutputFormats;
 import dev.frostlake.executor.SessionTimestampMapping;
 import dev.frostlake.executor.SessionZone;
@@ -44,6 +45,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
+import java.time.temporal.TemporalAccessor;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -506,6 +508,28 @@ public final class SharedFunctionHelpers {
         final BigDecimal exact = new BigDecimal(Math.abs(d));
         return exact.precision() - exact.scale() - 1;
     }
+    /**
+     * A numeric argument as the exact number it holds: a number as itself, a text read as one — a text that spells
+     * no number is "Numeric value 'b' is not recognized", the sentence every numeric argument earns
+     * (live-verified).
+     *
+     * @param value the argument, not NULL
+     * @return the number
+     */
+    public static BigDecimal numberArgument(final Object value) {
+        if (value instanceof BigDecimal) {
+            return (BigDecimal) value;
+        }
+        if (value instanceof String) {
+            try {
+                return new BigDecimal(((String) value).trim());
+            } catch (final NumberFormatException notANumber) {
+                throw new RuntimeException(NumericRangeRefusal.unreadableText(value));
+            }
+        }
+        return new BigDecimal(value.toString());
+    }
+
     // --- shared date/datetime parsing helpers ---
     public static LocalDate toLocalDate(final Object v) {
         if (v == null) return null;
@@ -514,6 +538,8 @@ public final class SharedFunctionHelpers {
         if (v instanceof ZonedDateTime) return ((ZonedDateTime) v).toLocalDate();
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalDate();
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.date();
+        if (sessionFormat != null) return LocalDate.from(sessionFormatted(s, sessionFormat, "Date"));
         try { return LocalDate.parse(s); } catch (final Exception ignored) {}
         final LocalDateTime epoch = digitEpochAtUtc(s);
         if (epoch != null) return epoch.toLocalDate();
@@ -522,6 +548,23 @@ public final class SharedFunctionHelpers {
         // Live names the TYPE it could not read the text as — "Date '...' is not recognized" —
         // where java.time's own message says "Text '...' could not be parsed".
         throw new RuntimeException("Date '" + s + "' is not recognized");
+    }
+
+    /**
+     * Text read by the session's input format, which is the only reading once one other than AUTO is set: text the
+     * format does not fit is not recognized, in the words the AUTO reading uses (live-verified).
+     *
+     * @param text   the text, trimmed
+     * @param format the session's format
+     * @param kind   the type's word as the refusal spells it: Date, Time or Timestamp
+     * @return the value the format read
+     */
+    private static TemporalAccessor sessionFormatted(final String text, final String format, final String kind) {
+        try {
+            return SnowflakeDateParser.parse(text, format, kind.toLowerCase(Locale.ROOT));
+        } catch (final RuntimeException unfit) {
+            throw new RuntimeException(kind + " '" + text + "' is not recognized");
+        }
     }
 
     public static LocalDateTime toLocalDateTime(final Object v) {
@@ -555,6 +598,16 @@ public final class SharedFunctionHelpers {
         if (v instanceof ZonedDateTime) return ((ZonedDateTime) v).toLocalDateTime();
         if (v instanceof LocalDate) return ((LocalDate) v).atStartOfDay();
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.timestamp();
+        if (sessionFormat != null) {
+            final TemporalAccessor read = sessionFormatted(s, sessionFormat, "Timestamp");
+            if (read instanceof OffsetDateTime) {
+                final OffsetDateTime written = (OffsetDateTime) read;
+                return targetCarriesZone ? written.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime()
+                    : written.toLocalDateTime();
+            }
+            return LocalDateTime.from(read);
+        }
         try { return LocalDateTime.parse(s); } catch (final Exception ignored) {}
         final LocalDateTime epoch = digitEpochAtUtc(s);
         if (epoch != null) return epoch;
@@ -600,6 +653,13 @@ public final class SharedFunctionHelpers {
             return ((LocalDate) v).atStartOfDay(zone).toOffsetDateTime();
         }
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.timestamp();
+        if (sessionFormat != null) {
+            final TemporalAccessor read = sessionFormatted(s, sessionFormat, "Timestamp");
+            return read instanceof OffsetDateTime
+                ? ((OffsetDateTime) read).toInstant().atZone(zone).toOffsetDateTime()
+                : LocalDateTime.from(read).atZone(zone).toOffsetDateTime();
+        }
         final LocalDateTime epoch = digitEpochAtUtc(s);
         if (epoch != null) {
             // An epoch already fixes the instant; the session's zone only expresses it.
@@ -656,6 +716,12 @@ public final class SharedFunctionHelpers {
             return ((LocalDate) v).atStartOfDay(zone).withFixedOffsetZone();
         }
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.timestamp();
+        if (sessionFormat != null) {
+            final TemporalAccessor read = sessionFormatted(s, sessionFormat, "Timestamp");
+            return read instanceof OffsetDateTime ? ((OffsetDateTime) read).toZonedDateTime()
+                : LocalDateTime.from(read).atZone(zone).withFixedOffsetZone();
+        }
         final LocalDateTime epoch = digitEpochAtUtc(s);
         if (epoch != null) {
             // An epoch written as TEXT stays at UTC whatever the session's zone, where the NUMBER
@@ -698,6 +764,29 @@ public final class SharedFunctionHelpers {
         return computed.atZone(SessionZone.current()).toOffsetDateTime();
     }
 
+    /**
+     * Text read as a TIME under an explicit 'AUTO' format: by the session's input format first, by AUTO when the text
+     * does not fit it — TO_TIME('15:15', 'AUTO') is 15:15 under HH12:MI AM (live-verified).
+     *
+     * @param text the text
+     * @return the time
+     */
+    public static LocalTime toLocalTimeAuto(final String text) {
+        if (SessionInputFormats.time() == null) {
+            return toLocalTime(text);
+        }
+        try {
+            return toLocalTime(text);
+        } catch (final RuntimeException unfit) {
+            final Map<String, String> displaced = SessionInputFormats.without(SessionInputFormats.TIME);
+            try {
+                return toLocalTime(text);
+            } finally {
+                SessionInputFormats.restore(displaced);
+            }
+        }
+    }
+
     public static LocalTime toLocalTime(final Object v) {
         if (v == null) return null;
         if (v instanceof LocalTime) return (LocalTime) v;
@@ -707,6 +796,8 @@ public final class SharedFunctionHelpers {
         if (v instanceof OffsetDateTime) return ((OffsetDateTime) inSessionZone(v)).toLocalTime();
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalTime();
         final String s = v.toString().trim();
+        final String sessionFormat = SessionInputFormats.time();
+        if (sessionFormat != null) return LocalTime.from(sessionFormatted(s, sessionFormat, "Time"));
         final LocalTime epoch = integerStringTime(s);
         if (epoch != null) return epoch;
         try { return LocalTime.parse(s); } catch (final Exception ignored) {}
@@ -992,6 +1083,25 @@ public final class SharedFunctionHelpers {
         if (isExplicitFormat(format)) {
             return LocalDateTime.from(SnowflakeDateParser.parse(value.toString(), format, "timestamp"));
         }
+        if (format != null && SessionInputFormats.timestamp() != null) {
+            // An explicit AUTO reads by the session's format first and by AUTO when the text does not fit it:
+            // under DD/MM/YYYY HH24:MI, TO_TIMESTAMP('05/03/2024 10:00', 'AUTO') is 5 March and an ISO text
+            // reads as well (live-verified).
+            try {
+                return toLocalDateTime(value);
+            } catch (final RuntimeException unfit) {
+                final Map<String, String> displaced = SessionInputFormats.without(SessionInputFormats.TIMESTAMP);
+                try {
+                    return parseTimestampWithFormat(value, null);
+                } finally {
+                    SessionInputFormats.restore(displaced);
+                }
+            }
+        }
+        if (format == null && SessionInputFormats.timestamp() != null) {
+            // The session's format is the only reading: a string of digits is no epoch under it.
+            return toLocalDateTime(value);
+        }
         final String text = value.toString().trim();
         if (isIntegerText(text)) {
             try {
@@ -1053,6 +1163,24 @@ public final class SharedFunctionHelpers {
         // 'YYYYMMDD') is 2020-01-15 — so it is asked before the epoch reading.
         if (isExplicitFormat(format)) {
             return LocalDate.from(SnowflakeDateParser.parse(value.toString(), format, "date"));
+        }
+        if (format != null && SessionInputFormats.date() != null) {
+            // An explicit AUTO reads by the session's format first and by AUTO when the text does not fit it, as
+            // TO_TIMESTAMP's does: TO_DATE('2024-01-15', 'AUTO') reads under DD/MM/YYYY (live-verified).
+            try {
+                return toLocalDate(value);
+            } catch (final RuntimeException unfit) {
+                final Map<String, String> displaced = SessionInputFormats.without(SessionInputFormats.DATE);
+                try {
+                    return parseDateWithFormat(value, null);
+                } finally {
+                    SessionInputFormats.restore(displaced);
+                }
+            }
+        }
+        if (format == null && SessionInputFormats.date() != null) {
+            // The session's format is the only reading: a string of digits is no epoch under it.
+            return toLocalDate(value);
         }
         final String digits = value.toString().trim();
         if (digits.matches("-?\\d+")) {

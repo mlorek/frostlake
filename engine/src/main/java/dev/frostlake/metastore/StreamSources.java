@@ -185,6 +185,51 @@ public final class StreamSources {
      * @param stream  the stream
      * @return the schema, or null when it is gone
      */
+    /**
+     * The full names of the tables a view stream's view reads, each read where the view lives, in the order the
+     * stream recorded them; null for any other stream.
+     *
+     * @param catalog the catalog
+     * @param stream  the stream
+     * @return the names, or null
+     */
+    public static List<String> baseTableFullNames(final Catalog catalog, final Stream stream) {
+        if (stream.getSourceType() != StreamSourceType.VIEW || stream.getBaseTableNames().isEmpty()) {
+            return null;
+        }
+        final Schema viewHome = viewHomeOf(catalog, homeOf(catalog, stream), stream);
+        final List<String> names = new ArrayList<>();
+        for (final String name : stream.getBaseTableNames()) {
+            names.add(completed(viewHome, name));
+        }
+        return names;
+    }
+
+    /**
+     * How many of the tables a view stream's view reads are gone, dropped or replaced under their names: none for a
+     * stream whose tables are all there, and at least one for a stale one.
+     *
+     * @param catalog the catalog
+     * @param stream  the stream
+     * @return the count
+     */
+    public static int missingBaseCount(final Catalog catalog, final Stream stream) {
+        if (stream.getSourceType() != StreamSourceType.VIEW || baseTablesOf(catalog, stream) != null) {
+            return 0;
+        }
+        final Schema viewHome = viewHomeOf(catalog, homeOf(catalog, stream), stream);
+        final List<Table> bound = stream.getBaseTables();
+        int missing = 0;
+        for (int i = 0; i < stream.getBaseTableNames().size(); i++) {
+            final boolean gone = bound != null && i < bound.size() ? holderOf(catalog, bound.get(i)) == null
+                : named(catalog, viewHome, stream.getBaseTableNames().get(i)) == null;
+            if (gone) {
+                missing++;
+            }
+        }
+        return Math.max(missing, 1);
+    }
+
     public static Schema viewHomeOf(final Catalog catalog, final Schema home, final Stream stream) {
         return schemaNamed(catalog, home, stream.getSourceTableName());
     }

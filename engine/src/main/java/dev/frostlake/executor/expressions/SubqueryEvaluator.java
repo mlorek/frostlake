@@ -19,6 +19,8 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.CorrelatedSubqueryRule;
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.DerivedColumnLineage;
+import dev.frostlake.executor.EqualityCorrelation;
+import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.OuterNameConstancy;
 import dev.frostlake.executor.ProjectionLineage;
 import dev.frostlake.executor.QueryExecutor;
@@ -35,6 +37,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 
 import java.util.ArrayList;
@@ -64,6 +67,14 @@ final class SubqueryEvaluator {
     private final Map<String, SubqueryExpression> countedBodies = new HashMap<>();
     /** Scalar subqueries by key, each as it is run (see {@link #statisticsBody}). */
     private final Map<String, SubqueryExpression> statisticsBodies = new HashMap<>();
+    /** Each copy's equality correlation, by key, as analyzed once (see {@link #equalityCorrelationOf}). */
+    private final Map<String, EqualityCorrelation> equalityCorrelations = new HashMap<>();
+    /** The outer key of each copy's equality correlation, parsed, by key. */
+    private final Map<String, Expression> outerKeys = new HashMap<>();
+    /** The copies run for each row: no equality correlation, or one that could not be computed once for all. */
+    private final Set<String> perRowOnly = new HashSet<>();
+    /** What an outer key's evaluation answers when it cannot settle a probe, which then runs the subquery. */
+    private static final Object UNDECIDED = new Object();
 
     SubqueryEvaluator(final ExpressionEvaluatorVisitor visitor) {
         this.visitor = visitor;
@@ -78,6 +89,10 @@ final class SubqueryEvaluator {
         final SubqueryExpression body = countedBody(expr, null);
         if (requireSupportedCorrelation(expr, body, false, false, false, null)) {
             return false;
+        }
+        final Boolean probed = probedExists(expr, body);
+        if (probed != null) {
+            return probed;
         }
         final List<ResultSet> results = countedSubquery(body);
 
@@ -171,6 +186,188 @@ final class SubqueryEvaluator {
         if (requireSupportedCorrelation(expr, true, false, false, null)) {
             return null;
         }
+        // An aggregate over an equality correlation reads its value by the outer row's key from values computed once
+        // for every key; a row no key equals runs the subquery once, and its value is the one every such row reads.
+        final PreparedKeyedValues keyed = keyedValuesOf(expr);
+        boolean missed = false;
+        if (keyed != null) {
+            final Object probe = outerKeyValue(memoKey(expr));
+            if (probe != UNDECIDED && (probe == null || keyed.answers(probe))) {
+                if (probe != null && keyed.holds(probe)) {
+                    final Object cell = keyed.valueOf(probe);
+                    if (!(cell instanceof DeferredFault)) {
+                        return cell;
+                    }
+                } else if (keyed.knowsEmptyValue()) {
+                    return keyed.emptyValue();
+                } else {
+                    missed = true;
+                }
+            }
+        }
+        final Object value = scalarSubqueryValue(expr);
+        if (missed) {
+            keyed.recordEmptyValue(value);
+        }
+        return value;
+    }
+
+    /**
+     * An EXISTS over an equality correlation (see {@link EqualityCorrelation}), answered by probing its inner keys,
+     * computed once for the statement, with the outer row's key: the answer running the subquery for the row gives,
+     * in time that grows with the two relations rather than with their product. Null where the probe cannot settle
+     * it — no such correlation, a key of a kind hashing does not compare, a collation — and the subquery runs.
+     */
+    private Boolean probedExists(final SubqueryExpression expr, final SubqueryExpression body) {
+        final SubqueryMemo memo = visitor.getSubqueryMemo();
+        final String key = memoKey(expr);
+        final EqualityCorrelation correlation = memo == null ? null : equalityCorrelationOf(key, body);
+        if (correlation == null || !correlation.answersARowPerKeptRow()) {
+            return null;
+        }
+        final String keysQuery = correlation.keysQuery();
+        PreparedInSet keys = memo.cachedInSet(keysQuery);
+        if (keys == null) {
+            final ResultSet computed = computedOnce(key, keysQuery, 1);
+            if (computed == null) {
+                return null;
+            }
+            keys = PreparedInSet.build(computed.getRows());
+            memo.recordInSet(keysQuery, keys);
+        }
+        final Object probe = outerKeyValue(key);
+        if (probe == UNDECIDED) {
+            return null;
+        }
+        if (probe == null) {
+            return Boolean.FALSE;
+        }
+        return keys.answers(probe) ? Boolean.valueOf(keys.contains(probe)) : null;
+    }
+
+    /**
+     * The values by key of a scalar aggregate over an equality correlation, computed once for the statement, or null
+     * where the subquery runs for each row.
+     */
+    private PreparedKeyedValues keyedValuesOf(final SubqueryExpression expr) {
+        final SubqueryMemo memo = visitor.getSubqueryMemo();
+        final String key = memoKey(expr);
+        if (memo == null || perRowOnly.contains(key) || statisticsBody(expr) != expr) {
+            return null;
+        }
+        final EqualityCorrelation correlation = equalityCorrelationOf(key, expr);
+        if (correlation == null || correlation.getAggregateItem() == null) {
+            perRowOnly.add(key);
+            return null;
+        }
+        final String groupedQuery = correlation.groupedQuery();
+        PreparedKeyedValues values = memo.cachedKeyedValues(groupedQuery);
+        if (values == null) {
+            final ResultSet computed = computedOnce(key, groupedQuery, 2);
+            if (computed == null) {
+                return null;
+            }
+            final ResultSetColumn valueColumn = computed.getColumns().get(1);
+            if (valueColumn.isUncheckedConstant() || valueColumn.isFoldedDouble()) {
+                perRowOnly.add(key);
+                return null;
+            }
+            values = PreparedKeyedValues.build(computed.getRows());
+            memo.recordKeyedValues(groupedQuery, values);
+        }
+        return values;
+    }
+
+    /**
+     * A copy's equality correlation, analyzed once: null where it has none, or where a part of it answers anew each
+     * time it is computed, or its outer key carries a collation.
+     */
+    private EqualityCorrelation equalityCorrelationOf(final String key, final SubqueryExpression body) {
+        if (perRowOnly.contains(key)) {
+            return null;
+        }
+        EqualityCorrelation correlation = equalityCorrelations.get(key);
+        if (correlation != null) {
+            return correlation;
+        }
+        correlation = analyzedCorrelation(key, body);
+        if (correlation == null) {
+            perRowOnly.add(key);
+            return null;
+        }
+        equalityCorrelations.put(key, correlation);
+        return correlation;
+    }
+
+    private EqualityCorrelation analyzedCorrelation(final String key, final SubqueryExpression body) {
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(body.getSubquery());
+        if (parsed == null) {
+            return null;
+        }
+        final Set<String> outerNames = new HashSet<>();
+        for (final String name : buildLateralContext().keySet()) {
+            outerNames.add(name.toUpperCase(Locale.ROOT));
+        }
+        final EqualityCorrelation correlation =
+            new CorrelatedSubqueryRule(queryExecutor, outerNames).equalityCorrelation(parsed);
+        if (correlation == null) {
+            return null;
+        }
+        try {
+            final List<String> innerTexts = correlation.innerTexts();
+            if (correlation.getAggregateItem() != null) {
+                innerTexts.add(correlation.getAggregateItem());
+            }
+            for (final String text : innerTexts) {
+                if (VolatileCalls.writes(ExpressionEvaluator.parse(text))) {
+                    return null;
+                }
+            }
+            final Expression outer = ExpressionEvaluator.parse(correlation.getOuterKey());
+            if (VolatileCalls.writes(outer) || visitor.collationOf(outer).toRules() != null) {
+                return null;
+            }
+            outerKeys.put(key, outer);
+        } catch (final RuntimeException unparsed) {
+            return null;
+        }
+        return correlation;
+    }
+
+    /**
+     * A correlation's once-for-all query, run as a subquery of its own; null — and the copy runs for each row from
+     * then on — where it does not run, reads the outer row after all, or answers a key under a collation.
+     */
+    private ResultSet computedOnce(final String key, final String query, final int width) {
+        final SubqueryMemo memo = visitor.getSubqueryMemo();
+        final List<ResultSet> results;
+        try {
+            results = executeSubquery(query);
+        } catch (final RuntimeException failed) {
+            perRowOnly.add(key);
+            return null;
+        }
+        if (memo.cachedResult(query) == null || results.isEmpty() || results.get(0) == null
+                || results.get(0).getColumns().size() != width
+                || columnCollation(results.get(0)).toRules() != null) {
+            perRowOnly.add(key);
+            return null;
+        }
+        return results.get(0);
+    }
+
+    /** The outer row's key of a copy's equality correlation, or UNDECIDED where it cannot be read for the row. */
+    private Object outerKeyValue(final String key) {
+        try {
+            return DeferredFault.read(outerKeys.get(key).accept(visitor));
+        } catch (final RuntimeException unread) {
+            return UNDECIDED;
+        }
+    }
+
+    /** A scalar subquery's value for the row, the subquery run for it. */
+    private Object scalarSubqueryValue(final SubqueryExpression expr) {
         // What an uncorrelated subquery raises is raised ahead of the rows that read it (see SubqueryAhead).
         final long outerReads = visitor.lateralReadCount();
         final List<ResultSet> results;
@@ -231,7 +428,7 @@ final class SubqueryEvaluator {
     }
 
     Object evaluateInSubquery(final Object value, final SubqueryExpression expr, final boolean not,
-                              final CollationSpec collation, final Expression subject) {
+                              final ExpressionCollation subjectCollation, final Expression subject) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         if (queryExecutor == null) {
             throw new RuntimeException("Cannot evaluate IN subquery: QueryExecutor not available");
@@ -250,6 +447,10 @@ final class SubqueryEvaluator {
         }
 
         final ResultSet resultSet = results.get(0);
+        // The members compare under the collation the probe and the query's column settle on, as a comparison of
+        // the two does: the column's own COLLATE counts (live-verified).
+        final CollationSpec collation = ExpressionCollation.combine(columnCollation(resultSet), subjectCollation)
+            .toRules();
 
         final SubqueryMemo subqueryMemo = visitor.getSubqueryMemo();
         // A query that reads the row around it is matched row against row, as a join is: its IN is TRUE for a
@@ -282,14 +483,21 @@ final class SubqueryEvaluator {
                 set = PreparedInSet.build(resultSet.getRows());
                 subqueryMemo.recordInSet(subquery, set);
             }
-            if (set.contains(value)) {
-                return !not;
+            if (set.answers(value)) {
+                if (set.contains(value)) {
+                    return !not;
+                }
+                return set.hasNull() ? null : not;
             }
-            return set.hasNull() ? null : not;
         }
 
-        // Correlated (or no memo): linear scan with early exit (result differs per outer row).
+        // Correlated, or a probe the index cannot settle: each member compared as value = member compares them.
+        // A probe that is no text converts every member, as the account converts the query's column, so a member
+        // that does not read refuses the statement wherever the match stands: 2 IN ('02', 'x') raises for 'x'
+        // (live-verified).
+        final boolean convertsEvery = !(value instanceof String);
         boolean anyNull = false;
+        boolean matched = false;
         for (final Row subRow : resultSet.getRows()) {
             final Object subValue = DeferredFault.read(subRow.getValue(0));
             if (subValue == null) {
@@ -298,11 +506,29 @@ final class SubqueryEvaluator {
             }
             if (collation != null ? CollationMatching.equalUnder(collation, value, subValue)
                     : ExpressionArithmetic.equals(value, subValue)) {
-                return !not;
+                matched = true;
+                if (!convertsEvery) {
+                    break;
+                }
             }
         }
-
+        if (matched) {
+            return !not;
+        }
         return anyNull && !twoValued ? null : not;
+    }
+
+    /** The collation a query's one column carries, as a comparison with it would read it. */
+    static ExpressionCollation columnCollation(final ResultSet resultSet) {
+        if (resultSet.getColumns().isEmpty()) {
+            return ExpressionCollation.NONE;
+        }
+        final ResultSetColumn column = resultSet.getColumns().get(0);
+        if (column.getCollation() == null) {
+            return ExpressionCollation.NONE;
+        }
+        return column.isCollationExplicit() ? ExpressionCollation.explicit(column.getCollation())
+            : ExpressionCollation.column(column.getCollation());
     }
 
     /**

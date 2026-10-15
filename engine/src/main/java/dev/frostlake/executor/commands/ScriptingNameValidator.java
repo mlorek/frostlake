@@ -17,9 +17,12 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.AssignedStatement;
+import dev.frostlake.executor.CallNamedShape;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QuotedBindName;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.expressions.DateTimeUnitSlot;
+import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 
@@ -66,10 +69,10 @@ import java.util.Set;
  *       {@code :binds} name the block's variables, though, and compile with it: one nothing declares is
  *       refused here, its name folded as an unquoted identifier is ({@code invalid identifier 'NOPE'});</li>
  *   <li>an unknown function — {@code missing_fn()} reports {@code Unknown function}, a different
- *       error from a different layer — and a function's ARGUMENTS are left alone with it, because the
- *       grammar admits bare keywords there and the function reads them itself:
- *       {@code DATEADD(MINUTE, 30, ts)} passes a date part, not a variable, and refusing it would
- *       break a script Snowflake runs.</li>
+ *       error from a different layer — and the word standing where a function reads a date or time
+ *       unit: {@code DATEADD(MINUTE, 30, ts)} passes a date part, not a variable, so that one argument
+ *       is the call's to read. Every other argument's names are the block's, and are judged here like
+ *       any other: {@code NVL(nope, 'x')} is refused for {@code NOPE} as the block compiles.</li>
  * </ul>
  *
  * <p>The same walk refuses an ASSIGNMENT to a FOR loop's counter, which is read-only for as long as
@@ -86,6 +89,15 @@ import java.util.Set;
  * is worse than the leniency being removed.
  */
 final class ScriptingNameValidator {
+
+    /**
+     * What marks, in a scope's names, the variable of a FOR loop that is no record: the mark and then the name. No
+     * name a block can write begins so.
+     */
+    private static final String NO_RECORD = "\u0000";
+
+    /** What marks, likewise, the counter of a FOR loop over a range, which has no fields. */
+    private static final String NO_FIELDS = "\u0001";
 
     /**
      * Names a script may use without declaring them. SQLCODE and the row counts resolve anywhere, NULL where
@@ -400,6 +412,13 @@ final class ScriptingNameValidator {
             declare(let.identifier(), scope, counters);
             return;
         }
+        if (node instanceof FrostlakeParser.SetStatementContext
+                && ((FrostlakeParser.SetStatementContext) node).COLON_EQ() != null) {
+            // SET x := … assigns the block's variable as x := … does, so its target must exist (live-verified, at
+            // the ':='); written with '=' it sets the session's variable, whatever the block declares.
+            final FrostlakeParser.SetStatementContext set = (FrostlakeParser.SetStatementContext) node;
+            requireName(text(set.identifier()), set.COLON_EQ().getSymbol(), scope);
+        }
         if (node instanceof FrostlakeParser.AssignmentStatementContext) {
             // The TARGET must already exist and must not be a FOR counter: live refuses
             // `missing_name := 1` and a counter's `i := 5` alike, each anchored on the ':='.
@@ -454,6 +473,14 @@ final class ScriptingNameValidator {
         }
         if (node instanceof FrostlakeParser.ForStatementContext) {
             final FrostlakeParser.ForStatementContext loop = (FrostlakeParser.ForStatementContext) node;
+            // A name alone in parentheses is refused where the parentheses open (live-verified).
+            final FrostlakeParser.QualifiedNameContext alone = loop.TO() == null
+                ? parenthesizedName(loop.expression(0)) : null;
+            if (alone != null && !scope.contains(canonical(text(alone.nameStartPart())))) {
+                final Token at = loop.expression(0).getStart();
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    invalidIdentifier(text(alone.nameStartPart()), false)));
+            }
             // The bounds are evaluated OUTSIDE the loop, so they cannot see the loop variable.
             for (final FrostlakeParser.ExpressionContext bound : loop.expression()) {
                 checkExpressions(bound, scope);
@@ -470,12 +497,23 @@ final class ScriptingNameValidator {
                 if (loop.TO() != null) {
                     bodyCounters.add(counter);
                     bodyRecords.remove(counter);
+                    body.remove(NO_RECORD + counter);
+                    body.add(NO_FIELDS + counter);
                     if (compiler != null) {
                         compiler.declareCounter(counter);
                     }
-                } else {
+                } else if (loop.expression(0).getStart() == loop.expression(0).getStop()) {
                     bodyCounters.remove(counter);
                     bodyRecords.add(counter);
+                    body.remove(NO_RECORD + counter);
+                    body.remove(NO_FIELDS + counter);
+                } else {
+                    // Over anything but a cursor's or a RESULTSET's name the variable is no record: a field read
+                    // from it is a name nothing declares, refused while the block compiles (live-verified).
+                    bodyCounters.remove(counter);
+                    bodyRecords.remove(counter);
+                    body.remove(NO_FIELDS + counter);
+                    body.add(NO_RECORD + counter);
                 }
             }
             walkStatementList(loop.statementList(), body, bodyCounters, bodyRecords, null, returnKind, compiler);
@@ -605,8 +643,16 @@ final class ScriptingNameValidator {
                     raise.getStart().getCharPositionInLine(),
                     "RAISE without specifying exception only allowed inside a handler."));
             }
+            // The two exceptions a script has without declaring them are raised by name, in any case unless
+            // the name is written in quotes (live-verified).
             if (raise.identifier() != null) {
-                require(raise.identifier(), scope);
+                // An exception no block declares is named as it is known, a quoted name without its quotes.
+                final String name = canonical(text(raise.identifier()));
+                if (!BUILT_IN_EXCEPTIONS.contains(name) && !scope.contains(name)) {
+                    final Token at = raise.identifier().getStart();
+                    throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                        "invalid identifier '" + name + "'"));
+                }
             }
         }
     }
@@ -674,14 +720,42 @@ final class ScriptingNameValidator {
             return;
         }
         if (node instanceof FrostlakeParser.FunctionArgListContext) {
-            // An argument's names are the call's to resolve, but for the two a handler supplies: where no handler
-            // runs they are no names at all, and the block is refused for them as it compiles.
-            checkHandlerNames(node, scope);
+            checkArguments((FrostlakeParser.FunctionArgListContext) node, scope);
             return;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             checkExpressions(node.getChild(i), scope);
         }
+    }
+
+    /**
+     * The names in a call's arguments, each judged as the block compiles, in the order written: a name nothing
+     * declares is refused at its own place, in a nested call and on a branch never run too, and a lambda's
+     * parameter is no name of the block's, so its body is refused for it. The one argument left to the call is the
+     * word standing where a function reads a date or time unit: that word names a unit, and one that names none is
+     * found when the call runs (all live-verified).
+     */
+    private static void checkArguments(final FrostlakeParser.FunctionArgListContext arguments,
+                                       final Set<String> scope) {
+        final int unit = unitSlotOf(arguments);
+        final List<FrostlakeParser.FunctionArgContext> written = arguments.functionArg();
+        for (int i = 0; i < written.size(); i++) {
+            if (i == unit) {
+                checkHandlerNames(written.get(i), scope);
+            } else {
+                checkExpressions(written.get(i), scope);
+            }
+        }
+    }
+
+    /** The place of the unit's word among the arguments of the call that holds them, or -1 when it reads none. */
+    private static int unitSlotOf(final FrostlakeParser.FunctionArgListContext arguments) {
+        if (!(arguments.getParent() instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return -1;
+        }
+        final FrostlakeParser.FunctionNameContext name =
+            ((FrostlakeParser.FunctionCallExprContext) arguments.getParent()).functionName();
+        return name == null ? -1 : DateTimeUnitSlot.positionIn(name.getText().toUpperCase(Locale.ROOT));
     }
 
     /** Whether a node declares a cursor over a query, in a DECLARE section or by LET. */
@@ -863,6 +937,7 @@ final class ScriptingNameValidator {
      * SYSTEM$TYPEOF(nosuch); END IF;} compile, where {@code CALL p(:nosuch)} does not).
      */
     private static void checkCall(final FrostlakeParser.CallStatementContext call, final Set<String> scope) {
+        CallNamedShape.require(call);
         checkEmbeddedBinds(call, scope);
     }
 
@@ -1056,11 +1131,49 @@ final class ScriptingNameValidator {
             || node instanceof FrostlakeParser.DdlStatementContext;
     }
 
-    /** Resolve only the ROOT of a dotted name; the field is a run-time concern. */
+    /**
+     * The name that stands alone between parentheses, {@code (c)}, {@code ((c))} or {@code (c.f)}, or null for any
+     * other expression.
+     */
+    private static FrostlakeParser.QualifiedNameContext parenthesizedName(final ParseTree expression) {
+        ParseTree node = expression;
+        boolean parenthesized = false;
+        while (true) {
+            while (node.getChildCount() == 1 && !(node instanceof FrostlakeParser.QualifiedNameExprContext)) {
+                node = node.getChild(0);
+            }
+            if (node.getChildCount() != 3 || !"(".equals(node.getChild(0).getText())
+                    || !")".equals(node.getChild(2).getText())) {
+                break;
+            }
+            parenthesized = true;
+            node = node.getChild(1);
+        }
+        if (!parenthesized || !(node instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.QualifiedNameContext name =
+            ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName();
+        return name.nameStartPart() != null ? name : null;
+    }
+
+    /**
+     * Resolve only the ROOT of a dotted name; the field is a run-time concern — but for the variable of a FOR over
+     * anything other than a cursor's or a RESULTSET's name, which has no fields: {@code r.v} there is "invalid
+     * identifier 'R.V'", at the name (live-verified).
+     */
     private static void requireRootOf(final FrostlakeParser.QualifiedNameContext name,
                                       final Set<String> scope) {
         if (name == null || name.nameStartPart() == null) {
             return;
+        }
+        final String root = canonical(text(name.nameStartPart()));
+        if (!name.namePart().isEmpty() && (scope.contains(NO_RECORD + root) || scope.contains(NO_FIELDS + root))) {
+            // A range's counter is named alone, {@code r.v} over FOR r IN 1 TO 2 being "invalid identifier 'R'".
+            final Token at = name.getStart();
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                invalidIdentifier(scope.contains(NO_RECORD + root) ? name.getText() : text(name.nameStartPart()),
+                    false)));
         }
         requireName(text(name.nameStartPart()), name.nameStartPart(), scope);
     }
@@ -1454,6 +1567,26 @@ final class ScriptingNameValidator {
      */
     static void rejectUnnamedBinds(final ParseTree node) {
         rejectUnnamedBinds(node, false);
+    }
+
+    /**
+     * Refuse a block for a logging statement whose name names none, wherever in the block it stands: the block
+     * does not compile, so nothing of it runs (live-verified: {@code SYSTEM$LOG_NOSUCH('m');}).
+     *
+     * @param node the block, or any part of it
+     */
+    static void rejectUnknownLoggingNames(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SystemCallStatementContext) {
+            final String name = ((FrostlakeParser.SystemCallStatementContext) node).SYSTEM_FUNC().getText()
+                .toUpperCase(Locale.ROOT);
+            if (!SystemFunctionNames.isLoggingStatement(name)) {
+                throw new RuntimeException(SystemFunctionNames.unknownLoggingStatement(name));
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rejectUnknownLoggingNames(node.getChild(i));
+        }
     }
 
     /** The walk, carrying whether the current subtree sits inside an embedded SQL statement. */

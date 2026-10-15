@@ -114,7 +114,9 @@ public final class StageResource implements RestResource {
         final ArrayNode out = RestJson.array();
         for (final RestRow row : call.sql().show("SHOW STAGES" + RestShow.like(call) + " IN SCHEMA "
                 + call.schemaSql())) {
-            out.add(toJson(row, null));
+            // A listed stage is the whole body a fetch answers, its described properties included.
+            out.add(toJson(row, call.sql().show("DESCRIBE STAGE "
+                + call.qualifiedSql(RestIdentifier.ofResolved(row.string("name"))))));
         }
         return RestResponse.json(200, out);
     }
@@ -149,15 +151,6 @@ public final class StageResource implements RestResource {
         RestJson.string(node, "cloud", row, "cloud");
         final ObjectNode directory = RestJson.object();
         RestJson.bool(directory, "enable", row, "directory_enabled");
-        if (described == null) {
-            if (directory.size() > 0) {
-                node.set("directory_table", directory);
-            }
-            RestJson.nulls(node, "name", "kind", "url", "endpoint", "storage_integration", "comment", "credentials",
-                "encryption", "directory_table", "file_format", "copy_options", "created_on", "has_credentials",
-                "has_encryption_key", "owner", "owner_role_type", "region", "cloud");
-            return node;
-        }
         final ObjectNode format = RestJson.object();
         final ObjectNode copyOptions = RestJson.object();
         for (final RestRow property : described) {

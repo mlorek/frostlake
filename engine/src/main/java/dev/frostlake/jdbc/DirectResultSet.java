@@ -288,6 +288,10 @@ public class DirectResultSet implements java.sql.ResultSet {
         if (value instanceof Number && !(value instanceof Double) && NumericType.isApproximate(declared)) {
             return Double.valueOf(((Number) value).doubleValue());
         }
+        if (value instanceof Number && !(value instanceof BigDecimal) && JdbcMarshaling.isClientDecimal(declared)) {
+            // A file transfer's size is the client's own DECIMAL, read as the BigDecimal its metadata names.
+            return new BigDecimal(value.toString());
+        }
         return value;
     }
 
@@ -1362,16 +1366,23 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public Date getDate(final int columnIndex, final Calendar cal) throws SQLException {
-        return getDate(columnIndex);   // engine values are not zoned; the Calendar is ignored
+        checkClosed();
+        if (cal == null || intervalKindAt(columnIndex - 1) != null) {
+            return getDate(columnIndex);
+        }
+        // The day's midnight in the Calendar's zone.
+        return JdbcMarshaling.toDate(engineResultSet.getValue(columnIndex - 1), cal);
     }
 
     @Override
     public Date getDate(final String columnLabel, final Calendar cal) throws SQLException {
-        return getDate(columnLabel);
+        checkClosed();
+        return getDate(indexOf(columnLabel) + 1, cal);
     }
 
     @Override
     public Time getTime(final int columnIndex, final Calendar cal) throws SQLException {
+        // The account's driver reads no Calendar for a TIME (live-verified).
         return getTime(columnIndex);
     }
 
@@ -1382,12 +1393,18 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public Timestamp getTimestamp(final int columnIndex, final Calendar cal) throws SQLException {
-        return getTimestamp(columnIndex);
+        checkClosed();
+        if (cal == null || intervalKindAt(columnIndex - 1) != null) {
+            return getTimestamp(columnIndex);
+        }
+        // A wall clock with no zone is read in the Calendar's zone; a zoned cell keeps its moment (live-verified).
+        return JdbcMarshaling.toTimestamp(engineResultSet.getValue(columnIndex - 1), cal);
     }
 
     @Override
     public Timestamp getTimestamp(final String columnLabel, final Calendar cal) throws SQLException {
-        return getTimestamp(columnLabel);
+        checkClosed();
+        return getTimestamp(indexOf(columnLabel) + 1, cal);
     }
 
     @Override

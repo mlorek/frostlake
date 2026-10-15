@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.udf;
 
+import dev.frostlake.executor.expressions.SourcePosition;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -65,12 +66,12 @@ public class StatementHandlerStatesTest {
         final Object site = new Object();
         final HandlerStateScope scope = StatementHandlerStates.begin();
         try {
-            final Object outer = StatementHandlerStates.enterSite(site);
+            final Object outer = StatementHandlerStates.enterCall(site, "F", 0, null);
             final AutoCloseable first = StatementHandlerStates.state(routine, "UTC", named("a"));
             assertSame(first, StatementHandlerStates.state(routine, "UTC", named("b")));
             assertNotSame(first, StatementHandlerStates.state(routine, "Europe/Warsaw", named("c")));
             assertNotSame(first, StatementHandlerStates.state(new Object(), "UTC", named("d")));
-            final Object inner = StatementHandlerStates.enterSite(new Object());
+            final Object inner = StatementHandlerStates.enterCall(new Object(), "F", 0, null);
             assertNotSame(first, StatementHandlerStates.state(routine, "UTC", named("e")));
             StatementHandlerStates.exitSite(inner);
             assertSame(first, StatementHandlerStates.state(routine, "UTC", named("f")));
@@ -80,6 +81,47 @@ public class StatementHandlerStatesTest {
         }
         assertEquals(4, closed.size());
         assertNull(StatementHandlerStates.state(routine, "UTC", named("g")));
+    }
+
+    @Test
+    public void oneCallWrittenInTwoPlacesHasTwoStates() {
+        final Object routine = new Object();
+        final Object call = new Object();
+        final HandlerStateScope scope = StatementHandlerStates.begin();
+        try {
+            final Object first = StatementHandlerStates.enterCall(call, "f", 1, new SourcePosition(1, 7));
+            final AutoCloseable atFirst = StatementHandlerStates.state(routine, "UTC", named("a"));
+            StatementHandlerStates.exitSite(first);
+            final Object again = StatementHandlerStates.enterCall(call, "F", 1, new SourcePosition(1, 7));
+            assertSame(atFirst, StatementHandlerStates.state(routine, "UTC", named("b")));
+            StatementHandlerStates.exitSite(again);
+            final Object second = StatementHandlerStates.enterCall(call, "F", 1, new SourcePosition(1, 15));
+            assertNotSame(atFirst, StatementHandlerStates.state(routine, "UTC", named("c")));
+            StatementHandlerStates.exitSite(second);
+        } finally {
+            StatementHandlerStates.end(scope);
+        }
+    }
+
+    @Test
+    public void aCallInABodyIsToldByItsNameAndCount() {
+        final Object routine = new Object();
+        final HandlerStateScope scope = StatementHandlerStates.begin();
+        try {
+            final Object outer = StatementHandlerStates.enterCall(new Object(), "WRAP", 1, new SourcePosition(1, 7));
+            final Object firstRow = StatementHandlerStates.enterCall(new Object(), "CNT", 1, null);
+            final AutoCloseable kept = StatementHandlerStates.state(routine, "UTC", named("a"));
+            StatementHandlerStates.exitSite(firstRow);
+            final Object secondRow = StatementHandlerStates.enterCall(new Object(), "cnt", 1, null);
+            assertSame(kept, StatementHandlerStates.state(routine, "UTC", named("b")));
+            StatementHandlerStates.exitSite(secondRow);
+            final Object secondCall = StatementHandlerStates.enterCall(new Object(), "CNT", 2, null);
+            assertNotSame(kept, StatementHandlerStates.state(routine, "UTC", named("c")));
+            StatementHandlerStates.exitSite(secondCall);
+            StatementHandlerStates.exitSite(outer);
+        } finally {
+            StatementHandlerStates.end(scope);
+        }
     }
 
     @Test

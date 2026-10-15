@@ -29,6 +29,11 @@ public class Power extends NumericArgumentFunction {
         if (args.get(0) == null || args.get(1) == null) return null;
         final double base = ((Number) args.get(0)).doubleValue();
         final double exponent = ((Number) args.get(1)).doubleValue();
+        if (base < 0 && !Double.isInfinite(exponent) && exponent != Math.rint(exponent)) {
+            // A negative number has no power that is no whole number.
+            throw FloatingPointRefusal.of("pow(" + FloatingPointRefusal.number(base) + ", "
+                + FloatingPointRefusal.number(exponent) + ")");
+        }
         return Math.pow(base, exponent);
     }
 

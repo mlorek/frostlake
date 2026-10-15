@@ -52,6 +52,7 @@ public final class TableFunctionArguments {
     private static final String TAG_REFERENCES_ALL_COLUMNS = "TAG_REFERENCES_ALL_COLUMNS";
     private static final String DATA_METRIC_FUNCTION_REFERENCES = "DATA_METRIC_FUNCTION_REFERENCES";
     private static final String ALERT_HISTORY = "ALERT_HISTORY";
+    private static final String COPY_HISTORY = "COPY_HISTORY";
     private static final String GENERATOR = "GENERATOR";
 
     /** The schema the INFORMATION_SCHEMA-only functions must be qualified with. */
@@ -65,7 +66,7 @@ public final class TableFunctionArguments {
     private static final Set<String> INFORMATION_SCHEMA_ONLY =
         new HashSet<>(Arrays.asList(QUERY_HISTORY, "QUERY_HISTORY_BY_SESSION", "QUERY_HISTORY_BY_USER",
             "QUERY_HISTORY_BY_WAREHOUSE", TASK_HISTORY, TAG_REFERENCES, "TAG_REFERENCES_ALL_COLUMNS",
-            ALERT_HISTORY, "TASK_DEPENDENTS",
+            ALERT_HISTORY, COPY_HISTORY, "TASK_DEPENDENTS",
             "CURRENT_TASK_GRAPHS", "COMPLETE_TASK_GRAPHS"));
 
     /**
@@ -147,12 +148,16 @@ public final class TableFunctionArguments {
             PARAMETER_KINDS.put(function, tagReferences);
         }
 
-        // The metric a DATA_METRIC_FUNCTION_REFERENCES call names is a text.
+        // The metric a DATA_METRIC_FUNCTION_REFERENCES call names is a text, and so are its entity and its domain.
         ACCEPTED_NAMES.put(DATA_METRIC_FUNCTION_REFERENCES,
             Arrays.asList("METRIC_NAME", "REF_ENTITY_NAME", "REF_ENTITY_DOMAIN"));
         final Map<String, TableFunctionParameterKind> metricReferences = new HashMap<>();
         metricReferences.put("METRIC_NAME", TableFunctionParameterKind.STRING);
+        metricReferences.put("REF_ENTITY_NAME", TableFunctionParameterKind.STRING);
+        metricReferences.put("REF_ENTITY_DOMAIN", TableFunctionParameterKind.STRING);
         PARAMETER_KINDS.put(DATA_METRIC_FUNCTION_REFERENCES, metricReferences);
+        // One argument written without a name is the metric's, and is told by that name.
+        POSITIONAL_PARAMETER_NAMES.put(DATA_METRIC_FUNCTION_REFERENCES, Arrays.asList("METRIC_NAME"));
 
         final Map<String, TableFunctionParameterKind> queryHistory = new HashMap<>();
         queryHistory.put("END_TIME_RANGE_START", TableFunctionParameterKind.TIMESTAMP);
@@ -161,6 +166,14 @@ public final class TableFunctionArguments {
         final Map<String, TableFunctionParameterKind> taskHistory = new HashMap<>();
         taskHistory.put("SCHEDULED_TIME_RANGE_START", TableFunctionParameterKind.TIMESTAMP);
         PARAMETER_KINDS.put(TASK_HISTORY, taskHistory);
+
+        // COPY_HISTORY's table is a text and its range two timestamps, a positional call filling them in that order.
+        final Map<String, TableFunctionParameterKind> copyHistory = new HashMap<>();
+        copyHistory.put("TABLE_NAME", TableFunctionParameterKind.STRING);
+        copyHistory.put("START_TIME", TableFunctionParameterKind.TIMESTAMP);
+        copyHistory.put("END_TIME", TableFunctionParameterKind.TIMESTAMP);
+        PARAMETER_KINDS.put(COPY_HISTORY, copyHistory);
+        POSITIONAL_PARAMETER_NAMES.put(COPY_HISTORY, Arrays.asList("TABLE_NAME", "START_TIME", "END_TIME"));
     }
 
     /**
@@ -214,6 +227,36 @@ public final class TableFunctionArguments {
         if (required != null && !namesInOrder.isEmpty() && !supplies(namesInOrder, required)) {
             throw new RuntimeException(at(nameToken, "missing required argument [" + required + "] for function ["
                 + echoed(functionName, nameToken) + "]"));
+        }
+    }
+
+    /**
+     * COPY_HISTORY takes its table and its start time, by name or position: a call that gives fewer arguments is
+     * refused for the count, and a table given as NULL as missing, each naming the first part of the call's name
+     * (live-verified).
+     *
+     * @param functionName  the function, unqualified and upper-cased
+     * @param nameToken     the first token of the call's name, whose position the refusal reports
+     * @param namesInOrder  each argument's name as written and upper-cased, null for a positional one
+     * @param argumentTexts each argument's text as written
+     */
+    public static void validateRequiredArguments(final String functionName, final Token nameToken,
+                                                 final List<String> namesInOrder, final List<String> argumentTexts) {
+        if (!COPY_HISTORY.equals(functionName)) {
+            return;
+        }
+        final String shown = nameToken.getText().toUpperCase(Locale.ROOT);
+        if (namesInOrder.size() < 2) {
+            throw new RuntimeException(at(nameToken, "not enough arguments for function [" + shown + "], expected 2,"
+                + " got " + namesInOrder.size()));
+        }
+        for (int i = 0; i < namesInOrder.size(); i++) {
+            final String name = namesInOrder.get(i) != null ? unquoted(namesInOrder.get(i))
+                : nameOfPositional(functionName, i);
+            if ("TABLE_NAME".equals(name) && "NULL".equalsIgnoreCase(argumentTexts.get(i).trim())) {
+                throw new RuntimeException(at(nameToken, "missing required argument [TABLE_NAME] for function ["
+                    + shown + "]"));
+            }
         }
     }
 
@@ -285,6 +328,36 @@ public final class TableFunctionArguments {
             throw new RuntimeException(at(nameToken, "too many arguments for function ["
                 + nameToken.getText() + "] expected 2, got " + given));
         }
+    }
+
+    /**
+     * The order a call's arguments are judged in: as written, or — for DATA_METRIC_FUNCTION_REFERENCES, whose entity
+     * is judged before its domain wherever each is written — in the order the function declares them
+     * (live-verified).
+     *
+     * @param functionName the function
+     * @param namesInOrder the arguments' names as written, upper-cased, null for a positional one
+     * @return the arguments' indexes, in the order to judge them
+     */
+    public static List<Integer> judgingOrder(final String functionName, final List<String> namesInOrder) {
+        final List<Integer> order = new ArrayList<>();
+        final List<String> declared = DATA_METRIC_FUNCTION_REFERENCES.equals(functionName)
+            ? ACCEPTED_NAMES.get(functionName) : null;
+        if (declared != null) {
+            for (final String name : declared) {
+                for (int i = 0; i < namesInOrder.size(); i++) {
+                    if (namesInOrder.get(i) != null && name.equals(unquoted(namesInOrder.get(i)))) {
+                        order.add(Integer.valueOf(i));
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < namesInOrder.size(); i++) {
+            if (!order.contains(Integer.valueOf(i))) {
+                order.add(Integer.valueOf(i));
+            }
+        }
+        return order;
     }
 
     /** The type a named parameter takes, or null when the function's surface has not been measured. */

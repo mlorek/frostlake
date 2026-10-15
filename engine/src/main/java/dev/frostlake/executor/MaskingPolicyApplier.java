@@ -281,7 +281,10 @@ final class MaskingPolicyApplier {
             names.add(params.get(i).getName());
             bound.add(policyCols.get(i));
         }
-        final String body = SqlIdentifierSubstitution.substituteParameters(policy.getBody(), names, bound);
+        // A row access policy reads a tag of the table it protects as a masking policy does.
+        final String body = rewriteTagFn(
+            SqlIdentifierSubstitution.substituteParameters(policy.getBody(), names, bound),
+            "GET_TAG_ON_CURRENT_TABLE", table.getName(), "TABLE");
         return executor.filterRows(rows, table, body);
     }
 }

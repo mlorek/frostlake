@@ -504,6 +504,12 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         return binary(ctx.expression(0), op, ctx.expression(1), ctx.op);
     }
 
+    /** The caret between two values is never a value: the statement is refused (see {@link CaretOperator}). */
+    @Override
+    public Expression visitCaretExpr(final FrostlakeParser.CaretExprContext ctx) {
+        throw CaretOperator.refusal();
+    }
+
     @Override
     public Expression visitConcatExpr(final FrostlakeParser.ConcatExprContext ctx) {
         if (readsPatternList(ctx)) {
@@ -591,6 +597,24 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             elements.add(visit(element));
         }
         return elements;
+    }
+
+    /**
+     * {@code a == b}: a call of a function named by the doubled sign, which resolves to nothing — the account
+     * answers {@code Unknown function "=="} for it (live-verified).
+     */
+    @Override
+    public Expression visitDoubledEqualsExpr(final FrostlakeParser.DoubledEqualsExprContext ctx) {
+        final Token sign = ctx.EQ_EQ().getSymbol();
+        final List<Expression> arguments = new ArrayList<>();
+        arguments.add(visit(ctx.expression(0)));
+        arguments.add(visit(ctx.expression(1)));
+        final FunctionCallExpression call = new FunctionCallExpression(sign.getText(), arguments);
+        final List<String> name = new ArrayList<>();
+        name.add(sign.getText());
+        call.setNameParts(name);
+        call.setPosition(new SourcePosition(sign.getLine(), sign.getCharPositionInLine()));
+        return call;
     }
 
     @Override
@@ -1601,6 +1625,24 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         }
     }
 
+    /**
+     * Whether a window carries a frame of its own: any ROWS frame, and a RANGE frame other than the running one from
+     * the partition's first row to the current row (see WindowFunctionExpression.isOwnFramed).
+     */
+    private static boolean hasOwnFrame(final FrostlakeParser.OverClauseContext over) {
+        final FrostlakeParser.WindowFrameContext frame = over.windowFrame();
+        if (frame == null) {
+            return false;
+        }
+        if (frame.ROWS() != null) {
+            return true;
+        }
+        final FrostlakeParser.FrameBoundContext start = frame.frameBound(0);
+        final boolean fromFirst = start.UNBOUNDED() != null && start.PRECEDING() != null;
+        final boolean toCurrent = frame.frameBound().size() == 1 || frame.frameBound(1).CURRENT() != null;
+        return !(fromFirst && toCurrent);
+    }
+
     /** Whether a frame runs from the partition's first row to its last. */
     private static boolean isWholePartition(final FrostlakeParser.WindowFrameContext frame) {
         if (frame == null || frame.BETWEEN() == null) {
@@ -1624,11 +1666,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             window.describeCall(ctx.functionName().getText().toUpperCase(Locale.ROOT),
                 argList(ctx.functionArgList()));
             window.describeNameParts(functionNameParts(ctx.functionName()));
-            // ROWS only: a RANGE frame leaves the window CUMULATIVE as far as the declared width goes,
-            // so it must not be reported as framed here (live-verified — see isRowsFramed).
-            window.describeWindow(ctx.overClause().orderByClause() != null,
-                ctx.overClause().windowFrame() != null
-                    && ctx.overClause().windowFrame().ROWS() != null);
+            // The running RANGE frame leaves the window CUMULATIVE as far as the declared width goes,
+            // so it is not reported as framed here (live-verified — see isOwnFramed).
+            window.describeWindow(ctx.overClause().orderByClause() != null, hasOwnFrame(ctx.overClause()));
             window.describeWithinGroup(withinGroupOrdered(ctx));
             window.describeWithinGroupKeys(withinGroupKeys(ctx.withinGroupClause()));
             window.describeAll(ctx.ALL() != null);
@@ -1931,8 +1971,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final WindowFunctionExpression window = new WindowFunctionExpression(originalText(ctx));
         window.describeCall(name.getText().toUpperCase(Locale.ROOT), values);
         window.describeNameParts(functionNameParts(name));
-        window.describeWindow(over.orderByClause() != null,
-            over.windowFrame() != null && over.windowFrame().ROWS() != null);
+        window.describeWindow(over.orderByClause() != null, hasOwnFrame(over));
         window.describeWithinGroupKeys(withinGroupKeys(withinGroup));
         window.describeAll(all != null);
         describeOver(window, over, distinct != null);
@@ -1942,6 +1981,10 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitFunctionCallMixedArgsExpr(final FrostlakeParser.FunctionCallMixedArgsExprContext ctx) {
+        if (ctx.strayArguments() != null) {
+            // A positional argument after a named one: refused for the call by name (see StrayArguments).
+            throw new RuntimeException(StrayArguments.refusal(ctx, ctx.strayArguments()));
+        }
         // One or more leading positional arguments, then one or more named arguments.
         final List<Expression> args = new ArrayList<>();
         final List<String> names = new ArrayList<>();
@@ -2081,6 +2124,10 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitFunctionCallNamedArgsExpr(final FrostlakeParser.FunctionCallNamedArgsExprContext ctx) {
+        if (ctx.strayArguments() != null) {
+            // A positional argument after a named one: refused for the call by name (see StrayArguments).
+            throw new RuntimeException(StrayArguments.refusal(ctx, ctx.strayArguments()));
+        }
         final List<Expression> args = new ArrayList<>();
         final List<String> names = new ArrayList<>();
         final List<SourcePosition> places = new ArrayList<>();
@@ -2137,7 +2184,21 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitSystemUserTaskCancelExpr(final FrostlakeParser.SystemUserTaskCancelExprContext ctx) {
-        return new SystemUserTaskCancelExpression(visit(ctx.expression()));
+        // A count other than one goes to the ordinary call node, whose arity table refuses it at the call.
+        final List<FrostlakeParser.ExpressionContext> args = ctx.expressionList() == null
+            ? new ArrayList<FrostlakeParser.ExpressionContext>() : ctx.expressionList().expression();
+        if (args.size() != 1) {
+            final List<Expression> built = new ArrayList<>();
+            for (final FrostlakeParser.ExpressionContext arg : args) {
+                built.add(visit(arg));
+            }
+            final FunctionCallExpression call = new FunctionCallExpression(
+                ctx.SYSTEM_USER_TASK_CANCEL().getText().toUpperCase(Locale.ROOT), built);
+            call.setPosition(new SourcePosition(ctx.getStart().getLine(),
+                ctx.getStart().getCharPositionInLine()));
+            return call;
+        }
+        return new SystemUserTaskCancelExpression(visit(args.get(0)));
     }
 
     // ------------------------------------------------------------------

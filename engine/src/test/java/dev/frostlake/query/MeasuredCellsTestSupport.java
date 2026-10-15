@@ -127,6 +127,14 @@ public abstract class MeasuredCellsTestSupport extends BaseDatabaseTest {
             .replaceAll("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<QID>"), sql);
     }
 
+    /**
+     * Asserts one statement reads as measured once the day it ran on is masked: a quoted date, as the echo of a
+     * CURRENT_DATE() holds it, reads {@code '<DATE>'}.
+     */
+    protected void assertDatedAnswer(final String expected, final String sql) {
+        assertEquals(expected, answer(sql).replaceAll("'\\d{4}-\\d{2}-\\d{2}'", "'<DATE>'"), sql);
+    }
+
     /** Asserts one statement's columns are the measured ones. */
     protected void assertShape(final String expected, final String sql) {
         assertEquals(expected, shape(sql), sql);

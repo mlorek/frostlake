@@ -45,10 +45,21 @@ final class TransactionAbortConstantWalk extends AstPrinterVisitor {
 
     @Override
     public String visitFunctionCall(final FunctionCallExpression expr) {
-        if (NOT_CONSTANT.contains(expr.getFunctionName().toUpperCase(Locale.ROOT))) {
+        final String name = expr.getFunctionName().toUpperCase(Locale.ROOT);
+        if (NOT_CONSTANT.contains(name)) {
             found = true;
         }
-        return super.visitFunctionCall(expr);
+        final int unitSlot = DateTimeUnitSlot.positionIn(name);
+        if (unitSlot < 0 || unitSlot >= expr.getArguments().size()) {
+            return super.visitFunctionCall(expr);
+        }
+        // A unit slot holds a word, never a value: DATE_PART(year, …) reads no column named year.
+        for (int i = 0; i < expr.getArguments().size(); i++) {
+            if (i != unitSlot) {
+                expr.getArguments().get(i).accept(this);
+            }
+        }
+        return name;
     }
 
     boolean found() {

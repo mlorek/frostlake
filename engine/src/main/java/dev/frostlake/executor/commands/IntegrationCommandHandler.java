@@ -467,7 +467,7 @@ public final class IntegrationCommandHandler {
     /** The external ID the account generates for an integration that assumes a cloud role. */
     private String externalId(final Integration integration) {
         return GeneratedCloudIdentity.externalId(catalog.getAccountLocator(),
-            integration.getKind().getWords() + " INTEGRATION", integration.getName());
+            integration.getKind().getWords() + " INTEGRATION", integration.getName(), integration.getIdentitySeed());
     }
 
     /**

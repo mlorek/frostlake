@@ -16,19 +16,23 @@
 
 package dev.frostlake.executor.udf;
 
+import dev.frostlake.executor.expressions.SourcePosition;
+
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Locale;
 
 /**
  * What handler runtimes keep while a statement runs, and for no longer. An account runs each call of a handler
  * function written in a statement in an environment of its own, made for that statement (live-verified): the
  * globals a JavaScript function sets are there for the statement's later rows, and are gone with the statement;
- * another function, another call of the same function in the same statement, a later statement and another
- * session never see them. A runtime therefore asks here for the state of the call being evaluated, and gets one
- * that lives as long as the statement on this thread does.
+ * another function, another call of the same function in the same statement (see {@link CallSite}), a later
+ * statement and another session never see them. A runtime therefore asks here for the state of the call being
+ * evaluated, and gets one that lives as long as the statement on this thread does.
  *
  * <p>A statement that runs inside another — one a procedure or a block runs — has states of its own, and ending
- * the outer statement ends whatever an inner one left behind.
+ * the outer statement ends whatever an inner one left behind; so does each evaluation of a block's own
+ * expression, which an account runs as a query of its own.
  */
 public final class StatementHandlerStates {
 
@@ -74,21 +78,27 @@ public final class StatementHandlerStates {
     }
 
     /**
-     * The call of a routine starts being evaluated.
+     * The call of a routine starts being evaluated. Evaluated inside the body of another call — a SQL function's
+     * — it is placed in that call as well.
      *
-     * @param site the place in the statement that calls it
+     * @param call    the call as parsed
+     * @param name    the routine's name
+     * @param ordinal the call's count among the calls of that name in the text it was parsed from, or 0
+     * @param origin  where the fragment of the statement holding the call begins, or null when unknown
      * @return the place evaluated until now, to hand to {@link #exitSite}
      */
-    public static Object enterSite(final Object site) {
+    public static Object enterCall(final Object call, final String name, final int ordinal,
+                                   final SourcePosition origin) {
         final Object outer = SITE.get();
-        SITE.set(site);
+        SITE.set(new CallSite(outer instanceof CallSite ? (CallSite) outer : null, origin, call,
+            name == null ? null : name.toUpperCase(Locale.ROOT), ordinal));
         return outer;
     }
 
     /**
-     * The call {@link #enterSite} was told of has been evaluated.
+     * The call {@link #enterCall} was told of has been evaluated.
      *
-     * @param outer what {@link #enterSite} answered
+     * @param outer what {@link #enterCall} answered
      */
     public static void exitSite(final Object outer) {
         if (outer == null) {

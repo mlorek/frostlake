@@ -40,6 +40,17 @@ final class ViewExpansion {
     }
 
     /**
+     * Note that what is planned next is no part of a view's body, though a view's expansion reached it.
+     *
+     * @return whether a view's body was being planned, for {@link #end}
+     */
+    static boolean suspend() {
+        final boolean outer = inForce();
+        IN_FORCE.remove();
+        return outer;
+    }
+
+    /**
      * Put back what {@link #begin} found.
      *
      * @param outer what it returned

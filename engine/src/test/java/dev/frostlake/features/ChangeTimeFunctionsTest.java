@@ -75,7 +75,7 @@ public class ChangeTimeFunctionsTest {
         assertTrue(created < first && first < second, created + " < " + first + " < " + second);
         assertTrue(second > 1_000_000_000_000_000_000L, "nanoseconds since the epoch: " + second);
         assertTrue(refusal("SELECT SYSTEM$LAST_CHANGE_COMMIT_TIME('no_such_table')")
-            .contains("'CTF.PUBLIC.NO_SUCH_TABLE' does not exist"));
+            .contains("Object 'NO_SUCH_TABLE' does not exist"));
     }
 
     @Test

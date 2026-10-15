@@ -130,19 +130,25 @@ final class ShowPipelineExecutor {
         final List<Row> rows = new ArrayList<>();
         final Schema home = catalog.getDatabase(dbName).getSchema(scName);
         for (final Stream stream : home.getStreams()) {
+            final boolean stale = stale(home, stream);
+            final String source = qualifiedSourceName(dbName, scName, stream.getSourceTableName());
+            // A table stream whose table is gone names none, and a stale stream has no time it goes stale after
+            // (live-verified).
+            final boolean tableGone = stream.getSourceType() == StreamSourceType.TABLE
+                && StreamSources.sourceOf(catalog, home, stream) == null;
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(stream.getCreatedAt()),
                 stream.getName(),
                 dbName, scName,
                 stream.getOwner(),
                 ShowResultHelpers.text(stream.getComment()),
-                qualifiedSourceName(dbName, scName, stream.getSourceTableName()),
+                tableGone ? TABLE_GONE : source,
                 sourceTypeText(stream),
-                qualifiedSourceName(dbName, scName, stream.getSourceTableName()),
+                baseTablesText(stream, source, tableGone),
                 "DELTA",
-                stale(home, stream) ? "true" : "false",
+                stale ? "true" : "false",
                 stream.getStreamType() == StreamType.APPEND_ONLY ? "APPEND_ONLY" : "DEFAULT",
-                ShowResultHelpers.createdOn(staleAfter(stream)),
+                stale ? null : ShowResultHelpers.createdOn(staleAfter(stream)),
                 "N/A",
                 ShowResultHelpers.OWNER_ROLE_TYPE
             )));
@@ -391,6 +397,30 @@ final class ShowPipelineExecutor {
     }
 
     /** Live reports a stream's source with its database and schema, even for a same-schema table. */
+    /** What SHOW STREAMS lists for a table stream whose table is gone, as its table and its base tables. */
+    private static final String TABLE_GONE = "No privilege or table dropped";
+
+    /**
+     * The tables a stream reads, as SHOW STREAMS lists them: a table stream's table, and the tables a view stream's
+     * view reads rather than the view itself, or how many of them are gone (live-verified).
+     */
+    private String baseTablesText(final Stream stream, final String source, final boolean tableGone) {
+        if (tableGone) {
+            return TABLE_GONE;
+        }
+        if (stream.getSourceType() == StreamSourceType.VIEW) {
+            final int missing = StreamSources.missingBaseCount(catalog, stream);
+            if (missing > 0) {
+                return missing + " inaccessible table(s)";
+            }
+            final List<String> bases = StreamSources.baseTableFullNames(catalog, stream);
+            if (bases != null) {
+                return String.join(",", bases);
+            }
+        }
+        return source;
+    }
+
     private String qualifiedSourceName(final String dbName, final String scName, final String source) {
         if (source == null) {
             return null;

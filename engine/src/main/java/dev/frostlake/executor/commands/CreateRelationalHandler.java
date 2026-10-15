@@ -20,6 +20,7 @@ import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.DmlWriteTarget;
 import dev.frostlake.executor.DynamicTableColumns;
 import dev.frostlake.executor.InformationSchemaGuard;
+import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.MaterializedViewRefresh;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.ProjectionSlot;
@@ -272,6 +273,10 @@ public class CreateRelationalHandler implements CommandHandler {
             }
 
             final boolean temporaryView = TemporaryObjectStatements.isTemporary(ctx);
+            // A name another relation kind holds is refused BEFORE anything is asked of the session and before
+            // existence is answered, so even IF NOT EXISTS over a table's name refuses rather than skipping
+            // (live-verified).
+            schema.rejectNameHeldByOtherKind(viewName, RelationKind.VIEW, temporaryView);
             // Replacing a view needs OWNERSHIP of it, asked ahead of the privilege to create one.
             if (orReplace && !temporaryView) {
                 queryExecutor.requireOwnership("VIEW", parts, null);
@@ -283,9 +288,6 @@ public class CreateRelationalHandler implements CommandHandler {
             } else {
                 ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, schema);
             }
-            // A name another relation kind holds is refused BEFORE existence is answered, so even
-            // IF NOT EXISTS over a table's name refuses rather than skipping (live-verified).
-            schema.rejectNameHeldByOtherKind(viewName, RelationKind.VIEW, temporaryView);
             // A VIEW answers existence FIRST: over an existing view, IF NOT EXISTS succeeds without the
             // body ever compiling (live: a broken body over an existing view is "already exists").
             if (ifNotExists && !orReplace && schema.hasView(viewName)) {
@@ -397,7 +399,8 @@ public class CreateRelationalHandler implements CommandHandler {
             try {
                 // The body compiles where the view will live, whatever the session's context.
                 view.setResolvedColumns(queryExecutor.resolveViewShapeInScope(
-                    schemaDatabaseName(parts), schema.getName(), selectQuery, view.getColumnNames()));
+                    schemaDatabaseName(parts), schema.getName(), selectQuery, view.getColumnNames(),
+                    selectQuery.equals(writtenQuery) ? null : ctx.objectName().getStop().getText()));
             } finally {
                 ExpressionSource.end(displacedBody);
             }
@@ -620,9 +623,17 @@ public class CreateRelationalHandler implements CommandHandler {
         return declared;
     }
 
+    /**
+     * Where a body begins, as the statement's own places are told: past the comments the text opens with, and from
+     * the statement's first token in a request of several (live-verified).
+     */
     private static SourcePosition originOf(final ParserRuleContext ctx) {
-        return ctx == null ? null
-            : new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+        if (ctx == null) {
+            return null;
+        }
+        final int[] shown = LeadingCommentOffset.rebase(ctx.getStart().getLine(),
+            ctx.getStart().getCharPositionInLine());
+        return new SourcePosition(shown[0], shown[1]);
     }
 
     private void applyViewColumnComments(final FrostlakeParser.ViewColumnListContext columnList,
@@ -669,6 +680,12 @@ public class CreateRelationalHandler implements CommandHandler {
                 throw new RuntimeException("Invalid materialized view name: " + qualifiedName);
             }
 
+            CreatedObjectProperties.requireMaterializedViewProperties(ctx, schema.getName());
+            // A name another kind of relation holds, and for a plain create a materialized view of the name,
+            // are refused before the privilege is asked (live-verified).
+            schema.rejectNameHeldByOtherKind(mvName, RelationKind.MATERIALIZED_VIEW, false);
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists,
+                schema.hasMaterializedView(mvName), parts);
             // A materialized view has a CREATE privilege of its own: CREATE VIEW does not authorize it.
             ddl.checkCreatePrivilege(Privilege.CREATE_MATERIALIZED_VIEW, schema);
 

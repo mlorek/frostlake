@@ -235,7 +235,18 @@ final class ObjectDdl {
      * stream.
      */
     static String stream(final Stream stream, final String name) {
-        final String source = stream.getSourceTableName() == null ? ""
+        return stream(stream, name, null);
+    }
+
+    /**
+     * As {@link #stream(Stream, String)}, for a table stream whose table is gone: its source is the table's full
+     * name quoted as one identifier, {@code on table "DB.S.RAW"} (live-verified).
+     *
+     * @param goneSource the full name of the stream's table when it is gone, or null
+     */
+    static String stream(final Stream stream, final String name, final String goneSource) {
+        final String source = goneSource != null ? "\"" + goneSource + "\""
+            : stream.getSourceTableName() == null ? ""
             : SqlIdentifiers.spellCanonicalEscaped(QualifiedName.parse(stream.getSourceTableName()).last());
         final String kind = stream.getSourceType() == null ? "TABLE" : stream.getSourceType().name();
         final StringBuilder sb = new StringBuilder("create or replace stream ").append(name);

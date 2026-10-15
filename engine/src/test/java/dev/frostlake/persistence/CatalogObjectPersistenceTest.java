@@ -55,6 +55,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class CatalogObjectPersistenceTest {
 
+    private static final String GENERATED_ID = "[A-Z0-9]+_SFCRole=\\d+_[A-Za-z0-9+/]{27}=";
+
     private static final String LOCATIONS = "STORAGE_LOCATIONS = ((NAME = 'loc1' STORAGE_PROVIDER = 'S3'"
         + " STORAGE_BASE_URL = 's3://bucket/path/' STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
         + " ENCRYPTION = (TYPE = 'AWS_SSE_KMS' KMS_KEY_ID = 'key1')),"
@@ -102,6 +104,20 @@ public class CatalogObjectPersistenceTest {
             Arrays.asList("SHOW INTEGRATIONS", "DESCRIBE INTEGRATION it_api", "DESCRIBE INTEGRATION it_ns",
                 "DESCRIBE INTEGRATION ice_cat", "SHOW EXTERNAL VOLUMES", "DESCRIBE EXTERNAL VOLUME ev_a",
                 "SHOW ACCOUNTS HISTORY", "SHOW MANAGED ACCOUNTS", "SHOW COMPUTE POOLS"));
+    }
+
+    /** The external ID an integration and a volume were given when they were created is theirs after a restart. */
+    @Test
+    public void aGeneratedExternalIdSurvivesARestart() {
+        assertKeepsEveryCell(Arrays.asList(
+            "CREATE API INTEGRATION it_ident API_PROVIDER = aws_api_gateway"
+                + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
+                + " API_ALLOWED_PREFIXES = ('https://a.example.com/') ENABLED = TRUE",
+            "CREATE OR REPLACE API INTEGRATION it_ident API_PROVIDER = aws_api_gateway"
+                + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
+                + " API_ALLOWED_PREFIXES = ('https://a.example.com/') ENABLED = TRUE",
+            "CREATE EXTERNAL VOLUME ev_ident " + LOCATIONS),
+            Arrays.asList("DESCRIBE INTEGRATION it_ident", "DESCRIBE EXTERNAL VOLUME ev_ident"));
     }
 
     /** The parameters set on a user and on the account, a session's own beside them and the account's alone. */
@@ -758,7 +774,10 @@ public class CatalogObjectPersistenceTest {
         for (final Row row : rs.getRows()) {
             out.append(" |");
             for (final Integer i : kept) {
-                out.append(' ').append(row.getValue(i));
+                // An external ID is generated for each creation: two engines running the same statements never
+                // share one, so only the cases that keep every cell compare it.
+                out.append(' ').append(everyCell ? String.valueOf(row.getValue(i))
+                    : String.valueOf(row.getValue(i)).replaceAll(GENERATED_ID, "<generated id>"));
             }
         }
         return out.toString();

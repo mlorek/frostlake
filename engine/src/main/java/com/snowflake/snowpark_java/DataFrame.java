@@ -213,7 +213,7 @@ public class DataFrame {
         final List<dev.frostlake.storage.Row> source = run().getRows();
         final Row[] out = new Row[source.size()];
         for (int i = 0; i < source.size(); i++) {
-            out[i] = new Row(source.get(i).getValues().toArray());
+            out[i] = Row.ofEngineCells(source.get(i).getValues());
         }
         return out;
     }

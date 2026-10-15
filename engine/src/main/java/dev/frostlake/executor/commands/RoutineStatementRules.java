@@ -189,6 +189,7 @@ final class RoutineStatementRules {
         final Set<String> exceptions = new HashSet<String>();
         for (int i = 0; i < section.getChildCount(); i++) {
             final ParseTree child = section.getChild(i);
+            TypelessDeclarations.requireTypeOrValue(child);
             judgeInOrder(child, false);
             if (child instanceof FrostlakeParser.DeclarationItemContext) {
                 final FrostlakeParser.DeclarationItemContext item = (FrostlakeParser.DeclarationItemContext) child;

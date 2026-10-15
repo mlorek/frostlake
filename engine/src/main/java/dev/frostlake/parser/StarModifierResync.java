@@ -85,12 +85,28 @@ final class StarModifierResync {
             if (token.getType() == FrostlakeLexer.FROM) {
                 continue;
             }
+            if (endsTheList(spoken, i)) {
+                return endOfInput(spoken);
+            }
             final String text = closedAt(sql, refused, closer, token.getStartIndex());
             if (resumesAt(text, token)) {
                 return linesAfter(text, refused);
             }
         }
         return Collections.emptyList();
+    }
+
+    /** Whether the token at {@code at} is a comma the text ends at: the list goes on, and the end is refused. */
+    private static boolean endsTheList(final List<Token> spoken, final int at) {
+        return spoken.get(at).getType() == FrostlakeLexer.COMMA && at + 1 < spoken.size()
+            && spoken.get(at + 1).getType() == Token.EOF;
+    }
+
+    /** The one line that refuses the end of input. */
+    private static List<String> endOfInput(final List<Token> spoken) {
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(spoken.get(spoken.size() - 1)));
+        return lines;
     }
 
     /**
@@ -167,7 +183,7 @@ final class StarModifierResync {
                 lines.addAll(unlessRightAfter(linesAfter(closedAt(sql, refused, closer, skipped.getStopIndex() + 1),
                     skipped), spoken.get(open + 4)));
             } else if (close.getType() != Token.EOF) {
-                lines.addAll(resume(sql, spoken, refused, closer, open + 3, close));
+                lines.addAll(resume(sql, spoken, refused, closer, open + 3, close, true));
             }
             return lines;
         }
@@ -188,11 +204,11 @@ final class StarModifierResync {
                 lines.addAll(unlessRightAfter(linesAfter(closedAt(sql, refused, closer, skipped.getStopIndex() + 1),
                     skipped), spoken.get(open + 5)));
             } else if (close.getType() != Token.EOF) {
-                lines.addAll(resume(sql, spoken, refused, closer, open + 4, close));
+                lines.addAll(resume(sql, spoken, refused, closer, open + 4, close, true));
             }
             return lines;
         }
-        lines.addAll(resume(sql, spoken, refused, closer, open + 2, inner));
+        lines.addAll(resume(sql, spoken, refused, closer, open + 2, inner, true));
         return lines;
     }
 
@@ -247,6 +263,16 @@ final class StarModifierResync {
      */
     private static List<String> resume(final String sql, final List<Token> spoken, final Token refused,
                                        final String closers, final int from, final Token after) {
+        return resume(sql, spoken, refused, closers, from, after, false);
+    }
+
+    /**
+     * {@link #resume(String, List, Token, String, int, Token)}; in a clause's list ({@code inList}) a comma the text
+     * ends at carries the list on, and the end of input is refused.
+     */
+    private static List<String> resume(final String sql, final List<Token> spoken, final Token refused,
+                                       final String closers, final int from, final Token after,
+                                       final boolean inList) {
         for (int i = from; i < spoken.size() && i <= from + SCAN; i++) {
             final Token token = spoken.get(i);
             if (token.getType() == Token.EOF) {
@@ -255,6 +281,9 @@ final class StarModifierResync {
             // A FROM inside a call's brackets is read here as the ANSI argument form, which live never reads.
             if (token.getType() == FrostlakeLexer.FROM) {
                 continue;
+            }
+            if (inList && endsTheList(spoken, i)) {
+                return endOfInput(spoken);
             }
             final String text = closedAt(sql, refused, closers, token.getStartIndex());
             if (resumesAt(text, token)) {

@@ -32,7 +32,7 @@ public class ArrayReverse extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (int i = src.size() - 1; i >= 0; i--) result.add(src.get(i));

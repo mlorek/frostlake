@@ -100,7 +100,16 @@ public final class SignatureTailLine {
         requireStatementReadings(script, sql);
         final SignatureRecovery reading = SignatureRecovery.of(script, sql);
         final List<String> lines = reading == null ? null : reading.lines();
-        if (lines == null || lines.isEmpty() || faultBefore(listener, reading.open())) {
+        if (lines == null || faultBefore(listener, reading.open())) {
+            return;
+        }
+        if (lines.isEmpty()) {
+            // The account reads the statement whole. Where this grammar does not — a stage reference of the account's
+            // own spelling, a backticked name — the properties are judged as the account judges them.
+            final String refused = listener.hasErrors() ? reading.propertyRefusal() : null;
+            if (refused != null) {
+                throw new RuntimeException(SqlCompilationError.of(refused));
+            }
             return;
         }
         throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
@@ -114,6 +123,8 @@ public final class SignatureTailLine {
      */
     private static void requireStatementReadings(final FrostlakeParser.SqlScriptContext script, final String sql) {
         final List<String> lines = new ArrayList<>();
+        // The lines of one reading keep the order the account reports them in: only statements are put in order.
+        final List<int[]> places = new ArrayList<>();
         char[] text = null;
         for (final SignatureRecovery reading : SignatureRecovery.ofStatements(script, sql)) {
             final List<String> faults = reading.lines();
@@ -121,7 +132,19 @@ public final class SignatureTailLine {
                 continue;
             }
             lines.addAll(faults);
+            final int[] opens = LeadingCommentOffset.rebase(reading.open().getLine(),
+                reading.open().getCharPositionInLine());
+            for (int i = 0; i < faults.size(); i++) {
+                places.add(opens);
+            }
             if (reading.readsABlockStatement()) {
+                if (reading.givesConstructUp() && reading.last().getType() == FrostlakeLexer.SEMI) {
+                    final List<Token> spoken = BlockReadOn.spoken(sql);
+                    final int semicolon = BlockReadOn.indexAt(spoken, reading.last().getStartIndex());
+                    if (semicolon >= 0) {
+                        lines.addAll(BlockReadOn.linesAfter(spoken, semicolon));
+                    }
+                }
                 // A block is refused for its first faulty statement.
                 throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
             }
@@ -143,20 +166,25 @@ public final class SignatureTailLine {
             return;
         }
         if (SignatureRecovery.holdsAStatement(new String(text))) {
-            lines.addAll(SyntaxErrorListener.linesReportedFor(new String(text), true));
+            for (final String line : SyntaxErrorListener.linesReportedFor(new String(text), true)) {
+                lines.add(line);
+                places.add(SyntaxErrorListener.sentenceCoordinates(line));
+            }
         }
         final List<String> ordered = new ArrayList<>();
-        for (final String line : lines) {
-            final int[] at = SyntaxErrorListener.sentenceCoordinates(line);
+        final List<int[]> orderedAt = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            final int[] at = places.get(i);
             int place = ordered.size();
             while (at != null && place > 0) {
-                final int[] earlier = SyntaxErrorListener.sentenceCoordinates(ordered.get(place - 1));
+                final int[] earlier = orderedAt.get(place - 1);
                 if (earlier == null || !before(at, earlier)) {
                     break;
                 }
                 place--;
             }
-            ordered.add(place, line);
+            ordered.add(place, lines.get(i));
+            orderedAt.add(place, at);
         }
         throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", ordered)), ordered, sql);
     }

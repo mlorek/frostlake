@@ -33,7 +33,7 @@ public class ArrayRemove extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         // A SQL NULL "value to remove" propagates — live: ARRAY_REMOVE(ARRAY_CONSTRUCT(1,NULL,2),
         // NULL) is SQL NULL (it does NOT strip the undefined), while ARRAY_REMOVE over the same array with a

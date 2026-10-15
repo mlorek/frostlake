@@ -67,6 +67,10 @@ public class ResultSetColumn {
     // an expression over it, or of a derived relation's column that carries one. A derived relation, a CTE and a
     // view built from this result set carry it, so the query that finally projects the values is judged by it.
     private final String projectionPolicyName;
+    // Whether the projection is the word NULL cast to a text type, or a column carrying one out of a derived
+    // relation — which an exact number beside it reads as the bare word. Read only by the type rules that fold
+    // such a NULL, through a derived relation built from this result set.
+    private final boolean nullText;
 
     public ResultSetColumn(final String name, final DataType dataType) {
         this(name, dataType, null);
@@ -105,7 +109,7 @@ public class ResultSetColumn {
                            final boolean nullabilityKnown, final ValueRange valueRange,
                            final DataType spelledNumber) {
         this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, null,
-            false, false, false, null);
+            false, false, false, null, false);
     }
 
     private ResultSetColumn(final String name, final DataType dataType, final String tableName,
@@ -113,7 +117,8 @@ public class ResultSetColumn {
                             final boolean nullabilityKnown, final ValueRange valueRange,
                             final DataType spelledNumber, final String collation,
                             final boolean uncheckedConstant, final boolean foldedDouble,
-                            final boolean collationExplicit, final String projectionPolicyName) {
+                            final boolean collationExplicit, final String projectionPolicyName,
+                            final boolean nullText) {
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
@@ -127,6 +132,7 @@ public class ResultSetColumn {
         this.foldedDouble = foldedDouble;
         this.collationExplicit = collationExplicit;
         this.projectionPolicyName = projectionPolicyName;
+        this.nullText = nullText;
     }
 
     /**
@@ -151,7 +157,7 @@ public class ResultSetColumn {
     public ResultSetColumn withCollation(final String spec, final boolean explicit) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble, spec != null && explicit,
-            projectionPolicyName);
+            projectionPolicyName, nullText);
     }
 
     /**
@@ -171,7 +177,8 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withUncheckedConstant() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, true, foldedDouble, collationExplicit, projectionPolicyName);
+            valueRange, spelledNumber, collation, true, foldedDouble, collationExplicit, projectionPolicyName,
+            nullText);
     }
 
     /**
@@ -182,7 +189,29 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withFoldedDouble() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, uncheckedConstant, true, collationExplicit, projectionPolicyName);
+            valueRange, spelledNumber, collation, uncheckedConstant, true, collationExplicit, projectionPolicyName,
+            nullText);
+    }
+
+    /**
+     * This column marked as projecting the word NULL cast to a text type, which an exact number beside it reads as
+     * the bare word through the derived relation built from this result set.
+     *
+     * @return a copy of this column so marked
+     */
+    public ResultSetColumn withNullText() {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, true);
+    }
+
+    /**
+     * Whether this column projects the word NULL cast to a text type (see {@link #withNullText}).
+     *
+     * @return true for such a column
+     */
+    public boolean isNullText() {
+        return nullText;
     }
 
     /**
@@ -193,7 +222,8 @@ public class ResultSetColumn {
      */
     public ResultSetColumn withProjectionPolicy(final String policyName) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
-            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, policyName);
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, policyName,
+            nullText);
     }
 
     /**

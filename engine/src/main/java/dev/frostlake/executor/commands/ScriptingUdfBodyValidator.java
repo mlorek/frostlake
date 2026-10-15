@@ -18,7 +18,9 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.expressions.CaretOperator;
 import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.SnowflakeBuiltinNames;
@@ -45,11 +47,15 @@ import java.util.Locale;
  *
  * <p>Live-verified on a real account, each rejection reproducing Snowflake's own message:
  * <ul>
- *   <li>{@code Unsupported statement type for Snowscript UDF: query statement} — any plain SQL statement
- *       in the body: {@code SELECT 1}, {@code INSERT INTO t VALUES (99)}, {@code UPDATE t SET v = 0},
- *       {@code CREATE TABLE zz (a INT)}, {@code EXECUTE IMMEDIATE '…'} and {@code CALL someproc()};</li>
- *   <li>{@code … : select into statement} — {@code SELECT COUNT(*) INTO x FROM t};</li>
- *   <li>{@code … : cursor declaration} — {@code DECLARE c CURSOR FOR SELECT …};</li>
+ *   <li>{@code Unsupported statement type for Snowscript UDF: SELECT} — any plain SQL statement in the body,
+ *       named by its kind ({@link SnowscriptStatementKind}): {@code SELECT 1} and {@code CALL someproc()} are
+ *       {@code SELECT}, {@code INSERT INTO t VALUES (99)} is {@code INSERT}, {@code CREATE TABLE zz (a INT)} is
+ *       {@code CREATE_TABLE}, and {@code EXECUTE IMMEDIATE '…'} is {@code UNKNOWN}. The first such statement as
+ *       written is the one named, in a branch, a loop or a handler too;</li>
+ *   <li>{@code … : select into statement} — {@code SELECT COUNT(*) INTO x FROM t}, and a CALL … INTO;</li>
+ *   <li>{@code … : cursor declaration} — {@code DECLARE c CURSOR FOR SELECT …}; a cursor's OPEN, FETCH and
+ *       CLOSE are {@code open cursor statement}, {@code fetch cursor statement} and
+ *       {@code close cursor statement}, and an AWAIT {@code await statement};</li>
  *   <li>{@code … : resultset declaration} — {@code DECLARE rs RESULTSET} and {@code LET rs RESULTSET}, with a
  *       query, with a dynamic statement or with nothing: the declaration itself is refused, before anything its
  *       query holds;</li>
@@ -97,7 +103,27 @@ final class ScriptingUdfBodyValidator {
 
     /** Walk the whole block, throwing on the first construct Snowflake refuses in a Snowscript UDF. */
     void validate(final FrostlakeParser.BeginEndBlockContext block) {
+        // What no expression may write is refused before any statement or call is judged: a caret between two
+        // values, and a sign written straight after a sign (live-verified).
+        CaretOperator.rejectIn(block);
+        rejectDoubledSigns(block);
         walk(block, null);
+    }
+
+    /**
+     * Two signs in a row are no expression: {@code - -a} is refused as an invalid function named by the outer
+     * sign, in a RETURN's value and in a call's argument alike, as a query's is (live-verified).
+     */
+    private static void rejectDoubledSigns(final ParseTree node) {
+        if (node instanceof FrostlakeParser.UnaryExprContext) {
+            final FrostlakeParser.UnaryExprContext signed = (FrostlakeParser.UnaryExprContext) node;
+            if (signed.expression() instanceof FrostlakeParser.UnaryExprContext) {
+                throw new RuntimeException(SqlCompilationError.of("invalid function '" + signed.op.getText() + "'"));
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rejectDoubledSigns(node.getChild(i));
+        }
     }
 
     /**
@@ -128,6 +154,40 @@ final class ScriptingUdfBodyValidator {
         for (int i = 0; i < body.getChildCount(); i++) {
             rejectScriptingUdfCalls(body.getChild(i));
         }
+    }
+
+    /**
+     * Whether a block holds an expression the account's reading of a function's block stops at, so that the body is
+     * read as an expression instead and refused in that frame: a word before a string inside a call's parentheses
+     * — {@code nosuch(TIMESTAMP_LTZ '…')}, {@code nosuch(foo 'x')}, where DATE, TIME and TIMESTAMP alone open a
+     * literal — and a name of three parts, {@code a.b.c} (all live-verified).
+     *
+     * @param node the block, or a node of it
+     * @return whether the block is no block a function's body may be
+     */
+    static boolean holdsWhatNoBlockReads(final ParseTree node) {
+        return holdsWhatNoBlockReads(node, false);
+    }
+
+    private static boolean holdsWhatNoBlockReads(final ParseTree node, final boolean insideCall) {
+        if (node instanceof FrostlakeParser.TypedLiteralArgExprContext
+                || insideCall && node instanceof FrostlakeParser.UnknownTypedLiteralExprContext) {
+            return true;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            return ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName().namePart().size() > 1;
+        }
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            // A query's names are the query's: a.b.c there names a column of a table in a schema.
+            return false;
+        }
+        final boolean arguments = insideCall || node instanceof FrostlakeParser.FunctionArgListContext;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsWhatNoBlockReads(node.getChild(i), arguments)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether every overload the catalog holds for {@code called} has a scripting-block body. */
@@ -167,8 +227,8 @@ final class ScriptingUdfBodyValidator {
             final FrostlakeParser.StatementContext stmt = (FrostlakeParser.StatementContext) node;
             if (stmt.proceduralStatement() == null) {
                 // Any non-procedural statement — DML, DDL, a bare query, SHOW … — is where a side effect
-                // would come from, and Snowflake reports every one of them as "query statement".
-                throw unsupportedStatement("query statement");
+                // would come from, and Snowflake refuses each by the name of its kind.
+                throw unsupportedStatement(SnowscriptStatementKind.of(stmt));
             }
         }
         if (node instanceof FrostlakeParser.ProceduralStatementContext) {
@@ -196,15 +256,34 @@ final class ScriptingUdfBodyValidator {
     }
 
     private void checkProceduralStatement(final FrostlakeParser.ProceduralStatementContext stmt) {
-        if (stmt.selectIntoStatement() != null) {
+        if (stmt.selectIntoStatement() != null || stmt.callIntoStatement() != null) {
+            // A CALL that stores its answer is named as the query that does.
             throw unsupportedStatement("select into statement");
         }
-        if (stmt.executeImmediateStatement() != null || stmt.callStatement() != null) {
-            // Both run arbitrary SQL, so Snowflake groups them with the plain statements it refuses.
-            throw unsupportedStatement("query statement");
+        if (stmt.executeImmediateStatement() != null) {
+            // A text only read when it runs is of no kind the account can tell.
+            throw unsupportedStatement("UNKNOWN");
         }
-        if (stmt.openStatement() != null || stmt.fetchStatement() != null || stmt.closeStatement() != null
-                || stmt.letStatement() != null && stmt.letStatement().CURSOR() != null) {
+        if (stmt.callStatement() != null || stmt.asyncStatement() != null || assignsAQuery(stmt)) {
+            // A CALL, a query started as a job and a query a variable is assigned are named as a query is.
+            throw unsupportedStatement("SELECT");
+        }
+        if (stmt.setStatement() != null) {
+            throw unsupportedStatement("SET");
+        }
+        if (stmt.awaitStatement() != null) {
+            throw unsupportedStatement("await statement");
+        }
+        if (stmt.openStatement() != null) {
+            throw unsupportedStatement("open cursor statement");
+        }
+        if (stmt.fetchStatement() != null) {
+            throw unsupportedStatement("fetch cursor statement");
+        }
+        if (stmt.closeStatement() != null) {
+            throw unsupportedStatement("close cursor statement");
+        }
+        if (stmt.letStatement() != null && stmt.letStatement().CURSOR() != null) {
             // A cursor a LET declares among the statements is one too.
             throw unsupportedStatement("cursor declaration");
         }
@@ -212,6 +291,20 @@ final class ScriptingUdfBodyValidator {
             // Declared with a query, with a dynamic statement or with nothing at all.
             throw unsupportedStatement("resultset declaration");
         }
+    }
+
+    /**
+     * Whether a statement assigns a variable a query written alone in parentheses, {@code x := (SELECT 1)}: the
+     * account names that statement by its query's kind, where a query deeper in the value is an expression of the
+     * statement's (live-verified).
+     */
+    private static boolean assignsAQuery(final FrostlakeParser.ProceduralStatementContext stmt) {
+        final FrostlakeParser.AssignmentStatementContext assignment = stmt.assignmentStatement();
+        if (assignment == null || !(assignment.booleanExpr() instanceof FrostlakeParser.ValueExprContext)) {
+            return false;
+        }
+        return ((FrostlakeParser.ValueExprContext) assignment.booleanExpr()).expression()
+            instanceof FrostlakeParser.ScalarSubqueryExprContext;
     }
 
     /**

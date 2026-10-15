@@ -46,10 +46,13 @@ One suite per `*.json` file:
    The first statement matters: a request holds **one** statement unless the session or the request
    asks for more, and several cases send a script of two or three. `0` means "any number", which is
    what a test session wants — an exact count would then refuse the single statements around it.
-   A runner replaying against a live account, where one session serves every case, first puts back the role and
-   the warehouse the session opened with and runs `USE SECONDARY ROLES NONE`. A case that reads through a role it
-   changes to therefore runs `USE SECONDARY ROLES ALL` itself, before its first `USE ROLE`; against Frostlake the
-   statement changes nothing, the engine keeping no secondary roles.
+   A runner whose one session serves several cases, a live replay or a runner that opens one session per suite file,
+   first puts back what the session opened with: it reads `CURRENT_ROLE()` once when the session opens and, before
+   each reset, runs `USE ROLE "<that role>"` and `USE SECONDARY ROLES NONE` (and, against a live account, puts back
+   its warehouse). A role a case changes to stays on its session, as on the account, so without the restore the
+   later resets run under it, and a `test_db` they create can be beyond the reach of the role the next session
+   opens with. A case that reads through a role it changes to therefore runs `USE SECONDARY ROLES ALL` itself,
+   before its first `USE ROLE`; Frostlake keeps a session's secondary roles as the account does.
 2. **Steps run in order in one session** (session state — USE, variables, open transactions —
    must carry across steps; over HTTP that means reusing the returned `sessionId`).
 3. A step with no `expect` must simply succeed. The first failed check stops the test.

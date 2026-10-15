@@ -87,6 +87,71 @@ final class OuterJoinMarkerRules {
     }
 
     /**
+     * The outer joins the WHERE's markers ask for over a comma-separated FROM clause, or null when the markers do not
+     * describe joins the rewrite can run: a marker under an OR, a marked relation outer-joined to two others or to
+     * none, a marker whose relation is not one of {@code relations}, or one conjunct marking two relations — shapes
+     * {@link #validate} refuses, or that no relation order can join.
+     *
+     * @param where     the WHERE's condition
+     * @param relations the FROM clause's relations, by name
+     * @return the joins, or null
+     */
+    static LegacyOuterJoins outerJoins(final FrostlakeParser.BooleanExprContext where,
+                                       final Map<String, Table> relations) {
+        final Map<String, List<FrostlakeParser.BooleanExprContext>> conditions = new LinkedHashMap<>();
+        final Map<String, Set<String>> requires = new LinkedHashMap<>();
+        final Map<String, String> partners = new LinkedHashMap<>();
+        final List<FrostlakeParser.BooleanExprContext> residual = new ArrayList<>();
+        for (final FrostlakeParser.BooleanExprContext conjunct : conjuncts(where)) {
+            final List<ParseTree> markers = new ArrayList<>();
+            final List<ParseTree> orMarkers = new ArrayList<>();
+            final List<ParseTree> names = new ArrayList<>();
+            collect(conjunct, false, markers, orMarkers, names);
+            if (markers.isEmpty()) {
+                residual.add(conjunct);
+                continue;
+            }
+            if (!orMarkers.isEmpty()) {
+                return null;
+            }
+            String inner = null;
+            for (final ParseTree marker : markers) {
+                final String marked = relationOf(nameOf(marker), relations);
+                if (marked == null || inner != null && !inner.equals(marked)) {
+                    return null;
+                }
+                inner = marked;
+            }
+            final Set<String> read = new LinkedHashSet<>();
+            for (final ParseTree name : names) {
+                final String relation = relationOf(nameOf(name), relations);
+                if (relation != null && !relation.equals(inner)) {
+                    read.add(relation);
+                }
+            }
+            if (read.size() == 1) {
+                final String partner = read.iterator().next();
+                if (partners.containsKey(inner) && !partners.get(inner).equals(partner)) {
+                    return null;
+                }
+                partners.put(inner, partner);
+            }
+            if (!conditions.containsKey(inner)) {
+                conditions.put(inner, new ArrayList<FrostlakeParser.BooleanExprContext>());
+                requires.put(inner, new LinkedHashSet<String>());
+            }
+            conditions.get(inner).add(conjunct);
+            requires.get(inner).addAll(read);
+        }
+        for (final String inner : conditions.keySet()) {
+            if (!partners.containsKey(inner)) {
+                return null;
+            }
+        }
+        return new LegacyOuterJoins(conditions, requires, residual);
+    }
+
+    /**
      * Refuse the first marker rule the WHERE breaks.
      *
      * @param where     the WHERE's condition

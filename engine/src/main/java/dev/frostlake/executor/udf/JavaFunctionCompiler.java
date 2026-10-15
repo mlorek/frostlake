@@ -121,9 +121,26 @@ public class JavaFunctionCompiler {
      */
     public Class<?> load(final String sourceCode, final String className, final ClassLoader parent,
                          final int release, final String where) {
+        return load(sourceCode, className, parent, release, where, true);
+    }
+
+    /**
+     * Loads a source's classes anew (see {@link #load(String, String, ClassLoader, int, String)}), compiled with or
+     * without Snowpark's classes on the class path.
+     *
+     * @param sourceCode the Java source code
+     * @param className  the class the handler names
+     * @param parent     the loader every other class comes from, or null for the system's
+     * @param release    the language level (see {@link JavaRuntimeLevel}), or 0 for the JDK's own
+     * @param where      the end of a refusal's sentence, {@code  in function F with handler H.f}
+     * @param snowpark   whether the routine names Snowpark (see {@link SnowparkPackage})
+     * @return the handler's class
+     */
+    public Class<?> load(final String sourceCode, final String className, final ClassLoader parent,
+                         final int release, final String where, final boolean snowpark) {
         // Every class the source declares is loaded with the handler's: a nested class, an enum, an
         // anonymous class and another top-level class are part of the body the handler runs.
-        final Map<String, byte[]> classes = compileClasses(sourceCode, className, release, where);
+        final Map<String, byte[]> classes = compileClasses(sourceCode, className, release, where, snowpark);
         if (!classes.containsKey(className)) {
             throw new RuntimeException("No class bytes generated for: " + className);
         }
@@ -162,7 +179,23 @@ public class JavaFunctionCompiler {
      */
     public Map<String, byte[]> compileClasses(final String sourceCode, final String className, final int release,
                                               final String where) {
-        final JavaSourceKey key = new JavaSourceKey(className, sourceCode, release);
+        return compileClasses(sourceCode, className, release, where, true);
+    }
+
+    /**
+     * Compiles Java source code and hands back every class it produced (see
+     * {@link #compileClasses(String, String, int, String)}), with or without Snowpark's classes on the class path.
+     *
+     * @param sourceCode the Java source code
+     * @param className  the class the source declares
+     * @param release    the language level (see {@link JavaRuntimeLevel}), or 0 for the JDK's own
+     * @param where      the end of the refusal's sentence, {@code  in function F with handler H.f}
+     * @param snowpark   whether the routine names Snowpark (see {@link SnowparkPackage})
+     * @return the classes' bytes by binary name, in name order
+     */
+    public Map<String, byte[]> compileClasses(final String sourceCode, final String className, final int release,
+                                              final String where, final boolean snowpark) {
+        final JavaSourceKey key = new JavaSourceKey(className, sourceCode, release, snowpark);
         final Map<String, byte[]> kept = JavaCompiledSources.get(key);
         if (kept != null) {
             return kept;
@@ -172,7 +205,7 @@ public class JavaFunctionCompiler {
             throw new RuntimeException("Java compiler not available. Make sure you are running with JDK, not JRE.");
         }
         final InMemoryJavaFileManager fileManager = new InMemoryJavaFileManager(
-            compiler.getStandardFileManager(null, null, null));
+            compiler.getStandardFileManager(null, null, null), snowpark);
         // The compiler's report is KEPT rather than left to go to stderr: a real account puts it in the error
         // it raises ("Error while compiling source: …"), and a body rejected at CREATE is useless to the caller
         // without knowing which line broke it.

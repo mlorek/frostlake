@@ -37,10 +37,30 @@ public class Uniform extends NumericArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null || args.get(1) == null) return null;
+        // The bounds are judged left to right before the generator is read, and a NULL generator beside them
+        // answers NULL (live-verified).
+        if (args.get(0) == null) {
+            throw new RuntimeException("Invalid parameter value: NULL. Reason: a must not be NULL");
+        }
+        if (args.get(1) == null) {
+            throw new RuntimeException("Invalid parameter value: NULL. Reason: b must not be NULL");
+        }
         final Object loArg = args.get(0);
         final Object hiArg = args.get(1);
-        final long entropy = args.size() >= 3 && args.get(2) != null
+        if (loArg instanceof Number && hiArg instanceof Number
+                && new BigDecimal(loArg.toString()).compareTo(new BigDecimal(hiArg.toString())) > 0) {
+            // Exact bounds are told at the scale they are drawn at: UNIFORM(1.5, 1, g) names 15 and 10.
+            final boolean exact = !isFloatBound(loArg) && !isFloatBound(hiArg);
+            final BigDecimal lo = new BigDecimal(loArg.toString());
+            final BigDecimal hi = new BigDecimal(hiArg.toString());
+            final int scale = Math.max(0, Math.max(lo.scale(), hi.scale()));
+            throw new RuntimeException("Invalid parameter value: "
+                + (exact ? lo.setScale(scale).unscaledValue().toString() : loArg.toString()) + ", "
+                + (exact ? hi.setScale(scale).unscaledValue().toString() : hiArg.toString())
+                + ". Reason: a must be smaller than or equal to b");
+        }
+        if (args.size() >= 3 && args.get(2) == null) return null;
+        final long entropy = args.size() >= 3
             ? ((Number) args.get(2)).longValue()
             : ThreadLocalRandom.current().nextLong();
 

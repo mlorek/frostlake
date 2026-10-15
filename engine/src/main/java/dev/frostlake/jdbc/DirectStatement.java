@@ -19,6 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
 import dev.frostlake.executor.DynamicStatementCount;
+import dev.frostlake.executor.StatementCanceledException;
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -38,6 +40,12 @@ import java.util.Locale;
  * Direct Statement implementation for embedded DatabaseEngine
  */
 public class DirectStatement implements Statement {
+
+    /** The query timeout in seconds, 0 for none (see {@link #setQueryTimeout}). */
+    private volatile int queryTimeoutSeconds;
+
+    /** The token of the statement running now, which {@link #cancel()} reaches; null between statements. */
+    private volatile StatementCancellation running;
 
     private final Connection connection;
     private final DatabaseEngine engine;
@@ -123,18 +131,30 @@ public class DirectStatement implements Statement {
         applyMultiStatementGate(sql);
         final ExecutionResult result;
         final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount());
+        // The statement runs under a token cancel() reaches from another thread and the query timeout bounds.
+        final StatementCancellation token = new StatementCancellation(queryTimeoutSeconds);
+        running = token;
+        StatementCancellation.offer(token);
         try {
             result = connection instanceof DirectConnection
                 ? ((DirectConnection) connection).executeScoped(sql)
                 : engine.execute(sql);
+        } catch (final StatementCanceledException e) {
+            throw new SQLException(e.getMessage(), StatementCanceledException.SQL_STATE, e.getCode(), e);
         } catch (final RuntimeException e) {
             throw new SQLException(e.getMessage(), e);
         } finally {
+            StatementCancellation.offer(null);
+            running = null;
             DynamicStatementCount.endRequest(displacedCount);
         }
         lastQueryId = result.getQueryId();
         if (!result.isSuccess()) {
-            throw new SQLException(result.getErrorMessage());
+            // A timeout or a cancel carries the account's SQLSTATE and vendor code (live-verified).
+            final Integer canceled = StatementCanceledException.codeOf(result.getErrorMessage());
+            throw canceled != null
+                ? new SQLException(result.getErrorMessage(), StatementCanceledException.SQL_STATE, canceled.intValue())
+                : new SQLException(result.getErrorMessage());
         }
         return result.getResultSets();
     }
@@ -313,17 +333,26 @@ public class DirectStatement implements Statement {
 
     @Override
     public int getQueryTimeout() throws SQLException {
-        return 0;
+        return queryTimeoutSeconds;
     }
 
     @Override
     public void setQueryTimeout(final int seconds) throws SQLException {
-        // No-op
+        if (seconds < 0) {
+            throw new SQLException("Query timeout must be zero or more seconds, not " + seconds);
+        }
+        // The statements this object runs are canceled once they run this long: "SQL execution canceled".
+        queryTimeoutSeconds = seconds;
     }
 
     @Override
     public void cancel() throws SQLException {
-        throw new SQLFeatureNotSupportedException("cancel not supported");
+        // From any thread: the running statement ends at its next check with "SQL execution canceled", and this
+        // object runs the next one as usual (live-verified).
+        final StatementCancellation token = running;
+        if (token != null) {
+            token.cancel();
+        }
     }
 
     @Override

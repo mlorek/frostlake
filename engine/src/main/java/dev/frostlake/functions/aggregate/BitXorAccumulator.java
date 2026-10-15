@@ -17,26 +17,28 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
-import java.math.BigDecimal;
+import dev.frostlake.functions.scalar.math.BitwiseOperand;
+
+import java.math.BigInteger;
 
 /** Accumulator for {@link BitXorAgg}. */
 public class BitXorAccumulator implements AggregateFunction.Accumulator {
-    private long result = 0L;
+    private BigInteger result = BigInteger.ZERO;
     private boolean hasValue = false;
 
     @Override
     public void accumulate(final Object v) {
         if (v == null) return;
         hasValue = true;
-        result ^= new BigDecimal(v.toString()).longValue();
+        result = result.xor(BitAggregateOperand.of(v));
     }
 
     @Override
-    public Object getResult() { return hasValue ? result : null; }
+    public Object getResult() { return hasValue ? BitwiseOperand.result(result) : null; }
 
     @Override
     public void reset() {
-        result = 0L;
+        result = BigInteger.ZERO;
         hasValue = false;
     }
 
@@ -45,7 +47,7 @@ public class BitXorAccumulator implements AggregateFunction.Accumulator {
         final BitXorAccumulator o = (BitXorAccumulator) other;
         if (o.hasValue) {
             hasValue = true;
-            result ^= o.result;
+            result = result.xor(o.result);
         }
     }
 }

@@ -56,12 +56,13 @@ public class SessionContext {
     }
 
     private String currentUser;
-    private String currentRole;
     private String displayUser;
-    private final Set<String> activeRoles;
-    private boolean secondaryRolesInUse;
-    /** What USE SECONDARY ROLES last asked for: ALL, the roles it named joined by commas, or nothing. */
-    private String secondaryRolesValue = "";
+    /**
+     * The roles of a statement run outside any front-end's session. A bound session takes these until it sets its
+     * own (USE ROLE, USE SECONDARY ROLES), which are then its alone: a role one session switches to never becomes
+     * another's.
+     */
+    private SessionRoles ownRoles = new SessionRoles();
     private boolean securityEnabled;
     /**
      * The settings of a statement run outside any front-end's session: the ALTER SESSION parameters and the
@@ -79,14 +80,28 @@ public class SessionContext {
     private InheritedParameters inheritedParameters;
 
     public SessionContext() {
-        this.activeRoles = new HashSet<>();
         this.securityEnabled = true;
         // By default, start as a system admin
         this.currentUser = "SYSTEM";
         this.displayUser = "SYSTEM";
-        this.currentRole = "SYSADMIN";
-        this.activeRoles.add("SYSADMIN");
-        this.activeRoles.add("PUBLIC");
+    }
+
+    /** The roles this thread's statements read: the bound session's own, else the context's. */
+    private SessionRoles roles() {
+        final SessionSettings bound = boundSettings.get();
+        return bound != null && bound.getRoles() != null ? bound.getRoles() : ownRoles;
+    }
+
+    /** The roles this thread's statements change: a bound session gets its own, starting from the context's. */
+    private SessionRoles ownedRoles() {
+        final SessionSettings bound = boundSettings.get();
+        if (bound == null) {
+            return ownRoles;
+        }
+        if (bound.getRoles() == null) {
+            bound.setRoles(new SessionRoles(ownRoles));
+        }
+        return bound.getRoles();
     }
 
     /**
@@ -127,18 +142,19 @@ public class SessionContext {
     }
 
     public String getCurrentRole() {
-        return currentRole;
+        return roles().getCurrentRole();
     }
 
     public void setCurrentRole(final String currentRole) {
-        this.currentRole = currentRole != null ? currentRole.toUpperCase(Locale.ROOT) : null;
+        final SessionRoles roles = ownedRoles();
+        roles.setCurrentRole(currentRole != null ? currentRole.toUpperCase(Locale.ROOT) : null);
         if (currentRole != null) {
-            activeRoles.add(currentRole.toUpperCase(Locale.ROOT));
+            roles.activeRoles().add(currentRole.toUpperCase(Locale.ROOT));
         }
     }
 
     public Set<String> getActiveRoles() {
-        return new HashSet<>(activeRoles);
+        return new HashSet<>(roles().activeRoles());
     }
 
     /**
@@ -166,19 +182,20 @@ public class SessionContext {
     /** The role a statement creates as: an owner's-rights procedure's owner while one runs, else the primary role. */
     public String getCreatingRole() {
         final String owner = executableOwner.get();
-        return owner != null ? owner : currentRole;
+        return owner != null ? owner : roles().getCurrentRole();
     }
 
     public void addActiveRole(final String role) {
         if (role != null) {
-            activeRoles.add(role.toUpperCase(Locale.ROOT));
+            ownedRoles().activeRoles().add(role.toUpperCase(Locale.ROOT));
         }
     }
 
     public void clearActiveRoles() {
-        activeRoles.clear();
+        final Set<String> active = ownedRoles().activeRoles();
+        active.clear();
         // Always keep PUBLIC role
-        activeRoles.add("PUBLIC");
+        active.add("PUBLIC");
     }
 
     /**
@@ -186,12 +203,12 @@ public class SessionContext {
      * {@code Your primary role R or one of your secondary roles must have …}.
      */
     public boolean isSecondaryRolesInUse() {
-        return secondaryRolesInUse;
+        return roles().isSecondaryRolesInUse();
     }
 
     /** Records whether the session asked for secondary roles. */
     public void setSecondaryRolesInUse(final boolean secondaryRolesInUse) {
-        this.secondaryRolesInUse = secondaryRolesInUse;
+        ownedRoles().setSecondaryRolesInUse(secondaryRolesInUse);
     }
 
     /**
@@ -200,7 +217,7 @@ public class SessionContext {
      * @return {@code ALL}, the roles named joined by commas, or the empty text for none
      */
     public String getSecondaryRolesValue() {
-        return secondaryRolesValue;
+        return roles().getSecondaryRolesValue();
     }
 
     /**
@@ -209,8 +226,9 @@ public class SessionContext {
      * @param value {@code ALL}, the roles named joined by commas, or the empty text for none
      */
     public void setSecondaryRoles(final String value) {
-        this.secondaryRolesValue = value;
-        this.secondaryRolesInUse = !value.isEmpty();
+        final SessionRoles roles = ownedRoles();
+        roles.setSecondaryRolesValue(value);
+        roles.setSecondaryRolesInUse(!value.isEmpty());
     }
 
     public boolean isSecurityEnabled() {
@@ -224,12 +242,11 @@ public class SessionContext {
     public void reset() {
         currentUser = "SYSTEM";
         displayUser = "SYSTEM";
-        currentRole = "SYSADMIN";
-        activeRoles.clear();
-        activeRoles.add("SYSADMIN");
-        activeRoles.add("PUBLIC");
-        secondaryRolesInUse = false;
-        secondaryRolesValue = "";
+        ownRoles = new SessionRoles();
+        final SessionSettings bound = boundSettings.get();
+        if (bound != null) {
+            bound.setRoles(null);
+        }
         securityEnabled = true;
         settings().reset();
     }

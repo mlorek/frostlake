@@ -210,7 +210,7 @@ final class ShowScopeKindRefusal {
         return cannotShow(listing.objectType(), scope);
     }
 
-    private static RuntimeException cannotShow(final String objectType, final String scope) {
+    static RuntimeException cannotShow(final String objectType, final String scope) {
         return new RuntimeException(SqlCompilationError.of("Unsupported statement type 'Cannot show objects of type "
             + objectType + " in " + scope + "'."));
     }

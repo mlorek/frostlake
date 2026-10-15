@@ -152,7 +152,18 @@ final class ValueSubqueryLines {
         }
         final boolean closed = spoken.get(innerClose).getType() == FrostlakeLexer.RPAREN;
         final int last = spoken.get(innerClose - 1).getType();
-        for (final String line : SyntaxErrorListener.linesReportedFor(new String(alone), true)) {
+        final List<String> inside = SyntaxErrorListener.linesReportedFor(new String(alone), true);
+        if (!inside.isEmpty() && innerOpen + 2 < spoken.size()
+                && inside.get(0).equals(SyntaxErrorListener.sentence(spoken.get(innerOpen + 2)))) {
+            // A query with no select list is refused at its SELECT alone, and its ')' is one more line unless the
+            // FROM or the SELECT stands right before it: (SELECT FROM t) is the SELECT and the ')', (SELECT FROM)
+            // the SELECT (live-verified).
+            if (closed && last != FrostlakeLexer.FROM && last != FrostlakeLexer.SELECT) {
+                lines.add(SyntaxErrorListener.sentence(spoken.get(innerClose)));
+            }
+            return lines;
+        }
+        for (final String line : inside) {
             if (!line.contains("'<EOF>'")) {
                 lines.add(line);
             } else if (!closed) {

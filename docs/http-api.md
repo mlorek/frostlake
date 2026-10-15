@@ -99,7 +99,10 @@ of it runs, with an ordinary syntax error naming no statement.
  "jdbcUpdateCount": -1}
 ```
 
-`precision` and `scale` describe a fixed-point NUMBER. A TIME or TIMESTAMP column — TIMESTAMP_NTZ,
+`precision` and `scale` describe a fixed-point NUMBER. One fixed-point column is named `DECIMAL` instead: the
+size a file transfer answers — a GET's `size`, a PUT's `source_size` and `target_size` — which is `DECIMAL` with
+precision 10 and scale 0, the type Snowflake's own drivers give the column of a result they build themselves; a
+client reads it as it reads a NUMBER. A TIME or TIMESTAMP column — TIMESTAMP_NTZ,
 TIMESTAMP_LTZ and TIMESTAMP_TZ alike — sends `precision` 0 and its fractional-second precision as `scale`, as
 the account's own result metadata does, and Snowflake's drivers report that number as the column's scale:
 `TIME(3)` sends 3, `TIMESTAMP_NTZ(0)` 0, a bare `TIMESTAMP_LTZ` and `CURRENT_TIMESTAMP` 9, `CURRENT_TIMESTAMP(3)`

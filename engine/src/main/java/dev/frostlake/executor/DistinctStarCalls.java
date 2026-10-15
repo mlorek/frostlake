@@ -17,21 +17,19 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.functions.FunctionRegistry;
-import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.List;
-import java.util.Locale;
 
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
- * A bare star under DISTINCT as a built-in function's whole argument - {@code COUNT(DISTINCT *)},
- * {@code HASH_AGG(DISTINCT *)}, windowed or not - which the account refuses as a feature it does not have, with no
- * prefix line and no position. It judges the statement's text: the refusal comes ahead of every name, a table that
- * is not there included, and in whichever clause the call stands (live-verified). A star qualified by its relation
- * or filtered by EXCLUDE or ILIKE is counted as before.
+ * A bare star under DISTINCT or ALL as the whole argument of a call named by one word - {@code COUNT(DISTINCT *)},
+ * {@code COUNT(ALL *)}, {@code HASH_AGG(DISTINCT *)}, windowed or not, and under a name that is no function's too -
+ * which the account refuses as a feature it does not have, with no prefix line and no position. It judges the
+ * statement's text: the refusal comes ahead of every name, a table or a column that is not there included, and in
+ * whichever clause the call stands (live-verified). A star qualified by its relation or filtered by EXCLUDE or
+ * ILIKE is counted as before.
  */
 final class DistinctStarCalls {
 
@@ -39,20 +37,19 @@ final class DistinctStarCalls {
     }
 
     /**
-     * Refuse the script when it calls a built-in function over a bare star under DISTINCT.
+     * Refuse the script when it calls a function named by one word over a bare star under DISTINCT or ALL.
      *
-     * @param script    the parsed script
-     * @param functions the registry that tells a built-in function's name
+     * @param script the parsed script
      */
-    static void requireNone(final ParseTree script, final FunctionRegistry functions) {
+    static void requireNone(final ParseTree script) {
         if (script == null) {
             return;
         }
-        if (isDistinctStar(script) && isBuiltIn(nameOf(script), functions)) {
+        if (isDistinctStar(script) && isOneWord(nameOf(script))) {
             throw new RuntimeException("Unsupported feature 'TOK_STAR'.");
         }
         for (int i = 0; i < script.getChildCount(); i++) {
-            requireNone(script.getChild(i), functions);
+            requireNone(script.getChild(i));
         }
     }
 
@@ -63,7 +60,7 @@ final class DistinctStarCalls {
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
-            if (call.DISTINCT() == null || call.functionArgList() == null) {
+            if (call.DISTINCT() == null && call.ALL() == null || call.functionArgList() == null) {
                 return false;
             }
             final List<FrostlakeParser.FunctionArgContext> arguments = call.functionArgList().functionArg();
@@ -79,14 +76,8 @@ final class DistinctStarCalls {
             : ((FrostlakeParser.FunctionCallExprContext) call).functionName();
     }
 
-    /** Whether a call's name is one word that names a built-in scalar, aggregate or window function. */
-    private static boolean isBuiltIn(final FrostlakeParser.FunctionNameContext written,
-                                     final FunctionRegistry functions) {
-        if (written == null || written.identifier().size() != 1 || functions == null) {
-            return false;
-        }
-        final String name = SqlIdentifiers.canonical(written.identifier(0)).toUpperCase(Locale.ROOT);
-        return functions.getFunction(name) != null || functions.hasAggregateFunction(name)
-            || WindowFunctionNames.handles(name);
+    /** Whether a call's name is one word: a built-in function's, or a name that is no function's at all. */
+    private static boolean isOneWord(final FrostlakeParser.FunctionNameContext written) {
+        return written != null && written.identifier().size() == 1;
     }
 }

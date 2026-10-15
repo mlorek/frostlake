@@ -36,7 +36,7 @@ public class ArraySlice extends BuiltInFunction {
         if (anyNull(args)) {
             return null;
         }
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         // A text bound is read as the number it spells, and a fraction rounds (see wholeNumber).
         int from = isCount(args.get(1)) ? wholeNumber(args.get(1)) : 0;
@@ -51,7 +51,7 @@ public class ArraySlice extends BuiltInFunction {
     }
 
     private static boolean isCount(final Object bound) {
-        return bound instanceof Number || bound instanceof CharSequence;
+        return bound instanceof Number || bound instanceof CharSequence || bound instanceof VariantValue;
     }
 
     @Override

@@ -14,6 +14,7 @@ live Snowflake wherever they have been measured — the notes call out the measu
 | `*` | `a * b` | Multiplication. |
 | `/` | `a / b` | Division. Division by zero is an error (`DIV0`/`DIV0NULL` are the guarded forms). |
 | `%` | `a % b` | Modulo (the `MOD` function is its twin). |
+| `^` | `a ^ b` | Read and never run: a statement that writes a caret between two values is refused while it compiles, `Unsupported feature '^'.`, before any of its names is looked up — in a query, a view's query, a block's branch that never runs and a routine's body as it is created (`POWER` is the function). A caret without an operand is a syntax error. |
 | `+`, `-` (unary) | `-a`, `+a` | Sign. A negated NUMBER keeps its type, while a unary plus gives an exact NUMBER at least two integer digits, its scale kept and capped at 38 (`+1` is NUMBER(2,0), `+1.5` NUMBER(3,1), `+99` NUMBER(2,0), `+NULL` NUMBER(2,0)); a text or a VARIANT operand converts to a FLOAT (`+'5'` is 5, `-'3'` is -3.0); a BOOLEAN, DATE/TIME/TIMESTAMP, BINARY, OBJECT, ARRAY or GEOGRAPHY operand is refused while the statement compiles, at the sign, under Snowflake's names — `Invalid argument types for function 'NEGATE': (BOOLEAN)` / `'UNARY PLUS': (DATE)`. An interval negates to its own type and takes no plus (`'UNARY PLUS': (INTERVAL DAY(9))`). |
 
 Numeric results carry Snowflake's derived precision/scale rules for NUMBER operands (the

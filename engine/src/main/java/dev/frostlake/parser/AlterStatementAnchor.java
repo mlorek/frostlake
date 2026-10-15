@@ -84,6 +84,12 @@ public final class AlterStatementAnchor {
                 alter = (FrostlakeParser.AlterStatementContext) context;
             }
         }
+        final Token attachment = alter == null ? networkPolicyFault(parser.getInputStream(), reported) : null;
+        if (attachment != null) {
+            final List<Token> named = new ArrayList<>();
+            named.add(attachment);
+            return named;
+        }
         boolean after = false;
         if (alter == null) {
             final FrostlakeParser.StatementContext runOn = UnseparatedStatementOpener.runOnStatement(parser, reported);
@@ -225,18 +231,76 @@ public final class AlterStatementAnchor {
     }
 
     /**
+     * The NETWORK_POLICY a fault in a user's attachment of a network policy is refused at. The attachment is the
+     * first word of the user's SET or UNSET list as a property is, so a fault after it names it —
+     * {@code ALTER USER u SET NETWORK_POLICY =} and {@code ALTER USER u UNSET NETWORK_POLICY COMMENT} both name
+     * NETWORK_POLICY (live-verified). Null when the fault lies in no such statement.
+     */
+    private static Token networkPolicyFault(final TokenStream stream, final Token reported) {
+        final List<Token> spoken = new ArrayList<>();
+        for (int i = reported.getTokenIndex() - 1; i >= 0; i--) {
+            final Token token = stream.get(i);
+            if (token.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            if (token.getType() == FrostlakeLexer.SEMI) {
+                break;
+            }
+            spoken.add(0, token);
+        }
+        if (spoken.size() < 5 || spoken.get(0).getType() != FrostlakeLexer.ALTER
+                || spoken.get(1).getType() != FrostlakeLexer.USER) {
+            return null;
+        }
+        final int name = spoken.get(2).getType() == FrostlakeLexer.IF
+            && spoken.get(3).getType() == FrostlakeLexer.EXISTS ? 4 : 2;
+        if (spoken.size() <= name + 2) {
+            return null;
+        }
+        final int verb = spoken.get(name + 1).getType();
+        final Token word = spoken.get(name + 2);
+        return (verb == FrostlakeLexer.SET || verb == FrostlakeLexer.UNSET)
+            && word.getType() == FrostlakeLexer.NETWORK_POLICY ? word : null;
+    }
+
+    /**
      * The token live refuses a fault in the account's SET list at: the first one after the SET, whichever
      * assignment the fault lies in, or null when the fault lies elsewhere.
      */
     private static Token accountListFault(final FrostlakeParser.AlterStatementContext alter, final TokenStream stream,
                                           final Token reported) {
+        if (alter.ACCOUNT() != null && alter.alteredAccount() != null && alter.alteredAccount().getStop() != null) {
+            // A named account's statement is given up at the SET or the UNSET after the name, whatever the fault
+            // in the list or the tags it opens (live-verified).
+            final Token verb = nextSpoken(stream, alter.alteredAccount().getStop().getTokenIndex());
+            return verb != null && (verb.getType() == FrostlakeLexer.SET || verb.getType() == FrostlakeLexer.UNSET)
+                && verb.getTokenIndex() < reported.getTokenIndex() ? verb : null;
+        }
         final FrostlakeParser.SessionActionContext action = alter.sessionAction();
-        if (alter.ACCOUNT() == null || action == null || action.getStart() == null
-                || action.getStart().getType() != FrostlakeLexer.SET
-                || action.getStart().getTokenIndex() > reported.getTokenIndex()) {
+        // The account's SET opens a list of parameters or of tags, and a fault in either names what follows it.
+        if (alter.ACCOUNT() == null) {
             return null;
         }
-        return nextSpoken(stream, action.getStart().getTokenIndex());
+        final Token opened = action != null ? action.getStart()
+            : alter.tagSet() != null ? alter.tagSet().getStart()
+            : alter.tagUnset() != null ? alter.tagUnset().getStart() : null;
+        // A list the parse gave up before it entered is still the one the word after ACCOUNT — or after an IF
+        // EXISTS that forgives nothing — opens.
+        final Token after = alter.if_exists() == null ? alter.ACCOUNT().getSymbol() : alter.if_exists().getStop();
+        final Token verb = opened != null ? opened : after == null ? null : nextSpoken(stream, after.getTokenIndex());
+        if (verb == null || verb.getTokenIndex() > reported.getTokenIndex()) {
+            return null;
+        }
+        final Token first = nextSpoken(stream, verb.getTokenIndex());
+        if (verb.getType() == FrostlakeLexer.UNSET) {
+            // An UNSET names what follows it only where that is the word TAG: its list of tags.
+            return first != null && first.getType() == FrostlakeLexer.TAG ? first : null;
+        }
+        if (verb.getType() != FrostlakeLexer.SET) {
+            return null;
+        }
+        // After an IF EXISTS with no name a list of tags cannot stand: the SET itself is refused.
+        return alter.if_exists() != null && first != null && first.getType() == FrostlakeLexer.TAG ? verb : first;
     }
 
     /** The next default-channel token after token index {@code after}, or null past the end. */

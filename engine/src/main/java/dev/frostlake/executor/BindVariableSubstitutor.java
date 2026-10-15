@@ -21,8 +21,12 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.StructuredArrayType;
+import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantJsonText;
@@ -87,6 +91,19 @@ public class BindVariableSubstitutor {
      * @return the text with each bind written out
      */
     public String substitute(final String sql, final boolean statement) {
+        return substitute(sql, statement, null);
+    }
+
+    /**
+     * Substitute colon bind variables into the SQL, noting each one written out.
+     *
+     * @param sql       the text
+     * @param statement whether the text is a statement a block runs
+     * @param binds     where each bind written out is noted — its line, its column, its written length and the
+     *                  length of what stands in its place — or null when nobody asks
+     * @return the text with each bind written out
+     */
+    public String substitute(final String sql, final boolean statement, final List<int[]> binds) {
         // Nothing to do unless the text can contain a bind variable.
         if (sql == null || sql.indexOf(':') < 0) {
             return sql;
@@ -133,7 +150,12 @@ public class BindVariableSubstitutor {
                         throw infinite;
                     }
                     out.append(sql, cursor, t.getStartIndex());
-                    out.append(typedLiteral(nameTok.getText(), value, toks, i));
+                    final String written = typedLiteral(nameTok.getText(), value, toks, i);
+                    out.append(written);
+                    if (binds != null) {
+                        binds.add(new int[] {t.getLine(), t.getCharPositionInLine(),
+                            nameTok.getStopIndex() + 1 - t.getStartIndex(), written.length()});
+                    }
                     cursor = nameTok.getStopIndex() + 1;
                     i++;   // consumed the identifier too
                     continue;
@@ -296,10 +318,15 @@ public class BindVariableSubstitutor {
 
     /**
      * Whether the bind at {@code colonIndex} stands where nothing is ever bound: the size of a SAMPLE or a
-     * TABLESAMPLE, with a method word before its parenthesis or without, its SEED or REPEATABLE, and the value
-     * list of a PIVOT ({@code FOR k IN (:s, 1)}).
+     * TABLESAMPLE, with a method word before its parenthesis or without, its SEED or REPEATABLE, the value list
+     * of a PIVOT ({@code FOR k IN (:s, 1)}), and the word TOP, which no bind counts for ({@code SELECT TOP :s v}
+     * reads a column TOP).
      */
     private static boolean isNeverBoundSlot(final List<Token> toks, final int colonIndex) {
+        if (colonIndex > 0 && toks.get(colonIndex - 1).getType() == FrostlakeLexer.TOP) {
+            // TOP takes a number written out: before a colon it is a name, and the colon a path's.
+            return true;
+        }
         int open = colonIndex - 1;
         int depth = 0;
         while (open >= 0) {
@@ -384,6 +411,12 @@ public class BindVariableSubstitutor {
             final String call = slot.wholeArgumentOf();
             return TypedNullBind.spell(declared, slot, call != null && declarations != null
                 && declarations.isUserFunctionName(call));
+        }
+        if (!literalOnlySlot && value instanceof VariantValue
+                && (declared instanceof ArrayType || declared instanceof ObjectType)
+                && !(declared instanceof StructuredArrayType) && !(declared instanceof StructuredObjectType)) {
+            // An ARRAY or an OBJECT variable is one where it is bound, not the VARIANT its text parses to.
+            return literal + "::" + (declared instanceof ArrayType ? "ARRAY" : "OBJECT");
         }
         if (literalOnlySlot || !(declared instanceof NumericType)
                 || (value instanceof Double && !Double.isFinite((Double) value))) {

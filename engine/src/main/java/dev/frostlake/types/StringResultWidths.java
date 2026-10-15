@@ -197,7 +197,9 @@ public final class StringResultWidths {
 
     /**
      * How many bytes the first argument can hold — its own length for a BINARY, four times its
-     * length for a string.
+     * length for a string. A binary the plan never sized — the result of TO_BINARY, of a cast to a bare BINARY — is
+     * read at the 64MB maximum, whatever width the engine holds it at: {@code BASE64_ENCODE(TO_BINARY('ab'))} is
+     * VARCHAR(89478488) where a BINARY column's is VARCHAR(11184812) (live-verified).
      *
      * @param argTypes the argument types
      * @return the byte count, or -1 when the argument determines none
@@ -208,7 +210,8 @@ public final class StringResultWidths {
         }
         final DataType first = argTypes.get(0);
         if (first instanceof BinaryType) {
-            return ((BinaryType) first).getMaxLength();
+            return ((BinaryType) first).getWidthSpelling() == BinaryWidthSpelling.DECLARED
+                ? ((BinaryType) first).getMaxLength() : BinaryType.NOMINAL_MAXIMUM;
         }
         final long characters = stringWidth(argTypes, 0);
         return characters < 0 ? -1 : characters * BYTES_PER_CHARACTER;

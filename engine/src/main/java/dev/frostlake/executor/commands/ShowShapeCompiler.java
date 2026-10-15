@@ -98,12 +98,18 @@ final class ShowShapeCompiler {
         }
     }
 
-    /** The statements judged, in the order written: each SHOW and each DESCRIBE TAG, a nested block's included. */
+    /**
+     * The statements judged, in the order written: each SHOW, each DESCRIBE TAG and each DESCRIBE that writes
+     * properties, a nested block's included.
+     */
     private static void collect(final ParseTree node, final List<ParserRuleContext> statements) {
         if (node instanceof FrostlakeParser.ShowStatementContext
                 || node instanceof FrostlakeParser.ShowClassStatementContext
                 || node instanceof FrostlakeParser.DescribeStatementContext
-                    && ((FrostlakeParser.DescribeStatementContext) node).TAG() != null) {
+                    && (((FrostlakeParser.DescribeStatementContext) node).TAG() != null
+                        || !((FrostlakeParser.DescribeStatementContext) node).describeProperty().isEmpty())
+                || node instanceof FrostlakeParser.SecurityObjectListingContext
+                    && !((FrostlakeParser.SecurityObjectListingContext) node).describeProperty().isEmpty()) {
             statements.add((ParserRuleContext) node);
             return;
         }
@@ -113,8 +119,22 @@ final class ShowShapeCompiler {
     }
 
     private static RuntimeException refusalOf(final ParserRuleContext statement, final ShowCommandHandler shows) {
-        if (statement instanceof FrostlakeParser.DescribeStatementContext) {
-            return new RuntimeException(DescribeTagRefusal.SENTENCE);
+        if (statement instanceof FrostlakeParser.DescribeStatementContext
+                || statement instanceof FrostlakeParser.SecurityObjectListingContext) {
+            if (statement instanceof FrostlakeParser.DescribeStatementContext
+                    && ((FrostlakeParser.DescribeStatementContext) statement).TAG() != null) {
+                return new RuntimeException(DescribeTagRefusal.SENTENCE);
+            }
+            if (waitsForValue(statement)) {
+                return null;
+            }
+            // A property the account does not know is refused while the block compiles.
+            try {
+                shows.requireProperties(statement);
+                return null;
+            } catch (final RuntimeException refused) {
+                return refused;
+            }
         }
         final boolean namesKnown = !waitsForValue(statement);
         try {

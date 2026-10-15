@@ -20,6 +20,7 @@ import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.WrittenSignatureType;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
 import org.antlr.v4.runtime.CommonTokenStream;
@@ -77,9 +78,10 @@ public final class RoutineReferenceText {
             }
             if (child instanceof FrostlakeParser.DataTypeNameContext) {
                 final ParseTree next = i + 1 < list.getChildCount() ? list.getChild(i + 1) : null;
-                types.add(DataTypeParser.parse((FrostlakeParser.DataTypeNameContext) child,
+                types.add(WrittenSignatureType.of(DataTypeParser.parse((FrostlakeParser.DataTypeNameContext) child,
                     next instanceof FrostlakeParser.TypeParametersContext
-                        ? (FrostlakeParser.TypeParametersContext) next : null));
+                        ? (FrostlakeParser.TypeParametersContext) next : null),
+                    next instanceof FrostlakeParser.TypeParametersContext));
             }
         }
         return types;

@@ -20,6 +20,8 @@ import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 
 public class Chr extends TextArgumentFunction {
@@ -28,9 +30,14 @@ public class Chr extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final int codePoint = ((Number) args.get(0)).intValue();
-        if (codePoint < 0 || codePoint > Character.MAX_CODE_POINT) return null;
-        return new String(Character.toChars(codePoint));
+        // A fraction goes to the nearest code point, and a number that is none is refused (live-verified).
+        final long codePoint = new BigDecimal(args.get(0).toString()).setScale(0, RoundingMode.HALF_UP).longValue();
+        // A surrogate is half of a character and names none.
+        if (codePoint < 0 || codePoint > Character.MAX_CODE_POINT
+                || codePoint >= Character.MIN_SURROGATE && codePoint <= Character.MAX_SURROGATE) {
+            throw new RuntimeException("Invalid character code " + codePoint + " in the CHR input");
+        }
+        return new String(Character.toChars((int) codePoint));
     }
 
     @Override

@@ -23,6 +23,7 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.node.ArrayNode;
 
+import java.math.RoundingMode;
 import java.util.List;
 
 /**
@@ -35,12 +36,13 @@ public class ArrayGenerateRange extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        final long start = ((Number) args.get(0)).longValue();
-        final long stop = ((Number) args.get(1)).longValue();
+        // A text or a VARIANT bound is read as the whole number it holds (see decimalOf).
+        final long start = wholeLong(args.get(0));
+        final long stop = wholeLong(args.get(1));
         long step = 1;
         if (args.size() > 2) {
             if (args.get(2) == null) return null;
-            step = ((Number) args.get(2)).longValue();
+            step = wholeLong(args.get(2));
         }
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         if (step > 0) {
@@ -49,6 +51,12 @@ public class ArrayGenerateRange extends BuiltInFunction {
             for (long i = start; i > stop; i += step) result.add(i);
         }
         return VariantValue.ofNode(result);
+    }
+
+    /** A bound as the whole number it holds: a number as before, a text or a VARIANT as {@link #decimalOf} reads it. */
+    private static long wholeLong(final Object value) {
+        return value instanceof Number ? ((Number) value).longValue()
+            : decimalOf(value).setScale(0, RoundingMode.HALF_UP).longValue();
     }
 
     @Override

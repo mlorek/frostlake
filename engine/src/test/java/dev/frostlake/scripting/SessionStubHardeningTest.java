@@ -67,6 +67,7 @@ public class SessionStubHardeningTest {
             CREATE OR REPLACE PROCEDURE make_session()
             RETURNS VARCHAR
             LANGUAGE JAVA
+            PACKAGES = ('com.snowflake:snowpark:latest')
             HANDLER='MakeSession.run'
             AS
             $$
@@ -102,6 +103,7 @@ public class SessionStubHardeningTest {
             CREATE OR REPLACE PROCEDURE grab_conn()
             RETURNS VARCHAR
             LANGUAGE JAVA
+            PACKAGES = ('com.snowflake:snowpark:latest')
             HANDLER='GrabConn.run'
             AS
             $$
@@ -140,6 +142,7 @@ public class SessionStubHardeningTest {
             CREATE OR REPLACE PROCEDURE count_nums()
             RETURNS VARCHAR
             LANGUAGE JAVA
+            PACKAGES = ('com.snowflake:snowpark:latest')
             HANDLER='CountNums.run'
             AS
             $$

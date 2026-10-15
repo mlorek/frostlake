@@ -23,8 +23,8 @@ import dev.frostlake.parser.FrostlakeParser;
  * whatever kind of table, from a query, LIKE another or as its clone — and so do ALTER, DROP and COMMENT of any
  * kind of object, a DROP … IF EXISTS that finds nothing included. Creating a sequence, a function, a procedure, a
  * schema, a stage, a file format, a stream, a tag, a masking or a row access policy, a task or a pipe does not:
- * the transaction is still open afterwards, as it is after ALTER STAGE, ALTER FILE FORMAT, ALTER SESSION,
- * TRUNCATE and USE.
+ * the transaction is still open afterwards, as it is after ALTER STAGE, ALTER FILE FORMAT, ALTER SESSION, a
+ * rename of a table, of a table's column or of a view, TRUNCATE and USE.
  *
  * <p>A statement that ends the transaction commits it where the transaction was begun, and is refused in a block
  * or a procedure called while its caller's transaction is open; one that does not runs in both places.
@@ -46,10 +46,24 @@ final class ImplicitCommit {
         }
         final FrostlakeParser.AlterStatementContext alter = ctx.alterStatement();
         if (alter != null) {
-            return alter.SESSION() == null && alter.STAGE() == null && alter.FORMAT() == null;
+            return alter.SESSION() == null && alter.STAGE() == null && alter.FORMAT() == null && !renames(alter);
         }
         final FrostlakeParser.CreateStatementContext create = ctx.createStatement();
         return create == null || !leavesTheTransactionOpen(create);
+    }
+
+    /**
+     * A rename of a table, of a table's column or of a view, which leaves the transaction open whether it renames or
+     * is refused.
+     */
+    private static boolean renames(final FrostlakeParser.AlterStatementContext alter) {
+        final FrostlakeParser.TableActionContext table = alter.TABLE() == null ? null : alter.tableAction();
+        if (table != null) {
+            return table.RENAME() != null && table.CONSTRAINT() == null;
+        }
+        final FrostlakeParser.ViewActionContext view = alter.VIEW() == null || alter.MATERIALIZED() != null ? null
+            : alter.viewAction();
+        return view != null && view.RENAME() != null;
     }
 
     /** A CREATE of one of the kinds that leave the transaction as it was. */

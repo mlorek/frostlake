@@ -37,4 +37,14 @@ public class ParameterSnapshot implements Serializable {
      */
     public DataType type;
     public String defaultValue;
+    /**
+     * Whether a text or a binary parameter was declared with no length of its own. Null on snapshots written
+     * before it was persisted, which restore a type held at the default length as declared without one.
+     */
+    public Boolean unsized;
+    /**
+     * The default as it is told back, where that is not the default as written. Null on snapshots written before
+     * it was persisted, which tell the default as written.
+     */
+    public String defaultTold;
 }

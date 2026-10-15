@@ -127,6 +127,8 @@ final class SqlUdfBodyCalls {
         if (!unknown.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.of(scan.unknownFunctionSentence(unknown)));
         }
+        // A tag function the body calls is answered as the function is created (see CompiledTagCalls).
+        CompiledTagCalls.requireInFunctionBody(body, queryExecutor);
     }
 
     /**

@@ -1035,7 +1035,8 @@ final class ShowSessionExecutor {
                         col.getOnUpdate() != null ? col.getOnUpdate() : "NO ACTION",
                         col.getOnDelete() != null ? col.getOnDelete() : "NO ACTION",
                         table.columnForeignKeyConstraintName(col.getName()),
-                        referencedPrimaryKeyName(schema, col.getReferencedTable()),
+                        referencedKeyName(schema, col.getReferencedTable(), col.getReferencedColumn() == null
+                            ? null : Arrays.asList(col.getReferencedColumn())),
                         "NOT DEFERRABLE",
                         relyText(col.getRely()),
                         null)));
@@ -1060,7 +1061,7 @@ final class ShowSessionExecutor {
                             fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
                             fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",
                             fk.getConstraintName(),
-                            referencedPrimaryKeyName(schema, fk.getReferencedTable()),
+                            referencedKeyName(schema, fk.getReferencedTable(), pkColumns),
                             "NOT DEFERRABLE",
                             relyText(fk.getRely()),
                             null)));
@@ -1194,7 +1195,12 @@ final class ShowSessionExecutor {
         return null;
     }
 
-    private String referencedPrimaryKeyName(final Schema schema, final String referencedTable) {
+    /**
+     * The name of the key a foreign key references: a UNIQUE key of the referenced columns, or the primary key
+     * (live-verified: a foreign key on a UNIQUE key reports that key's name as its pk_name).
+     */
+    private String referencedKeyName(final Schema schema, final String referencedTable,
+                                     final List<String> referencedColumns) {
         final String bare = QualifiedName.parse(referencedTable).last();
         Table target = schema.hasTable(bare) ? schema.getTable(bare) : null;
         if (target == null) {
@@ -1204,7 +1210,7 @@ final class ShowSessionExecutor {
                 return null;   // the referenced table is gone or lives outside this catalog
             }
         }
-        return target != null ? target.primaryKeyConstraintName() : null;
+        return target != null ? target.referencedKeyName(referencedColumns) : null;
     }
 
     /** The schemas a keys listing spans: current schema, a named schema, a database's schemas, all, or none. */

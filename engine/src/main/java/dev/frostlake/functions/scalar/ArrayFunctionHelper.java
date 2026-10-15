@@ -83,6 +83,40 @@ public final class ArrayFunctionHelper {
     }
 
     /**
+     * The array an ARRAY argument reads on the row: an array as itself, and a VARIANT that holds no array as a
+     * one-element array of what it holds. {@code ARRAY_SLICE(TO_VARIANT('abc'), 0, 1)} is {@code ["abc"]},
+     * {@code ARRAY_CONTAINS(1::VARIANT, TO_VARIANT(1))} TRUE and {@code ARRAY_SLICE(PARSE_JSON('{"a":1}'), 0, 1)}
+     * {@code [{"a":1}]} (live-verified). The functions that refuse such a VARIANT read it with {@link #requireArray}.
+     *
+     * @param value the argument
+     * @return the array, or null for a SQL NULL, a JSON null, a VECTOR or any other value
+     */
+    public static ArrayNode parseArrayOrSingle(final Object value) {
+        final ArrayNode array = parseArray(value);
+        return array != null ? array : singleOf(value);
+    }
+
+    /**
+     * A one-element array of what a VARIANT holds when it holds no array (see {@link #parseArrayOrSingle}).
+     *
+     * @param value the argument
+     * @return the array, or null for any other value
+     */
+    public static ArrayNode singleOf(final Object value) {
+        if (!(value instanceof VariantValue)) {
+            return null;
+        }
+        final JsonNode held = ((VariantValue) value).node();
+        if (held == null || held.isArray() || held.isNull() || VariantUndefined.isUndefined(held)
+                || TypedVectorNode.vectorValueOf(held) != null) {
+            return null;
+        }
+        final ArrayNode single = MAPPER.createArrayNode();
+        single.add(held);
+        return single;
+    }
+
+    /**
      * The array a value holds, for the functions that refuse anything else on the row: {@code ARRAY_CAT(1, [1])}
      * is "Left argument of ARRAY_CAT is not an array", over a number, an OBJECT, a VARIANT scalar and a VECTOR
      * alike (live-verified). A SQL NULL is no refusal and answers null.

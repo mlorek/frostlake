@@ -109,6 +109,54 @@ public class GeneratedCloudIdentityTest extends BaseDatabaseTest {
         assertMatches(SERVICE_ACCOUNT, google.get("API_GCP_SERVICE_ACCOUNT"));
     }
 
+    /**
+     * The external ID is the creation's own: an ALTER keeps it, a CREATE OR REPLACE and a DROP followed by a CREATE
+     * make another, while the IAM user stays the account's one.
+     */
+    @Test
+    public void anExternalIdIsGeneratedForEachCreation() {
+        final String api = "API INTEGRATION gci_api API_PROVIDER = aws_api_gateway API_AWS_ROLE_ARN = " + ROLE
+            + " API_ALLOWED_PREFIXES = ('https://x.execute-api.us-east-1.amazonaws.com/') ENABLED = TRUE";
+        engine.executeQuery("CREATE OR REPLACE " + api);
+        final Map<String, String> first = properties("DESC API INTEGRATION gci_api");
+        engine.executeQuery("CREATE OR REPLACE " + api);
+        final Map<String, String> replaced = properties("DESC API INTEGRATION gci_api");
+        assertNotEquals(first.get("API_AWS_EXTERNAL_ID"), replaced.get("API_AWS_EXTERNAL_ID"));
+        assertEquals(first.get("API_AWS_IAM_USER_ARN"), replaced.get("API_AWS_IAM_USER_ARN"));
+        engine.executeQuery("ALTER API INTEGRATION gci_api SET API_AWS_ROLE_ARN ="
+            + " 'arn:aws:iam::123456789012:role/fl_ident2'");
+        assertEquals(replaced.get("API_AWS_EXTERNAL_ID"),
+            properties("DESC API INTEGRATION gci_api").get("API_AWS_EXTERNAL_ID"));
+        engine.executeQuery("DROP INTEGRATION gci_api");
+        engine.executeQuery("CREATE " + api);
+        final Map<String, String> again = properties("DESC API INTEGRATION gci_api");
+        assertMatches(EXTERNAL_ID, again.get("API_AWS_EXTERNAL_ID"));
+        assertNotEquals(replaced.get("API_AWS_EXTERNAL_ID"), again.get("API_AWS_EXTERNAL_ID"));
+    }
+
+    /** A volume's external ID likewise: another after CREATE OR REPLACE, the same after a DROP that is undone. */
+    @Test
+    public void aVolumesExternalIdOutlivesADropUndone() {
+        final String volume = "EXTERNAL VOLUME gci_vol STORAGE_LOCATIONS = ((NAME = 'l1' STORAGE_PROVIDER = 'S3'"
+            + " STORAGE_BASE_URL = 's3://fl-ident/' STORAGE_AWS_ROLE_ARN = " + ROLE + "))";
+        engine.executeQuery("CREATE OR REPLACE " + volume);
+        final String first = member(properties("DESCRIBE EXTERNAL VOLUME gci_vol").get("STORAGE_LOCATION_1"),
+            "STORAGE_AWS_EXTERNAL_ID");
+        engine.executeQuery("CREATE OR REPLACE " + volume);
+        final String replaced = member(properties("DESCRIBE EXTERNAL VOLUME gci_vol").get("STORAGE_LOCATION_1"),
+            "STORAGE_AWS_EXTERNAL_ID");
+        assertMatches(EXTERNAL_ID, replaced);
+        assertNotEquals(first, replaced);
+        engine.executeQuery("DROP EXTERNAL VOLUME gci_vol");
+        engine.executeQuery("UNDROP EXTERNAL VOLUME gci_vol");
+        assertEquals(replaced, member(properties("DESCRIBE EXTERNAL VOLUME gci_vol").get("STORAGE_LOCATION_1"),
+            "STORAGE_AWS_EXTERNAL_ID"));
+        engine.executeQuery("DROP EXTERNAL VOLUME gci_vol");
+        engine.executeQuery("CREATE " + volume);
+        assertNotEquals(replaced, member(properties("DESCRIBE EXTERNAL VOLUME gci_vol").get("STORAGE_LOCATION_1"),
+            "STORAGE_AWS_EXTERNAL_ID"));
+    }
+
     @Test
     public void aGlueCatalogAndAnSnsTopicShowTheirs() {
         engine.executeQuery("CREATE CATALOG INTEGRATION gci_glue CATALOG_SOURCE = GLUE CATALOG_NAMESPACE = 'ns'"

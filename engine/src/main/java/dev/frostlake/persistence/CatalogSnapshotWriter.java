@@ -641,6 +641,7 @@ final class CatalogSnapshotWriter {
             fnSnapshot.parameters = snapshotParameters(fn.getParameters());
             fnSnapshot.returnType = fn.getReturnType() != null ? fn.getReturnType().getName() : null;
             fnSnapshot.returnDataType = fn.getReturnType();
+            fnSnapshot.returnSized = fn.getReturnSized();
             fnSnapshot.returnColumns = snapshotParameters(fn.getReturnColumns());
             fnSnapshot.body = fn.getBody();
             fnSnapshot.tableFunction = fn.isTableFunction();
@@ -671,6 +672,7 @@ final class CatalogSnapshotWriter {
             procSnapshot.parameters = snapshotParameters(proc.getParameters());
             procSnapshot.returnType = proc.getReturnType() != null ? proc.getReturnType().getName() : null;
             procSnapshot.returnDataType = proc.getReturnType();
+            procSnapshot.returnSized = proc.getReturnSized();
             procSnapshot.body = proc.getBody();
             procSnapshot.language = proc.getLanguage();
             procSnapshot.handler = proc.getHandler();
@@ -865,6 +867,8 @@ final class CatalogSnapshotWriter {
                 paramSnapshot.dataType = param.getDataType() != null ? param.getDataType().getName() : null;
                 paramSnapshot.type = param.getDataType();
                 paramSnapshot.defaultValue = param.getDefaultValue();
+                paramSnapshot.unsized = Boolean.valueOf(param.isUnsized());
+                paramSnapshot.defaultTold = param.getDefaultTold();
                 snapshots.add(paramSnapshot);
             }
         }

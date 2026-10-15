@@ -40,9 +40,11 @@ import dev.frostlake.executor.procedural.Statement;
 import dev.frostlake.executor.procedural.StatementType;
 import dev.frostlake.executor.procedural.WhenClause;
 import dev.frostlake.executor.procedural.WhileStatement;
+import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.parser.FrostlakeParser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -76,16 +78,45 @@ public class ProceduralBlockBuilder {
     }
 
     /**
+     * A logging statement, {@code SYSTEM$LOG_INFO('message');}. A name of that family that names no logging
+     * statement is refused, in the account's own words for it (live-verified).
+     *
+     * @param ctx the statement
+     * @return the statement that evaluates its arguments and logs them
+     */
+    Statement buildLogging(final FrostlakeParser.SystemCallStatementContext ctx) {
+        final String name = ctx.SYSTEM_FUNC().getText().toUpperCase(Locale.ROOT);
+        if (!SystemFunctionNames.isLoggingStatement(name)) {
+            throw new RuntimeException(SystemFunctionNames.unknownLoggingStatement(name));
+        }
+        final List<BaseExpression> arguments = new ArrayList<>();
+        for (final FrostlakeParser.ExpressionContext argument : ctx.expression()) {
+            arguments.add(visitor.buildExpression(argument));
+        }
+        final Statement statement = new EvaluateStatement(new FunctionCallExpression(name, arguments));
+        statement.setSourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+        return statement;
+    }
+
+    /**
      * Build a Statement from ANTLR statement context
      */
     private Statement buildStatement(final FrostlakeParser.StatementContext ctx) {
         final Statement statement = buildStatementOf(ctx);
         if (statement != null) {
             // Every statement carries where it stands, so an error escaping the block can name the
-            // statement that failed ("… on line L at position P"), as live does.
-            statement.setSourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+            // statement that failed ("… on line L at position P"), as live does. An assignment of a CALL's answer
+            // stands where its CALL does: the CALL is the statement that runs (live-verified).
+            final Token at = assignedCall(ctx) == null ? ctx.getStart() : assignedCall(ctx).getStart();
+            statement.setSourcePosition(at.getLine(), at.getCharPositionInLine());
         }
         return statement;
+    }
+
+    /** The CALL whose answer the statement assigns to a variable, {@code x := (CALL p())}, or null. */
+    private static FrostlakeParser.CallStatementContext assignedCall(final FrostlakeParser.StatementContext ctx) {
+        return ctx.proceduralStatement() == null || ctx.proceduralStatement().assignmentStatement() == null ? null
+            : ctx.proceduralStatement().assignmentStatement().callStatement();
     }
 
     private Statement buildStatementOf(final FrostlakeParser.StatementContext ctx) {
@@ -183,12 +214,7 @@ public class ProceduralBlockBuilder {
         }
 
         if (ctx.systemCallStatement() != null) {
-            final List<BaseExpression> arguments = new ArrayList<>();
-            for (final FrostlakeParser.ExpressionContext argument : ctx.systemCallStatement().expression()) {
-                arguments.add(visitor.buildExpression(argument));
-            }
-            return new EvaluateStatement(new FunctionCallExpression(
-                ctx.systemCallStatement().SYSTEM_FUNC().getText().toUpperCase(Locale.ROOT), arguments));
+            return buildLogging(ctx.systemCallStatement());
         }
         if (ctx.callIntoStatement() != null) {
             // CALL ... INTO :variable runs the CALL as a bare one runs, and assigns the value the procedure

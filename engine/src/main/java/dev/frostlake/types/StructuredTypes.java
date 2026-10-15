@@ -118,6 +118,36 @@ public final class StructuredTypes {
             || parameter instanceof VariantType);
     }
 
+    /**
+     * A type as a routine's signature names it where the routine is listed or described: its bare name, and a
+     * structured one with its shape, the types inside it bare too and a field's NOT NULL kept —
+     * {@code OBJECT(a NUMBER NOT NULL, b VARCHAR)}, {@code ARRAY(NUMBER)}, {@code MAP(VARCHAR, ARRAY(FLOAT))}
+     * (live-verified). So f(x OBJECT) and f(x OBJECT(a INT)) read as the two overloads they are.
+     *
+     * @param type a parameter's or a result's declared type
+     * @return the type as a signature spells it
+     */
+    public static String signatureText(final DataType type) {
+        if (type instanceof StructuredObjectType) {
+            final StringBuilder shape = new StringBuilder("OBJECT(");
+            final List<StructuredField> fields = ((StructuredObjectType) type).getFields();
+            for (int i = 0; i < fields.size(); i++) {
+                shape.append(i > 0 ? ", " : "").append(fields.get(i).getName()).append(' ')
+                    .append(signatureText(fields.get(i).getDataType()))
+                    .append(fields.get(i).isNotNull() ? " NOT NULL" : "");
+            }
+            return shape.append(')').toString();
+        }
+        if (type instanceof MapType) {
+            return "MAP(" + signatureText(((MapType) type).getKeyType()) + ", "
+                + signatureText(((MapType) type).getValueType()) + ")";
+        }
+        if (type instanceof StructuredArrayType) {
+            return "ARRAY(" + signatureText(((StructuredArrayType) type).getElementType()) + ")";
+        }
+        return type.getName();
+    }
+
     /** A type as Snowflake spells it in an argument-type / cast error message. */
     public static String describe(final DataType type) {
         if (type == null) {

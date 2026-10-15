@@ -31,6 +31,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -51,9 +52,14 @@ import java.util.regex.Pattern;
  * subquery a name reads {@code (:x)::TYPE}, and so does every name of a stored procedure's body and of a block
  * whose outermost DECLARE section declares a cursor or a RESULTSET with a query. A text variable's type is its
  * value's width, as a bound value's is. The place counts from the expression's own start, after a lead-in on its
- * first line: seven columns when the expression holds a subquery (the account compiles it as a query), and
- * eight more for a value given to a variable — a LET, an assignment, a DECLARE default; a later line keeps its
- * own columns (all live-verified).
+ * first line: seven columns when the expression holds a subquery or a call of a user-defined function (the
+ * account compiles it as a query), and eight more for a value given to a variable — a LET, an assignment, a
+ * DECLARE default; a later line keeps its own columns (all live-verified).
+ *
+ * <p>A call given more or fewer arguments than it takes is judged with the types and placed the same way:
+ * {@code RETURN 1 + ABS(1, 2)} is {@code too many arguments for function [ABS(1, 2)] expected 1, got 2} at
+ * position 4, {@code RETURN 1 + f(1)} over a function that takes none at position 11, and {@code x := ABS(1, 2)}
+ * at position 8 (live-verified).
  *
  * <p>A refusal that echoes the expression — a comparison's conversion, a declared type's cast — writes each
  * variable as the conversion of its bound value (see {@link BoundValueRendering}): {@code LET n := 5; LET x DATE
@@ -80,6 +86,12 @@ public final class BlockExpressionTypes {
 
     /** What a declared type's cast refusal reads before its echo. */
     private static final String CAST_ECHO = "invalid type [CAST(";
+
+    /** What a call given more arguments than it takes is refused with, before its echo. */
+    private static final String TOO_MANY = "too many arguments for function [";
+
+    /** What a call given fewer arguments than it takes is refused with, before its echo. */
+    private static final String NOT_ENOUGH = "not enough arguments for function [";
 
     private BlockExpressionTypes() {
     }
@@ -111,14 +123,21 @@ public final class BlockExpressionTypes {
         final String refusal = argumentTypeRefusal(expression, sqlOf(expression), types, queryExecutor);
         if (refusal != null) {
             String echoed = refusal;
-            if (refusal.contains(CONVERSION_ECHO)) {
+            // A refusal that echoes the expression writes each variable as its bound value's conversion: the plan's
+            // for a comparison's conversion, and a miscounted call's as the block binds it, ABS(x, 2) over a number
+            // holding 1 as [ABS(TO_NUMBER('1'), 2)].
+            final String echo = refusal.contains(CONVERSION_ECHO) ? CONVERSION_ECHO
+                : refusal.contains(TOO_MANY) ? TOO_MANY : refusal.contains(NOT_ENOUGH) ? NOT_ENOUGH : null;
+            if (echo != null) {
                 final String rendered = argumentTypeRefusal(expression,
-                    rendered(expression, types, values, true), types, queryExecutor);
-                if (rendered != null && rendered.contains(CONVERSION_ECHO)) {
+                    rendered(expression, types, values, CONVERSION_ECHO.equals(echo)), types, queryExecutor);
+                if (rendered != null && rendered.contains(echo)) {
                     echoed = rendered;
                 }
             }
-            throw new BlockExpressionTypeError(placedInExpression(echoed, expression, types, counters, namesBound));
+            throw new BlockExpressionTypeError(placedInExpression(echoed, expression, types, counters, namesBound,
+                compilesAsAQuery(expression, queryExecutor == null ? null
+                    : DeclarationTypes.scriptTyper(types, queryExecutor))));
         }
         if (target != null) {
             final String conversion = conversionRefusal(expression, types, target, values, queryExecutor);
@@ -289,7 +308,8 @@ public final class BlockExpressionTypes {
             final String message = refused.getMessage();
             return SqlCompilationError.isCompilationError(message)
                 && (message.contains("Invalid argument types for function '")
-                    || message.contains(CONVERSION_ECHO)) ? message : null;
+                    || message.contains(CONVERSION_ECHO) || message.contains(TOO_MANY)
+                    || message.contains(NOT_ENOUGH)) ? message : null;
         } finally {
             ExpressionSource.end(displaced);
         }
@@ -298,7 +318,7 @@ public final class BlockExpressionTypes {
     /** A refusal placed in the block, moved into the expression as the account counts it. */
     private static String placedInExpression(final String refusal, final ParserRuleContext expression,
                                              final Map<String, DataType> types, final Set<String> counters,
-                                             final boolean namesBound) {
+                                             final boolean namesBound, final boolean query) {
         final Matcher place = PLACE.matcher(refusal);
         if (!place.find()) {
             return refusal;
@@ -306,7 +326,6 @@ public final class BlockExpressionTypes {
         final int line = Integer.parseInt(place.group(1));
         final int column = Integer.parseInt(place.group(2));
         final Token start = expression.getStart();
-        final boolean query = holdsASubquery(expression);
         int moved = column + writtenOutShift(expression, line, column, types, counters, query || namesBound);
         if (line == start.getLine()) {
             moved += -start.getCharPositionInLine() + (query ? QUERY_LEAD : 0)
@@ -362,16 +381,40 @@ public final class BlockExpressionTypes {
         return writtenOut.length() + cast.length() - writtenWidth;
     }
 
-    private static boolean holdsASubquery(final ParseTree node) {
+    /**
+     * Whether the account compiles the expression as a query: it holds a subquery, or a call of a function
+     * someone created, in whatever language.
+     */
+    private static boolean compilesAsAQuery(final ParseTree node, final ExpressionEvaluator typer) {
         if (node instanceof FrostlakeParser.SelectStatementContext) {
             return true;
         }
+        final String[] called = typer == null ? null : calledName(node);
+        if (called != null && typer.callsUserFunction(Arrays.asList(called))) {
+            return true;
+        }
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (holdsASubquery(node.getChild(i))) {
+            if (compilesAsAQuery(node.getChild(i), typer)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** The canonical parts of the name a call writes, or null for a node that is no call by a plain name. */
+    private static String[] calledName(final ParseTree node) {
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            return ParseTreeText.functionNameParts(((FrostlakeParser.FunctionCallExprContext) node).functionName());
+        }
+        if (node instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            return ParseTreeText.functionNameParts(
+                ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).functionName());
+        }
+        if (node instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            return ParseTreeText.functionNameParts(
+                ((FrostlakeParser.FunctionCallNamedArgsExprContext) node).functionName());
+        }
+        return null;
     }
 
     /** Whether the expression is the value a LET, an assignment or a DECLARE default gives a variable. */

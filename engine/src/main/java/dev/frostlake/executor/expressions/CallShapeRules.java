@@ -156,7 +156,8 @@ final class CallShapeRules {
         walkAll(window.getPartitionKeys(), walk);
         if (kind != null) {
             walkAll(window.getOrderKeys(), walk);
-            throw new RuntimeException(SqlCompilationError.of("Invalid function type [" + kind + "] for window function."));
+            throw new RuntimeException(SqlCompilationError.of("Invalid function type [" + echoedName(kind)
+                + "] for window function."));
         }
         throw new RuntimeException(SqlCompilationError.of("Window function type [" + builtin
             + "] requires ORDER BY in window specification."));
@@ -194,7 +195,7 @@ final class CallShapeRules {
     /** The quantifier's refusal: the call echoed from the plan with the quantifier as written. */
     private RuntimeException quantifierRefusal(final String name, final String quantifier,
                                                final List<Expression> arguments) {
-        final StringBuilder echo = new StringBuilder(name).append('(').append(quantifier).append(' ');
+        final StringBuilder echo = new StringBuilder(echoedName(name)).append('(').append(quantifier).append(' ');
         final int unitSlot = DateTimeUnitSlot.positionIn(name);
         for (int i = 0; i < arguments.size(); i++) {
             if (i > 0) {
@@ -211,7 +212,19 @@ final class CallShapeRules {
     }
 
     private static RuntimeException withinGroupRefusal(final String name) {
-        return new RuntimeException(SqlCompilationError.of("Function " + name + " does not support WITHIN GROUP clause."));
+        return new RuntimeException(SqlCompilationError.of("Function " + echoedName(name)
+            + " does not support WITHIN GROUP clause."));
+    }
+
+    /**
+     * The name a refusal echoes a call by: the account knows GROUPING as GROUPING_ID wherever it names the call
+     * (live-verified).
+     *
+     * @param name the call's name, upper-cased
+     * @return the name as a refusal writes it
+     */
+    public static String echoedName(final String name) {
+        return "GROUPING".equals(name) ? "GROUPING_ID" : name;
     }
 
     /**

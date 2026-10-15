@@ -100,7 +100,7 @@ class DirectResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public boolean isSigned(final int column) throws SQLException {
-        return false;
+        return DriverColumnMetrics.isSigned(getColumnTypeName(column));
     }
 
     @Override

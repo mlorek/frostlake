@@ -18,12 +18,12 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.functions.scalar.DateTypeHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -76,7 +76,7 @@ public class DateAdd extends BuiltInFunction {
         if (timeOnly) {
             return result.toLocalTime();
         }
-        if (part.isWholeDay() && DateTypeHelper.isDateOnly(args.get(2))) {
+        if (part.isWholeDay() && args.get(2) instanceof LocalDate) {
             return result.toLocalDate();
         }
         return SharedFunctionHelpers.sameTimestampFlavour(args.get(2), result);

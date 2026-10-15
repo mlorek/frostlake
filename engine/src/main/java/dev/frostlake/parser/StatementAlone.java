@@ -63,6 +63,8 @@ final class StatementAlone {
         lexer.addErrorListener(listener);
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         final FrostlakeParser parser = new FrostlakeParser(stream);
+        // Where this parse reports a fault is read: it must not depend on what was parsed before.
+        ColdPrediction.arm(parser);
         parser.removeErrorListeners();
         parser.addErrorListener(listener);
         final FrostlakeParser.SqlScriptContext script = parser.sqlScript();

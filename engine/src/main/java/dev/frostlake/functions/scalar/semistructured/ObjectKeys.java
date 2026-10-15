@@ -32,9 +32,17 @@ public class ObjectKeys extends VariantAccessorFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
-        if (src == null || !src.isObject()) return null;
+        if (src == null || src.isNull()) {
+            return null;
+        }
+        if (!src.isObject()) {
+            // A VARIANT that holds no object is refused as the cast of it to one is (live-verified).
+            throw new RuntimeException("Failed to cast variant value " + src.toString() + " to OBJECT");
+        }
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
-        src.propertyNames().forEach(result::add);
+        for (final String name : src.propertyNames()) {
+            result.add(name);
+        }
         return VariantValue.ofNode(result);
     }
 

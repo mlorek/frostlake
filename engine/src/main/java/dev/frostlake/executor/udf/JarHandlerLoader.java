@@ -23,7 +23,9 @@ import dev.frostlake.metastore.model.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.DataInputStream;
 import java.io.File;
+import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -36,6 +38,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 /**
  * Loads a pre-compiled handler class from the JAR(s) named in a UDF/procedure's {@code IMPORTS} clause — the
@@ -73,6 +77,9 @@ public final class JarHandlerLoader {
      * than parsing. A replaced jar (new size/mtime) naturally misses the cache and reloads.
      */
     private static final Map<String, Class<?>> HANDLER_CACHE = new ConcurrentHashMap<>();
+
+    /** What every class file opens with. */
+    private static final int CLASS_FILE_MAGIC = 0xCAFEBABE;
 
     /** Load {@code className} (trying the Scala {@code object} singleton {@code className$} first) from the IMPORTS jar(s). */
     public static Class<?> load(final List<String> written, final String className,
@@ -141,11 +148,15 @@ public final class JarHandlerLoader {
             final Class<?> scalaObject = loader.loadClass(className + "$");   // Scala object singleton, if present
             HANDLER_CACHE.put(cacheKey.toString(), scalaObject);
             return scalaObject;
+        } catch (final UnsupportedClassVersionError newer) {
+            throw tooNewForThisRuntime(className, newer);
         } catch (final ClassNotFoundException e) {
             try {
                 final Class<?> plainClass = loader.loadClass(className);      // plain Java/Scala class
                 HANDLER_CACHE.put(cacheKey.toString(), plainClass);
                 return plainClass;
+            } catch (final UnsupportedClassVersionError newer) {
+                throw tooNewForThisRuntime(className, newer);
             } catch (final ClassNotFoundException e2) {
                 // Spell out how each entry resolved — a stage lookup that silently fell back to a
                 // relative local path is otherwise indistinguishable from a jar that lacks the class.
@@ -162,6 +173,63 @@ public final class JarHandlerLoader {
                     + " (resolved to: " + resolved + ")", e2);
             }
         }
+    }
+
+    /**
+     * A handler class compiled for a newer Java than the one this engine runs on: the class cannot be loaded here,
+     * whatever runtime its routine names, and the call is refused rather than left to fail inside the JVM.
+     */
+    private static RuntimeException tooNewForThisRuntime(final String className,
+                                                         final UnsupportedClassVersionError newer) {
+        return new RuntimeException("Handler class '" + className + "' was compiled for a newer Java than this"
+            + " engine runs on (Java " + Runtime.version().feature() + "): " + newer.getMessage(), newer);
+    }
+
+    /**
+     * The class-file version a handler class was compiled to, as the IMPORTS jar(s) hold it: 55 for Java 11, 61
+     * for Java 17, 65 for Java 21. The first import that holds the class answers.
+     *
+     * @param written    the routine's imports, as it keeps them
+     * @param className  the handler's class
+     * @param catalog    the catalog the imports' stages are looked up in
+     * @param s3Resolver the resolver of {@code s3://} imports, or null
+     * @return the version, or -1 when no import holds the class or it cannot be read
+     */
+    public static int classFileVersion(final List<String> written, final String className, final Catalog catalog,
+                                       final S3PathResolver s3Resolver) {
+        if (written == null) {
+            return -1;
+        }
+        final ImportLocalizer localizer = LOCALIZER.get();
+        final List<String> imports = localizer != null ? localizer.localImports(written) : written;
+        final String held = className.replace('.', '/') + ".class";
+        for (final String entry : imports) {
+            final File jar;
+            try {
+                jar = new File(resolveToLocalPath(entry, catalog, s3Resolver));
+            } catch (final RuntimeException unresolved) {
+                continue;
+            }
+            if (!jar.isFile()) {
+                continue;
+            }
+            try (JarFile file = new JarFile(jar)) {
+                final JarEntry found = file.getJarEntry(held);
+                if (found == null) {
+                    continue;
+                }
+                try (DataInputStream in = new DataInputStream(file.getInputStream(found))) {
+                    if (in.readInt() != CLASS_FILE_MAGIC) {
+                        return -1;
+                    }
+                    in.readUnsignedShort();
+                    return in.readUnsignedShort();
+                }
+            } catch (final IOException unreadable) {
+                return -1;
+            }
+        }
+        return -1;
     }
 
     /**

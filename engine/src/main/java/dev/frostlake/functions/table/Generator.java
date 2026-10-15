@@ -17,6 +17,7 @@
 package dev.frostlake.functions.table;
 
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -88,8 +89,10 @@ public class Generator extends TableFunction {
             rows.add(new Row(new ArrayList<>()));
             generated++;
 
-            // Add small sleep to prevent infinite loop in very short time limits
+            // Add small sleep to prevent infinite loop in very short time limits; the statement's timeout or
+            // cancel ends the generation where it stands.
             if (generated % 1000 == 0) {
+                StatementCancellation.check();
                 try {
                     Thread.sleep(1);
                 } catch (final InterruptedException e) {

@@ -117,7 +117,7 @@ public class StreamFollowsItsTableTest {
         engine.execute("DROP TABLE d");
         engine.execute("CREATE TABLE d (x STRING)");
         engine.execute("INSERT INTO d VALUES ('new')");
-        assertEquals("SQL compilation error:\nBase table 'SD.PUBLIC.D' dropped, cannot read from stream 'SDR'.",
+        assertEquals("Base table 'SD.PUBLIC.D' dropped, cannot read from stream 'SDR' in line 1 position 14.",
             refusal("SELECT x FROM sdr"));
         assertEquals("true", shown("SDR", "stale"));
 

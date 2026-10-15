@@ -73,14 +73,19 @@ public class Cursor {
         this.closedByLoop = false;
     }
 
-    /** True when the FOR loop that iterated this cursor closed it and nothing has opened it since. */
-    public boolean wasClosedByLoop() {
-        return closedByLoop;
+    /** True when a FOR loop ran this cursor to its end and nothing has opened or closed it since. */
+    public boolean wasEndedByLoop() {
+        return isOpen && closedByLoop;
     }
 
-    /** Closes the cursor as the FOR loop that iterated it does when it ends. */
-    public void closeAfterLoop() {
-        close();
+    /**
+     * Leaves the cursor as the FOR loop that iterated it does when it ends: open, past its last row, so that a FETCH
+     * finds no row and a CLOSE closes it (live-verified). A FOR that names it again opens it afresh.
+     */
+    public void endLoop() {
+        if (resultSet != null) {
+            this.currentPosition = resultSet.getRowCount();
+        }
         this.closedByLoop = true;
     }
 
@@ -113,6 +118,7 @@ public class Cursor {
             throw new RuntimeException("CURSOR " + name + " is not open");
         }
         this.isOpen = false;
+        this.closedByLoop = false;
         this.resultSet = null;
         this.currentPosition = -1;
     }

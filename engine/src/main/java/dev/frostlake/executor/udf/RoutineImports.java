@@ -17,25 +17,25 @@
 package dev.frostlake.executor.udf;
 
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Stage;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * What an {@code IMPORTS = ('@stage/file.jar')} clause has to be true of at CREATE time.
- *
- * <p>Snowflake checks BOTH legs before the routine exists, measured on a live account:
+ * What an {@code IMPORTS = ('@stage/file.jar')} clause has to be true of at CREATE time. The account judges each
+ * import before the routine exists (live-verified):
  *
  * <pre>
+ *   IMPORTS=('@stg')                           IMPORT must specify the path of a file on a stage, but only …
  *   IMPORTS=('@nosuchstage/handlers.jar')      Stage 'DB.SCHEMA.NOSUCHSTAGE' does not exist or not authorized.
- *   IMPORTS=('@stg/handlers.jar'), no such jar Remote file 'handlers.jar' was not found. …
+ *   IMPORTS=('@stg/lib/a.jar'), no such jar    Remote file 'lib/a.jar' was not found. …
  * </pre>
- *
- * <p>Frostlake checked neither, so a routine could be created against a stage that was never made and
- * only fail — if at all — when something tried to load the handler.
  */
 public final class RoutineImports {
 
@@ -43,18 +43,25 @@ public final class RoutineImports {
     }
 
     /**
-     * Refuse an import whose stage or file is missing.
+     * Refuse an import whose stage or file is missing, in the order the imports are written (live-verified): an
+     * import that names a stage and no file below it ({@code @stg}, {@code @stg/}, {@code @~}) is refused before
+     * its stage is looked for, a stage that is not there — a table's stage among them, which is there while its
+     * table is — and then a file the stage does not hold, named by its path below the stage as written. A path
+     * that ends in a slash names a directory, which is not judged here.
      *
-     * <p>User stages ({@code @~}) and table stages ({@code @%name}) are not modelled in the catalog, and
-     * a bare path with no {@code @} is a local file the loader resolves itself; both are left alone
-     * rather than guessed at.
+     * <p>A stage whose files the engine cannot see — an external URL it does not resolve — is left alone, and so
+     * is a path with no {@code @}, a local file the loader resolves itself.
+     *
+     * @param imports the imports as written
+     * @param catalog the catalog the stages resolve in
+     * @param stages  where the stages the engine keeps itself hold their files, or null
      */
-    public static void validate(final List<String> imports, final Catalog catalog) {
+    public static void validate(final List<String> imports, final Catalog catalog, final ImportLocalizer stages) {
         if (imports == null || imports.isEmpty() || catalog == null) {
             return;
         }
         for (final String entry : imports) {
-            validateOne(entry, catalog);
+            validateOne(entry, catalog, stages);
         }
     }
 
@@ -96,7 +103,7 @@ public final class RoutineImports {
             + (slash >= 0 ? trimmed.substring(slash) : "");
     }
 
-    private static void validateOne(final String entry, final Catalog catalog) {
+    private static void validateOne(final String entry, final Catalog catalog, final ImportLocalizer stages) {
         if (entry == null) {
             return;
         }
@@ -108,28 +115,58 @@ public final class RoutineImports {
         final int slash = reference.indexOf('/');
         final String stageName = slash >= 0 ? reference.substring(0, slash) : reference;
         final String relative = slash >= 0 ? reference.substring(slash + 1) : "";
-        if (stageName.isEmpty() || stageName.startsWith("~") || stageName.startsWith("%")) {
-            return;
-        }
-
-        final Stage stage = resolveStage(stageName, catalog);
-        if (stage == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(stageName, catalog)));
-        }
         if (relative.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.inline("IMPORT must specify the path of a file on a"
+                + " stage, but only the stage name '" + stageName + "' was provided."));
+        }
+        if (stageName.isEmpty()) {
             return;
         }
-        // A stage whose backing directory the engine cannot see (an external URL it does not resolve)
-        // can answer nothing about its files, so there is nothing to refuse.
-        if (stage.getLocalPath() == null) {
+        if (stageName.startsWith("%")) {
+            requireTableOf(stageName, catalog);
+        } else if (!stageName.startsWith("~")) {
+            final Stage stage = resolveStage(stageName, catalog);
+            if (stage == null) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(stageName, catalog)));
+            }
+            if (stage.getLocalPath() != null) {
+                if (!relative.endsWith("/") && !stage.fileExists(relative)) {
+                    throw new RuntimeException(missingFile(relative));
+                }
+                return;
+            }
+        }
+        if (relative.endsWith("/") || stages == null) {
             return;
         }
-        if (!stage.fileExists(relative)) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "Remote file '" + fileNameOf(relative) + "' was not found. If you are running a copy"
-                + " command, please make sure files are not deleted when they are being loaded or files"
-                + " are not being loaded into two different tables concurrently with auto purge option."));
+        final Path kept = stages.keptStageFile(trimmed);
+        if (kept != null && !Files.isRegularFile(kept)) {
+            throw new RuntimeException(missingFile(relative));
         }
+    }
+
+    /** A table's stage is there while its table is: one of a table that is not is a stage that does not exist. */
+    private static void requireTableOf(final String stageName, final Catalog catalog) {
+        final String tableName = stageName.substring(1);
+        boolean held = false;
+        try {
+            final String[] parts = SqlIdentifiers.canonicalTextParts(tableName);
+            held = parts.length > 0 && catalog.resolveOwningSchema(tableName).hasTable(parts[parts.length - 1]);
+        } catch (final RuntimeException missing) {
+            held = false;
+        }
+        if (!held) {
+            final int dot = tableName.lastIndexOf('.');
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage",
+                qualified(tableName.substring(0, dot + 1) + "%" + tableName.substring(dot + 1), catalog)));
+        }
+    }
+
+    /** The account's sentence for a stage that holds no file at an import's path, the path as written. */
+    private static String missingFile(final String relative) {
+        return "Remote file '" + relative + "' was not found. If you are running a copy command, please make sure"
+            + " files are not deleted when they are being loaded or files are not being loaded into two different"
+            + " tables concurrently with auto purge option.";
     }
 
     private static Stage resolveStage(final String stageName, final Catalog catalog) {
@@ -151,11 +188,5 @@ public final class RoutineImports {
             return stageName.toUpperCase(Locale.ROOT);
         }
         return database + "." + schema + "." + stageName.toUpperCase(Locale.ROOT);
-    }
-
-    /** Live reports the file's own name, not the path it sat under. */
-    private static String fileNameOf(final String relative) {
-        final int slash = relative.lastIndexOf('/');
-        return slash >= 0 ? relative.substring(slash + 1) : relative;
     }
 }

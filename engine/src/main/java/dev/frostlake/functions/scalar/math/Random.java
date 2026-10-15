@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.math;
 
+import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
@@ -33,9 +34,12 @@ import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * RANDOM([seed]) — a pseudo-random signed 64-bit integer (not a fraction in [0, 1)). Without a seed
- * each call is independent; with a seed the value is deterministic, so a constant seed yields the same
- * value for every row (matching Snowflake). java.util.Random is fully qualified because this class
- * shadows that name.
+ * each call is independent. With a seed each ROW draws its own value from the seed: rows differ, every
+ * call with that seed in one row agrees, and a relation that numbers its rows from the first draws the
+ * same sequence again — two UNION ALL arms over one table repeat each other's values (live-verified, as
+ * documented: "RANDOM returns a different value for each row, even though the seed is the same"). The
+ * values are this engine's own; the account's generator promises none. java.util.Random is fully
+ * qualified because this class shadows that name.
  *
  * <p>The seedless path is genuinely random, as Snowflake's is. It once returned a SplitMix64 scramble
  * of a monotonic counter for test reproducibility; that was removed because nothing depended on it —
@@ -50,10 +54,14 @@ public class Random extends BuiltInFunction {
     // and a refusal listing it as an argument spells the same pair.
     public Random() { super("RANDOM", new NumericType("NUMBER", 19, 0)); }
 
+    /** How far a seed moves from one row to the next: odd, so the rows of a statement never share a seed. */
+    private static final long ROW_STEP = 0x9E3779B97F4A7C15L;
+
     @Override
     public Object evaluate(final List<Object> args) {
         if (!args.isEmpty()) {
-            return new java.util.Random(seedOf(args.get(0))).nextLong();
+            // The row's place (see RowOrdinal) moves the seed by an odd step, so no two rows share one.
+            return new java.util.Random(seedOf(args.get(0)) + RowOrdinal.current() * ROW_STEP).nextLong();
         }
         return ThreadLocalRandom.current().nextLong();
     }

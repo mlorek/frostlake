@@ -18,11 +18,15 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
 
 /** Accumulator for {@link Kurtosis}. */
 public class KurtosisAccumulator implements AggregateFunction.Accumulator {
+    /** The fractional digits of the answer's type, NUMBER(38,12). */
+    private static final int SCALE = 12;
+
     private final List<Double> values = new ArrayList<>();
 
     @Override
@@ -50,8 +54,13 @@ public class KurtosisAccumulator implements AggregateFunction.Accumulator {
         for (final Double value : values) {
             sum4 += Math.pow((value.doubleValue() - mean) / stddev, 4);
         }
-        return (double) n * (n + 1) / ((n - 1) * (n - 2) * (n - 3)) * sum4
+        final double kurtosis = (double) n * (n + 1) / ((n - 1) * (n - 2) * (n - 3)) * sum4
             - 3.0 * (n - 1) * (n - 1) / ((n - 2) * (n - 3));
+        if (Double.isNaN(kurtosis) || Double.isInfinite(kurtosis)) {
+            return null;
+        }
+        // The answer is a NUMBER of twelve fractional digits.
+        return BigDecimal.valueOf(kurtosis).setScale(SCALE, RoundingMode.HALF_UP);
     }
 
     @Override

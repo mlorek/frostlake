@@ -96,7 +96,9 @@ public class CopyPurgeTest {
 
     /** The directory backing {@code @%<table>} for a table in the test schema. */
     private Path tableStageDir(final String table) {
-        return internalRoot.resolve("tables").resolve("DB.S." + table.toUpperCase(Locale.ROOT));
+        final Path dir = engine.getExecutor().resolveCopyBaseDir("@%" + table);
+        assertEquals("DB.S." + table.toUpperCase(Locale.ROOT), dir.getFileName().toString());
+        return dir;
     }
 
     private void assertStaged(final Path stageDir, final String fileName) {
@@ -383,7 +385,7 @@ public class CopyPurgeTest {
         engine.executeQuery("COPY INTO t FROM @~/p141 FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) PURGE = TRUE");
 
         assertEquals(2, count("t"));
-        final File[] userDirs = internalRoot.resolve("users").toFile().listFiles();
+        final File[] userDirs = engine.getExecutor().resolveCopyBaseDir("@~").getParent().toFile().listFiles();
         assertTrue(userDirs != null && userDirs.length == 1, "exactly one user stage dir expected");
         assertPurged(userDirs[0].toPath().resolve("p141"), "u.csv");
     }

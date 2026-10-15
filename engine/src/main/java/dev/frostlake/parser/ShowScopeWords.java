@@ -55,6 +55,28 @@ public final class ShowScopeWords {
     }
 
     /**
+     * Whether a scope's name is one unquoted word that names a kind of object, so that the name after it is that
+     * object's — which may carry a signature — and no instance of a class.
+     *
+     * @param first the first token of the scope's name
+     * @param last  the last token of the scope's name
+     * @return whether the name is such a kind's word
+     */
+    public static boolean namesKind(final Token first, final Token last) {
+        if (first == null || first != last || first.getType() == FrostlakeLexer.QUOTED_IDENTIFIER
+                || ClassNameWords.isClassWord(first)) {
+            return false;
+        }
+        final String upper = first.getText().toUpperCase(Locale.ROOT);
+        for (final String kind : NAMING_KINDS) {
+            if (kind.equals(upper)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Whether the parse refused {@code refused} because the scope written just before it reads no name: the token
      * after a keyword written alone as a SHOW listing's scope ({@link #takesInstance}).
      *

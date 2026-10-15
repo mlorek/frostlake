@@ -33,10 +33,11 @@ public class TimeFromParts extends BuiltInFunction {
                 return null;
             }
         }
-        final int hour   = ((Number) args.get(0)).intValue();
-        final int minute = ((Number) args.get(1)).intValue();
-        final int second = ((Number) args.get(2)).intValue();
-        final int nanos  = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 0;
+        // Each part is read as a date's parts are: a fraction rounds half away from zero, a text is its number.
+        final int hour   = DateFromParts.part(args.get(0));
+        final int minute = DateFromParts.part(args.get(1));
+        final int second = DateFromParts.part(args.get(2));
+        final int nanos  = args.size() > 3 && args.get(3) != null ? DateFromParts.part(args.get(3)) : 0;
         // Components beyond their range carry over, and the total wraps within the day
         // (25 h -> 01:00:00), rather than erroring.
         long total = hour * 3600L + minute * 60L + second + Math.floorDiv(nanos, 1_000_000_000L);

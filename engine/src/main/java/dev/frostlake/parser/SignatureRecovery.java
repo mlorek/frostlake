@@ -31,8 +31,10 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 /**
- * How the account reads the signature a DROP or a DESCRIBE writes after a table's or a view's name, and the tail after
- * it, when something in them is wrong: every line it reports, in its order.
+ * How the account reads the signature a DROP or a DESCRIBE writes after its object's name, and the tail after it,
+ * when something in them is wrong: every line it reports, in its order. The reading is the same after every kind —
+ * a table, a secret, a policy, a warehouse or a role alike — and a DESCRIBE's properties are read this way with
+ * no signature before them too.
  *
  * <p>The account reads the signature as a list of data types and recovers from a fault the way a recursive-descent
  * reader with single-token repair does. At a token it cannot match it first drops that token when the one after it is
@@ -70,8 +72,19 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  * repair looked one token ahead: {@code DESCRIBE TABLE t1 ((a), b) /* x} is the '(', the first ')', the lexer's line
  * and then the second ')' (live-verified).
  *
- * <p>A shape outside this reading — another statement after a ';', a DEFAULT as an item, an expression as a property
- * value, a text the account's lexer refuses twice — makes it answer nothing, and the parse's own lines stand.
+ * <p>DEFAULT heading an item of the signature reads as a field's name does — a type is due after it, so
+ * {@code (DEFAULT x)} describes the table and {@code (DEFAULT)} names the ')' — while a type that is the word
+ * DEFAULT is refused where it stands; an ARRAY's and an OBJECT's parentheses are theirs unless a TABLE or a SELECT
+ * follows the '('. The word TIMESTAMP predicts its longer spellings, so a '.' after it is named there and again by
+ * the list: {@code DESCRIBE TABLE t1 (TIMESTAMP.a)} is the '.' twice and then the ')' (all live-verified).
+ *
+ * <p>A SHOW listing's scope reads the same signature after its name, and nothing of a DROP's tail: what follows
+ * the list there is the listing's own modifiers, so a reading whose first fault lies past the list answers nothing
+ * (live-verified).
+ *
+ * <p>A shape outside this reading — another statement after a ';', a TIMESTAMP followed by a word or a number, an
+ * expression as a property value, a text the account's lexer refuses twice — makes it answer nothing, and the
+ * parse's own lines stand.
  */
 final class SignatureRecovery {
 
@@ -142,15 +155,52 @@ final class SignatureRecovery {
     private final List<String> reported = new ArrayList<>();
     private boolean lexerLineGiven;
     private ParserRuleContext statement;
+    /** Whether no signature is written: a DESCRIBE's properties stand straight after the object's name. */
+    private boolean bare;
     private boolean inBlock;
+    /** Whether the statement is a SHOW listing, whose scope the signature follows. */
+    private boolean listing;
+    /** Whether the statement stands in the body of an IF, a CASE or a loop, which is given up with it. */
+    private boolean inBody;
+    private boolean givesConstructUp;
     private boolean readsNoFurther;
+    /** Whether the statement ends at a ';' written inside its brackets, after which the account reads nothing. */
+    private boolean endsInsideBrackets;
+    /** The names of the properties read, in the order written, and the first token of each one's value. */
+    private final List<Token> propertyNames = new ArrayList<>();
+    private final List<Token> propertyValues = new ArrayList<>();
     private int pathLimit;
     private int at;
     private boolean recovering;
     private int lastErrorIndex = -1;
 
-    private SignatureRecovery(final SignatureTokens read, final List<Token> tokens, final boolean describe,
+    private SignatureRecovery(final SignatureTokens read, final List<Token> written, final boolean describe,
                               final boolean identifierName) {
+        // The account's statement ends at its first ';', inside brackets too: nothing after one written there is
+        // read, by this statement or as another (DESCRIBE TABLE t1 (a;x) is the ';' alone).
+        int depth = 0;
+        int cut = -1;
+        for (int i = 0; i < written.size() - 1 && cut < 0; i++) {
+            final int type = written.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN) {
+                depth--;
+            } else if (type == FrostlakeLexer.SEMI) {
+                if (depth <= 0) {
+                    break;
+                }
+                cut = i;
+            }
+        }
+        final List<Token> tokens;
+        if (cut < 0) {
+            tokens = written;
+        } else {
+            tokens = new ArrayList<>(written.subList(0, cut + 1));
+            tokens.add(written.get(written.size() - 1));
+            this.endsInsideBrackets = true;
+        }
         this.tokens = tokens;
         this.lexerLineAt = read.lexerLineAt();
         if (read.lexerLineAt() < 0) {
@@ -174,7 +224,9 @@ final class SignatureRecovery {
      * @return the reading, or null
      */
     static SignatureRecovery of(final FrostlakeParser.SqlScriptContext script, final String sql) {
-        final int open = signatureOpen(script, sql);
+        final int signature = signatureOpen(script, sql);
+        final int properties = signature >= 0 ? -1 : propertiesOpen(script, sql);
+        final int open = signature >= 0 ? signature : properties;
         if (open < 0) {
             return null;
         }
@@ -193,10 +245,15 @@ final class SignatureRecovery {
         });
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();
-        final Token first = open < stream.size() ? stream.get(open) : null;
-        if (first == null || first.getType() != FrostlakeLexer.LPAREN
+        int from = open;
+        while (properties >= 0 && from < stream.size() && stream.get(from).getChannel() != Token.DEFAULT_CHANNEL) {
+            from++;
+        }
+        final Token first = from < stream.size() ? stream.get(from) : null;
+        if (first == null || (properties < 0) != (first.getType() == FrostlakeLexer.LPAREN)
+                || properties >= 0 && !in(classOf(first), PROPERTY)
                 || firstUnlexed[0] >= 0 && firstUnlexed[0] < first.getStartIndex()) {
-            // No signature, or a text refused at the lexer before one.
+            // No signature and no word a property opens with, or a text refused at the lexer before one.
             return null;
         }
         final SignatureTokens read = SignatureTokens.read(sql, first.getStartIndex());
@@ -206,7 +263,34 @@ final class SignatureRecovery {
         final ParserRuleContext name = objectName(script.flowChain().get(0).statement().get(0));
         final boolean identifierName = name.getChildCount() == 1 && name.getChild(0) instanceof TerminalNode
             && ((TerminalNode) name.getChild(0)).getSymbol().getType() == FrostlakeParser.KW_IDENTIFIER_OPEN;
-        return new SignatureRecovery(read, read.tokens(), isDescribe(script), identifierName);
+        final SignatureRecovery reading = new SignatureRecovery(read, read.tokens(), isDescribe(script), identifierName);
+        reading.bare = properties >= 0;
+        reading.listing = script.flowChain().get(0).statement().get(0).showStatement() != null;
+        return reading;
+    }
+
+    /**
+     * The index of the token after the object's name of a script that is one DESCRIBE of a table or a view with no
+     * signature: where its properties begin, which the account reads as it reads them after a signature. -1 for any
+     * other script.
+     */
+    private static int propertiesOpen(final FrostlakeParser.SqlScriptContext script, final String sql) {
+        if (script == null || sql == null || script.flowChain().isEmpty()
+                || script.flowChain().get(0).statement().isEmpty()) {
+            return -1;
+        }
+        final FrostlakeParser.StatementContext statement = script.flowChain().get(0).statement().get(0);
+        final ParserRuleContext name = isDescribe(statement) ? objectName(statement) : null;
+        if (name == null || name.getStop() == null) {
+            return -1;
+        }
+        for (final Token token : spokenTokens(sql)) {
+            // One statement alone: a script of several is read statement by statement.
+            if (token.getType() == FrostlakeLexer.SEMI) {
+                return -1;
+            }
+        }
+        return name.getStop().getTokenIndex() + 1;
     }
 
     /**
@@ -238,7 +322,14 @@ final class SignatureRecovery {
         collectStatements(script, statements);
         List<Token> spoken = null;
         for (final FrostlakeParser.StatementContext statement : statements) {
-            final ParserRuleContext name = objectName(statement);
+            final ParserRuleContext signed = objectName(statement);
+            // A block's CREATE that ends in no query reads a word after it as a property's name, as the same
+            // statement does on its own: BEGIN CREATE TABLE t (x INT) y z; END is the z, the '=' it wants.
+            final boolean wordAfter = signed == null && statement.getStop() != null
+                && statement.getStop().getType() != FrostlakeLexer.SEMI
+                && statement.getStart().getType() == FrostlakeLexer.CREATE && standsInABlock(statement)
+                && UnseparatedStatementOpener.readsWordAsProperty(statement);
+            final ParserRuleContext name = wordAfter ? statement : signed;
             if (name == null || name.getStop() == null) {
                 continue;
             }
@@ -262,7 +353,11 @@ final class SignatureRecovery {
                     break;
                 }
             }
-            if (open == null || open.getType() != FrostlakeLexer.LPAREN) {
+            // A DESCRIBE with no signature is read from its first property.
+            final boolean properties = open != null && (wordAfter || isDescribe(statement))
+                && open.getType() != FrostlakeLexer.LPAREN && open.getType() != FrostlakeLexer.END
+                && in(classOf(open), PROPERTY);
+            if (open == null || (wordAfter || open.getType() != FrostlakeLexer.LPAREN) && !properties) {
                 continue;
             }
             final SignatureTokens read = SignatureTokens.read(sql, open.getStartIndex());
@@ -292,14 +387,36 @@ final class SignatureRecovery {
             final boolean identifierName = name.getChildCount() == 1 && name.getChild(0) instanceof TerminalNode
                 && ((TerminalNode) name.getChild(0)).getSymbol().getType() == FrostlakeParser.KW_IDENTIFIER_OPEN;
             final SignatureRecovery reading = new SignatureRecovery(read, region,
-                statement.describeStatement() != null, identifierName);
+                wordAfter || isDescribe(statement), identifierName);
             reading.statement = statement;
+            reading.bare = properties;
+            reading.listing = statement.showStatement() != null;
+            boolean nearest = true;
             for (ParserRuleContext up = statement.getParent(); up != null && !reading.inBlock; up = up.getParent()) {
                 reading.inBlock = up instanceof FrostlakeParser.BeginEndBlockContext;
+                if (nearest && (up instanceof FrostlakeParser.IfStatementContext
+                        || up instanceof FrostlakeParser.CaseStatementContext
+                        || up instanceof FrostlakeParser.LoopStatementContext
+                        || up instanceof FrostlakeParser.ForStatementContext
+                        || up instanceof FrostlakeParser.WhileStatementContext
+                        || up instanceof FrostlakeParser.RepeatStatementContext)) {
+                    reading.inBody = true;
+                }
+                nearest = nearest && !(up instanceof FrostlakeParser.BeginEndBlockContext)
+                    && !(up instanceof FrostlakeParser.ExceptionHandlerContext) && !reading.inBody;
             }
             readings.add(reading);
         }
         return readings;
+    }
+
+    private static boolean standsInABlock(final ParserRuleContext statement) {
+        for (ParserRuleContext up = statement.getParent(); up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.BeginEndBlockContext) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void collectStatements(final ParseTree node, final List<FrostlakeParser.StatementContext> into) {
@@ -353,13 +470,50 @@ final class SignatureRecovery {
     }
 
     /**
+     * Whether the statement, one of a control construct's body, was given up with that construct at its fault.
+     *
+     * @return true when the lines after the reading's own are the block's
+     */
+    boolean givesConstructUp() {
+        return givesConstructUp;
+    }
+
+    /**
      * Whether the statement's end was itself refused, so that nothing after the statement is read at all:
      * {@code DROP TABLE t (INT) x; SELECT 1 x y} is the first x alone.
      *
      * @return true when the reading gave up at the statement's end
      */
     boolean readsNoFurther() {
-        return readsNoFurther;
+        return readsNoFurther || endsInsideBrackets;
+    }
+
+    /**
+     * What the account refuses of the properties this reading read whole, as it judges them before the object is
+     * looked up: the first name it does not know — {@code invalid parameter 'x'}, the name as written, a backticked
+     * one with its backticks — or a TYPE given a backticked name; null when it refuses none this reading can tell.
+     * Asked where this grammar cannot read a text the account reads: a stage reference of the account's own
+     * spelling ({@code x = @s!=x}), a backticked name (live-verified).
+     *
+     * @return the refusal's sentence, or null
+     */
+    String propertyRefusal() {
+        for (int i = 0; i < propertyNames.size(); i++) {
+            final Token name = propertyNames.get(i);
+            if (!"TYPE".equalsIgnoreCase(name.getText())) {
+                return "invalid parameter '" + name.getText() + "'";
+            }
+            final Token value = propertyValues.get(i);
+            if (value.getType() == SignatureTokens.BACKTICKED_NAME) {
+                return "invalid value [" + value.getText() + "] for parameter 'TYPE'";
+            }
+            final String word = value.getText();
+            if (!"STAGE".equalsIgnoreCase(word) && !"COLUMNS".equalsIgnoreCase(word)) {
+                // Another spelling of a TYPE's value is the handler's to judge.
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
@@ -427,7 +581,31 @@ final class SignatureRecovery {
         } catch (final SignatureFault unmodelled) {
             return null;
         }
+        if (listing && !reported.isEmpty() && firstFaultIsPastTheSignature()) {
+            // A listing's modifiers follow its scope: only the signature is read here.
+            return new ArrayList<>();
+        }
         return reported;
+    }
+
+    /** Whether the first line reported names a token after the parenthesis that closes the signature. */
+    private boolean firstFaultIsPastTheSignature() {
+        int depth = 0;
+        Token close = null;
+        for (int i = 0; i < tokens.size() && close == null; i++) {
+            final int type = tokens.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN && --depth == 0) {
+                close = tokens.get(i);
+            }
+        }
+        final int[] first = SyntaxErrorListener.sentenceCoordinates(reported.get(0));
+        if (close == null || first == null) {
+            return false;
+        }
+        final int[] closes = LeadingCommentOffset.rebase(close.getLine(), close.getCharPositionInLine());
+        return first[0] > closes[0] || first[0] == closes[0] && first[1] > closes[1];
     }
 
     /**
@@ -464,37 +642,116 @@ final class SignatureRecovery {
     }
 
     /**
-     * The object name a DROP or a DESCRIBE reads when its kind is one whose signature this reading models — a table
-     * or a view of any kind, a stream, a task, a pipe or a sequence, and for a DROP a tag, a file format, a policy,
-     * an alert or a search service too — or null for any other statement.
+     * The object name a DROP or a DESCRIBE reads when its kind is one the account reads a signature after — every
+     * kind but a stage, whose '(' is refused, a routine, whose parentheses are its own, and the few a DESCRIBE names
+     * with words of its own (an integration, an external volume, a user, an account, a result) — or null for any
+     * other statement. The account reads the signature, and a DESCRIBE's properties, alike after all of them.
      */
     private static ParserRuleContext objectName(final FrostlakeParser.StatementContext statement) {
-        final FrostlakeParser.DescribeStatementContext describe = statement.describeStatement();
-        if (describe != null && describe.objectName() != null
-                && (describe.TABLE() != null || describe.VIEW() != null || describe.STREAM() != null
-                    || describe.TASK() != null || describe.PIPE() != null || describe.SEQUENCE() != null)) {
-            return describe.objectName();
+        final ParserRuleContext command = signedCommand(statement);
+        if (command == null) {
+            return null;
         }
-        final FrostlakeParser.DdlStatementContext ddl = statement.ddlStatement();
-        final FrostlakeParser.DropStatementContext drop = ddl == null ? null : ddl.dropStatement();
-        if (drop != null && drop.objectName() != null
-                && (drop.TABLE() != null || drop.VIEW() != null || drop.STREAM() != null || drop.TASK() != null
-                    || drop.PIPE() != null || drop.SEQUENCE() != null || drop.TAG() != null || drop.FORMAT() != null
-                    || drop.POLICY() != null && (drop.MASKING() != null || drop.ACCESS() != null)
-                    || drop.ALERT() != null || drop.CORTEX() != null)) {
-            return drop.objectName();
+        for (int i = 0; i < command.getChildCount(); i++) {
+            final ParseTree child = command.getChild(i);
+            if (child instanceof FrostlakeParser.ObjectNameContext || child instanceof FrostlakeParser.QualifiedNameContext
+                    || child instanceof FrostlakeParser.IdentifierContext) {
+                return (ParserRuleContext) child;
+            }
+            if (child instanceof FrostlakeParser.DropInstanceNameContext) {
+                return ((FrostlakeParser.DropInstanceNameContext) child).objectName();
+            }
+            if (child instanceof FrostlakeParser.ObjectSignatureContext) {
+                break;
+            }
         }
         return null;
     }
 
-    private static ParseTree nextSibling(final ParserRuleContext node) {
+    /** The DROP or the DESCRIBE a statement is, when its kind is one a signature may follow the name of. */
+    private static ParserRuleContext signedCommand(final FrostlakeParser.StatementContext statement) {
+        final FrostlakeParser.DescribeStatementContext describe = statement.describeStatement() != null
+            ? statement.describeStatement() : taskBodyDescribe(statement);
+        if (describe != null) {
+            return describe.STAGE() != null || describe.FUNCTION() != null || describe.PROCEDURE() != null
+                || describe.INTEGRATION() != null || describe.VOLUME() != null || describe.USER() != null
+                || describe.OPTIMIZATION() != null || describe.RESULT() != null || describe.ACCOUNT() != null
+                || describe.REPOSITORY() != null || describe.IDENTIFIER() != null ? null : describe;
+        }
+        final FrostlakeParser.SecurityObjectListingContext listing = statement.securityObjectListing();
+        if (listing != null) {
+            return listing.DESCRIBE() != null || listing.DESC() != null ? listing : null;
+        }
+        final FrostlakeParser.ShowStatementContext show = statement.showStatement();
+        if (show != null) {
+            // A listing's scope reads a signature after its name as a DROP reads one after its object's; what
+            // follows the signature is the listing's own tail (see lines).
+            // The lock, transaction and replication listings read no signature after their scope.
+            return show.IN() != null && show.objectName() != null && show.showInstanceName() == null
+                && show.LOCKS() == null && show.TRANSACTIONS() == null && show.replicationListingKind() == null
+                ? show : null;
+        }
+        final FrostlakeParser.AccessControlStatementContext access = statement.accessControlStatement();
+        if (access != null) {
+            return access.DROP() != null && access.DATABASE() != null && access.ROLE() != null ? access : null;
+        }
+        final FrostlakeParser.DdlStatementContext ddl = statement.ddlStatement();
+        if (ddl == null) {
+            return null;
+        }
+        final FrostlakeParser.DropStatementContext drop = ddl.dropStatement();
+        if (drop != null) {
+            return drop.STAGE() != null || drop.FUNCTION() != null || drop.PROCEDURE() != null ? null : drop;
+        }
+        ParserRuleContext other = ddl.securityObjectStatement();
+        if (other == null) {
+            other = ddl.notebookStatement();
+        }
+        if (other == null) {
+            other = ddl.streamlitStatement();
+        }
+        if (other == null && ddl.dropClassStatement() != null
+                && (ddl.dropClassStatement().unmodelledKind() != null
+                    || ddl.dropClassStatement().dropKindWord != null
+                    || ddl.dropClassStatement().droppedClass != null)) {
+            other = ddl.dropClassStatement();
+        }
+        return other != null && other.getStart() != null && other.getStart().getType() == FrostlakeLexer.DROP
+            ? other : null;
+    }
+
+    /** Whether a statement is a DESCRIBE of any kind, or a task whose body is one. */
+    private static boolean isDescribe(final FrostlakeParser.StatementContext statement) {
+        final FrostlakeParser.SecurityObjectListingContext listing = statement.securityObjectListing();
+        return statement.describeStatement() != null || taskBodyDescribe(statement) != null
+            || listing != null && (listing.DESCRIBE() != null || listing.DESC() != null);
+    }
+
+    /**
+     * The DESCRIBE a CREATE TASK's body is, which the account reads as the DESCRIBE it is —
+     * {@code CREATE TASK … AS DESCRIBE TABLE t (a b) x} is the b and the end of the input — or null. A DROP as a
+     * body is not read on this way: its faulty signature is one line (live-verified).
+     */
+    private static FrostlakeParser.DescribeStatementContext taskBodyDescribe(
+            final FrostlakeParser.StatementContext statement) {
+        final FrostlakeParser.DdlStatementContext ddl = statement.ddlStatement();
+        final FrostlakeParser.CreateStatementContext create = ddl == null ? null : ddl.createStatement();
+        final FrostlakeParser.TaskBodyContext body = create == null || create.TASK() == null ? null : create.taskBody();
+        final FrostlakeParser.TaskBodyStatementContext written = body == null ? null : body.taskBodyStatement();
+        return written == null ? null : written.describeStatement();
+    }
+
+    private static ParseTree nextSibling(final ParserRuleContext name) {
+        // An instance's name is read inside a rule of its own: what follows the name follows that rule.
+        final ParserRuleContext node = name.getParent() instanceof FrostlakeParser.DropInstanceNameContext
+            ? name.getParent() : name;
         final ParserRuleContext parent = node.getParent();
         final int index = parent.children.indexOf(node);
         return index + 1 < parent.getChildCount() ? parent.getChild(index + 1) : null;
     }
 
     private static boolean isDescribe(final FrostlakeParser.SqlScriptContext script) {
-        return script.flowChain().get(0).statement().get(0).describeStatement() != null;
+        return isDescribe(script.flowChain().get(0).statement().get(0));
     }
 
     /**
@@ -518,6 +775,7 @@ final class SignatureRecovery {
                         && nextType == FrostlakeLexer.VARYING
                     || type == FrostlakeLexer.TIMESTAMP && nextType != FrostlakeLexer.LPAREN
                         && nextType != FrostlakeLexer.COMMA && nextType != FrostlakeLexer.RPAREN
+                        && nextType != FrostlakeLexer.DOT
                     || type == FrostlakeLexer.FLOAT_LITERAL && next != null && nextType == FrostlakeLexer.DOT
                         && next.getStartIndex() == token.getStopIndex() + 1) {
                 return false;
@@ -541,9 +799,11 @@ final class SignatureRecovery {
                 consume();
             }
         } else if (describe) {
-            following.add(PROPERTY | EOR);
-            signature();
-            following.remove(following.size() - 1);
+            if (!bare) {
+                following.add(PROPERTY | EOR);
+                signature();
+                following.remove(following.size() - 1);
+            }
             properties();
         } else {
             // A block's statement is followed by another: after a fault the word at hand is read as that one's
@@ -551,11 +811,34 @@ final class SignatureRecovery {
             following.add(bit(DROP_OPTION) | (inBlock ? PROPERTY : 0L) | EOR);
             signature();
             following.remove(following.size() - 1);
-            if (la(1) == DROP_OPTION) {
+            final boolean faulty = recovering;
+            final boolean option = la(1) == DROP_OPTION;
+            if (option) {
                 matched();
-            } else if (inBlock && recovering && in(la(1), PROPERTY)) {
-                matched();
+            }
+            if (!option && inBlock && faulty && in(la(1), PROPERTY)) {
+                if (inBody || la(2) == SEMI) {
+                    // In a control construct's body the statement is given up with the construct, and so is the
+                    // block when the word is all that is left of the statement: what the rest then refuses is
+                    // read from the block around it (see BlockReadOn).
+                    givesConstructUp = true;
+                } else {
+                    matched();
+                    report(lt(1));
+                }
+                while (la(1) != EOF_CLASS && la(1) != SEMI) {
+                    consume();
+                }
+            } else if (inBlock && !faulty && in(la(1), PROPERTY)) {
+                // A word run in after a signature read whole is refused, and the token after it too, unless the
+                // statement ends there: then the block is given up as above.
                 report(lt(1));
+                if (la(2) == SEMI) {
+                    givesConstructUp = true;
+                } else {
+                    recovering = false;
+                    report(lt(2));
+                }
                 while (la(1) != EOF_CLASS && la(1) != SEMI) {
                     consume();
                 }
@@ -614,7 +897,26 @@ final class SignatureRecovery {
     }
 
     private void item() {
+        if (lt(1).getType() == FrostlakeLexer.DEFAULT) {
+            defaultItem();
+            return;
+        }
         type(LIST_END);
+    }
+
+    /** DEFAULT heading an item reads as a field's name does: a type is due after it, and a second DEFAULT is none. */
+    private void defaultItem() {
+        following.add(LIST_END);
+        try {
+            matched();
+            if (!in(la(1), ITEM_START) || lt(1).getType() == FrostlakeLexer.DEFAULT) {
+                throw fault(1);
+            }
+            dataType();
+        } catch (final SignatureFault fault) {
+            handle(fault);
+        }
+        following.remove(following.size() - 1);
     }
 
     /** One data type read by a rule of its own: a fault inside gives that type up and no more. */
@@ -666,7 +968,13 @@ final class SignatureRecovery {
             return;
         }
         if (kind == SCALE_TYPE || kind == LENGTH_TYPE || kind == PRECISION_TYPE) {
+            final boolean timestamp = lt(1).getType() == FrostlakeLexer.TIMESTAMP;
             matched();
+            if (timestamp && describe && la(1) == DOT && !recovering) {
+                // The word predicts its longer spellings: a '.' none of them reads is named there, and again by
+                // the list the type stands in.
+                reported.add(SyntaxErrorListener.sentence(lt(1)));
+            }
             if (la(1) == LPAREN && (la(2) == INT || la(2) == MINUS || kind == LENGTH_TYPE && la(2) == RPAREN)) {
                 typeParameters(kind);
             }
@@ -694,7 +1002,7 @@ final class SignatureRecovery {
         final int word = lt(1).getType();
         if (word == FrostlakeLexer.ARRAY || word == FrostlakeLexer.OBJECT) {
             matched();
-            if (la(1) == LPAREN && la(2) != TABLE) {
+            if (la(1) == LPAREN && la(2) != TABLE && lt(2).getType() != FrostlakeLexer.SELECT) {
                 matched();
                 if (word == FrostlakeLexer.ARRAY) {
                     element();
@@ -718,7 +1026,8 @@ final class SignatureRecovery {
         } else if (word == FrostlakeLexer.INTERVAL) {
             interval();
         } else {
-            throw unmodelled();
+            // DEFAULT where a type is due names no type.
+            throw fault(1);
         }
     }
 
@@ -817,7 +1126,7 @@ final class SignatureRecovery {
         return type == FrostlakeLexer.INT || type == FrostlakeLexer.INTEGER || type == FrostlakeLexer.BIGINT
             || type == FrostlakeLexer.SMALLINT || type == FrostlakeLexer.TINYINT || type == FrostlakeLexer.BYTEINT
             || type == FrostlakeLexer.FLOAT || type == FrostlakeLexer.FLOAT4 || type == FrostlakeLexer.FLOAT8
-            || type == FrostlakeLexer.DOUBLE || type == FrostlakeLexer.REAL;
+            || type == FrostlakeLexer.DOUBLE || type == FrostlakeLexer.REAL || type == FrostlakeLexer.BOOLEAN;
     }
 
     /** INTERVAL unit [(p [, s])] [TO unit [(p [, s])]]: a TO is read only with the unit after it. */
@@ -968,7 +1277,9 @@ final class SignatureRecovery {
                 report(lt(1));
                 consume();
             } else {
+                Token name = null;
                 if (in(la(1), PROPERTY)) {
+                    name = lt(1);
                     matched();
                 } else if (la(1) == EQ) {
                     // After a ',' an '=' is named as the name it lacks, and read.
@@ -977,6 +1288,10 @@ final class SignatureRecovery {
                     throw fault(1);
                 }
                 match(EQ, EQ_FOLLOW);
+                if (name != null) {
+                    propertyNames.add(name);
+                    propertyValues.add(lt(1));
+                }
                 value();
             }
         } catch (final SignatureFault fault) {
@@ -991,6 +1306,15 @@ final class SignatureRecovery {
      */
     private void value() {
         final int kind = la(1);
+        if (kind == EXPRESSION && predictsAnExpression()) {
+            // CASE and CAST predict an expression: the token no expression goes on with is refused before the word
+            // is read, and the word read again as a property.
+            throw fault(2);
+        }
+        if (kind == WHEN && (la(2) == EOF_CLASS || la(2) == SEMI)) {
+            matched();
+            return;
+        }
         if (kind == EXPRESSION || kind == WHEN || kind == COLON) {
             throw unmodelled();
         }
@@ -1005,6 +1329,25 @@ final class SignatureRecovery {
         } else {
             throw fault(1);
         }
+    }
+
+    /**
+     * Whether the CASE or the CAST at hand is followed by one of the tokens the account was asked about: the end of
+     * the statement or a number after either, a WHEN that ends the statement after CASE, a parenthesized number
+     * after CAST ({@code x = CASE} is the end of the input twice, {@code x = CAST(1 AS INT)} the '(' twice, the AS
+     * and the ')'; live-verified).
+     */
+    private boolean predictsAnExpression() {
+        final int word = lt(1).getType();
+        final int next = la(2);
+        if (word != FrostlakeLexer.CASE && word != FrostlakeLexer.CAST) {
+            return false;
+        }
+        if (next == EOF_CLASS || next == SEMI || next == INT || next == NUM) {
+            return true;
+        }
+        return word == FrostlakeLexer.CASE ? next == WHEN && (la(3) == EOF_CLASS || la(3) == SEMI)
+            : next == LPAREN && la(3) == INT;
     }
 
     /**
@@ -1025,6 +1368,19 @@ final class SignatureRecovery {
         }
         if (la(length + 1) == SESSION_VARIABLE) {
             throw unmodelled();
+        }
+        if (la(length + 1) == COLON) {
+            // A ':' after a word value is named where the value ends and again where the word, read as a
+            // property's name, wants its '='; the bind it opens then takes the rest of the statement
+            // (x = y : z is the ':' twice and nothing more).
+            final String colon = SyntaxErrorListener.sentence(lt(length + 1));
+            reported.add(colon);
+            reported.add(colon);
+            while (la(1) != EOF_CLASS && la(1) != SEMI) {
+                consume();
+            }
+            recovering = false;
+            return;
         }
         if (in(la(length + 1), REREAD_AFTER_WORD)) {
             throw fault(length + 1);

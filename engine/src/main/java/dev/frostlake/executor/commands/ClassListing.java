@@ -20,10 +20,12 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.ClassNameWords;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -38,6 +40,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import org.antlr.v4.runtime.Token;
 
 /**
  * {@code SHOW <class>}: the instances of a class, and the two listings the account names by a word of the same
@@ -50,7 +53,8 @@ import java.util.Set;
  * CLASSES an unsupported feature; a LIMIT 0 is refused before a class is looked up; a class that is missing before
  * its scope is read; and a scope as a schema-level listing's is — a name after IN ACCOUNT and a path after IN
  * DATABASE ask for a full search path, a schema's name of three parts names nothing, and a schema or a database
- * that does not exist is named by the class listings and not by the datasets'.
+ * that does not exist is named by the class listings and not by the datasets'. A scope that names a kind of object
+ * — a table, a view, a class, an application — holds nothing the three list (see {@link #refuseHolderScope}).
  */
 final class ClassListing {
 
@@ -95,10 +99,12 @@ final class ClassListing {
             if (!BuiltInClass.isBuiltIn(parts, catalog)) {
                 throw new RuntimeException(ShowScopeRefusal.missingClass(parts, catalog));
             }
+            refuseHolderScope(ctx, kind);
             refuseOverlongContainer(ctx);
             scope(ctx).schemas(catalog, false);
             return new ResultSet(columns(INSTANCE_COLUMNS), new ArrayList<Row>());
         }
+        refuseHolderScope(ctx, kind);
         final List<Schema> schemas = scope(ctx).schemas(catalog, kind == ClassListingKind.DATASETS);
         if (kind == ClassListingKind.DATASETS) {
             return new ResultSet(columns(ctx.TERSE() != null ? TERSE_DATASET_COLUMNS : DATASET_COLUMNS),
@@ -123,8 +129,16 @@ final class ClassListing {
                 throw new RuntimeException(SqlCompilationError.of(ShowScopeRefusal.syntaxErrorAt(
                     tail.PRIVILEGES().getSymbol(), tail.PRIVILEGES().getText())));
             }
+            if (ctx.scopeKind != null
+                    && BuiltInClass.isBuiltIn(ClassNameParts.of(ctx.className(), queryExecutor), catalog)) {
+                // A class that exists has its scope judged before the page size; a missing one is looked up after.
+                refuseHolderScope(ctx, kind);
+            }
             requirePositiveLimit(tail);
             return;
+        }
+        if (ctx.scopeKind != null || ctx.scopeClass != null) {
+            refuseHolderScope(ctx, kind);
         }
         refuseOverlongContainer(ctx);
         requirePositiveLimit(tail);
@@ -147,6 +161,47 @@ final class ClassListing {
     private static void requirePositiveLimit(final FrostlakeParser.ShowTailContext tail) {
         if (tail != null && tail.LIMIT() != null && tail.INTEGER_LITERAL() != null) {
             ShowPageSize.require(tail.INTEGER_LITERAL().getText());
+        }
+    }
+
+    /**
+     * A scope that names a kind of object rather than a container. A table and a view hold nothing a class
+     * statement lists, named or not; a class holds no dataset and no class, and an instance listing looks the
+     * class up as it looks its own up; an application is looked up, and none is modelled — the datasets' listing
+     * names nothing it misses (live-verified).
+     */
+    private void refuseHolderScope(final FrostlakeParser.ShowClassStatementContext ctx, final ClassListingKind kind) {
+        final String noun = kind == ClassListingKind.DATASETS ? "DATASET"
+            : kind == ClassListingKind.CLASSES ? "CLASS" : "INSTANCE";
+        if (ctx.scopeKind != null) {
+            throw ShowScopeKindRefusal.cannotShow(noun, ctx.scopeKind.getText().toUpperCase(Locale.ROOT));
+        }
+        if (ctx.scopeClass != null) {
+            if (kind != ClassListingKind.INSTANCES) {
+                throw ShowScopeKindRefusal.cannotShow(noun, "CLASS");
+            }
+            final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+            if (BuiltInClass.isBuiltIn(parts, catalog)) {
+                throw ShowScopeKindRefusal.cannotShow(noun, "CLASS");
+            }
+            throw new RuntimeException(ShowScopeRefusal.missingClass(parts, catalog));
+        }
+        if (ctx.scopeApplication != null) {
+            final FrostlakeParser.ObjectNameContext written = ctx.objectName();
+            if (ctx.PACKAGE() == null && written.getStart() == written.getStop()
+                    && written.getStart().getType() == FrostlakeLexer.PACKAGE) {
+                // APPLICATION PACKAGE with no name after it: the package's name is missing where the tail begins.
+                final Token next = ctx.showTail().getStart();
+                throw new RuntimeException(SqlCompilationError.of(ShowScopeRefusal.syntaxErrorAt(next,
+                    next.getType() == Token.EOF ? "<EOF>" : next.getText())));
+            }
+            final String[] application = queryExecutor.resolveObjectNameParts(ctx.objectName());
+            if (kind == ClassListingKind.DATASETS || application.length > 1) {
+                throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
+            throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled(
+                ctx.PACKAGE() != null ? "Application package" : "Application",
+                SqlIdentifiers.spellCanonical(application[0])));
         }
     }
 

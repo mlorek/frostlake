@@ -58,6 +58,8 @@ public class FunctionCallExpression implements Expression {
     private String operatorSpelling;
     /** Whether that operator was written with NOT. */
     private boolean operatorNegated;
+    /** The call's count among the calls of its name in the expression it was parsed in, or 0 when not counted. */
+    private int callOrdinal;
     /** The canonical name of the method a call written {@code instance!method(…)} names, or null. */
     private String methodName;
 
@@ -327,6 +329,21 @@ public class FunctionCallExpression implements Expression {
 
     public void setPosition(final SourcePosition position) {
         this.position = position;
+    }
+
+    /**
+     * The call's count among the calls of its name in the expression it was parsed in: the first call of a name
+     * written there is 1, the next 2 (see {@link CallOrdinalWalk}).
+     *
+     * @return the count, or 0 for a call nobody counted
+     */
+    public int getCallOrdinal() {
+        return callOrdinal;
+    }
+
+    /** Records the call's count among the calls of its name — see {@link #getCallOrdinal()}. */
+    void setCallOrdinal(final int callOrdinal) {
+        this.callOrdinal = callOrdinal;
     }
 
 }

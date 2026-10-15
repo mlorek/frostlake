@@ -108,6 +108,45 @@ public class SnapshotKeepsDefinitionsTest {
         original.shutdown();
     }
 
+    /**
+     * A routine keeps whether its text parameter was declared with a length: a copy names the parameter declared
+     * bare by the written maximum and not by a column's width, and the one declared at that width the other way.
+     */
+    @Test
+    public void routinesKeepWhetherAParameterWasDeclaredWithALength() throws Exception {
+        final DatabaseEngine original = new DatabaseEngine();
+        original.execute("CREATE DATABASE r1");
+        original.execute("USE SCHEMA r1.PUBLIC");
+        original.execute("CREATE FUNCTION bare(p VARCHAR) RETURNS INT AS '1'");
+        original.execute("CREATE FUNCTION sized(p VARCHAR(16777216)) RETURNS INT AS '1'");
+        original.execute("CREATE PROCEDURE bin(p BINARY) RETURNS INT LANGUAGE SQL AS 'BEGIN RETURN 1; END;'");
+        final List<String> wanted = Arrays.asList("refused", "named", "named", "refused", "refused", "named");
+        assertEquals(wanted, namedBy(original));
+        for (final DatabaseEngine copy : copiesOf(original)) {
+            copy.execute("USE SCHEMA r1.PUBLIC");
+            assertEquals(wanted, namedBy(copy));
+            copy.shutdown();
+        }
+        original.shutdown();
+    }
+
+    /** Whether each written signature names its routine. */
+    private static List<String> namedBy(final DatabaseEngine on) {
+        final List<String> out = new ArrayList<>();
+        for (final String described : Arrays.asList("FUNCTION bare(VARCHAR(16777216))",
+                "FUNCTION bare(VARCHAR(134217728))", "FUNCTION sized(VARCHAR(16777216))",
+                "FUNCTION sized(VARCHAR(134217728))", "PROCEDURE bin(BINARY(8388608))",
+                "PROCEDURE bin(BINARY(67108864))")) {
+            try {
+                on.executeQuery("DESCRIBE " + described);
+                out.add("named");
+            } catch (final RuntimeException refused) {
+                out.add("refused");
+            }
+        }
+        return out;
+    }
+
     @Test
     public void viewsKeepTheStatementAsTypedAndTheirColumnComments() throws Exception {
         final DatabaseEngine original = new DatabaseEngine();

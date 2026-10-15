@@ -43,7 +43,9 @@ public class ArrayAppend extends VariantAccessorFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final String arrayStr = args.get(0).toString().trim();
+        // A VARIANT that holds no array is read as a one-element array of it (see parseArrayOrSingle).
+        final ArrayNode single = ArrayFunctionHelper.singleOf(args.get(0));
+        final String arrayStr = single != null ? single.toString() : args.get(0).toString().trim();
         final Object value = args.get(1);
 
         try {

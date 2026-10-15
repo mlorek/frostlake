@@ -51,6 +51,7 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.WrittenSignatureType;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -697,7 +698,8 @@ public class CommentCommandHandler implements CommandHandler {
         final List<DataType> argumentTypes = new ArrayList<>();
         if (ctx.dataTypeList() != null) {
             for (final FrostlakeParser.DataTypeNameContext typeCtx : ctx.dataTypeList().dataTypeName()) {
-                argumentTypes.add(visitor.parseDataType(typeCtx, RoutineSignatureForm.parametersOf(typeCtx)));
+                argumentTypes.add(WrittenSignatureType.of(visitor.parseDataType(typeCtx, RoutineSignatureForm.parametersOf(typeCtx)),
+                    RoutineSignatureForm.parametersOf(typeCtx) != null));
             }
         }
         return argumentTypes;

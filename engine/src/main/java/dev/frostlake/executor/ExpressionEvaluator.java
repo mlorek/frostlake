@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.BindVariableExpression;
+import dev.frostlake.executor.expressions.CallOrdinalWalk;
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
@@ -30,6 +31,7 @@ import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryMemo;
+import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Table;
@@ -320,6 +322,16 @@ public class ExpressionEvaluator {
     public int subqueryWidth(final Expression expression) {
         return expression instanceof SubqueryExpression
             ? preparedVisitor().subqueryWidth((SubqueryExpression) expression) : 0;
+    }
+
+    /**
+     * Whether a name is a user-defined function's and no built-in's, as this evaluator's catalog resolves it.
+     *
+     * @param parts the name's canonical parts
+     * @return whether a call of the name is a call of a function someone created
+     */
+    public boolean callsUserFunction(final List<String> parts) {
+        return preparedVisitor().callsUserFunction(parts);
     }
 
     /** The plan-time user-defined function argument check alone, over a parsed expression. */
@@ -731,6 +743,23 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * Whether a select item projects the word NULL cast to a text type, or a column carrying one out of a derived
+     * relation — see TableColumn#isNullText. Never throws.
+     *
+     * @param expression a select item
+     * @return true for such an item
+     */
+    public boolean projectsNullText(final Expression expression) {
+        try {
+            return UntypedNullFold.isNullTextConstant(expression)
+                || expression instanceof ColumnReferenceExpression
+                    && preparedVisitor().readsNullText((ColumnReferenceExpression) expression);
+        } catch (final RuntimeException undetermined) {
+            return false;
+        }
+    }
+
+    /**
      * Whether a select item projects a number or boolean constant wrapped into a VARIANT, or a column carrying
      * one out of a derived relation — see TableColumn#isUncheckedConstant. Never throws.
      *
@@ -812,6 +841,34 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * The interval a projected item hands on to the column it becomes: {@link #inferStaticRange}'s, or the empty
+     * one for an item of any type that is always NULL; never throws.
+     *
+     * @param expression the select item's expression
+     * @return the interval, or null when none can be known
+     */
+    public ValueRange inferProjectedRange(final Expression expression) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        try {
+            return reusableVisitor.inferProjectedRange(expression);
+        } catch (final RuntimeException undetermined) {
+            // A COMPILATION error is a refusal the channel reached on purpose — an operand pair
+            // Snowflake rejects — not the ordinary "could not determine a type" this swallows.
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+                throw undetermined;
+            }
+            return null;
+        }
+    }
+
+    /**
      * Applies the argument-family refusals to every call in {@code expression} from declared types,
      * before any row is read — see {@link ExpressionEvaluatorVisitor#rejectArgumentFamilies}.
      */
@@ -875,6 +932,17 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * {@link #plannedText} for an aggregate call a sentence names by itself — see
+     * {@link ExpressionEvaluatorVisitor#strictPlanCallDefinition}.
+     *
+     * @param expression the call
+     * @return the call as the plan computes it
+     */
+    public String plannedCallDefinition(final Expression expression) {
+        return preparedVisitor().strictPlanCallDefinition(expression);
+    }
+
+    /**
      * {@link #qualifiedText} for an aggregate call that a NESTING message brackets: a plain AVG at
      * that root prints as its SUM half, the way live names it — see
      * {@link ExpressionEvaluatorVisitor#strictAggregateText}.
@@ -921,6 +989,8 @@ public class ExpressionEvaluator {
         // a genuinely malformed expression or a construct not modeled by the builder; let it
         // propagate rather than silently producing a wrong AST.
         final Expression ast = AntlrExpressionParser.parse(expression);
+        // A handler runtime tells the calls of a text read anew for each row apart by their counts.
+        CallOrdinalWalk.number(ast);
         AST_CACHE.put(expression, ast);
         return ast;
     }

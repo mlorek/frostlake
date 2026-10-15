@@ -26,6 +26,11 @@ import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.YearMonthInterval;
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.List;
 
 /**
@@ -101,14 +106,13 @@ public final class ValueComparisons {
     }
 
     /**
-     * Normalize a value for DISTINCT comparison.
-     * Converts numbers to Double for consistent comparison (e.g., 1 == 1.0).
+     * Normalize a value for a DISTINCT aggregate: one key per value, as SELECT DISTINCT keys it. A number keys by its
+     * exact value, so 9007199254740992 and 9007199254740993 are two and 1.0 and 1.00 one, and the two zeros of a
+     * FLOAT are one; a zoned timestamp keys by its instant (see {@link #canonicalGroupKeyValue}).
      */
     public static Object normalizeValueForDistinct(final Object value) {
-        if (value instanceof Number) {
-            // Adding a positive zero folds -0.0 into 0.0 and changes nothing else: the two zeros are
-            // ONE distinct value on the account, where Double.equals would count them as two.
-            return ((Number) value).doubleValue() + 0.0;
+        if (value instanceof Number || value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
+            return canonicalGroupKeyValue(value);
         }
         return value;
     }
@@ -118,11 +122,19 @@ public final class ValueComparisons {
      * same bucket: Integer 1, Long 1, Double 1.0 and BigDecimal 1.00 must form one group (mixed
      * representations arise from VARIANT casts, set-operation branches and literal folding). Unlike
      * the join-key normalizer this must not over-group — the bucket IS the grouping decision, with no
-     * downstream re-confirmation — so only exact-value numeric canonicalization is applied; strings,
-     * temporals and booleans pass through unchanged. Integral values become {@code Long}, everything
-     * else a trailing-zero-stripped {@code BigDecimal}, both of which honor equals/hashCode.
+     * downstream re-confirmation — so only exact-value canonicalization is applied; strings, dates,
+     * naive timestamps and booleans pass through unchanged. Integral values become {@code Long}, everything
+     * else a trailing-zero-stripped {@code BigDecimal}, both of which honor equals/hashCode. A zoned
+     * timestamp — TIMESTAMP_TZ or TIMESTAMP_LTZ — becomes its {@link Instant}: two spellings of one moment are
+     * one value, as {@code =} finds them (live-verified).
      */
     public static Object canonicalGroupKeyValue(final Object value) {
+        if (value instanceof OffsetDateTime) {
+            return ((OffsetDateTime) value).toInstant();
+        }
+        if (value instanceof ZonedDateTime) {
+            return ((ZonedDateTime) value).toInstant();
+        }
         if (value instanceof VariantValue) {
             // A semi-structured value groups by the VARIANT order's own equality — numbers by value
             // whatever their notation, objects whatever their key order — which its equals and
@@ -201,11 +213,33 @@ public final class ValueComparisons {
         if (v1 instanceof YearMonthInterval && v2 instanceof YearMonthInterval) {
             return ((YearMonthInterval) v1).compareTo((YearMonthInterval) v2);
         }
+        // A zoned timestamp orders by its moment alone, so two spellings of one moment tie and the next key
+        // decides; a date beside a timestamp is its midnight (live-verified).
+        if (isZoned(v1) && isZoned(v2)) {
+            return instantOf(v1).compareTo(instantOf(v2));
+        }
+        if (v1 instanceof LocalDate && v2 instanceof LocalDateTime) {
+            return ((LocalDate) v1).atStartOfDay().compareTo((LocalDateTime) v2);
+        }
+        if (v1 instanceof LocalDateTime && v2 instanceof LocalDate) {
+            return ((LocalDateTime) v1).compareTo(((LocalDate) v2).atStartOfDay());
+        }
         if (v1 instanceof Comparable && v2 instanceof Comparable && v1.getClass() == v2.getClass()) {
             return ((Comparable) v1).compareTo(v2);
         }
 
         return v1.toString().compareTo(v2.toString());
+    }
+
+    /** Whether a value is a zoned timestamp: a TIMESTAMP_LTZ's or a TIMESTAMP_TZ's. */
+    private static boolean isZoned(final Object value) {
+        return value instanceof OffsetDateTime || value instanceof ZonedDateTime;
+    }
+
+    /** A zoned timestamp's moment. */
+    private static Instant instantOf(final Object zoned) {
+        return zoned instanceof OffsetDateTime ? ((OffsetDateTime) zoned).toInstant()
+            : ((ZonedDateTime) zoned).toInstant();
     }
 
     /**

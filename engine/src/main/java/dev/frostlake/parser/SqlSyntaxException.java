@@ -28,6 +28,7 @@ public class SqlSyntaxException extends RuntimeException {
     private final List<String> syntaxErrors;
     private final String failedSql;
     private boolean declareSectionEnd;
+    private UnknownTypeReading unknownTypes;
 
     public SqlSyntaxException(final String message, final List<String> syntaxErrors, final String failedSql) {
         super(message);
@@ -56,6 +57,21 @@ public class SqlSyntaxException extends RuntimeException {
     /** Marks the refusal as one of an END written where a DECLARE section's BEGIN belongs. */
     void markDeclareSectionEnd() {
         declareSectionEnd = true;
+    }
+
+    /**
+     * The statement read with its words that name no type taken as types, when it was refused for one of them: what
+     * else the statement says of its types can then be judged ahead of the word.
+     *
+     * @return the reading, or null for any other refusal
+     */
+    public UnknownTypeReading getUnknownTypes() {
+        return unknownTypes;
+    }
+
+    /** Records the reading a refusal for a word that names no type was made from. */
+    void setUnknownTypes(final UnknownTypeReading reading) {
+        unknownTypes = reading;
     }
 
     @Override

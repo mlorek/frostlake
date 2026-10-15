@@ -62,8 +62,7 @@ final class ChangeTimes {
      * for a view only when the rows of a table it reads do (documented: "If the specified database object is a view,
      * then at least one of the database objects referenced by the view changed"). A view's token is the newest of
      * its tables', and never earlier than the view itself. The name resolves as a written one would, against the
-     * session's database and schema, and a name that is no table or view refuses the call. The refusal's wording is
-     * the catalog's own; the documentation gives none.
+     * session's database and schema, and a name that is no table or view refuses the call, told as it was written.
      *
      * @param catalog  the catalog
      * @param argument the call's argument, the object's name as written
@@ -76,7 +75,9 @@ final class ChangeTimes {
         final String[] name = fullName(catalog, written(argument));
         final Long token = relationToken(catalog, name, new HashSet<String>());
         if (token == null) {
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Object", QualifiedName.join(name)));
+            // The name is told as it was written, not completed (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Object",
+                QualifiedName.join(SqlIdentifiers.canonicalTextParts(written(argument).trim()))));
         }
         return token;
     }

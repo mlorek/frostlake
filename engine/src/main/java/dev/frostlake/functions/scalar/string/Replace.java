@@ -39,7 +39,8 @@ public class Replace extends TextArgumentFunction {
         final String str = args.get(0).toString();
         final String search = args.get(1) != null ? args.get(1).toString() : "";
         final String replacement = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : "";
-        return str.replace(search, replacement);
+        // An empty text is found nowhere: the subject is as it was (live-verified).
+        return search.isEmpty() ? str : str.replace(search, replacement);
     }
 
     /** Under a collation every substring the collation calls equal to the search text is replaced. */

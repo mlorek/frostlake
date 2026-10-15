@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
+import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
@@ -70,6 +71,12 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  * <p>In a select item the operand of such a nested call is one token: a name followed by anything but the call's
  * closing parenthesis is refused at that next token, any other longer operand at the closing parenthesis, and a FOR
  * tail at the token after the FOR — each as the one line after the FROM's.
+ *
+ * <p>A call that is the operand of a WHERE, a HAVING or an ORDER BY itself is passed over, and the statement read on:
+ * a later fault is reported, and so is a second call in the refused form —
+ * {@code WHERE EXTRACT('wks' FROM d) = 1 ORDER BY a x y} is the FROM, then the x. A cast around the call under more
+ * than one bracket, a CASE around it and a name that has no FROM form of its own stack lines of their own (see
+ * {@code shapedLines}), and a block's query reports these lines and then the block's (see {@link BlockQueryLines}).
  */
 public final class AnsiFromFormSyntax {
 
@@ -106,11 +113,55 @@ public final class AnsiFromFormSyntax {
             }
         }
         if (firstFrom != null) {
+            // A block's query reports the lines of a statement of its own, then the block's reading after them.
+            final List<String> block = sql == null || !standsInBlock(firstCall) ? null
+                : BlockQueryLines.lines(sql, BlockReadOn.spoken(sql), firstFrom.getTokenIndex(), true);
             final List<String> lines = new ArrayList<>();
-            lines.add(SyntaxErrorListener.sentence(firstFrom));
-            lines.addAll(readAsFromClause(firstCall, firstFrom, tokens, sql));
+            if (block != null) {
+                lines.addAll(block);
+            } else {
+                lines.add(SyntaxErrorListener.sentence(firstFrom));
+                lines.addAll(readAsFromClause(firstCall, firstFrom, tokens, sql));
+            }
             throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
         }
+    }
+
+    private static boolean standsInBlock(final ParserRuleContext call) {
+        for (ParserRuleContext up = call.getParent(); up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.StatementListContext) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The lines a text reports: its syntax faults, or, when it parses, those of the first call it holds in the
+     * refused form.
+     *
+     * @param text the text
+     * @return the lines, none for a text nothing refuses
+     */
+    static List<String> linesOf(final String text) {
+        final List<String> syntax = SyntaxErrorListener.linesReportedFor(text, true);
+        if (!syntax.isEmpty()) {
+            return syntax;
+        }
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        final FrostlakeParser parser = new FrostlakeParser(stream);
+        parser.removeErrorListeners();
+        final FrostlakeParser.SqlScriptContext tree = parser.sqlScript();
+        if (parser.getNumberOfSyntaxErrors() == 0) {
+            try {
+                requireCallForms(tree, stream, text);
+            } catch (final SqlSyntaxException refused) {
+                return refused.getSyntaxErrors();
+            }
+        }
+        return new ArrayList<>();
     }
 
     /** Whether a FROM stands inside a parenthesis that follows a word, so the walk runs only where it can find one. */
@@ -160,18 +211,26 @@ public final class AnsiFromFormSyntax {
     private static List<String> readAsFromClause(final ParserRuleContext call, final Token from,
                                                  final TokenStream tokens, final String sql) {
         final List<String> stacked = new ArrayList<>();
-        if (sql == null || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null) {
             return stacked;
         }
         boolean carried = true;
         ParserRuleContext innermost = null;
         boolean callAbove = false;
         int callsAbove = 0;
+        boolean inCase = false;
         ParserRuleContext place = null;
         final List<ParserRuleContext> levels = new ArrayList<>();
         for (ParserRuleContext up = call.getParent(); up != null && place == null; up = up.getParent()) {
-            if (up instanceof FrostlakeParser.ExprItemContext || up instanceof FrostlakeParser.WhereClauseContext) {
+            if (up instanceof FrostlakeParser.ExprItemContext || up instanceof FrostlakeParser.WhereClauseContext
+                    || up instanceof FrostlakeParser.HavingClauseContext
+                    || up instanceof FrostlakeParser.OrderItemContext
+                        && !(up.getParent().getParent() instanceof FrostlakeParser.OverClauseContext)) {
                 place = up;
+            } else if (up instanceof FrostlakeParser.CaseExpressionContext
+                    || up instanceof FrostlakeParser.WhenClauseContext) {
+                inCase = true;
+                carried = false;
             } else if (isBracket(up)) {
                 if (innermost == null) {
                     innermost = up;
@@ -194,13 +253,34 @@ public final class AnsiFromFormSyntax {
         if (place == null || !isStatementQuery(place)) {
             return stacked;
         }
-        if (place instanceof FrostlakeParser.WhereClauseContext) {
+        if (!(place instanceof FrostlakeParser.ExprItemContext)) {
+            if (inCase) {
+                return stacked;
+            }
             if (innermost instanceof FrostlakeParser.CastExprContext
                     || innermost instanceof FrostlakeParser.TryCastExprContext) {
                 return castResyncLines(innermost, from, tokens, sql);
             }
-            return innermost == null || hasForTail(call) || !closesInPlace(call, tokens) ? stacked
+            if (innermost == null && closesInPlace(call, tokens)) {
+                // A call that is a clause's own operand: a FOR tail has its value refused, and any other call is
+                // passed over and the statement read on.
+                final Token afterFor = hasForTail(call) ? tokenAfter(call, firstFor(call)) : null;
+                if (afterFor != null) {
+                    stacked.add(SyntaxErrorListener.sentence(afterFor));
+                    return stacked;
+                }
+                return hasForTail(call) ? stacked : clauseReadOn(call, from, sql);
+            }
+            return innermost == null || hasForTail(call) || !closesInPlace(call, tokens)
+                    || !(place instanceof FrostlakeParser.WhereClauseContext) ? stacked
                 : droppedCallLines(call, from, null, false, tokens, sql);
+        }
+        final List<String> shaped = shapedLines(call, levels, inCase, carried, tokens);
+        if (shaped != null) {
+            return shaped;
+        }
+        if (inCase) {
+            return stacked;
         }
         if (carried) {
             final List<String> givenUp = AnsiFromFormGroupLines.lines(
@@ -323,8 +403,173 @@ public final class AnsiFromFormSyntax {
             return stacked;
         }
         text[placeholder] = '1';
-        stacked.addAll(linesAfter(new String(text), from));
+        stacked.addAll(linesAfterWithForms(new String(text), from));
         return stacked;
+    }
+
+    /** The statement read on with the call passed over as a value: its faults, and a later call in the refused form. */
+    private static List<String> clauseReadOn(final ParserRuleContext call, final Token from, final String sql) {
+        final char[] text = sql.toCharArray();
+        final int start = call.getStart().getStartIndex();
+        for (int c = start; c <= call.getStop().getStopIndex() && c < text.length; c++) {
+            if (text[c] != '\n' && text[c] != '\r') {
+                text[c] = c == start ? '1' : ' ';
+            }
+        }
+        return linesAfterWithForms(new String(text), from);
+    }
+
+    private static List<String> linesAfterWithForms(final String text, final Token from) {
+        final List<String> stacked = new ArrayList<>();
+        final int[] at = SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(from));
+        for (final String line : linesOf(text)) {
+            final int[] place = SyntaxErrorListener.sentenceCoordinates(line);
+            if (place != null && (place[0] > at[0] || place[0] == at[0] && place[1] > at[1])) {
+                stacked.add(line);
+            }
+        }
+        return stacked;
+    }
+
+    /**
+     * The lines after the FROM for a call under the brackets the account was asked about, by their kinds from the
+     * call outwards — C a CAST's or a TRY_CAST's parenthesis, F a call's, P a plain one — or null for any other
+     * stack (all live-verified). For EXTRACT and SUBSTRING, which have a FROM form of their own:
+     *
+     * <pre>
+     *   C F F, C P P, and C F under a CASE   the cast's AS, then its ')'
+     *   C F F F                              the cast's AS, then the ')' after the cast's
+     *   C P                                  the cast's ')'
+     *   C under a CASE                       the call's ')', then the cast's
+     *   P P                                  the inner parenthesis's ')'
+     * </pre>
+     *
+     * <p>The stacks with a P are read so around a call whose operand is a number, with a comparison in a
+     * parenthesis — {@code ((EXTRACT('wks' FROM 2)) = 1)} — or, for P P, a comma after the number; a name there
+     * keeps the readings of {@code AnsiFromFormGroupLines}. The others:
+     *
+     * <pre>
+     *   F C F                                nothing
+     *   P C F                                the parenthesis's ')'
+     *   P P C F, F F C F                     the second bracket's ')'
+     * </pre>
+     *
+     * <p>For any other name, which has none: under F the call's ')' of that F, under C the cast's ')', and under
+     * C F the cast's AS and its ')'. A FOR tail has the token after its FOR refused whatever stands around it.
+     */
+    private static List<String> shapedLines(final ParserRuleContext call, final List<ParserRuleContext> levels,
+                                            final boolean inCase, final boolean carried, final TokenStream tokens) {
+        final StringBuilder kinds = new StringBuilder();
+        int castAt = -1;
+        for (int i = 0; i < levels.size(); i++) {
+            final ParserRuleContext level = levels.get(i);
+            final boolean cast = level instanceof FrostlakeParser.CastExprContext
+                || level instanceof FrostlakeParser.TryCastExprContext;
+            if (cast && castAt < 0) {
+                castAt = i;
+            }
+            kinds.append(cast ? 'C' : level instanceof FrostlakeParser.FunctionCallExprContext ? 'F' : 'P');
+        }
+        final String shape = kinds.toString();
+        final List<String> lines = new ArrayList<>();
+        if (hasForTail(call)) {
+            final Token afterFor = shape.startsWith("C") && shape.length() > 1 ? tokenAfter(call, firstFor(call))
+                : null;
+            if (afterFor == null) {
+                return null;
+            }
+            lines.add(SyntaxErrorListener.sentence(afterFor));
+            return lines;
+        }
+        final boolean own = hasFromFormOfItsOwn(call);
+        final ParserRuleContext cast = castAt < 0 ? null : levels.get(castAt);
+        // Parentheses that only carry the item's value are given up one by one (AnsiFromFormGroupLines): the stacks
+        // with a P are those whose parentheses hold a comparison, around a call whose operand is a number.
+        final int operand = numberOperand(call, tokens);
+        final boolean compared = !carried && operand >= 0;
+        final boolean asThenClose = own
+            ? "CFF".equals(shape) || "CPP".equals(shape) && compared || "CF".equals(shape) && inCase
+            : "CF".equals(shape) && !inCase;
+        if (asThenClose || own && "CFFF".equals(shape) && !inCase) {
+            final Token as = asOf(cast, tokens);
+            final Token close = closeOf(asThenClose ? cast : levels.get(1), tokens);
+            if (as == null || close == null) {
+                return null;
+            }
+            lines.add(SyntaxErrorListener.sentence(as));
+            lines.add(SyntaxErrorListener.sentence(close));
+            return lines;
+        }
+        if (inCase) {
+            final Token own1 = own && "C".equals(shape) ? closeOf(call, tokens) : null;
+            final Token own2 = own1 == null ? null : closeOf(cast, tokens);
+            if (own2 == null) {
+                return null;
+            }
+            lines.add(SyntaxErrorListener.sentence(own1));
+            lines.add(SyntaxErrorListener.sentence(own2));
+            return lines;
+        }
+        if (own && "FCF".equals(shape)) {
+            return lines;
+        }
+        final int closed = !own ? ("F".equals(shape) || "C".equals(shape) ? 0 : -1)
+            : "CP".equals(shape) && compared || "PCF".equals(shape) ? 0
+            : "PPCF".equals(shape) || "FFCF".equals(shape) ? 1
+            : "PP".equals(shape) && (compared || operand == 1) ? 0 : -1;
+        final Token close = closed < 0 ? null : closeOf(levels.get(closed), tokens);
+        if (close == null) {
+            return null;
+        }
+        lines.add(SyntaxErrorListener.sentence(close));
+        return lines;
+    }
+
+    /** The ')' that closes a bracket's own parenthesis in the text as written, or null. */
+    private static Token closeOf(final ParserRuleContext bracket, final TokenStream tokens) {
+        Token open = bracket.getStart();
+        while (open != null && open.getType() != FrostlakeLexer.LPAREN && open.getType() != Token.EOF) {
+            open = nextSpoken(tokens, open.getTokenIndex());
+        }
+        return open == null || open.getType() != FrostlakeLexer.LPAREN ? null
+            : closingParen(tokens, open.getTokenIndex());
+    }
+
+    /** The AS written directly inside a cast's parenthesis, or null. */
+    private static Token asOf(final ParserRuleContext cast, final TokenStream tokens) {
+        final Token close = closeOf(cast, tokens);
+        if (close == null) {
+            return null;
+        }
+        int depth = 0;
+        for (int i = cast.getStart().getTokenIndex(); i < close.getTokenIndex(); i++) {
+            final Token token = tokens.get(i);
+            if (token.getType() == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (token.getType() == FrostlakeLexer.RPAREN) {
+                depth--;
+            } else if (token.getType() == FrostlakeLexer.AS && depth == 1) {
+                return token;
+            }
+        }
+        return null;
+    }
+
+    /** Whether the call's operand, as written, is a number: 1 for one a comma follows, 0 for any other, -1 for none. */
+    private static int numberOperand(final ParserRuleContext call, final TokenStream tokens) {
+        final Token close = closeOf(call, tokens);
+        for (int i = call.getStart().getTokenIndex(); close != null && i < close.getTokenIndex(); i++) {
+            if (tokens.get(i).getType() == FrostlakeLexer.FROM) {
+                final Token operand = nextSpoken(tokens, i);
+                final Token after = operand == null ? null : nextSpoken(tokens, operand.getTokenIndex());
+                if (operand == null || after == null || operand.getType() != FrostlakeLexer.INTEGER_LITERAL
+                        && operand.getType() != FrostlakeLexer.FLOAT_LITERAL) {
+                    return -1;
+                }
+                return after.getType() == FrostlakeLexer.COMMA ? 1 : 0;
+            }
+        }
+        return -1;
     }
 
     /**

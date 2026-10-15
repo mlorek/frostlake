@@ -57,6 +57,17 @@ final class RefusalPrediction extends ParserATNSimulator {
         return false;
     }
 
+    /** Whether the first word after the token the decision starts at is of the given type. */
+    private boolean nextWordIs(final int type) {
+        for (int i = _startIndex + 1; i < _input.size(); i++) {
+            final Token after = _input.get(i);
+            if (after.getChannel() == Token.DEFAULT_CHANNEL) {
+                return after.getType() == type;
+            }
+        }
+        return false;
+    }
+
     @Override
     protected int getSynValidOrSemInvalidAltThatFinishedDecisionEntryRule(final ATNConfigSet configs,
                                                                          final ParserRuleContext outerContext) {
@@ -64,6 +75,16 @@ final class RefusalPrediction extends ParserATNSimulator {
                 && _input.get(_startIndex).getType() == FrostlakeParser.COMMA && followsAnItem()) {
             // After a select item's comma another item is due: the list does not end there, whatever the item
             // after it fails on.
+            return ATN.INVALID_ALT_NUMBER;
+        }
+        if (_dfa != null && _dfa.atnStartState.ruleIndex == FrostlakeParser.RULE_orderByClause
+                && _input.get(_startIndex).getType() == FrostlakeParser.COMMA && nextWordIs(FrostlakeParser.ALL)) {
+            // ALL after an ORDER BY key's comma is no key: the clause is refused at the ALL, not at the comma.
+            return ATN.INVALID_ALT_NUMBER;
+        }
+        if (_dfa != null && _dfa.atnStartState.ruleIndex == FrostlakeParser.RULE_orderByClause
+                && _input.get(_startIndex).getType() == FrostlakeParser.NULLS) {
+            // The NULLS of ORDER BY ALL wants its FIRST or LAST: it begins no statement of its own.
             return ATN.INVALID_ALT_NUMBER;
         }
         final Pair<ATNConfigSet, ATNConfigSet> split = splitAccordingToSemanticValidity(configs, outerContext);

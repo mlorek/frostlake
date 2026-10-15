@@ -71,6 +71,22 @@ final class TableFunctionSignatures {
         return null;
     }
 
+    /**
+     * Whether a parameter list takes a call's arguments, matched as a table function's are: a table procedure
+     * called as a FROM source is judged by the same rule (live-verified).
+     *
+     * @param parameters  the routine's parameters, in declaration order
+     * @param positional  each positional argument's static type, null where it is undetermined
+     * @param names       each named argument's name, canonical
+     * @param named       each named argument's static type, null where it is undetermined
+     * @param untypedNull whether each argument, positional ones first, is a bare NULL
+     * @return whether the parameters take the arguments
+     */
+    static boolean fits(final List<Parameter> parameters, final List<DataType> positional, final List<String> names,
+                        final List<DataType> named, final List<Boolean> untypedNull) {
+        return taken(parameters, positional, names, named, untypedNull) != null;
+    }
+
     /** The argument index each parameter takes, -1 where its default stands, or null when the call does not fit. */
     private static int[] taken(final List<Parameter> parameters, final List<DataType> positional,
                                final List<String> names, final List<DataType> named,

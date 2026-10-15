@@ -16,9 +16,13 @@
 
 package dev.frostlake.functions;
 
+import dev.frostlake.executor.SqlCompilationError;
+
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
@@ -44,6 +48,11 @@ import java.util.TreeSet;
  */
 public final class SystemFunctionNames {
 
+    /** The names a block's logging statements are written with. */
+    private static final Set<String> LOGGING = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
+        "SYSTEM$LOG", "SYSTEM$LOG_TRACE", "SYSTEM$LOG_DEBUG", "SYSTEM$LOG_INFO", "SYSTEM$LOG_WARN",
+        "SYSTEM$LOG_ERROR", "SYSTEM$LOG_FATAL")));
+
     private static final SortedSet<String> NAMES = Collections.unmodifiableSortedSet(
         new TreeSet<String>(Arrays.asList(
             "SYSTEM$ABORT_SESSION",
@@ -66,13 +75,6 @@ public final class SystemFunctionNames {
             "SYSTEM$GET_TAG_ON_CURRENT_TABLE",
             "SYSTEM$GET_TASK_GRAPH_CONFIG",
             "SYSTEM$LAST_CHANGE_COMMIT_TIME",
-            "SYSTEM$LOG",
-            "SYSTEM$LOG_DEBUG",
-            "SYSTEM$LOG_ERROR",
-            "SYSTEM$LOG_FATAL",
-            "SYSTEM$LOG_INFO",
-            "SYSTEM$LOG_TRACE",
-            "SYSTEM$LOG_WARN",
             "SYSTEM$PIPE_STATUS",
             "SYSTEM$QUERY_REFERENCE",
             "SYSTEM$REFERENCE",
@@ -96,6 +98,39 @@ public final class SystemFunctionNames {
     /** Whether the engine implements this {@code SYSTEM$} name (case-insensitive). */
     public static boolean contains(final String name) {
         return name != null && NAMES.contains(name.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Whether the name is one of a block's logging statements, {@code SYSTEM$LOG} and {@code SYSTEM$LOG_<level>}.
+     * They stand as statements in a block and are no functions: a query or a CALL that names one is refused as
+     * naming an unknown function (live-verified).
+     *
+     * @param name the name as written
+     * @return whether it is a logging statement's name
+     */
+    public static boolean isLoggingStatement(final String name) {
+        return name != null && LOGGING.contains(name.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * The refusal of a logging statement's name written where a function is called.
+     *
+     * @param name the name as written
+     * @return the refusal
+     */
+    public static RuntimeException unknownLoggingFunction(final String name) {
+        return new RuntimeException(SqlCompilationError.of("Unknown function " + name.toUpperCase(Locale.ROOT)));
+    }
+
+    /**
+     * The refusal of a statement written as a logging statement under a name that names none, in the account's
+     * own words for it, which run the name into the sentence and leave a placeholder unfilled (live-verified).
+     *
+     * @param name the name, upper-cased
+     * @return the refusal's text
+     */
+    public static String unknownLoggingStatement(final String name) {
+        return SqlCompilationError.of("Unknown function" + name + " does not match any known functions {1}");
     }
 
     /** Every {@code SYSTEM$} function name the engine implements, upper-cased and sorted. */

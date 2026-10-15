@@ -14,6 +14,411 @@ Changes since 0.2.0 accumulate here as they land.
 
 ### Now refused (SQL that earlier versions accepted)
 
+- **A column a table that holds rows cannot fill, and a hybrid table without a primary key.** ALTER TABLE ... ADD
+  COLUMN on a table with rows refuses a NOT NULL column without a non-null default (`Non-nullable column 'D' cannot
+  be added to non-empty table 'T' unless it has a non-null default value.`) and an AUTOINCREMENT, IDENTITY or sequence
+  default (`Cannot add column 'K' with non-constant default to non-empty table 'T'.`), judging every column of the
+  statement before adding any; it used to leave NULLs in a NOT NULL column. An empty table takes all of them, a
+  sequence default included, which used to be refused. `CREATE HYBRID TABLE` without a PRIMARY KEY is refused with
+  `A hybrid table must contain primary key.`
+- **A file format's ENCODING outside the account's character sets, and a Boolean option that is no bare TRUE or
+  FALSE.** `ENCODING = 'latin1'`, `= 'CP1252'` or `= ''`, and `TRIM_SPACE = 'yes'`, `EMPTY_FIELD_AS_NULL = 1` or
+  `REPLACE_INVALID_CHARACTERS = 'TRUE'`, are refused at CREATE and ALTER FILE FORMAT with `invalid value [<value as
+  written>] for parameter '<NAME>'`, as the account refuses them. An ENCODING may name a set by the account's name
+  (`ISO88591`) or the set's own (`ISO-8859-1`), in any case. A COPY's inline ENCODING is judged alike.
+- **A window frame no rows can make, and an offset that is no literal.** A start past its end (`ROWS BETWEEN 1
+  FOLLOWING AND CURRENT ROW`, `RANGE BETWEEN 1 PRECEDING AND 2 PRECEDING`, a lone `ROWS 1 FOLLOWING`), an UNBOUNDED
+  FOLLOWING start, an UNBOUNDED PRECEDING end and a ROWS offset of `1.5` are now `Invalid window frame` at that
+  bound when the statement compiles, ahead of every other rule of the window; they used to answer empty frames.
+  A frame offset is an unsigned number or an `INTERVAL '…'` constant: a column, a sign, a parenthesis, a bind, a
+  string or `NULL` is a syntax error at the offset.
+- **A distinct UNION in a recursive CTE.** `WITH RECURSIVE r AS (SELECT 1 UNION SELECT … FROM r)` is `SQL
+  compilation error: UNION not yet supported within a Recursive CTE`, in a view's body too; a RECURSIVE view's
+  body still takes one, and its recursion ends when a step meets no row it has not met.
+- **An IMPORTS entry the stage does not hold, judged at CREATE.** An import that names a stage and no file below it
+  (`'@stg'`, `'@stg/'`, `'@~'`) is refused first — `IMPORT must specify the path of a file on a stage, but only the
+  stage name 'stg' was provided.` — then a stage that does not exist, a table's stage among them, which is there
+  while its table is, and then a file a user's, a table's or an internal stage does not hold, named by its path
+  below the stage as written: `Remote file 'dir/a.jar' was not found. …`. A function and a procedure of any
+  language are refused so, ahead of their runtime version and packages.
+- **Snowpark in a Java routine's inline body without `PACKAGES = ('com.snowflake:snowpark:…')`.** The body compiles
+  against Snowpark only when the routine names it, at any version and in any case; without it a Snowpark type is
+  the compiler's `cannot find symbol` and `com.snowflake.snowpark_java` and `com.snowflake.snowpark` are packages
+  that do not exist, in the compiler's own report.
+- **A Java handler that names no class, and an instance handler's protected constructor.** `HANDLER = 'f'` is
+  `Invalid function name f in function F with handler f`, for a function and a procedure; a class whose
+  zero-argument constructor is protected is refused for an instance handler as a private one is.
+- **A Java handler's `java.util.List` parameter for anything but an OBJECT.** A list was taken for any type and the
+  CALL failed with `argument type mismatch`; it is paired as a map is, and a VARIANT, a VARCHAR or an ARRAY for it
+  is refused as the procedure is created — `Snowflake type ARRAY[LOB](38,0){nullable} is not supported as input
+  to argument at index 0 with Java type java.util.Map<String, String> in function F with handler H.run`, the
+  account's own words for the map.
+- **A name nothing declares, inside a call's argument in a block.** `BEGIN IF (FALSE) THEN RETURN NVL(nosuch, 'x');
+  END IF; RETURN 1; END;` answered 1, and the name was found only when its statement ran, as an
+  EXPRESSION_ERROR. The block is refused while it compiles, `invalid identifier 'NOSUCH'` at the name's own place
+  and bare — in a nested call, a condition, a loop's bound, a handler and a DECLARE's default alike, and ahead of a
+  later name outside the call. A lambda's parameter is no name of the block's, so `TRANSFORM([1], x -> x + 1)` in a
+  block's own expression is refused for `X`. The word standing where DATEADD, DATEDIFF, DATE_TRUNC, DATE_PART and
+  their aliases read a unit is left to the call.
+- **A Snowpark `Row`'s accessors cast, they do not convert.** A Java handler's `row.getString(0)` over a number
+  answered its digits, `getInt` read a text, `getBoolean` a number: each now fails the handler as on the account —
+  a `ClassCastException` for `getString`, `getBoolean`, `getDecimal`, `getDate`, `getTime`, `getTimestamp`,
+  `getBinary`, `getList` and `getMap`, and `Error Code: 0400, Error message: Cannot cast java.lang.String(a) to
+  Int.` for the number accessors, which read a whole number their type can hold (`getByte` over 300 is refused)
+  and, for `getDouble` and `getFloat`, a FLOAT. `Row.toArray()` and `Row.getStruct()`, which Snowpark does not
+  have, are gone: a handler that calls one no longer compiles.
+- **A sign after a sign in a Snowscript function's block.** `… AS $$ BEGIN RETURN - -a; END $$` created the
+  function; it is `invalid function '-'` as the function is created, named by the outer sign, as a query's is.
+- **A procedure's body that opens with a name, or reads a `$name` nothing set.** `… LANGUAGE SQL AS $$x := 1;$$`
+  created the procedure: a body written without a block that opens with a name opens with no statement, and is
+  refused at that name (`syntax error line 1 at position 0 unexpected 'x'.`). A body of one statement that names
+  a session variable which does not exist as the procedure is created is refused for it, as a block's is, and a
+  `CALL` written without a block and without its semicolon at the `END` of the frame the account compiles it in.
+- **`DESCRIBE TAG`.** It is `Unsupported feature 'TAG'.` whether or not the tag exists, by any name, with any
+  property, inside a block and through EXECUTE IMMEDIATE, as on the account; `SHOW TAGS` reads a tag back.
+- **An infinity bound into a block's statement.** A FLOAT variable may hold NaN and the infinities, but a
+  statement of the block cannot bind an infinity: `Invalid bind value (inf) for type (REAL).` while it compiles.
+  A NaN binds.
+- **A bare name as a VALUES row's item, and a date part's word outside a unit's place.** `INSERT … VALUES (x)`
+  with a name that is no value is an invalid identifier at its place; `UPPER(ms)`, `COUNT(day)` and
+  `TRUNC(d, month)` read the word as a name like any other, refused when no column has it. A date part's word is
+  a word only where a date function's unit stands.
+- **A SELECT … INTO whose select list writes another number of values than it has targets** is refused while
+  the block compiles; more than one row is `A SELECT INTO statement expects exactly 1 returned row, but got <n>.`
+- **A context word written without parentheses in a block's own expression.** `CURRENT_DATE`, `CURRENT_TIME`,
+  `CURRENT_TIMESTAMP`, `CURRENT_USER`, `LOCALTIME` and `LOCALTIMESTAMP` are names there, refused as invalid
+  identifiers while the block compiles.
+- **A `:name` in a cursor's query.** A cursor's query binds none of the block's variables: the name is refused
+  when the cursor opens, as a bind nothing sets. Only a question mark is bound, by `OPEN … USING`.
+- **A row count that is no whole number of rows.** A LIMIT, an OFFSET or a FETCH count with more digits than 64
+  bits hold, and a block's variable bound there that is negative, a text, a FLOAT or a BOOLEAN, is an invalid row
+  count; a SAMPLE's percentage, size and seed are held to their ranges while the statement compiles.
+- **A SHOW's LIMIT of 0, or past 10,000.** A page size runs from 1 to 10,000: zero is refused while the statement
+  compiles, before its scope is looked up, and a size past 10,000 once the scope is found. What a SHOW's shape
+  alone rules out is refused while a block compiles, before any statement of it runs.
+- **`||` over numbers or a NULL as a predicate.** It is VARCHAR(134217728), so a WHERE or a HAVING of one is
+  refused as a predicate that is no BOOLEAN.
+- **A GENERATOR's ROWCOUNT that is a text or a BOOLEAN** is refused by its type while the statement compiles,
+  and a negative one in the account's sentence; a NULL bound is a bound not given.
+- **The IS_ and AS_ functions over what is no VARIANT.** The type predicates of a VARIANT, its casts that answer
+  NULL for another kind and STRIP_NULL_VALUE refuse a text, a date, a time, a timestamp and a BINARY by the
+  argument types; AS_INTEGER, AS_DECIMAL, AS_NUMBER and the AS_TIMESTAMP casts take a VARIANT and nothing else.
+- **A frame the ranking and navigation functions do not take.** ROW_NUMBER, NTILE, CUME_DIST, PERCENT_RANK, LAG,
+  LEAD and the event counters refuse a cumulative or a sliding ROWS frame and a RANGE frame; RANK and DENSE_RANK
+  the same RANGE frames. NTILE's count is at least 1.
+- **`TO_QUERY` of anything but one query or one CALL**, a write in a procedure called in a FROM clause, and a
+  SET or an UNSET of a session variable in an owner's-rights procedure. An EXPLAIN carries nothing out: a
+  procedure in its statement's FROM clause does not run and a sequence it reads does not move.
+- **A text of two statements that counted as one.** The one-statement gate counts the statements a text runs
+  as, off the parse the run reuses: `SELECT 1 AS a$$b; DELETE …` is two, as are a statement after a line comment
+  that a carriage return ends and one behind a block's word used as a name.
+- **A NULL typed from what stands beside it as `SYSTEM$ABORT_TRANSACTION`'s argument, and an ARRAY as
+  `SYSTEM$WAIT`'s.** `SYSTEM$ABORT_TRANSACTION(NVL(NULL, 12))` and `(NULL + 1)` answered `Bad transaction id`
+  or NULL; the plan types such a NULL with a conversion it cannot fold, so the argument is no constant:
+  `argument 1 to function SYSTEM$ABORT_TRANSACTION needs to be constant, found 'NVL(SYSTEM$NULL_TO_FIXED(null),
+  12)'`. `SYSTEM$WAIT(ARRAY_CONSTRUCT(1))` waited; it is `Invalid argument types for function 'SYSTEM$WAIT':
+  (ARRAY)`.
+- **`SYSTEM$LOG` and `SYSTEM$LOG_<level>` called as functions.** `SELECT SYSTEM$LOG_INFO('m')` and
+  `CALL SYSTEM$LOG('info', 'm')` answered NULL. They are statements of a Snowflake Scripting block and no
+  functions: a query or a CALL that names one is refused, `Unknown function SYSTEM$LOG_INFO`, over no rows and
+  inside `SYSTEM$TYPEOF` too. A statement of that spelling under a name that names none
+  (`SYSTEM$LOG_NOSUCH('m');`) no longer compiles.
+- **A number written `0x…`.** `SELECT 0x3` was read as `0 AS x3` and `SELECT 0x` as `0 AS x`. A hexadecimal
+  number is one token no statement reads, refused where it stands (`unexpected '0x3'`), and the prefix alone is
+  a number that stops: `parse error line 1 at position 9 near '<EOF>'.`
+- **A value outside a mathematical function's domain.** `ACOS(2)`, `ASIN(-1.5)`, `LN(0)`, `LOG(1, 5)`,
+  `LOG(10, 0)`, `SQRT(-1)` and `POWER(-8, 1/3)` answered NaN, an infinity or NULL. Each is refused in the
+  account's words, the operation named: `Invalid floating point operation: acos(2)`, `log(e,0)`, `log(1,5)`,
+  `sqrt(-1)`, `pow(-8, 0.333333)`. `COT(0)` is `Infinity`, as on the account.
+- **`FACTORIAL` outside 0 … 33, a negative shift count, a character code that names no character.**
+  `FACTORIAL(34)` is `Numeric value is out of range, error: 34 is too large for factorial function.`,
+  `FACTORIAL(-1)` is `… Input of factorial function can't be negative. -1 is invalid.`,
+  `BITSHIFTLEFT(1, -1)` is `Invalid parameter value: -1. Reason: shift parameter must be greater or equal to
+  zero`, and `CHR(-1)`, `CHR(1114112)` and a surrogate's code are `Invalid character code -1 in the CHR input`.
+- **A key written twice in `OBJECT_CONSTRUCT`, and `OBJECT_KEYS` over what is no object.**
+  `OBJECT_CONSTRUCT('a', 1, 'a', 2)` kept the last value; it is `Duplicate field key 'a'`.
+  `OBJECT_KEYS(PARSE_JSON('[1]'))` answered NULL; it is `Failed to cast variant value [1] to OBJECT`.
+- **A task named by a number.** `SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS(1)` looked for a task named 1; the
+  name is a constant text: `argument 1 to function SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS needs to be
+  constant, found 'CAST(1 AS VARCHAR(134217728))'`.
+- **A field read from a FOR variable that is no record.** `FOR r IN (SELECT v FROM t) DO x := r.v; END FOR;` ran
+  no iteration, and `FOR r IN 1 TO 2 DO x := r.v; END FOR;` answered NULL. The variable of a FOR over a cursor or
+  a RESULTSET is a record; over anything else it has no fields, and a field read from it is refused while the
+  block compiles, on a branch that never runs too: `invalid identifier 'R.V'` for a loop over a value in
+  parentheses, and the counter alone, `invalid identifier 'R'`, for a loop over a range.
+- **`TOP` with a bind in a RESULTSET's query.** `res := (SELECT TOP :s v FROM t)` took the variable's value as
+  the count. TOP takes a number written out: before a colon it is a name and the colon a path's, so the query
+  is refused as an account refuses it, `invalid identifier 'TOP'`.
+- **A fraction as `SPLIT_PART`'s part.** `SELECT SPLIT_PART('a,b,c', ',', 1.6)` answered `b`, the part rounded.
+  An exact NUMBER with a fraction there — a literal, a NUMBER(4,2) column, a cast to one, `1 + 0.6` — is now
+  refused while the statement compiles, over a table with no row too: `argument 3 to function SPLIT_PART needs to
+  be an integer, found: '1.6'`, the argument echoed as the plan prints it (`'T.N'`, `'CAST(1.6 AS NUMBER(4,2))'`).
+  What is computed from literals is computed first, so a whole number written with a fraction is still read
+  (`2.0`, `1.5 + 0.5`, `2::NUMBER(4,1)`) and a NULL answers NULL (`NULL::NUMBER(4,2)`); so is the one whole value
+  a column's statistics leave an expression. A FLOAT, a text and a VARIANT are read and rounded as before.
+- **A BINARY given to an ARRAY parameter.** `DECLARE b BINARY; BEGIN CALL pa(:b); … END;` ran where `pa` takes an
+  ARRAY. It is refused as the other families an ARRAY parameter does not take are: `Invalid argument types for
+  function 'PA': (BINARY(67108864))`.
+- **A cursor declared over a name that is no RESULTSET.** `DECLARE c CURSOR FOR nosuch; BEGIN … END;` ran, and
+  `OPEN c` over the missing name did nothing. The name a cursor is declared over must be a RESULTSET declared
+  before the cursor, in its block or in one around it; any other name is refused while the body compiles, at the
+  name, whether the cursor is opened or not — `invalid identifier 'NOSUCH'`: a name nothing declares, a variable
+  that is no RESULTSET, the cursor's own name, a RESULTSET declared after the cursor and a table's name alike,
+  in the DECLARE section and in `LET c CURSOR FOR …`. A procedure with such a cursor is created and refused when
+  it is called.
+
+- **A NULL, or a value that is no constant, in seven argument places.** Each answered NULL or a default where an
+  account refuses the call:
+  - `GET(arr, NULL)` and `arr[NULL]` over an ARRAY, for an index the plan folds to NULL — the bare word,
+    `NULL::INT`, `NULL + 1`, `TO_NUMBER(NULL)` — are `Invalid extraction path 'Extract path index cannot be null':
+    invalid number at position {1}.` (the account's own sentence, placeholder included). A NULL read from a
+    column or answered by a condition, a NULL text and a VARIANT or OBJECT read with a NULL still answer NULL.
+  - `TO_CHAR(x, NULL)` and a format of any type but text (`TO_CHAR(1, 5)`, a BOOLEAN, a date, a VARIANT) are
+    `Format argument for function 'TO_CHAR' needs to be a string`, named as the call is written; `TO_CHAR(TRUE,
+    'x')` and `TO_CHAR(NULL, NULL)` are refused for their count of arguments.
+  - `SHA2('a', n)`, with a size that is a column, a typed NULL or an expression over an untyped NULL, is
+    `argument 2 to function SHA2 needs to be constant, found 'T.N'`, over a table with no row too.
+  - `RANDSTR(NULL, g)` is `Invalid parameter value: NULL. Reason: length must not be NULL` and a negative length
+    `… length must not be negative`, where it was a NULL and an internal error.
+  - `UNIFORM(NULL, b, g)` / `UNIFORM(a, NULL, g)` are `… a must not be NULL` / `… b must not be NULL`, and a first
+    bound above the second `Invalid parameter value: 2, 1. Reason: a must be smaller than or equal to b`, where
+    it answered the first bound.
+  - `NTH_VALUE(x, NULL)` is `Invalid value [null] for function 'NTH_VALUE', parameter 2: n in nth_value cannot be
+    null`, `NTH_VALUE(x, 0)` `… N (i.e., second argument) cannot be zero.`, a negative n `Invalid parameter value:
+    -1. Reason: Second argument of the function must be a positive integer.`, and an n that is no whole number
+    written out — a column, `1 + 1`, `1.5` — `argument 2 to function NTH_VALUE needs to be constant, found '…'`.
+  - `LAG` and `LEAD` take a whole number written out as their offset: a column, a typed NULL or `1 + NULL` is
+    `argument 2 to function LAG needs to be constant, found 'T.N'`, and the bare word NULL, a fraction, a text,
+    `1 + 1` or `ABS(1)` `argument 1 to function LAG needs to be constant, found 'SYSTEM$NULL_TO_FIXED(null)'`,
+    each echoed as the plan prints it. `LAG(a, n)` over a column was `invalid identifier 'N'`.
+
+- **A SQL function whose table is gone, where no row calls it.** A SQL function's body ran only when a row
+  called it, so `SELECT f() FROM t` over an empty `t`, `SELECT * FROM t WHERE a = f()`, `IFF(FALSE, f(), 1)`,
+  `… LIMIT 0` and a table function joined to an empty table all ran although the table `f`'s body reads had been
+  dropped. An account expands the body into the statement while it compiles and refuses it — `Object
+  'DB.S.UE' does not exist or not authorized.` — in a query, an INSERT … SELECT, an UPDATE, a DELETE and a MERGE,
+  and a view, a table (`CREATE TABLE … AS`) and a function created over such a call are no longer created. A
+  function reached through another is refused alike, and a view the body reads is expanded under its own name.
+  The statement's own refusals — a column it does not have, a call's argument count — still speak first.
+
+- **A bare name as the scope of a security listing is a schema.** `SHOW SECRETS IN <name>`, `SHOW PASSWORD
+  POLICIES IN <name>` and `SHOW NETWORK RULES IN <name>` listed a DATABASE of that name when the current database
+  had no such schema. The name is a schema of the current database and nothing else: `Schema 'DB.NAME' does not
+  exist or not authorized.` (a network rule listing: `Object does not exist, or operation cannot be performed.`).
+
+- **The tag functions of what a policy protects, outside a policy.** `SYSTEM$GET_TAG_ON_CURRENT_TABLE('t')` and
+  `SYSTEM$GET_TAG_ON_CURRENT_COLUMN('t')` answered NULL wherever they were written. Outside a policy's body they
+  are refused while the statement compiles, as on an account — `Invalid system$get_tag_on_current_table function
+  invocation.It can only be invoked from a masking policy/row access policy.` and `Invalid
+  system$get_tag_on_current_column function invocation. It can only be invoked from a masking or projection
+  policy.` — over a table, in a WHERE clause, in a block (bare, past every handler) and in a view, a function or
+  a procedure that only stores the call, which is no longer created. The tag's name is judged first: no argument or
+  two is the count's sentence, a column `Invalid value [A] for function …, parameter 0: constant arguments
+  expected`, a NULL `argument 0 to function … needs to be constant, found 'null'`, a number `argument needs to be
+  a string: …`. A row access policy that reads the column's tag, a projection policy that reads the table's and
+  an aggregation policy that reads either are refused as they are created, and so is a policy naming a tag that
+  is not there.
+
+- **SYSTEM$GET_TAG compiled with what holds it.** A procedure or a function whose body calls
+  `SYSTEM$GET_TAG` over a tag, an object or a domain that is missing was created and failed when called; it is
+  refused at CREATE. In a block's own expression a `:name` among the arguments is refused where it stands
+  (`Bind variable null not set.`; in a procedure's body `Bind variables not allowed in view and UDF
+  definitions.`), an argument that reads a variable inside an expression is `argument 1 to function
+  SYSTEM$GET_TAG needs to be constant, found 'null'`, and a function's parameter for an argument `Invalid value
+  [CORRELATION(null)] for function 'SYSTEM$GET_TAG', parameter 1: constant arguments expected`.
+
+- **A USING value bound where the statement takes no text.** A USING list — a cursor's `OPEN c USING (x)` and
+  `EXECUTE IMMEDIATE … USING (x)` — hands each value over as its text, as an account does, so what ran with the
+  value's own type is refused in the account's words: a placeholder as a row count (`LIMIT ?`, `OFFSET ?`) is
+  `Invalid row count '?' in limit clause`, a BOOLEAN bound as a predicate or into IFF `Invalid data type
+  [VARCHAR(4)] for predicate` / `Invalid argument types for function 'IFF'`, a DATE bound into `? + 1` `Numeric
+  value '2024-01-15' is not recognized`, and an infinity bound into a comparison with a NUMBER `Numeric value
+  'inf' is not recognized`. A cast in the text (`?::INT`, `?::DATE`) reads the value as before.
+- **A SQL function's block body whose expression does not compile, behind a handler.** `CREATE FUNCTION f() RETURNS
+  INT AS BEGIN RETURN 'a' + TRUE; EXCEPTION WHEN OTHER THEN RETURN 5; END` answered 5 for `SELECT f()`. On an
+  account the body compiles with the statement that calls the function, so the call is refused with the
+  expression's own compilation error and no handler of the body catches it. An expression that fails as it is
+  evaluated (`RETURN 1 / 0`) is still the body's exception, which its handlers catch.
+- **A COMMENT written after a task's body.** `CREATE TASK … AS SELECT 1 COMMENT = 'c'` set the task's comment. On an
+  account the body runs to the end of the statement, so the word belongs to the body: a syntax error after a query,
+  a CALL, DML or a block, and the body's own clause after a CREATE (`AS CREATE TABLE t (x INT) COMMENT = 'c'`).
+  The task's own comment is written before AS, as before.
+- **A column a window call reads in the ORDER BY of an aggregate query with no GROUP BY.** `SELECT MAX(id) FROM t
+  ORDER BY MAX(id) OVER ()` answered the row. The clause is dropped, as before, but a window call among its keys is
+  held to the grouping first, as the select list's are: `[T.ID] is not a valid group by expression`. A window over
+  aggregates and constants alone (`SUM(MAX(id)) OVER ()`, `COUNT(*) OVER ()`) still answers the row.
+- **A column a window call reads beside a GROUP BY ALL that finds no key.** `SELECT MAX(id), MAX(id) OVER () FROM t
+  GROUP BY ALL` answered a row; the query is the one group an aggregate query is, and the column is refused the
+  same way.
+- **A SQL procedure whose body the account refuses to read.** `CREATE PROCEDURE … AS $$ BEGIN DROP TABLE t (VIEW);
+  … END $$` created the procedure and failed at its CALL. An account reads the body when the procedure is created:
+  a faulty signature or property of a DROP or a DESCRIBE in it, a word run in after a statement and a call in a
+  FROM form no name accepts refuse the CREATE with the body's own lines, and no procedure is left to call.
+- **A table named after LATERAL.** `FROM t, LATERAL x` and `JOIN LATERAL x y` read `x` as a table; LATERAL takes
+  a query in parentheses or a function's call, and an account refuses the token after the name (twice, as it
+  reports it).
+- **A star's RENAME without AS.** `SELECT * RENAME (a x) FROM t` renamed the column; the AS is required, and the
+  name after the column is a syntax error.
+- **A ':=' SET of a name no block declares.** `BEGIN SET x := 1; … END` set a session variable; `SET x := …`
+  assigns the block's variable as `x := …` does, and an undeclared one is `invalid identifier 'X'` while the block
+  compiles. Written with '=' it sets the session's variable, as before.
+- **A list SET whose values do not match its names.** `SET (x, y) = (1)` set `x` and left `y` NULL; it is `Number
+  of variables on left-hand side of assignment (2) is not equal to the number of values on right-hand side (1).`
+- **A bind in a session SET outside a block.** `SET x = :nosuch` set NULL (and `SET x = :1` failed inside the
+  engine); both are `Bind variable :nosuch not set.` at the bind.
+
+- **A type's name as a staged-file query's format.** `SELECT $1 FROM @st (FILE_FORMAT => 'CSV')` and `=> json`
+  read the file as that type; an account knows no file format of the name: `File format 'CSV' does not exist or
+  not authorized.` Name a `CREATE FILE FORMAT` object, or leave the argument out for CSV. An argument other than
+  FILE_FORMAT and PATTERN (`NOSUCH => 'x'`), which was ignored, is `Unsupported feature 'TABLE'.`
+- **TRUNCATE TABLE IF EXISTS of a stream or a dynamic table** answered success. IF EXISTS forgives a missing
+  table alone: a stream is `Object found is of type 'STREAM', not specified type 'TABLE'.`, a dynamic table
+  `Invalid Operation TRUNCATE on Dynamic Table`.
+
+- **A window of a measure's own in MATCH_RECOGNIZE.** `MEASURES ROW_NUMBER() OVER (ORDER BY id) AS rn` and `SUM(v)
+  OVER () AS sv` were computed; a measure is read over its match, and the clause refuses the OVER where it stands:
+  `OVER clause not allowed in MATCH_RECOGNIZE MEASURES clause.`
+
+- **SYSTEM$WAIT over an amount that is no whole constant.** `SYSTEM$WAIT(1.5)` waited two seconds. An account takes
+  a whole number it need not compute: a number written with a fraction, and any number that is computed or cast
+  (`1 + 0`, `2 / 2`, `0::NUMBER(10,2)`), is `argument 0 to function SqlIdentifier{qualifierNames=[],
+  identifierName=SYSTEM$WAIT} needs to be constant, found 'CAST(1.5 AS NUMBER(18,0))'` - the amount as the plan
+  prints it - and a BOOLEAN `Invalid argument types for function 'SYSTEM$WAIT': (BOOLEAN)`. `1.0`, a text and a
+  FLOAT are still taken.
+- **A bare star under ALL, and under a name that is no function's.** `COUNT(DISTINCT *)` was refused over the
+  statement's text; `COUNT(ALL *)` was counted, and `NOSUCHFN(DISTINCT *)` was an unknown function. Each is
+  `Unsupported feature 'TOK_STAR'.`, ahead of a table or a column that is not there, windowed too.
+- **A CALL of a function that answers only over a window**: `CALL ROW_NUMBER()` is `Missing window specification
+  for function [ROW_NUMBER()].`, where it was an unknown function.
+
+- **A SYSTEM$ function's argument that reads a row.** The SYSTEM$ functions that answer while a statement
+  compiles took a column and answered row by row. An account refuses it, over no row too, each family in its own
+  sentence: `SELECT SYSTEM$GET_TAG_ALLOWED_VALUES(n) FROM t` is `Invalid value [T.N] for function
+  'SYSTEM$GET_TAG_ALLOWED_VALUES', parameter 0: constant arguments expected`, the argument as the plan prints it
+  (`[UPPER(T.N)]`, `[(SELECT T.N AS "N" FROM T AS T LIMIT 1 OFFSET 0)]`), and so is anything the plan has not folded
+  by then - a cast, written or implied, and every call but `||`, CONCAT, UPPER, LOWER and GETVARIABLE over
+  constants; `SYSTEM$CLUSTERING_DEPTH(n)`, `SYSTEM$CLUSTERING_INFORMATION(n)` and `SYSTEM$LAST_CHANGE_COMMIT_TIME(n)`
+  are `argument 0 to function … needs to be constant, found 'T.N'`, `SYSTEM$STREAM_HAS_DATA(n)` and
+  `SYSTEM$STREAM_GET_TABLE_TIMESTAMP(n)` the same counted from one, and `SYSTEM$WAIT(n)` in the account's own
+  naming of that function. SYSTEM$GET_TAG reads its arguments before a name resolves: a qualified column is echoed
+  as written (`[T.N]`), a column inside an expression is `invalid identifier 'N'` at the name, and any query is
+  refused, printed as parsed. A view over SYSTEM$GET_TAG_ALLOWED_VALUES is created, and its reader refused.
+- **The clustering functions over what they cannot read.** `SYSTEM$CLUSTERING_DEPTH` and
+  `SYSTEM$CLUSTERING_INFORMATION` answered a fixed text for any name. A table that does not exist is now `Table 'T'
+  does not exist or not authorized.`, a table with no clustering key and no key list `Invalid clustering keys or
+  table T is not clustered`, a key naming no column an `invalid identifier`, a view `Cannot specify clustering keys
+  on views`, a NULL `null argument for table name`; `SYSTEM$CLUSTERING_RATIO` is `Unsupported feature 'Clustering
+  Ratio'.`
+- **A user-defined function's arguments inside a block.** A call whose arguments no overload takes was refused in a
+  statement run on its own and answered in a block wherever the argument was not a NULL or a number bind. It is
+  refused there as well, by the declared types: a BOOLEAN or an ARRAY bind, an expression over a bind (`fd(:s + 1)`
+  is `Invalid argument types for function 'FD': (NUMBER(11,2))`), a literal the block's query writes, and a variable
+  of the block's own expression - `t := fd(s)` over a NUMBER variable is that expression's EXPRESSION_ERROR.
+
+- **A grouped or DISTINCT query's ORDER BY key that tests a subquery.** A key reading a subquery as a value was
+  refused there; one testing it - `ORDER BY EXISTS (SELECT 1 FROM g)`, `id IN (SELECT id FROM g)`, `id > ANY
+  (SELECT …)` - was answered. An account refuses every subquery in such a key, re-printed from its plan:
+  `[EXISTS(SELECT 1 AS "1" FROM G AS G)] is not a valid order by expression`, an IN and a quantified comparison
+  by the quantifier alone, `[ANY(SELECT G.ID AS "ID" FROM G AS G)]` (`ALL` for NOT IN). The same subquery in the
+  select list does not make the key legal; naming it by the list's alias does, and so does an ungrouped query.
+- **A policy created over the name of another kind of policy.** A schema's policies share one namespace on an
+  account, and each kind kept its own here: `CREATE ROW ACCESS POLICY p` beside a masking policy `p` was created.
+  It is now `Object 'DB.S.P' already exists.`, with OR REPLACE `Object found is of type 'MASKING_POLICY', not
+  specified type 'ROW_ACCESS_POLICY'.`, and IF NOT EXISTS finds the name taken. A policy renamed onto a name
+  another policy holds is refused the same way - a join, an aggregation or a projection policy renamed onto a
+  name of its own kind used to replace the holder silently.
+- **A rename into a schema the role may not create in.** Renaming a stage, a file format, a function, a
+  procedure, a tag, a masking, row access, join, aggregation, projection or password policy asked for nothing
+  but the object. An account creates the object under its new name: the schema the name lands in - its own
+  included - is asked for the privilege to create the kind, `Insufficient privileges to operate on schema 'S'.
+  Your primary role R must have CREATE STAGE granted on SCHEMA DB.S.`
+- **A session's parameter written as a property of an Iceberg table.** `CREATE ICEBERG TABLE t (a INT) TIMEZONE =
+  'UTC'` was created. As for any table the parameter is none of its properties: `cannot set parameter 'TIMEZONE'
+  at 'ICEBERG_TABLE'`.
+- **A call of a function that cannot use its secrets, wherever it is compiled.** A function that names
+  SECRETS and no external access integration was refused only when a row called it: `SELECT f(a) FROM t WHERE
+  1 = 0` answered no rows, and a view, a function, a procedure or a column default calling it was created. As
+  on an account the call is refused while the statement compiles - `invalid property 'SECRETS' for 'FUNCTION'`,
+  or `Object 'S' does not exist or not authorized.` for a secret that is gone - in a query over no rows, an
+  EXPLAIN, a DELETE or an UPDATE, a block, and the definition that calls it is not created. The refusal comes
+  ahead of an invalid identifier and of the call's argument count.
+- **A dotted name in a SQL function's body.** `CREATE FUNCTION f(x NUMBER) RETURNS NUMBER AS 't.x'` was created
+  and failed when called. Outside a subquery a dotted name is no parameter's, and an account refuses the
+  CREATE: `invalid identifier 'T.X'`. `s.nextval`, which reaches a sequence, is still created.
+- **A parameter DEFAULT that reads a query.** `DEFAULT (SELECT 1)` was created. An account refuses it where the
+  query starts: `invalid default argument expression (SELECT 1 AS "1" FROM (VALUES (null)) DUAL)`.
+- **A Java handler compiled for a newer Java than the runtime it declares.** `CREATE FUNCTION ... LANGUAGE JAVA
+  RUNTIME_VERSION = '11' HANDLER = 'H.h' IMPORTS = ('@st/h.jar')` was created whatever the jar held. As on an
+  account a handler class the imports hold compiled for a newer Java than the declared runtime reads - 17 for
+  runtime 11, 21 for runtime 17 - is refused at CREATE: `Class files were compiled with an unsupported version
+  of the JDK. Use the '-target' or '-release' option when compiling your class files to target Java 11 in
+  function F with handler H.h`. A function that declares no RUNTIME_VERSION runs on the account's default
+  runtime, which differs from account to account, and is held to no level; a class newer than the engine's own
+  Java is refused when it is called, where it failed inside the JVM.
+- **A repeated secret name under IF EXISTS.** `ALTER FUNCTION IF EXISTS nosuch(NUMBER) SET SECRETS = ('a' = s,
+  'a' = s)` answered success. The list is judged first: `Duplicate secret name 'a' passed in.`
+- **An APPROX_PERCENTILE percentile above 1.** `APPROX_PERCENTILE(n, 1.01)` answered the largest value. As on
+  an account the percentile lies between 0 and 1 inclusive: `Invalid value [1.01] for function
+  'APPROX_PERCENTILE', parameter 2: Percentile must be between 0 and 1 inclusive.`
+- **A USING TEMPLATE query of more than one column.** `CREATE TABLE t USING TEMPLATE (SELECT
+  ARRAY_AGG(OBJECT_CONSTRUCT(*)), 1 FROM TABLE(INFER_SCHEMA(...)))` read its first column and ignored the rest.
+  An account refuses the query: `Invalid template: The sub-query must SELECT a single scalar value`.
+- **A foreign key given an ON DELETE or an ON UPDATE rule twice.** `FOREIGN KEY (y) REFERENCES p (id) ON DELETE
+  CASCADE ON DELETE SET NULL` created the table. As on an account a key takes one rule of each kind: a second
+  rule of a kind is a syntax error at its `DELETE` or `UPDATE`, a third rule at its `ON`.
+- **A cast out of a vector or a MAP that has no conversion.** `[1,2,3]::VECTOR(INT,3)::DATE` answered the
+  vector's text, `::NUMBER` failed only when the row was read, and a MAP cast to a DATE, a BOOLEAN, a FLOAT or a
+  BINARY likewise; `TRY_CAST` and `TRY_TO_NUMBER` over either answered NULL. As on an account neither converts
+  to a scalar, and the statement is refused while it compiles: `invalid type [CAST(TO_VECTOR(ARRAY_CONSTRUCT(1,
+  2, 3)) AS DATE)] for parameter 'TO_DATE'`. A vector is read into an ARRAY of its own elements' kind alone
+  (`::ARRAY(FLOAT)` over an INT vector is `Invalid argument types for function 'CAST': (VECTOR(INT, 3))`), is no
+  OBJECT (`… for parameter 'TO_OBJECT'`, by a cast and by `TO_OBJECT`) and no shaped OBJECT or MAP
+  (`incompatible types: [VECTOR] and [MAP]`).
+- **A MAP or a shaped OBJECT wrapped into an ARRAY.** `{'a': 1}::MAP(VARCHAR, INT)::ARRAY` and `TO_ARRAY` over a
+  MAP or an `OBJECT(a INT)` answered `[{"a":1}]`, as a plain OBJECT does. An account refuses both:
+  `Unsupported data type 'MAP'.`, `Unsupported data type 'STRUCTURED_OBJECT'.`
+- **A DECFLOAT with a precision other than 38.** `NULL::DECFLOAT(5)`, a `DECFLOAT(16)` column, parameter or
+  declared variable were taken, the number ignored. As on an account the type takes the one precision:
+  `Unsupported DECFLOAT precision: 5.`, while the statement compiles, for any other number - a negative one
+  included. `DECFLOAT` and `DECFLOAT(38)` are unchanged.
+- **A written signature that names a structured parameter by another shape.** `DESCRIBE FUNCTION f(OBJECT(b
+  INT))`, `DROP FUNCTION f(OBJECT(a VARCHAR))` and `f(ARRAY)` all reached `f(x OBJECT(a INT))` - only the outer
+  family was compared. As on an account a structured parameter is named by its shape: the field names, their
+  order, each type's family and a field's `NOT NULL` must be the declared ones, whatever widths are written
+  inside (`OBJECT(a NUMBER(10,2))` still names `OBJECT(a INT)`). Another shape is `Function '…' does not exist
+  or not authorized`.
+- **ALTER MATERIALIZED VIEW IF EXISTS no longer forgives a missing view for every action.** `ALTER MATERIALIZED
+  VIEW IF EXISTS nosuch SUSPEND` answered `Statement executed successfully.` As on an account IF EXISTS forgives
+  the view's absence for the clustering actions, RENAME and SET / UNSET COMMENT; SUSPEND, RESUME and SET / UNSET
+  SECURE are refused with `Materialized view '…' does not exist or not authorized`. A `CLUSTER BY` key is
+  compiled even then, so a column that is nowhere is `invalid identifier 'X'`.
+- **A metric schedule that is no schedule.** `CREATE TABLE t (a INT) DATA_METRIC_SCHEDULE = 'x'` was created, a
+  view likewise. As on an account the text is `'<n> MINUTE'` with 5, 15, 30, 60, 720 or 1440 minutes, a `USING
+  CRON` expression with its time zone or - for a table alone - `'TRIGGER_ON_CHANGES'`; anything else is
+  `Invalid schedule was specified. Please refer to the docs on what constitutes a valid schedule.`
+- **A user's table function, or a table procedure, called with named and positional arguments mixed.**
+  `TABLE(f(1, b => 'x'))` ran, the positional arguments filling the leading parameters. As on an account a call
+  in a FROM clause writes its arguments one way or the other, in whichever order they come: `illegal mixing of
+  named and positional arguments for function F`, at the function's name and before the names and the types are
+  judged - the rule a CALL already had. Name every argument, or none.
+- **A table procedure's arguments in a FROM clause are no longer converted.** `SELECT * FROM TABLE(p('1'))` over
+  `p(x NUMBER)` ran, the text converted as a CALL converts it, and `TABLE(p('x'))` failed only when the procedure
+  ran. As on an account the FROM form matches its arguments to the parameters' declared types exactly, while the
+  statement compiles, as a table function's are matched: a text, a FLOAT, a NUMBER of another scale and an
+  untyped NULL are no arguments of a NUMBER parameter, nor a `TIMESTAMP_NTZ(3)` of a `TIMESTAMP_NTZ` one. Every
+  misfit, too few and too many arguments among them, is `Invalid argument types for function 'P': (VARCHAR(1))`
+  at the procedure's name, the name as the call writes it (`'TEST_SCHEMA.P'`); written with names it is `named
+  arguments [X] do not match any signature for function P`. A number written as a literal is matched at the scale
+  its value needs, so `p(1.0)` still names a NUMBER(38,0) parameter. Cast the argument (`p('1'::NUMBER)`), or CALL
+  the procedure.
+- **A routine's signature written with its family's default width.** `DROP FUNCTION f(VARCHAR(16777216))` dropped
+  a function declared `f(p VARCHAR)`, and `f(TIMESTAMP_NTZ(9))` named a parameter declared `TIMESTAMP_NTZ(3)`:
+  a width equal to the default read as no width at all. As on an account a type written with a length or digits
+  names only a parameter declared with the same - `Function 'DB.SCHEMA.F' does not exist or not authorized.`
+  otherwise - and a parameter declared without a length is as wide as a text or a binary gets, named by
+  `VARCHAR(134217728)` and `BINARY(67108864)` and by no other length. DESCRIBE, DROP, ALTER, COMMENT ON and
+  GET_DDL read a signature alike, a function's and a procedure's. A type written bare names a parameter of any
+  width, as before, and so does `NUMBER(38,0)`: write the bare type.
 - **USE ROLE of a role the user may not activate.** `USE ROLE r` activated any role that existed, so a script
   that created a role and switched to it without granting it ran here and failed on an account. As there, a role
   is activated only by a user it reaches: one granted to the user, or to a role the user holds, however far
@@ -838,6 +1243,1171 @@ Changes since 0.2.0 accumulate here as they land.
 
 ### Fixed
 
+- **The array functions read their arguments on the row as the account does.** A VARIANT that holds no array is
+  read as a one-element array by ARRAY_SLICE, ARRAY_CONTAINS, ARRAY_POSITION, ARRAY_APPEND, ARRAY_PREPEND,
+  ARRAY_DISTINCT, ARRAY_INSERT, ARRAY_REMOVE, ARRAY_REVERSE, ARRAY_SORT, ARRAYS_OVERLAP, ARRAY_INTERSECTION,
+  ARRAY_EXCEPT, ARRAY_MAX and ARRAY_MIN, where they answered NULL or refused. A text or VARIANT position of
+  ARRAY_INSERT, ARRAY_REMOVE_AT and ARRAY_GENERATE_RANGE is read as the number it holds, where it was refused as an
+  invalid argument type. A VARIANT text that spells no number is `Failed to cast variant value "abc" to FIXED`, and
+  ARRAY_SORT's flags convert as TO_BOOLEAN does. GET over an array answers NULL for a text or VARIANT index, and
+  refuses a BINARY, OBJECT or ARRAY index while the statement compiles.
+- **A SQL function whose query body reads its parameter in a WHERE is judged where the call reads the row.**
+  `SELECT a + 1 WHERE a > 0` called over a column is refused with `Unsupported subquery type cannot be evaluated
+  inside Function object: SQ_WHERE`, as the correlated subquery it expands into; over a constant it answers as
+  before.
+- **A stream whose table was replaced shows it as the account does.** SHOW STREAMS lists `No privilege or table
+  dropped` for a table stream's table and base tables, and `1 inaccessible table(s)` for a view stream's. It names a
+  healthy view stream's base tables rather than its view, and gives a stale stream no `stale_after`. A read of the
+  table stream is `Base table '…' dropped, cannot read from stream 'ST' in line 1 position 14.` (no compilation
+  error), and of the view stream `Change tracking is not enabled or has been missing for the time range requested on
+  table '…'.` SYSTEM$STREAM_HAS_DATA refuses such a stream, and GET_DDL quotes its table's full name.
+- **A collation is settled over every relation that feeds a column.** A UNION BY NAME gave its columns no collation
+  at all: each column's collation now folds over the arms' columns of its name, so `UNION BY NAME` deduplicates
+  under it and two that differ are refused with `Incompatible collations: 'en-cs' and 'en-ci'`. A recursive CTE kept
+  its anchor's collation; it now settles the anchor with its recursive terms, a COLLATE in a term outranking the
+  anchor's column. `c = ANY (SELECT d …)` over two columns' collations is refused as `IN` is, where it used to
+  compare under the left side's alone.
+- **A user-defined table function after LATERAL without TABLE( … ) is resolved and judged.** A call whose arguments
+  did not match its parameters, or that named them, was not found and the query failed with `invalid identifier`
+  on its select list; it is now matched as inside TABLE( … ), refused with `Invalid argument types for function
+  'PTF': (NUMBER(10,2))` at the call, and a name no table function carries is `Unknown table function NOSUCH_TF`
+  (a quoted name keeps its quotes). A JavaScript, Python, Java or Scala table function's arguments are judged by
+  type as a SQL one's are, where any arguments used to reach the handler.
+- **A called SQL function's GET_DDL is judged while the statement compiles.** A function whose body names a missing
+  object in GET_DDL was refused only when a row ran it; the object is now looked up wherever the call stands, under
+  SYSTEM$TYPEOF, in a branch never taken and over no row. GET_DDL's constant-arguments refusal prints CURRENT_DATE
+  as the day it answers, `[CAST('2026-10-14' AS VARCHAR(134217728))]`, as the account's plan does.
+- **A correlated EXISTS, NOT EXISTS or scalar aggregate over one equality is computed once for every key.** Such a
+  subquery ran in full for each outer row, so its cost grew with the product of its relations: over 10,000 rows on
+  each side EXISTS took 9.3 s, NOT EXISTS 9.3 s and `(SELECT MAX(k) FROM b WHERE b.id = a.id)` 10.8 s, where they
+  now take 18, 22 and 39 ms. A subquery that reads the outer row only through one `inner = outer` conjunct of its
+  WHERE has its inner keys, or its aggregate by key, computed once per statement and probed per row; any other
+  shape, a key of a kind hashing does not compare, and a collated key still run the subquery for each row. The
+  answers are unchanged.
+- **SEQ1, SEQ2, SEQ4 and SEQ8 number the rows a GROUP BY reads.** A key built from them read 0 for every row, so
+  `SELECT SEQ4() % 3 AS b, COUNT(*) … GROUP BY b` put every row in one group; the keys now number the rows the
+  grouping reads, an item shows the key its group was formed by (or, written out again, reads its group's first
+  row), and an aggregated SEQ, in the select list or a HAVING, numbers each row by its place in that scan rather
+  than in its group: `SUM(SEQ4())` over the groups of `i % 3` in 0..8 is 9, 12 and 15.
+- **An ORDER BY position over a star sorts by the column at that position.** Over relations sharing a column name,
+  `SELECT * FROM a JOIN b ON … ORDER BY 3` sorted by the first column of that name, A.X, instead of the third
+  output column, B.X; a position counting to a star's column now reads that column's own slot, through USING, a
+  comma join, DISTINCT, a derived table and qualified stars alike.
+- **A WHERE computes only the select aliases it reads, and shows the value it tested.** Every aliased item was
+  computed for every input row before the predicate ran, read or not, and computed again for the rows that passed:
+  an aliased SQL UDF or correlated subquery cost 20 to 50 times the unaliased form, a sequence's NEXTVAL was drawn
+  for every row the WHERE removed, and `WHERE r = 1` over `UNIFORM(1, 2, RANDOM()) AS r` showed rows with r = 2.
+  Over a single relation the value the predicate read is now the value shown, through ORDER BY, LIMIT, DISTINCT,
+  a window item and an ungrouped HAVING; over a join, or under a QUALIFY, the item is computed again for the
+  projection, as the account does. A WHERE that reads an alias beside a LIMIT is no longer refused with `invalid
+  identifier`, and an aliased item's scalar subquery raises what it raises ahead of the rows even when the WHERE
+  keeps none.
+- **A volatile GROUP BY key shows the value its group was formed by.** An item the key names by its alias or
+  position, or under GROUP BY ALL, ROLLUP, CUBE and GROUPING SETS, was computed again for each group, so
+  `SELECT UNIFORM(1, 50, RANDOM()) AS r, COUNT(*) … GROUP BY r` formed 50 groups showing 29 distinct keys. A key
+  that writes the expression out again stays a call of its own, as on the account.
+- **CONNECT BY walks a hierarchy as deep as its data goes.** A chain deeper than 1000 levels was refused as most
+  likely cyclic; it is now walked to its end, and only a real cycle, a row reached again below itself on its own
+  path from the root, is refused with `CONNECT BY reached a row again below itself: the hierarchy contains a
+  cycle.`
+- **PIVOT and UNPIVOT take their documented aliases.** `PIVOT (SUM(amt) [AS] total FOR …)` names each pivoted column
+  after its value and the alias, `'JAN_TOTAL'`, and `UNPIVOT (… IN (jan [AS] january, …))` carries the alias in the
+  name column; both were syntax errors. A pivot value written twice is refused with `The column ''JAN'' was specified
+  multiple times for 'FROM'` and two equal value aliases with `Duplicate column alias 'X'.`, where the repeat's column
+  used to stay NULL.
+- **A set operation's arms meet as the account folds them.** A DATE arm beside a TIMESTAMP_LTZ one becomes its
+  midnight; a number or a BOOLEAN before a VARIANT makes the column a VARIANT; a text before a VARIANT keeps its own
+  type; `TRUE UNION ALL 'false'` is a BOOLEAN and `'false' UNION ALL TRUE` a VARCHAR(5); and a text or a date after a
+  VARIANT, or a text after an ARRAY, is refused with `inconsistent data type for result columns for set operator
+  input branches, expected VARCHAR(7), got VARIANT`.
+- **TOP takes the counts LIMIT takes.** `TOP 2147483648` failed with a raw `NumberFormatException`; a count is now
+  taken up to 2^62 - 1 in TOP, LIMIT, FETCH and OFFSET alike and refused past it with `Invalid row count '…' in limit
+  clause` (`result offset` for an OFFSET), where LIMIT took counts up to 2^63 - 1.
+- **UNPIVOT holds its columns to one type.** The value column took the type of the first listed column whatever
+  the others were, so a CTAS stored 2.125 as 2.1 under NUMBER(5,1) and a 10-character text under VARCHAR(3). The
+  listed columns are now read in the relation's column order and the first of another type is refused with `The
+  type of column 'B' conflicts with the type of other columns in the UNPIVOT list.` (a NUMBER of another precision
+  or scale included); texts of different widths join in the widest, and the name column is a VARCHAR of no width.
+- **A CONNECT BY query keeps its columns' types.** SYSTEM$TYPEOF answered `NULL[LOB]` for every column and LEVEL,
+  arithmetic over them was declared VARCHAR, and a CTAS rounded an AVG to an integer. The hierarchy now reads its
+  table's declared types and tags, and LEVEL is a NUMBER(38,0).
+- **A time-travel read is tagged by the version it reads.** Over a table that has shrunk since, a COUNT, MIN or
+  MAX at an AT or BEFORE point was tagged by the table's current rows (`[SB1]` for 300 earlier rows); it is now
+  tagged by the rows of that version, as a copy of them would be.
+- **A seeded RANDOM answers a value per row.** `RANDOM(seed)` answered one value for every row, so a seeded
+  `UNIFORM`, `NORMAL` or `RANDSTR` wrote one value into every generated row and `WHERE UNIFORM(0, 9, RANDOM(42)) < 5`
+  kept no row or all of them. Each row now draws its own value from the seed, every call with that seed in one row
+  agrees, and a statement run again draws the same values.
+- **The rows the embedding API answers are the caller's own.** A SELECT that read a table's columns as they are
+  handed out the stored rows themselves, so changing one through `Row.setValue` or `getValues()` rewrote the table,
+  its time-travel versions and the cached result RESULT_SCAN reads. `DatabaseEngine.execute` and `executeQuery` now
+  answer copies.
+- **A quoted CTE name keeps its case.** A CTE named with a quoted identifier, `WITH "c" AS (…)`, could not be read by
+  any spelling and failed as a missing table, while a quoted reference such as `"c"` read an unquoted CTE `c`. CTE
+  names now match as identifiers do: `"c"` and `c` are two CTEs, `"C"` and `c` one. A CTE shadows a table of its
+  name, the first of two CTEs of one name wins, and a CTE that reads itself under a name that is not all upper case
+  is refused with `'r' is an invalid Recursive CTE`, as live refuses it.
+- **A column list of the wrong length is refused.** A CTE's column list must name exactly the columns its query
+  produces, even when the statement never reads the CTE, and a FROM item's alias list may rename fewer columns than
+  the item has but not more: `Mismatch between number of columns produced by 'C' and the number of aliases
+  specified.` Both used to be accepted with their names half applied.
+- **A column named like a date part is held to the grouping.** A column called YEAR, MONTH, DAY or another
+  date-part word escaped the grouped-query check inside any function call, so `ABS(year)`, `COALESCE(day, 0)` or
+  `MAX(year) OVER ()` over an ungrouped column answered one row's value per group. The word is read as a unit only
+  in a date function's unit slot (`DATEADD(day, …)`, `LAST_DAY(d, month)`); anywhere else it is the column, refused
+  as live refuses it.
+- **An aggregate and a window over aggregates combine in one expression.** Over grouped rows,
+  `SUM(b) / SUM(SUM(b)) OVER ()`, `COUNT(*) * 100 / SUM(COUNT(*)) OVER ()` and `MAX(b) - LAG(MAX(b)) OVER (…)`
+  were refused with `invalid identifier 'B'` or `Unknown function COUNT.`; they now answer, in the select list
+  and in QUALIFY.
+- **A correlated subquery beside a window reads its relation's alias.** Over one relation with an alias, a
+  scalar, EXISTS or IN subquery correlated through the alias failed with `invalid identifier 'R1.O'` when the
+  select list also held a window function.
+- **The `(+)` outer-join marker works over any number of comma-separated relations.** It used to be honored only
+  with exactly two: with a third relation every marked conjunct filtered like an inner join, so the documentation's
+  departments, projects and employees example answered 2 rows instead of 4. Each marked relation now joins with a
+  LEFT JOIN on its marked conjuncts once the relations they read have joined, a chain of markers being a chain of
+  left joins, and a LATERAL item beside them reads the null-supplied rows. `SELECT *` and positional references
+  read the relations in the order the FROM clause wrote them; a marked relation written first used to come last.
+  A marker on a self-join's alias null-supplies that alias's own rows.
+- **A join pairs every row its equality accepts.** An equi-join could miss rows a filter over the same equality
+  kept: a text column beside a BOOLEAN, a DATE, a TIME or a timestamp (`b = 'true'`, `d = '2024-01-01'`), a number
+  beside a BOOLEAN (`TRUE = 2` holds), -0.0 beside 0.0, and text under an accent- or space-insensitive collation;
+  and a text that does not read as the number beside it (`'1a'`) was passed over where it is refused with
+  `Numeric value '1a' is not recognized`. A bare USING
+  key read by a later join (`a FULL JOIN b USING (k) JOIN c ON k = c.ck`) lost the rows whose left copy is NULL.
+- **Each session keeps its own role.** A USE ROLE or USE SECONDARY ROLES in one session of an engine shared by
+  several — the HTTP server's sessions, or direct JDBC connections to one engine — used to become every other
+  session's role: their CURRENT_ROLE() changed under them, what they created was owned by the other session's role
+  and their privileges were checked against it. A session now takes the engine's role until it sets its own, and keeps
+  that to itself.
+- **EQUAL_NULL and IS [NOT] DISTINCT FROM answer what `=` answers for two values.** They used to compare two non-NULL
+  values by their printed text: a VARIANT number and a VARIANT string with the same digits were "not distinct", two
+  TIMESTAMP_TZ values at one instant with different offsets were "distinct", and a NULL-safe join paired rows `=` keeps
+  apart. Only NULLs are treated differently now.
+- **A dropped key takes only its own foreign keys, a sequence stays in range, and SET INCREMENT serves the computed
+  value first.** DROP PRIMARY KEY, DROP UNIQUE, DROP CONSTRAINT and DROP COLUMN take the foreign keys other tables hold
+  on the key that goes, and only those: a foreign key on a UNIQUE key used to go with the primary key, and one on a key
+  dropped by name or with its column used to stay. They take CASCADE and RESTRICT, which refuses a referenced key with
+  `cannot drop constraint because of dependencies`, and SHOW IMPORTED KEYS names a UNIQUE key as its pk_name. A
+  sequence draw whose next step would leave the 64-bit range fails with `Sequence value has exceeded valid range in
+  sequence object S.` where it used to wrap around. After ALTER SEQUENCE ... SET INCREMENT the value already computed
+  comes next and the new step applies from there, as documented; it used to step from the last value at once.
+- **A table swapped with itself survives, and a hybrid table holds its keys.** `ALTER TABLE t SWAP WITH t`, however
+  either name is spelled, leaves the table as it was; it used to drop the table and its rows for good. A view named as
+  the table to swap with is refused by its kind, and a missing one is refused even under IF EXISTS. A hybrid table
+  refuses a repeated PRIMARY KEY (`Primary key already exists`), a repeated UNIQUE value (`Duplicate key value violates
+  unique constraint "SYS_INDEX_<table>_UNIQUE_<column>"`) and a row whose FOREIGN KEY no parent row holds, a NULL one
+  included (`Foreign key constraint "SYS_INDEX_…" was violated.`), on INSERT; it used to take them all.
+- **A JSON load strips null values on request, a stage named with a dot is one stage, and the load history is
+  reported.** STRIP_NULL_VALUES = TRUE loads a JSON record without its null-valued fields and null array elements, at
+  every depth, where they used to stay. A quoted stage name or schema name that holds a dot (`@"s.dotted"`,
+  `@"S.A".c`) reaches its stage in PUT, a staged-file query and a COPY, which used to read it as a schema and a
+  stage; INFORMATION_SCHEMA.STAGES lists a quoted name as written. INFORMATION_SCHEMA.LOAD_HISTORY reports each file a
+  completed COPY loaded, which it used to leave empty, and a table's records go when it is truncated, replaced or
+  dropped.
+- **COPY reads a file in its ENCODING, fills the columns a column list leaves out, truncates on request, and a long
+  AND chain compiles at once.** A delimited file loads in the character set its format's ENCODING names, and a byte
+  sequence that set cannot read refuses its record (`Invalid UTF8 detected in string '...'`) unless
+  REPLACE_INVALID_CHARACTERS = TRUE turns it into U+FFFD; the load used to read every file as UTF-8 and replace bad
+  bytes silently. A COPY with a column list gives each column it leaves out its DEFAULT or next IDENTITY value, where
+  it used to leave them NULL, and refuses to leave out a column whose DEFAULT is a sequence. TRUNCATECOLUMNS = TRUE
+  and ENFORCE_LENGTH = FALSE cut a text longer than its column to the column's length instead of refusing it. A
+  CREATE OR REPLACE FILE FORMAT that is refused leaves the old format as it was. A chain of ANDs, ORs or comparisons
+  is typed in time that grows with its length: each operand's value range is worked out once, where every operator
+  used to work it out again, so a chain of a few dozen terms took minutes.
+- **COPY reads by its file format's date, time, timestamp and binary formats, an S3 stage stays inside its local
+  root, and an engine keeps its stages to itself.** A COPY load reads its fields by the file format's DATE_FORMAT,
+  TIME_FORMAT and TIMESTAMP_FORMAT, written inline or in a named file format, and by the session's input formats
+  where a format is AUTO or not written; a BINARY column's text reads by BINARY_FORMAT, HEX, BASE64 or UTF8. A
+  day-first file used to load `05/01/2024` as 1 May and refuse `13/01/2024`. An `s3://` stage's `..` segments and a
+  URL with no bucket name files inside `stage.s3.localRoot` or the mapped directory, as S3 keys are flat names;
+  they used to read and write any file the engine could reach. An engine that keeps nothing across a restart keeps
+  its internal, table and user stages in a directory of its own below `stage.internal.localRoot`, deleted when it
+  shuts down or the JVM exits; two engines whose stages shared a name used to see and erase each other's files.
+- **A running statement can be stopped, a session keeps its own results, and the HTTP driver reads a FLOAT's NaN.**
+  STATEMENT_TIMEOUT_IN_SECONDS ends a statement that outlives it — `Statement reached its statement or warehouse
+  timeout of N second(s) and was canceled.`, SQLSTATE 57014, a whole block with it — and the in-process JDBC
+  driver's `setQueryTimeout` and `cancel()` end one with `SQL execution canceled`; both used to run to the end.
+  SYSTEM$CANCEL_QUERY cancels the running statement its ID names, and answers `Identified SQL statement is not
+  currently executing.` or `invalid UUID` where it claimed a cancellation it did not make. LAST_QUERY_ID and
+  RESULT_SCAN no longer lose a session's last query when other sessions run statements: each session keeps its own
+  results and history. Over the HTTP driver a FLOAT column's NaN and infinities come back from `getObject` as
+  Doubles and read `NaN`, `inf` and `-inf`.
+- **An ORDER BY key's row fault, a text where a number belongs, and the JDBC Calendar overloads.** An ORDER BY key
+  that cannot compute its value for a row (`ORDER BY v::NUMBER`, `ORDER BY 1 / n`) raises the expression's own
+  error, `Numeric value 'abc' is not recognized` or `Division by zero`, where it was reported as `invalid
+  identifier`, and a window's ORDER BY no longer turns such a key into NULL. ADD_MONTHS, HEX_ENCODE, BASE64_ENCODE,
+  BITCOUNT, NEGATE and ARRAY_REPEAT answer `Numeric value 'b' is not recognized` instead of Java's own text, and a
+  FLOAT's NaN or infinity given to a bitwise function is `Number out of representable range`. Both JDBC drivers
+  honour the Calendar of `setTimestamp`, `setDate`, `getTimestamp` and `getDate` as the account's driver does, and
+  `setTime` with a Calendar binds the time its moment shows in UTC. A bound date, time or timestamp is no longer
+  read through the session's input formats.
+- **TIME plus or minus an interval, the BIT functions in 128 bits, FROM_PARTS parts read as numbers.** `t + INTERVAL
+  '3 hours, 18 minutes'` and `t - INTERVAL '1 hour'` move a TIME around the clock (23:30 plus an hour is 00:30)
+  where both failed with `Cannot add`; a day or longer is refused while the statement compiles (`['DAY'] is not a
+  valid date/time component for function + and type TIME(9).`). BITAND, BITOR, BITXOR, BITNOT, GETBIT and the
+  BITAND_AGG family keep every bit of a value past 2^63. DATE_FROM_PARTS, TIME_FROM_PARTS and TIMESTAMP_FROM_PARTS
+  round a fractional part half away from zero instead of truncating it and read a text part as its number;
+  `DATE_FROM_PARTS(TRUE, 1, 1)` is refused at the call.
+- **Equal moments meet, and DISTINCT aggregates count exact values.** Two TIMESTAMP_TZ or TIMESTAMP_LTZ values
+  for one moment, written at different offsets, are now one value in a join, an IN subquery, UNION, INTERSECT,
+  EXCEPT, DISTINCT, COUNT(DISTINCT), GROUP BY, PARTITION BY, RANK and an ORDER BY tie, as `=` already found them.
+  A DATE meets its midnight TIMESTAMP_NTZ in a join, and a TIMESTAMP_NTZ meets a TIMESTAMP_TZ in the session's
+  zone. COUNT, SUM, AVG and ARRAY_AGG with DISTINCT keyed numbers through a double, so integers past 2^53 and
+  long decimals merged; they now key the exact value. AVG(DISTINCT x) declares and truncates to three more
+  decimals than its argument, and its window form reads the distinct values. A RANGE frame's peers are found by
+  exact keys too.
+- **DATE_INPUT_FORMAT, TIMESTAMP_INPUT_FORMAT and TIME_INPUT_FORMAT are applied.** Once set to a format, it is the
+  only reading of text as a date, a timestamp or a time: a cast, a typed literal, TO_DATE / TO_TIMESTAMP_* /
+  TO_TIME and their TRY_ forms, a comparison, and a value written into a column. Text the format does not fit is
+  `Date '…' is not recognized` (the TRY_ forms answer NULL), an ISO text and a string of digits included; a
+  written `'AUTO'` reads by the format first and by AUTO after it. They were stored and never read.
+- **RANGE frames with an offset over DATE and TIMESTAMP keys.** `RANGE BETWEEN INTERVAL '1 day' PRECEDING AND
+  CURRENT ROW` over a DATE, a plain number of days over a DATE and an interval over any TIMESTAMP now hold the rows
+  within that distance, ascending or descending, where all of them were refused. The refusals a RANGE frame earns
+  are the account's own and come when the statement compiles: a second ORDER BY key, a text key, an interval beside
+  a number's key, a number beside a timestamp's, and a negative interval. `AVG` over any frame but the running one
+  declares three more decimals than its argument, as it already did over a ROWS frame.
+- **A recursive CTE runs until a step adds no row.** It stopped silently after 1000 steps, so a three-year date
+  series answered 1001 rows; the account caps the recursion nowhere, and neither does the engine now.
+- **LISTAGG(DISTINCT x, delimiter) drops repeated values without GROUP BY.** `LISTAGG(DISTINCT g, ',')` listed
+  every value (`a,a,b,b`) in a query that does not group; it answers `a,b`, as the grouped call does.
+- **SELECT * over a join keeps the type of each column of a shared name.** A second column named like an earlier
+  one (`t1.k` NUMBER, `t2.k` VARCHAR) was reported with the first one's type, in the result's metadata and in
+  DESCRIBE RESULT; each now keeps its own, over a derived relation too.
+- **A USING or NATURAL join compares its keys as the ON form's `=` does.** Keys were compared by their text, so two
+  texts equal under the columns' collation (`'Abc'` and `'abc'` under `'en-ci'`) did not join; they do now, and a
+  text key against a number is read as a number, a text that reads as none refusing the statement (`Numeric value
+  'a' is not recognized`).
+- **A value IN a query compares with each member as `value = member` does.** An uncorrelated subquery's members
+  were matched by their text, so `2 IN (SELECT '02')` was FALSE and NOT IN returned the rows the account excludes.
+  A number against text members now reads every member as a number — one that reads as none refuses the statement
+  wherever the match stands — a date reads a text as a date, and the query column's COLLATE counts.
+- **UNION [ALL] BY NAME types each column by the arms' columns of its name.** The types were folded by position,
+  so a VARCHAR column became NUMBER(38,5) when the arms listed their columns in another order, and a DATE beside a
+  NUMBER was refused as inconsistent; the arms' values now take the folded types too (`1` beside `2.5` is `1.0`).
+- **An UPDATE's and a MERGE's SET values read the row as it was.** `SET a = b, b = a` wrote one column into both,
+  and a value read what an item applied before it had set — in the hash order of the column names, not the order
+  written. Every value now reads the old row, so two columns swap and `SET y = x + 1, x = 0` reads the old `x`. A
+  plain UPDATE computes all its rows before it writes any, so a SET subquery over the table sees it as the
+  statement began — `SET v = (SELECT SUM(v) FROM t)` gives every row one sum — inside a transaction too. Of two
+  values that fail, a plain UPDATE reports the one of the column the table holds first, UPDATE … FROM and MERGE
+  the one written first.
+- **A writer waits for another session's transaction that holds its table.** An UPDATE, DELETE, MERGE or TRUNCATE
+  that would change a row of a table another session's open transaction had written ran at once, and whichever
+  transaction committed last silently undid the other's committed write. It now waits until the holder commits or
+  rolls back and runs over what it left, or is refused once the session's LOCK_TIMEOUT passes — `Statement '…' has
+  locked table 'T' in transaction … and this lock has not yet been released.` / `Your statement '…' was aborted
+  because waiting for this lock is limited to 2 seconds.`, `… is currently not allowed.` under 0 — and the
+  transaction it runs in stays open. Reads, INSERTs and statements that change no row neither wait nor hold a
+  table. Sessions of the HTTP server and of its JDBC clients wait; an engine one thread drives has no other session
+  to wait for.
+- **A handler's state is kept for each place a statement calls it from.** A JavaScript function's globals and a
+  Java function's class state were shared by calls written alike: two select items, two arms of a UNION, two
+  common table expressions, two scalar subqueries, two aggregates and an INSERT's or an UPDATE's items counted on
+  from one another (`SELECT cnt(1), cnt(1)` answered `1 | 2`). Each place counts from 1 now, and the rows it
+  reads share its state; a call written once in a SQL function's body is one place for each call of the
+  function, its rows sharing it; a block's own expressions — an assignment, a condition, a RETURN — start afresh
+  on each evaluation, a loop's turns included; and reading a query's shape before it runs keeps nothing for its
+  rows.
+- **A dollar sign that opens nothing is refused where it stands.** `SELECT $"PV"`, `SELECT $ 1` and `SELECT 1 + $`
+  were `parse error … near '<EOF>'` at the end of the text: they are `syntax error line 1 at position 7
+  unexpected '$'.` at the dollar sign, and in a block the END after the statement is named too.
+- **`EXIT WHEN …` and `BREAK WHEN …` report the account's lines.** The account reads WHEN as the loop's label and
+  refuses the token after it and the statement's semicolon — `unexpected 'i'.`, `unexpected ';'.` — where the
+  engine named a later semicolon.
+- **A stray BREAK in a scripting function a block's expression calls keeps the function body's place.**
+  `x := (SELECT fbreak())` reported the BREAK at the place the subquery's own refusals take in the expression;
+  inside the block's `EXPRESSION_ERROR` it is `error line 1 at position 7`, the body's own, as from the session.
+- **A FOR over a cursor leaves it open past its last row.** A FETCH after the loop finds no row and leaves its
+  variables as they were, a CLOSE closes the cursor and a second CLOSE is refused, `CURSOR C is not open`; the
+  engine closed the cursor at the loop's end, refused the FETCH and took any number of CLOSEs.
+- **A FETCH from a cursor that is not open, inside a procedure a block calls,** is that block's statement's failure:
+  its OTHER handler catches it, `SQLCODE` 92201, where it went past every handler.
+- **The scan of a JavaScript procedure's OBJECT answer that is no object.** A `Uint8Array`, a `String` object or a
+  `Date` answered for `RETURNS OBJECT` is handed out by the CALL; a statement that reads it from the CALL's scan
+  is refused, `Failed to cast variant value "01" to OBJECT`.
+- **A JavaScript answer that holds itself** — `var a = {}; a.self = a; return a;` for a VARIANT, an ARRAY or an
+  OBJECT — is refused `Object contains cyclic references`, where it read as a late conversion failure.
+- **A statement refused for the names it writes leaves an open transaction alone.** `BEGIN TRANSACTION; INSERT
+  …; DROP TABLE nosuch;` committed the INSERT before the DROP was refused. A DROP, an ALTER or a COMMENT of a table
+  or a view that is not there — or is there as the other kind — an UNDROP of a table never dropped or of a name a
+  table holds, a CREATE TABLE or a CREATE VIEW under a taken name and a table created LIKE or as the CLONE of a
+  source that is not there are refused before the transaction is touched, so a ROLLBACK undoes its rows; in a
+  block or a procedure called under its caller's transaction each is refused for itself rather than as
+  `Modifying a transaction that has started at a different scope is not allowed.` A column to add that is there
+  and a column to drop that is not are refused after the commit, as on the account, and a rename — of a table, a
+  column or a view — ends no transaction at all.
+- **`UNDROP TABLE` of a name a table holds** is `Object 'T' already exists.`, before the dropped versions are
+  looked at.
+- **The width of a block's and a procedure's binary.** A procedure's parameter written `BINARY` reads
+  BINARY(67108864), and a procedure's or a block's binary answer — whatever width RETURNS wrote — reads
+  BINARY(67108864) to SYSTEM$TYPEOF over its scan and to DESCRIBE RESULT, which spells any binary result column
+  without a written width, TO_BINARY's included, at that maximum.
+- **The scan of a handler's answer wider than its column.** A Java handler answering `'abc'` for `RETURNS
+  VARCHAR(2)`: the CALL hands it out, and a statement that reads the value from the CALL's RESULT_SCAN is refused
+  `String 'abc' is too long and would be truncated`, while one that counts its rows answers.
+- **Which of two type refusals an expression earns.** `(TRUE || 'a') || IS_NULL_VALUE('x')` was refused for the
+  concatenation: what an operator's operands are refused for comes first, in the order written — a call's
+  argument types, an arithmetic operator's, a sign's — and a concatenation's chain is judged last.
+- **A Java handler's `String[]` over an ARRAY of containers** reads a NULL inside a nested array or object as
+  `null`, where it read `undefined`.
+- **A procedure's body written without a block runs as a block's statement.** `… AS $$SELECT x;$$` ran its
+  statement bare. The account runs such a body as the one statement of a block of its own, `BEGIN` on a line
+  above it: a failure is `Uncaught exception of type 'STATEMENT_ERROR' on line 2 at position 0 : …` (line 3 when
+  the body opens with a line break, the position the statement's own), with the statement's refusal placed in the
+  statement behind it, and a `:name` the block cannot bind is `invalid identifier 'X'` at line 2 as the body
+  compiles. Called from a block, the calling statement's sentence stands in front of both.
+- **The caret is an operator, and an unsupported one.** `SELECT 2 ^ 2` was a syntax error at a character no token
+  opens with. The account reads the caret between two values and refuses the statement while it compiles,
+  `Unsupported feature '^'.`, before any name in it is looked up — in a select list, a WHERE, HAVING or ORDER BY
+  clause, an INSERT's values, a view's query, under EXPLAIN, on a block's branch that never runs and in a
+  routine's body as it is created (`Compilation of SQL UDF failed: Unsupported feature '^'.` for a function's
+  expression). `SELECT 2 ^` and `SELECT ^ 2` stay syntax errors, at the end of the text and at the caret.
+- **A negated LIKE with a quantifier reports the account's lines.** `'a' NOT LIKE ANY ('x', 'y')` — and NOT
+  ILIKE, NOT RLIKE, ALL — named the quantifier alone: the token that opens the parentheses is named too, and
+  then the parenthesis behind a name written first, or, in a select list, the closing parenthesis of a list of
+  several patterns.
+- **A Snowscript function's block the account does not read.** A word before a string inside a call's
+  parentheses (`nosuch(TIMESTAMP_LTZ '…')`, where DATE, TIME and TIMESTAMP alone open a literal) and a name of
+  three parts were answered `Unsupported expression for Snowscript UDF: …`; the body is read as an expression
+  instead and refused in that frame, at the RETURN and at the token after the first parenthesis. A membership
+  list's plain member after a computed one is printed in the list the plain ones share:
+  `NOSUCH(A IN (1 IN (1 + 1), 3))`.
+- **A word that names no unit, in a block's own expression.** `BEGIN RETURN DATEADD(nosuch, 1, d); END;` was
+  refused by the function's sentence; a block is refused for the name nothing declares, `invalid identifier
+  'NOSUCH'` at line 1, position 0, when the statement runs.
+- **What a Snowpark `Row` hands a Java handler.** `DataFrame.collect()` hands each cell in the class Snowpark
+  does: a NUMBER of no scale a `Long`, one with a scale a `BigDecimal`, a FLOAT a `Double`, a DATE, a TIME and a
+  TIMESTAMP the `java.sql` classes, a BINARY its bytes, a VARIANT, an ARRAY and an OBJECT their JSON text. `get`
+  answers that object, `getVariant` reads the text, `getString` over bytes is the list of their numbers, and
+  `toString` writes a text between double quotes (`Row[1,"a"]`).
+- **`ALTER ACCOUNT` reads a name and the account's tags.** `ALTER ACCOUNT <name> SET | UNSET …` was a syntax
+  error at the name: the statement is read, its list judged first (`invalid value [5] for parameter
+  'QUERY_TAG'`, `invalid property 'X' for 'ACCOUNT'`), and an account that is not this one is then refused as
+  one that does not exist; a fault in a named account's list is told at the SET or the UNSET after the name.
+  `ALTER ACCOUNT SET TAG t = 'v'` and `UNSET TAG t` were syntax errors at TAG: they look the tag up and keep its
+  value on the account.
+- **A routine's types are spelled as they were declared.** A RETURNS type or an argument written
+  `VARCHAR(16777216)` or `BINARY(8388608)` was spelled bare, like one written with no width: GET_DDL and DESCRIBE
+  keep the width that was written, and INFORMATION_SCHEMA's `data_type` and `character_maximum_length` tell
+  it, where a type written bare still reads `VARCHAR(134217728)` / `BINARY(67108864)` there. A `RETURNS BINARY`
+  written bare reads `BINARY` in GET_DDL and DESCRIBE.
+- **A statement that is no query in a FROM clause's parentheses** is refused at its first word, as on the
+  account: `SELECT * FROM (DESCRIBE TABLE t)` names `DESCRIBE`, not the `TABLE` after it, and SHOW, EXPLAIN,
+  CALL, USE and a bare VALUES there likewise.
+- **Non-finite numbers in a block.** A FLOAT, DOUBLE or REAL variable holds NaN and the infinities, from a LET, a
+  DECLARE default, an assignment, a procedure's argument and its RETURN; a call rebuilt from its arguments'
+  values keeps a FLOAT a FLOAT and writes them as the casts of their words; a BINARY literal in a block is the
+  BINARY it spells, where it was a NULL.
+- **Constant arguments that fold to NULL.** GETVARIABLE takes a name the plan folds to NULL; RANDOM and UNIFORM
+  refuse a call folding to NULL that a condition tests; BASE64_ENCODE's line length and alphabet follow the
+  same rule and echo the refused argument from the plan.
+- **A text literal in arithmetic** reads as the plan reads it: one that spells a number with nothing about it at
+  eighteen digits and its value's scale (`'1.50' * 1` is NUMBER(19,1)), any other text as NUMBER(18,5).
+  SYSTEM$TYPEOF names a small literal by its digits written out (`1e-7` is NUMBER(8,7)).
+- **SYSTEM$GET_TAG and TAG_REFERENCES** judge their arguments while the statement compiles — the domain first
+  and as written, a missing tag refused over no rows — match a domain whatever its case, name a missing object
+  as a statement over its kind names it, and name a function or a procedure by its signature.
+  `ALTER FUNCTION | PROCEDURE | SERVICE | IMAGE REPOSITORY … SET TAG` keeps the tag; it was accepted and kept
+  nothing.
+- **A missing object is named as the account names it**: a stream's source table, a dynamic table's CLONE source
+  and a RENAME COLUMN's table as written when written bare; DESCRIBE FILE FORMAT, MASKING POLICY and ROW ACCESS
+  POLICY by the full path; a SHOW over a schema or a database that does not exist by its listing's kind.
+- **Scripting.** An error that leaves several bodies carries one uncaught-exception sentence for each; a CALL a
+  block runs is the statement it is written as, each `:name` judged by the type its variable is declared with;
+  `CALL … INTO` takes one variable; a variable that holds NULL, written alone as a VALUES row's item, carries no
+  type and fits any column; a block's variable bound as a row count gives the whole part of an exact number.
+- **Syntax-error lines in a block.** A statement refused at a word is given up with the construct whose
+  statement it is, and the rest is read from the construct around it; a stage reference is one token in a
+  refusal; FLOAT4 and FLOAT8 are names.
+- **NULL arguments and whole-number counts.** A NULL in any argument of a text function answers NULL, whatever
+  place it stands in; a position, a length or a count is a whole number whatever is written there, a fraction
+  going to the nearest; a date call with the bare word NULL among its arguments folds to an untyped NULL before
+  its unit is judged. SYSTEM$TYPEOF tags a call over an argument that is always NULL as the empty interval.
+- **Set operations and VALUES fold their columns' types**: a later branch gives its value in the column's type
+  (a number under a BOOLEAN column is FALSE for zero), a FROM-clause VALUES holds every row at the folded type,
+  and the word NULL cast to a text type is the bare word where it meets an exact number.
+- **`EXECUTE IMMEDIATE … USING`** binds each `:n` by its number beside the question marks, and the text is a
+  statement of its own that reads none of the block's variables. Each statement of a text of several commits at
+  its own end; the places inside the text are counted as the text is written.
+- **A call of a SQL function with several signatures of one argument count** is typed by the body of the
+  signature the call runs.
+- **The clock functions' precision.** CURRENT_TIMESTAMP, LOCALTIMESTAMP, CURRENT_TIME and LOCALTIME take a
+  whole-number constant between 0 and 9, judged while the statement compiles.
+- **Functions.** ARRAY_FLATTEN takes an array of arrays; the empty pattern matches nothing in the REGEXP family;
+  TRY_TO_BOOLEAN reads the words TO_BOOLEAN reads; a SHA2 digest size is 224, 256, 384 or 512; CONVERT_TIMEZONE
+  knows a zone by its own name; NORMAL takes two numbers and a generator; a VARIANT read inside a block stays one
+  for the call around it; a RANGE frame with an offset gives a row whose key is NULL the rows that share it.
+- **Policies.** `ALTER TABLE … ALTER | MODIFY [COLUMN] c SET / UNSET PROJECTION POLICY` takes both verbs and
+  resolves the policy before the column; DATA_METRIC_FUNCTION_REFERENCES reads its metric and its entity as
+  identifier paths under a domain judged first.
+- **Task functions.** TASK_HISTORY declares the account's 28 columns and the four task functions its types; a
+  run's ROOT_TASK_ID, RUN_ID and GRAPH_RUN_GROUP_ID are its graph run's.
+- **Sessions running side by side.** The statement pins — clock, zone, output formats, the refusal's role —
+  follow each thread's own outermost statement, so a statement that starts while another session's is running
+  keeps its session's zone and its privilege sentence. CURRENT_ROLE() answers the owner inside a body running
+  with owner's rights.
+- **Warehouses, Iceberg tables and users.** A warehouse altered to another type keeps the acceleration setting
+  it has; CREATE ICEBERG TABLE without an external volume takes the EXTERNAL_VOLUME parameter of its schema,
+  else its database's, else the account's; NETWORK_POLICY is one of a user's properties, read by CREATE USER
+  and by an ALTER USER … SET list, which takes commas.
+- **REST API.** The 404 a resource answers for an object that is not there is the sentence a statement over it
+  refuses with; getTags answers on functions, procedures, service functions, image repositories and services; a
+  user's network_policy is applied and read back.
+- **A SYSTEM$ function is called as any other function is.** `SELECT SYSTEM$TYPEOF(a => 1)` was a syntax
+  error and answers its type; a function that takes no names says so (`function SYSTEM$WAIT does not support
+  named arguments`), a name written twice is refused at its second value, a quantifier and a WITHIN GROUP by
+  the call's echo, and a wrong count echoes the values alone: `too many arguments for function
+  [SYSTEM$TYPEOF(1, 2)] expected 1, got 2`. Under a qualifier the name is a routine nobody declared —
+  `Unknown user-defined function SNOWFLAKE.SYSTEM$TYPEOF.` — in a query and in a CALL.
+- **A query carries each `SYSTEM$ABORT_TRANSACTION` it writes out once, while it compiles.** The call ran when
+  a row evaluated it, so behind a false `IFF`, over an empty table, in a `WHERE` no row passes and under
+  `EXPLAIN` it ended nothing, and two rows called it twice. The transaction is now over whether or not a row
+  reaches the call, and every row reads the one answer.
+- **`SYSTEM$ABORT_TRANSACTION`'s argument.** An argument that fails as it is read — `TO_NUMBER('abc')`, `1/0`,
+  `SQRT(-1)` — and a conversion by a format name no transaction, `Bad transaction id`, where the failure was
+  raised; the argument's type is judged before its value (`'x'::DATE` is refused as a DATE); a NULL the plan
+  types from what stands beside it is no constant (`NVL(NULL, 12)` is `… needs to be constant, found
+  'NVL(SYSTEM$NULL_TO_FIXED(null), 12)'`); `IFF(NULL, 12, 13)`, `CASE WHEN NULL …` and `DECODE(NULL, NULL, …)`
+  name the branch the NULL leaves. A CALL's refusal of an argument's type names no place, and
+  `SYSTEM$WAIT` refuses an ARRAY.
+- **A binary literal is `X` and a string literal, and a quoted name may cross a line end.** A backslash
+  escapes and a doubled quote stays inside a binary literal, so `SELECT x'41\'; DELETE FROM t --'` is one
+  statement, its literal running to the last quote, where it was read as two; line feeds and carriage returns
+  in the literal's text, written out or escaped, are no part of its digits, as blanks are not (`x'4\n1'` is
+  one byte). `SELECT 1 AS "a<LF>b"` was a parse error and names its column. A text that is nothing but a
+  comment that never closes reports the lexer's line alone.
+- **Text functions at their edges.** `LTRIM`, `RTRIM` and `TRIM` with no list of characters trim the blank
+  alone — a tab and a line feed stay; `REPLACE` with an empty pattern replaces nothing; part 0 of `SPLIT_PART`
+  is part 1; `STRTOK` with no delimiter characters answers the whole text; `CHR` rounds a fraction to the
+  nearest code.
+- **Dates built from parts roll over in both directions.** `DATE_FROM_PARTS(2024, 0, 1)` is 2023-12-01,
+  `DATE_FROM_PARTS(2024, 3, 0)` is 2024-02-29 and `TIMESTAMP_FROM_PARTS(2024, 3, 15, 25, 61, 61)` carries its
+  hour, minute and second on; an hour, a minute, a second or a nanosecond below its range borrows. A
+  `DATEADD` over a text answers a timestamp, as it is typed, and a DATE truncated to an hour or a shorter part
+  stays the DATE it is.
+- **Bits.** `BITSHIFTLEFT` and `BITSHIFTRIGHT` shift within 128 bits, a left shift dropping what leaves the
+  top and a right shift keeping the sign. The bitwise aggregates round a fraction half away from zero before
+  they read its bits (`BITXOR_AGG` over 4.5 reads 5), declare the whole digits of their argument — NUMBER(2,0)
+  over a FLOAT — and refuse a text that is no number as a failed conversion. `BITOR` over literals, a bitwise
+  aggregate over values of no sign and `FACTORIAL` of a whole literal are tagged by the value they hold.
+- **Aggregates.** `PERCENTILE_CONT` and `PERCENTILE_DISC` over a descending order read the group from its
+  top. `KURTOSIS` answers a NUMBER(38,12) and `SKEW` a FLOAT; `REGR_COUNT` is a NUMBER(18,0); `BIT_AND`,
+  `BIT_OR`, `BIT_XOR` and `BIT_NOT` are typed as the names they stand for.
+- **`CBRT` as the account computes it.** The root is within a unit in the last place and not always the
+  nearest double: `CBRT(27)` is 3.0000000000000004 and `CBRT(216)` is 6.000000000000001, where `CBRT(64)` and
+  `CBRT(125)` are exact.
+- **`GET_IGNORE_CASE` reads the key spelled exactly so first**, and only without one a key of another case;
+  a whole number is told as one (`2.0` is 2).
+- **A block's logging statement evaluates its arguments.** `SYSTEM$LOG_INFO(1 / 0);` passed over the
+  division; it fails the block where the argument stands, `Uncaught exception of type 'EXPRESSION_ERROR' on
+  line 1 at position 22 : Division by zero`.
+- **`SHOW NETWORK POLICIES` and `SHOW IMAGE REPOSITORIES` read `STARTS WITH` and `LIMIT … FROM`** as the
+  other listings do, a `LIMIT 0` refused as theirs is. A fault after a user's `NETWORK_POLICY` —
+  `ALTER USER u SET NETWORK_POLICY =`, `ALTER USER u UNSET NETWORK_POLICY COMMENT` — is refused at that word.
+- **`SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS` with no argument or a NULL one.** Written with no argument
+  it is `not enough arguments for function [SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS()], expected 1, got 0`
+  and not a syntax error; a NULL name answers NULL.
+- **The clock functions' precision argument** echoes a FLOAT as the plan converts it:
+  `CURRENT_TIMESTAMP(PI())` is `Invalid value [CAST(PI() AS NUMBER(18,0))] for function 'CURRENT_TIMESTAMP',
+  parameter 1: must be an integer constant`.
+- **A USING or NATURAL join matched NULL keys, and missed numbers of another scale.** `a JOIN b USING (k)`
+  joined a row whose key is NULL to the other side's NULL-keyed rows, and did not join an INT 1 to a NUMBER(5,2)
+  1.00. A key is matched by equality: a NULL joins nothing, so an inner join drops such rows and an outer join
+  keeps each side's unmatched, and two numbers are equal by value whatever scale each is held at.
+- **A NULL of a text type through a derived relation, and a text column of NULLs.** `SELECT a + 1 FROM (SELECT
+  NULL::VARCHAR(10) AS a)` was typed NUMBER(19,5) as a text read as a number is. Such a NULL —
+  `NULL::VARCHAR(10)`, `CAST(NULL AS STRING)`, `TO_VARCHAR(NULL)` — is the bare word to an exact number beside
+  it, and a derived table, a common table expression, a view and a renamed column carry it to the query above:
+  NUMBER(19,0), as `NULL + 1` is. What is computed from a text that is always NULL — a stored column of NULLs,
+  a conversion of one, `COALESCE` and `NVL2` over one — is tagged by the empty interval, `[SB1]`.
+- **A SQL function's number is held at the scale its call is typed with.** `fx(n)` over a NUMBER(10,2) column
+  holding 1.5, the body `n + 0.5`, answered `2.0` in a column typed NUMBER(11,2). It answers `2.00`, with one
+  signature or several, and `fx(n) + 1` is `3.00`.
+- **A dynamic text's refusal is placed in the text as written.** A fault after a bound placeholder was placed
+  in the text as it stood once the value was written in: `EXECUTE IMMEDIATE 'SELECT :1a AS a' USING (s, t)`
+  named the AS at position 14 for a value of five characters. A syntax fault and a name that does not resolve
+  are placed where the text has them — position 11 — on its later lines too, and a comment that opens the text
+  is not counted.
+- **A query assigned to a RESULTSET reports its own faults, from its parenthesis.** `res := (SELECT … OFFSET
+  :s)` and `res := (SELECT * FROM t UNPIVOT (x FOR y IN (:s)))` were refused at the query's SELECT. The query's
+  own faults are reported where they stand — the parenthesis that closes it where a clause still waits, the
+  colon in an UNPIVOT's list of names — and a refusal the query earns when it runs is placed from the opening
+  parenthesis (`res := (SELECT missing FROM t)` names the identifier at position 8, and at line 2 when the
+  query stands on the next line). A query a RESULTSET is declared with keeps its own places, a refusal of a
+  call's arguments included.
+- **`IDENTIFIER()` over a block's variable echoes what the variable holds.** An empty text was echoed as four
+  quotes, and in a SELECT … INTO as `':s'`; the refusal names the text between quotes, `invalid identifier ''`.
+- **A CALL of a name a built-in function holds.** With a procedure `ABS(n)` in the schema, `CALL abs(-3)` ran the
+  procedure. A name with no schema before it that a built-in function holds — a scalar's or an aggregate's,
+  written bare or between quotes in any case (`CALL "abs"(-3)`) — now calls the function, as an account does:
+  `CALL abs(-3)` answers 3, `CALL pi(1)` is the built-in's `too many arguments for function [PI(1)] expected 0,
+  got 1`, and `CALL test_schema.abs(-3)` still runs the procedure. A block's CALL, `x := (CALL abs(-3))` and
+  `CALL abs(-3) INTO :x` read the name alike. A built-in's refusal of named arguments is placed nowhere in a
+  CALL (`error line 0 at position -1`), as its count refusals are.
+- **The shape of a CALL's named arguments is judged first.** A name written twice was refused when the CALL ran
+  (in a block as an uncaught STATEMENT_ERROR placed in the CALL's own text), an unknown procedure's CALL was
+  `Unknown function` whatever its arguments, and a mix of named and positional arguments was told before a name
+  written twice. The shape is now judged before the procedure is looked for, and for a block's CALL while the
+  block compiles, on a branch that never runs too: `duplicate named argument N for function PN` at the second
+  writing, then `illegal mixing of named and positional arguments for function PN` at the procedure's name,
+  the procedure named as the CALL writes it (`TEST_SCHEMA.P`, `"p"`).
+- **Where an assigned CALL stands.** A failing `x := (CALL p(:d))` was placed at the assignment, and for a
+  RESULTSET assigned inside a construct at an offset in the CALL's own text; a bare name among its arguments
+  was placed from the assignment's start. The CALL inside the parentheses is the statement that runs: its
+  failure is placed at the CALL, at the block's top level and inside IF, FOR, CASE and a nested block, and its own
+  places count from the CALL (`invalid identifier 'STATS'` at position 13 of `CALL add_dml(stats, 'z')`).
+- **A VARIANT variable bound to a CALL.** A variable declared VARIANT that holds a text was converted as the
+  text: `Date 'x' is not recognized`. It is a VARIANT to the CALL whatever it holds — `Failed to cast variant
+  value "x" to DATE`, and `to FIXED`, `to REAL`, `to BOOLEAN`, `to TIME`, `to TIMESTAMP_NTZ` by the parameter.
+  The too-many-arguments sentence echoes a semi-structured variable that holds a value as the JSON the statement
+  binds: `[PN(PARSE_JSON(:v), 1)]`, `[ADD_DML(CAST(PARSE_JSON(:stats) AS OBJECT), 'z', 1)]`.
+- **The width a body holds a text parameter at.** A parameter declared `VARCHAR`, `STRING` or `TEXT` with no
+  length was held at the column width, so a NULL bound on from it was `VARCHAR(16777216)`. A body holds it as
+  wide as a block's own `DECLARE s VARCHAR` — `Invalid argument types for function 'PA': (VARCHAR(134217728))` —
+  and a parameter written with a length at that length.
+- **Storage tags follow a column of NULLs and a date column's days further.** `SYSTEM$TYPEOF` tagged a date part
+  or a character code over a column that is always NULL by its declared width once the column came through a
+  derived table, a common table expression, a view, a set operation or a join, and a year or a day of the year
+  over a DATE column by the part's whole range. The empty interval now follows such a column of any type through
+  a derived relation and through what is computed from it; `YEAR`, the week's year and `DAYOFYEAR` over a DATE,
+  TIMESTAMP_NTZ or TIMESTAMP_LTZ column are tagged by the least and the greatest day the table holds (`YEAR(d)`
+  over years 100 to 120 is `[SB1]`), read through MIN / MAX / ANY_VALUE, a derived relation, a conversion that
+  keeps no offset of its own, a DATE moved by a whole number of days, `DATEADD`, `DATE_TRUNC`, `LAST_DAY` and
+  what `COALESCE`, `IFF`, `GREATEST` and `LEAST` choose. A SQL table function's column is tagged by the values
+  its body computes, at the scale the column declares, instead of by the declared width.
+- **`SPLIT_PART`'s part of a type that is no number.** A BOOLEAN there was refused with no place, a date as
+  `Numeric value '2026-…' is not recognized` when a row was read, and a BINARY with no place. Each — and a time
+  and a timestamp — is refused while the statement compiles, at the call: `Invalid argument types for function
+  'SPLIT_PART': (VARCHAR(5), VARCHAR(1), DATE)`.
+- **The lines of a text the lexer gives up on.** A text with an unclosed string, quoted name, comment or binary
+  literal reported the lexer's line alone, and one with a character no token opens with that character alone,
+  whatever else the text held. An unclosed string now loses its quote and its words are read on (`SHOW TABLES
+  LIKE 'abc` is the lexer's line, then `'abc'`), a quoted name, a comment and a binary literal take everything to
+  the end (`SELECT "abc` adds `'<EOF>'`), and the lexer's line stands among the parser's by the place of the
+  fault (`SELECT 1 x y; SELECT 'abc` is `'y'`, then the lexer's line). After a character no token opens with the
+  reading goes on where an account's does — at the next alias, comma or clause after a select list's value
+  (`SELECT 1 # 2 x y` is `'# '`, then `'y'`), at the next comma in a list of keys, at the next statement
+  otherwise — and a fault before the character ends a script's report (`SELECT 1 x y # 2` is `'y'` alone). An
+  unclosed comment was read as a division and a star.
+
+- **A NULL generator, a NULL format, and NTH_VALUE's n.** `UNIFORM(1, 2, NULL)` drew a number and
+  `TO_CHAR(1, NULL::VARCHAR)` printed the number unformatted; both answer NULL. `NTH_VALUE(x, 2.0)` and
+  `NTH_VALUE(x, '2')` read the first value: the n was taken from the argument's text and fell back to 1.
+
+- **A listing's modifier written three times.** `SHOW TABLES LIMIT 1 LIMIT 2 LIMIT 3` was refused at the third
+  LIMIT; it is refused at the second, as two are, and in a block at that LIMIT and its count.
+
+- **A SHOW in a function's block body.** `CREATE FUNCTION f() … AS 'BEGIN SHOW TABLES LIMIT 0; RETURN 1; END;'`
+  answered `Unsupported statement type for Snowscript UDF: SHOW` where an account judges the SHOW's own shape
+  first: the page-size sentence, and `Unsupported feature 'SHOW TABLES ... WITH PRIVILEGES <>'.`
+
+- **A parenthesized list after a SHOW scope's name.** An account reads a signature — a list of types or names,
+  empty too — after the name a SHOW's `IN` names, and then looks the scope up as if it were not written.
+  `SHOW TABLES IN test_schema (x)`, `SHOW TABLES IN DATABASE db (x)`, `SHOW COLUMNS IN TABLE t1 (x)`,
+  `SHOW FUNCTIONS IN CLASS c (x)` and `SHOW TABLES IN ACCOUNT a (x)` were syntax errors at the parenthesis; each
+  now answers what the statement answers without the list, for every listing that takes a scope, `SHOW DATASETS`,
+  `SHOW CLASSES` and `SHOW <class>` included. A faulty list is refused where an account refuses it — `(x y)` at
+  the `y`, `(1)` at the `1`, `((x))` at the inner parenthesis, `(a.b.c.d)` at the `d`, `(ARRAY(1))` at the `1` and
+  then at the list's own `)` — nothing but the listing's modifiers follows the list, and neither an instance's
+  name (`IN c i (x)`) nor the lone word `ACCOUNT` takes one. The word `IDENTIFIER` before a list that opens no
+  reference is the scope's own name: `SHOW TABLES IN SCHEMA IDENTIFIER(x)` misses the schema `IDENTIFIER`.
+
+- **A SYSTEM$ word as a name.** A word that begins `SYSTEM$` was a system function's token wherever it stood, so
+  `SELECT 1 AS system$foo`, `CREATE TABLE system$t (a INT)`, `DROP TABLE system$foo`, `USE SCHEMA system$foo`,
+  `LET system$x := 1` and `SHOW SYSTEM$FOO` were all syntax errors at the word. It is a plain name wherever it
+  calls nothing: an alias, a column, a table, a view, a schema, a common table expression, a variable, a class and
+  the function a `CREATE FUNCTION` names — a function of the schema named `SYSTEM$F` is created, called by its
+  name and dropped — and `SELECT SYSTEM$FOO` is `invalid identifier 'SYSTEM$FOO'`. A call that names no function
+  stays `Unknown function SYSTEM$FOO.`
+
+- **A word after a block's END.** An account reads one word after a block's `END`, as it reads a loop's label
+  after `END LOOP`, and Frostlake refused the word. `BEGIN RETURN 1; END IF;` now answers `1`, as a statement, as
+  the text `EXECUTE IMMEDIATE` runs and as a procedure's body, and so it does ended by `LOOP`, `CASE`, `DO`,
+  `UNTIL`, a quoted name, `COMMENT` or `IDENTIFIER`; a second word is refused at itself (`END a b` at the `b`),
+  and `FOR`, `WHILE`, `REPEAT`, `BEGIN`, `END` and a plain word after a top block's `END` stay refused where they
+  stand. A block nested in another that ends in a word and declares nothing is read and then neither compiled nor
+  run, as on an account: `BEGIN LET r := 0; BEGIN r := 1; END IF; RETURN r; END;` answers `0`, and a name the
+  nested block's statements do not declare is no fault. A nested block with a `DECLARE` section runs.
+
+- **SHOW DATASETS, SHOW CLASSES and SHOW of a class in a table, a view, a class or an application.** Each of
+  these scopes was a syntax error. A table, a view and a class hold nothing the three statements list —
+  `Unsupported statement type 'Cannot show objects of type DATASET in TABLE'.`, the noun `DATASET`, `CLASS` or
+  `INSTANCE`, with the scope's name or without it, told before a `LIMIT 0` — an instance listing looks a class
+  scope up (`Object type or Class 'X' does not exist or not authorized.`), and an application is looked up and
+  missed (`Application 'X' does not exist or not authorized.`, `Application package 'X' …`), the datasets' listing
+  naming nothing it misses. `SHOW CLASS` is refused at the `CLASS`, where it was refused at the end of the text.
+
+- **DROP CLASS.** `DROP CLASS x` was a syntax error at the name. It reads a name, a signature and `CASCADE` or
+  `RESTRICT`, and misses the class by its full path — `Object type or Class 'DB.S.X' does not exist or not
+  authorized.` — which `IF EXISTS` forgives; a schema or a database that does not exist is named first, and a
+  name of four parts names nothing.
+
+- **A database named by a path in the key listings and SHOW DATABASE ROLES.** `SHOW PRIMARY KEYS IN DATABASE
+  a.b` (and `UNIQUE`, `IMPORTED`, `EXPORTED`) was a syntax error at the name and is `Must specify the full search
+  path starting from database for B`, the path's last part; `SHOW DATABASE ROLES IN DATABASE a.b` and `… IN a.b`
+  were syntax errors at the dot and are `Object does not exist, or operation cannot be performed.`, told after a
+  `LIMIT 0` and before a `TERSE` listing's refusal.
+
+- **A view as a MERGE's source.** `MERGE INTO t USING v ON …` was refused with `Object 'V' does not exist or not
+  authorized.` whenever `v` was a view. A view is read there as a FROM clause reads it — named bare, by a path or
+  under an alias — and one whose table is gone answers `Failure during expansion of view 'V': …`.
+
+- **DML over a view whose table is gone.** `DELETE FROM v`, `UPDATE v …`, `INSERT INTO v …`, `MERGE INTO v …`
+  and `TRUNCATE TABLE v` told the statement's own rule for a view (`DELETE statement's target must be a table`).
+  The view is expanded first, as an account does it: `Failure during expansion of view 'V': SQL compilation
+  error: Object 'DB.S.VB' does not exist or not authorized.`; a whole view keeps the target sentence.
+
+- **The scopes of SHOW NETWORK RULES, SECRETS, PASSWORD POLICIES and NETWORK POLICIES.** `IN TABLE [t]`, `IN VIEW
+  [v]` and `IN CLASS c` were syntax errors; they are `Unsupported statement type 'Cannot show objects of type
+  SECRET in TABLE'.` in the listing's own noun. `IN APPLICATION a` and `IN APPLICATION PACKAGE p` look the
+  application up (`Application 'A' does not exist or not authorized.`; a network rule listing `Object does not
+  exist, or operation cannot be performed.`), and a package without its name is the syntax error at the
+  statement's end. `SHOW NETWORK POLICIES` reads a scope: any kind of object holds none (`… of type NETWORK
+  POLICY in DATABASE`), and a bare name is another account's, `Account 'X' does not exist or not authorized.`
+  `SHOW PASSWORD POLICIES ON DATABASE d` is `Unsupported feature 'SHOW PASSWORD POLICIES ON DATABASE'.`, and an
+  ON before anything but ACCOUNT, USER or DATABASE is refused at the ON.
+
+- **DATA_METRIC_FUNCTION_REFERENCES' domain words and argument types.** 58 more kinds of object are `Invalid
+  value '<KIND>' for argument 'ref_entity_domain' …` where they were an unknown domain (ALERT, MASKING POLICY,
+  SERVICE, SECRET, NOTEBOOK, MODEL …), a kind of several words echoed with underscores (`'ROW_ACCESS_POLICY'`);
+  a table kind may be written with an underscore (`ICEBERG_TABLE`, `MATERIALIZED_VIEW`); `REF_ENTITY_NAME` and
+  `REF_ENTITY_DOMAIN` given a number, a boolean, a date or a VARIANT are `invalid type [NUMBER(1,0)] for
+  parameter 'REF_ENTITY_NAME'`, the entity judged before the domain wherever each is written, and one argument
+  written without a name is judged as the metric's.
+
+- **SYSTEM$GET_TAG in a block is answered while the block compiles.** `BEGIN RETURN SYSTEM$GET_TAG('nosuch',
+  't', 'table'); END;` reported the missing tag as the RETURN's `EXPRESSION_ERROR`, a handler caught it, and a
+  branch that never ran was not judged. The lookup happens before any statement runs, as on an account: the
+  refusal is bare, past every handler, for a RETURN, a LET, a condition, a DECLARE default, a nested block and a
+  query such an expression reads alike. A variable written by its bare name as an argument — `SYSTEM$GET_TAG('tg',
+  n, 'table')` — is read as its value, where it was refused as no constant.
+
+- **A row access policy reads the tag of its table.** `SYSTEM$GET_TAG_ON_CURRENT_TABLE('tg')` in a row access
+  policy's body answered NULL; it reads the tag of the table the policy filters, as in a masking policy.
+
+- **The echo of a text conditional read as a number.** `LAST_QUERY_ID(IFF(TRUE, '1.50', '2') * 1)` echoed
+  `CAST((TO_NUMBER(IFF(…), 18, 5)) * 1 AS NUMBER(18,0))`. An IFF or a CASE over text literals reads at the widest
+  scale its results spell and a product by one folds into the cast to its type, `CAST(CAST(TO_NUMBER(IFF(…), 18,
+  1) AS NUMBER(19,1)) AS NUMBER(18,0))`; NVL and any other text value read at NUMBER(18,5) and fold alike; a term
+  of a smaller scale is raised as beside a number of the width the results spell, `… + (CAST(0 AS NUMBER(3,1)))`,
+  and beside a term of a larger scale the conditional reads at the term's; a CASE matching one constant against
+  others folds to the result it picks, and a text a call made (`UPPER('1.50') * 1`) reads as a text value does.
+
+- **A NULL alphabet for the BASE64 decoders.** `BASE64_DECODE_BINARY(x, NULL)`, `TRY_BASE64_DECODE_BINARY(x,
+  NULL)` and `TRY_BASE64_DECODE_STRING(x, NULL)` answer NULL, as `BASE64_DECODE_STRING` did.
+
+- **What the UNICODE_ANALYZER joins.** A colon or a middle dot between two letters and a comma between two digits
+  join them into one word (`SEARCH('a:b', 'a', ANALYZER => 'UNICODE_ANALYZER')` is FALSE, `'1,2'` is not found by
+  `'1'`); a colon between digits and a comma between letters still cut.
+
+- **What follows the name of a kind without objects.** `DESCRIBE SNAPSHOT | DATASET | MODEL | CONNECTION |
+  SERVICE | IMAGE REPOSITORY | EXTERNAL VOLUME <name> x` named the surplus word; the account reads it as a
+  property waiting for its value and refuses the statement's end, and reads a signature after the name too.
+  `DESCRIBE DATASET` and `DESCRIBE MODEL` miss their object (`Dataset 'DB.S.X' does not exist or not
+  authorized.`) where they were an unsupported feature. `DROP IMAGE REPOSITORY` and `DROP SERVICE` take a
+  signature and a behaviour word — PURGE being refused in its one sentence, and a word after FORCE where it
+  stands — and `DROP SNAPSHOT | CONNECTION | DATASET | MODEL x (a)` reads the signature.
+
+- **Syntax-error lines over the kinds' words.** `DESCRIBE RESOURCE x` reports the word and then the statement's
+  end, `DESCRIBE STORAGE x` the STORAGE and then the end — the words after such a keyword are read in pairs, the
+  second of each refused — and `DESCRIBE DBT | GIT | SEMANTIC | AUTHENTICATION | SESSION | PACKAGES | PRIVACY x
+  y` the wrong second word and then the end; `DROP DATA METRIC FUNCTION f(TABLE(INT))` stops at the METRIC.
+  `ALTER EXTERNAL TABLE t SET TAG a = 'x'` is refused at the SET and `UNSET TAG a` at the tag's name; `UNSET x`
+  is `invalid property 'x' for 'EXTERNAL_TABLE'`, `UNSET AUTO_REFRESH` `invalid value 'null' for property
+  'AUTO_REFRESH'`, and a refused SET property is named as written.
+
+- **REST: missing objects of the system database's schemas, and a role's grants without a current database.** A
+  request under `/api/v2/databases/SNOWFLAKE/schemas/ACCOUNT_USAGE/…` answered that the schema does not exist; it
+  names the object that is missing, as under any schema (`\ntable 'snowflake.account_usage.nosuch_t' does not
+  exist or not authorized. …`). `GET /api/v2/databases/{database}/database-roles/{name}/grants` in a session
+  that has no current database answers `400` with code `090105` — `cannot perform show grants. this session does
+  not have a current database. call 'use database', or use a qualified name.` — before the database or the role
+  is looked up.
+
+- **A USING list binds the text of each value.** `SYSTEM$TYPEOF(?)` over a FLOAT variable holding 6.5 is
+  `VARCHAR(3)`, as on an account, where the value kept its own type: a NUMBER is bound as its digits at the declared
+  scale (`1.50`), a FLOAT as fifteen significant digits with an exponent where its magnitude calls for one
+  (`1e+20`, `1.5e-07`, `inf`, `NaN`), a TIME and a TIMESTAMP with the fractional digits their type keeps, a
+  BOOLEAN as `true` / `false`, a BINARY as its hexadecimal digits. A placeholder the list leaves unset is refused
+  at its place in the text as written. A text compared with a FLOAT reads `inf`, `-inf` and `NaN`.
+- **A VALUES clause carries no statistics.** An exact number read from one is tagged by its declared precision
+  alone — `SYSTEM$TYPEOF(column1)` over `VALUES (150), (25000)` is `NUMBER(5,0)[SB4]`, where the rows' own interval
+  gave `[SB2]` — and a SUM over a shifted column of it is rewritten whatever its rows hold (`SUM(column1 + 1)`
+  over one row is `NUMBER(22,1)[SB16]`); a subquery or a WITH clause over the clause is merged into the query over
+  it, so `SUM(x)` over `(SELECT column1 + 1 x FROM VALUES …)` is rewritten too, and an alias list renames the
+  clause's columns and nothing else.
+- **Refusal echoes spell a NULL as an account does.** The invalid-type sentence prints an untyped NULL as the plan
+  types it, in its own spellings: `TO_OBJECT(NULL + 1)` is refused for `(SYSTEM$NULL_TO_FIXED(NULL)) + 1` and
+  `TO_OBJECT(NVL(NULL, NULL) + 1)` for `(SYSTEM$NULL_TO_FIXED(NVL(COERCE(NULL AS NULL), NULL))) + 1`.
+  GETVARIABLE's constant-name sentence leaves every NULL bare (`IFF(1 = 1, null, 'x')`, `HASH(null)`), and more
+  names fold to the NULL or the text they are and are no refusal: `NULLIF(NULL, 'x')`, `IFF(1 = 1, NULL, NULL)`,
+  `NVL2(NULL, NULL, NULL)`, `TO_CHAR(NULL)`, `NULLIFZERO(NULL)`, a simple CASE over a NULL operand.
+- **The statement a SQL function's block body may not hold is named by its kind**, as an account names it:
+  `Unsupported statement type for Snowscript UDF: INSERT`, where every statement was `query statement`. A query, an
+  EXPLAIN and a CALL are `SELECT`; a COPY INTO a table is `INSERT` and one into a location `UNLOAD`; a CREATE, an
+  ALTER and a rename are named by what they make or change where an account tells that apart (`CREATE_TABLE`,
+  `CREATE_TABLE_AS_SELECT`, `CREATE_VIEW`, `ALTER_TABLE_ADD_COLUMN`, `RENAME_TABLE`, `CREATE_CONSTRAINT`, …) and
+  `CREATE`, `ALTER`, `RENAME` or `DROP` otherwise; an UNDROP is `RESTORE`, an EXECUTE IMMEDIATE `UNKNOWN`; a
+  cursor's OPEN, FETCH and CLOSE and an AWAIT have sentences of their own. A body that is one such statement ending
+  in its semicolon (`AS $$ DELETE FROM t; $$`) is named the same way.
+- **A SQL function's block body is compiled with the statement that calls it.** A RETURN, a condition or an
+  assignment of the body that does not compile (`RETURN 'a' + TRUE`) refuses the calling statement with its own
+  compilation error, where it read as the body's uncaught `EXPRESSION_ERROR`; a block's LET or assignment whose
+  value calls the function is refused the same way, and a block's RETURN that calls it words the refusal as its own
+  statement's.
+- **`RAISE STATEMENT_ERROR` and `RAISE EXPRESSION_ERROR`** raise the two exceptions a script has without declaring
+  them, with the code -20000, the state P0001 and no message; `WHEN STATEMENT_ERROR` catches the one and `WHEN
+  EXPRESSION_ERROR` the other, a procedure's caller catches either as the CALL's `STATEMENT_ERROR`, and nothing
+  catching it reads `Uncaught exception of type 'STATEMENT_ERROR' on line 1 at position 6`. Both were refused as
+  invalid identifiers. An undeclared exception written in quotes is named without them.
+- **A variable declared by its name alone** — `DECLARE q;`, `LET q;` — is refused in an account's words, `variable
+  'Q' must have either a type or an initializer to infer a type from`, at the name of a DECLARE section's item and
+  at the LET, after the block's syntax and before its names; a procedure's and a function's body are refused as they
+  are created. It was a syntax error at the semicolon.
+- **A refusal inside a SQL function's expression body is placed in the body as written.** The lines and the blanks a
+  body opens with count (`AS '\n nosuch + 1'` is line 2, position 1), and the place no longer moves with the
+  statement that creates the function: a CREATE FUNCTION in a block, or after a comment, reported position 0.
+- **A block's query that recovers from its own fault lets the later statements be read.** A closing parenthesis
+  refused where its bracket wants an operand (`OVER (ORDER BY)`, `ABS(1,)`, `IN ()`) and the statement's semicolon
+  refused where a clause wants one (`ORDER BY;`, `WHERE;`) end the statement all the same, so a fault in a later
+  statement or in a handler is reported after it — where the report named the next statement's first word, or
+  stopped.
+- **A quoted function body that opens a block and reads as none** reports the lines an account reads on to: the
+  token after the first opening parenthesis, the semicolon or a closing parenthesis where an operator wants an
+  operand, a later bracket's own fault, and a word after a finished operand — `$$BEGIN RETURN 1 +; END$$` is the
+  RETURN and the `;`.
+- **A view's NUMBER column is told within the capacity it is declared with.** `SYSTEM$TYPEOF` of a view's `SUM(n +
+  1)` column declared NUMBER(18,2) reads `[SB8]` through the view, and expressions over it follow, where the body's
+  wider interval showed; an aggregate over the column, a derived table and a WITH clause keep the body's interval.
+  `BASE64_ENCODE` and `HEX_ENCODE` over a binary an expression makes with no size (`TO_BINARY(…)`, a cast to
+  BINARY) are VARCHAR(89478488) and VARCHAR(134217728), and a line length adds nothing over a binary.
+- **Which of several correlated subqueries a statement is refused for.** One refused for its own aggregate over the
+  outer row and its columns (`(SELECT MAX(t.id + g.v) FROM g)`) outranks every other shape wherever it stands, and
+  of several such the last written is reported — the ORDER BY's over the WHERE's. Of the other shapes (a LIMIT, a
+  query inside reading the outer row, an aggregate of the outer row alone) the first is reported, the WHERE's
+  before the select list's. The last written was reported whatever the shape.
+- **An operator after EXISTS inside a call's arguments** stacks the call's closing bracket, as an account does:
+  `SELECT f(EXISTS (SELECT 1 FROM g)::INT)` is the `::` and the `)`, the outermost call's when calls are nested.
+- **A SELECT with no select list is read on.** `SELECT FROM` is the FROM and the end of the input, `SELECT FROM
+  WHERE` the FROM, the WHERE and the end, `SELECT FROM t x y` the FROM and the `y`; a query written as a value with
+  no list is its SELECT alone (and its `)` after a table). Only the first token was reported.
+- **A DROP's and a DESCRIBE's signature, the readings that were left.** The statement ends at its first `;`, one
+  written inside brackets too (`DESCRIBE TABLE t (a;x)` is the `;` alone); a `:` after a word value is named twice;
+  and a value the account reads where this grammar cannot — `x = @s!=x`, a backticked name — leaves the property
+  to be judged: `invalid parameter 'x'`.
+- **A task's body and an alert's condition.** A word that opens no body is refused alone (`AS VALUES (1)` is the
+  VALUES); a DESCRIBE as a body is read as the DESCRIBE it is (`AS DESCRIBE TABLE t (a b) x` is the `b` and the end
+  of the input); an alert's `IF (EXISTS (CREATE TABLE zz (x INT)))` is the CREATE and the last `)`, the statement's
+  own brackets unread.
+- **A word after a CREATE in a block** is a property's name there too: `BEGIN CREATE TABLE t (x INT) y z; END` is
+  the `z` alone, and `… y; END` the `;`. The `y` was refused as a statement run in.
+- **GROUP BY ALL over a select list of nothing but aggregates** is the one group an aggregate query with no GROUP
+  BY is: it answers one row over an empty input too (`SELECT COUNT(*) FROM t WHERE FALSE GROUP BY ALL` is 0, where
+  it answered no row), its ORDER BY is dropped (`ORDER BY MAX(id / 0)` answers the row, it divided), and a column
+  its HAVING reads is `[T.ID] is not a valid group by expression`. A constant item is a key, as before.
+- **What a window call names when it reads a column that is not grouped** is the argument or the key as a whole,
+  as the plan holds it, once it is more than the column: `MAX(id + 1) OVER ()` beside an aggregate is `[T.ID + 1] is
+  not a valid group by expression`, `MAX(ABS(id)) OVER ()` is `[ABS(T.ID)] …`. It named the column.
+- **A subquery inside an aggregate or a call, as a refusal echoes it**, is re-printed from its plan: `[MAX((SELECT
+  MAX(G.V) AS "MAX(G.V)" FROM G AS G))] is not a valid order by expression`, a name of the query around it as
+  `CORRELATION(FZ.ID)` — in a window key and in the argument list an arity refusal tells as well. It printed
+  `(subquery SELECT …)`.
+- **A string LIMIT and a view's body in a statement that is not the request's first** are placed from that
+  statement's own first token and line, as its other refusals are: `SELECT 1; SELECT a FROM t LIMIT 'x'` names
+  position 22, `SELECT 1; CREATE VIEW v AS SELECT nosuch FROM t` position 24. A comment that opens the statement
+  no longer moves a view body's place either.
+- **The token after a LIMIT, OFFSET or FETCH that may be a table's alias** is reported once for each reading, as an
+  account reports it: `SELECT a FROM t LIMIT -1` is the `-` twice, `LIMIT (1)` the `1` and then the `(`. After a
+  table that has its alias, an ORDER BY or any other clause it is reported once, and `SELECT a FROM t ORDER BY a
+  LIMIT` names the end of the input.
+- **EXECUTE IMMEDIATE of a text that holds no statement** — blank, comments or semicolons alone — is `Empty SQL
+  statement.`, and in a block `Executing NULL or empty statement is not permitted.` It was a syntax error at the
+  end of the text.
+- **A signature after every kind a DROP or a DESCRIBE names.** An account reads one after its own kinds too:
+  `DROP WAREHOUSE | COMPUTE POOL | USER | ROLE | CONTACT | DATABASE ROLE | NETWORK POLICY IF EXISTS x (a)` and the
+  projection, aggregation and join policies' run where they were syntax errors, and so does a DESCRIBE of a
+  compute pool, a network policy and those policies. A faulty signature is reported alike after every kind —
+  `DROP SECRET s ('x')` names the `'x'` and no longer the `(`, `(ARRAY(1))` is the `1` and the `)` after a
+  database, a schema, a notebook and a session policy as after a table.
+- **A DESCRIBE's properties after every kind.** `DESCRIBE SECRET | NETWORK RULE | NETWORK POLICY | PASSWORD POLICY
+  | NOTEBOOK | STREAMLIT | ALERT x TYPE = COLUMNS` was a syntax error: a TYPE is read and changes nothing, and any
+  other name is `invalid parameter 'x'` before the object is looked up — for a session policy and the other kinds
+  no object is modelled of as well, where the missing object was reported first.
+- **`DESCRIBE ICEBERG TABLE` over a name that reaches nothing** names the kind and the full path: `Iceberg table
+  'DB.SCHEMA.T' does not exist or not authorized.` It read `Table 'T' …`.
+- **A DESCRIBE's properties with no signature before them** are read as after one. `DESCRIBE TABLE t x = (a b)` is
+  the `b` twice and the `)`, a CASE or a CAST where a value stands names the token after it twice, and the same
+  lines are reported for a statement of a script and of a block; a block refuses a name the account does not know
+  (`invalid parameter 'x'`) while it compiles, so the refusal carries no wrapper.
+- **A DROP's signature in a block.** A faulty one in the body of an IF, a CASE or a loop gives the construct up, and
+  what follows is read from the block around it (`BEGIN IF (TRUE) THEN DROP TABLE t (VIEW); END IF; RETURN 1; END;`
+  is the VIEW and the RETURN). A word run in after a signature is refused and the block given up when the
+  statement ends there: `BEGIN DROP TABLE t (a) x; RETURN 1; END;` is the `x` and the RETURN.
+- **The place an uncaught failure's wrapper names** is counted past the comments a text the session sends opens
+  with, as every other place of the text is: `/* c */ BEGIN EXECUTE IMMEDIATE 'SELECT 1 FROM'; END` fails "on line
+  1 at position 6", and a raised exception is placed the same way. A procedure's body keeps its comments.
+- **A DROP's and a DESCRIBE's signature: DEFAULT, TIMESTAMP, SELECT and BOOLEAN.** DEFAULT heading an item reads as
+  a field's name does and wants a type after it: `DESCRIBE TABLE t1 (DEFAULT x)` and `(DEFAULT INT, INT)` describe
+  the table where they were syntax errors at the word, `(DEFAULT)` names the `)` and `(DEFAULT 1)` the `1`. A
+  `.` after the word TIMESTAMP is named twice in a DESCRIBE, `(TIMESTAMP.a)` being the dot, the dot and the `)`;
+  `OBJECT(DEFAULT INT)` and `VECTOR(BOOLEAN, 3)` are read; an ARRAY's and an OBJECT's parentheses are not theirs
+  before a SELECT, so `OBJECT(SELECT INT)` names the `(`; and `ARRAY(DEFAULT)` is the DEFAULT alone.
+- **A fault straight after a select item's alias in a query that is not the statement's own**, the shapes that
+  were left: a list of values in parentheses is read from its first comma as the FROM clause's next table
+  (`(SELECT 1 x (1, 2)) WHERE a b` is the `(`, the `2` and the `b`), an empty pair before the query's end is the
+  one line, an `=` or an IN after the alias is the fault and not the alias (`SELECT 1 x = 1` names the `=`), an
+  EXISTS's query in a WHERE is read on from, and a joined query names the ON after a word too.
+- **The lines after a call in an ANSI FROM form is refused**, the places that were left: a call that is a WHERE's,
+  a HAVING's or an ORDER BY's own operand is passed over and the statement read on — a later fault and a second
+  such call are reported — a cast around the call under two brackets or a CASE adds its AS before its `)`, a name
+  with no FROM form of its own (TRIM) reads one bracket further out, a FOR tail under a cast names the token after
+  the FOR, and a block's query reports these lines and then the block's END.
+- **`DROP … PURGE` for the kinds of the account.** After a warehouse, a compute pool, a user, a role and a database
+  role the word was a syntax error; an account reads it there as after any other kind and answers `DROP TABLE ...
+  PURGE is only supported for unmanaged Iceberg tables in Catalog-Linked Databases. Table: '<name>'.` once the
+  name is there or IF EXISTS forgives its absence, and refuses a missing one as missing. A network policy takes
+  the word and drops as if it were not written, and `DROP DATABASE ROLE` reads CASCADE and RESTRICT too.
+- **Another kind under the name `DROP ICEBERG TABLE` gives** is refused before anything else, with or without
+  PURGE or IF EXISTS: `Object found is of type 'VIEW', not specified type 'ICEBERG_TABLE'.` — and so for a table
+  that is no Iceberg table, an event table (`'EVENT_TABLE'`) and a stream. The PURGE sentence was answered there,
+  and a view was refused against `'TABLE'`.
+- **`DROP HYBRID …` is refused at HYBRID**, which names no kind after DROP, and a name straight after it is refused
+  too: `DROP HYBRID t` is `'HYBRID'` then `'t'`. The word after HYBRID was the one named.
+- **An aggregation policy and a join policy are created in the sentence a projection policy is:** `Aggregation
+  policy 'AP' is successfully created.`
+- **A star argument in a call the plan echoes names its columns.** `TO_JSON(DISTINCT {*})` over `fz (id, b)` is
+  `invalid use of 'distinct' for function 'TO_JSON(DISTINCT OBJECT_CONSTRUCT(*)(FZ.ID, FZ.B))'`, the columns
+  those an EXCLUDE or an ILIKE leaves, each under its relation's name; any other call reads them as its
+  arguments, `HASH(FZ.ID, FZ.B, 1)` for `HASH(*, 1)`. The star was echoed as written.
+- **The lines after a fault inside the braces of a star read as a value**, `TO_JSON({*, 1})`: after a comma the
+  braces are closed where they stand and the closing brace is the token left over, twice when the last argument
+  is a name; a word after the star takes the name after it and refuses the token behind; DISTINCT, a literal and
+  a second EXCLUDE are followed by the brace or the parenthesis the account names; a RENAME or a REPLACE in the
+  braces of a call's argument is read as under a call. The query's FROM was named in most of them.
+- **A faulty query that is a statement of a BEGIN … END block** reports the lines it reports as a statement of
+  its own — a select list read on after `1 AS 1`, a CAST's comma and its parenthesis, a word run into a bracket
+  — and then the block's reading of the place it was given up at: the first name from there is taken and the
+  token after it refused, a semicolon there gives the block up (`BEGIN SELECT UPPER(CAST(1, 2)) FROM t; END;` is
+  `','`, `')'`, then the END), an END on the way closes the block, and a star's misplaced REPLACE is followed by
+  the token after the first name behind it. Only the first of those lines was reported.
+- **A character no token opens with is refused where it stands.** `SELECT 1 § 2` and `SELECT 😀` were `parse
+  error … near '<EOF>'` at the end of the input; an account refuses the character as a token of two characters -
+  the character and the one after it, so both halves of one outside the Basic Multilingual Plane - and reports
+  nothing else: `unexpected '§ '` at 9. The recovery readings also run now on a text that holds such a character
+  inside a string.
+- **The lines after a fault inside a CAST** follow the account's in the places that were left: after LIMIT (the
+  CAST twice), in a WHERE (the condition is read on), in a later item of an ORDER BY or GROUP BY, as a CASE's
+  operand or inside a call in its first condition, in a scalar subquery and a VALUES row, as an operand of
+  something more, left unclosed before the FROM, and after TOP n.
+- **Script recovery** in more shapes: a word after the name of a DESCRIBE of any kind, a dot a DROP's name ends
+  with, and `RLIKE ON t x` / `INSERT ON (t)` after a select list's comma. After a SHOW's scope and after a bare
+  `DESC` the word is refused only behind a name the account keeps as a keyword (`t`, `d`); behind any other name
+  it is judged when the statement runs.
+
+- **A literal or a word run in after a script's first statement** is reported with the account's lines in the
+  shapes that were left: `BEGIN 1; …` refuses the literal and reads the statements after it (it was read as a
+  block to the end of the input), `COMMIT NULL` and `ROLLBACK NULL` refuse the NULL, a word after a DESCRIBE's
+  name, a COPY, a LIST or a REMOVE is read and the `;` after it refused, and the statements after a word that
+  follows a FETCH, a USING list or a SAMPLE are no longer reported.
+- **A fault inside a query used as a value** names what an account names after the query's SELECT: the word after
+  a name (`(SELECT a x y FROM t)`), nothing for a literal after a literal, `FROM` and the fault after a star, the
+  cast's or the query's closing parenthesis around it, a WITH and its AS, and only the SELECT of each faulty query
+  of a WHERE's IN list.
+- **A refusal does not depend on what was parsed before it.** The readings a refusal makes of a rebuilt text keep
+  a prediction cache of their own, as the refused statement's own second reading already did.
+
+- **A doubled '=' is read.** `SET x == 1` and `SET (x, y) == (1, 2)` set their variables, where they were syntax
+  errors; in an expression `a == b` is a call of a function named "==", refused as an account refuses it:
+  `Unknown function "==".`
+- **A schema's variable is refused by name.** `SET s.v = 1` and `UNSET db.s.v` were syntax errors at the dot; they
+  are read, and refused as `Schema Variable 'S.V' does not exist or not authorized.{2}` - the account's sentence,
+  its `{2}` included.
+- **FOR UPDATE after a statement's query is read.** `SELECT … FROM t FOR UPDATE [NOWAIT | WAIT n]` was a syntax
+  error at the FOR; it is `Unsupported feature 'FOR UPDATE clause'.` once the query's names have resolved, and `A
+  'FOR UPDATE' clause is not compatible with 'not selecting from a table'.` for a query that reads none.
+- **The lines after a refused SET name.** `SET x (1)`, `SET x, y = 1`, `SET x (1) y z` and their like reported
+  the name alone; an account reads on from the first comma or closing parenthesis as its list form would stand
+  there, and reports what it meets: the end of the input, the '=', the word where the '=' is missing.
+- **The lines for a word where a join's table belongs.** `JOIN USING (a)`, `JOIN OFFSET 1`, `JOIN WINDOW w AS
+  (…)`, `JOIN INNER n`, `JOIN ASOF n` and a dot are reported with the account's lines (a second parenthesis, the
+  token twice, the end of the input).
+- **The lines for a word run into a bracket's value** in a CASE, an IN list, a star's EXCLUDE / RENAME / REPLACE,
+  an aggregate's DISTINCT, a scalar subquery's first item, before an '=' or an IN, before a surplus parenthesis
+  and before a second bracket follow the account's; a script's last SELECT is reported as it is alone.
+
+- **A staged-file query's arguments are read as a table function's.** `FROM @st (FILE_FORMAT => (ff))`,
+  `=> IDENTIFIER('ff')`, `=> NULL`, `PATTERN => ('.*')` and an empty `()` were syntax errors; each value is now any
+  expression, and one that is no constant is refused as an account refuses it, told as the tree holds it:
+  `Invalid argument [FILE_FORMAT=>[unresolved function: "="](TYPE, CSV)] for table function. Table function
+  argument is required to be a constant.` An option list written as the format, `(TYPE = CSV FIELD_DELIMITER =
+  '|')`, is refused at the second option word. A format that does not exist, a schema that does not, and a
+  pattern that is no regular expression are refused in the account's sentences, in its order; of an argument
+  written twice the last counts.
+- **The duplicate-row refusal prints every kind of cell as it is stored.** A TIME and a timestamp were printed
+  as a query shows them, or in nanoseconds whatever the column's scale: `Row Values` now holds a TIME and a
+  TIMESTAMP_NTZ / _LTZ in the units of the column's scale, a TIMESTAMP_TZ with its offset folded in, a BINARY as
+  `0x414243` (`NO_VALUE` for one of no bytes) and a FLOAT in six significant digits (`1e+06`, `0.333333`, `nan`).
+- **What is no table as a DML target.** A MERGE and a multi-table INSERT into a materialized view were `Object
+  'MV' does not exist`; they are `MERGE operations are not allowed on materialized views` (`INSERT (MULTI-TABLE)
+  operations …`). Every statement that writes rows to a dynamic table - INSERT, UPDATE, DELETE, MERGE, COPY,
+  TRUNCATE - was a missing table and is `Invalid Operation INSERT on Dynamic Table` (its own word). TRUNCATE of
+  a stream is `Object found is of type 'STREAM', not specified type 'TABLE'.`
+- **INFORMATION_SCHEMA.TABLES tells an event table by its kind:** `TABLE_TYPE` is `EVENT TABLE`, where it was
+  `BASE TABLE`.
+
+- **A window function written with no OVER in MATCH_RECOGNIZE's MEASURES** was `Missing window specification for
+  function [ROW_NUMBER()].` It is read over the rows of its match: ROW_NUMBER numbers them, RANK and DENSE_RANK
+  rank them, NTILE, PERCENT_RANK and CUME_DIST divide them, NTH_VALUE and CONDITIONAL_TRUE_EVENT read the rows so
+  far; under ONE ROW PER MATCH a ranking function is 1. An operator refused for its operands in a measure or a
+  definition is placed where the clause writes it.
+- **A table function's rows are numbered after every condition on its input.** A WHERE condition on the relations
+  to the function's left was applied before the function only when it held no subquery: `FROM t, TABLE(SPLIT_TO_TABLE
+  (t.c, '.')) s WHERE t.k > (SELECT MIN(k) FROM t)` numbered its rows 2 and 3, where an account numbers them 1
+  and 2. A condition holding a subquery that reads no row of those relations, and an EXISTS that reads the row,
+  filter the input as well.
+- **The lines after a stray word in a call inside another call.** `SELECT ABS(ABS(x y)) FROM t` reported the word
+  alone; an account adds the outermost call's closing parenthesis (a CAST's and an IFF's too), repeats the word
+  after a name written with its relation, and reports the word alone after a literal or a call - where a second
+  line was stacked.
+- **A refusal named an internal stand-in.** `SELECT SHOW TABLES IN a...c` was `unexpected 'xxxxxx'`: the word a
+  re-read spells a name with is never reported.
+
+- **A string between dollar signs is a string literal wherever one may stand.** `ALTER TABLE t SET COMMENT =
+  $$z$$`, a column's `COMMENT $$z$$` in an ALTER, a view's, a schema's and a stage's comment, a tag's
+  `ALLOWED_VALUES $$a$$, $$b$$`, a file format's `FIELD_DELIMITER = $$|$$`, `DATE $$2020-01-01$$`, `TIMESTAMP
+  $$…$$` and `INTERVAL $$1 day$$` were syntax errors at the string, and `ALTER FUNCTION f() SET COMMENT = $$c$$` an
+  invalid property. The text is read again with the string spelled as the quoted string it is; where a quoted
+  string is refused too - `SELECT 1 $$x$$` - the refusal still names the dollar string.
+- **A correlated subquery beside a constant NULL is not judged.** `SELECT id, CASE WHEN FALSE THEN 1 END + (SELECT
+  v FROM g WHERE g.id = t.id) FROM t` was refused as an unsupported subquery; the plan folds the sum to NULL -
+  under `+`, `-`, `*`, `/`, `||` and a comparison, for NULL, a cast of it, and a CASE, IFF, NULLIF, COALESCE, NVL,
+  ABS or TO_NUMBER over constants - so the statement answers NULL for every row.
+- **A settled condition inside an aggregate's argument of a subquery read as a value.** `(SELECT MAX(IFF(tt.id =
+  t.id, 'x', value)) FROM tt)` over key ranges that never meet was refused; the condition is folded there as it
+  is anywhere else, and the subquery answered.
+- **GROUPING over what is no key of a plain GROUP BY** - `GROUPING(n + 1)`, `GROUPING(1)`, `GROUPING(SUM(n))`,
+  an argument given a name - answers 1, where it answered 0; a refusal names the call GROUPING_ID, as an account
+  does (`not enough arguments for function [GROUPING_ID()]`, `Invalid function type [GROUPING_ID] for window
+  function.`).
+- **A CALL of a built-in function** types its column as the SELECT of the call does (`CALL UPPER('a')` is a
+  VARCHAR(3), where every text was VARCHAR(134217728)) and places a refused count of arguments nowhere (`error
+  line 0 at position -1`).
+- **A table function written bare in a FROM clause** reports the account's second line: with two arguments, the
+  second a text, the first closing parenthesis left with nothing to close.
+
+- **The lines after a star call's misplaced RENAME or REPLACE, one bracket deeper.** A star call under ROLLUP, CUBE
+  or GROUPING SETS, in a window's keys inside a QUALIFY or an ORDER BY, in the WHERE of an EXISTS, in a CTE's
+  clause and in a CASE of a WHERE reported the keyword and then lines of its own. It is read as a statement's
+  clause is: `SELECT 1 FROM t GROUP BY ROLLUP (HASH(* REPLACE (1 AS id)))` reports `'REPLACE'`, the `'1'` and the
+  call's `')'`. A window's keys in a select item report the keyword and the token after it, a derived table's
+  clause the keyword alone - but for a lone name in parentheses, after which the call's `')'` is refused - and a
+  comma the text ends at adds `'<EOF>'`.
+- **A block statement's refusal is placed in the statement as the block wrote it.** A place after a bind was
+  counted in the text with the bind's value written out: `res := (SELECT :s + 1)` over a BINARY variable pointed
+  at position 24 where an account says 11. A RESULTSET's query is counted from its opening parenthesis, so a
+  refused call in `res := (SELECT ABS(:s))` is at position 8.
+- **A variable holding NULL picks a user-defined function's overload by its declaration** in a block's own
+  expression: `t := fo(s)` over a BOOLEAN or a VARCHAR variable holding NULL takes the VARCHAR overload beside a
+  NUMBER one.
+- **The types of the SYSTEM$ functions.** `SYSTEM$TYPEOF` read every SYSTEM$ call but four as `NULL[LOB]`.
+  SYSTEM$GET_TAG_ALLOWED_VALUES, SYSTEM$CLUSTERING_INFORMATION, SYSTEM$ALLOWLIST, SYSTEM$GET_SNOWFLAKE_PLATFORM_INFO
+  and SYSTEM$CURRENT_USER_TASK_NAME are a text of no width (`VARCHAR[LOB]`, a VARCHAR(134217728) column),
+  SYSTEM$CLUSTERING_DEPTH a FLOAT and SYSTEM$LAST_CHANGE_COMMIT_TIME a NUMBER(38,0).
+  SYSTEM$CURRENT_USER_TASK_NAME outside a task is the empty text, not NULL, and `SELECT NULL::ARRAY + NULL` is
+  refused at its operator, position included.
+
+- **The aggregate a misplaced subquery is refused for, as the plan computes it.** `Subquery containing
+  correlated aggregate function […] can only appear in having or select clause` echoed the call as written. An
+  account names what its plan holds by then: an AVG over an INTEGER is `SCALED_ROUND_INT_DIVIDE(SUM(FZ.ID),
+  COUNT(FZ.ID))`, over a NUMBER(10,2) `(CAST(SUM(FZ.D) AS NUMBER(28,8))) / (COUNT(FZ.D))`, a MEDIAN is
+  `PERCENTILE_CONT(CAST(FZ.ID AS NUMBER(38,3)), 0.5)`, a COUNT_IF `SUM(IFF(CAST(FZ.B AS BOOLEAN), 1, 0))` - a
+  predicate kept as it is, `SUM(IFF(FZ.ID > 5, 1, 0))`, and only the values beside one cast - an
+  `AVG(DISTINCT n)` casts its argument, a distinct count is `HLL_ESTIMATE(HLL_ACCUMULATE(FZ.ID))`, a
+  BOOLXOR_AGG its null-guarded sum. An argument of a type the call does not take is refused for the type first,
+  at the call: `Invalid argument types for function 'SUM': (BOOLEAN)` for an AVG over a BOOLEAN.
+- **A name that is taken, told before the privilege to create.** Only a table, a view and a sequence refused a
+  taken name ahead of `Insufficient privileges`. Every kind does on an account - a stage, a file format, a
+  function, a procedure, a stream, a task, a pipe, a tag, the policies, a materialized view, an event table, a
+  secret, a network rule - and names the object as the statement wrote it, `Object 'DB.S.F' already exists.` for
+  a function too. A name another kind of relation holds is refused before anything is asked, under IF NOT
+  EXISTS and OR REPLACE alike: `Object 'T' already exists as TABLE`, with a table and an event table told
+  apart (`as EVENT_TABLE`). A rename onto a taken name is refused for the name before the privilege as well.
+- **A word that names no data type, in its turn.** `Unsupported data type 'X'.` was given as soon as the word
+  was met. An account reads any name where a type belongs and judges the statement's syntax first, so `CREATE
+  TABLE t (n nosuch,)` is a syntax error at the parenthesis and nothing else; then the widths of the types it
+  knows, so `(n nosuch, v VARCHAR(0))` is refused for the length; then the word. Several such words no longer
+  make a syntax error: the first is refused, one written with parameters before one written bare. A word with
+  parameters is echoed as written (`'NoSuch(5, 2)'`), a quoted one keeps its case (`'nosuch'`), and a dotted or
+  quoted name with parameters is the syntax error at its parenthesis that it is on an account. A member of an
+  ARRAY, an OBJECT or a MAP is read the same.
+- **The order an Iceberg table's column list is refused in.** The list was judged column by column, each whole.
+  An account judges it in steps, each over every column: what a type is written as - an unknown word, a length,
+  a NUMBER without digits - then OBJECT, ARRAY and TIMESTAMP_TZ, then the scale of a time, then VARIANT and the
+  rest. `(v VARIANT, c CHAR)` is refused for the CHAR and `(v VARIANT, t TIME(3))` for the scale; columns added
+  by ALTER ICEBERG TABLE are judged for their scales first. An unknown word no longer comes before an earlier
+  column's refusal.
+- **The external ID of a cloud-facing object is its creation's.** An API, a Glue catalog or an SNS integration
+  and an external volume showed an external ID derived from the name alone, so one created again showed the ID
+  it had. As on an account a CREATE OR REPLACE and a DROP followed by a CREATE give another, an ALTER and an
+  UNDROP keep it; the IAM user stays the account's one.
+- **`DESCRIBE TABLE` of an Iceberg table** shows the `name mapping` column an account shows ahead of `write
+  default`.
+- **How a routine parameter's default is told back.** GET_DDL, and the REST body's `default_value` read from
+  it, repeated the default as written. An account prints it from the plan it compiled to: `'2020-01-01'::DATE`,
+  `TO_DATE('2020-01-01')` and `DATE '2020-01-01'` are all `CAST('2020-01-01' AS DATE)`, `NULL` is `null`, a bare
+  `CURRENT_DATE` is `CURRENT_DATE()`, `[1, 2]` is `ARRAY_CONSTRUCT(1, 2)`, `NULL::INT` is
+  `SYSTEM$NULL_TO_FIXED(null)`. A parameter declared `BINARY` reads `BINARY` there, not its width. A default
+  written with a date function's unit word - `DATEADD(day, 1, '2020-01-01'::DATE)` - is no longer refused as
+  reading a name.
+- **A secrets list that names a variable twice.** `ALTER FUNCTION` and `ALTER PROCEDURE ... SET SECRETS = ('a' =
+  s, 'a' = s)` over a routine that is not there said the routine does not exist. The list is judged before the
+  routine is looked up, as on an account, and two names that differ in case alone are one: `Duplicate secret
+  name 'A' passed in.`
+- **A word out of place between a routine's parameters and its body.** `CREATE FUNCTION f(x NUMBER) COPY GRANTS
+  COPY GRANTS RETURNS NUMBER AS 'x'` was refused at the second `COPY`. An account reads what follows the last
+  clause it takes as properties, a name, an `=` and a value: the report is `'GRANTS'` and then `'NUMBER'` - the
+  RETURNS being a property's name by then - and `RETURNS NUMBER LANGUAGE SQL LANGUAGE SQL` is the second `'SQL'`.
+- **A quoted part of a refused dotted name.** `invalid identifier 'T."LOW"'` for `t."low"`; the part is now
+  told as written, `'T."low"'`.
+- **A Java body written beside IMPORTS.** A function with both an inline body and imports looked for its
+  handler in the jars alone and failed with a class not found. The inline handler runs, as on an account.
+- **The zone a JavaScript handler is told.** A formatter given a zone told it back as written. It now tells the
+  name the account's engine keeps - `Asia/Kolkata` is `Asia/Calcutta`, `Japan` is `Asia/Tokyo`, `EST` is
+  `Etc/GMT+5`, every name of UTC is `UTC` - and a session whose TIMEZONE is `Etc/GMT`, `Greenwich`, `Zulu` or
+  `Universal` is told `UTC`, one set to `GMT` its offset, `+00:00`. `ALTER SESSION SET TIMEZONE = 'GMT+0'` and
+  `'GMT-0'` are taken.
+- **OVER after what is no call.** `invalid function` now tells a windowed value as its tree prints it -
+  `(SELECT 1 AS "1" FROM (VALUES (null)) DUAL)`, `SUM(X) OVER (ORDER BY X ASC NULLS LAST)`, `"COUNT(*)"() OVER
+  ()`, `ROW(1, 2)` - and of two kinds of function refused the one written first is named: `SELECT ABS(x) OVER
+  (), x::INT OVER ()` is `[ABS]`. An OVER with no window names the token after it (`SELECT x OVER w` is `'w'`),
+  a `!` followed by no method's name names that token and then the `!`, and `b IS UNKNOWN` is refused at its
+  `IS`.
+- **A star, a DISTINCT or an ALL given a name.** `COUNT(x => *) OVER ()` reported the star and then a
+  parenthesis of the window; an account reports the star alone, the parenthesis after it closing the call.
+  What follows a star otherwise is read on as an account reads it: `COUNT(x => *, 1)` is `'*'`, `','` and the
+  call's `')'`, `COUNT(x => *, y => 1, 2)` is `'*'`, `','`, `'=>'` and `')'`, inside another call that call's own
+  parenthesis is the one named, and `COUNT(x => DISTINCT n, y => 1)` is `'DISTINCT'` and the `'=>'`.
+- **A null treatment inside a call's parentheses.** `SUM(n IGNORE NULLS) OVER ()` was refused at the closing
+  parenthesis of the window, `LAG(n IGNORE NULLS) OVER (ORDER BY n)` at the `ORDER`, and a call outside a window
+  named the word twice. Only FIRST_VALUE and LAST_VALUE take the treatment there; for every other function the
+  word is where the report starts and, but for LAG, LEAD and NTH_VALUE, where it ends. Those three are read as
+  closed at the word, so the parenthesis after it is named too - their own, or the one of a call around them:
+  `ABS(LAG(n IGNORE NULLS) OVER (ORDER BY n))` is `'IGNORE'` and the last `')'`.
+- **APPROX_PERCENTILE's percentile.** A percentile that was no plain number failed inside the engine -
+  `Character n is neither a decimal digit number...` for a column, `Index 2 out of bounds for length 2` for
+  `2` - and a call with named arguments was refused for its names first. The percentile is now judged as an
+  account judges it, after the argument count and before the names: a number outside 0 to 1 by its value, a
+  text, a NULL or a BOOLEAN as `Percentile must be a numeric value.`, anything computed as `Percentile must be a
+  constant numberic value between 0 and 1 inclusive.` with the expression echoed from the plan - `RT2.N`,
+  `0.5 + 0.1`, `CAST(0.5 AS FLOAT)`.
+- **A time-travel or change-tracking point that reads a column.** In a query the refusal carried no place; it
+  is now `error line 1 at position 73` and `invalid identifier 'ID'`, at the name. A CREATE STREAM's point and a
+  clone's said invalid identifier too, where an account resolves the source table's column and refuses it as
+  no constant: `argument TIMESTAMP to function AT needs to be constant, found 'CAST(CT_CONST.ID AS
+  TIMESTAMP_LTZ(0))'`, `argument OFFSET to function AT needs to be constant, found 'NEGATE(CT_CONST.ID)'`,
+  `argument JOBID to function AT ...` for a STATEMENT.
+- **How DESCRIBE spells a policy's signature.** A masking or a row access policy over a vector was listed as
+  `(VAL VECTOR)` and one over a structured type with full types inside - `(VAL ARRAY(NUMBER(38,0)))`. The
+  signature now reads as a routine's does: `(VAL VECTOR(FLOAT, 3))`, `(VAL ARRAY(NUMBER))`, `(VAL OBJECT(a NUMBER
+  NOT NULL))`.
+- **What USING TEMPLATE makes of a text answer.** A text was refused as `template must be a non-null JSON
+  array` whatever it held. An account reads it as JSON: the text of an array of column definitions creates the
+  table, and a text that is no JSON is refused with the reader's sentence and place - `Invalid template:
+  Unrecognized token 'x': was expecting (JSON String, Number, Array, Object or token 'null', 'true' or
+  'false')`, then ` at [Source: (String)"x"; line: 1, column: 2]`. A fault of the template's query is placed
+  where it stands in the whole statement, not in the query alone.
+- **IS_ROLE_IN_SESSION and secondary roles.** A role held only through `USE SECONDARY ROLES` was not in the
+  session. It is now, with every role it holds, as on an account.
+- **A clause written out of place after a key constraint.** A MATCH or an ON UPDATE / ON DELETE rule after a
+  property, a second MATCH, a VALIDATE with no ENABLE before it, and any of them after a PRIMARY KEY or a UNIQUE
+  were refused at the right word in some orders and at a later one in others - `RELY ON DELETE NO ACTION` at
+  the `NO`, `ON UPDATE CASCADE MATCH PARTIAL ON DELETE SET NULL` at the `SET` - and one line was reported. The
+  report now starts at the first word that breaks the order, and in a CREATE TABLE's column list reads on as an
+  account does: `NOT ENFORCED MATCH SIMPLE)` is `'MATCH'`, `'SIMPLE'` and `')'`, `NOT ENFORCED ON DELETE NO
+  ACTION)` is `'ON'`, `'DELETE'`, `'NO'`, `'ACTION'` and `')'`. An ALTER TABLE names the one word.
+- **A scope after SHOW LOCKS and SHOW TRANSACTIONS.** `SHOW LOCKS IN DATABASE abc` was refused at `DATABASE`
+  alone. An account names the token after it too when the two could be a kind and its name, or two names:
+  `'DATABASE'` then `'abc'`, `'abc'` then `'def'` - not a number or a `$variable`, and nothing after `TABLE`.
+- **The type of a text DECODE without a default.** `DECODE(n, 1, 'x')` was `VARCHAR(1)`. No default is a default
+  of NULL, read as a CASE's missing ELSE is, so the type is `VARCHAR(134217728)` as on an account; with a
+  default it stays the widest result.
+- **How a refusal echoes a cast into or out of a shape.** An invalid-type sentence spelled the cast as written -
+  `CAST(CAST(ARRAY_CONSTRUCT(1, 2) AS ARRAY(NUMBER(38,0))) AS DATE)`. An account names a cast whose source or
+  target is a structured ARRAY, OBJECT or MAP `STRUCTURED_CAST(x)`, the target unspelled, and a vector read into
+  an array `FROM_VECTOR(x)`, by a cast and by `TO_ARRAY` alike: `CAST(STRUCTURED_CAST(ARRAY_CONSTRUCT(1, 2)) AS
+  DATE)`, `CAST(FROM_VECTOR(VT.V) AS NUMBER(38,0))`. `TO_ARRAY`, `TO_OBJECT` and `TO_VARIANT` over a value that is
+  one already are `identity(x)`; in an arity or a predicate sentence they are dropped, and `TO_ARRAY` over a
+  vector is `CAST(x AS ARRAY)`.
+- **A comma before the first option of a parenthesized option list.** `CREATE STAGE s DIRECTORY = (, ENABLE =
+  TRUE)` was refused at the comma alone. An account names each leading comma and then the parenthesis closing
+  the list, and reports nothing after it - in a stage's DIRECTORY, FILE_FORMAT, ENCRYPTION, COPY_OPTIONS and
+  CREDENTIALS, a table's staging properties, ALTER STAGE and COPY INTO. A list left open has no line for a
+  parenthesis: `(,` names the comma and the end of input, `(, ENABLE = TRUE` the comma alone. In a list of
+  values the value after the comma is named too: `NULL_IF = (, 'a')` is `','` and `''a''`.
+- **REST: a listed stage is the whole stage.** `GET /api/v2/…/stages` answered each stage without its file
+  format and copy options and with one directory table property. An account answers the body a fetch of the
+  stage does, and so does the list now. Measured with it: an external stage's `cloud` is `AWS` / `AZURE` as SHOW
+  STAGES spells it, an internal one's null, and the directory table carries no time of its last refresh.
+- **The lines a faulty type parameter list is refused with.** Only the first unexpected token was reported. As
+  on an account a cast names the first token inside an ARRAY's or an OBJECT's parentheses twice (`NULL::ARRAY(5)`
+  is `'5'` and `'5'` again), and a list of definitions - a table's columns, a routine's or a policy's
+  parameters, an OBJECT's fields - reads on after a fault one token would not mend: `CREATE TABLE t (a
+  VARCHAR(5,2))` is refused at the `,`, at the `2` and at the list's own `)`. An ALTER TABLE's column reports
+  the comma and the number, a scalar RETURNS and a declaration the comma alone.
+- **The words around a materialized view's clustering key.** `CREATE MATERIALIZED VIEW mv CLUSTER BY (x) COPY
+  GRANTS AS …` was refused at `COPY`; the word is read as a property's name, so the fault is the `GRANTS` after
+  it, as on an account. Under ALTER the clustering actions - CLUSTER BY, DROP CLUSTERING KEY, SUSPEND / RESUME
+  RECLUSTER - name a view that is not there a `Table`, the other actions a `Materialized view`.
+- **The properties a materialized view is created with were a syntax error.** `CREATE MATERIALIZED VIEW mv
+  CHANGE_TRACKING = FALSE AS …` did not parse. The `name = value` properties are now read and judged as an
+  account judges them: an unknown name is `invalid property 'FOO' for 'TABLE'`, a value of another type `invalid
+  value [5] for parameter 'CHANGE_TRACKING'`, another kind of table's property, schema evolution and a file
+  location `Unsupported feature 'AUTO_REFRESH'.`, a parameter of another level `cannot set parameter 'TIMEZONE'
+  at 'MATERIALIZED_VIEW'`, a table's parameter a schema the statement may not operate on, and `ERROR_LOGGING`,
+  change tracking switched on and a row timestamp switched on `invalid property … for 'MATERIALIZED_VIEW'`. A
+  table's staging properties, `CHANGE_TRACKING = FALSE`, `ROW_TIMESTAMP = FALSE` and a metric schedule are taken.
+- **Which of several refused property names is named.** A CREATE TABLE, VIEW or MATERIALIZED VIEW with two
+  unknown properties named the first written. An account names neither the first nor the last but the first of
+  a table hashed by name - `A = 1 P = 2` and `P = 1 A = 2` both answer `invalid property 'P' for 'TABLE'` - and
+  the same holds for two values of another type and two parameters of another level. A view judges its names
+  class by class in that order too, so `ERROR_LOGGING = TRUE TIMEZONE = 'UTC'` is refused for the TIMEZONE.
+- **`COPY = …` among a table's or a view's properties.** It was `invalid property 'COPY' for 'TABLE'`. COPY is
+  a word of the statement that takes no value: a number or TRUE / FALSE is `invalid value [1] for parameter
+  'COPY'`, a text, a word or a list `invalid type of property ''x'' for 'COPY'`.
+- **A view's `ROW_TIMESTAMP = FALSE`, and another kind of table's property on a view.** The first was refused
+  as an invalid property and is taken, as on an account, which refuses the row timestamp only switched on.
+  `AUTO_REFRESH`, `LOCATION` and the like were `invalid property … for 'TABLE'` and are `options AUTO_REFRESH
+  and {1} are incompatible.`, as a table's staging properties already were; `ENABLE_SCHEMA_EVOLUTION = 5` is
+  that too, its value unread.
+- **How a structured parameter is spelled where a signature is shown.** DESCRIBE FUNCTION / PROCEDURE's
+  `signature`, SHOW's `arguments` and INFORMATION_SCHEMA's `ARGUMENT_SIGNATURE` printed the full types inside a
+  shape - `(X OBJECT(a NUMBER(38,0) NOT NULL, b VARCHAR(16777216)))`. An account spells them bare and keeps a
+  field's NOT NULL: `(X OBJECT(a NUMBER NOT NULL, b VARCHAR))`, `ARRAY(NUMBER)`, `MAP(VARCHAR, ARRAY(FLOAT))`. A
+  VECTOR keeps its element type and size in DESCRIBE and SHOW - `VECTOR(INT, 3)`, where it was a bare `VECTOR` -
+  and SHOW's `RETURN` part of a structured result is its shape, `RETURN OBJECT(a NUMBER)`.
+- **A positional argument after a named one is refused by the call's name.** `SELECT f(a => 1, 2)` was a syntax
+  error at the `2`. The call is read whole now and refused as an account refuses it, while the statement
+  compiles: `positional argument cannot follow named argument in function call 'F'`, at the argument - a
+  built-in, an aggregate, a window function, a user's function and a name nobody defined alike, before any table
+  or column of the statement is looked up and after every syntax error. The place is the argument's own: the `+`
+  of `f(a => 1, 1 + 1)`, the `::` of a cast, the first token of anything else. A SQL function's body is refused
+  for it at CREATE.
+- **Of two miscounted calls in one FROM-less item, the first written is the one refused.** `SELECT ABS(1, 2) +
+  f(1)` over a function `f` that takes no argument named `F(1)`, and `f(ABS(1, 2))` the outer call: a user's
+  function was judged before any built-in. The calls are judged in the order written, each after the calls its
+  arguments hold, as in a query over a table. `CREATE FUNCTION … AS 'ABS(1, 2) + f(1)'` names the ABS too.
+- **A miscounted call inside a block's expression is placed where the account places it.** `BEGIN RETURN 1 +
+  ABS(1, 2); END;` reported `error line 1 at position 7` whatever the expression, and a condition's or a CASE's
+  miscounted call no compilation error at all. The place counts from the expression's own start: position 4 for
+  that RETURN, 11 for `RETURN 1 + f(1)` - an expression holding a user's function is compiled as a query, seven
+  columns on - eight more for a value given to a variable, and each variable ahead of the call written out as its
+  type. The echo writes a variable as its bound value's conversion, `[ABS(TO_NUMBER('1'), 2)]`. An untyped LET's
+  value and a CASE statement's operand are refused while the block compiles, bare and placed in the block, on a
+  branch that never runs too. `Invalid argument types for function 'F'` of a user's function takes the same
+  seven columns.
 - **INFORMATION_SCHEMA views for a role that is no administrator.** Reading `INFORMATION_SCHEMA.TABLES`,
   `COLUMNS` or `FUNCTIONS` as a user without an administrative role failed with a raw
   `java.lang.SecurityException` - each view was held to a SELECT grant no role can be given. The views need no
@@ -2210,6 +3780,61 @@ Changes since 0.2.0 accumulate here as they land.
 
 ### Added
 
+- **ALTER SCHEMA ... SWAP WITH and ALTER DATABASE ... SWAP WITH.** Two schemas, or two databases, trade names, each
+  keeping its objects and their rows; a swap with itself leaves it as it was, and the schema to swap with is looked
+  for first, so a missing one is refused even under IF EXISTS. Both used to be syntax errors.
+- **INFORMATION_SCHEMA.COPY_HISTORY.** `TABLE(INFORMATION_SCHEMA.COPY_HISTORY(TABLE_NAME => 't', START_TIME => ts
+  [, END_TIME => ts]))` answers the files COPY loaded into a table within the range, in the account's 21 columns, and
+  refuses a call short of its table or start time, a NULL table and a text time in the account's sentences.
+- **ORDER BY ALL [ASC | DESC] [NULLS FIRST | LAST]** orders a query by every column it answers, left to right: in
+  a plain query, a grouped or windowed one, a set operation, a subquery, a view and a block's `SELECT … INTO`. It
+  stands alone, and a window's OVER and a WITHIN GROUP refuse it at the ALL, as the account does.
+- **SYS_CONNECT_BY_PATH(expr, separator)** in a CONNECT BY query: the path from the root to the row, each value
+  after the separator (`/ceo/vp`). Outside a hierarchical query it stays `Unknown function SYS_CONNECT_BY_PATH.`
+- **Snowpark `Row`: `toList()`, `clone()`, `getObject(int)`, `getListOfVariant(int)` and `getMapOfVariant(int)`**,
+  as the Java API has them; `com.snowflake.snowpark.SnowparkClientException` is the exception a number accessor
+  fails with.
+- **Statements for kinds with no object here.** DROP and DESCRIBE of a resource monitor, a session, a share, an
+  application and its package, a Git repository, a semantic view, a connection and the policy kinds resolve
+  the name and miss it as the account does; `DROP EVENT TABLE [IF EXISTS]`; `ALTER EXTERNAL TABLE` judges its
+  action, then its name.
+- **`USE SECONDARY ROLES`** replaces the roles in use, and CURRENT_SECONDARY_ROLES() answers the setting.
+- **`GRANT` and `REVOKE` take IDENTIFIER() names** for the object, a bulk grant's schema or database, and the
+  role, the user or the database role that is granted or holds the grant.
+- **`SHOW DATASETS`, `SHOW CLASSES` and SHOW of a built-in class's name**; the SNOWFLAKE database holds the
+  schemas an account's holds, empty where nothing is modelled.
+- **`ALTER WAREHOUSE … UNSET`** puts MAX_CONCURRENCY_LEVEL, the two statement timeouts and the type back on
+  their defaults.
+- **SEARCH's analyzers and PHRASE mode.** UNICODE_ANALYZER cuts at the word boundaries, NO_OP_ANALYZER does not
+  cut, and `SEARCH_MODE` takes PHRASE; both options are judged while the statement compiles.
+- **Read-only requests and sessions.** A request may ask to be run read-only (`"readOnly": true`), and a
+  session may be opened so: it runs only when every statement is a query, a SHOW, a DESCRIBE or an EXPLAIN that
+  reaches no write, and is refused before anything runs otherwise (`docs/http-api.md`).
+- **`http.cors.allowedOrigins`** names the pages that may call the HTTP server; a preflight from one is answered
+  with the CORS headers.
+- **`TIMESTAMP_FROM_PARTS(date, time)`.** The names that build a TIMESTAMP_NTZ also take a date and a time —
+  a text is read as either. Another pair is refused by that signature's name, `Invalid argument types for
+  function 'TIMESTAMP_NTZ_FROM_DATE_TIME': (TIME(9), DATE)`, and three to five arguments are short of the
+  parts: `not enough arguments for function [TIMESTAMP_NTZ_FROM_PARTS(2024, 3, 15)], expected 6, got 3`.
+- **The function catalog lists every function the engine calls.** `docs/functions.md` gains a row for each
+  of 184 names that had none — the mathematical, conditional, text, conversion, date, array and object,
+  aggregate and window functions among them — each row telling what the function answers at its edges.
+- **`SEARCH_MODE => 'EXACT'`.** The query must stand in the data as it is written — case apart, the characters
+  between its tokens included — with no token running on before it or after it: `'a, b'` is found in `'x a, b!'`
+  and not by `'a,b'`, `'a b'` or `', b'`; a trailing delimiter of the query has to be there too; an empty query
+  finds a text with no token; nothing is found across two columns. Under the `NO_OP_ANALYZER` the two must be
+  equal, and the `UNICODE_ANALYZER` does not take the mode.
+
+- **CREATE [OR REPLACE] EVENT TABLE [IF NOT EXISTS] <name> CLONE <event table>.** Only another event table is a
+  source: a table is `Invalid operation Cannot clone an Event table from a table.`, a dynamic table, a view and a
+  stream are refused in sentences of their own, and a clone takes no property of its own.
+
+- **`ALTER MATERIALIZED VIEW … RENAME TO` a name with a path.** Only a bare name was read. A qualified one
+  places the view in the schema it names, as on an account.
+- **`SHOW TERSE LOCKS` and `SHOW TERSE TRANSACTIONS`.** Both were a syntax error; an account takes the word
+  and answers the same columns.
+- **`ALTER MATERIALIZED VIEW … SET SECURE` and `UNSET SECURE`.** Both were a syntax error; they switch the
+  view's `is_secure`, as on an account.
 - **Twenty-four more SHOW listings.** `SHOW EXPORTED KEYS`, `SHOW REGIONS`, `SHOW GRANTS ON ACCOUNT` and the
   listings of the kinds the engine has no object of — `RESOURCE MONITORS`, `SHARES`, `CONNECTIONS`, `APPLICATIONS`,
   `APPLICATION PACKAGES`, `INDEXES`, `CHANNELS`, `SNAPSHOTS`, `GIT REPOSITORIES`, `SEMANTIC VIEWS`, the `SESSION`,
@@ -2242,6 +3867,52 @@ Changes since 0.2.0 accumulate here as they land.
 
 ### Changed
 
+- **The results kept for RESULT_SCAN are bounded by their size.** Besides `query.result.cache.size` results per
+  session, all kept results together hold at most `query.result.cache.cells` values (2,000,000 by default); past it
+  the oldest go, each session's latest result staying. Forty SELECTs of 100,000 rows used to keep 735 MB reachable
+  and grow with every statement; they now level off near 220 MB.
+- **Window aggregates read their frames without adding each one up again.** Over exact numbers a SUM, AVG or COUNT
+  window reads any frame from the partition's prefix sums, a MIN or MAX from a tree over the partition, a
+  whole-partition MEDIAN or other aggregate is computed once per partition, and a RANGE frame's offset bounds are
+  found by halving the sorted keys. Over 10 000 rows `SUM(v) OVER ()` took 2 s and a `RANGE BETWEEN 5 PRECEDING AND 5
+  FOLLOWING` frame 47 s; both now take well under a second, and grow with the rows rather than their square.
+- **A join keyed through an earlier join or a self-join runs by key.** An equality reading a relation an earlier
+  join brought in (`a JOIN b ON … JOIN c ON b.j = c.cj`, or the same over a comma join's WHERE) and one between the
+  two aliases of a self-join (`t x JOIN t y ON x.id = y.parent`) now take the hash path instead of comparing every
+  pair of rows. The plan's join stage names the keys it buckets by, as `| HASH J=CJ`.
+- **An engine that keeps nothing across a restart no longer leaves stage files behind.** Its internal named stages,
+  table stages and user stage live in `<stage.internal.localRoot>/engine-<id>` and go when the engine does, so a
+  file PUT on `@~` of a server that does not persist is gone after a restart. An engine with a write-ahead log or
+  snapshot persistence keeps them in `stage.internal.localRoot` as before.
+- **A handler class a Java routine's code does not hold is reported with the class loader's frames.** `No class
+  bytes generated for: G` is the account's `User Error Report` of `java.lang.ClassNotFoundException: G` with the
+  three loader frames numbered as the routine's Java runtime (11, 17 or 21) numbers them, for a function, a
+  procedure and a table function.
+- **The HTTP server holds a request to its host, its origin and its content type.** On a loopback-bound server
+  a request with another Host is refused with 421, one from an Origin the operator did not allow with 403, and
+  a body of the SQL endpoints that is not declared `application/json` with 415 (`docs/http-api.md`).
+- **`DatabaseHttpServer` runs its engine on the configuration file it is given**, a port argument winning over
+  the file's port, and `durability.walFile` defaults to `wal.log` under the persistence directory in force.
+- **The server chooses its lock by what a request can reach**, read from the parse the run reuses: a query that
+  can reach a write runs alone. The remote JDBC driver counts a text's statements from the lexer's tokens, and
+  the server has the last word.
+- **SYSTEM$CLUSTERING_DEPTH answers a number and SYSTEM$CLUSTERING_INFORMATION the account's report.** The depth
+  was a JSON text of the engine's own (`{"average_depth": 1.0, "table_name": …}`); it is the FLOAT `1.0`, and `0.0`
+  for a table with no row. The information names `cluster_by_keys` (`LINEAR` and the key list as written),
+  `total_partition_count`, `total_constant_partition_count`, `average_overlaps`, `average_depth`, `version` and
+  `clustering_errors` over the one partition the engine keeps a table in.
+- **SYSTEM$LAST_CHANGE_COMMIT_TIME names a missing object as it was written**: `Object 'NOSUCH' does not exist or not
+  authorized.`, where it was completed with the session's database and schema.
+
+- **A file transfer's size is a DECIMAL(10,0).** A GET's `size` and a PUT's `source_size` and `target_size` were
+  declared NUMBER(10,0). The client answers a file transfer, and an account's driver names these columns by its
+  own type: `getColumnTypeName` is `DECIMAL`, `getColumnType` `java.sql.Types.DECIMAL` though the scale is 0,
+  `getColumnClassName` `java.math.BigDecimal` - which is what `getObject` now returns - and the display size 12.
+  Both JDBC transports answer so, and the HTTP wire names the columns' type `DECIMAL` where it said `NUMBER`.
+  LIST's `size` stays the NUMBER(38,0) it is.
+- **`ResultSetMetaData.isSigned` answers true for a number.** The in-process transport answered false for every
+  column and the HTTP one false for a NUMBER. As an account's driver answers: true for a NUMBER of any scale and
+  for a FLOAT (reported DOUBLE), false for every other type.
 - **A CALL converts every argument to its parameter's type, for every language.** A SQL procedure's BOOLEAN
   parameter given `'off'` or `0` holds FALSE (`a::VARCHAR` answered `off`), and a handler receives the converted
   value in its language's own type: a JavaScript handler a number for a text given to a FLOAT parameter, a string

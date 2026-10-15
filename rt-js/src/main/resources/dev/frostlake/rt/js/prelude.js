@@ -341,6 +341,16 @@
             return named(this, dateToTimeString.call(this));
         };
 
+        // ---- a formatter names its zone as the account's engine knows it ----------------------------------------
+        var dateFormatResolved = Intl.DateTimeFormat.prototype.resolvedOptions;
+        Intl.DateTimeFormat.prototype.resolvedOptions = function resolvedOptions() {
+            var options = dateFormatResolved.call(this);
+            if (typeof options.timeZone === 'string') {
+                options.timeZone = host.zoneId(options.timeZone);
+            }
+            return options;
+        };
+
         // ---- JSON.parse refuses a text in the account's words ---------------------------------------------------
         var jsonParse = JSON.parse;
         var SyntaxErrorType = SyntaxError;

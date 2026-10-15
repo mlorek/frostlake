@@ -27,7 +27,7 @@ public class Bitnot extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        return ~BitwiseOperand.whole(args.get(0));
+        return BitwiseOperand.result(BitwiseOperand.wide(args.get(0)).not());
     }
 
     @Override

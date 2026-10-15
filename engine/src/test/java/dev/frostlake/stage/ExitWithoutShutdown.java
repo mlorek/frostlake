@@ -51,7 +51,7 @@ public final class ExitWithoutShutdown {
         engine.execute("DROP TABLE t");
         // What was set aside before the exit, for the test to tell the hook's work from nothing set aside at all.
         final StringBuilder setAside = new StringBuilder();
-        try (java.util.stream.Stream<Path> walk = Files.walk(Paths.get(args[0], "dropped"))) {
+        try (java.util.stream.Stream<Path> walk = Files.walk(Paths.get(args[0]))) {
             final Iterator<Path> paths = walk.iterator();
             while (paths.hasNext()) {
                 final String name = paths.next().getFileName().toString();

@@ -27,9 +27,11 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
@@ -52,13 +54,11 @@ import java.util.Map;
  * children), so this runs before the WHERE stage and everything downstream sees an ordinary relation.
  *
  * <p>Snowflake performs no cycle detection — a cyclic hierarchy simply runs until the warehouse times out
- * (live-verified). An in-memory engine cannot hang, so the walk is bounded by {@link #MAX_DEPTH}, the same
- * guard value the recursive-CTE fixpoint loop uses, and reports the cycle instead.
+ * (live-verified) — and walks a hierarchy as deep as its data goes. An in-memory engine cannot run until a timeout,
+ * so a row reached again below itself, on its own path from the root, is reported as the cycle it is; a hierarchy
+ * that is merely deep is walked to its end, the statement's timeout and cancel ending a long walk as they end any.
  */
 public final class ConnectByExpander {
-
-    /** Maximum hierarchy depth before the walk is reported as cyclic. */
-    public static final int MAX_DEPTH = 1000;
 
     /** The {@code LEVEL} pseudo-column's name. */
     public static final String LEVEL_COLUMN = "LEVEL";
@@ -73,6 +73,12 @@ public final class ConnectByExpander {
         this.functionRegistry = functionRegistry;
         this.catalog = catalog;
     }
+
+    /**
+     * The hidden column holding each row's path: the source rows from its root down to the row itself, which
+     * SYS_CONNECT_BY_PATH reads (see {@code SysConnectByPath}).
+     */
+    public static final String PATH_COLUMN = "CONNECT_BY$PATH";
 
     /** The out-of-the-way name a source column called {@code LEVEL} takes in the expanded relation,
      *  so the name {@code LEVEL} resolves to the depth pseudo-column. */
@@ -100,12 +106,22 @@ public final class ConnectByExpander {
         }
         final TableColumn depth =
             new TableColumn(LEVEL_COLUMN, NumericType.NUMBER, true, null, false, false, false);
+        depth.setStaticallyTyped(true);
         columns.add(clash ? depth : depth.starHiddenCopy());
         for (final TableColumn column : baseTable.getColumns()) {
-            columns.add(new TableColumn(ConnectByRootExpression.ROOT_PREFIX + column.getName(),
-                column.getDataType(), true, null, false, false, false).starHiddenCopy());
+            final TableColumn root = new TableColumn(ConnectByRootExpression.ROOT_PREFIX + column.getName(),
+                column.getDataType(), true, null, false, false, false);
+            root.setStaticallyTyped(true);
+            columns.add(root.starHiddenCopy());
         }
-        return new Table(baseTable.getName(), columns, false);
+        columns.add(new TableColumn(PATH_COLUMN, StringType.VARCHAR, true, null, false, false, false)
+            .starHiddenCopy());
+        // The hierarchy's columns are the table's own, so they keep its declared types and the tags its statistics
+        // give them: SYSTEM$TYPEOF(w) over a NUMBER(6,2) column is NUMBER(6,2)[SB2] beside CONNECT BY as without it,
+        // and w * 2 is NUMBER(7,2) (live-verified). Its rows are not the table's, so no COUNT is bounded by them.
+        final Table expanded = new Table(baseTable.getName(), columns, false);
+        expanded.markCopiedFrom(baseTable);
+        return expanded;
     }
 
     /**
@@ -145,25 +161,28 @@ public final class ConnectByExpander {
 
         final List<Row> result = new ArrayList<>();
         final Deque<int[]> pending = new ArrayDeque<>();
+        // Beside each pending step, the path down to its parent: the source rows from the root.
+        final Deque<List<Row>> parentPaths = new ArrayDeque<>();
         for (int i = baseRows.size() - 1; i >= 0; i--) {
             if (isSeed[i]) {
                 pending.push(new int[]{i, 1, i});
+                parentPaths.push(Collections.<Row>emptyList());
             }
         }
         while (!pending.isEmpty()) {
             final int[] step = pending.pop();
             final Row row = baseRows.get(step[0]);
+            final List<Row> path = new ArrayList<>(parentPaths.pop());
+            path.add(row);
             final int level = step[1];
             final Row rootRow = baseRows.get(step[2]);
-            if (level > MAX_DEPTH) {
-                throw new RuntimeException("CONNECT BY exceeded the maximum hierarchy depth of "
-                    + MAX_DEPTH + " — the data most likely contains a cycle.");
-            }
+            StatementCancellation.check();
             final List<Object> values = new ArrayList<>(row.getValues());
             values.add(Long.valueOf(level));
             for (int c = 0; c < width; c++) {
                 values.add(c < rootRow.getValues().size() ? rootRow.getValue(c) : null);
             }
+            values.add(Collections.unmodifiableList(path));
             result.add(new Row(values));
 
             // Children are pushed in reverse so the walk emits them in source order.
@@ -171,11 +190,26 @@ public final class ConnectByExpander {
                 final List<Object> combined = new ArrayList<>(baseRows.get(i).getValues());
                 combined.addAll(row.getValues());
                 if (SqlTruth.isTrue(stepEvaluator.evaluate(stepPredicate, new Row(combined)))) {
+                    if (onPath(path, baseRows.get(i))) {
+                        throw new RuntimeException("CONNECT BY reached a row again below itself: the hierarchy"
+                            + " contains a cycle.");
+                    }
                     pending.push(new int[]{i, level + 1, step[2]});
+                    parentPaths.push(path);
                 }
             }
         }
         return result;
+    }
+
+    /** Whether a source row stands on a path from the root already, by identity. */
+    private static boolean onPath(final List<Row> path, final Row candidate) {
+        for (final Row step : path) {
+            if (step == candidate) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The candidate-plus-parent relation the CONNECT BY predicate is evaluated against. */

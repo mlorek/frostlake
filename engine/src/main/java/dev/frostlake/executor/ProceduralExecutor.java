@@ -21,8 +21,10 @@ import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
+import dev.frostlake.executor.expressions.UnknownUnitWord;
 import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.executor.procedural.AsyncJob;
 import dev.frostlake.executor.procedural.AsyncJobState;
@@ -30,6 +32,7 @@ import dev.frostlake.executor.procedural.AsyncStatement;
 import dev.frostlake.executor.procedural.AwaitStatement;
 import dev.frostlake.executor.procedural.BaseExpression;
 import dev.frostlake.executor.procedural.BinaryExpression;
+import dev.frostlake.executor.procedural.BuiltInExceptions;
 import dev.frostlake.executor.procedural.CallStatement;
 import dev.frostlake.executor.procedural.CaseStatement;
 import dev.frostlake.executor.procedural.CloseStatement;
@@ -67,6 +70,8 @@ import dev.frostlake.executor.procedural.UserDefinedException;
 import dev.frostlake.executor.procedural.VariableExpression;
 import dev.frostlake.executor.procedural.WhenClause;
 import dev.frostlake.executor.procedural.WhileStatement;
+import dev.frostlake.executor.udf.HandlerStateScope;
+import dev.frostlake.executor.udf.StatementHandlerStates;
 import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
@@ -121,9 +126,14 @@ import java.util.Objects;
 import java.util.Set;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ProceduralExecutor {
+
+    private static final Logger logger = LoggerFactory.getLogger(ProceduralExecutor.class);
 
     private final ScopeManager scope = new ScopeManager();
     private final CursorManager cursorManager = new CursorManager();
@@ -240,6 +250,8 @@ public class ProceduralExecutor {
     private int blockDepth;
     /** Whether the statement running now is a block's own SELECT … INTO, run as text. */
     private boolean runningBlockSelectInto;
+    /** The place of the CALL an assignment being re-read from its own text runs, or null. */
+    private int[] assignedCallPlace;
 
     /**
      * The row variables of the FOR loops running now, innermost last. A record is no value: named in an EXECUTE
@@ -256,6 +268,11 @@ public class ProceduralExecutor {
     private volatile Thread blockThread;
     /** The block depth the running procedure body's blocks count from; 0 for the session's own script. */
     private int procedureFrameBase;
+    /** How many bodies are running as frames of their own above the text the session sent. */
+    private int openBodyFrames;
+
+    /** How many SQL functions' block bodies are running, one called from another's statement. */
+    private int functionBodies;
     /** The block depth of a body whose CALL made it a transaction scope; -1 when the running body is none. */
     private int scopedBase = -1;
     // Where the statement that is currently failing stood, for the uncaught-exception message the
@@ -385,7 +402,9 @@ public class ProceduralExecutor {
 
     /** Offer an exception to the innermost active CONTINUE handler; true if it handled it (caller continues). */
     public boolean tryContinueHandler(final Exception e) {
-        return !continueHandlers.isEmpty() && continueHandlers.peek().tryHandleAsContinue(e);
+        // A statement's timeout or cancel ends the whole statement: no handler continues past it.
+        return !(e instanceof StatementCanceledException)
+            && !continueHandlers.isEmpty() && continueHandlers.peek().tryHandleAsContinue(e);
     }
 
     /**
@@ -458,6 +477,8 @@ public class ProceduralExecutor {
     }
 
     private void dispatchStatement(final Statement stmt) {
+        // A block's statement, a loop's iteration among them, is where its statement's timeout or cancel ends it.
+        StatementCancellation.check();
         // Each procedural statement reads its own clock (live-verified) — including each
         // iteration of a loop body, which live treats as fresh statements.
         StatementClock.advance();
@@ -469,7 +490,7 @@ public class ProceduralExecutor {
                 executeSet((SetStatement) stmt);
                 break;
             case EVALUATE:
-                evaluateExpression(((EvaluateStatement) stmt).getExpression(), null);
+                executeLogging((FunctionCallExpression) ((EvaluateStatement) stmt).getExpression());
                 break;
             case IF:
                 executeIf((IfStatement) stmt);
@@ -580,6 +601,7 @@ public class ProceduralExecutor {
                 && isParenthesizedQuery(stmt.getRawExpressionText())) {
             final ResultSetVariable assigned = new ResultSetVariable(stripOuterParens(stmt.getRawExpressionText()));
             assigned.setName(stmt.getVariableName().toUpperCase(Locale.ROOT));
+            assigned.setParenthesisLead(parenthesisLead(stmt.getRawExpressionText()));
             setVariable(stmt.getVariableName(), assigned);
             final BaseExpression value = stmt.getExpression();
             runInitialiser(assigned, value == null ? -1 : value.getSourceLine(),
@@ -644,6 +666,28 @@ public class ProceduralExecutor {
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         final int firstTokenType = tokens.LT(1).getType();
         return firstTokenType == FrostlakeLexer.SELECT || firstTokenType == FrostlakeLexer.WITH;
+    }
+
+    /**
+     * How far a parenthesized query stands from its opening parenthesis: the lines between them, and the columns
+     * its first line counts before the query's own — the parenthesis and the blanks after it, or on a later line
+     * the blanks that open the line.
+     */
+    private static int[] parenthesisLead(final String rawText) {
+        final String text = rawText.trim();
+        int end = 1;
+        while (end < text.length() && Character.isWhitespace(text.charAt(end))) {
+            end++;
+        }
+        int lines = 0;
+        int lineStart = 0;
+        for (int i = 1; i < end; i++) {
+            if (text.charAt(i) == '\n') {
+                lines++;
+                lineStart = i + 1;
+            }
+        }
+        return new int[] {lines, end - lineStart};
     }
 
     /** Strip one layer of outer parentheses from a parenthesized query. */
@@ -746,7 +790,11 @@ public class ProceduralExecutor {
         final Cursor cursor = iterableName != null ? readCursor(iterableName) : null;
 
         if (cursor != null) {
-            // FOR rec IN cursorName DO — implicit open, iterate, close
+            // FOR rec IN cursorName DO — implicit open and iterate; a cursor an earlier FOR ran to its end is opened
+            // afresh.
+            if (cursor.wasEndedByLoop()) {
+                cursor.close();
+            }
             if (!cursor.isOpen()) {
                 openCursorWithQuery(cursor);
             }
@@ -764,7 +812,9 @@ public class ProceduralExecutor {
                 }
             } finally {
                 loopRecords.remove(loopRecords.size() - 1);
-                if (cursor.isOpen()) cursor.closeAfterLoop();
+                if (cursor.isOpen()) {
+                    cursor.endLoop();
+                }
                 clearRowVariables(varName, cursor.getResultSet());
             }
             return;
@@ -1238,6 +1288,20 @@ public class ProceduralExecutor {
         return declared instanceof DateTimeType ? "NULL::" + SqlTypeNames.canonical(declared) : null;
     }
 
+    /**
+     * The NULL of a declared text, BOOLEAN, date, time or timestamp variable's type, as SQL writes it; null for any
+     * other value.
+     */
+    private String declaredNullOf(final BaseExpression argument) {
+        if (!(argument instanceof VariableExpression)) {
+            return null;
+        }
+        final DataType declared = variableTypes.get(((VariableExpression) argument).getName().toUpperCase(Locale.ROOT));
+        return declared instanceof DateTimeType || declared instanceof BooleanType
+            || declared instanceof StringType && !(declared instanceof UuidType)
+            ? "NULL::" + SqlTypeNames.canonical(declared) : null;
+    }
+
     /** The declared type of every name a block's expression may read: FOR counters, record fields, variables. */
     private Map<String, DataType> namesInScope() {
         final Map<String, DataType> typesInScope = new HashMap<String, DataType>(counterTypes);
@@ -1405,7 +1469,8 @@ public class ProceduralExecutor {
         }
         final String name = type.getName() == null ? "" : type.getName().toUpperCase(Locale.ROOT);
         if (name.startsWith("TIMESTAMP") || "DATE".equals(name) || "TIME".equals(name) || "DATETIME".equals(name)) {
-            return ValueCaster.castValue(value, name);
+            return value instanceof VariantValue ? variantTemporal((VariantValue) value, name)
+                : ValueCaster.castValue(value, name);
         }
         if (value instanceof VariantValue) {
             final VariantValue variant = (VariantValue) value;
@@ -1418,6 +1483,23 @@ public class ProceduralExecutor {
         }
         // A SQL body's parameter is a variable of the body, and holds a semi-structured value as one does.
         return sqlBody ? jsonHeld(value, type) : value;
+    }
+
+    /**
+     * A VARIANT argument of a DATE, a TIME or a timestamp parameter: a text that spells one, and a text that
+     * spells none is refused as the variant it is.
+     */
+    private static Object variantTemporal(final VariantValue variant, final String name) {
+        try {
+            return ValueCaster.castValue(variant, name);
+        } catch (final RuntimeException unread) {
+            if (!String.valueOf(unread.getMessage()).endsWith("is not recognized")) {
+                throw unread;
+            }
+        }
+        throw new RuntimeException("Failed to cast variant value " + variant.text() + " to "
+            + ("TIMESTAMP".equals(name) ? SessionTimestampMapping.current()
+                : "DATETIME".equals(name) ? "TIMESTAMP_NTZ" : name));
     }
 
     /** A VARIANT argument of a BOOLEAN parameter: a boolean, or a text that spells one. */
@@ -1453,7 +1535,7 @@ public class ProceduralExecutor {
             }
         }
         throw new RuntimeException("Failed to cast variant value " + variant.text() + " to "
-            + (NumericType.isApproximate(type) ? "DOUBLE" : "FIXED"));
+            + (NumericType.isApproximate(type) ? "REAL" : "FIXED"));
     }
 
     /**
@@ -1565,7 +1647,18 @@ public class ProceduralExecutor {
             final ResultSetVariable rsv = (ResultSetVariable) value;
             requireInitialized(rsv);
             if (rsv.getResultSet() == null && rsv.getSelectQuery() != null && queryExecutor != null) {
-                final List<ResultSet> r = issue(substituteStatementBinds(rsv.getSelectQuery()));
+                // A refusal in a query assigned to a RESULTSET, res := (SELECT …), is placed from the query's
+                // opening parenthesis; in a query the RESULTSET is declared with — DECLARE … DEFAULT (…), LET … :=
+                // (…) — every place is the query's own (live-verified).
+                final List<int[]> binds = new ArrayList<>();
+                final String bound = bindSubstitutor.substitute(rsv.getSelectQuery(), true, binds);
+                final int[] lead = rsv.getParenthesisLead();
+                final List<ResultSet> r;
+                try {
+                    r = issuePlaced(bound, binds, 0);
+                } catch (final RuntimeException refused) {
+                    throw lead == null ? refused : BoundText.displaced(refused, lead[0], lead[1]);
+                }
                 rsv.setResultSet(r.isEmpty() ? null : r.get(0));
             }
             return rsv.getResultSet();
@@ -1628,15 +1721,21 @@ public class ProceduralExecutor {
             runningBlockSelectInto = stmt.isSelectInto();
             try {
                 // A statement that keeps its :names is still held to what a statement can bind.
-                final String substituted = substituteStatementBinds(stmt.getSql());
+                final List<int[]> binds = new ArrayList<>();
+                final String substituted = bindSubstitutor.substitute(stmt.getSql(), true, binds);
+                // An assignment of a CALL's answer is read again from its own text, and its CALL stands where
+                // the block wrote it.
+                assignedCallPlace = stmt.keepsWrittenBinds()
+                    ? new int[] {stmt.getSourceLine(), stmt.getSourcePosition()} : null;
                 for (final ResultSet result
-                        : issue(stmt.keepsWrittenBinds() ? stmt.getSql() : substituted)) {
+                        : stmt.keepsWrittenBinds() ? issue(stmt.getSql()) : issuePlaced(substituted, binds, 0)) {
                     recordSqlRowCount(result);
                     if (result != null) {
                         sawResult = true;
                     }
                 }
             } finally {
+                assignedCallPlace = null;
                 runningBlockSelectInto = outerSelectInto;
             }
             if (!sawResult) {
@@ -1861,11 +1960,32 @@ public class ProceduralExecutor {
     }
 
     /**
+     * The statements a dynamic text holds. A fault of its syntax is placed in the text as written, whatever its
+     * placeholders were written out as: {@code 'SELECT ? x y'} names the y at position 11 (live-verified).
+     */
+    private int statementCountOf(final String sqlText, final List<int[]> written) {
+        if (written.isEmpty()) {
+            return queryExecutor.requestStatementCountOf(sqlText);
+        }
+        // A comment that opens the text is not counted: its places are told from the first word.
+        final SourcePosition comment = LeadingCommentOffset.of(sqlText);
+        final SourcePosition origin = comment != null ? comment : new SourcePosition(1, 0);
+        final SourcePosition outer = LeadingCommentOffset.begin(origin);
+        final BoundText displaced = LeadingCommentOffset.bind(new BoundText(origin, written));
+        try {
+            return queryExecutor.requestStatementCountOf(sqlText);
+        } finally {
+            LeadingCommentOffset.unbind(displaced);
+            LeadingCommentOffset.end(outer);
+        }
+    }
+
+    /**
      * Run a text as a body of its own, the way a statement that runs a dynamic text does: it sees none of the
      * variables of the block that asks for it and nothing that block is handling, a block in it is the top
      * block of its own body, and a failure it lets out is left for the asking statement to name.
      */
-    private List<ResultSet> executeAsOwnBody(final String sqlText) {
+    private List<ResultSet> executeAsOwnBody(final String sqlText, final List<int[]> written) {
         // Texts run texts only so deep (see StatementNesting).
         StatementNesting.enter();
         final int enclosingFrame = enterDynamicFrame();
@@ -1873,7 +1993,8 @@ public class ProceduralExecutor {
         final ProcedureFrame enclosingBody = enterProcedureFrame();
         boolean failed = true;
         try {
-            final List<ResultSet> result = issue(sqlText);
+            // A refusal is placed in the text as written, whatever its placeholders were written out as.
+            final List<ResultSet> result = written.isEmpty() ? issue(sqlText) : issuePlaced(sqlText, written, 0);
             failed = false;
             return result;
         } finally {
@@ -1893,6 +2014,38 @@ public class ProceduralExecutor {
             CallDepth.requireMayIssue(queryExecutor.getTransactionManager().scopeDepth());
         }
         return queryExecutor.execute(sql);
+    }
+
+    /**
+     * {@link #issue} for a statement whose binds have been written out: a refusal is placed in the text the block
+     * wrote (see {@link BoundText}), and a refusal of a call's or an operator's arguments {@code lead} columns
+     * further in on its first line.
+     *
+     * @param sql   the statement with its binds written out
+     * @param binds each bind written out, as the substitution noted it
+     * @param lead  the columns such a refusal counts before the statement's own first one
+     * @return the statement's results
+     */
+    private List<ResultSet> issuePlaced(final String sql, final List<int[]> binds, final int lead) {
+        try {
+            if (binds.isEmpty()) {
+                return issue(sql);
+            }
+            if (queryExecutor.getTransactionManager() != null) {
+                CallDepth.requireMayIssue(queryExecutor.getTransactionManager().scopeDepth());
+            }
+            // A comment that opens the text is not counted: its places are told from the first word.
+            final SourcePosition comment = LeadingCommentOffset.of(sql);
+            final SourcePosition origin = comment != null ? comment : new SourcePosition(1, 0);
+            final BoundText displaced = LeadingCommentOffset.bind(new BoundText(origin, binds));
+            try {
+                return queryExecutor.executeFrom(sql, origin);
+            } finally {
+                LeadingCommentOffset.unbind(displaced);
+            }
+        } catch (final RuntimeException refused) {
+            throw lead == 0 ? refused : BoundText.led(refused, lead);
+        }
     }
 
     private void executeDeclareException(final DeclareExceptionStatement stmt) {
@@ -1939,7 +2092,8 @@ public class ProceduralExecutor {
                 return declared;
             }
         }
-        return null;
+        // The two exceptions a script has without declaring them are raised by name as any other is.
+        return BuiltInExceptions.of(canonical);
     }
 
     public Object evaluateExpression(final BaseExpression expr) {
@@ -1953,6 +2107,20 @@ public class ProceduralExecutor {
      * @param target the declared type a value given to a variable converts to, or null
      * @return the value
      */
+    /**
+     * A logging statement, {@code SYSTEM$LOG_INFO('message');}: its arguments are evaluated and the message is
+     * written to the engine's own log. The statement answers nothing.
+     */
+    private void executeLogging(final FunctionCallExpression statement) {
+        final List<Object> told = new ArrayList<Object>();
+        for (final BaseExpression argument : statement.getArguments()) {
+            told.add(evaluateExpression(argument, null));
+        }
+        if (!told.isEmpty()) {
+            logger.info("{}: {}", statement.getFunctionName(), told.size() == 1 ? told.get(0) : told);
+        }
+    }
+
     private Object evaluateExpression(final BaseExpression expr, final DataType target) {
         try {
             if (expr != null && expr.getJudgedFrom() != null && queryExecutor != null) {
@@ -1965,6 +2133,12 @@ public class ProceduralExecutor {
             // first-wins, so this innermost one beats the statement record taken on the way out.
             if (expr != null && expr.getSourceLine() > 0) {
                 recordExpressionFailure(expr.getSourceLine(), expr.getSourcePosition());
+            }
+            // A bare word where a unit is read, naming none, is to a block the name nothing declares.
+            final UnknownUnitWord unit = UnknownUnitWord.in(failed);
+            if (unit != null) {
+                throw new RuntimeException(SqlCompilationError.at(1, 0, "invalid identifier '" + unit.word() + "'"),
+                    failed);
             }
             throw failed;
         }
@@ -2018,11 +2192,13 @@ public class ProceduralExecutor {
                             && isLoopRecord(((VariableExpression) bind).getName())) {
                         unbound.add(bindValues.size() + 1);
                     }
-                    bindValues.add(evaluateExpression(bind));
+                    bindValues.add(usingBind(bind instanceof VariableExpression
+                        ? ((VariableExpression) bind).getName() : null, evaluateExpression(bind)));
                 }
             }
+            final List<int[]> written = new ArrayList<>();
             try {
-                sqlText = DynamicStatementBinds.bind(sqlText, bindValues, unbound);
+                sqlText = DynamicStatementBinds.bind(sqlText, bindValues, unbound, written);
             } catch (final RuntimeException unset) {
                 recordStatementFailure(execExpr.getStatementLine(), execExpr.getStatementPosition());
                 throw unset;
@@ -2035,9 +2211,12 @@ public class ProceduralExecutor {
             // runs, and a text of several answers as a multi-statement request (see DynamicStatementCount). A
             // failure is the statement's, where the EXECUTE IMMEDIATE begins.
             try {
-                final int statements = queryExecutor.requestStatementCountOf(sqlText);
+                if (QueryExecutor.holdsNoStatement(sqlText)) {
+                    throw new RuntimeException("Executing NULL or empty statement is not permitted.");
+                }
+                final int statements = statementCountOf(sqlText, written);
                 DynamicStatementCount.require(statements, queryExecutor.getSecurityManager(), true);
-                final List<ResultSet> result = executeAsOwnBody(sqlText);
+                final List<ResultSet> result = executeAsOwnBody(sqlText, written);
                 if (statements > 1) {
                     final MultiStatementAnswer answer = new MultiStatementAnswer(result);
                     recordSqlRowCount(answer);
@@ -2070,8 +2249,15 @@ public class ProceduralExecutor {
                 try {
                     final String callExpr = rebuiltCall(funcExpr);
                     // Execute as SELECT expression, outside the session's statement history: an expression is
-                    // not a statement, and must not move LAST_QUERY_ID off the statement before it.
-                    final List<ResultSet> results = queryExecutor.executeUnrecorded("SELECT " + callExpr);
+                    // not a statement, and must not move LAST_QUERY_ID off the statement before it. Its handler
+                    // calls start afresh, as the block's other expressions do (see evaluateSqlScalar).
+                    final HandlerStateScope handlerStates = StatementHandlerStates.begin();
+                    final List<ResultSet> results;
+                    try {
+                        results = queryExecutor.executeUnrecorded("SELECT " + callExpr);
+                    } finally {
+                        StatementHandlerStates.end(handlerStates);
+                    }
                     if (!results.isEmpty()) {
                         final ResultSet rset = results.get(0);
                         if (rset.getRowCount() > 0) return rset.getRows().get(0).getValue(0);
@@ -2129,7 +2315,11 @@ public class ProceduralExecutor {
                 // A date, time or timestamp variable that holds NULL is the NULL of its type, not the
                 // bare word: MONTHS_BETWEEN over one answers NULL, where over a bare NULL it is refused
                 // (live-verified).
-                final String typed = written != null ? null : temporalNullOf(argExprs.get(i));
+                // A user-defined function's overload is chosen by the declared type of a variable holding NULL:
+                // a text or a BOOLEAN one takes the VARCHAR overload beside a NUMBER one (live-verified).
+                final String typed = written != null ? null
+                    : isUserFunctionName(funcExpr.getFunctionName()) ? declaredNullOf(argExprs.get(i))
+                    : temporalNullOf(argExprs.get(i));
                 callExpr.append(written != null ? written : typed != null ? typed : "NULL");
             } else if (av instanceof Number) {
                 callExpr.append(numberLiteral((Number) av));
@@ -2303,6 +2493,9 @@ public class ProceduralExecutor {
             throw new RuntimeException(TransactionAbortedMessages.IGNORED);
         }
         blockExpressionDepth++;
+        // An account runs a block's own expression as a query of its own, so a handler it calls keeps nothing from
+        // the block's earlier evaluations: a loop's next turn starts afresh (live-verified).
+        final HandlerStateScope handlerStates = StatementHandlerStates.begin();
         try {
             // The whole expression compiles before any of it runs (see BlockExpressionSubqueries).
             if (!compiledSubqueryHolders.contains(expr.getExpression())) {
@@ -2311,6 +2504,7 @@ public class ProceduralExecutor {
             }
             return ev.evaluate(expr.getExpression(), EMPTY_ROW);
         } finally {
+            StatementHandlerStates.end(handlerStates);
             blockExpressionDepth--;
         }
     }
@@ -2529,6 +2723,18 @@ public class ProceduralExecutor {
             && queryExecutor.getFunctionRegistry().getAggregateFunction(name) == null;
     }
 
+    /**
+     * A USING value as what it is bound as: its text, by the declared type of the variable it was read from (see
+     * {@link UsingBindText}).
+     *
+     * @param variable the variable the value was read from, or null when it names none
+     * @param value    the value
+     * @return what the statement is handed
+     */
+    public Object usingBind(final String variable, final Object value) {
+        return UsingBindText.of(value, variable == null ? null : getDeclaredVariableType(variable));
+    }
+
     public DataType getDeclaredVariableType(final String name) {
         if (name == null) {
             return null;
@@ -2677,6 +2883,20 @@ public class ProceduralExecutor {
         this.returnValue = value;
     }
 
+    /**
+     * Where the CALL of {@code x := (CALL p())} stands in the block that wrote it: the place the block gave the
+     * statement when the assignment is one it re-reads from its own text, else the CALL's own first token. The
+     * block's place is handed out once, to the assignment it was noted for.
+     *
+     * @param call the CALL's first token, in the text being read
+     * @return the line and the position
+     */
+    public int[] placeOfAssignedCall(final Token call) {
+        final int[] noted = assignedCallPlace;
+        assignedCallPlace = null;
+        return noted != null && noted[0] > 0 ? noted : new int[] {call.getLine(), call.getCharPositionInLine()};
+    }
+
     /** Mark that a BEGIN…END block handler has started (nesting depth++). */
     /** Remember where a failing statement stood — the FIRST record of a propagation wins, so the
      *  innermost statement names itself and the enclosing constructs it unwinds through do not. */
@@ -2768,9 +2988,39 @@ public class ProceduralExecutor {
         // Nor does a BREAK or a CONTINUE reach across a body: the caller's loops are its own.
         clearLoopControl();
         procedureFrameBase = blockDepth;
+        openBodyFrames++;
         scopedBase = -1;
         clearStatementFailure();
         return caller;
+    }
+
+    /** A SQL function's block body starts to run: what it compiles, it compiles for the statement calling it. */
+    public void enterFunctionBody() {
+        functionBodies++;
+    }
+
+    /** The function body that started last has ended. */
+    public void exitFunctionBody() {
+        functionBodies--;
+    }
+
+    /**
+     * Whether a SQL function's block body is running.
+     *
+     * @return true inside {@link #enterFunctionBody()} and {@link #exitFunctionBody()}
+     */
+    public boolean runsFunctionBody() {
+        return functionBodies > 0;
+    }
+
+    /**
+     * Whether the block running belongs to the text the session sent rather than to a body that runs as a frame of
+     * its own — a called procedure's, a dynamic text's.
+     *
+     * @return true when no such frame is open
+     */
+    public boolean runsSessionText() {
+        return openBodyFrames == 0;
     }
 
     /**
@@ -2824,6 +3074,7 @@ public class ProceduralExecutor {
      */
     public void exitProcedureFrame(final ProcedureFrame caller, final boolean failed) {
         procedureFrameBase = caller.getBase();
+        openBodyFrames--;
         scopedBase = caller.getScopedBase();
         restoreHandledExceptions(caller.getHandled());
         exceptionScopes.clear();
@@ -3243,7 +3494,8 @@ public class ProceduralExecutor {
         if (!cursor.isOpen()) {
             final List<Object> binds = new ArrayList<>();
             for (final BaseExpression bind : stmt.getUsingBindings()) {
-                binds.add(evaluateExpression(bind));
+                binds.add(usingBind(bind instanceof VariableExpression ? ((VariableExpression) bind).getName() : null,
+                    evaluateExpression(bind)));
             }
             openCursorWithQuery(cursor, binds);
         }
@@ -3282,12 +3534,9 @@ public class ProceduralExecutor {
             throw new RuntimeException("Cursor not declared: " + cursorName);
         }
         if (!cursor.isOpen()) {
-            if (cursor.wasClosedByLoop()) {
-                // A cursor a FOR loop opened and closed tolerates the CLOSE (measured: close-after-FOR runs clean).
-                return;
-            }
             // Closing a cursor that is not open — never opened, or closed already — is a statement error, which a
-            // WHEN STATEMENT_ERROR handler catches (live-verified).
+            // WHEN STATEMENT_ERROR handler catches (live-verified). A cursor a FOR loop ran to its end is still
+            // open, and its first CLOSE closes it.
             throw new RuntimeException("CURSOR " + cursorName + " is not open");
         }
         cursor.close();

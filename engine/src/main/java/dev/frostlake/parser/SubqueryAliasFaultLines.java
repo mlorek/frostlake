@@ -36,12 +36,19 @@ import org.antlr.v4.runtime.Token;
  *   (SELECT 1 x AS FROM fz WHERE …) …      'AS', then the query's ')': the query reads more than one table
  *   (SELECT 1 x 'y', 2 FROM fz) WHERE a b  'y', then the 2 and 'b': what the comma begins is read as the FROM
  *                                          clause's next table
+ *   (SELECT 1 x (1, 2) FROM fz) WHERE a b  '(', then the 2 and 'b': a list in parentheses is read as the comma is,
+ *                                          from its first comma
+ *   (SELECT 1 x ()) WHERE a b              '(' alone: an empty pair before the query's end
+ *   (SELECT 1 x = 1) WHERE a b             '=', then 'b' — the alias is the item's, and the operator the fault; so
+ *                                          IN and its list
  *   WITH c AS (SELECT 1 x 'y' FROM fz) …   'y', and the statement reads on as if it were not there
- *   FROM fz JOIN (SELECT 1 x 'y') d ON …   'y', then the ON
+ *   WHERE EXISTS (SELECT 1 x 'y' FROM fz) AND a b    'y', then 'b': an EXISTS in a WHERE reads on the same way,
+ *                                          and one in the select list names the query's ')'
+ *   FROM fz JOIN (SELECT 1 x 'y') d ON …   'y', then the ON — and so after a word; with no ON the statement reads on
  * </pre>
  *
- * <p>A word after the alias (see {@code SelectListResync}), any other query joined to a table, an empty pair of parentheses before the query's end and a list of values in
- * parentheses are left to the other readings (all live-verified).
+ * <p>A word after the alias (see {@code SelectListResync}) and any other query joined to a table are left to the
+ * other readings (all live-verified).
  */
 final class SubqueryAliasFaultLines {
 
@@ -59,7 +66,11 @@ final class SubqueryAliasFaultLines {
      */
     static List<String> lines(final String sql, final List<Token> spoken, final int faultIndex,
                               final boolean statementParse) {
-        final int fault = statementParse && sql != null ? CastFaultPlace.positionOf(spoken, faultIndex) : -1;
+        int fault = statementParse && sql != null ? CastFaultPlace.positionOf(spoken, faultIndex) : -1;
+        if (fault >= 2 && fault + 1 < spoken.size() && comparesAnAlias(spoken, fault)) {
+            // The word is the item's alias, and the operator after it the fault.
+            fault++;
+        }
         final int open = fault < 3 ? -1 : CastFaultPlace.enclosingParen(spoken, fault);
         if (open < 1 || spoken.get(open + 1).getType() != FrostlakeLexer.SELECT || !followsAnAlias(spoken, open, fault)
                 || inBlock(spoken, open)) {
@@ -70,21 +81,42 @@ final class SubqueryAliasFaultLines {
         if (close < 0) {
             return null;
         }
-        if (!common && !opensADerivedTable(spoken, open)) {
-            return joinedLines(spoken, open, fault, close);
-        }
         final boolean group = spoken.get(fault).getType() == FrostlakeLexer.LPAREN;
-        final int end = group ? CastFaultPlace.closeOf(spoken, fault) : fault;
-        if (end < 0 || end >= close || group && (common || holds(spoken, fault, end, FrostlakeLexer.COMMA))) {
+        if (spoken.get(open - 1).getType() == FrostlakeLexer.EXISTS) {
+            return existsLines(sql, spoken, open, fault, close, group);
+        }
+        if (!common && !opensADerivedTable(spoken, open)) {
+            return joinedLines(sql, spoken, open, fault, close);
+        }
+        final int grouped = group ? CastFaultPlace.closeOf(spoken, fault) : fault;
+        // An operator takes the literal after it with it; an IN its list.
+        final int end = !group && isOperator(spoken.get(fault)) && isLiteral(spoken.get(fault + 1)) ? fault + 1
+            : spoken.get(fault).getType() == FrostlakeLexer.IN && spoken.get(fault + 1).getType() == FrostlakeLexer.LPAREN
+                ? CastFaultPlace.closeOf(spoken, fault + 1) : grouped;
+        if (end < 0 || end >= close) {
             return null;
         }
         final List<String> lines = new ArrayList<>();
         lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+        if (group && common) {
+            return null;
+        }
+        final int listComma = group ? firstComma(spoken, fault, end) : end;
+        if (listComma < end) {
+            // A list in parentheses: the query is given up at the '(', and what the list's first comma begins is
+            // read as the FROM clause's next table; the rest of the list is passed over.
+            final char[] text = CastFaultPlace.blanked(sql.toCharArray(), spoken, open, listComma - 1);
+            text[spoken.get(open).getStartIndex()] = 't';
+            if (listComma + 2 <= end - 1) {
+                CastFaultPlace.blanked(text, spoken, listComma + 2, end - 1);
+            }
+            return readOn(lines, new String(text));
+        }
         final int next = end + 1;
         final boolean comma = spoken.get(next).getType() == FrostlakeLexer.COMMA && next + 1 < close;
         if (common) {
             if (!comma) {
-                return readOn(lines, sql, spoken, fault, fault);
+                return readOn(lines, sql, spoken, fault, end);
             }
             if (!isNumber(spoken.get(next + 1))) {
                 return null;
@@ -108,7 +140,8 @@ final class SubqueryAliasFaultLines {
         final boolean oneName = group && end == fault + 2 && SyntaxErrorListener.isNameLike(spoken.get(fault + 1));
         if (next == close) {
             if (empty) {
-                return null;
+                // An empty pair before the query's end is the one line.
+                return lines;
             }
             if (oneName) {
                 lines.add(SyntaxErrorListener.sentence(spoken.get(end)));
@@ -145,18 +178,102 @@ final class SubqueryAliasFaultLines {
      * The lines for a literal that ends the query of a join's table: the table's alias is read, and the ON after it
      * refused — {@code FROM fz JOIN (SELECT 1 x 'y') d ON 1 = 1} is the 'y', then the ON.
      */
-    private static List<String> joinedLines(final List<Token> spoken, final int open, final int fault,
-                                            final int close) {
+    private static List<String> joinedLines(final String sql, final List<Token> spoken, final int open,
+                                            final int fault, final int close) {
         if (spoken.get(open - 1).getType() != FrostlakeLexer.JOIN || fault + 1 != close
-                || !isLiteral(spoken.get(fault)) || close + 2 >= spoken.size()
-                || !SyntaxErrorListener.isNameLike(spoken.get(close + 1))
-                || spoken.get(close + 2).getType() != FrostlakeLexer.ON) {
+                || !isLiteral(spoken.get(fault)) && !readsAsAName(spoken.get(fault)) || close + 2 >= spoken.size()
+                || !SyntaxErrorListener.isNameLike(spoken.get(close + 1))) {
             return null;
         }
         final List<String> lines = new ArrayList<>();
         lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
-        lines.add(SyntaxErrorListener.sentence(spoken.get(close + 2)));
+        if (spoken.get(close + 2).getType() == FrostlakeLexer.ON) {
+            lines.add(SyntaxErrorListener.sentence(spoken.get(close + 2)));
+            return lines;
+        }
+        // A join that takes no ON reads on after a literal as if it were not there.
+        return isLiteral(spoken.get(fault)) ? readOn(lines, sql, spoken, fault, fault) : null;
+    }
+
+    /**
+     * The lines for a fault after the alias in an EXISTS's query: in a statement's own WHERE the token — a pair of
+     * parentheses with it — is passed over and the statement read on; in its select list the query's ')' is
+     * refused.
+     */
+    private static List<String> existsLines(final String sql, final List<Token> spoken, final int open,
+                                            final int fault, final int close, final boolean group) {
+        final int end = group ? CastFaultPlace.closeOf(spoken, fault) : fault;
+        final int clause = CastFaultPlace.clauseOf(spoken, open);
+        if (end < 0 || end >= close || clause < 0) {
+            return null;
+        }
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(spoken.get(fault)));
+        if (spoken.get(clause).getType() == FrostlakeLexer.SELECT) {
+            // A value run into the alias with more of the query after it; a word there has a reading of its own.
+            if (readsAsAName(spoken.get(fault)) || end + 1 >= close) {
+                return null;
+            }
+            lines.add(SyntaxErrorListener.sentence(spoken.get(close)));
+            return lines;
+        }
+        return spoken.get(clause).getType() == FrostlakeLexer.WHERE ? readOn(lines, sql, spoken, fault, end) : null;
+    }
+
+    /**
+     * The line for an '=' after a select item's alias in a statement's own query: the alias is the item's, the '='
+     * is refused, and nothing after it is reported — {@code SELECT 1 x = 1 FROM fz WHERE a b} is the '=' alone
+     * (live-verified).
+     *
+     * @param spoken     the text's tokens on the default channel
+     * @param faultIndex the token index of the fault the parse names, the alias
+     * @return the line, or null where this reading does not apply
+     */
+    static List<String> comparedAliasLine(final List<Token> spoken, final int faultIndex) {
+        final int fault = CastFaultPlace.positionOf(spoken, faultIndex);
+        if (fault < 2 || fault + 1 >= spoken.size() || spoken.get(0).getType() != FrostlakeLexer.SELECT
+                || spoken.get(fault + 1).getType() != FrostlakeLexer.EQ || !comparesAnAlias(spoken, fault)
+                || CastFaultPlace.enclosingParen(spoken, fault) >= 0) {
+            return null;
+        }
+        final int clause = CastFaultPlace.clauseOf(spoken, fault);
+        if (clause != 0) {
+            return null;
+        }
+        for (int i = 1; i < spoken.size(); i++) {
+            if (spoken.get(i).getType() == FrostlakeLexer.SEMI) {
+                return null;
+            }
+        }
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(spoken.get(fault + 1)));
         return lines;
+    }
+
+    /** Whether the word at {@code at} is an alias after a value that an '=' or an IN follows. */
+    private static boolean comparesAnAlias(final List<Token> spoken, final int at) {
+        final int after = spoken.get(at + 1).getType();
+        if (after != FrostlakeLexer.EQ && after != FrostlakeLexer.IN || !SyntaxErrorListener.isNameLike(spoken.get(at))) {
+            return false;
+        }
+        final Token value = spoken.get(at - 1);
+        return isLiteral(value) || value.getType() == FrostlakeLexer.RPAREN || value.getType() == FrostlakeLexer.AS;
+    }
+
+    private static boolean isOperator(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.EQ || type == FrostlakeLexer.PLUS || type == FrostlakeLexer.MINUS
+            || type == FrostlakeLexer.SLASH || type == FrostlakeLexer.PERCENT || type == FrostlakeLexer.PIPE_PIPE;
+    }
+
+    /** The first comma inside the parentheses from {@code open} to {@code close}, at any depth. */
+    private static int firstComma(final List<Token> spoken, final int open, final int close) {
+        for (int i = open + 1; i < close; i++) {
+            if (spoken.get(i).getType() == FrostlakeLexer.COMMA) {
+                return i;
+            }
+        }
+        return close;
     }
 
     /** The lines so far and those of the text read again with the tokens from one position through another blanked. */

@@ -16,8 +16,10 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
+import dev.frostlake.executor.expressions.CaseExpression;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.PlannedCorrelations;
 import dev.frostlake.executor.expressions.SqlFunctionArgument;
@@ -25,10 +27,12 @@ import dev.frostlake.executor.expressions.SubqueryAnchor;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
+import dev.frostlake.executor.expressions.WhenClause;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
 import dev.frostlake.values.RelationStatistics;
@@ -36,6 +40,7 @@ import dev.frostlake.values.RelationStatistics;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -91,6 +96,18 @@ public final class CorrelationPlanJudgement {
 
     /** What {@link #folded} answers for an operand that is no constant. */
     private static final Object NOT_CONSTANT = new Object();
+
+    /** The operators whose value is NULL whenever an operand is. */
+    private static final Set<Integer> NULL_PROPAGATING_OPERATORS = new HashSet<>(Arrays.asList(
+        Integer.valueOf(FrostlakeLexer.PLUS), Integer.valueOf(FrostlakeLexer.MINUS), Integer.valueOf(FrostlakeLexer.STAR),
+        Integer.valueOf(FrostlakeLexer.SLASH), Integer.valueOf(FrostlakeLexer.PERCENT),
+        Integer.valueOf(FrostlakeLexer.PIPE_PIPE), Integer.valueOf(FrostlakeLexer.EQ), Integer.valueOf(FrostlakeLexer.NEQ),
+        Integer.valueOf(FrostlakeLexer.LT), Integer.valueOf(FrostlakeLexer.GT), Integer.valueOf(FrostlakeLexer.LTE),
+        Integer.valueOf(FrostlakeLexer.GTE)));
+
+    /** The calls over constants that may fold to NULL. */
+    private static final Set<String> NULL_DECIDING_CALLS = new HashSet<>(Arrays.asList(
+        "IFF", "NULLIF", "COALESCE", "NVL", "IFNULL", "ABS", "TO_NUMBER"));
 
     private final QueryExecutor executor;
     private final FrostlakeParser.SelectStatementContext statement;
@@ -379,35 +396,66 @@ public final class CorrelationPlanJudgement {
     }
 
     /**
-     * The refusal of the correlated subquery live cannot evaluate, or null: of several the one written last in the
-     * select list, and with none there the last of the first other clause that holds one —
-     * {@code SELECT ABS((SELECT …)), ABS((SELECT …))} is placed at the second (live-verified). Every refused
-     * subquery is recorded in {@link #refusedKeys()}.
+     * The refusal of the correlated subquery live cannot evaluate, or null. Of several it reports one, and which one
+     * goes by why each is refused (live-verified):
+     *
+     * <ul>
+     *   <li>a value subquery refused for its own aggregate over the outer row and its columns —
+     *       {@code (SELECT MAX(fz.id + g.v) FROM g)} — outranks every other shape wherever it stands, and of several
+     *       such the LAST is reported: the one written last in the select list, and with none there the last of the
+     *       last clause that holds one ({@code SELECT ABS((SELECT …)), ABS((SELECT …))} is placed at the second,
+     *       {@code WHERE … ORDER BY …} at the ORDER BY's);</li>
+     *   <li>of the other shapes — a LIMIT, a query inside the subquery reading the outer row, an aggregate of the
+     *       outer row alone — the FIRST is reported, in the order the plan reads them: the WHERE's, then the select
+     *       list's, then the HAVING's, the QUALIFY's and the ORDER BY's.</li>
+     * </ul>
+     *
+     * <p>Every refused subquery is recorded in {@link #refusedKeys()}.
      */
     public RuntimeException refusal() {
         final boolean spared = pruned() || readRowByRow();
         final Set<String> outerNames = outerNames();
-        RuntimeException inSelectList = null;
-        RuntimeException first = null;
+        RuntimeException earlyInSelectList = null;
+        RuntimeException earlyElsewhere = null;
+        RuntimeException lateInWhere = null;
+        RuntimeException lateInSelectList = null;
+        RuntimeException lateElsewhere = null;
         for (final ParseTree judged : judgedClauses()) {
-            RuntimeException last = null;
+            final boolean selectItem = judged instanceof FrostlakeParser.SelectItemContext;
+            final boolean where = !selectItem && !(judged instanceof FrostlakeParser.HavingClauseContext)
+                && !(judged instanceof FrostlakeParser.QualifyClauseContext)
+                && !(judged instanceof FrostlakeParser.OrderByClauseContext);
             for (final ParseTree subquery : subqueries(judged)) {
                 final boolean kept = spared && keptThroughTableFunction(subquery, outerNames);
                 if (spared && !kept) {
                     continue;
                 }
                 final RuntimeException refused = judge(subquery, outerNames, kept);
-                if (refused != null) {
-                    last = refused;
+                if (refused == null) {
+                    continue;
+                }
+                if (judgedForItsAggregate) {
+                    if (selectItem) {
+                        earlyInSelectList = refused;
+                    } else {
+                        earlyElsewhere = refused;
+                    }
+                } else if (where) {
+                    lateInWhere = lateInWhere == null ? refused : lateInWhere;
+                } else if (selectItem) {
+                    lateInSelectList = lateInSelectList == null ? refused : lateInSelectList;
+                } else {
+                    lateElsewhere = lateElsewhere == null ? refused : lateElsewhere;
                 }
             }
-            if (judged instanceof FrostlakeParser.SelectItemContext) {
-                inSelectList = last != null ? last : inSelectList;
-            } else if (first == null) {
-                first = last;
-            }
         }
-        return inSelectList != null ? inSelectList : first;
+        if (earlyInSelectList != null) {
+            return earlyInSelectList;
+        }
+        if (earlyElsewhere != null) {
+            return earlyElsewhere;
+        }
+        return lateInWhere != null ? lateInWhere : lateInSelectList != null ? lateInSelectList : lateElsewhere;
     }
 
     /**
@@ -447,6 +495,9 @@ public final class CorrelationPlanJudgement {
         }
         return ((FrostlakeParser.ExistsExprContext) node).selectStatement();
     }
+
+    /** Whether the subquery {@link #judge} refused last is of the shape the account refuses in its earlier pass. */
+    private boolean judgedForItsAggregate;
 
     /** The subqueries {@link #refusal()} refused, keyed as {@link PlannedCorrelations} records them. */
     public Set<String> refusedKeys() {
@@ -504,6 +555,8 @@ public final class CorrelationPlanJudgement {
                     in == null ? null : ParseTreeText.getOriginalText(in.expression())))) {
             return null;
         }
+        // A membership test keeps the order the aggregate shape has: of several the last is reported.
+        judgedForItsAggregate = !scalar || rule.refusedForItsAggregate();
         final String text = ParseTreeText.getOriginalText(subquery);
         refusedKeys.add(scalar ? PlannedCorrelations.valueKey(text) : PlannedCorrelations.membershipKey(text));
         final Function called = scalar ? SqlFunctionArgument.calledWith(executor, node) : null;
@@ -637,9 +690,78 @@ public final class CorrelationPlanJudgement {
             }
             return;
         }
+        if (foldsToNullBesideAnOperand(node)) {
+            return;
+        }
         for (int i = 0; i < node.getChildCount(); i++) {
             collectSubqueries(node.getChild(i), into);
         }
+    }
+
+    /**
+     * Whether a node is an arithmetic operator, a comparison or a {@code ||} one of whose operands is a constant
+     * that folds to NULL. The whole operation is NULL then, and live does not judge a subquery that is its other
+     * operand: {@code CASE WHEN FALSE THEN 1 END + (SELECT …)} and {@code NULL || (SELECT …)} are answered, where
+     * {@code 1 + (SELECT …)} and {@code COALESCE(NULL, (SELECT …))} are judged (live-verified).
+     */
+    private boolean foldsToNullBesideAnOperand(final ParseTree node) {
+        if (node.getChildCount() != 3 || !(node.getChild(1) instanceof TerminalNode)
+                || !(node.getChild(0) instanceof ParserRuleContext) || !(node.getChild(2) instanceof ParserRuleContext)) {
+            return false;
+        }
+        final int operator = ((TerminalNode) node.getChild(1)).getSymbol().getType();
+        if (!NULL_PROPAGATING_OPERATORS.contains(Integer.valueOf(operator))) {
+            return false;
+        }
+        return foldsToNull((ParserRuleContext) node.getChild(0)) || foldsToNull((ParserRuleContext) node.getChild(2));
+    }
+
+    /** Whether an operand is a constant - a CASE or a call over constants among them - that folds to NULL. */
+    private boolean foldsToNull(final ParserRuleContext operand) {
+        try {
+            final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(operand));
+            if (!isConstantOrDecided(parsed)) {
+                return false;
+            }
+            return new ExpressionEvaluator(new Table("DUMMY", new ArrayList<TableColumn>(), false),
+                executor.getFunctionRegistry(), executor.getCatalog(), executor)
+                .evaluate(parsed, new Row(new Object[0])) == null;
+        } catch (final RuntimeException unfoldable) {
+            return false;
+        }
+    }
+
+    /** {@link #isConstant}, or a CASE or one of the calls that may fold to NULL, every operand of which is one. */
+    private static boolean isConstantOrDecided(final Expression expr) {
+        if (isConstant(expr)) {
+            return true;
+        }
+        if (expr instanceof CaseExpression) {
+            final CaseExpression written = (CaseExpression) expr;
+            if (written.getElseExpression() != null && !isConstantOrDecided(written.getElseExpression())) {
+                return false;
+            }
+            for (final WhenClause when : written.getWhenClauses()) {
+                if (!isConstantOrDecided(when.getCondition()) || !isConstantOrDecided(when.getResult())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expr instanceof FunctionCallExpression) {
+            final FunctionCallExpression call = (FunctionCallExpression) expr;
+            if (call.getNameExpression() != null || call.getFunctionName() == null
+                    || !NULL_DECIDING_CALLS.contains(call.getFunctionName().toUpperCase(Locale.ROOT))) {
+                return false;
+            }
+            for (final Expression argument : call.getArguments()) {
+                if (!isConstantOrDecided(argument)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     /**

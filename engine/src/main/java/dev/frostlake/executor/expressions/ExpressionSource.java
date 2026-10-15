@@ -110,6 +110,15 @@ public final class ExpressionSource {
         return ORIGIN.get() == null ? own : resolve(own);
     }
 
+    /**
+     * Where the fragment being evaluated begins in its statement.
+     *
+     * @return the origin, or null when none is set
+     */
+    public static SourcePosition origin() {
+        return ORIGIN.get();
+    }
+
     /** Whether an origin is set — for callers that only build a message when one can be positioned. */
     public static boolean hasOrigin() {
         return ORIGIN.get() != null;

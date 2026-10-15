@@ -102,7 +102,8 @@ public class ViewStreamFollowsItsTablesTest {
         assertTrue(refusal("SELECT a FROM vs").contains("Base table 'VD.PUBLIC.T' dropped"), refusal("SELECT a FROM vs"));
         engine.execute("CREATE TABLE t (a INT)");
         engine.execute("INSERT INTO t VALUES (2)");
-        assertTrue(refusal("SELECT a FROM vs").contains("dropped"), "a new T is not the view's table");
+        assertTrue(refusal("SELECT a FROM vs").contains("Change tracking is not enabled or has been missing for the"
+            + " time range requested on table 'VD.PUBLIC.T'."), "a new T is not the view's table");
         // UNDROP restores the latest T dropped, so the new one is moved out of the way first.
         engine.execute("ALTER TABLE t RENAME TO t_new");
         engine.execute("UNDROP TABLE t");

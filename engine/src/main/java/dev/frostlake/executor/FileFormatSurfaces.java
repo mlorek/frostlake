@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.copy.StagedFileIo;
+
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -144,6 +146,18 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
         return false;
     }
 
+    /** Whether any type's tree declares the option Boolean. */
+    private static boolean isBooleanOption(final String name) {
+        for (final List<FormatProperty> tree : TREES.values()) {
+            for (final FormatProperty property : tree) {
+                if (property.name.equalsIgnoreCase(name)) {
+                    return "Boolean".equals(property.type);
+                }
+            }
+        }
+        return false;
+    }
+
     /** Whether the given type's tree carries the option. */
     public static boolean isOptionValidFor(final String type, final String name) {
         for (final FormatProperty property : tree(type)) {
@@ -219,6 +233,17 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
         if ("FIELD_OPTIONALLY_ENCLOSED_BY".equals(upper) && !ENCLOSERS.contains(value.toUpperCase(Locale.ROOT))) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter 'FIELD_OPTIONALLY_ENCLOSED_BY'"));
+        }
+        // A Boolean option takes the bare words TRUE and FALSE in any case: a quoted 'TRUE', a number or any other word
+        // is refused (live-verified).
+        if (isBooleanOption(upper) && !"TRUE".equalsIgnoreCase(written) && !"FALSE".equalsIgnoreCase(written)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter '" + upper + "'"));
+        }
+        // ENCODING names one of the account's character sets, by its own name (ISO88591) or the set's (ISO-8859-1).
+        if ("ENCODING".equals(upper) && !StagedFileIo.isEncodingName(value)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter 'ENCODING'"));
         }
     }
 

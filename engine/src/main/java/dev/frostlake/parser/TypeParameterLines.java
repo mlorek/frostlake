@@ -42,6 +42,25 @@ import org.antlr.v4.runtime.tree.ParseTree;
  *
  * <p>A list refused at its own closing parenthesis after {@code ::} leaves the rest of the statement to be read
  * and reported; every other refusal ends the statement's report.
+ *
+ * <p>An ARRAY and an OBJECT judge the first token inside their parentheses themselves, and a cast names that token
+ * twice: {@code NULL::ARRAY(5)} is '5' and '5' again, {@code CAST(x AS OBJECT(5,2))} '5', '5' and then ')' — but an
+ * empty pair inside a CAST once.
+ *
+ * <p>In a list of definitions — a table's columns, a routine's parameters, an OBJECT's fields — a fault that one
+ * token more or less does not mend makes the account read the list on: the comma is taken for the one between two
+ * definitions, so the number after it is refused as no name, and the first ')' met ends the list, so that what
+ * follows it is refused too:
+ *
+ * <pre>
+ *   CREATE TABLE t (a VARCHAR(5,2))            ',', '2', then the list's own ')'
+ *   CREATE TABLE t (a VARCHAR(5,2), b INT)     ',', '2', then the ',' after the type
+ *   CREATE TABLE t (a VARCHAR(5,2,3))          ',', '2', '3', then ')'
+ *   CREATE TABLE t (a ARRAY(5))                '5', then ')'
+ *   CREATE TABLE t (a ARRAY() NOT NULL)        ')', then 'NOT'
+ *   ALTER TABLE t ADD COLUMN a VARCHAR(5,2)    ',' and '2': no list stands open around the column
+ *   CREATE TABLE t (a VARCHAR(5,))             ',' alone: without it the list reads
+ * </pre>
  */
 public final class TypeParameterLines {
 
@@ -68,8 +87,120 @@ public final class TypeParameterLines {
         }
         final Token close = next.getType() == FrostlakeParser.RPAREN ? next : null;
         final FrostlakeParser.DataTypeNameContext type = typeBefore(list);
-        return refusal(open, written, close, TypeParameterFamily.of(type), structured(type),
-            list.getParent() instanceof FrostlakeParser.CastExpr2Context, inCast(list));
+        final boolean structured = structured(type);
+        final boolean afterColons = list.getParent() instanceof FrostlakeParser.CastExpr2Context;
+        final TypeParameterRefusal refusal = refusal(open, written, close, TypeParameterFamily.of(type), structured,
+            afterColons, inCast(list));
+        if (refusal == null || !inDefinitionList(list)) {
+            return refusal;
+        }
+        final List<Token> read = readOn(refusal, close, structured, tokens,
+            list.getParent() instanceof FrostlakeParser.AlterColumnItemActionContext || underAlter(list));
+        return read == null ? refusal : new TypeParameterRefusal(read, true);
+    }
+
+    /** How far ahead a list of definitions is read on after a fault in one of its types. */
+    private static final int READ_AHEAD = 400;
+
+    /**
+     * The lines of a fault in a type of a list of definitions, read on as the account reads the list on, or null
+     * when the fault is one the list is not read on after: one token more or less would mend it.
+     *
+     * @param refusal    the refusal as a type standing alone earns it
+     * @param close      the type list's closing parenthesis when the list is numbers, signs and commas to its end
+     * @param structured whether the type is an ARRAY or an OBJECT
+     * @param tokens     the statement's tokens, standing at the first token inside the parentheses
+     * @param unlisted   whether the definition stands in no parentheses of its own list, as ALTER TABLE's do
+     * @return the lines, or null
+     */
+    private static List<Token> readOn(final TypeParameterRefusal refusal, final Token close, final boolean structured,
+                                      final TokenStream tokens, final boolean unlisted) {
+        final Token fault = refusal.line(0);
+        final List<Token> ahead = new ArrayList<>();
+        for (int k = 1; k <= READ_AHEAD; k++) {
+            final Token token = tokens.LT(k);
+            ahead.add(token);
+            if (token.getType() == Token.EOF) {
+                break;
+            }
+        }
+        int at = ahead.indexOf(fault);
+        if (at < 0) {
+            return null;
+        }
+        final boolean comma = fault.getType() == FrostlakeParser.COMMA;
+        if (!structured && (!comma || ahead.get(at + 1).getType() == FrostlakeParser.RPAREN)) {
+            return null;
+        }
+        final List<Token> lines = new ArrayList<>();
+        lines.add(fault);
+        int end = fault == close ? at : -1;
+        if (comma) {
+            // The comma is read as the one between two definitions, and what follows it is no name.
+            at++;
+            lines.add(ahead.get(at));
+            if (ahead.get(at).getType() == Token.EOF) {
+                return lines;
+            }
+        }
+        while (end < 0) {
+            at++;
+            if (at >= ahead.size()) {
+                return lines;
+            }
+            final int kind = ahead.get(at).getType();
+            if (kind == FrostlakeParser.RPAREN) {
+                end = at;
+            } else if (kind == Token.EOF) {
+                return lines;
+            } else if (kind == FrostlakeParser.COMMA && at + 1 < ahead.size()
+                    && ahead.get(at + 1).getType() == FrostlakeParser.INTEGER_LITERAL) {
+                at++;
+                lines.add(ahead.get(at));
+            } else if (kind == FrostlakeParser.COMMA) {
+                return lines;
+            } else {
+                // Anything else is passed over up to the first ')', which ends the list.
+                while (at < ahead.size() && ahead.get(at).getType() != FrostlakeParser.RPAREN
+                        && ahead.get(at).getType() != Token.EOF) {
+                    at++;
+                }
+                if (at >= ahead.size() || ahead.get(at).getType() == Token.EOF) {
+                    return lines;
+                }
+                end = at;
+            }
+        }
+        if (!unlisted && end + 1 < ahead.size()) {
+            // The list is over, and what stands after it is no part of the statement there.
+            final int after = ahead.get(end + 1).getType();
+            if (after == FrostlakeParser.RPAREN || after == FrostlakeParser.COMMA || after == FrostlakeParser.NOT) {
+                lines.add(ahead.get(end + 1));
+            }
+        }
+        return lines;
+    }
+
+    /** Whether a list belongs to a definition of a list of them: a column, a parameter, an OBJECT's field. */
+    private static boolean inDefinitionList(final FrostlakeParser.TypeParametersContext list) {
+        final ParserRuleContext parent = list.getParent();
+        return parent instanceof FrostlakeParser.ColumnDefContext
+            || parent instanceof FrostlakeParser.ParameterDefContext
+            || parent instanceof FrostlakeParser.StructuredFieldContext
+            || parent instanceof FrostlakeParser.AlterColumnItemActionContext;
+    }
+
+    /** Whether a list's definition is an ALTER statement's, which opens no list of its own around it. */
+    private static boolean underAlter(final FrostlakeParser.TypeParametersContext list) {
+        for (ParserRuleContext context = list.getParent(); context != null; context = context.getParent()) {
+            if (context instanceof FrostlakeParser.AlterStatementContext) {
+                return true;
+            }
+            if (context instanceof FrostlakeParser.CreateStatementContext) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /**
@@ -105,8 +236,17 @@ public final class TypeParameterLines {
         final int word = tokens.get(name).getType();
         final boolean afterColons = spokenBefore(tokens, name) >= 0
             && tokens.get(spokenBefore(tokens, name)).getType() == FrostlakeParser.DOUBLE_COLON;
-        return refusal(tokens.get(open), written, close, TypeParameterFamily.ofWord(word),
-            word == FrostlakeParser.ARRAY || word == FrostlakeParser.OBJECT, afterColons, !afterColons);
+        final boolean structured = word == FrostlakeParser.ARRAY || word == FrostlakeParser.OBJECT;
+        if (structured && written.isEmpty() && close == null) {
+            // The text stops where an ARRAY's element type or an OBJECT's first field stands: its end is that
+            // first token, named twice as any other is.
+            final List<Token> lines = new ArrayList<>();
+            lines.add(end);
+            lines.add(end);
+            return new TypeParameterRefusal(lines, true);
+        }
+        return refusal(tokens.get(open), written, close, TypeParameterFamily.ofWord(word), structured, afterColons,
+            !afterColons);
     }
 
     /**
@@ -234,6 +374,11 @@ public final class TypeParameterLines {
         final List<Token> lines = new ArrayList<>();
         if (afterColons || structured || inCast && !cannotBegin) {
             lines.add(fault);
+            if (structured && cannotBegin && (afterColons || inCast && fault != close)) {
+                // The first token inside an ARRAY's or an OBJECT's parentheses is named twice by a cast; an
+                // empty pair inside a CAST once.
+                lines.add(fault);
+            }
             if (closeNamed) {
                 lines.add(close);
             }

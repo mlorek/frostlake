@@ -17,6 +17,7 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.functions.scalar.SysConnectByPath;
 import dev.frostlake.functions.scalar.conditional.BoolAnd;
 import dev.frostlake.functions.scalar.conditional.BoolNot;
 import dev.frostlake.functions.scalar.conditional.BoolOr;
@@ -391,6 +392,7 @@ import dev.frostlake.functions.scalar.vector.VectorNormalize;
 import dev.frostlake.functions.scalar.vector.VectorTrunc;
 import dev.frostlake.functions.table.AlertHistoryFunction;
 import dev.frostlake.functions.table.CompleteTaskGraphsFunction;
+import dev.frostlake.functions.table.CopyHistoryFunction;
 import dev.frostlake.functions.table.CurrentTaskGraphsFunction;
 import dev.frostlake.functions.table.DataMetricReferencesFunction;
 import dev.frostlake.functions.table.Flatten;
@@ -678,6 +680,9 @@ public class FunctionRegistry {
         // GroupByAggregateEvaluator for super-group rows). GROUPING_ID(e1,…,en) is the multi-arg bitmask.
         register(new GroupingFn());
         register(new GroupingIdFn());
+
+        // A hierarchical query's path, read from the CONNECT BY expansion (see SysConnectByPath).
+        register(new SysConnectByPath());
 
         // Context functions
         register(new CurrentDatabase(catalog));
@@ -1082,6 +1087,7 @@ public class FunctionRegistry {
         registerTableFunction(new StrtokSplitToTable());
         registerTableFunction(new Flatten());
         registerTableFunction(new TaskHistoryFunction(catalog));
+        registerTableFunction(new CopyHistoryFunction(catalog));
         registerTableFunction(new TagReferencesFunction(catalog));
         registerTableFunction(new TagReferencesAllColumnsFunction(catalog));
         registerTableFunction(new AlertHistoryFunction(catalog));

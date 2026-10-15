@@ -16,6 +16,7 @@
 
 package dev.frostlake.task;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Schema;
 
@@ -46,7 +47,11 @@ public final class UserTaskCancellation {
      */
     public static String cancel(final Catalog catalog, final TaskScheduler scheduler,
                                 final String taskName) {
-        final String name = taskName == null ? "" : taskName.replaceAll("^'|'$", "");
+        if (taskName == null) {
+            // A NULL name answers NULL (live-verified).
+            return null;
+        }
+        final String name = taskName.replaceAll("^'|'$", "");
         // The argument may be QUALIFIED (db.schema.task or schema.task); unqualified parts
         // default to the session's. The messages echo the name exactly as it was passed.
         final String[] parts = name.split("\\.");
@@ -65,6 +70,24 @@ public final class UserTaskCancellation {
             return "Task " + name + " has no currently running executions." + CANCEL_QUERY_HINT;
         }
         return "Successfully cancelled ongoing executions of task " + name + ".";
+    }
+
+    /**
+     * The refusal of a call written with another number of arguments than the one name, placed at the call
+     * (live-verified: {@code SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS()} is "not enough arguments for
+     * function [SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS()], expected 1, got 0").
+     *
+     * @param line     the call's line
+     * @param position the call's position in the line
+     * @param written  the call as written
+     * @param given    how many arguments it carries
+     * @return the refusal
+     */
+    public static RuntimeException wrongCount(final int line, final int position, final String written,
+                                              final int given) {
+        return new RuntimeException(SqlCompilationError.at(line, position, given < 1
+            ? "not enough arguments for function [" + written + "], expected 1, got " + given
+            : "too many arguments for function [" + written + "] expected 1, got " + given));
     }
 
     private static String notFound(final String name) {

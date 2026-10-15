@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
+import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.ExtractionPath;
@@ -48,12 +49,17 @@ public class GetPath extends VariantAccessorFunction {
         final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || args.get(1) == null) return null;
         final String accessor = args.get(1).toString();
-        JsonNode result;
+        final JsonNode result;
         if (pathMode) {
             result = navigatePath(src, accessor);
+        } else if (src.isArray() && args.get(1) instanceof Number) {
+            // An index written with a fraction goes to the nearest whole number: GET(arr, 1.6) reads the third
+            // element (live-verified).
+            result = src.get(wholeNumber(args.get(1)));
         } else if (src.isArray()) {
-            try { result = src.get(Integer.parseInt(accessor)); }
-            catch (final NumberFormatException e) { result = src.get(accessor); }
+            // An array is read by a number alone: a text or a VARIANT index names no element, GET([1], '0') and
+            // GET([1], TO_VARIANT(0)) are NULL (live-verified).
+            result = null;
         } else {
             result = src.get(accessor);
         }
@@ -70,6 +76,15 @@ public class GetPath extends VariantAccessorFunction {
             throw new RuntimeException(ExtractionPath.malformed(text, getName()));
         }
         return path.in(node);
+    }
+
+    /**
+     * GET's index is a text or a number: a BINARY, an OBJECT or an ARRAY is refused while the statement compiles,
+     * {@code Invalid argument types for function 'GET': (ARRAY, BINARY(1))} at the call (live-verified).
+     */
+    @Override
+    public ArrayArgumentKind arrayArgumentKind(final int position) {
+        return !pathMode && position == 1 ? ArrayArgumentKind.SCALAR : null;
     }
 
     @Override

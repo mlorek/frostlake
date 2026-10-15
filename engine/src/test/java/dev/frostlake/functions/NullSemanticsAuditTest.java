@@ -79,6 +79,9 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         // NORMAL's mean and deviation must be there: "Invalid parameter value: NULL. Reason: mean must not be
         // NULL" (measured). Only a NULL generator answers NULL.
         "NORMAL",
+        // So must UNIFORM's bounds and RANDSTR's length: "Invalid parameter value: NULL. Reason: a must not be
+        // NULL" and "… length must not be NULL" (measured). Only a NULL generator answers NULL.
+        "UNIFORM", "RANDSTR",
         // Planned over its values' date parts, which a NULL of no type has none of: MONTHS_BETWEEN(NULL, d) is
         // "Function EXTRACT does not support NULL argument type" while it compiles (live-verified); a typed NULL
         // answers NULL.
@@ -86,6 +89,9 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         // The super-group markers answer for a GROUP BY's keys: called in a query that groups by nothing they
         // are refused, "GROUPING function without a GROUP BY." (measured).
         "GROUPING", "GROUPING_ID",
+        // SYS_CONNECT_BY_PATH answers for a CONNECT BY query's rows: called in a query that is no hierarchy it is
+        // "Unknown function SYS_CONNECT_BY_PATH." (measured), while inside one a NULL on the path answers NULL.
+        "SYS_CONNECT_BY_PATH",
         // Catalog-only entry: the call shape TRY_CAST(x, ...) is a live syntax error (only
         // TRY_CAST(expr AS type) exists, and it parses as a cast expression), so the registered
         // function exists solely for SHOW FUNCTIONS and refuses direct evaluation.

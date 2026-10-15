@@ -16,15 +16,12 @@
 
 package dev.frostlake.executor.commands;
 
-import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.QueryExecutor;
-import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
-import org.antlr.v4.runtime.Token;
 
 import java.util.Locale;
 
@@ -35,8 +32,9 @@ import java.util.Locale;
  * only supported for unmanaged Iceberg tables in Catalog-Linked Databases. Table: 'V'.} The name is the one written,
  * qualified as far as it was written. The sentence comes once the name has resolved: a missing database or schema is
  * refused first, and so is a missing object unless IF EXISTS forgives it — the sentence then stands in place of the
- * skipped drop. A file format, a contact, a secret and a network rule take the word and drop as if it were not there
- * (live-verified).
+ * skipped drop. So it is for the kinds of the account — a warehouse, a compute pool, a user, a role — and for a
+ * database role. A file format, a contact, a secret, a network rule and a network policy take the word and drop as
+ * if it were not there (live-verified).
  */
 final class DropPurge {
 
@@ -63,19 +61,6 @@ final class DropPurge {
         return new RuntimeException("SQL Compilation Error: DROP TABLE ... PURGE is only supported for unmanaged Iceberg"
             + " tables in Catalog-Linked Databases. Table: '"
             + SqlIdentifiers.spellAlreadyCanonicalPath(QualifiedName.join(nameParts)) + "'.");
-    }
-
-    /**
-     * The refusal of a PURGE after a DROP whose kind is not known to read the word: a syntax error naming it.
-     *
-     * @param behavior the PURGE
-     * @return the refusal
-     */
-    static RuntimeException unexpected(final FrostlakeParser.DropBehaviorContext behavior) {
-        final Token word = behavior.getStart();
-        final int[] shown = LeadingCommentOffset.rebase(word.getLine(), word.getCharPositionInLine());
-        return new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
-            + shown[1] + " unexpected '" + word.getText() + "'."));
     }
 
     /**

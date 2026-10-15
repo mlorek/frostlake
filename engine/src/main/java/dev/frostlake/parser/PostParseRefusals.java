@@ -147,7 +147,8 @@ public final class PostParseRefusals {
         final StringBuilder repaired = new StringBuilder(prefix);
         if (last.getType() == FrostlakeLexer.DOUBLE_COLON || last.getType() == FrostlakeLexer.AS && castAs) {
             repaired.append(SOME_TYPE);
-        } else if ((last.getType() == FrostlakeLexer.FOR || last.getType() == FrostlakeLexer.FROM) && !open.isEmpty()) {
+        } else if ((last.getType() == FrostlakeLexer.FOR || last.getType() == FrostlakeLexer.FROM) && !open.isEmpty()
+                || last.getType() == FrostlakeLexer.LIMIT && open.isEmpty()) {
             repaired.append(SOME_OPERAND);
         }
         for (int i = open.size() - 1; i >= 0; i--) {

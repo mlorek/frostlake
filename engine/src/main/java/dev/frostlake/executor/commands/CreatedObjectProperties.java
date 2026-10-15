@@ -19,7 +19,10 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.parser.FrostlakeParser;
+
+import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -49,10 +52,19 @@ import java.util.Set;
  *   AUTO_REFRESH = TRUE          Unsupported feature 'AUTO_REFRESH'.    a property of another kind of table
  * </pre>
  *
- * A statement with several faults is answered for the first class in that order, whichever is written first.
- * A view names an unknown property a table's ({@code for 'TABLE'}), is refused a table's parameters as a
- * schema it may not operate on, and a table's staging properties as incompatible options; a sequence takes
- * no property but its own and is refused every parameter.
+ * A statement with several faults is answered for the first class in that order, whichever is written first;
+ * of several names of one class the one refused is not the first written but the first of a table hashed by
+ * name ({@code A = 1 P = 2} and {@code P = 1 A = 2} both refuse {@code P}), while a repeated name is refused
+ * where it is read. {@code COPY} is a word of the statement and takes no value: a number or a switch value is
+ * an invalid value of it, a text or a word an invalid type.
+ *
+ * <p>A view names an unknown property a table's ({@code for 'TABLE'}), is refused a table's parameters as a
+ * schema it may not operate on, and a table's staging properties as incompatible options. A materialized view
+ * is judged as a view under its own kind, with what it is given as a table: its staging properties are taken,
+ * another kind of table's, schema evolution and a file location are an unsupported feature, and change
+ * tracking is refused only when it is switched on — as a row timestamp is for both. The schedule the metrics
+ * of any of the three run on is held to its grammar (see {@link MetricSchedule}). A sequence takes no property
+ * but its own and is refused every parameter.
  */
 final class CreatedObjectProperties {
 
@@ -60,6 +72,8 @@ final class CreatedObjectProperties {
     private static final String STRING = "STRING";
     /** A value that is a word or a switch value, never a number. */
     private static final String WORD = "WORD";
+    private static final String COPY = "COPY";
+    private static final String METRIC_SCHEDULE = "DATA_METRIC_SCHEDULE";
     private static final String ICEBERG_OPTION = "Iceberg table options (e.g. BASE_LOCATION) require"
         + " DEFAULT_METADATA_WRITE_FORMAT=ICEBERG or CREATE ICEBERG TABLE";
 
@@ -108,20 +122,25 @@ final class CreatedObjectProperties {
             }
         }
         rejectDuplicates(names);
-        for (final String name : names) {
-            final String key = ParameterRegistry.canonical(name);
-            if (!TABLE_PROPERTIES.containsKey(key) && !PARAMETER_TYPES.containsKey(key)
-                    && !ParameterRegistry.isTableParameter(key) && !OTHER_TABLE_KIND_PROPERTIES.contains(key)) {
-                throw ParameterRegistry.invalidProperty(name, "TABLE");
+        final List<Integer> order = judgedOrder(names);
+        rejectUnknown(names, order);
+        if (ctx.ICEBERG() != null) {
+            // A parameter a session keeps is no property of a table of any kind: cannot set parameter 'TIMEZONE'
+            // at 'ICEBERG_TABLE' (live-verified).
+            for (final Integer i : order) {
+                final String key = ParameterRegistry.canonical(names.get(i));
+                if (ParameterRegistry.isSessionParameter(key) && !ParameterRegistry.isTableParameter(key)) {
+                    throw cannotSet(key, "ICEBERG_TABLE");
+                }
             }
         }
         if (ctx.ICEBERG() != null || ctx.HYBRID() != null) {
-            // What an Iceberg or a hybrid table may be given is judged where the table is made.
+            // What else an Iceberg or a hybrid table may be given is judged where the table is made.
             return;
         }
-        rejectValuesOfAnotherType(names, values);
-        for (final String name : names) {
-            final String key = ParameterRegistry.canonical(name);
+        rejectValuesOfAnotherType(names, values, order, new HashSet<String>());
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
             if (OTHER_TABLE_KIND_PROPERTIES.contains(key)) {
                 throw new RuntimeException("Unsupported feature '" + key + "'.");
             }
@@ -133,6 +152,7 @@ final class CreatedObjectProperties {
                 throw cannotSet(key, "TABLE");
             }
         }
+        requireMetricSchedule(names, values, true);
     }
 
     /** Judges the properties written before a CREATE VIEW's query, for a view made in the named schema. */
@@ -144,31 +164,126 @@ final class CreatedObjectProperties {
             names.add(property.optionKey().getText());
             values.add(property.copyOptionValue());
         }
-        rejectDuplicates(names);
-        for (final String name : names) {
-            final String key = ParameterRegistry.canonical(name);
-            if (!TABLE_PROPERTIES.containsKey(key) && !PARAMETER_TYPES.containsKey(key)
-                    && !ParameterRegistry.isTableParameter(key)) {
-                // The property is named a table's, the view's kind notwithstanding.
-                throw ParameterRegistry.invalidProperty(name, "TABLE");
+        requireViewKindProperties(names, values, schemaName, false);
+    }
+
+    /**
+     * Judges the properties written among a CREATE MATERIALIZED VIEW's comment and clustering key, for a view
+     * made in the named schema.
+     */
+    static void requireMaterializedViewProperties(final FrostlakeParser.CreateStatementContext ctx,
+                                                  final String schemaName) {
+        final List<String> names = new ArrayList<String>();
+        final List<FrostlakeParser.CopyOptionValueContext> values =
+            new ArrayList<FrostlakeParser.CopyOptionValueContext>();
+        for (final ParseTree child : ctx.children) {
+            if (child instanceof FrostlakeParser.CommentClauseContext) {
+                // A comment written as a text is a property like the others, and counts among the repeated.
+                names.add("COMMENT");
+                values.add(null);
+            } else if (child instanceof FrostlakeParser.ViewPropertyContext) {
+                final FrostlakeParser.ViewPropertyContext property = (FrostlakeParser.ViewPropertyContext) child;
+                names.add(property.optionKey().getText());
+                values.add(property.copyOptionValue());
             }
         }
-        rejectValuesOfAnotherType(names, values);
+        requireViewKindProperties(names, values, schemaName, true);
+    }
+
+    /**
+     * What a view's kind makes of the names it knows, class by class: another kind of table's, a parameter of
+     * another level, a table's parameter, and last — in an order of their own — what the kind has no use for
+     * or only the value decides.
+     */
+    private static void requireViewKindProperties(final List<String> names,
+                                                  final List<FrostlakeParser.CopyOptionValueContext> values,
+                                                  final String schemaName, final boolean materialized) {
+        final String kind = materialized ? "MATERIALIZED_VIEW" : "VIEW";
+        rejectDuplicates(names);
+        final List<Integer> order = judgedOrder(names);
+        // The property is named a table's, the view's kind notwithstanding.
+        rejectUnknown(names, order);
+        final Set<String> unread = new HashSet<String>();
         for (final String name : names) {
             final String key = ParameterRegistry.canonical(name);
-            if ("COMMENT".equals(key) || "CHANGE_TRACKING".equals(key) || "DATA_METRIC_SCHEDULE".equals(key)) {
-                continue;
+            if (anotherKindsFor(key, materialized)) {
+                unread.add(key);
             }
-            if (VIEW_INCOMPATIBLE.contains(key)) {
-                throw new RuntimeException(SqlCompilationError.of("options " + key + " and {1} are incompatible."));
+        }
+        rejectValuesOfAnotherType(names, values, order, unread);
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (unread.contains(key)) {
+                throw new RuntimeException(materialized ? "Unsupported feature '" + key + "'."
+                    : SqlCompilationError.of("options " + key + " and {1} are incompatible."));
             }
-            if (TABLE_PROPERTIES.containsKey(key)) {
-                throw ParameterRegistry.invalidProperty(key, "VIEW");
+        }
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (!TABLE_PROPERTIES.containsKey(key) && !ParameterRegistry.isTableParameter(key)
+                    && !VIEW_LEVELS.contains(key)) {
+                throw cannotSet(key, kind);
             }
-            if (ParameterRegistry.isTableParameter(key) || VIEW_LEVELS.contains(key)) {
+        }
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (!METRIC_SCHEDULE.equals(key) && !TABLE_PROPERTIES.containsKey(key)
+                    && (ParameterRegistry.isTableParameter(key) || VIEW_LEVELS.contains(key))) {
                 throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("schema", schemaName));
             }
-            throw cannotSet(key, "VIEW");
+        }
+        requireMetricSchedule(names, values, false);
+        if (written(names, "ERROR_LOGGING") >= 0) {
+            throw ParameterRegistry.invalidProperty("ERROR_LOGGING", kind);
+        }
+        // Switched off it is taken; switched on it is no property of the kind. A view tracks changes.
+        if (materialized && switchedOn(names, values, "CHANGE_TRACKING")) {
+            throw ParameterRegistry.invalidProperty("CHANGE_TRACKING", kind);
+        }
+        if (switchedOn(names, values, "ROW_TIMESTAMP")) {
+            throw ParameterRegistry.invalidProperty("ROW_TIMESTAMP", kind);
+        }
+    }
+
+    /**
+     * Whether a view's kind reads a name as another kind of table's — judged by the name alone, its value
+     * unread: a view is refused a table's staging and storage properties with it, a materialized view takes
+     * the staging ones.
+     */
+    private static boolean anotherKindsFor(final String key, final boolean materialized) {
+        if (OTHER_TABLE_KIND_PROPERTIES.contains(key)) {
+            return true;
+        }
+        return materialized ? "ENABLE_SCHEMA_EVOLUTION".equals(key) || "BASE_LOCATION".equals(key)
+            : VIEW_INCOMPATIBLE.contains(key);
+    }
+
+    /** Where a property is written among the names, or -1. */
+    private static int written(final List<String> names, final String key) {
+        for (int i = 0; i < names.size(); i++) {
+            if (key.equals(ParameterRegistry.canonical(names.get(i)))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean switchedOn(final List<String> names,
+                                      final List<FrostlakeParser.CopyOptionValueContext> values, final String key) {
+        final int at = written(names, key);
+        return at >= 0 && values.get(at) != null && values.get(at).booleanValue() != null
+            && values.get(at).booleanValue().TRUE() != null;
+    }
+
+    /** The schedule its metrics run on is held to the schedule grammar, whatever the kind. */
+    private static void requireMetricSchedule(final List<String> names,
+                                              final List<FrostlakeParser.CopyOptionValueContext> values,
+                                              final boolean onChanges) {
+        final int at = written(names, METRIC_SCHEDULE);
+        if (at >= 0 && values.get(at) != null) {
+            final FrostlakeParser.CopyOptionValueContext value = values.get(at);
+            MetricSchedule.require(value.STRING_LITERAL() != null
+                ? SqlStringLiterals.decode(value.getText()) : value.getText(), onChanges);
         }
     }
 
@@ -192,7 +307,11 @@ final class CreatedObjectProperties {
                 throw ParameterRegistry.invalidProperty(name, "SEQUENCE");
             }
         }
-        rejectValuesOfAnotherType(names, values);
+        final List<Integer> written = new ArrayList<Integer>();
+        for (int i = 0; i < names.size(); i++) {
+            written.add(i);
+        }
+        rejectValuesOfAnotherType(names, values, written, new HashSet<String>());
         if (!names.isEmpty()) {
             throw cannotSet(ParameterRegistry.canonical(names.get(0)), "SEQUENCE");
         }
@@ -211,16 +330,54 @@ final class CreatedObjectProperties {
     }
 
     /**
+     * The order the names of a property list are judged in: that of a table hashed by name — the slot the name
+     * falls in first, the written order within a slot — not the written one (live-verified).
+     */
+    private static List<Integer> judgedOrder(final List<String> names) {
+        int slots = 16;
+        while (names.size() * 4 > slots * 3) {
+            slots *= 2;
+        }
+        final List<Integer> order = new ArrayList<Integer>();
+        for (int slot = 0; slot < slots; slot++) {
+            for (int i = 0; i < names.size(); i++) {
+                final int hash = ParameterRegistry.canonical(names.get(i)).hashCode();
+                if (((hash ^ (hash >>> 16)) & (slots - 1)) == slot) {
+                    order.add(i);
+                }
+            }
+        }
+        return order;
+    }
+
+    /** A name that is neither a property nor a parameter is refused as it is written, as a table's. */
+    private static void rejectUnknown(final List<String> names, final List<Integer> order) {
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (!TABLE_PROPERTIES.containsKey(key) && !PARAMETER_TYPES.containsKey(key)
+                    && !ParameterRegistry.isTableParameter(key) && !OTHER_TABLE_KIND_PROPERTIES.contains(key)
+                    && !COPY.equals(key)) {
+                throw ParameterRegistry.invalidProperty(names.get(i), "TABLE");
+            }
+        }
+    }
+
+    /**
      * A value that is not of its name's type is refused as written: a switch takes TRUE and FALSE alone, a count
-     * an unsigned whole number, a text anything but a number or a switch value.
+     * an unsigned whole number, a text anything but a number or a switch value. The names in {@code unread}
+     * are judged by the name alone.
      */
     private static void rejectValuesOfAnotherType(final List<String> names,
-                                                  final List<FrostlakeParser.CopyOptionValueContext> values) {
-        for (int i = 0; i < names.size(); i++) {
+                                                  final List<FrostlakeParser.CopyOptionValueContext> values,
+                                                  final List<Integer> order, final Set<String> unread) {
+        for (final Integer i : order) {
             final String key = ParameterRegistry.canonical(names.get(i));
             final FrostlakeParser.CopyOptionValueContext value = values.get(i);
+            if (COPY.equals(key)) {
+                throw copyValue(value);
+            }
             final String type = TABLE_PROPERTIES.containsKey(key) ? TABLE_PROPERTIES.get(key) : PARAMETER_TYPES.get(key);
-            if (value == null || type == null) {
+            if (value == null || type == null || unread.contains(key)) {
                 continue;
             }
             final boolean number = value.INTEGER_LITERAL() != null;
@@ -238,6 +395,22 @@ final class CreatedObjectProperties {
                 throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value.getText(), key));
             }
         }
+    }
+
+    /**
+     * COPY given a value: a number or a switch value is no value of it, a text or a word no type of it, and a
+     * parenthesized list is named by the parser's own word for one.
+     */
+    private static RuntimeException copyValue(final FrostlakeParser.CopyOptionValueContext value) {
+        if (value == null) {
+            return new RuntimeException(SqlCompilationError.of(
+                "invalid type of property 'TOK_PROPERTY_LIST' for '" + COPY + "'"));
+        }
+        if (value.INTEGER_LITERAL() != null || value.booleanValue() != null) {
+            return new RuntimeException(SqlCompilationError.invalidValueForParameter(value.getText(), COPY));
+        }
+        return new RuntimeException(SqlCompilationError.of(
+            "invalid type of property '" + value.getText() + "' for '" + COPY + "'"));
     }
 
     /**

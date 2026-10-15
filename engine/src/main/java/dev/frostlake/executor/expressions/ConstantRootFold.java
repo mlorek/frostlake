@@ -20,6 +20,7 @@ import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -87,6 +88,9 @@ final class ConstantRootFold {
 
     private static final int MAX_PRECISION = 38;
 
+    /** How many whole digits a term raised to another's scale keeps at least. */
+    private static final int TERM_WHOLE_DIGITS = 2;
+
     /** What an evaluation that failed answers, where null is the NULL a TRY conversion answers. */
     private static final Object FAILED = new Object();
 
@@ -110,7 +114,18 @@ final class ConstantRootFold {
         return new ConstantRootFold(visitor).folded(argument);
     }
 
-    /** Whether every leaf is a literal, under operators, casts and scalar calls that take arguments. */
+    /**
+     * Whether an expression is computed from literals alone, so the plan knows its value before a row is read.
+     *
+     * @param expr      the expression
+     * @param functions the functions a call in it names
+     * @return whether every leaf is a literal
+     */
+    static boolean isOverLiterals(final Expression expr, final FunctionRegistry functions) {
+        return literalLeaves(expr, functions);
+    }
+
+    /** Whether every leaf is a literal, under operators, casts, a CASE and scalar calls that take arguments. */
     private static boolean literalLeaves(final Expression expr, final FunctionRegistry functions) {
         if (expr instanceof LiteralExpression) {
             return true;
@@ -125,6 +140,15 @@ final class ConstantRootFold {
             final BinaryOperationExpression binary = (BinaryOperationExpression) expr;
             return binary.getEscape() == null && literalLeaves(binary.getLeft(), functions)
                 && literalLeaves(binary.getRight(), functions);
+        }
+        if (expr instanceof CaseExpression) {
+            final CaseExpression chosen = (CaseExpression) expr;
+            for (final WhenClause when : chosen.getWhenClauses()) {
+                if (!literalLeaves(when.getCondition(), functions) || !literalLeaves(when.getResult(), functions)) {
+                    return false;
+                }
+            }
+            return chosen.getElseExpression() == null || literalLeaves(chosen.getElseExpression(), functions);
         }
         if (!(expr instanceof FunctionCallExpression)) {
             return false;
@@ -172,7 +196,32 @@ final class ConstantRootFold {
         if (expr instanceof FunctionCallExpression) {
             return foldedCall((FunctionCallExpression) expr);
         }
+        if (expr instanceof CaseExpression) {
+            return foldedCase((CaseExpression) expr);
+        }
         return expr;
+    }
+
+    /**
+     * A CASE that matches one constant against others is the result it picks: {@code CASE 1 WHEN 1 THEN '1.50' ELSE
+     * '2' END} is the text {@code '1.50'}. A CASE of conditions stays as written (live-verified).
+     */
+    private Expression foldedCase(final CaseExpression chosen) {
+        for (final WhenClause when : chosen.getWhenClauses()) {
+            if (!when.isOperandMatch()) {
+                return chosen;
+            }
+        }
+        for (final WhenClause when : chosen.getWhenClauses()) {
+            final Object met = evaluated(when.getCondition());
+            if (met == FAILED) {
+                return chosen;
+            }
+            if (Boolean.TRUE.equals(met)) {
+                return folded(when.getResult());
+            }
+        }
+        return chosen.getElseExpression() == null ? chosen : folded(chosen.getElseExpression());
     }
 
     private Expression foldedUnary(final UnaryOperationExpression unary) {
@@ -302,17 +351,25 @@ final class ConstantRootFold {
         Expression left = folded(binary.getLeft());
         Expression right = folded(binary.getRight());
         if (TEXT_READING_OPERATORS.contains(operator)) {
-            final String leftText = textOf(binary.getLeft());
-            final String rightText = textOf(binary.getRight());
+            final String leftText = textConstant(binary.getLeft(), left);
+            final String rightText = textConstant(binary.getRight(), right);
             if (leftText != null && rightText != null) {
                 if (operator != BinaryOperator.MODULO) {
                     left = textAsFloat(left);
                     right = textAsFloat(right);
                 }
             } else if (leftText != null && isNumber(right)) {
-                left = textOperand(operator, leftText, left, right);
+                left = textOperand(operator, leftText, left, right, isTextOperation(binary.getLeft()));
             } else if (rightText != null && isNumber(left)) {
-                right = textOperand(operator, rightText, right, left);
+                right = textOperand(operator, rightText, right, left, isTextOperation(binary.getRight()));
+            } else if (leftText == null && rightText == null && isTextValue(left) && isExactNumber(right)) {
+                final Expression[] met = textValueMeeting(operator, left, right);
+                left = met[0];
+                right = met[1];
+            } else if (leftText == null && rightText == null && isTextValue(right) && isExactNumber(left)) {
+                final Expression[] met = textValueMeeting(operator, right, left);
+                right = met[0];
+                left = met[1];
             }
         }
         if (operator == BinaryOperator.ADD || operator == BinaryOperator.SUBTRACT
@@ -331,6 +388,60 @@ final class ConstantRootFold {
         }
         return left == binary.getLeft() && right == binary.getRight() ? binary
             : new BinaryOperationExpression(left, operator, right);
+    }
+
+    /** A text value — a call, a conditional — that is no text constant the fold reads as its number. */
+    private boolean isTextValue(final Expression operand) {
+        return !(operand instanceof LiteralExpression) && visitor.inferStaticType(operand) instanceof StringType;
+    }
+
+    private boolean isExactNumber(final Expression operand) {
+        return isExactNumber(visitor.inferStaticType(operand));
+    }
+
+    /**
+     * A text value beside an exact number, as the arithmetic converts it: the number it reads as, NUMBER(18,5), or
+     * for a conditional over text literals the width its results spell ({@link PlanTextNumber#typeOfSettled}). A
+     * product and a quotient convert the text alone; in a sum, a difference or a remainder a term of a smaller
+     * scale beside such a conditional is raised to the conditional's scale, as beside a number of the width its
+     * results spell — {@code IFF(TRUE, '1.50', '2') + 0} is {@code (TO_NUMBER(IFF(…), 18, 1)) + (CAST(0 AS
+     * NUMBER(3,1)))} — and beside a term of a larger scale the conditional reads at the term's,
+     * {@code (TO_NUMBER(IFF(…), 18, 2)) + 0.25} (live-verified). Any other sum is left as written, for the printer
+     * to convert.
+     *
+     * @return the text operand and the other one, each as the plan holds it
+     */
+    private Expression[] textValueMeeting(final BinaryOperator operator, final Expression text,
+                                          final Expression other) {
+        final NumericType settled = PlanTextNumber.typeOfSettled(text);
+        final NumericType reading = settled != null ? settled : ImpliedTextNumber.COLUMN_READING;
+        final Expression asNumber = toNumber(text, reading.getPrecision(), reading.getScale());
+        if (operator == BinaryOperator.MULTIPLY || operator == BinaryOperator.DIVIDE) {
+            return new Expression[] {asNumber, other};
+        }
+        final NumericType spelled = PlanTextNumber.spelledWidthOfSettled(text);
+        final NumericType term = (NumericType) visitor.inferStaticType(other);
+        if (spelled == null) {
+            return new Expression[] {text, other};
+        }
+        if (term.getScale() > spelled.getScale()) {
+            // Beside a term of more decimals the conditional reads at the term's scale, and the term stays.
+            return new Expression[] {toNumber(text, reading.getPrecision(), term.getScale()), other};
+        }
+        if (term.getScale() == spelled.getScale()) {
+            return new Expression[] {asNumber, other};
+        }
+        final int raised = Math.max(term.getPrecision() + spelled.getScale() - term.getScale(),
+            spelled.getPrecision());
+        final int precision = Math.min(MAX_PRECISION, Math.max(raised, TERM_WHOLE_DIGITS + spelled.getScale()));
+        return new Expression[] {asNumber,
+            new CastExpression(other, "NUMBER(" + precision + "," + spelled.getScale() + ")")};
+    }
+
+    private static Expression toNumber(final Expression text, final int precision, final int scale) {
+        return new FunctionCallExpression("TO_NUMBER", new ArrayList<Expression>(Arrays.asList(
+            text, new LiteralExpression(Long.valueOf(precision), LiteralType.INTEGER),
+            new LiteralExpression(Long.valueOf(scale), LiteralType.INTEGER))));
     }
 
     /**
@@ -380,12 +491,16 @@ final class ConstantRootFold {
      * spelled number at its own width ({@link #textTerm}).
      */
     private Expression textOperand(final BinaryOperator operator, final String text, final Expression operand,
-                                   final Expression other) {
+                                   final Expression other, final boolean made) {
         if (isApproximate(other)) {
             return textAsFloat(operand);
         }
         if (operator == BinaryOperator.MULTIPLY || operator == BinaryOperator.DIVIDE) {
-            return textFactor(text);
+            // A text a call or a join made reads as a text value does, NUMBER(18,5): UPPER('1.50') * 1 is
+            // CAST(1.5 AS NUMBER(19,5)), where the literal '1.50' reads at its own scale.
+            final BigDecimal read = made && PlanTextNumber.spelled(text) != null ? PlanTextNumber.value(text) : null;
+            return read != null ? new FoldedConstantExpression(read, ImpliedTextNumber.COLUMN_READING)
+                : textFactor(text);
         }
         return textTerm(text, other);
     }
@@ -468,6 +583,15 @@ final class ConstantRootFold {
         } catch (final RuntimeException refused) {
             return FAILED;
         }
+    }
+
+    /**
+     * {@link #textOf} of an operand as written, or the text a CASE over constants folded to, which reads as the
+     * literal it picked does.
+     */
+    private String textConstant(final Expression written, final Expression folded) {
+        final String text = textOf(written);
+        return text != null || !(written instanceof CaseExpression) ? text : textOf(folded);
     }
 
     /**

@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.TransactionAbort;
 
+import java.math.BigDecimal;
 import java.util.Locale;
 import java.util.Set;
 
@@ -90,6 +91,17 @@ final class TransactionAbortArgument {
     }
 
     /**
+     * Whether the plan of an argument holds a NULL it had to type from what stands beside it — the second
+     * argument of NVL, the other operand of a sum — which is a conversion the plan cannot fold, and so no constant.
+     *
+     * @param planned the argument as the plan prints it
+     * @return whether a typed NULL stands in it
+     */
+    static boolean typesANull(final String planned) {
+        return planned.contains("SYSTEM$NULL_TO_");
+    }
+
+    /**
      * Reads the id a constant argument names.
      *
      * @param argument the argument as written
@@ -100,8 +112,19 @@ final class TransactionAbortArgument {
      */
     static Object read(final Expression argument, final Object value, final ExpressionEvaluatorVisitor visitor,
                        final boolean inBlock) {
+        if (argument instanceof CaseExpression) {
+            final CaseExpression chosen = (CaseExpression) argument;
+            boolean never = chosen.getElseExpression() != null && !chosen.getWhenClauses().isEmpty();
+            for (final WhenClause when : chosen.getWhenClauses()) {
+                never = never && isBareNull(when.getCondition());
+            }
+            // A CASE whose every condition is the bare word NULL is its ELSE (CASE WHEN NULL THEN 12 ELSE 13 END
+            // names 13), as an IFF over NULL is its last argument.
+            return never ? read(chosen.getElseExpression(), value, visitor, inBlock)
+                : value == null ? null : TransactionAbort.BAD;
+        }
         if (value == null) {
-            return null;
+            return wideNumberLeftUnread(argument) ? TransactionAbort.BAD : null;
         }
         if (argument instanceof LiteralExpression || argument instanceof SessionVarExpression
                 || argument instanceof BindVariableExpression) {
@@ -122,6 +145,20 @@ final class TransactionAbortArgument {
         if (argument instanceof FunctionCallExpression) {
             final FunctionCallExpression call = (FunctionCallExpression) argument;
             final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+            if (name.equals("IFF") && call.getArguments().size() == 3 && isBareNull(call.getArguments().get(0))) {
+                // A condition that is the bare word NULL settles the choice before the plan: the call is its
+                // last argument (IFF(NULL, 12, 13) names 13).
+                return read(call.getArguments().get(2), value, visitor, inBlock);
+            }
+            if (name.equals("DECODE") && call.getArguments().size() >= 3 && isBareNull(call.getArguments().get(0))
+                    && isBareNull(call.getArguments().get(1))) {
+                // NULL matches NULL before the plan too: DECODE(NULL, NULL, 12, 13) names 12.
+                return read(call.getArguments().get(2), value, visitor, inBlock);
+            }
+            if (NUMBER_CONVERSIONS.contains(name) && call.getArguments().size() > 1) {
+                // A conversion by a format, or to a width, names no id.
+                return TransactionAbort.BAD;
+            }
             if (NUMBER_CONVERSIONS.contains(name) && !call.getArguments().isEmpty()) {
                 return converted("NUMBER", call.getArguments().get(0), value, visitor, false);
             }
@@ -160,8 +197,39 @@ final class TransactionAbortArgument {
             ? TransactionAbort.exactNumber((Number) value) : TransactionAbort.BAD;
     }
 
+    /**
+     * Whether a NULL answer is a TRY_ conversion's of a text that spells a number too wide to hold: the text is
+     * a number all the same, and names no id — {@code TRY_TO_NUMBER('1e400')} is {@code Bad transaction id} where
+     * {@code TRY_TO_NUMBER('abc')} is NULL.
+     */
+    private static boolean wideNumberLeftUnread(final Expression argument) {
+        if (!(argument instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) argument;
+        if (!NUMBER_CONVERSIONS.contains(call.getFunctionName().toUpperCase(Locale.ROOT))
+                || call.getArguments().size() != 1 || !(call.getArguments().get(0) instanceof LiteralExpression)) {
+            return false;
+        }
+        final Object written = ((LiteralExpression) call.getArguments().get(0)).getValue();
+        if (!(written instanceof String)) {
+            return false;
+        }
+        try {
+            new BigDecimal(((String) written).trim());
+            return true;
+        } catch (final NumberFormatException noNumber) {
+            return false;
+        }
+    }
+
+    private static boolean isBareNull(final Expression expression) {
+        return expression instanceof LiteralExpression
+            && ((LiteralExpression) expression).getType() == LiteralType.NULL;
+    }
+
     /** A type's name without its parameters, upper-cased: NUMBER of NUMBER(10,2), DOUBLE of DOUBLE PRECISION. */
-    private static String family(final String targetType) {
+    static String family(final String targetType) {
         final String upper = targetType == null ? "" : targetType.trim().toUpperCase(Locale.ROOT);
         int end = 0;
         while (end < upper.length() && (Character.isLetterOrDigit(upper.charAt(end)) || upper.charAt(end) == '_')) {

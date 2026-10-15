@@ -45,7 +45,9 @@ public final class JavaHandlerInstances {
         } catch (final NoSuchMethodException none) {
             constructor = null;
         }
-        if (constructor == null || Modifier.isPrivate(constructor.getModifiers())) {
+        // A protected constructor is no constructor the account calls, where a package's own one is (live-verified).
+        if (constructor == null || Modifier.isPrivate(constructor.getModifiers())
+                || Modifier.isProtected(constructor.getModifiers())) {
             throw new RuntimeException("The provided method is non-static, but the enclosing class does not have a"
                 + " public zero-argument constructor" + where);
         }

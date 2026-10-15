@@ -67,6 +67,10 @@ final class RowPatternExpressions {
     /** What a column read with no symbol before it counts as among an argument's symbols. */
     private static final String NO_SYMBOL = "";
 
+    /** The window functions that, under ONE ROW PER MATCH, rank the one row a match answers with. */
+    private static final Set<String> RANKED_OVER_THE_ANSWER = Set.of(
+        "ROW_NUMBER", "RANK", "DENSE_RANK", "NTILE", "PERCENT_RANK", "CUME_DIST");
+
     private boolean defining;
     private boolean finalNow;
     /**
@@ -287,7 +291,8 @@ final class RowPatternExpressions {
                                  final List<ParserRuleContext> arguments,
                                  final FrostlakeParser.OverClauseContext over, final StringBuilder out) {
         if (over != null) {
-            return false;
+            // A measure is read over its match: a window of its own is refused, at the OVER (live-verified).
+            throw new RuntimeException(placed(over, "OVER clause not allowed in MATCH_RECOGNIZE MEASURES clause."));
         }
         final boolean window = functions.hasAggregateFunction(name) || "FIRST".equals(name) || "LAST".equals(name)
             || "PREV".equals(name) || "NEXT".equals(name) || WindowFunctionNames.handles(name);
@@ -326,12 +331,41 @@ final class RowPatternExpressions {
                 neighbour(call, "PREV".equals(name) || "LAG".equals(name) ? "LAG" : "LEAD", arguments, out);
                 return true;
             default:
-                if (!functions.hasAggregateFunction(name)) {
+                if (functions.hasAggregateFunction(name)) {
+                    aggregate(call, arguments, out);
+                    return true;
+                }
+                if (!WindowFunctionNames.handles(name)) {
                     return false;
                 }
-                aggregate(call, arguments, out);
+                overTheMatch(call, name, out);
                 return true;
         }
+    }
+
+    /**
+     * A window function written with no OVER: it is read over the rows of its match, in the clause's order
+     * (live-verified). ROW_NUMBER numbers a match's rows from 1, RANK and DENSE_RANK rank them, NTILE, PERCENT_RANK
+     * and CUME_DIST divide them, NTH_VALUE and a conditional event read the rows so far. Under ONE ROW PER MATCH the
+     * ranking functions rank the one row the match answers with, so each is 1.
+     */
+    private void overTheMatch(final FrostlakeParser.FunctionCallExprContext call, final String name,
+                              final StringBuilder out) {
+        out.append("IFF ( ").append(EMPTY).append(" , NULL , ");
+        // The call as written, its arguments read as a measure's are.
+        for (int i = 0; i < call.getChildCount(); i++) {
+            write(call.getChild(i), out);
+        }
+        out.append("OVER ( ");
+        if (oneRow && RANKED_OVER_THE_ANSWER.contains(name)) {
+            out.append("PARTITION BY ").append(MATCH).append(" , ").append(PLACE).append(" ORDER BY ").append(PLACE);
+        } else {
+            out.append(IN_MATCH);
+            if ("NTH_VALUE".equals(name)) {
+                out.append(' ').append(finalNow ? WHOLE : SO_FAR);
+            }
+        }
+        out.append(" ) ) ");
     }
 
     /** FIRST or LAST of a value over the match: its first row, or the last the semantics reach. */

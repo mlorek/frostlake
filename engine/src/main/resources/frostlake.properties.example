@@ -91,11 +91,21 @@ command.removeEnabled=false
 # filesystem-backed stages for development and testing.
 stage.file.urlEnabled=false
 
+# Query Results
+# The results RESULT_SCAN can read back: each session keeps its last query.result.cache.size results, and all
+# results together hold at most query.result.cache.cells values (a row's values, counted over every row) before
+# the oldest are let go - each session's latest result always stays.
+query.result.cache.size=500
+query.result.cache.cells=2000000
+
 # Logging Configuration
 logging.level=INFO
 
 # Internal stages (named, table and user stages) keep their files under one local directory each,
-# below this root (default: <user-home>/.frostlake_stages/internal):
+# below this root (default: <user-home>/.frostlake_stages/internal). An engine with a write-ahead log or
+# snapshot persistence keeps them in the root itself, for the engine that restarts on its data; any other
+# engine keeps them in a directory of its own below the root, deleted when the engine shuts down or the
+# JVM exits:
 # stage.internal.localRoot=/var/frostlake_stages/internal
 # A stage's names are flat, as on a real account: a file 'dir' and a file 'dir/g' coexist. On disk the
 # file 'dir' is then kept inside the directory 'dir' as the entry '%00'; every other file keeps its plain
@@ -106,7 +116,8 @@ logging.level=INFO
 # Maps s3://bucket/key references to local files for local/CI testing — both stage file operations
 # (LIST / GET / PUT / REMOVE) on S3-backed stages and the JAR(s) named in a UDF/procedure IMPORTS clause
 # (by s3:// URL or via an S3-backed @stage). An unmapped key resolves under stage.s3.localRoot as
-# <root>/bucket/key.
+# <root>/bucket/key. A key is a flat name, as on S3: its '..' and empty segments are percent-encoded as
+# an internal stage's are, so no URL reaches outside the root or the mapped directory.
 # Both settings are optional; the defaults below apply when unset.
 #
 # Fallback base for s3:// resolution (default: <user-home>/.frostlake_stages/s3):

@@ -416,7 +416,13 @@ public final class StatementSeparation {
             text.setCharAt(i, 'x');
         }
         final String firstLine = firstFaultOf(text.toString(), -1);
-        return firstLine == null || SyntaxErrorListener.sentenceCoordinates(firstLine) == null ? null : firstLine;
+        final int[] at = firstLine == null ? null : SyntaxErrorListener.sentenceCoordinates(firstLine);
+        if (at == null) {
+            return null;
+        }
+        // A fault at the word itself names the word as written, never the name it was read as.
+        return at[0] == word.getLine() && at[1] == word.getCharPositionInLine()
+            ? SyntaxErrorListener.sentence(word) : firstLine;
     }
 
     /**
@@ -540,6 +546,8 @@ public final class StatementSeparation {
         lexer.addErrorListener(listener);
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         final FrostlakeParser parser = new FrostlakeParser(stream);
+        // Where this parse reports a fault is read: it must not depend on what was parsed before.
+        ColdPrediction.arm(parser);
         parser.removeErrorListeners();
         parser.addErrorListener(listener);
         final FrostlakeParser.SqlScriptContext script = parser.sqlScript();

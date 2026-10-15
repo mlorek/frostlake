@@ -42,6 +42,9 @@ public final class LeadingCommentOffset {
 
     private static final ThreadLocal<SourcePosition> ORIGIN = new ThreadLocal<SourcePosition>();
 
+    /** The text running with its binds written out, whose places are told in the text as written. */
+    private static final ThreadLocal<BoundText> BOUND = new ThreadLocal<BoundText>();
+
     private LeadingCommentOffset() {
     }
 
@@ -131,7 +134,44 @@ public final class LeadingCommentOffset {
      * @return the two re-based, as {line, position}
      */
     public static int[] rebase(final int line, final int position) {
-        return rebase(ORIGIN.get(), line, position);
+        final SourcePosition origin = ORIGIN.get();
+        final BoundText bound = BOUND.get();
+        // Only the statement the binds were written into is moved: one it runs has an origin of its own.
+        return rebase(origin, line, bound != null && bound.origin() == origin ? bound.written(line, position)
+            : position);
+    }
+
+    /**
+     * Whether a place of the statement that runs is where one of its binds was written out (see {@link BoundText}).
+     *
+     * @param line     the place's line in the text that runs, 1-based
+     * @param position its column there
+     * @return whether a written-out bind begins at the place
+     */
+    public static boolean beginsABind(final int line, final int position) {
+        final BoundText bound = BOUND.get();
+        return bound != null && bound.origin() == ORIGIN.get() && bound.beginsABind(line, position);
+    }
+
+    /**
+     * Note the text about to run with its binds written out.
+     *
+     * @param bound the text, or null for none
+     * @return whatever it displaced, for {@link #unbind}
+     */
+    public static BoundText bind(final BoundText bound) {
+        final BoundText previous = BOUND.get();
+        BOUND.set(bound);
+        return previous;
+    }
+
+    /** Put back whatever {@link #bind} displaced; null clears. */
+    public static void unbind(final BoundText previous) {
+        if (previous == null) {
+            BOUND.remove();
+        } else {
+            BOUND.set(previous);
+        }
     }
 
     /**

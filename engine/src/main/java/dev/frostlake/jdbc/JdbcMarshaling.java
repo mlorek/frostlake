@@ -16,6 +16,7 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.SqlTokens;
 import dev.frostlake.executor.expressions.IntervalCells;
@@ -36,14 +37,19 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -63,13 +69,20 @@ import org.antlr.v4.runtime.Token;
  */
 public final class JdbcMarshaling {
 
+    /** How a bound Timestamp, Date and Time are written for their explicit formats (see {@link #formatLiteral}). */
+    private static final DateTimeFormatter BOUND_TIMESTAMP =
+        DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSSSSS");
+    private static final DateTimeFormatter BOUND_DATE = DateTimeFormatter.ofPattern("uuuu-MM-dd");
+    private static final DateTimeFormatter BOUND_TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
+
     /**
      * Map an engine {@code DataType} to a {@link java.sql.Types} constant, using its PARAMETERS where
      * they decide the answer. Every integer alias is NUMBER(38,0) in the catalog, as on a real account,
      * so the name alone can no longer tell an integer column from a decimal one — the SCALE does, and
      * live agrees: an INT column reports {@code Types.BIGINT} over JDBC and a NUMBER(10,2) reports
      * {@code Types.DECIMAL}. It is the same rule this driver's metadata queries already apply to
-     * INFORMATION_SCHEMA rows.
+     * INFORMATION_SCHEMA rows. A column NAMED DECIMAL is a file transfer's size, which the client answers itself
+     * and reports as {@code Types.DECIMAL} though its scale is 0 (live-verified).
      */
     public static int toSqlType(final DataType type) {
         return type instanceof NumericType
@@ -80,10 +93,24 @@ public final class JdbcMarshaling {
     /** As above, for a caller that has the type's NAME and SCALE rather than the type itself. */
     public static int toSqlType(final String typeName, final int scale) {
         final String name = typeName == null ? "" : typeName.toUpperCase(Locale.ROOT);
-        if (name.equals("NUMBER") || name.equals("NUMERIC") || name.equals("DECIMAL")) {
+        if (name.equals("DECIMAL")) {
+            return Types.DECIMAL;
+        }
+        if (name.equals("NUMBER") || name.equals("NUMERIC")) {
             return scale == 0 ? Types.BIGINT : Types.DECIMAL;
         }
         return toSqlType(typeName);
+    }
+
+    /**
+     * Whether a column's type is the DECIMAL a file transfer's size carries: the client's own type, which no
+     * other column is named by.
+     *
+     * @param type a result column's declared type
+     * @return whether the driver reads the column as a {@code BigDecimal} whatever its scale
+     */
+    public static boolean isClientDecimal(final DataType type) {
+        return type instanceof NumericType && "DECIMAL".equalsIgnoreCase(type.getName());
     }
 
     /** Map an engine {@code DataType} name to a {@link java.sql.Types} constant. */
@@ -323,6 +350,118 @@ public final class JdbcMarshaling {
         return Timestamp.valueOf(parseDateTime(v.toString()));
     }
 
+    /**
+     * A Timestamp bound with a Calendar, as the account's driver binds one (see {@link CalendarBoundInstant}).
+     *
+     * @param x   the value
+     * @param cal the Calendar
+     * @return the value to bind
+     */
+    public static Object boundAtCalendar(final Timestamp x, final Calendar cal) {
+        if (x == null || cal == null) {
+            return x;
+        }
+        return new CalendarBoundInstant(
+            x.toInstant().atZone(cal.getTimeZone().toZoneId()).toLocalDateTime().toInstant(ZoneOffset.UTC));
+    }
+
+    /**
+     * A Date bound with a Calendar: the day its moment falls on in the Calendar's zone (live-verified).
+     *
+     * @param x   the value
+     * @param cal the Calendar
+     * @return the value to bind
+     */
+    public static Date dateAtCalendar(final Date x, final Calendar cal) {
+        if (x == null || cal == null) {
+            return x;
+        }
+        return Date.valueOf(Instant.ofEpochMilli(x.getTime()).atZone(cal.getTimeZone().toZoneId()).toLocalDate());
+    }
+
+    /**
+     * A Time bound with a Calendar, as the account's driver binds one: the Calendar is not read, and the time is the
+     * one its moment shows in UTC, in any session (live-verified).
+     *
+     * @param x the value
+     * @return the value to bind
+     */
+    public static Time timeAtUtc(final Time x) {
+        if (x == null) {
+            return null;
+        }
+        return Time.valueOf(LocalTime.ofInstant(Instant.ofEpochMilli(x.getTime()), ZoneOffset.UTC));
+    }
+
+    /**
+     * A cell read with a Calendar: a wall clock with no zone — a TIMESTAMP_NTZ or a DATE — names the moment it shows
+     * in the Calendar's zone, and a zoned cell keeps its own moment, as the account's driver reads them
+     * (live-verified).
+     *
+     * @param v   the cell
+     * @param cal the Calendar, or null
+     * @return the Timestamp
+     */
+    public static Timestamp toTimestamp(final Object v, final Calendar cal) {
+        if (v == null || cal == null) {
+            return toTimestamp(v);
+        }
+        final ZoneId zone = cal.getTimeZone().toZoneId();
+        if (v instanceof OffsetDateTime) {
+            return Timestamp.from(((OffsetDateTime) v).toInstant());
+        }
+        if (v instanceof ZonedDateTime) {
+            return Timestamp.from(((ZonedDateTime) v).toInstant());
+        }
+        if (v instanceof LocalDateTime) {
+            return Timestamp.from(((LocalDateTime) v).atZone(zone).toInstant());
+        }
+        if (v instanceof LocalDate) {
+            return Timestamp.from(((LocalDate) v).atStartOfDay(zone).toInstant());
+        }
+        if (v instanceof CharSequence) {
+            final Instant zoned = zonedMoment(v.toString());
+            return Timestamp.from(zoned != null ? zoned : parseDateTime(v.toString()).atZone(zone).toInstant());
+        }
+        return toTimestamp(v);
+    }
+
+    /**
+     * A DATE cell read with a Calendar: its day's midnight in the Calendar's zone.
+     *
+     * @param v   the cell
+     * @param cal the Calendar, or null
+     * @return the Date
+     */
+    public static Date toDate(final Object v, final Calendar cal) {
+        if (v == null || cal == null) {
+            return toDate(v);
+        }
+        return new Date(toDate(v).toLocalDate().atStartOfDay(cal.getTimeZone().toZoneId()).toInstant().toEpochMilli());
+    }
+
+    /** The moment a wire text with a trailing offset names, or null for a text with no offset. */
+    private static Instant zonedMoment(final String text) {
+        final String trimmed = text.trim();
+        final int space = trimmed.lastIndexOf(' ');
+        if (space <= 0) {
+            return null;
+        }
+        final String token = trimmed.substring(space + 1);
+        if ("Z".equals(token)) {
+            return parseDateTime(trimmed.substring(0, space)).toInstant(ZoneOffset.UTC);
+        }
+        if (!isNumericOffset(token)) {
+            return null;
+        }
+        final String colonless = token.replace(":", "");
+        final int hours = Integer.parseInt(colonless.substring(1, 3));
+        final int minutes = colonless.length() >= 5 ? Integer.parseInt(colonless.substring(3, 5)) : 0;
+        final int sign = colonless.charAt(0) == '-' ? -1 : 1;
+        return parseDateTime(trimmed.substring(0, space))
+            .toInstant(ZoneOffset.ofHoursMinutes(sign * hours, sign * minutes));
+    }
+
     public static Date toDate(final Object v) {
         if (v == null || v instanceof Date) {
             return (Date) v;
@@ -457,7 +596,7 @@ public final class JdbcMarshaling {
         for (int i = 0; i < values.size(); i++) {
             params.put(i + 1, values.get(i));
         }
-        return substitute(sql, params, unbound, false);
+        return substitute(sql, params, unbound, false, new ArrayList<int[]>());
     }
 
     /**
@@ -472,11 +611,27 @@ public final class JdbcMarshaling {
      * @return the text with each bound placeholder written out
      */
     public static String bindUsing(final String sql, final List<Object> values, final Set<Integer> unbound) {
+        return bindUsing(sql, values, unbound, new ArrayList<int[]>());
+    }
+
+    /**
+     * {@link #bindUsing(String, List, Set)}, noting each placeholder it writes out, so a refusal of the text that
+     * runs can be placed in the text as written.
+     *
+     * @param sql     the text
+     * @param values  the USING values, in order
+     * @param unbound the 1-based numbers that bind nothing
+     * @param written takes each bound placeholder: its line, its column, its written length and the length of
+     *                what stands in its place, in the order written
+     * @return the text with each bound placeholder written out
+     */
+    public static String bindUsing(final String sql, final List<Object> values, final Set<Integer> unbound,
+                                   final List<int[]> written) {
         final Map<Integer, Object> params = new HashMap<>();
         for (int i = 0; i < values.size(); i++) {
             params.put(i + 1, values.get(i));
         }
-        return substitute(sql, params, unbound, true);
+        return substitute(sql, params, unbound, true, written);
     }
 
     /**
@@ -486,29 +641,43 @@ public final class JdbcMarshaling {
      * binding.)
      */
     public static String substitutePlaceholders(final String sql, final Map<Integer, Object> params) {
-        return substitute(sql, params, Collections.<Integer>emptySet(), false);
+        return substitute(sql, params, Collections.<Integer>emptySet(), false, new ArrayList<int[]>());
     }
 
     private static String substitute(final String sql, final Map<Integer, Object> params, final Set<Integer> unbound,
-                                     final boolean numbered) {
+                                     final boolean numbered, final List<int[]> written) {
         final List<Token> tokens = lex(sql).getTokens();
         final StringBuilder out = new StringBuilder(sql.length() + 16);
         int param = 0;
         int cursor = 0;
         for (int i = 0; i < tokens.size(); i++) {
             final Token t = tokens.get(i);
+            if (numbered && t.getType() == FrostlakeLexer.QUESTION && unbound.contains(param + 1)) {
+                // A placeholder the USING list leaves unset is refused where it stands in the text as written,
+                // whatever the values before it were bound as.
+                throw new RuntimeException(SqlCompilationError.inline("error line " + t.getLine() + " at position "
+                    + t.getCharPositionInLine() + "\nBind variable ? not set."));
+            }
             if (t.getType() == FrostlakeLexer.QUESTION && !unbound.contains(++param)) {
+                if (numbered) {
+                    requireNoRowCount(tokens, i);
+                }
+                final String literal = formatLiteral(params.get(param));
                 out.append(sql, cursor, t.getStartIndex());
-                out.append(formatLiteral(params.get(param)));
+                out.append(literal);
                 cursor = t.getStopIndex() + 1;
+                written.add(new int[] {t.getLine(), t.getCharPositionInLine(), 1, literal.length()});
             } else if (numbered && t.getType() == FrostlakeLexer.COLON && i + 1 < tokens.size()
                     && tokens.get(i + 1).getType() == FrostlakeLexer.INTEGER_LITERAL) {
                 final Token digits = tokens.get(i + 1);
                 final Integer number = bindNumber(digits.getText());
                 if (number != null && params.containsKey(number) && !unbound.contains(number)) {
+                    final String literal = formatLiteral(params.get(number));
                     out.append(sql, cursor, t.getStartIndex());
-                    out.append(formatLiteral(params.get(number)));
+                    out.append(literal);
                     cursor = digits.getStopIndex() + 1;
+                    written.add(new int[] {t.getLine(), t.getCharPositionInLine(),
+                        digits.getStopIndex() + 1 - t.getStartIndex(), literal.length()});
                     i++;
                 }
             }
@@ -575,6 +744,22 @@ public final class JdbcMarshaling {
     }
 
     /**
+     * Refuse a USING list's {@code ?} standing where a row count belongs: the list hands a text over, and a LIMIT
+     * and an OFFSET take none — {@code Invalid row count '?' in limit clause} (live-verified).
+     */
+    private static void requireNoRowCount(final List<Token> tokens, final int placeholder) {
+        int before = placeholder - 1;
+        while (before >= 0 && tokens.get(before).getChannel() != Token.DEFAULT_CHANNEL) {
+            before--;
+        }
+        final int type = before < 0 ? Token.EOF : tokens.get(before).getType();
+        if (type == FrostlakeLexer.LIMIT || type == FrostlakeLexer.OFFSET) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid row count '?' in "
+                + (type == FrostlakeLexer.LIMIT ? "limit clause" : "result offset clause")));
+        }
+    }
+
+    /**
      * Render a parameter value as a SQL literal. Strings escape BOTH backslash and single-quote — the lexer
      * honors {@code \}-escapes (see the STRING_LITERAL grammar rule), so doubling only the quote would let a
      * trailing backslash break out of the literal. Temporal values are emitted in ISO form the engine parses.
@@ -597,14 +782,21 @@ public final class JdbcMarshaling {
         if (value instanceof Boolean) {
             return value.toString();
         }
+        // A bound date or time is a typed value, which the session's input formats do not read: each is written with
+        // a format of its own, so DATE_INPUT_FORMAT and its kin leave a binding alone, as they leave the account's.
+        if (value instanceof CalendarBoundInstant) {
+            return "TO_TIMESTAMP_LTZ('" + ((CalendarBoundInstant) value).text()
+                + "', 'YYYY-MM-DD HH24:MI:SS.FF9 TZHTZM')";
+        }
         if (value instanceof Timestamp) {
-            return "'" + ((Timestamp) value).toLocalDateTime() + "'::TIMESTAMP_NTZ";
+            return "TO_TIMESTAMP_NTZ('" + BOUND_TIMESTAMP.format(((Timestamp) value).toLocalDateTime())
+                + "', 'YYYY-MM-DD HH24:MI:SS.FF9')";
         }
         if (value instanceof Date) {
-            return "'" + ((Date) value).toLocalDate() + "'::DATE";
+            return "TO_DATE('" + BOUND_DATE.format(((Date) value).toLocalDate()) + "', 'YYYY-MM-DD')";
         }
         if (value instanceof Time) {
-            return "'" + ((Time) value).toLocalTime() + "'::TIME";
+            return "TO_TIME('" + ((Time) value).toLocalTime().format(BOUND_TIME) + "', 'HH24:MI:SS')";
         }
         if (value instanceof BinaryValue) {
             // A binary parameter binds as a hex literal, which the parser reads back as BINARY.

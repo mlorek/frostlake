@@ -81,6 +81,9 @@ public class UndropVersionsTest {
         engine.execute("ALTER TABLE d RENAME TO d_v2");
         engine.execute("UNDROP TABLE d");
         assertEquals(List.of("1"), column("SELECT v FROM d", "V"), "then the one dropped before it");
+        // A table holding the name is the refusal, before the versions are looked at.
+        assertEquals("SQL compilation error:\nObject 'D' already exists.", refusal("UNDROP TABLE d"));
+        engine.execute("ALTER TABLE d RENAME TO d_v1");
         assertEquals("Table D did not exist or was purged.", refusal("UNDROP TABLE d"));
     }
 

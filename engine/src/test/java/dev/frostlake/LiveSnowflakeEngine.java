@@ -620,8 +620,10 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         switch (typeName) {
             case "NUMBER":
             case "NUMERIC":
-            case "DECIMAL":
                 return new NumericType("NUMBER", precision, scale);
+            case "DECIMAL":
+                // The one column the driver names so is a file transfer's size, which the client answers itself.
+                return new NumericType("DECIMAL", precision, scale);
             case "DOUBLE":
             case "DOUBLE PRECISION":
             case "FLOAT":

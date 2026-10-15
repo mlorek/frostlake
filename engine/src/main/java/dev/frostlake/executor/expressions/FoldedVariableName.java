@@ -40,15 +40,18 @@ import java.util.Set;
  *   DECODE(NULL, NULL, NULL)  DECODE(1, 1, NULL, 'x')                   a conditional a literal settles
  * </pre>
  *
- * <p>It does not fold a comparison, so {@code IFF(1 = 1, NULL, 'x')} is no constant, nor REPLACE, HASH,
- * ARRAY_SIZE, NULLIFZERO, ZEROIFNULL, NVL2, {@code NULLIF('a', 'a')}, {@code COALESCE(NULL, 'x')} — whose text
- * it converts — or a failing TRY conversion to a DATE or a BOOLEAN. A call this class does not name is not folded.
+ * <p>It does not fold a comparison, so {@code IFF(1 = 1, NULL, 'x')} is no constant — though two NULL results
+ * leave the condition nothing to choose, {@code IFF(1 = 1, NULL, NULL)} and {@code NVL2(NULL, NULL, NULL)} — nor
+ * REPLACE, HASH, ARRAY_SIZE, {@code NULLIFZERO(0)}, ZEROIFNULL, {@code NVL2(NULL, 'a', NULL)},
+ * {@code NULLIF('a', 'a')}, {@code COALESCE(NULL, 'x')} — whose text it converts — or a failing TRY conversion to
+ * a DATE or a BOOLEAN. A NULL operand of a simple CASE matches no WHEN. A call this class does not name is not
+ * folded.
  */
 final class FoldedVariableName {
 
     /** The calls that answer NULL for a NULL argument and that the plan folds over constants. */
     private static final Set<String> STRICT = Set.of("ABS", "ROUND", "TRIM", "SUBSTR", "LPAD", "LENGTH",
-        "TO_VARCHAR", "TO_DATE", "DATEADD", "LEAST", "GREATEST");
+        "TO_VARCHAR", "TO_CHAR", "TO_DATE", "DATEADD", "LEAST", "GREATEST", "NULLIFZERO");
 
     /** The conditionals that are NULL over NULLs alone. */
     private static final Set<String> NULL_OVER_NULLS = Set.of("NVL", "COALESCE", "IFNULL", "NULLIF");
@@ -149,6 +152,11 @@ final class FoldedVariableName {
     private static Expression foldedCase(final CaseExpression chosen) {
         for (final WhenClause when : chosen.getWhenClauses()) {
             if (when.isOperandMatch()) {
+                // A NULL operand matches no WHEN, and the ELSE answers; any other operand is not folded.
+                if (when.getCondition() instanceof BinaryOperationExpression
+                        && isNull(((BinaryOperationExpression) when.getCondition()).getLeft())) {
+                    continue;
+                }
                 return null;
             }
             if (isTrue(when.getCondition())) {
@@ -196,6 +204,15 @@ final class FoldedVariableName {
             }
             return nullLiteral();
         }
+        if ("NULLIF".equals(name) && args.size() == 2 && isNull(foldedTo(args.get(0))) && isConstant(args.get(1))) {
+            // A NULL equals nothing, so it is what NULLIF answers whatever it is compared with.
+            return nullLiteral();
+        }
+        if (("IFF".equals(name) || "NVL2".equals(name)) && args.size() == 3 && isNull(foldedTo(args.get(1)))
+                && isNull(foldedTo(args.get(2))) && isConstantOrComparison(args.get(0))) {
+            // Two NULL results leave nothing for the condition to choose between.
+            return nullLiteral();
+        }
         if ("IFF".equals(name) && args.size() == 3) {
             final Expression condition = args.get(0);
             if (isTrue(condition)) {
@@ -207,6 +224,16 @@ final class FoldedVariableName {
             return foldedDecode(args);
         }
         return null;
+    }
+
+    /** Whether a condition reads no row: a constant, or a comparison of constants. */
+    private static boolean isConstantOrComparison(final Expression condition) {
+        if (isConstant(condition) || isNull(foldedTo(condition))) {
+            return true;
+        }
+        return condition instanceof BinaryOperationExpression && isPredicate(condition)
+            && isConstant(((BinaryOperationExpression) condition).getLeft())
+            && isConstant(((BinaryOperationExpression) condition).getRight());
     }
 
     /** DECODE over literals alone: the result of the first search its subject equals, a NULL equal to a NULL. */

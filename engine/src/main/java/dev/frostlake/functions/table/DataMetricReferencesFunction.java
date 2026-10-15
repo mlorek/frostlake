@@ -89,10 +89,22 @@ public class DataMetricReferencesFunction extends TableFunction {
     private static final Set<String> BARE_NAMED_DOMAINS = new HashSet<String>(Arrays.asList("TABLE", "VIEW",
         "MATERIALIZED VIEW"));
 
-    /** The kinds of object the account knows and this argument takes no value of. */
-    private static final Set<String> REFUSED_DOMAINS = new HashSet<String>(Arrays.asList("ACCOUNT", "COLUMN",
-        "DATABASE", "FUNCTION", "INTEGRATION", "PIPE", "PROCEDURE", "ROLE", "SEQUENCE", "STAGE", "STREAM", "TAG",
-        "TASK", "USER", "WAREHOUSE"));
+    /**
+     * The kinds of object the account knows and this argument takes no value of, each refused by its name with an
+     * underscore between its words; any other word is an unknown domain, as written (live-verified word by word).
+     */
+    private static final Set<String> REFUSED_DOMAINS = new HashSet<String>(Arrays.asList("ACCOUNT",
+        "AGGREGATION POLICY", "ALERT", "APPLICATION", "APPLICATION PACKAGE", "AUTHENTICATION POLICY", "BUDGET",
+        "CATALOG", "CLASS", "COLUMN", "COMPUTE POOL", "CONNECTION", "CONSTRAINT", "CONTACT", "CORTEX AGENT",
+        "CORTEX SEARCH SERVICE", "DATA EXCHANGE", "DATA METRIC FUNCTION", "DATABASE", "DATABASE ROLE", "DATASET",
+        "DBT PROJECT", "EXPERIMENT", "EXTERNAL VOLUME", "FAILOVER GROUP", "FILE FORMAT", "FUNCTION",
+        "GIT REPOSITORY", "IMAGE REPOSITORY", "INSTANCE", "INTEGRATION", "INTERACTIVE TABLE", "JOB", "JOIN POLICY",
+        "MANAGED ACCOUNT", "MASKING POLICY", "MODEL", "NETWORK POLICY", "NETWORK RULE", "NOTEBOOK", "NOTIFICATION",
+        "OBJECT", "ONLINE FEATURE TABLE", "ORGANIZATION", "PACKAGES POLICY", "PASSWORD POLICY", "PIPE", "POLICY",
+        "PRIVACY POLICY", "PROCEDURE", "PROJECTION POLICY", "REPLICATION GROUP", "RESOURCE MONITOR", "ROLE",
+        "ROW ACCESS POLICY", "SECRET", "SEMANTIC VIEW", "SEQUENCE", "SERVICE", "SESSION", "SESSION POLICY",
+        "SNOWFLAKE INTELLIGENCE", "STAGE", "STORAGE LIFECYCLE POLICY", "STREAM", "STREAMLIT", "TABLE FUNCTION",
+        "TAG", "TASK", "USER", "VOLUME", "WAREHOUSE", "WORKSPACE"));
 
     private final Catalog catalog;
 
@@ -178,9 +190,10 @@ public class DataMetricReferencesFunction extends TableFunction {
      * name where a table, a view or a materialized view was named bare, by the full path otherwise (live-verified).
      */
     private void appendEntityRows(final String entityName, final String entityDomain, final List<Row> rows) {
-        final String domain = entityDomain.toUpperCase(Locale.ROOT);
+        // A kind of two words may be written with an underscore between them.
+        final String domain = entityDomain.toUpperCase(Locale.ROOT).replace('_', ' ');
         if (REFUSED_DOMAINS.contains(domain)) {
-            throw new RuntimeException(SqlCompilationError.inline("Invalid value '" + domain
+            throw new RuntimeException(SqlCompilationError.inline("Invalid value '" + domain.replace(' ', '_')
                 + "' for argument 'ref_entity_domain' for function "
                 + " information_schema.data_metric_function_references."));
         }

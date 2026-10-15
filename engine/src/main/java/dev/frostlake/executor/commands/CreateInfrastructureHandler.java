@@ -98,9 +98,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String taskName = ddl.extractObjectName(taskQualifiedName);
         final boolean orReplace = ctx.or_replace() != null;
         TaskBodySyntax.requireOneStatement(ctx);
-        TaskBodySyntax.requireNoCommentAfter(ctx.taskBody(), ctx.commentClause());
 
         try {
+            DDLCommandHandler.refuseTakenName(!orReplace && !ifNotExists,
+                hasTaskNamed(ddl.resolveSchemaFromQualifiedName(taskQualifiedName), taskName),
+                qualifiedNameParts(ctx.qualifiedName(0)));
             ddl.checkCreatePrivilege(Privilege.CREATE_TASK,
                 ddl.resolveSchemaFromQualifiedName(taskQualifiedName));
             if (orReplace) {
@@ -213,6 +215,16 @@ public class CreateInfrastructureHandler implements CommandHandler {
         return false;
     }
 
+    /** Whether the schema holds a pipe of exactly that name. */
+    private static boolean hasPipeNamed(final Schema schema, final String name) {
+        for (final Pipe candidate : schema.getPipes()) {
+            if (candidate.getName().equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Object handleCreatePipe(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String pipeQualifiedName = getText(ctx.qualifiedName(0));
         final Schema pipeSchema = catalog.resolveOwningSchema(pipeQualifiedName);
@@ -224,6 +236,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             try { pipeSchema.dropPipe(pipeName); } catch (final RuntimeException ignored) {}
         }
         try {
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists,
+                hasPipeNamed(pipeSchema, pipeName), qualifiedNameParts(ctx.qualifiedName(0)));
             ddl.checkCreatePrivilege(Privilege.CREATE_PIPE, pipeSchema);
             // Extract COPY statement text
             final String copyStatement = ddl.getOriginalText(ctx.copyStatement());
@@ -791,6 +805,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
             try { catalog.dropStage(stageName); } catch (final RuntimeException ignored) {}
         }
         try {
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists
+                    && !TemporaryObjectStatements.isTemporary(ctx),
+                ddl.resolveSchemaFromQualifiedName(stageName).hasStageExact(ddl.extractObjectName(stageName)),
+                qualifiedNameParts(ctx.qualifiedName(0)));
             requireCreateUnlessTemporary(ctx, Privilege.CREATE_STAGE, stageName);
             // A URL-less CREATE STAGE makes an internal named stage (Snowflake's default when URL is omitted);
             // a URL (except file://) denotes an external stage.
@@ -888,6 +906,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     + ddl.extractObjectName(stageName).toUpperCase(Locale.ROOT) + "): location not specified"));
             }
 
+            CloudStageUrls.require(url);
             refuseLocalUrlUnlessEnabled(url);
 
             final StageType type = (url == null || url.startsWith("file://")) ? StageType.INTERNAL : StageType.EXTERNAL;
@@ -1034,13 +1053,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
             queryExecutor.requireOwnership("FILE_FORMAT", nameParts, null);
             // Asked before the file format a replacement drops is gone.
             requireCreateUnlessTemporary(ctx, Privilege.CREATE_FILE_FORMAT, name);
-            try {
-                catalog.dropFileFormat(name);
-            } catch (final RuntimeException ignored) {
-                // OR REPLACE: nothing to drop
-            }
         }
         try {
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists
+                    && !TemporaryObjectStatements.isTemporary(ctx), catalog.hasFileFormat(name), nameParts);
             requireCreateUnlessTemporary(ctx, Privilege.CREATE_FILE_FORMAT, name);
             final FileFormat fileFormat = new FileFormat(simpleName, "CSV");
             fileFormat.setOwner(catalog.currentRoleForOwner());
@@ -1048,6 +1064,15 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 fileFormat.setComment(comment);
+            }
+            if (ctx.or_replace() != null) {
+                // The options are judged before the format a replacement drops is gone: a refused CREATE OR REPLACE
+                // leaves the old one as it was (live-verified).
+                try {
+                    catalog.dropFileFormat(name);
+                } catch (final RuntimeException ignored) {
+                    // OR REPLACE: nothing to drop
+                }
             }
             // The options are judged BEFORE existence: an invalid option refuses even over an existing
             // format, IF NOT EXISTS or not (live-verified).
@@ -1089,6 +1114,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 throw DDLCommandHandler.namedAsWritten(new NameTakenException(SqlCompilationError.of("Object '"
                     + SqlIdentifiers.spellCanonical(newSimple) + "' already exists.")), newParts);
             }
+            // A renamed file format is created under its new name: its schema is asked for the privilege to
+            // create one, once the name is found free (live-verified).
+            queryExecutor.requireCreatePrivilege(Privilege.CREATE_FILE_FORMAT, catalog.resolveOwningSchema(newName));
             final String grantedBefore = catalog.resolveOwningSchema(name).qualifiedName(fileFormat.getName());
             catalog.dropFileFormat(name);
             fileFormat.setName(newSimple);

@@ -176,6 +176,12 @@ final class SignatureTokens {
             if (type == FrostlakeLexer.MALFORMED_EXPONENT) {
                 return malformedNumber(token.getStopIndex() + 1);
             }
+            if (type == FrostlakeLexer.HEX_NUMBER || type == FrostlakeLexer.CARET || type == FrostlakeParser.DOLLAR) {
+                // 0x with its hexadecimal digits is one token to the account, and a symbol to this reading; so is
+                // the caret, a token of one character as the bar and the ampersand are.
+                tokens.add(made(SYMBOL, start, token.getStopIndex()));
+                continue;
+            }
             if (type == FrostlakeLexer.SLASH && start + 1 < sql.length() && sql.charAt(start + 1) == '*') {
                 // A comment that closes is skipped, so this one does not.
                 return refusedToTheEnd();
@@ -191,8 +197,8 @@ final class SignatureTokens {
     }
 
     /**
-     * A number the account reads otherwise than this lexer: three runs of digits as one token, a run that stops
-     * after its second point as a malformed number, and {@code 0x} with its hexadecimal digits as one token.
+     * A number the account reads otherwise than this lexer: three runs of digits as one token, and a run that stops
+     * after its second point as a malformed number.
      *
      * @return where to read on from, or {@link #CONTINUE} for a number both read alike
      */
@@ -208,17 +214,6 @@ final class SignatureTokens {
                 }
                 tokens.add(made(SYMBOL, start, third - 1));
                 return third;
-            }
-        }
-        if (at == start + 1 && sql.charAt(start) == '0' && at < sql.length()
-                && (sql.charAt(at) == 'x' || sql.charAt(at) == 'X')) {
-            int end = at + 1;
-            while (end < sql.length() && Character.digit(sql.charAt(end), 16) >= 0 && sql.charAt(end) < 128) {
-                end++;
-            }
-            if (end > at + 1) {
-                tokens.add(made(SYMBOL, start, end - 1));
-                return end;
             }
         }
         return CONTINUE;

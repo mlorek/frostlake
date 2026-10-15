@@ -40,6 +40,39 @@ public class RestStageTest extends BaseRestTest {
         sql("CREATE SCHEMA " + database + ".s");
     }
 
+    /**
+     * A listed stage is the body a fetch of it answers — its file format, its copy options and every directory
+     * table property — and an external stage's cloud is spelled as SHOW STAGES spells it, an internal one's
+     * null; the directory table carries no moment of its last refresh (live-verified).
+     */
+    @Test
+    public void aListedStageCarriesItsWholeBody() throws Exception {
+        schema("stg_listed");
+        sql("CREATE STAGE stg_listed.s.plain DIRECTORY = (ENABLE = TRUE)");
+        sql("ALTER STAGE stg_listed.s.plain REFRESH");
+        sql("CREATE STAGE stg_listed.s.fmt FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) COPY_OPTIONS = (ON_ERROR ="
+            + " CONTINUE)");
+        sql("CREATE STAGE stg_listed.s.ext URL = 's3://bucket/path/'");
+        sql("CREATE STAGE stg_listed.s.az URL = 'azure://account.blob.core.windows.net/c/p/'");
+
+        final JsonNode listed = ok(get(stages("stg_listed")));
+        assertEquals("AZ,EXT,FMT,PLAIN", names(listed));
+        for (final JsonNode stage : listed) {
+            assertEquals(ok(get(stages("stg_listed") + "/" + stage.path("name").asString())), stage);
+            assertEquals(5, stage.path("directory_table").size(), stage.toString());
+            assertTrue(stage.path("directory_table").has("refresh_on_create"), stage.toString());
+            assertTrue(stage.path("copy_options").has("on_error"), stage.toString());
+            assertEquals("CSV", stage.path("file_format").path("type").asString());
+        }
+        assertEquals("AZURE", listed.get(0).path("cloud").asString());
+        assertEquals("AWS", listed.get(1).path("cloud").asString());
+        assertTrue(listed.get(2).path("cloud").isNull(), listed.get(2).toString());
+        assertEquals(1, listed.get(2).path("file_format").path("skip_header").asInt());
+        assertEquals("CONTINUE", listed.get(2).path("copy_options").path("on_error").asString());
+        assertEquals("ABORT_STATEMENT", listed.get(3).path("copy_options").path("on_error").asString());
+        assertTrue(listed.get(3).path("directory_table").path("enable").asBoolean(), listed.get(3).toString());
+    }
+
     @Test
     public void aStageIsCreatedFetchedListedAndDropped() throws Exception {
         schema("stg_basic");

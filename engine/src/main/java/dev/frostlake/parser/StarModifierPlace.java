@@ -75,7 +75,12 @@ final class StarModifierPlace {
 
     /**
      * The place of the star at {@code star} in {@code tree}, or null when it stands where no reading is known: in a
-     * subquery, a join condition, a window or anywhere else.
+     * subquery that is compared or listed, a join condition, a CASE's condition inside a select item, or anywhere
+     * else.
+     *
+     * <p>A clause is read through what stands one bracket deeper in it — ROLLUP, CUBE and GROUPING SETS, and the
+     * keys of a window — and the clause of a CTE's query or the WHERE of an EXISTS in a statement's own WHERE is
+     * read as a statement's is. A window's keys in a select item are read as the item is.
      *
      * @param tree the parse of the text before the keyword, its brackets closed
      * @param star the star token of the original text
@@ -88,27 +93,60 @@ final class StarModifierPlace {
         }
         ParserRuleContext own = null;
         ParserRuleContext enclosing = null;
-        for (ParserRuleContext up = (ParserRuleContext) node.getParent(); up != null; up = up.getParent()) {
+        ParserRuleContext windowed = null;
+        ParserRuleContext below = null;
+        boolean window = false;
+        boolean condition = false;
+        for (ParserRuleContext up = (ParserRuleContext) node.getParent(); up != null; below = up, up = up.getParent()) {
             if (up instanceof FrostlakeParser.ObjectStarItemContext) {
                 return item(up, StarModifierPlaceKind.ITEM, null);
             }
             if (up instanceof FrostlakeParser.ExprItemContext) {
-                return own == null ? null
-                    : item(up, enclosing == null ? StarModifierPlaceKind.ITEM : StarModifierPlaceKind.NESTED, enclosing);
+                if (own == null || condition) {
+                    return null;
+                }
+                if (window) {
+                    // A window's keys are read as the item is, in a statement's own query.
+                    return enclosing == null && statementQuery(queryOf(up))
+                        ? new StarModifierPlace(StarModifierPlaceKind.ITEM, up.getStart(), null, false, null) : null;
+                }
+                return item(up, enclosing == null ? StarModifierPlaceKind.ITEM : StarModifierPlaceKind.NESTED, enclosing);
             }
             if (up instanceof FrostlakeParser.SelectStatementContext
-                    || up instanceof FrostlakeParser.OverClauseContext
                     || up instanceof FrostlakeParser.WithinGroupClauseContext) {
                 return null;
             }
+            if (up instanceof FrostlakeParser.OverClauseContext) {
+                if (own == null || enclosing != null || window) {
+                    return null;
+                }
+                window = true;
+                windowed = up.getParent();
+                continue;
+            }
+            if (up == windowed || up.getParent() instanceof FrostlakeParser.OverClauseContext || isGrouping(up)) {
+                // The windowed call's own brackets, a window's key lists and a super-group's are not around the star.
+                continue;
+            }
             if (isClause(up)) {
-                return own == null || !statementClause(up) ? null
-                    : new StarModifierPlace(StarModifierPlaceKind.CLAUSE, null, null, false, null);
+                if (own == null) {
+                    return null;
+                }
+                if (statementClause(up)) {
+                    return new StarModifierPlace(StarModifierPlaceKind.CLAUSE, null, null, false, null);
+                }
+                return window ? null : enclosedClause(up);
             }
             if (isMergeCondition(up)) {
                 // A MERGE's ON is read as a clause is.
-                return own == null || inBlock(up) ? null
+                return own == null || window || inBlock(up) ? null
                     : new StarModifierPlace(StarModifierPlaceKind.CLAUSE, null, null, false, null);
+            }
+            if (up instanceof FrostlakeParser.WhenClauseContext
+                    && below == ((FrostlakeParser.WhenClauseContext) up).booleanExpr(0)
+                    || up instanceof FrostlakeParser.SimpleCaseExprContext
+                    && below == ((FrostlakeParser.SimpleCaseExprContext) up).expression()) {
+                condition = true;
             }
             if (!(up instanceof FrostlakeParser.ParenExprContext) && opensABracket(up)) {
                 if (own == null) {
@@ -123,6 +161,47 @@ final class StarModifierPlace {
             }
         }
         return null;
+    }
+
+    /**
+     * The place of a clause that is not a statement's own: a CTE's clause and the WHERE of an EXISTS that stands in a
+     * statement's own WHERE are read as a statement's clause is, a derived table's clause has a reading of its own,
+     * and any other query's has none known.
+     */
+    private static StarModifierPlace enclosedClause(final ParserRuleContext clause) {
+        final FrostlakeParser.SelectStatementContext query = queryOf(clause);
+        if (query == null) {
+            return null;
+        }
+        if (cteQuery(query) || clause instanceof FrostlakeParser.WhereClauseContext && existsInStatementWhere(query)) {
+            return new StarModifierPlace(StarModifierPlaceKind.CLAUSE, null, null, false, null);
+        }
+        return enclosedQueryOpener(query) == null ? null
+            : new StarModifierPlace(StarModifierPlaceKind.DERIVED_CLAUSE, null, null, false, null);
+    }
+
+    /** Whether a query is the subquery of an EXISTS standing, under no bracket, in a statement's own WHERE. */
+    private static boolean existsInStatementWhere(final FrostlakeParser.SelectStatementContext query) {
+        if (!(query.getParent() instanceof FrostlakeParser.ExistsExprContext)) {
+            return false;
+        }
+        for (ParserRuleContext up = query.getParent().getParent(); up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.WhereClauseContext) {
+                return statementClause(up);
+            }
+            if (up instanceof FrostlakeParser.SelectStatementContext || opensABracket(up)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a context is a super-group of a GROUP BY, a list of one, or a grouping set. */
+    private static boolean isGrouping(final ParserRuleContext context) {
+        return context instanceof FrostlakeParser.GroupByElementContext
+            || context instanceof FrostlakeParser.GroupByColumnListContext
+            || context instanceof FrostlakeParser.GroupingSetListContext
+            || context instanceof FrostlakeParser.GroupingSetContext;
     }
 
     /**
@@ -302,9 +381,13 @@ final class StarModifierPlace {
             || context instanceof FrostlakeParser.TryCastExprContext;
     }
 
-    /** Whether a context opens a bracket of its own: a call's parentheses, a CAST's, or any other construct's. */
+    /**
+     * Whether a context opens a bracket of its own: a call's parentheses, a CAST's, any other construct's, or the
+     * braces of a star read as a value, which are that star's own call.
+     */
     private static boolean opensABracket(final ParserRuleContext context) {
-        return openingParen(context) != null;
+        return openingParen(context) != null || context instanceof FrostlakeParser.FunctionCallStarExprContext
+            && ((FrostlakeParser.FunctionCallStarExprContext) context).LBRACE() != null;
     }
 
     /** The first '(' among a context's own tokens, or null. */

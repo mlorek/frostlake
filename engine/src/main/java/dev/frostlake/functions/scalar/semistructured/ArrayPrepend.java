@@ -33,7 +33,7 @@ public class ArrayPrepend extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         // Live: ARRAY_PREPEND([1], NULL) is [undefined,1].

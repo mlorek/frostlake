@@ -18,27 +18,46 @@ package dev.frostlake.executor.expressions;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * The column references an expression reads from the row it is evaluated over, in written order: a
- * subquery's names resolve in its own scope and a lambda's parameters are bound by the call that takes
- * it, so neither counts.
+ * subquery's names resolve in its own scope, a lambda's parameters are bound by the call that takes
+ * it, and the word in a date/time unit slot names a unit ({@link DateTimeUnitSlot}), so none of them counts.
  */
 public final class ColumnReferenceCollectWalk extends AstPrinterVisitor {
 
     private final List<ColumnReferenceExpression> references = new ArrayList<>();
     /** The parameters of the lambdas being walked, innermost first. */
     private final Deque<List<String>> lambdaParameters = new ArrayDeque<>();
+    /** The words standing in a unit slot of a call being walked. */
+    private final Set<Expression> unitWords = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>());
 
     @Override
     public String visitColumnReference(final ColumnReferenceExpression expr) {
         // A lambda's parameter is its own, bare or as the qualifier of a field it reads.
-        if (!isLambdaParameter(expr.isQualified() ? expr.getTableName() : expr.getColumnName())) {
+        if (!unitWords.contains(expr)
+                && !isLambdaParameter(expr.isQualified() ? expr.getTableName() : expr.getColumnName())) {
             references.add(expr);
         }
         return super.visitColumnReference(expr);
+    }
+
+    @Override
+    public String visitFunctionCall(final FunctionCallExpression expr) {
+        final List<Expression> args = expr.getArguments();
+        final int slot = expr.getFunctionName() == null ? -1
+            : DateTimeUnitSlot.positionIn(expr.getFunctionName().toUpperCase(Locale.ROOT));
+        if (slot >= 0 && args != null && slot < args.size()) {
+            // DATEADD(day, 1, ts) reads no column DAY, whatever the row holds under that name.
+            unitWords.add(args.get(slot));
+        }
+        return super.visitFunctionCall(expr);
     }
 
     @Override

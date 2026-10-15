@@ -80,7 +80,9 @@ number. A refused statement's message is relayed as the account relays it: the s
 `"\nwarehouse 'w9' does not exist or not authorized."` (a refused statement's message keeps the privilege hint that
 follows that sentence). The code is the
 statement's error number where the refusal's family has one: `002003` does not exist, `002002` already exists,
-`001003` syntax error, `003001` insufficient privileges, and a few others the resources name. Every routed answer
+`001003` syntax error, `003001` insufficient privileges, `090105` a statement that needs a current database the
+session does not have, and a few others the resources name. A request under a schema the system database serves
+without holding it (`SNOWFLAKE.ACCOUNT_USAGE` and its like) names the object that is missing, as under any schema. Every routed answer
 carries `X-Snowflake-Request-ID`, and an error's `request_id` repeats it.
 
 Response bodies carry every property of the specification's schema, `null` where the engine has no value, as the
@@ -224,7 +226,7 @@ scope, a revoke the objects it took a privilege or a grant option back from.
 | `listDatabaseRoles` `GET /databases/{database}/database-roles` | `SHOW DATABASE ROLES IN DATABASE [LIMIT … FROM]`; the page starts after the `fromName` |
 | `createDatabaseRole`, `deleteDatabaseRole` | `CREATE DATABASE ROLE [COMMENT]`, `DROP DATABASE ROLE [IF EXISTS]` |
 | `cloneDatabaseRole` `POST …/database-roles/{name}:clone` | the SQL has no clone of a database role: `CREATE DATABASE ROLE` (per `createMode`, in `targetDatabase` when given) with the source's comment, then a `GRANT` of each privilege, database role and future grant the source holds |
-| `listGrants`, `grantPrivileges`, `revokeGrants`, `listFutureGrants`, `grantFuturePrivileges`, `revokeFutureGrants` on `/databases/{database}/database-roles/{name}` | as for roles, with `DATABASE ROLE <database>.<name>` as the grantee |
+| `listGrants`, `grantPrivileges`, `revokeGrants`, `listFutureGrants`, `grantFuturePrivileges`, `revokeFutureGrants` on `/databases/{database}/database-roles/{name}` | as for roles, with `DATABASE ROLE <database>.<name>` as the grantee; `listGrants` in a session with no current database answers `400` with code `090105` (`cannot perform show grants. this session does not have a current database. …`) before the database or the role is looked up |
 | `grantPrivilege` `POST /grants/{granteeType}/{granteeName}/{securableType}/{securableName}/privileges` | `GRANT … ON <kind> <name> \| ON ACCOUNT TO <grantee> [WITH GRANT OPTION]`; a role or database role securable with no privileges grants that role |
 | `grantGroupPrivilege` `POST /grants/…/{bulkGrantType}/{securableTypePlural}/{scopeType}/{scopeName}/privileges` | `GRANT … ON ALL \| FUTURE <kinds> IN DATABASE \| SCHEMA <scope> TO <grantee>` |
 | `revokePrivilege`, `revokeGroupPrivilege` `DELETE …/privileges/{privilege}` | `REVOKE … FROM <grantee> [RESTRICT \| CASCADE]` (`deleteMode`; any other value is no mode, as it is for `mode`) |
@@ -452,7 +454,7 @@ account-level: `/api/v2/external-volumes`.
 
 | endpoint | runs |
 |---|---|
-| `listStages` `GET /stages` | `SHOW STAGES [LIKE] IN SCHEMA` |
+| `listStages` `GET /stages` | `SHOW STAGES [LIKE] IN SCHEMA` + `DESCRIBE STAGE` per stage: each listed stage is the whole body `fetchStage` answers |
 | `createStage` `POST /stages` | `CREATE [OR REPLACE] [TEMPORARY] STAGE [IF NOT EXISTS]` with `URL`, `STORAGE_INTEGRATION`, `ENDPOINT`, `CREDENTIALS = (…)`, `ENCRYPTION = (…)`, `DIRECTORY = (…)`, `FILE_FORMAT = (…)`, `COPY_OPTIONS = (…)` and `COMMENT` from the body |
 | `fetchStage` `GET /stages/{name}` | `SHOW STAGES LIKE … IN SCHEMA` + `DESCRIBE STAGE` (file format, copy options, directory table) |
 | `deleteStage` `DELETE /stages/{name}` | `DROP STAGE [IF EXISTS]` |
@@ -509,8 +511,8 @@ STORAGE_LOCATION = '<name>' CREDENTIALS = (…) | SET ALLOW_WRITES | SET COMMENT
 VOLUMES [LIKE]` (`name, allow_writes, comment`) and `DESC[RIBE] EXTERNAL VOLUME` (`parent_property, property,
 property_type, property_value, property_default`). Frostlake never reaches the storage: the `ACTIVE` location is
 empty, and the identity a real account generates for a location is a stand-in — `STORAGE_AWS_IAM_USER_ARN` reads one
-fixed IAM user, `STORAGE_AWS_EXTERNAL_ID` the id that was written or else the one derived from the volume's name,
-and a GCS location's `STORAGE_GCP_SERVICE_ACCOUNT` one fixed service account. `created_on` /
+fixed IAM user, `STORAGE_AWS_EXTERNAL_ID` the id that was written or else the one generated for this creation of
+the volume (another after a CREATE OR REPLACE, the same after a DROP that is undone), and a GCS location's `STORAGE_GCP_SERVICE_ACCOUNT` one fixed service account. `created_on` /
 `owner` are null in the API's body, as the listing does not carry them.
 
 ### Streams and tasks (`stream.yaml`, `task.yaml`)
@@ -620,8 +622,8 @@ procedure. A fetch reports what SHOW, DESCRIBE and the DDL carry, with the accou
 what they do not (`called_on_null_input` true, `nullable: true`, `log_level` and `trace_level` `OFF`; for a
 function `is_temporary: false` and `is_volatile` true; and `is_builtin: true` for a procedure, as the account reports
 it);
-each argument's `default_value` is its default as the DDL spells it (`null` for an argument that has none or
-defaults to NULL), and `language_config` tells a handler routine's `packages`, `imports`, `target_path`,
+each argument's `default_value` is its default as the DDL spells it — printed from its plan, so
+`'2020-01-01'::DATE` is `CAST('2020-01-01' AS DATE)` — (`null` for an argument that has none or defaults to NULL), and `language_config` tells a handler routine's `packages`, `imports`, `target_path`,
 `artifact_repository`, `artifact_repository_packages`, `external_access_integrations` and `secrets`, each secret
 by its full name; `owner` and `owner_role_type` are `null`. A listing leaves the body out (`null` for a function,
 `""` for a procedure), as the account's listing does.
@@ -790,9 +792,9 @@ created. A statement naming a kind the integration is not answers `Integration <
 Differences from a real account: nothing is validated against the outside world — a real account refuses an Azure
 or Google gateway URL it cannot reach, contacts a Polaris/REST catalog on CREATE, and accepts only GCP Pub/Sub
 names of its own cloud. The identities a real account hands out are stand-ins: `API_AWS_IAM_USER_ARN`,
-`SF_AWS_IAM_USER_ARN` and `GLUE_AWS_IAM_USER_ARN` read one fixed IAM user, each `…_AWS_EXTERNAL_ID` an id derived from
-the integration's kind and name (`<ACCOUNT>_SFCRole=1_<28 characters>`, the same for as long as the integration keeps
-its name), `API_GCP_SERVICE_ACCOUNT` one fixed service account, and a Glue catalog written without `GLUE_REGION`
+`SF_AWS_IAM_USER_ARN` and `GLUE_AWS_IAM_USER_ARN` read one fixed IAM user, each `…_AWS_EXTERNAL_ID` an id generated
+for this creation of the integration (`<ACCOUNT>_SFCRole=1_<28 characters>`, kept through an ALTER and another once
+the integration is created again), `API_GCP_SERVICE_ACCOUNT` one fixed service account, and a Glue catalog written without `GLUE_REGION`
 reads the account's own region. The notification hooks' `sf_aws_*` properties carry the same values; their
 `gcp_pubsub_service_account` / `azure_consent_url` properties stay null.
 

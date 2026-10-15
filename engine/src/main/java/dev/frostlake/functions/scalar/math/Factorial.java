@@ -19,6 +19,9 @@ package dev.frostlake.functions.scalar.math;
 import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.IntegerResultWidths;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.util.List;
 
 public class Factorial extends NumericArgumentFunction {
@@ -27,12 +30,21 @@ public class Factorial extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final long n = ((Number) args.get(0)).longValue();
-        if (n < 0) throw new RuntimeException("FACTORIAL requires a non-negative integer");
-        if (n > 20) throw new RuntimeException("FACTORIAL argument too large (max 20)");
-        long result = 1;
-        for (long i = 2; i <= n; i++) result *= i;
-        return result;
+        // A fraction goes to the nearest whole number; 33 is the last whose factorial a NUMBER holds.
+        final long n = new BigDecimal(args.get(0).toString()).setScale(0, RoundingMode.HALF_UP).longValue();
+        if (n < 0) {
+            throw new RuntimeException("Numeric value is out of range, error: Input of factorial function can't be"
+                + " negative. " + n + " is invalid.");
+        }
+        if (n > 33) {
+            throw new RuntimeException("Numeric value is out of range, error: " + n
+                + " is too large for factorial function.");
+        }
+        BigInteger result = BigInteger.ONE;
+        for (long i = 2; i <= n; i++) {
+            result = result.multiply(BigInteger.valueOf(i));
+        }
+        return result.bitLength() < 63 ? (Object) Long.valueOf(result.longValue()) : new BigDecimal(result);
     }
 
     @Override

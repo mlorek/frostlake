@@ -49,6 +49,7 @@ public class SubqueryMemo {
 
     private final Map<String, List<ResultSet>> uncorrelatedResults = new HashMap<>();
     private final Map<String, PreparedInSet> inSets = new HashMap<>();
+    private final Map<String, PreparedKeyedValues> keyedValues = new HashMap<>();
     private final Set<String> correlated = new HashSet<>();
     private final Set<String> redrawn = new HashSet<>();
 
@@ -89,5 +90,21 @@ public class SubqueryMemo {
 
     public void recordInSet(final String subquery, final PreparedInSet set) {
         inSets.put(subquery, set);
+    }
+
+    /**
+     * @param subquery a grouped query's text (see {@link dev.frostlake.executor.EqualityCorrelation#groupedQuery})
+     * @return its values by key, or null when not computed in this statement
+     */
+    public PreparedKeyedValues cachedKeyedValues(final String subquery) {
+        return keyedValues.get(subquery);
+    }
+
+    /**
+     * @param subquery a grouped query's text
+     * @param values   its values by key
+     */
+    public void recordKeyedValues(final String subquery, final PreparedKeyedValues values) {
+        keyedValues.put(subquery, values);
     }
 }

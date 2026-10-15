@@ -22,6 +22,7 @@ import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -44,10 +45,14 @@ import java.util.Set;
  *
  * <p>Only a conjunct that can be judged from a left row alone, with the same answer before and after the call,
  * is taken: every name in it is a column of a relation to the left and of nothing the function answers, and it
- * holds no subquery, no sequence read and no call but a built-in scalar function's that answers alike each time
- * it is asked — which keeps anything that may answer differently the second time out. A query block with a
- * RIGHT or FULL join, or with the {@code (+)} join marker, takes none: there a condition on the left relations
- * also decides which rows are null-extended.
+ * holds no sequence read and no call but a built-in scalar function's that answers alike each time it is asked —
+ * which keeps anything that may answer differently the second time out. A subquery in it is one whose every name
+ * is its own ({@code t.k > (SELECT MIN(k) FROM t)}, an IN's, a NOT IN's) or an EXISTS that reads the row; a value
+ * read through the row ({@code t.k > (SELECT … WHERE x.k < t.k)}) is left to the WHERE (live-verified), and so
+ * is a subquery a name of which may be the function's or a later relation's — one that is neither its own nor a
+ * left relation's, or a bare one among relations whose columns are not known. A query block with a RIGHT or FULL
+ * join, or with the {@code (+)} join marker, takes none: there a condition on the left relations also decides
+ * which rows are null-extended.
  */
 final class LateralInputFilter {
 
@@ -88,9 +93,10 @@ final class LateralInputFilter {
         final LateralInputFilter filter = new LateralInputFilter(evaluator);
         final List<FrostlakeParser.BooleanExprContext> written = new ArrayList<>();
         collectConjuncts(select.whereClause().booleanExpr(), written);
+        final Set<String> offered = offeredNames(scope, scopeTables);
         for (final FrostlakeParser.BooleanExprContext conjunct : written) {
             final int[] names = new int[1];
-            if (!readsTheLeftAlone(conjunct, executor.getFunctionRegistry(), scope, scopeTables, lateralTable, names)
+            if (!readsTheLeftAlone(conjunct, executor, offered, scope, scopeTables, lateralTable, names)
                     || names[0] == 0) {
                 continue;
             }
@@ -136,15 +142,34 @@ final class LateralInputFilter {
         conjuncts.add(condition);
     }
 
-    private static boolean readsTheLeftAlone(final ParseTree node, final FunctionRegistry functions,
-                                             final Map<String, Table> scope, final List<Table> scopeTables,
-                                             final Table lateralTable, final int[] names) {
-        if (node instanceof FrostlakeParser.SelectStatementContext
-                || node instanceof FrostlakeParser.FunctionCallStarExprContext) {
+    private static boolean readsTheLeftAlone(final ParseTree node, final QueryExecutor executor,
+                                             final Set<String> offered, final Map<String, Table> scope,
+                                             final List<Table> scopeTables, final Table lateralTable,
+                                             final int[] names) {
+        if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            // A query whose every name is its own answers alike for every left row, and an EXISTS that reads the
+            // row is judged from it alone; a value read through the row is left to the WHERE, as is a query a
+            // name of which may be the function's or a later relation's.
+            if (holdsVaryingCall(node)) {
+                return false;
+            }
+            final CorrelationSide reach = new CorrelatedSubqueryRule(executor, offered)
+                .reach((FrostlakeParser.SelectStatementContext) node);
+            if (reach == CorrelationSide.INNER) {
+                return true;
+            }
+            if (reach == CorrelationSide.OUTER && node.getParent() instanceof FrostlakeParser.ExistsExprContext) {
+                names[0]++;
+                return true;
+            }
             return false;
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext
-                && !answersAlikeEachTime((FrostlakeParser.FunctionCallExprContext) node, functions)) {
+                && !answersAlikeEachTime((FrostlakeParser.FunctionCallExprContext) node,
+                    executor.getFunctionRegistry())) {
             return false;
         }
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
@@ -153,11 +178,54 @@ final class LateralInputFilter {
                 ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName()), scope, scopeTables, lateralTable);
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (!readsTheLeftAlone(node.getChild(i), functions, scope, scopeTables, lateralTable, names)) {
+            if (!readsTheLeftAlone(node.getChild(i), executor, offered, scope, scopeTables, lateralTable, names)) {
                 return false;
             }
         }
         return true;
+    }
+
+    /** Every name the left relations offer a subquery, upper-cased: bare columns and relation-qualified ones. */
+    private static Set<String> offeredNames(final Map<String, Table> scope, final List<Table> scopeTables) {
+        final Set<String> names = new HashSet<>();
+        for (final Table relation : scopeTables) {
+            if (relation != null) {
+                addColumns(names, null, relation);
+            }
+        }
+        for (final Map.Entry<String, Table> named : scope.entrySet()) {
+            if (named.getValue() != null) {
+                addColumns(names, named.getKey(), named.getValue());
+            }
+        }
+        return names;
+    }
+
+    private static void addColumns(final Set<String> names, final String qualifier, final Table relation) {
+        for (final TableColumn column : relation.getColumns()) {
+            final String name = column.getName().toUpperCase(Locale.ROOT);
+            names.add(name);
+            if (qualifier != null) {
+                names.add(qualifier.toUpperCase(Locale.ROOT) + "." + name);
+            }
+        }
+    }
+
+    /** Whether a query calls a function whose answer changes from one call to the next. */
+    private static boolean holdsVaryingCall(final ParseTree node) {
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            final String[] name = ParseTreeText.functionNameParts(
+                ((FrostlakeParser.FunctionCallExprContext) node).functionName());
+            if (name.length == 1 && VARYING.contains(name[0].toUpperCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsVaryingCall(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether a call is a built-in scalar function's, written plainly, that answers alike each time. */
@@ -214,8 +282,10 @@ final class LateralInputFilter {
         return false;
     }
 
+    /** Whether a {@code (+)} marker is written under the node: {@code t.c(+)}, or one following an operand. */
     private static boolean holdsJoinMarker(final ParseTree node) {
-        if (node instanceof FrostlakeParser.OuterJoinOperandExprContext) {
+        if (node instanceof FrostlakeParser.OuterJoinColumnExprContext
+                || node instanceof FrostlakeParser.OuterJoinOperandExprContext) {
             return true;
         }
         for (int i = 0; i < node.getChildCount(); i++) {

@@ -32,6 +32,8 @@ import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.HybridKeys;
+import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
@@ -738,9 +740,61 @@ final class InsertExecutor {
         storeInsertedRow(table, fullyQualifiedName, row, guard);
     }
 
+    /**
+     * A hybrid table's foreign keys hold row by row (documented): a row whose key no row of the parent holds, a NULL
+     * key included, is refused, the parent rows this transaction has written counted.
+     */
+    private void refuseOrphanRow(final Table table, final Row row) {
+        if (!table.isHybrid()) {
+            return;
+        }
+        for (final ForeignKeyConstraint key : table.getForeignKeys()) {
+            final List<Object> values = new ArrayList<>();
+            boolean missing = false;
+            for (final String column : key.getColumnNames()) {
+                final int index = table.getColumnIndex(column);
+                final Object value = index >= 0 && index < row.getValues().size() ? row.getValue(index) : null;
+                missing = missing || value == null;
+                values.add(value);
+            }
+            if (missing || !parentHolds(key, values)) {
+                throw new RuntimeException(HybridKeys.foreignKeyViolated(table, key));
+            }
+        }
+    }
+
+    /** Whether a row of the key's parent holds these values in its referenced columns. */
+    private boolean parentHolds(final ForeignKeyConstraint key, final List<Object> values) {
+        final String parentName = key.getReferencedTable();
+        final Table parent = executor.getCatalog().resolveTable(parentName);
+        final String parentStorage = executor.getFullyQualifiedTableName(parentName);
+        final List<Integer> slots = new ArrayList<>();
+        for (final String column : key.getReferencedColumns()) {
+            slots.add(parent.getColumnIndex(column));
+        }
+        final List<Row> candidates = new ArrayList<>(executor.getStorageEngine().getTableStorage(parentStorage).scan());
+        if (executor.isDeferredApply()) {
+            candidates.addAll(executor.getTransactionManager().getCurrentTransaction().getWriteSet()
+                .pendingInserts(parentStorage));
+        }
+        for (final Row candidate : candidates) {
+            boolean match = true;
+            for (int i = 0; i < slots.size() && match; i++) {
+                final int slot = slots.get(i);
+                final Object held = slot >= 0 && slot < candidate.getValues().size() ? candidate.getValue(slot) : null;
+                match = held != null && ValueComparisons.compareValues(held, values.get(i)) == 0;
+            }
+            if (match) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Write a row whose constraints have been enforced: buffered in the transaction's write set, or at once. */
     private void storeInsertedRow(final Table table, final String fullyQualifiedName, final Row row,
                                   final DeferredInsertGuard guard) {
+        refuseOrphanRow(table, row);
         if (executor.isDeferredApply()) {
             final TableStorage base = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
             final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();

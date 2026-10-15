@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -157,6 +158,27 @@ public class ShowCommandHandler implements CommandHandler {
      */
     public void requireShape(final FrostlakeParser.ShowClassStatementContext ctx) {
         new ClassListing(catalog, queryExecutor).requireShape(ctx);
+    }
+
+    /**
+     * Refuse a DESCRIBE for the first property the account refuses in it — a name it does not know
+     * ({@code invalid parameter 'x'}), a name left without its value — as it does before the object is looked up:
+     * a block is refused for it while it compiles, so the refusal carries no wrapper (live-verified).
+     *
+     * A kind the account refuses as a feature before it reads any property is left to that refusal.
+     *
+     * @param ctx the DESCRIBE, of any kind
+     */
+    public void requireProperties(final ParserRuleContext ctx) {
+        if (ctx instanceof FrostlakeParser.DescribeStatementContext
+                && ((FrostlakeParser.DescribeStatementContext) ctx).unmodelledKind() != null) {
+            final UnmodelledDropKind unmodelled =
+                UnmodelledDropKind.of(((FrostlakeParser.DescribeStatementContext) ctx).unmodelledKind());
+            if (unmodelled == UnmodelledDropKind.RESOURCE_MONITOR || unmodelled == UnmodelledDropKind.ORGANIZATION) {
+                return;
+            }
+        }
+        DescribeProperties.describesStage(ctx, queryExecutor);
     }
 
     /**
@@ -728,6 +750,14 @@ public class ShowCommandHandler implements CommandHandler {
                     : ctx.IN() == null ? "TABLE" : "SCHEMA";
                 scopeName = scope.isDatabase() ? scope.name() : null;
             } else if (ctx.DATABASE() != null) {
+                if (!ctx.keysDatabasePath.isEmpty()) {
+                    // A database is one part: a path asks for a full search path, naming its last part.
+                    final FrostlakeParser.NamePartContext last =
+                        ctx.keysDatabasePath.get(ctx.keysDatabasePath.size() - 1);
+                    throw new RuntimeException(SqlCompilationError.of(
+                        "Must specify the full search path starting from database for "
+                            + SqlIdentifiers.canonicalTextParts(last.getText())[0]));
+                }
                 scopeKind = "DATABASE";
                 scopeName = getText(ctx.identifier());
             } else if (ctx.SCHEMA() != null) {
@@ -1081,23 +1111,34 @@ public class ShowCommandHandler implements CommandHandler {
             return new IntegrationCommandHandler(catalog, queryExecutor).describe(ctx.integrationKind(), ctx.identifier());
         }
         if (ctx.VOLUME() != null) {
+            DescribeProperties.describesStage(ctx, queryExecutor);
             return new ExternalVolumeCommandHandler(catalog).describe(ctx.identifier());
         }
         if (ctx.unmodelledKind() != null) {
-            throw describeUnmodelled(UnmodelledDropKind.of(ctx.unmodelledKind()),
-                queryExecutor.resolveObjectNameParts(ctx.objectName()));
+            final UnmodelledDropKind unmodelled = UnmodelledDropKind.of(ctx.unmodelledKind());
+            if (unmodelled != UnmodelledDropKind.RESOURCE_MONITOR && unmodelled != UnmodelledDropKind.ORGANIZATION) {
+                // A kind that misses its object judges the properties first, as every modelled kind does.
+                DescribeProperties.describesStage(ctx, queryExecutor);
+            }
+            throw describeUnmodelled(unmodelled, queryExecutor.resolveObjectNameParts(ctx.objectName()));
         }
         if (ctx.IMAGE() != null && ctx.REPOSITORY() != null) {
-            // The account describes no image repository, whatever one is named (live-verified).
+            // The account describes no image repository, whatever one is named; a property's name left without
+            // its value is the statement's syntax error first (live-verified).
+            DescribeProperties.requireValues(ctx);
             throw new RuntimeException("Unsupported feature 'TOK_IMAGE_REPOSITORY'.");
         }
         final ShowCommandExecutor showExecutor = queryExecutor.getShowExecutor();
         if (ctx.NOTEBOOK() != null || ctx.STREAMLIT() != null) {
+            DescribeProperties.describesStage(ctx, queryExecutor);
             return new AppObjectListing(catalog).describe(ctx.NOTEBOOK() != null ? AppObjectKind.NOTEBOOK
                 : AppObjectKind.STREAMLIT, ctx.qualifiedName());
         }
         if (ctx.IDENTIFIER() != null) {
-            if (UnmodelledKindWords.isOneWord(ctx.IDENTIFIER().getSymbol())) {
+            if (UnmodelledKindWords.readsDescribeTail(ctx.IDENTIFIER())) {
+                // A kind the account knows judges the properties first, as every modelled kind does, and then
+                // misses its object.
+                DescribeProperties.describesStage(ctx, queryExecutor);
                 throw describeUnmodelled(UnmodelledDropKind.valueOf(ctx.IDENTIFIER().getText()
                     .toUpperCase(Locale.ROOT)), ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
             }
@@ -1134,6 +1175,15 @@ public class ShowCommandHandler implements CommandHandler {
         }
         if (ctx.ICEBERG() != null && ctx.objectName() != null) {
             refuseTableThatIsNoIcebergTable(ctx.objectName());
+            final String described = describedName(ctx.objectName());
+            if (!showExecutor.namesAStoredRelation(described) && !showExecutor.namesDynamicTable(described)) {
+                // A name that reaches nothing is refused as an Iceberg table by its full path, after its schema
+                // (live-verified).
+                final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+                final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Iceberg table",
+                    owner.qualifiedName(parts[parts.length - 1])));
+            }
         }
         if (stageProperties && (ctx.DYNAMIC() != null || ctx.TABLE() != null || ctx.VIEW() != null)) {
             // The stage properties are the relation's, whatever kind the name reaches: a dynamic table
@@ -1562,7 +1612,7 @@ public class ShowCommandHandler implements CommandHandler {
         final List<DataType> argumentTypes = new ArrayList<>();
         if (ctx.dataTypeList() != null) {
             for (final FrostlakeParser.DataTypeNameContext typeCtx : ctx.dataTypeList().dataTypeName()) {
-                argumentTypes.add(columnParser.parseDataType(typeCtx, RoutineSignatureForm.parametersOf(typeCtx)));
+                argumentTypes.add(RoutineSignatureForm.writtenType(columnParser, typeCtx));
             }
         }
         return argumentTypes;

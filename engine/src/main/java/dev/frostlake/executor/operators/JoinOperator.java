@@ -17,12 +17,18 @@
 package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.DeferredFault;
+import dev.frostlake.executor.SessionZone;
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import dev.frostlake.values.VariantValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -147,16 +153,33 @@ public class JoinOperator implements Operator {
         // A USING or NATURAL join matches by key through its evaluator and carries no condition text.
         final String rightSideRead = rightSide.describe() == null ? "" : "{" + rightSide.describe() + "}";
         if (joinType == JoinType.CROSS || joinCondition == null) {
-            return String.format("%s JOIN[%s x %s]%s",
-                joinType, leftTable.getName(), rightTable.getName(), rightSideRead);
+            return String.format("%s JOIN[%s x %s%s]%s",
+                joinType, leftTable.getName(), rightTable.getName(), keysRead(), rightSideRead);
         }
 
         final String conditionPreview = joinCondition.length() > 30
             ? joinCondition.substring(0, 27) + "..."
             : joinCondition;
 
-        return String.format("%s JOIN[%s x %s ON %s]%s",
-            joinType, leftTable.getName(), rightTable.getName(), conditionPreview, rightSideRead);
+        return String.format("%s JOIN[%s x %s ON %s%s]%s",
+            joinType, leftTable.getName(), rightTable.getName(), conditionPreview, keysRead(), rightSideRead);
+    }
+
+    /** The columns the hash path buckets the two sides by, as {@code " | HASH L=R, …"}; nothing without keys. */
+    private String keysRead() {
+        if (leftKeyIdx == null || rightKeyIdx == null) {
+            return "";
+        }
+        final StringBuilder keys = new StringBuilder(" | HASH ");
+        for (int i = 0; i < leftKeyIdx.length; i++) {
+            keys.append(i > 0 ? ", " : "").append(columnName(leftTable, leftKeyIdx[i])).append('=')
+                .append(columnName(rightTable, rightKeyIdx[i]));
+        }
+        return keys.toString();
+    }
+
+    private static String columnName(final Table table, final int index) {
+        return index >= 0 && index < table.columnCount() ? table.columnAt(index).getName() : "$" + (index + 1);
     }
 
     /**
@@ -166,6 +189,8 @@ public class JoinOperator implements Operator {
         final List<Row> resultRows = new ArrayList<>();
 
         for (final Row leftRow : leftRows) {
+            // Each outer row is where the statement's timeout or cancel ends a join.
+            StatementCancellation.check();
             for (final Row rightRow : rightRows) {
                 final Row combinedRow = combineRows(leftRow, rightRow);
                 resultRows.add(combinedRow);
@@ -187,6 +212,8 @@ public class JoinOperator implements Operator {
 
         // Process each left row
         for (final Row leftRow : leftRows) {
+            // Each outer row is where the statement's timeout or cancel ends a join.
+            StatementCancellation.check();
             boolean leftMatchFound = false;
 
             // Try to match with each right row
@@ -246,6 +273,8 @@ public class JoinOperator implements Operator {
         final boolean[] matchedRight = new boolean[rightRows.size()];
 
         for (final Row leftRow : leftRows) {
+            // Each outer row is where the statement's timeout or cancel ends a join.
+            StatementCancellation.check();
             boolean leftMatchFound = false;
             final List<Integer> candidates = rightIndex.get(buildKey(leftRow, leftKeyIdx));
             if (candidates != null) {
@@ -310,7 +339,24 @@ public class JoinOperator implements Operator {
             return ((String) value).toUpperCase(Locale.ROOT);
         }
         if (value instanceof Number) {
-            return ((Number) value).doubleValue();
+            // -0.0 and 0 are one value to =, so they share a bucket (live-verified).
+            final double numeric = ((Number) value).doubleValue();
+            return numeric == 0.0 ? 0.0 : numeric;
+        }
+        // Every date and timestamp buckets by the moment it names: a zoned one whatever its offset, a naive one
+        // and a date's midnight read in the session's zone, as = compares a TIMESTAMP_NTZ with a TIMESTAMP_TZ
+        // (live-verified). Two naive values a zone change folds together share a bucket, which is safe.
+        if (value instanceof OffsetDateTime) {
+            return ((OffsetDateTime) value).toInstant();
+        }
+        if (value instanceof ZonedDateTime) {
+            return ((ZonedDateTime) value).toInstant();
+        }
+        if (value instanceof LocalDateTime) {
+            return ((LocalDateTime) value).atZone(SessionZone.current()).toInstant();
+        }
+        if (value instanceof LocalDate) {
+            return ((LocalDate) value).atStartOfDay(SessionZone.current()).toInstant();
         }
         return value;
     }

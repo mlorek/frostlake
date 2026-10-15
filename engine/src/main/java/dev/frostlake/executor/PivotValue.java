@@ -75,6 +75,24 @@ final class PivotValue {
         return name;
     }
 
+    /**
+     * The column's name under the aggregate's alias, which it ends in — inside the quotes of a quoted name:
+     * {@code SUM(amt) AS total} names the columns {@code 'JAN_TOTAL'} and, beside a value's own alias {@code j},
+     * {@code J_TOTAL} (live-verified).
+     *
+     * @param aggregateAlias the aggregate's alias, or null when it has none
+     * @return the name
+     */
+    String name(final String aggregateAlias) {
+        if (aggregateAlias == null) {
+            return name;
+        }
+        if (name.length() > 1 && name.startsWith("'") && name.endsWith("'")) {
+            return name.substring(0, name.length() - 1) + "_" + aggregateAlias + "'";
+        }
+        return name + "_" + aggregateAlias;
+    }
+
     Object value() {
         return value;
     }

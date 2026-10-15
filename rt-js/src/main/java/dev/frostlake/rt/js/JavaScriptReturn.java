@@ -48,6 +48,9 @@ final class JavaScriptReturn {
     /** How the invoker's source spells the prefix of a refusal it hands back in place of a value. */
     static final String REFUSAL_IN_SOURCE = "\\u0001R:";
 
+    /** How the invoker's source spells the prefix of a refusal the account words without the execution error's. */
+    static final String BARE_REFUSAL_IN_SOURCE = "\\u0001B:";
+
     /** How the invoker's source spells the text it writes for an array element that is {@code undefined}. */
     static final String HOLE_IN_SOURCE = "\\u0000undefined\\u0000";
 
@@ -58,6 +61,8 @@ final class JavaScriptReturn {
     static final String TEXT_IN_SOURCE = "\\u0001S:";
 
     private static final String REFUSAL = "\u0001R:";
+
+    private static final String BARE_REFUSAL = "\u0001B:";
 
     private static final String TEXT = "\u0001S:";
 
@@ -78,6 +83,10 @@ final class JavaScriptReturn {
         }
         if (result instanceof String && ((String) result).startsWith(REFUSAL)) {
             throw new RuntimeException("JavaScript execution error: " + ((String) result).substring(REFUSAL.length()));
+        }
+        if (result instanceof String && ((String) result).startsWith(BARE_REFUSAL)) {
+            // A value that holds itself: Object contains cyclic references (live-verified).
+            throw new RuntimeException(((String) result).substring(BARE_REFUSAL.length()));
         }
         if (returns instanceof StringType) {
             final String written = String.valueOf(result);

@@ -155,6 +155,20 @@ public final class BlockReadOn {
     }
 
     /**
+     * Whether the statement that ends at a token is a statement of a BEGIN … END block itself — its body or one of
+     * its handlers — and not of a control construct's body.
+     *
+     * @param tokens the text's tokens ({@link #spoken})
+     * @param end    the index of the statement's semicolon, or of the token it runs into
+     * @return whether the innermost construct open there is a block
+     */
+    public static boolean standsDirectlyInBlock(final List<Token> tokens, final int end) {
+        final Deque<OpenConstruct> open = new ArrayDeque<>();
+        read(tokens, 0, end, open, false);
+        return !open.isEmpty() && open.peek().closingWord() < 0;
+    }
+
+    /**
      * The token refused once the block statement that ends at a semicolon is given up.
      *
      * @param tokens    the text's tokens ({@link #spoken})

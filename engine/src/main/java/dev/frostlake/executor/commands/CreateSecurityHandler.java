@@ -20,6 +20,7 @@ import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.expressions.PolicyObjectTagCalls;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -39,6 +40,7 @@ import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.SqlTypeNames;
 
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -126,6 +128,9 @@ public class CreateSecurityHandler implements CommandHandler {
             try { catalog.dropTag(tagName); } catch (final RuntimeException ignored) {}
         }
         try {
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists,
+                ddl.resolveSchemaFromQualifiedName(tagName).hasTagExact(ddl.extractObjectName(tagName)),
+                qualifiedNameParts(ctx.qualifiedName(0)));
             ddl.checkCreatePrivilege(Privilege.CREATE_TAG,
                 ddl.resolveSchemaFromQualifiedName(tagName));
             catalog.createTag(tagName, allowedValues, comment);
@@ -186,6 +191,38 @@ public class CreateSecurityHandler implements CommandHandler {
             + SqlIdentifiers.spellCanonical(parts[parts.length - 1]) + "' already exists."));
     }
 
+    /**
+     * A policy's name, judged with the privilege to create it. The policies of a schema share one namespace: a
+     * plain CREATE over a name any of them holds is refused for the name before the privilege is asked; with OR
+     * REPLACE or IF NOT EXISTS the privilege comes first, and then a holder of another kind is no policy to
+     * replace — {@code Object found is of type 'MASKING_POLICY', not specified type 'ROW_ACCESS_POLICY'.} —
+     * while IF NOT EXISTS finds the name taken (live-verified).
+     *
+     * @param schema      the policy's schema
+     * @param policyName  its name
+     * @param kind        its kind as a refusal spells it
+     * @param parts       its name as written, canonical
+     * @param orReplace   whether the statement says OR REPLACE
+     * @param ifNotExists whether it says IF NOT EXISTS
+     * @param privilege   the privilege creating it asks
+     */
+    private void requirePolicyCreatable(final Schema schema, final String policyName, final String kind,
+                                        final String[] parts, final boolean orReplace, final boolean ifNotExists,
+                                        final Privilege privilege) {
+        final String holder = schema.policyKindHolding(policyName);
+        if (holder != null && !orReplace && !ifNotExists) {
+            throw policyNameTaken(parts);
+        }
+        ddl.checkCreatePrivilege(privilege, schema);
+        if (holder != null && !holder.equals(kind)) {
+            if (orReplace) {
+                throw new RuntimeException(SqlCompilationError.PREFIX + " Object found is of type '" + holder
+                    + "', not specified type '" + kind + "'.");
+            }
+            throw policyNameTaken(parts);
+        }
+    }
+
     public Object handleCreateMaskingPolicy(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String qn = getText(ctx.qualifiedName(0));
         final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
@@ -195,7 +232,8 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
-            ddl.checkCreatePrivilege(Privilege.CREATE_MASKING_POLICY, schema);
+            requirePolicyCreatable(schema, policyName, "MASKING_POLICY", parts, orReplace, ifNotExists,
+                Privilege.CREATE_MASKING_POLICY);
             if (orReplace) {
                 queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
                 if (catalog.isPolicyInUse(policyName, true)) {
@@ -233,6 +271,8 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             final DataType declaredReturnType = ctx.dataTypeName() != null
                 ? columnParser.parseDataType(ctx.dataTypeName(), ctx.typeParameters()) : null;
+            PolicyObjectTagCalls.requireTagsIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition()
+                : ctx.booleanExpr(), catalog);
             PolicyBodyCheck.compile(queryExecutor, catalog, policyName, declaredReturnType,
                 params, body, schema);
             final MaskingPolicy policy = new MaskingPolicy(policyName, params, returnType, body);
@@ -257,7 +297,8 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
-            ddl.checkCreatePrivilege(Privilege.CREATE_ROW_ACCESS_POLICY, schema);
+            requirePolicyCreatable(schema, policyName, "ROW_ACCESS_POLICY", parts, orReplace, ifNotExists,
+                Privilege.CREATE_ROW_ACCESS_POLICY);
             if (orReplace) {
                 queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
                 try { schema.dropRowAccessPolicy(policyName); } catch (final RuntimeException ignored) {}
@@ -273,6 +314,9 @@ public class CreateSecurityHandler implements CommandHandler {
             final String body = ctx.bodyDefinition() != null
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
+            // A row access policy protects a table and no column: the column's tag is not its to read.
+            PolicyObjectTagCalls.refuseIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
+                PolicyObjectTagCalls.ON_CURRENT_COLUMN);
             // A row access policy's RETURNS is always BOOLEAN, spelled or not.
             PolicyBodyCheck.compile(queryExecutor, catalog, policyName, BooleanType.BOOLEAN,
                 params, body, schema);
@@ -311,7 +355,8 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
-            ddl.checkCreatePrivilege(Privilege.CREATE_JOIN_POLICY, schema);
+            requirePolicyCreatable(schema, policyName, "JOIN_POLICY", parts, orReplace, ifNotExists,
+                Privilege.CREATE_JOIN_POLICY);
             if (orReplace) {
                 if (catalog.isJoinPolicyInUse(policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -362,7 +407,8 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
-            ddl.checkCreatePrivilege(Privilege.CREATE_AGGREGATION_POLICY, schema);
+            requirePolicyCreatable(schema, policyName, "AGGREGATION_POLICY", parts, orReplace, ifNotExists,
+                Privilege.CREATE_AGGREGATION_POLICY);
             if (orReplace) {
                 if (catalog.isAggregationPolicyInUse(policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -376,6 +422,10 @@ public class CreateSecurityHandler implements CommandHandler {
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
             PolicyBodyCheck.requireNumericLimits(body);
+            // An aggregation policy protects neither a column nor a table whose tag it could read.
+            final ParseTree written = ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr();
+            PolicyObjectTagCalls.refuseIn(written, PolicyObjectTagCalls.ON_CURRENT_TABLE);
+            PolicyObjectTagCalls.refuseIn(written, PolicyObjectTagCalls.ON_CURRENT_COLUMN);
             final AggregationPolicy policy = new AggregationPolicy(policyName, body);
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
@@ -414,7 +464,8 @@ public class CreateSecurityHandler implements CommandHandler {
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
-            ddl.checkCreatePrivilege(Privilege.CREATE_PROJECTION_POLICY, schema);
+            requirePolicyCreatable(schema, policyName, "PROJECTION_POLICY", parts, orReplace, ifNotExists,
+                Privilege.CREATE_PROJECTION_POLICY);
             if (orReplace) {
                 if (catalog.isProjectionPolicyInUse(policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
@@ -428,6 +479,9 @@ public class CreateSecurityHandler implements CommandHandler {
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
             PolicyBodyCheck.requireNumericLimits(body);
+            // A projection policy protects a column: the table's tag is not its to read.
+            PolicyObjectTagCalls.refuseIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
+                PolicyObjectTagCalls.ON_CURRENT_TABLE);
             final ProjectionPolicy policy = new ProjectionPolicy(policyName, body);
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {

@@ -155,11 +155,26 @@ public class ColumnDefinitionParser implements CommandHandler {
                 || negatedLiteral(defaultExpression.expression()) != null) {
             return;
         }
+        // A sequence's NEXTVAL is a default ADD COLUMN takes on a table that holds no rows; one that holds rows has
+        // refused it already, as a non-constant default (live-verified).
+        if (isSequenceNextval(defaultExpression.expression())) {
+            return;
+        }
         // A default that calls a user-defined function is echoed as the plan prints it, the function under its
         // bare name in upper case, and a name that is no function is refused as one first (live-verified).
         final String planned = new DefaultExpressionCalls(queryExecutor).addColumnEcho(defaultExpression.expression());
         throw new RuntimeException(SqlCompilationError.of("Invalid column default expression ["
             + (planned != null ? planned : castSpelling(defaultExpression.expression())) + "]"));
+    }
+
+    /** Whether a default is a sequence's next value, {@code seq.NEXTVAL}, qualified or not. */
+    private static boolean isSequenceNextval(final FrostlakeParser.ExpressionContext expression) {
+        if (!(expression instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return false;
+        }
+        final String[] parts = ParseTreeText.qualifiedNameParts(
+            ((FrostlakeParser.QualifiedNameExprContext) expression).qualifiedName());
+        return parts.length >= 2 && parts.length <= 4 && "NEXTVAL".equals(parts[parts.length - 1]);
     }
 
     /**
@@ -1307,7 +1322,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (p.typeParameters() == null && parameter.getDataType() instanceof StringType) {
             return new Parameter(parameter.getName(),
                 new StringType(parameter.getDataType().getName(), POLICY_VARCHAR_LENGTH),
-                parameter.getDefaultValue());
+                parameter.getDefaultValue(), parameter.isUnsized(), parameter.getDefaultTold());
         }
         return parameter;
     }
@@ -1319,7 +1334,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         final String name = getText(p.identifier());
         final DataType type = parseDataType(p.dataTypeName(), p.typeParameters());
         final String defaultVal = p.expression() != null ? getOriginalText(p.expression()) : null;
-        return new Parameter(name, type, defaultVal);
+        return new Parameter(name, type, defaultVal, p.typeParameters() == null && Parameter.holdsDefaultLength(type));
     }
 
 

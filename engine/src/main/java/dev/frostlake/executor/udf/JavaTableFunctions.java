@@ -136,13 +136,16 @@ public final class JavaTableFunctions {
                 : JarHandlerLoader.load(function.getImports(), className, catalog, s3Resolver);
         } catch (final RuntimeException unreadable) {
             if (String.valueOf(unreadable.getMessage()).startsWith("No class bytes generated for")) {
-                throw new RuntimeException(missingClass(className, where), unreadable);
+                throw new RuntimeException(JavaHandlerFailure.missingClass(className,
+                    JavaRuntimeLevel.declared(function.getRuntimeVersion()), where), unreadable);
             }
             throw unreadable;
         }
     }
 
     /**
+     * The report of a class a Scala table function's body does not hold, which names the class and no frame.
+     *
      * @param className a handler's class
      * @param where     the end of the report's sentence
      * @return the report of a class the body does not hold

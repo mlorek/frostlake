@@ -241,6 +241,9 @@ public class DropCommandHandler implements CommandHandler {
      * for finds nothing to drop (live-verified).
      */
     public Object handleDropClassStatement(final FrostlakeParser.DropClassStatementContext ctx) {
+        if (ctx.droppedClass != null) {
+            return dropClass(ctx);
+        }
         final UnmodelledDropKind unmodelled = UnmodelledDropKind.of(ctx);
         if (unmodelled != null) {
             return dropUnmodelled(ctx, unmodelled);
@@ -262,6 +265,23 @@ public class DropCommandHandler implements CommandHandler {
             return dropBuiltInInstance(ctx);
         }
         throw new RuntimeException(ShowScopeRefusal.missingClass(parts, catalog));
+    }
+
+    /**
+     * DROP CLASS of a class by its name. No class a statement may drop is modelled: the name resolves the way any
+     * schema object's does — a missing database or schema is refused, IF EXISTS or not, and so is a name with too
+     * many parts — and then the class is missing by its full path, which IF EXISTS forgives (live-verified).
+     */
+    private Object dropClass(final FrostlakeParser.DropClassStatementContext ctx) {
+        final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+        final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
+        if (ctx.if_exists() != null) {
+            ConditionalDdlOutcome.dropSkipped();
+            return null;
+        }
+        throw new RuntimeException(SqlCompilationError.inline("Object type or Class '"
+            + SqlIdentifiers.spellAlreadyCanonicalPath(QualifiedName.join(owner.getDatabaseName(), owner.getName(),
+                parts[parts.length - 1])) + "' does not exist or not authorized."));
     }
 
     /**
@@ -335,16 +355,23 @@ public class DropCommandHandler implements CommandHandler {
     public Object handleDropStatement(final FrostlakeParser.DropStatementContext ctx) {
         final boolean ifExists = ctx.if_exists() != null;
         final boolean purged = DropPurge.written(ctx.dropBehavior());
-        if (purged && namesAnAccountScopedKind(ctx) && ctx.DATABASE() == null) {
-            // Not known to read the word: a warehouse, a compute pool, a user and a role keep the syntax error.
-            throw DropPurge.unexpected(ctx.dropBehavior());
+        if (purged && namesAnAccountScopedKind(ctx) && ctx.DATABASE() == null
+                && (ifExists || holdsAccountScoped(ctx))) {
+            // A warehouse, a compute pool, a user and a role read the word as the kinds of a schema do: it is refused
+            // once the name is there to drop or IF EXISTS forgives its absence, and a missing one is refused as
+            // missing (live-verified).
+            throw DropPurge.refusal(dropNameParts(ctx));
         }
         if (ctx.ALERT() != null) {
             return new AlertCommandHandler(queryExecutor).drop(ctx, ifExists);
         }
         RoutineSignatureForm.requireTypesOnly(ctx.dataTypeList());
         requireContainers(ctx);
-        if (purged && ctx.FORMAT() == null && ctx.CONTACT() == null) {
+        if (ctx.ICEBERG() != null) {
+            rejectOtherThanIceberg(dropNameParts(ctx));
+        }
+        if (purged && ctx.FORMAT() == null && ctx.CONTACT() == null
+                && (ctx.DATABASE() != null || !namesAnAccountScopedKind(ctx))) {
             final String[] named = dropNameParts(ctx);
             final RelationKind relation = relationKindOf(ctx);
             if (relation != null) {
@@ -821,7 +848,7 @@ public class DropCommandHandler implements CommandHandler {
                     final List<DataType> argumentTypes = new ArrayList<>();
                     if (ctx.dataTypeList() != null) {
                         for (final FrostlakeParser.DataTypeNameContext dtCtx : ctx.dataTypeList().dataTypeName()) {
-                            argumentTypes.add(columnParser.parseDataType(dtCtx, RoutineSignatureForm.parametersOf(dtCtx)));
+                            argumentTypes.add(RoutineSignatureForm.writtenType(columnParser, dtCtx));
                         }
                     }
                     queryExecutor.requireFunctionOwnership(schema, functionName, argumentTypes);
@@ -861,7 +888,7 @@ public class DropCommandHandler implements CommandHandler {
                     final List<DataType> argumentTypes = new ArrayList<>();
                     if (ctx.dataTypeList() != null) {
                         for (final FrostlakeParser.DataTypeNameContext dtCtx : ctx.dataTypeList().dataTypeName()) {
-                            argumentTypes.add(columnParser.parseDataType(dtCtx, RoutineSignatureForm.parametersOf(dtCtx)));
+                            argumentTypes.add(RoutineSignatureForm.writtenType(columnParser, dtCtx));
                         }
                     }
                     queryExecutor.requireProcedureOwnership(schema, procedureName, argumentTypes);
@@ -1057,6 +1084,40 @@ public class DropCommandHandler implements CommandHandler {
      * 'TABLE', not specified type 'EVENT_TABLE'.", and a missing name is refused as an event table, where DROP
      * TABLE drops an event table as it drops any table (live-verified).
      */
+    /** Whether the warehouse, compute pool, user or role a DROP names is there. */
+    private boolean holdsAccountScoped(final FrostlakeParser.DropStatementContext ctx) {
+        final String name = dropNameText(ctx);
+        if (ctx.WAREHOUSE() != null) {
+            return catalog.hasWarehouse(name);
+        }
+        if (ctx.POOL() != null) {
+            return catalog.hasComputePool(name);
+        }
+        return ctx.USER() != null ? catalog.hasUser(name) : catalog.roleExists(name);
+    }
+
+    /**
+     * Another kind under the name a DROP ICEBERG TABLE gives is refused before anything else — before a PURGE, and
+     * whether or not IF EXISTS is written: {@code Object found is of type 'VIEW', not specified type
+     * 'ICEBERG_TABLE'.}, and so for a table that is no Iceberg table, an event table and a stream (live-verified).
+     */
+    private void rejectOtherThanIceberg(final String[] parts) {
+        final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        final String name = parts[parts.length - 1];
+        if (schema.hasTable(name)) {
+            final Table table = schema.getTable(name);
+            if (table.getIcebergMetadata() == null) {
+                throw new RuntimeException(SqlCompilationError.objectOfOtherType(
+                    table.isEventTable() ? "EVENT_TABLE" : "TABLE", "ICEBERG_TABLE"));
+            }
+            return;
+        }
+        final RelationKind found = schema.relationKindOf(name);
+        if (found != null) {
+            throw new RuntimeException(SqlCompilationError.objectOfOtherType(found.spelling(), "ICEBERG_TABLE"));
+        }
+    }
+
     private static void requireEventTable(final Schema schema, final String databaseName, final String tableName) {
         if (schema.hasTable(tableName)) {
             if (!schema.getTable(tableName).isEventTable()) {

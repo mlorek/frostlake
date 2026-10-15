@@ -65,7 +65,7 @@ final class InsertColumnListRecovery {
      */
     static List<String> refusal(final String sql, final List<Token> spoken, final int namedIndex,
                                 final boolean statementParse) {
-        if (sql == null || namedIndex < 0 || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (sql == null || namedIndex < 0) {
             return null;
         }
         final int open = listOpen(sql, spoken, namedIndex);

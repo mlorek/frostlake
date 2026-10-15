@@ -136,6 +136,16 @@ public class Function extends SqlObject {
     void setHome(final Schema home) {
         this.home = home;
     }
+    /**
+     * Whether the RETURNS type was written with its width: a text or a binary written {@code VARCHAR(16777216)}
+     * is spelled so where one written bare is spelled bare. Null for a routine restored from a snapshot that
+     * did not tell.
+     */
+    private Boolean returnSized;
+
+    public Boolean getReturnSized() { return returnSized; }
+    public void setReturnSized(final Boolean returnSized) { this.returnSized = returnSized; }
+
     public void setSecure(final boolean secure) { this.secure = secure; }
 
     /**

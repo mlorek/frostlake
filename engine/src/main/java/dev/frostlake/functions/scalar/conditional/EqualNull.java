@@ -16,13 +16,11 @@
 
 package dev.frostlake.functions.scalar.conditional;
 
+import dev.frostlake.executor.expressions.ExpressionArithmetic;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.BooleanType;
-import dev.frostlake.values.DayTimeInterval;
-import dev.frostlake.values.YearMonthInterval;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 /** EQUAL_NULL(a, b) — NULL-safe equality: returns TRUE if both NULL, TRUE if equal, FALSE otherwise. */
@@ -40,22 +38,14 @@ public class EqualNull extends BuiltInFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
+    /**
+     * Two NULLs are equal and a NULL beside a value is not; two values are equal exactly when {@code =} says so —
+     * a VARIANT number beside a VARIANT string is not, two TIMESTAMP_TZ values at one instant are, and two intervals
+     * of one family are when their spans are (live-verified). IS [NOT] DISTINCT FROM reads through here.
+     */
     @Override
     public Object evaluate(final List<Object> args) {
-        final Object a = args.get(0);
-        final Object b = args.get(1);
-        if (a == null && b == null) return true;
-        if (a == null || b == null) return false;
-        if (a instanceof Number && b instanceof Number) {
-            return new BigDecimal(a.toString()).compareTo(new BigDecimal(b.toString())) == 0;
-        }
-        // Two intervals of one family are the same value when their SPANS are: INTERVAL '1' DAY IS DISTINCT
-        // FROM INTERVAL '24' HOUR is FALSE (live-verified), whatever each prints as.
-        if (a instanceof DayTimeInterval && b instanceof DayTimeInterval
-                || a instanceof YearMonthInterval && b instanceof YearMonthInterval) {
-            return a.equals(b);
-        }
-        return a.toString().equals(b.toString());
+        return ExpressionArithmetic.equals(args.get(0), args.get(1));
     }
 
     @Override

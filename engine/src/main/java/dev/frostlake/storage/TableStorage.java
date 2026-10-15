@@ -17,6 +17,7 @@
 package dev.frostlake.storage;
 
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.metastore.HybridKeys;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.TableStructure;
@@ -255,8 +256,9 @@ public class TableStorage {
         if (metadata.hasPrimaryKeyColumns()) {
             final Object pk = extractPrimaryKey(row);
             if (pk != null) {
-                if (engine.enforcePrimaryKey && primaryKeyIndex.containsKey(pk)) {
-                    throw new RuntimeException("Duplicate primary key: " + pk);
+                if ((engine.enforcePrimaryKey || metadata.isHybrid()) && primaryKeyIndex.containsKey(pk)) {
+                    throw new RuntimeException(metadata.isHybrid() ? HybridKeys.primaryKeyExists()
+                        : "Duplicate primary key: " + pk);
                 }
                 primaryKeyIndex.put(pk, rows.size());
             }
@@ -264,7 +266,7 @@ public class TableStorage {
 
         // Enforce UNIQUE columns when opted in (constraints.enforce.uniqueKey). No unique index is
         // maintained (indexes are intentionally not implemented), so scan for a duplicate value.
-        if (engine.enforceUniqueKey) {
+        if (engine.enforceUniqueKey || metadata.isHybrid()) {
             final List<TableColumn> cols = metadata.getColumns();
             for (int i = 0; i < cols.size(); i++) {
                 if (!cols.get(i).isUnique() || cols.get(i).isPrimaryKey() || i >= row.getValues().size()) {
@@ -276,8 +278,9 @@ public class TableStorage {
                 }
                 for (final Row existing : rows) {
                     if (i < existing.getValues().size() && value.equals(existing.getValue(i))) {
-                        throw new RuntimeException(
-                            "Duplicate unique key on column '" + cols.get(i).getName() + "': " + value);
+                        throw new RuntimeException(metadata.isHybrid()
+                            ? HybridKeys.uniqueViolated(metadata, cols.get(i).getName())
+                            : "Duplicate unique key on column '" + cols.get(i).getName() + "': " + value);
                     }
                 }
             }

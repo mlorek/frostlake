@@ -23,6 +23,7 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.functions.scalar.DateTypeHelper;
 
 import java.time.DayOfWeek;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
@@ -98,7 +99,8 @@ public class DateTrunc extends BuiltInFunction {
         }
         // A DATE-only input keeps DATE type for a day-or-larger unit; a sub-day truncation or a timestamp
         // input yields a timestamp (Snowflake semantics).
-        if (dayOrLarger && DateTypeHelper.isDateOnly(args.get(1))) {
+        if (args.get(1) instanceof LocalDate || dayOrLarger && DateTypeHelper.isDateOnly(args.get(1))) {
+            // A DATE has no clock to truncate: under an hour or a finer unit it is the same date.
             return result.toLocalDate();
         }
         return SharedFunctionHelpers.sameTimestampFlavour(args.get(1), result);

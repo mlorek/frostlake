@@ -40,6 +40,8 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -227,7 +229,8 @@ public final class SetOperations {
             // branch's 2.50 as 2.5000 under NUMBER(12,4). The gate below used to skip the whole
             // column unless some branch was a string, so a column declared with a scale handed back
             // values that did not carry it.
-            if (!(target instanceof NumericType) && !isTimestampTarget(target)) {
+            if (!(target instanceof NumericType) && !isTimestampTarget(target) && !isZonedTimestampTarget(target)
+                    && !isLocalTimestampTarget(target)) {
                 boolean anyStringBranch = false;
                 for (final List<ResultSetColumn> columns : branchColumns) {
                     if (col < columns.size()
@@ -258,6 +261,16 @@ public final class SetOperations {
         }
     }
 
+    /** Whether the unified type is a TIMESTAMP_TZ, which a naive branch's value becomes at the session's offset. */
+    private static boolean isZonedTimestampTarget(final DataType target) {
+        return target instanceof DateTimeType && "TIMESTAMP_TZ".equalsIgnoreCase(target.getName());
+    }
+
+    /** Whether the unified type is a TIMESTAMP_LTZ, which a DATE branch's value becomes in the session's zone. */
+    private static boolean isLocalTimestampTarget(final DataType target) {
+        return target instanceof DateTimeType && "TIMESTAMP_LTZ".equalsIgnoreCase(target.getName());
+    }
+
     /** Whether the unified type is a naive TIMESTAMP, which a DATE branch's value widens into. */
     private static boolean isTimestampTarget(final DataType target) {
         return target instanceof DateTimeType && "TIMESTAMP_NTZ".equalsIgnoreCase(target.getName());
@@ -269,7 +282,8 @@ public final class SetOperations {
      * arm that spells no UUID is "UUID 'abc' is invalid, ..." (live-verified).
      */
     private static boolean isStringCoercionTarget(final DataType target) {
-        if (target instanceof NumericType || target instanceof UuidType) {
+        if (target instanceof NumericType || target instanceof UuidType || isZonedTimestampTarget(target)
+                || isLocalTimestampTarget(target) || target instanceof BooleanType) {
             return true;
         }
         return target instanceof DateTimeType
@@ -333,6 +347,24 @@ public final class SetOperations {
                 return scaled;
             }
             return value;
+        }
+        // A DATE branch beside a TIMESTAMP_LTZ one becomes the instant of its midnight in the session's zone, as
+        // its cast does, and so meets an equal moment of the other branch (live-verified).
+        if (isLocalTimestampTarget(target)) {
+            return value instanceof LocalDate || value instanceof LocalDateTime
+                ? FoldedValues.presented(value, target) : value;
+        }
+        // A BOOLEAN column reads a text branch's value as a cast does: 'maybe' is "Boolean value 'maybe' is not
+        // recognized" (live-verified).
+        if (target instanceof BooleanType) {
+            return value instanceof CharSequence ? FoldedValues.presented(value, target) : value;
+        }
+        // A TIMESTAMP_NTZ branch after a TIMESTAMP_TZ one takes the session's offset, as its cast does, so it
+        // meets an equal moment of the other branch (live-verified); the other order is refused while the
+        // statement compiles.
+        if (isZonedTimestampTarget(target)) {
+            return value instanceof LocalDateTime || value instanceof LocalDate
+                ? SharedFunctionHelpers.toWrittenOffsetTimestamp(value) : value;
         }
         // A DATE branch beside a TIMESTAMP one becomes a timestamp at midnight, which is the value
         // live hands back — the DATE branch of d UNION ts reads 2020-01-01T00:00 and not 2020-01-01.
@@ -852,6 +884,10 @@ public final class SetOperations {
             // single row there, the FIRST one — where Double.equals tells them apart. Adding a positive
             // zero folds -0.0 into 0.0 and leaves every other double alone. A column that mixes a
             // double with an exact number is NUMERIC below, whose decimal key has no sign of zero.
+            // A zoned timestamp keys by its moment: two spellings of one moment are one row (live-verified).
+            if (value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
+                return ValueComparisons.canonicalGroupKeyValue(value);
+            }
             return value instanceof Double ? Double.valueOf(((Double) value).doubleValue() + 0.0) : value;
         }
         switch (coercion) {

@@ -90,6 +90,28 @@ public final class JavaHandlerFailure {
     }
 
     /**
+     * The report of a handler class the routine's code does not hold, raised as the routine is created: the
+     * class loader's frames, numbered as the account's Java runtime of the routine's level numbers them
+     * (live-verified for 11, 17 and 21).
+     *
+     * @param className the class the handler names, as written
+     * @param level     the routine's Java level (see {@link JavaRuntimeLevel#declared}), 0 for the default
+     * @param where     the sentence's end
+     * @return the report
+     */
+    public static String missingClass(final String className, final int level, final String where) {
+        final int found = level >= 17 ? 445 : 476;
+        final int loaded = level >= 21 ? 593 : level >= 17 ? 592 : 589;
+        final int delegated = level >= 21 ? 526 : level >= 17 ? 525 : 522;
+        return report("""
+            java.lang.ClassNotFoundException: %s
+            \tat java.base/java.net.URLClassLoader.findClass(URLClassLoader.java:%d)
+            \tat java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:%d)
+            \tat java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:%d)""".formatted(className, found, loaded,
+            delegated), where);
+    }
+
+    /**
      * An exception with no frame to show: what an account reports for a class it cannot make an instance of.
      *
      * @param named the exception as Java prints it

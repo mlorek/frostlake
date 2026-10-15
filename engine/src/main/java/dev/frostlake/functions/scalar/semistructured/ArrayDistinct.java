@@ -36,7 +36,7 @@ public class ArrayDistinct extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
         if (src == null) return null;
         // Live-verified: when nothing is a duplicate the array comes back UNCHANGED
         // (ARRAY_DISTINCT(ARRAY_CONSTRUCT(NULL,1,2)) is [undefined,1,2], ARRAY_DISTINCT([2,NULL,1]) is

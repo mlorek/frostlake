@@ -150,6 +150,15 @@ public final class ParseTreeText {
      */
     public static String[] functionNameParts(final FrostlakeParser.FunctionNameContext ctx) {
         final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
+        if (ctx.systemFunctionName() != null) {
+            // A SYSTEM$ function's name closes the parts written before it, each followed by its own dot.
+            final String[] named = new String[ids.size() + 1];
+            for (int i = 0; i < ids.size(); i++) {
+                named[i] = getIdentifier(ids.get(i));
+            }
+            named[ids.size()] = ctx.systemFunctionName().getText().toUpperCase(Locale.ROOT);
+            return named;
+        }
         if (ids == null || ids.isEmpty()) {
             return null;
         }

@@ -26,6 +26,7 @@ import java.util.Locale;
  * <pre>
  *   type                               precision   scale   display size
  *   NUMBER(p,s)                        p           s       p + 1, one more when s &gt; 0
+ *   DECIMAL(p,s)                       p           s       p + 2: a file transfer's size, the client's own type
  *   DECFLOAT                           38          0       40
  *   DOUBLE (every approximate alias)   0           0       24
  *   DATE                               10          0       10
@@ -61,6 +62,7 @@ final class DriverColumnMetrics {
         }
         switch (family(driverTypeName)) {
             case "NUMBER":
+            case "DECIMAL":
                 return numericPrecision;
             case "DECFLOAT":
                 return 38;
@@ -89,6 +91,7 @@ final class DriverColumnMetrics {
     static int scale(final String driverTypeName, final int numericScale, final int fractionalDigits) {
         switch (family(driverTypeName)) {
             case "NUMBER":
+            case "DECIMAL":
             case "INTERVAL_DAY_TIME":
             case "INTERVAL_YEAR_MONTH":
                 return numericScale;
@@ -120,6 +123,9 @@ final class DriverColumnMetrics {
             case "NUMBER":
                 // A sign, and a decimal point when there is a fraction.
                 return numericPrecision + 1 + (numericScale > 0 ? 1 : 0);
+            case "DECIMAL":
+                // A sign and a decimal point, fraction or none.
+                return numericPrecision + 2;
             case "DECFLOAT":
                 return 40;
             case "DOUBLE":
@@ -134,6 +140,19 @@ final class DriverColumnMetrics {
                 // A date, a time and a timestamp display at their precision; the rest at 0.
                 return precision(driverTypeName, numericPrecision, null);
         }
+    }
+
+    /**
+     * Whether the driver reports a column signed: a fixed-point number, whatever its scale, and an approximate one
+     * — NUMBER, a file transfer's DECIMAL and DOUBLE. Every other type is unsigned, a date, a time, a timestamp, a
+     * BOOLEAN and an interval among them, negative values notwithstanding (live-verified).
+     *
+     * @param driverTypeName the driver's name for the column's type
+     * @return what {@code isSigned} answers for it
+     */
+    static boolean isSigned(final String driverTypeName) {
+        final String family = family(driverTypeName);
+        return "NUMBER".equals(family) || "DECIMAL".equals(family) || "DOUBLE".equals(family);
     }
 
     /**

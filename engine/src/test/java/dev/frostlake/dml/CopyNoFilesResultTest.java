@@ -360,7 +360,7 @@ public class CopyNoFilesResultTest {
     public void validationModeOnAnEmptyStageKeepsItsOwnShape() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
         // An EXISTING but empty table-stage directory — the state a stage is in once its files are gone.
-        Files.createDirectories(internalRoot.resolve("tables").resolve("DB.S.T"));
+        Files.createDirectories(engine.getExecutor().resolveCopyBaseDir("@%t"));
 
         final ResultSet rs = engine.executeQuery(
             "COPY INTO t VALIDATION_MODE = RETURN_ERRORS FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");

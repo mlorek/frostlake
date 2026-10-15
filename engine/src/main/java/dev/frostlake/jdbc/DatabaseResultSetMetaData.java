@@ -72,12 +72,7 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public boolean isSigned(final int column) throws SQLException {
-        final String type = getColumnTypeName(column);
-        if (DriverColumnMetrics.isInterval(type)) {
-            // An interval is reported unsigned, its negative values notwithstanding (live-verified).
-            return false;
-        }
-        return type.contains("INT") || type.contains("DECIMAL") || type.contains("FLOAT") || type.contains("DOUBLE");
+        return DriverColumnMetrics.isSigned(getColumnTypeName(column));
     }
 
     @Override

@@ -21,6 +21,8 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.WrittenSignatureType;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -46,6 +48,23 @@ final class RoutineSignatureForm {
      * @return the type's own parameters
      */
     static FrostlakeParser.TypeParametersContext parametersOf(final FrostlakeParser.DataTypeNameContext type) {
+        return parametersAfter(type);
+    }
+
+    /**
+     * One type of a written argument list, as a signature writes it: marked unsized where no length or digits
+     * follow its name (see {@link WrittenSignatureType}).
+     *
+     * @param parser the parser that reads a type
+     * @param type   a type of a written argument list
+     * @return the written type
+     */
+    static DataType writtenType(final ColumnDefinitionParser parser, final FrostlakeParser.DataTypeNameContext type) {
+        final FrostlakeParser.TypeParametersContext parameters = parametersAfter(type);
+        return WrittenSignatureType.of(parser.parseDataType(type, parameters), parameters != null);
+    }
+
+    private static FrostlakeParser.TypeParametersContext parametersAfter(final FrostlakeParser.DataTypeNameContext type) {
         final ParseTree list = type.getParent();
         for (int i = 0; list != null && i + 1 < list.getChildCount(); i++) {
             if (list.getChild(i) == type) {

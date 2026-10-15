@@ -52,13 +52,25 @@ public class Sequence {
     }
 
     /**
-     * Get the next value in the sequence (NEXTVAL)
+     * Get the next value in the sequence (NEXTVAL). A draw also computes the value after it, and a step that would
+     * leave the 64-bit range fails the draw, and every draw after it, with {@code Sequence value has exceeded valid
+     * range in sequence object S.} — so the last value inside the range is never handed out (live-verified).
      */
     public long nextVal() {
-        final long value = nextValue.getAndAdd(increment);
-        lastValue = value;
-        drawn = true;
-        return value;
+        while (true) {
+            final long value = nextValue.get();
+            final long after;
+            try {
+                after = Math.addExact(value, increment);
+            } catch (final ArithmeticException outOfRange) {
+                throw new RuntimeException("Sequence value has exceeded valid range in sequence object " + name + ".");
+            }
+            if (nextValue.compareAndSet(value, after)) {
+                lastValue = value;
+                drawn = true;
+                return value;
+            }
+        }
     }
 
     /**
@@ -127,15 +139,14 @@ public class Sequence {
     }
 
     /**
-     * Change the step applied by future NEXTVAL calls (ALTER SEQUENCE … SET INCREMENT). A sequence nothing has
-     * drawn from still serves its START value first (live-verified); after a draw the next value is the last
-     * one drawn plus the new step.
+     * Change the step applied by future NEXTVAL calls (ALTER SEQUENCE … SET INCREMENT). The value already computed
+     * with the old step is still handed out next, and the new step applies from the value after it: the documented
+     * example's sequence at 1, 2, 3 goes on 4, then 0 under INCREMENT -4. A sequence nothing has drawn from serves its
+     * START value first. The account may skip further ahead, as it caches values, and a sequence makes no promise
+     * against gaps.
      */
     public void setIncrement(final long increment) {
         this.increment = increment;
-        if (drawn) {
-            nextValue.set(lastValue + increment);
-        }
     }
 
     /** When this sequence was created, as SHOW SEQUENCES reports it. */

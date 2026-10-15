@@ -33,6 +33,7 @@ import org.antlr.v4.runtime.TokenStream;
  *   SELECT 1 FROM t JOIN ); SELECT 1 x y  ')', then 'y': the parenthesis is passed over
  *   SELECT 1 FROM t LEFT JOIN WHERE a = 1 'WHERE' alone
  *   SELECT 1 FROM t JOIN LEFT JOIN n      the second 'JOIN': a join type after a JOIN is passed over
+ *   SELECT 1 FROM t JOIN . WHERE a = 1    '.' alone
  * </pre>
  *
  * <p>What follows the refused token is read as if the join had not been written, so the lines after the first are
@@ -110,7 +111,8 @@ final class JoinTableSyntax {
         final int[] at = SyntaxErrorListener.sentenceCoordinates(lines.get(0));
         // A token refused in the text without the join too is one fault, and what its own statement reports after it
         // is that fault's wreckage: only the later statements speak then.
-        int[] from = at;
+        // After a dot where the table belongs nothing more of the statement is told: only the later statements speak.
+        int[] from = type == FrostlakeLexer.DOT ? statementEnd(spoken, fault) : at;
         for (final String line : SyntaxErrorListener.linesReportedFor(new String(text), true)) {
             final int[] place = SyntaxErrorListener.sentenceCoordinates(line);
             if (place == null) {

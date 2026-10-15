@@ -27,6 +27,9 @@ public final class JavaRuntimeLevel {
     /** The level of a routine that declares no RUNTIME_VERSION. */
     private static final int DEFAULT = 11;
 
+    /** A class file's major version is its Java level and this: Java 11 writes 55. */
+    private static final int CLASS_FILE_VERSION_OF_JAVA_ZERO = 44;
+
     /** Static helpers only — never instantiated. */
     private JavaRuntimeLevel() {
     }
@@ -36,18 +39,36 @@ public final class JavaRuntimeLevel {
      * @return the release to compile at, or 0 for the JDK's own level
      */
     public static int of(final String runtimeVersion) {
-        int level = DEFAULT;
-        if (runtimeVersion != null && !runtimeVersion.trim().isEmpty()) {
-            final String written = runtimeVersion.trim();
-            int end = 0;
-            while (end < written.length() && Character.isDigit(written.charAt(end))) {
-                end++;
-            }
-            if (end == 0 || end > 3) {
-                return 0;
-            }
-            level = Integer.parseInt(written.substring(0, end));
-        }
+        final int level = declared(runtimeVersion);
         return level > Runtime.version().feature() ? 0 : level;
+    }
+
+    /**
+     * The Java level a routine runs at on an account, whatever JDK the engine itself runs on.
+     *
+     * @param runtimeVersion a routine's RUNTIME_VERSION, or null when it declares none
+     * @return the level, or 0 for a version that names none
+     */
+    public static int declared(final String runtimeVersion) {
+        if (runtimeVersion == null || runtimeVersion.trim().isEmpty()) {
+            return DEFAULT;
+        }
+        final String written = runtimeVersion.trim();
+        int end = 0;
+        while (end < written.length() && Character.isDigit(written.charAt(end))) {
+            end++;
+        }
+        return end == 0 || end > 3 ? 0 : Integer.parseInt(written.substring(0, end));
+    }
+
+    /**
+     * The newest class-file version a routine's runtime reads: 55 for Java 11, 61 for 17, 65 for 21.
+     *
+     * @param runtimeVersion a routine's RUNTIME_VERSION, or null when it declares none
+     * @return the class-file version, or {@code Integer.MAX_VALUE} for a version that names no level
+     */
+    public static int newestClassFile(final String runtimeVersion) {
+        final int level = declared(runtimeVersion);
+        return level == 0 ? Integer.MAX_VALUE : CLASS_FILE_VERSION_OF_JAVA_ZERO + level;
     }
 }

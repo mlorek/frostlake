@@ -27,8 +27,6 @@ import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphConfig;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.TransactionManager;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -47,8 +45,6 @@ import java.util.UUID;
  * manager and the directory of abortable sessions (no QueryExecutor back-pointer).
  */
 public class SystemFunctionEvaluator {
-
-    private static final Logger logger = LoggerFactory.getLogger(SystemFunctionEvaluator.class);
 
     private final Catalog catalog;
     private final StorageEngine storageEngine;
@@ -70,6 +66,9 @@ public class SystemFunctionEvaluator {
         // reads them from (through FunctionRegistry.allDispatchableNames()) — they are in none of the
         // registry maps. Checking it here, ahead of the switch, keeps the two in step: a case added below
         // but not declared there does not dispatch, so the listing cannot fall behind unnoticed.
+        if (SystemFunctionNames.isLoggingStatement(funcName)) {
+            throw SystemFunctionNames.unknownLoggingFunction(funcName);
+        }
         if (!SystemFunctionNames.contains(funcName)) {
             throw new RuntimeException("Unsupported system function: " + funcName);
         }
@@ -103,33 +102,18 @@ public class SystemFunctionEvaluator {
                 return ChangeTimes.lastChangeCommitTime(catalog, args.isEmpty() ? null : args.get(0));
             case "SYSTEM$WAIT":
                 return SystemWait.waitFor(args);
-            case "SYSTEM$LOG":
-                if (args.size() >= 2) logger.info("SYSTEM$LOG [{}]: {}", args.get(0), args.get(1));
-                else if (!args.isEmpty()) logger.info("SYSTEM$LOG: {}", args.get(0));
-                return null;
-            case "SYSTEM$LOG_TRACE":
-            case "SYSTEM$LOG_DEBUG":
-            case "SYSTEM$LOG_INFO":
-            case "SYSTEM$LOG_WARN":
-            case "SYSTEM$LOG_ERROR":
-            case "SYSTEM$LOG_FATAL":
-                if (!args.isEmpty()) logger.info("{}: {}", funcName.toUpperCase(Locale.ROOT), args.get(0));
-                return null;
-            case "SYSTEM$CLUSTERING_DEPTH": {
-                final String t = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
-                return "{\"average_depth\": 1.0, \"table_name\": \"" + t + "\"}";
-            }
-            case "SYSTEM$CLUSTERING_INFORMATION": {
-                final String t = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
-                return "{\"clustering_key\": null, \"total_partition_count\": 1, \"average_depth\": 1.0, \"table_name\": \"" + t + "\"}";
-            }
+            case "SYSTEM$CLUSTERING_DEPTH":
+                return ClusteringStatistics.depth(catalog, storageEngine, args);
+            case "SYSTEM$CLUSTERING_INFORMATION":
+                return ClusteringStatistics.information(catalog, storageEngine, args);
             case "SYSTEM$CLUSTERING_RATIO":
-                return 1.0;
+                return ClusteringStatistics.ratio(catalog, storageEngine, args);
             case "SYSTEM$ABORT_TRANSACTION":
                 return abortTransaction(args);
             case "SYSTEM$ABORT_SESSION":
                 return SessionAbort.abort(args.isEmpty() ? null : args.get(0), sessionDirectory);
             case "SYSTEM$CANCEL_QUERY":
+                return cancelQuery(args.isEmpty() ? null : args.get(0));
             case "SYSTEM$CANCEL_ALL_QUERIES":
                 return "Query cancelled.";
             case "SYSTEM$STREAM_BACKLOG": {
@@ -151,7 +135,8 @@ public class SystemFunctionEvaluator {
                 return ChangeTimes.streamTableTimestamp(catalog, storageEngine, args.isEmpty() ? null : args.get(0));
             case "SYSTEM$CURRENT_USER_TASK_NAME": {
                 final Task current = TaskScheduler.currentTask();
-                return current != null ? current.getName() : null;
+                // Outside a task the name is empty, not NULL (live-verified).
+                return current != null ? current.getName() : "";
             }
             case "SYSTEM$GET_PREDECESSOR_RETURN_VALUE": {
                 // The task-graph value SET by this task's (first) predecessor in its latest run.
@@ -273,5 +258,24 @@ public class SystemFunctionEvaluator {
     private Object abortTransaction(final List<Object> args) {
         return TransactionAbort.answer(TransactionAbort.byValue(args.isEmpty() ? null : args.get(0)),
             transactionManager, false);
+    }
+
+    /**
+     * SYSTEM$CANCEL_QUERY: the running statement its query ID names is canceled, from any session; an ID that names no
+     * running statement answers that it is not executing, and a text that is no UUID that it is invalid
+     * (live-verified).
+     */
+    private static String cancelQuery(final Object id) {
+        if (id == null) {
+            return null;
+        }
+        final String text = id.toString().trim();
+        try {
+            UUID.fromString(text);
+        } catch (final IllegalArgumentException notAUuid) {
+            return "invalid UUID";
+        }
+        return StatementCancellation.cancelRunning(text) ? "Query cancelled."
+            : "Identified SQL statement is not currently executing.";
     }
 }

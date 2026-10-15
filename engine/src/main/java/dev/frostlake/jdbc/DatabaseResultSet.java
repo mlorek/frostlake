@@ -147,6 +147,12 @@ public class DatabaseResultSet implements ResultSet {
             && column.scaleOrZero() == 0;
     }
 
+    /** Whether a 1-based column is a file transfer's size, the one column named DECIMAL on the wire. */
+    private boolean isClientDecimalColumn(final int columnIndex) {
+        return columnIndex >= 1 && columnIndex <= data.getColumns().size()
+            && "DECIMAL".equalsIgnoreCase(data.getColumns().get(columnIndex - 1).getDataType());
+    }
+
     /** Whether a 1-based column is declared BOOLEAN, read off the wire metadata. */
     private boolean isBooleanColumn(final int columnIndex) {
         return columnIndex >= 1 && columnIndex <= data.getColumns().size()
@@ -457,6 +463,10 @@ public class DatabaseResultSet implements ResultSet {
                 return JdbcMarshaling.toTime(value);
             }
             return JdbcMarshaling.toTimestamp(value);
+        }
+        if (value instanceof Number && !(value instanceof BigDecimal) && isClientDecimalColumn(columnIndex)) {
+            // A file transfer's size is the client's own DECIMAL, read as the BigDecimal its metadata names.
+            return new BigDecimal(value.toString());
         }
         if (value instanceof Number && !(value instanceof BigDecimal)
                 && !(value instanceof Double) && isWholeNumberColumn(columnIndex)) {
@@ -924,16 +934,23 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public Date getDate(final int columnIndex, final Calendar cal) throws SQLException {
-        return getDate(columnIndex);
+        if (cal == null || intervalKind(columnIndex) != null) {
+            return getDate(columnIndex);
+        }
+        // The day's midnight in the Calendar's zone.
+        final Object value = getValue(columnIndex);
+        wasNull = (value == null);
+        return JdbcMarshaling.toDate(value, cal);
     }
 
     @Override
     public Date getDate(final String columnLabel, final Calendar cal) throws SQLException {
-        return getDate(columnLabel);
+        return getDate(findColumn(columnLabel), cal);
     }
 
     @Override
     public Time getTime(final int columnIndex, final Calendar cal) throws SQLException {
+        // The account's driver reads no Calendar for a TIME (live-verified).
         return getTime(columnIndex);
     }
 
@@ -944,12 +961,18 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public Timestamp getTimestamp(final int columnIndex, final Calendar cal) throws SQLException {
-        return getTimestamp(columnIndex);
+        if (cal == null || intervalKind(columnIndex) != null) {
+            return getTimestamp(columnIndex);
+        }
+        // A wall clock with no zone is read in the Calendar's zone; a zoned cell keeps its moment (live-verified).
+        final Object value = getValue(columnIndex);
+        wasNull = (value == null);
+        return JdbcMarshaling.toTimestamp(value, cal);
     }
 
     @Override
     public Timestamp getTimestamp(final String columnLabel, final Calendar cal) throws SQLException {
-        return getTimestamp(columnLabel);
+        return getTimestamp(findColumn(columnLabel), cal);
     }
 
     @Override
@@ -1306,6 +1329,31 @@ public class DatabaseResultSet implements ResultSet {
         }
 
         final List<Object> row = data.getRows().get(currentRow);
-        return row.get(columnIndex - 1); // JDBC columns are 1-based
+        final Object cell = row.get(columnIndex - 1); // JDBC columns are 1-based
+        // JSON has no NaN or infinity, so the wire spells a FLOAT's as a string: it is the double it names, which
+        // getObject answers and getString spells NaN, inf and -inf, as the account's driver does (live-verified).
+        if (cell instanceof String && isApproximateColumn(columnIndex)) {
+            final Double nonFinite = nonFiniteDouble((String) cell);
+            if (nonFinite != null) {
+                return nonFinite;
+            }
+        }
+        return cell;
+    }
+
+    /** The double a wire word for a non-finite FLOAT names, or null for any other text. */
+    private static Double nonFiniteDouble(final String word) {
+        switch (word) {
+            case "NaN":
+                return Double.valueOf(Double.NaN);
+            case "Infinity":
+            case "inf":
+                return Double.valueOf(Double.POSITIVE_INFINITY);
+            case "-Infinity":
+            case "-inf":
+                return Double.valueOf(Double.NEGATIVE_INFINITY);
+            default:
+                return null;
+        }
     }
 }

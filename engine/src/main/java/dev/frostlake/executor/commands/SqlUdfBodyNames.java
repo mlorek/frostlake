@@ -38,10 +38,12 @@ import java.util.Set;
  * frame - line 1 counts from position 1, every later line from 0 - and a comment before the name does
  * not move it (live-verified).
  *
- * <p>Only a name written as ONE part is judged. A dotted name is something else - {@code s1.nextval}
- * reaches a sequence, and a real account creates that function - and the keyword constructs that look
- * like bare names ({@code CURRENT_DATE}, {@code CURRENT_TIMESTAMP}, {@code LOCALTIME}) are their own
- * expressions in the grammar, so they never reach here.
+ * <p>A dotted name is no parameter's. Outside a subquery it names nothing the body can read - {@code t.x},
+ * {@code x.a} over a VARIANT parameter, the function's own name before a parameter's - and is refused the same
+ * way, {@code invalid identifier 'T.X'}, a quoted part kept as written. Only {@code s1.nextval} is something
+ * else: it reaches a sequence, and a real account creates that function. The keyword constructs that look like
+ * bare names ({@code CURRENT_DATE}, {@code CURRENT_TIMESTAMP}, {@code LOCALTIME}) are their own expressions in
+ * the grammar, so they never reach here.
  *
  * <p>Parameters match without regard to case: a body over {@code (x INT)} may write {@code x + 1} or
  * {@code X + 1}, and both are created.
@@ -83,9 +85,14 @@ final class SqlUdfBodyNames {
             return;
         }
         final Token at = unknown.getStart();
+        // Each part is spelled on its own: T."low" keeps the quoted part as written.
+        final StringBuilder spelled = new StringBuilder();
+        for (final String part : SqlIdentifiers.canonicalTextParts(unknown.getText())) {
+            spelled.append(spelled.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+        }
         throw new RuntimeException(SqlCompilationError.at(at.getLine(),
             at.getCharPositionInLine() + (at.getLine() == 1 ? firstLineShift : 0),
-            "invalid identifier '" + SqlIdentifiers.spellAsWritten(unknown.getText()) + "'"));
+            "invalid identifier '" + spelled + "'"));
     }
 
     /**
@@ -134,7 +141,8 @@ final class SqlUdfBodyNames {
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
             final FrostlakeParser.QualifiedNameContext name =
                 ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName();
-            if (name != null && name.namePart().isEmpty() && !declares(parameters, name.getText())) {
+            if (name != null && (name.namePart().isEmpty() ? !declares(parameters, name.getText())
+                    : !readsSequence(name))) {
                 return name;
             }
         }
@@ -145,6 +153,11 @@ final class SqlUdfBodyNames {
             }
         }
         return null;
+    }
+
+    /** Whether a dotted name asks a sequence for a value: its last part is NEXTVAL, written bare. */
+    private static boolean readsSequence(final FrostlakeParser.QualifiedNameContext name) {
+        return "NEXTVAL".equalsIgnoreCase(name.namePart(name.namePart().size() - 1).getText());
     }
 
     /** The bare word a call writes where its function reads a date or time unit, or null when it writes none there. */

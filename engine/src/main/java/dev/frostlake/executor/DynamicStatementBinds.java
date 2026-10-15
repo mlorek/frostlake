@@ -23,6 +23,7 @@ import dev.frostlake.parser.SqlCharStream;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -54,13 +55,30 @@ public final class DynamicStatementBinds {
      * @return the text with its binds written out
      */
     public static String bind(final String text, final List<Object> values, final Set<Integer> unbound) {
+        return bind(text, values, unbound, new ArrayList<int[]>());
+    }
+
+    /**
+     * {@link #bind(String, List, Set)}, noting each placeholder written out: the text is refused where its faults
+     * stand in the text as written, whatever a value is written out as — {@code 'SELECT :1a AS a'} names the AS at
+     * position 11 (live-verified; see {@link BoundText}).
+     *
+     * @param text    the statement's text
+     * @param values  the USING values in order, empty for none
+     * @param unbound the 1-based numbers of the values that bind nothing
+     * @param written takes each bound placeholder: its line, its column, its written length and the length of
+     *                what stands in its place
+     * @return the text with its binds written out
+     */
+    public static String bind(final String text, final List<Object> values, final Set<Integer> unbound,
+                              final List<int[]> written) {
         if (isBlock(text)) {
             // A block binds nothing of a USING list: its ? is an unnamed bind and its :1 a name nothing declares,
             // each refused as the block compiles (live-verified).
             return text;
         }
         requireSet(text, values.size(), unbound);
-        return values.isEmpty() ? text : JdbcMarshaling.bindUsing(text, values, unbound);
+        return values.isEmpty() ? text : JdbcMarshaling.bindUsing(text, values, unbound, written);
     }
 
     /**

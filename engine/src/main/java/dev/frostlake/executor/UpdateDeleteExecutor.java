@@ -40,6 +40,7 @@ import dev.frostlake.transaction.TransactionWriteSet;
 import dev.frostlake.types.DataType;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -95,6 +96,8 @@ final class UpdateDeleteExecutor {
                 : executor.getQualifiedName(ctx.objectName().qualifiedName()));
             DmlTarget.requireTable(executor, tableName, "UPDATE");
             final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
+            // A function that cannot use its secrets is refused once the table is found, ahead of every name.
+            CalledRoutineSecrets.require(ctx, executor);
             DmlTarget.refuseEventTable(table, "UPDATE");
             // The storage key the target reads under, recorded as a SELECT's resolution records it: a
             // correlated subquery in the statement asks how many rows the target holds.
@@ -106,12 +109,12 @@ final class UpdateDeleteExecutor {
                 executor.requirePrivilege(Privilege.UPDATE, "TABLE", tableName);
                 executor.getSecurityManager().checkPermission(Privilege.UPDATE, SecurableObjectType.TABLE, tableName);
             }
-            // Parse assignments
-            final Map<String, String> assignments = new HashMap<>();
+            // Parse assignments, in the order written
+            final Map<String, String> assignments = new LinkedHashMap<>();
             // Where each SET value begins in the statement, so an unknown name inside it reports the
             // place it was written. The assignments themselves are keyed by column, which loses the
             // parse context, so the origins travel alongside.
-            final Map<String, SourcePosition> assignmentOrigins = new HashMap<>();
+            final Map<String, SourcePosition> assignmentOrigins = new LinkedHashMap<>();
             for (final FrostlakeParser.AssignmentContext assign : ctx.assignmentList().assignment()) {
                 // Handle qualified identifiers (table.column) or simple identifiers
                 final String colName = ParseTreeText.namePartText(assign.namePart());
@@ -125,6 +128,8 @@ final class UpdateDeleteExecutor {
             }
             compileNames(ctx, table, ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null,
                 ctx.assignmentList().assignment(), ctx.whereClause(), ctx.tableReference(), ctx.joinClause());
+            // A SQL function the statement calls is expanded into it once its names have resolved.
+            CalledRoutineSources.require(ctx, executor);
             // What the SET list writes is judged by a projection policy as a projection is (an UPDATE ... FROM once
             // its sources are known); the WHERE only uses the column.
             final List<FrostlakeParser.ExpressionContext> assignedValues = new ArrayList<>();
@@ -201,6 +206,8 @@ final class UpdateDeleteExecutor {
                 : executor.getQualifiedName(ctx.objectName().qualifiedName()));
             DmlTarget.requireTable(executor, tableName, "DELETE");
             final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
+            // A function that cannot use its secrets is refused once the table is found, ahead of every name.
+            CalledRoutineSecrets.require(ctx, executor);
             // The storage key the target reads under, recorded as a SELECT's resolution records it: a
             // correlated subquery in the statement asks how many rows the target holds.
             table.setQualifiedName(executor.getFullyQualifiedTableName(tableName));
@@ -214,6 +221,7 @@ final class UpdateDeleteExecutor {
             compileNames(ctx, table, ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null,
                 new ArrayList<FrostlakeParser.AssignmentContext>(), ctx.whereClause(), ctx.tableReference(),
                 ctx.joinClause());
+            CalledRoutineSources.require(ctx, executor);
             // Get all rows - use fully qualified name
             final String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
             // The PARTITIONS lock registers per STATEMENT KIND, not per matched row — a DELETE
@@ -283,6 +291,33 @@ final class UpdateDeleteExecutor {
         return setIndexes;
     }
 
+    /**
+     * The columns a plain UPDATE sets, in the order it computes them: the table's own order, so of two values that
+     * fail the one of the earlier column is reported, whichever was written first (live-verified). UPDATE … FROM
+     * and a MERGE compute theirs in the order written.
+     */
+    private static List<String> inColumnOrder(final Map<String, String> assignments,
+                                               final Map<String, Integer> setIndexes) {
+        final List<String> order = new ArrayList<>(assignments.keySet());
+        Collections.sort(order, new Comparator<String>() {
+            @Override
+            public int compare(final String left, final String right) {
+                return Integer.compare(setIndexes.get(left).intValue(), setIndexes.get(right).intValue());
+            }
+        });
+        return order;
+    }
+
+    /**
+     * A write stage that changes rows waits first for another session's transaction that holds the table (see
+     * {@link QueryExecutor#requireTableUnlocked}); one that changes none takes nothing (live-verified).
+     */
+    private void requireUnlockedFor(final List<Row> changing, final String fullyQualifiedName, final Table table) {
+        if (!changing.isEmpty()) {
+            executor.requireTableUnlocked(fullyQualifiedName, table.getName());
+        }
+    }
+
     /** How an UPDATE's write stage reads in a plan: the target and the columns it sets. */
     private static String updateDescription(final Table table, final Map<String, String> assignments) {
         return "UPDATE[" + table.getName() + " SET " + String.join(", ", assignments.keySet()) + "]";
@@ -308,20 +343,24 @@ final class UpdateDeleteExecutor {
         plan.add(new StageOperator(updateDescription(table, assignments)) {
             @Override
             protected List<Row> apply(final List<Row> matchingRows) {
+                requireUnlockedFor(matchingRows, fullyQualifiedName, table);
                 // Update matching rows. Expose any WITH-clause CTEs so a SET-clause subquery can resolve them.
                 final Map<String, ResultSet> savedCteContext = executor.getCurrentCteContext();
                 if (cteResults != null) {
                     executor.setCurrentCteContext(cteResults);
                 }
                 try {
+                    // Every row's new image is computed before any is written, each from the row as it was:
+                    // a SET value reads the old row whatever else the list sets, and a subquery over the table
+                    // sees it as the statement began (live-verified).
+                    final List<String> order = inColumnOrder(assignments, setIndexes);
+                    final List<Row> oldRows = new ArrayList<>();
                     final List<Row> written = new ArrayList<>();
+                    final List<Integer> rowIndexes = new ArrayList<>();
                     for (final Row row : matchingRows) {
-                        final Row oldRow = row;
-                        final int rowIndex = rowPositions.take(row).intValue();
                         final Row updatedRow = row.copy();
-                        for (final Map.Entry<String, String> entry : assignments.entrySet()) {
-                            final String colName = entry.getKey();
-                            final String valueExpr = entry.getValue();
+                        for (final String colName : order) {
+                            final String valueExpr = assignments.get(colName);
                             final int colIndex = setIndexes.get(colName).intValue();
                             final SourcePosition displaced =
                                 ExpressionSource.beginNested(assignmentOrigins.get(colName));
@@ -334,7 +373,7 @@ final class UpdateDeleteExecutor {
                                 newValue = ExpressionEvaluator.parse(valueExpr)
                                         instanceof DefaultMarkerExpression
                                     ? executor.declaredDefaultFor(table, colIndex, fullyQualifiedName)
-                                    : executor.evaluateUpdateValue(valueExpr, updatedRow, table, targetAlias);
+                                    : executor.evaluateUpdateValue(valueExpr, row, table, targetAlias);
                             } catch (final RuntimeException failed) {
                                 // A plain UPDATE's SET value that cannot be computed is a DML failure on
                                 // that column, live-verified: "DML operation to table UPD failed on column
@@ -348,6 +387,14 @@ final class UpdateDeleteExecutor {
                             updatedRow.setValue(colIndex, newValue);
                         }
                         executor.enforceColumnConstraintsForDml(table, updatedRow, false, tableName);
+                        oldRows.add(row);
+                        written.add(updatedRow);
+                        rowIndexes.add(rowPositions.take(row));
+                    }
+                    for (int i = 0; i < written.size(); i++) {
+                        final int rowIndex = rowIndexes.get(i).intValue();
+                        final Row oldRow = oldRows.get(i);
+                        final Row updatedRow = written.get(i);
                         updateStorage.replaceRow(rowIndex, updatedRow);
                         // Log transaction
                         if (executor.getTransactionManager().hasActiveTransaction()) {
@@ -359,7 +406,6 @@ final class UpdateDeleteExecutor {
                             executor.getStreamManager().trackUpdate(fullyQualifiedName, oldRow, updatedRow,
                                 updateStorage.getRowId(rowIndex));
                         }
-                        written.add(updatedRow);
                     }
                     return written;
                 } finally {
@@ -417,6 +463,7 @@ final class UpdateDeleteExecutor {
         plan.add(new StageOperator(updateDescription(table, assignments)) {
             @Override
             protected List<Row> apply(final List<Row> matching) {
+                requireUnlockedFor(matching, fullyQualifiedName, table);
                 // Expose WITH-clause CTEs while building the new rows, so a subquery in the SET clause
                 // (SET v = (SELECT x FROM cte)) can resolve the CTE — the same field WHERE subqueries use.
                 final Map<String, ResultSet> savedCteContext = executor.getCurrentCteContext();
@@ -425,24 +472,28 @@ final class UpdateDeleteExecutor {
                 }
                 try {
                     final Map<String, Integer> setIndexes = setIndexes(table, assignments);
+                    // Every row's new image is computed before the write set takes any, so a subquery over the
+                    // table sees it as the statement began (live-verified).
                     final List<Row> written = new ArrayList<>();
+                    final List<Row> images = new ArrayList<>();
+                    final List<Integer> pendingAt = new ArrayList<>();
+                    final List<Long> idsAt = new ArrayList<>();
                     for (final Row row : matching) {
-                        if (pendingRows.contains(row)) {
-                            final Integer idx = pendingPositions.take(row);
-                            if (idx != null) {
-                                writeSet.setPendingInsert(fullyQualifiedName, idx.intValue(),
-                                    buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes, writtenName,
-                                        targetAlias));
-                                written.add(row);
-                            }
+                        final boolean pending = pendingRows.contains(row);
+                        final Integer idx = pending ? pendingPositions.take(row) : effectivePositions.take(row);
+                        if (idx != null) {
+                            images.add(buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes,
+                                writtenName, targetAlias));
+                            pendingAt.add(pending ? idx : null);
+                            idsAt.add(pending ? null : effectiveIds.get(idx.intValue()));
+                            written.add(row);
+                        }
+                    }
+                    for (int i = 0; i < images.size(); i++) {
+                        if (pendingAt.get(i) != null) {
+                            writeSet.setPendingInsert(fullyQualifiedName, pendingAt.get(i).intValue(), images.get(i));
                         } else {
-                            final Integer idx = effectivePositions.take(row);
-                            if (idx != null) {
-                                writeSet.recordUpdate(fullyQualifiedName, effectiveIds.get(idx.intValue()),
-                                    buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes, writtenName,
-                                        targetAlias));
-                                written.add(row);
-                            }
+                            writeSet.recordUpdate(fullyQualifiedName, idsAt.get(i), images.get(i));
                         }
                     }
                     return written;
@@ -471,6 +522,7 @@ final class UpdateDeleteExecutor {
         plan.add(new StageOperator("DELETE[" + table.getName() + "]") {
             @Override
             protected List<Row> apply(final List<Row> rowsToDelete) {
+                requireUnlockedFor(rowsToDelete, fullyQualifiedName, table);
                 // Collect indices to delete (in reverse order to avoid shifting)
                 final List<Integer> indicesToDelete = new ArrayList<>();
                 // Each row's identity, read while the row is still stored: a stream reports the DELETE under it.
@@ -547,6 +599,7 @@ final class UpdateDeleteExecutor {
         plan.add(new StageOperator("DELETE[" + table.getName() + "]") {
             @Override
             protected List<Row> apply(final List<Row> matching) {
+                requireUnlockedFor(matching, fullyQualifiedName, table);
                 final List<Row> deleted = new ArrayList<>();
                 final List<Integer> pendingIndices = new ArrayList<>();
                 for (final Row row : matching) {
@@ -587,23 +640,25 @@ final class UpdateDeleteExecutor {
                                 final Map<String, Integer> setIndexes, final String writtenName,
                                 final String alias) {
         final Row newRow = source.copy();
-        for (final Map.Entry<String, String> entry : assignments.entrySet()) {
-            final int colIndex = setIndexes.get(entry.getKey()).intValue();
+        // Every value reads the row as it was, in the table's column order (see inColumnOrder).
+        for (final String column : inColumnOrder(assignments, setIndexes)) {
+            final String valueExpr = assignments.get(column);
+            final int colIndex = setIndexes.get(column).intValue();
             // Each value is evaluated under ITS OWN origin, so an unknown name inside one SET value
             // reports that value's place rather than the statement's or the previous assignment's.
             final SourcePosition displaced =
-                ExpressionSource.beginNested(origins == null ? null : origins.get(entry.getKey()));
+                ExpressionSource.beginNested(origins == null ? null : origins.get(column));
             final Object newValue;
             try {
                 // The bare DML DEFAULT, as in the other assignment path — see there for the rule. It is
                 // evaluated where the table lives, so the table's name goes in full.
-                newValue = ExpressionEvaluator.parse(entry.getValue())
+                newValue = ExpressionEvaluator.parse(valueExpr)
                         instanceof DefaultMarkerExpression
                     ? executor.declaredDefaultFor(table, colIndex, homeName(table))
-                    : executor.evaluateUpdateValue(entry.getValue(), newRow, table, alias);
+                    : executor.evaluateUpdateValue(valueExpr, source, table, alias);
             } catch (final RuntimeException failed) {
                 throw DmlWriteTarget.isRowTimeFailure(failed)
-                    ? DmlWriteTarget.failedOnColumn(writtenName, entry.getKey(), failed) : failed;
+                    ? DmlWriteTarget.failedOnColumn(writtenName, column, failed) : failed;
             } finally {
                 ExpressionSource.end(displaced);
             }
@@ -718,10 +773,16 @@ final class UpdateDeleteExecutor {
         plan.add(new StageOperator(updateDescription(target, assignments)) {
             @Override
             protected List<Row> apply(final List<Row> combinedRows) {
-                final List<Row> written = new ArrayList<>();
+                requireUnlockedFor(combinedRows, targetFqn, target);
+                // Every row's new image is computed before any is written (see executeUpdateImmediate).
+                final List<Row> images = new ArrayList<>();
                 for (final Row combinedRow : combinedRows) {
-                    final Row targetRow = targetOf.get(combinedRow);
-                    final Row updatedRow = applySet(targetRow, target, combinedRow, ev, setByColumn, writtenName);
+                    images.add(applySet(targetOf.get(combinedRow), target, combinedRow, ev, setByColumn, writtenName));
+                }
+                final List<Row> written = new ArrayList<>();
+                for (int i = 0; i < combinedRows.size(); i++) {
+                    final Row targetRow = targetOf.get(combinedRows.get(i));
+                    final Row updatedRow = images.get(i);
                     final Integer base = baseIndexOf.get(targetRow);
                     if (base == null) {
                         writeSet.setPendingInsert(targetFqn, pendingIndexOf.get(targetRow).intValue(), updatedRow);
@@ -815,6 +876,7 @@ final class UpdateDeleteExecutor {
         plan.add(new StageOperator("DELETE[" + target.getName() + "]") {
             @Override
             protected List<Row> apply(final List<Row> matching) {
+                requireUnlockedFor(matching, targetFqn, target);
                 final List<Row> deleted = new ArrayList<>();
                 final List<Integer> immediateDeletes = new ArrayList<>();
                 final List<Integer> pendingDeletes = new ArrayList<>();

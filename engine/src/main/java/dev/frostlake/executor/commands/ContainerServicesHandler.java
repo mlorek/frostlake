@@ -308,6 +308,11 @@ public final class ContainerServicesHandler {
     private Object dropImageRepository(final FrostlakeParser.ContainerServicesStatementContext ctx) {
         final Schema schema = schemaOf(ctx.qualifiedName());
         final String name = last(ctx.qualifiedName());
+        // A PURGE is refused in the one sentence every kind's is, once the name resolves or IF EXISTS forgives it.
+        if (DropPurge.written(ctx.dropBehavior())
+                && (ctx.if_exists() != null || schema.getContainerObjects().getImageRepository(name) != null)) {
+            throw DropPurge.refusal(ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
+        }
         if (!schema.getContainerObjects().removeImageRepository(name)) {
             if (ctx.if_exists() != null) {
                 ConditionalDdlOutcome.dropSkipped();
@@ -323,10 +328,15 @@ public final class ContainerServicesHandler {
             "repository_url", "owner", "owner_role_type", "comment", "encryption");
         final List<Row> rows = new ArrayList<>();
         final String like = like(ctx);
+        // The listing reads STARTS WITH and LIMIT … FROM as a service listing does (live-verified for the reading).
+        final String startsWith = ctx.showTail() != null && ctx.showTail().STARTS() != null
+            && !ctx.showTail().stringText().isEmpty()
+            ? ParseTreeText.stringValue(ctx.showTail().stringText(0)) : null;
         for (final Schema schema : scope(ctx.containerShowScope())) {
             final String database = databaseOf(schema);
             for (final ImageRepository repository : schema.getContainerObjects().getImageRepositories()) {
-                if (like != null && !ShowResultHelpers.matchesLike(repository.getName(), like)) {
+                if (like != null && !ShowResultHelpers.matchesLike(repository.getName(), like)
+                        || startsWith != null && !repository.getName().startsWith(startsWith)) {
                     continue;
                 }
                 rows.add(new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(repository.getCreatedOn()),
@@ -336,7 +346,7 @@ public final class ContainerServicesHandler {
                     repository.getEncryption())));
             }
         }
-        return new ResultSet(columns, rows);
+        return limit(new ResultSet(columns, rows), ctx.showTail());
     }
 
     /** The registry URL a repository is pushed to and pulled from: {@code <org>-<account>.registry…/…}. */
@@ -596,6 +606,10 @@ public final class ContainerServicesHandler {
     private Object dropService(final FrostlakeParser.ContainerServicesStatementContext ctx) {
         final Schema schema = schemaOf(ctx.qualifiedName());
         final String name = last(ctx.qualifiedName());
+        if (DropPurge.written(ctx.dropBehavior())
+                && (ctx.if_exists() != null || schema.getContainerObjects().getService(name) != null)) {
+            throw DropPurge.refusal(ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
+        }
         if (!schema.getContainerObjects().removeService(name)) {
             if (ctx.if_exists() != null) {
                 ConditionalDdlOutcome.dropSkipped();
@@ -733,6 +747,8 @@ public final class ContainerServicesHandler {
     }
 
     private ResultSet describeService(final FrostlakeParser.ContainerServicesStatementContext ctx) {
+        // The properties written after the name are judged before the service is looked up, as every kind's are.
+        DescribeProperties.describesStage(ctx, queryExecutor);
         final Schema schema = schemaOf(ctx.qualifiedName());
         final ContainerService service = service(ctx.qualifiedName(), true);
         final List<Row> rows = new ArrayList<>();

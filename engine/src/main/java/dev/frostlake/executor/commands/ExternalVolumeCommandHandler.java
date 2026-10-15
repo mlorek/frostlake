@@ -274,7 +274,7 @@ public final class ExternalVolumeCommandHandler {
             volume.isAllowWrites() ? "true" : "false", "true")));
         // One external ID is generated for the volume: every location that wrote none shows it (live-verified).
         final String generatedId = GeneratedCloudIdentity.externalId(catalog.getAccountLocator(), "EXTERNAL VOLUME",
-            name);
+            name, volume.getIdentitySeed());
         int index = 0;
         for (final Map<String, PropertyValue> location : volume.getStorageLocations()) {
             index++;

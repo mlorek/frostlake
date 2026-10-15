@@ -20,10 +20,13 @@ import dev.frostlake.executor.AnonymousBlockResult;
 import dev.frostlake.executor.BlockExpressionTypeError;
 import dev.frostlake.executor.BlockExpressionTypes;
 import dev.frostlake.executor.BodyAbort;
+import dev.frostlake.executor.BodyPlacedError;
 import dev.frostlake.executor.CallDepth;
+import dev.frostlake.executor.CalledRoutineSecrets;
 import dev.frostlake.executor.ContinueHandler;
 import dev.frostlake.executor.DeclarationTypes;
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.FunctionBodyCompileError;
 import dev.frostlake.executor.InfiniteBindRefusal;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ProceduralExecutor;
@@ -32,10 +35,13 @@ import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.ScriptedErrorPlace;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StatementCanceledException;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.UndeclaredScriptVariableException;
+import dev.frostlake.executor.UnrunBlocks;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SubqueryExpression;
+import dev.frostlake.executor.procedural.BuiltInExceptions;
 import dev.frostlake.executor.procedural.CalledProcedureFailure;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.executor.procedural.UserDefinedException;
@@ -51,7 +57,9 @@ import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 
+import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.misc.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -290,9 +298,19 @@ public class BeginEndBlockHandler implements CommandHandler {
      * @return what the block answers
      */
     public Object handle(final FrostlakeParser.BeginEndBlockContext ctx) {
+        if (proceduralExecutor.entersTopBlockOfBody()) {
+            // A plain word after the END of a body's top block is refused before anything runs.
+            BlockEndWord.requireKnown(ctx);
+        } else if (UnrunBlocks.endsUnrun(ctx)) {
+            // A nested block that ends in a word and declares nothing runs none of its statements, wherever the
+            // text it was read from begins.
+            return null;
+        }
         if (!proceduralExecutor.entersTopBlockOfBody() || proceduralExecutor.isBodyScoped()) {
             return run(ctx);
         }
+        // A block compiles whole: a function it calls that cannot use its secrets is refused before it runs.
+        CalledRoutineSecrets.require(ctx, queryExecutor);
         final TransactionManager transactions = queryExecutor.getTransactionManager();
         transactions.enterScope();
         final int level = transactions.scopeDepth();
@@ -348,6 +366,7 @@ public class BeginEndBlockHandler implements CommandHandler {
         ShowShapeCompiler.requireShapes(ctx, new ShowCommandHandler(catalog, queryExecutor));
         // An unnamed bind is refused while the block compiles, before any statement of it runs.
         ScriptingNameValidator.rejectUnnamedBinds(ctx);
+        ScriptingNameValidator.rejectUnknownLoggingNames(ctx);
         // So is a BREAK, a CONTINUE or an EXIT that stands in no loop of the body, or names no loop around it.
         if (proceduralExecutor.entersTopBlockOfBody()) {
             LoopControlPlacement.require(ctx);
@@ -366,6 +385,10 @@ public class BeginEndBlockHandler implements CommandHandler {
         // used earlier in the block (live-verified).
         ScriptingNameValidator.rejectRedeclarationToRun(ctx, parameters,
             proceduralExecutor.entersTopBlockOfBody());
+        // A cursor declared over a name that is no RESULTSET where it stands is refused with the body's names.
+        if (proceduralExecutor.entersTopBlockOfBody()) {
+            CursorSources.require(ctx);
+        }
         final DataType declaredReturn = proceduralExecutor.declaredReturnOfNextBlock();
         ScriptingNameValidator.validate(ctx, inScope, loopRecords, declaredReturn == null ? null
             : new DeclaredReturnJudge(declaredReturn, declaredTypesInScope(), queryExecutor),
@@ -375,6 +398,9 @@ public class BeginEndBlockHandler implements CommandHandler {
         ScriptingNameValidator.rejectRepeatedIntoTargets(ctx);
         // And then each INTO target must name a variable its statement sees (see IntoTargetDeclarations).
         IntoTargetDeclarations.requireDeclared(ctx, inScope);
+        // A tag function one of the block's own expressions calls is answered now, a missing tag being the
+        // block's refusal (see CompiledTagCalls).
+        CompiledTagCalls.require(ctx, queryExecutor);
 
         // Enter a new scope for this block; also snapshot cursors so inner-declared
         // cursors are cleaned up when the block exits.
@@ -513,16 +539,20 @@ public class BeginEndBlockHandler implements CommandHandler {
                     && proceduralExecutor.getFailureLine() > 0) {
                 // What a called procedure let out is the calling statement's failure here, whatever was raised
                 // inside (live-verified).
+                final int[] failed = placedPastOpeningComments(ctx, proceduralExecutor.getFailureLine(),
+                    proceduralExecutor.getFailurePosition());
                 throw new RuntimeException("Uncaught exception of type 'STATEMENT_ERROR' on line "
-                    + proceduralExecutor.getFailureLine() + " at position "
-                    + proceduralExecutor.getFailurePosition() + " : " + uncaught.getMessage(), uncaught);
+                    + failed[0] + " at position " + failed[1] + " : " + uncaught.getMessage(), uncaught);
             }
             // An exception no handler caught reads with live's wording at the TOP of its body
             // only — an enclosing block may still catch it by name, and SQLERRM must keep the raw
             // text until then.
             if (outermostOfBody && uncaught.getExceptionName() != null) {
+                final int[] raised = placedPastOpeningComments(ctx, uncaught.getSourceLine(),
+                    uncaught.getSourcePosition());
                 final ProceduralException formatted = new ProceduralException(
-                    uncaught.getErrorCode(), uncaught.uncaughtMessage(), uncaught.getExceptionName());
+                    uncaught.getErrorCode(), uncaught.uncaughtMessage(raised[0], raised[1]),
+                    uncaught.getExceptionName());
                 formatted.setSourcePosition(uncaught.getSourceLine(), uncaught.getSourcePosition());
                 throw formatted;
             }
@@ -540,16 +570,29 @@ public class BeginEndBlockHandler implements CommandHandler {
             // procedure's body wraps what it lets out as the session's script does, so an error that
             // leaves several bodies carries one sentence for each (live-verified).
             if (outermostOfBody && proceduralExecutor.hasFailurePlace()
-                    && !(uncaught instanceof UndeclaredScriptVariableException)) {
+                    && !(uncaught instanceof UndeclaredScriptVariableException)
+                    && !(uncaught instanceof StatementCanceledException)) {
+                if (compilesWithTheCaller(uncaught)) {
+                    // A function's block body compiles with the statement that calls the function: an expression
+                    // of it that does not compile is that statement's refusal, bare, where one that fails as it
+                    // is evaluated is the body's uncaught exception (live-verified).
+                    throw uncaught;
+                }
+                if (uncaught instanceof FunctionBodyCompileError && ExpressionErrorPlace.assignsAValueAt(ctx,
+                        proceduralExecutor.getFailureLine(), proceduralExecutor.getFailurePosition())) {
+                    // A value a LET or an assignment takes from such a function is compiled with the block.
+                    throw uncaught;
+                }
                 final String inner = "EXPRESSION_ERROR".equals(proceduralExecutor.getFailureKind())
-                        && !(uncaught instanceof BlockExpressionTypeError)
+                        && !(uncaught instanceof BlockExpressionTypeError) && !BodyPlacedError.isIn(uncaught)
                     ? ExpressionErrorPlace.placed(ctx, proceduralExecutor.getFailureLine(),
                         proceduralExecutor.getFailurePosition(), uncaught.getMessage())
                     : uncaught.getMessage();
+                final int[] failed = placedPastOpeningComments(ctx, proceduralExecutor.getFailureLine(),
+                    proceduralExecutor.getFailurePosition());
                 throw new RuntimeException("Uncaught exception of type '"
                     + proceduralExecutor.getFailureKind() + "' on line "
-                    + proceduralExecutor.getFailureLine() + " at position "
-                    + proceduralExecutor.getFailurePosition() + " : " + inner, uncaught);
+                    + failed[0] + " at position " + failed[1] + " : " + inner, uncaught);
             }
             throw uncaught;
         } finally {
@@ -816,8 +859,24 @@ public class BeginEndBlockHandler implements CommandHandler {
         proceduralExecutor.setVariable("SQLSTATE", state);
     }
 
+    /**
+     * Whether a failure is an expression of a SQL function's block body that does not compile: the body compiles
+     * with the statement calling the function, so the refusal is no exception of the body's (see
+     * {@link FunctionBodyCompileError}).
+     */
+    private boolean compilesWithTheCaller(final Exception e) {
+        return proceduralExecutor.runsFunctionBody() && e instanceof RuntimeException
+            && !(e instanceof ProceduralException)
+            && "EXPRESSION_ERROR".equals(proceduralExecutor.getFailureKind())
+            && SqlCompilationError.isCompilationError(e.getMessage());
+    }
+
     private boolean shouldHandleException(final FrostlakeParser.ExceptionConditionContext condition, final Exception e,
                                           final int exceptionDepth) {
+        // A statement's timeout or cancel ends the whole statement: no handler of its blocks takes it.
+        if (compilesWithTheCaller(e) || e instanceof StatementCanceledException) {
+            return false;
+        }
         // Check if this is an "OTHER" handler (catch-all)
         if (condition.OTHER() != null) {
             return true;
@@ -845,7 +904,8 @@ public class BeginEndBlockHandler implements CommandHandler {
                     return true;
                 }
                 if (e instanceof ProceduralException) {
-                    return false;
+                    // An exception the script raised by this name is caught by it (live-verified).
+                    return ((ProceduralException) e).getDeclaration() == BuiltInExceptions.STATEMENT_ERROR;
                 }
                 return e instanceof RuntimeException && !(e instanceof BlockExpressionTypeError)
                     && !"EXPRESSION_ERROR".equals(proceduralExecutor.getFailureKind());
@@ -853,7 +913,8 @@ public class BeginEndBlockHandler implements CommandHandler {
             // or an assignment's value, a RETURN's, a condition.
             case "EXPRESSION_ERROR":
                 if (e instanceof ProceduralException) {
-                    return false;
+                    return !(e instanceof CalledProcedureFailure)
+                        && ((ProceduralException) e).getDeclaration() == BuiltInExceptions.EXPRESSION_ERROR;
                 }
                 return e instanceof BlockExpressionTypeError
                     || e instanceof RuntimeException && "EXPRESSION_ERROR".equals(proceduralExecutor.getFailureKind());
@@ -869,5 +930,21 @@ public class BeginEndBlockHandler implements CommandHandler {
                 }
                 return false;
         }
+    }
+    /**
+     * The place of a statement that failed or raised, as the wrapper tells it: in a text the session sent that opens
+     * with comments, the first token after them is line 1, position 0, as for every other place of the text —
+     * {@code /* c *\/ BEGIN EXECUTE IMMEDIATE 'SELECT 1 FROM'; END} fails "on line 1 at position 6". A body that
+     * runs as a frame of its own keeps its comments: a procedure's is counted from where its text begins
+     * (live-verified).
+     */
+    private int[] placedPastOpeningComments(final FrostlakeParser.BeginEndBlockContext block, final int line,
+                                            final int position) {
+        final CharStream source = block.getStart() == null ? null : block.getStart().getInputStream();
+        if (source == null || source.size() == 0 || !proceduralExecutor.runsSessionText()) {
+            return new int[]{line, position};
+        }
+        final SourcePosition origin = LeadingCommentOffset.of(source.getText(Interval.of(0, source.size() - 1)));
+        return LeadingCommentOffset.rebase(origin, line, position);
     }
 }

@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.encoding;
 
-import java.math.BigDecimal;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.util.List;
@@ -112,7 +112,7 @@ public final class Base64Options {
         if (args.size() <= index || args.get(index) == null) {
             return 0;
         }
-        final BigInteger rounded = new BigDecimal(args.get(index).toString())
+        final BigInteger rounded = SharedFunctionHelpers.numberArgument(args.get(index))
             .setScale(0, RoundingMode.HALF_UP).toBigInteger();
         if (rounded.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0
                 || rounded.compareTo(BigInteger.valueOf(Integer.MIN_VALUE)) < 0) {

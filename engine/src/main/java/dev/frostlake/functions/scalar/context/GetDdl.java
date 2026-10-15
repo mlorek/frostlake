@@ -29,6 +29,7 @@ import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.TagAssignment;
 import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.Taggable;
@@ -60,6 +61,7 @@ import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.SequenceDefault;
 import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Tag;
@@ -383,7 +385,10 @@ public class GetDdl extends BuiltInFunction {
                 if (stream == null) {
                     throw missing(parts, owner, "Stream", false);
                 }
-                return ObjectDdl.stream(stream, names.object(owner, name));
+                final boolean gone = stream.getSourceType() == StreamSourceType.TABLE
+                    && StreamSources.sourceOf(catalog, owner, stream) == null;
+                return ObjectDdl.stream(stream, names.object(owner, name),
+                    gone ? StreamSources.fullName(owner, stream) : null);
             }
             case "TASK": {
                 final Task task = find(owner, name, objectType);
@@ -1067,7 +1072,7 @@ public class GetDdl extends BuiltInFunction {
           .append(routineParameters(function.getParameters())).append("\n");
         sb.append("RETURNS ").append(function.isTableFunction()
             ? "TABLE (" + returnColumns(function.getReturnColumns()) + ")"
-            : routineTypeText(function.getReturnType())).append("\n");
+            : SqlTypeNames.routineType(function.getReturnType(), function.getReturnSized())).append("\n");
         sb.append("LANGUAGE ").append(function.getLanguage().toUpperCase(Locale.ROOT)).append("\n");
         if ("RETURNS NULL ON NULL INPUT".equals(function.getNullHandling())) {
             sb.append("STRICT\n");
@@ -1102,7 +1107,7 @@ public class GetDdl extends BuiltInFunction {
           .append("\n");
         sb.append("RETURNS ").append(procedure.returnsTable()
             ? "TABLE (" + returnColumns(procedure.getReturnColumns()) + ")"
-            : routineTypeText(procedure.getReturnType())).append("\n");
+            : SqlTypeNames.routineType(procedure.getReturnType(), procedure.getReturnSized())).append("\n");
         sb.append("LANGUAGE ").append(procedure.getLanguage().toUpperCase(Locale.ROOT)).append("\n");
         if ("RETURNS NULL ON NULL INPUT".equals(procedure.getNullHandling())) {
             sb.append("STRICT\n");
@@ -1213,7 +1218,11 @@ public class GetDdl extends BuiltInFunction {
             "Object '" + written + "' does not exist or not authorized."));
     }
 
-    /** {@code ("X" NUMBER(38,0) DEFAULT 1, …)} — every parameter quoted, its default kept. */
+    /**
+     * {@code ("X" NUMBER(38,0) DEFAULT 1, …)} — every parameter quoted, its default as the plan it compiled to
+     * prints it: {@code DEFAULT CAST('2020-01-01' AS DATE)} for {@code '2020-01-01'::DATE}, {@code DEFAULT null}
+     * for {@code NULL} (live-verified).
+     */
     private String routineParameters(final List<Parameter> parameters) {
         final StringBuilder out = new StringBuilder("(");
         for (int i = 0; parameters != null && i < parameters.size(); i++) {
@@ -1221,10 +1230,11 @@ public class GetDdl extends BuiltInFunction {
                 out.append(", ");
             }
             final Parameter parameter = parameters.get(i);
+            // A text or a binary declared with no length reads bare, and one declared with its length keeps it.
             out.append(quotedName(parameter.getName())).append(" ")
-               .append(routineTypeText(parameter.getDataType()));
+               .append(SqlTypeNames.routineType(parameter.getDataType(), Boolean.valueOf(!parameter.isUnsized())));
             if (parameter.hasDefault()) {
-                out.append(" DEFAULT ").append(parameter.getDefaultValue());
+                out.append(" DEFAULT ").append(parameter.getToldDefault());
             }
         }
         return out.append(")").toString();
@@ -1243,14 +1253,6 @@ public class GetDdl extends BuiltInFunction {
         return out.toString();
     }
 
-    /**
-     * A routine's type as the account spells it: the canonical name, except that a string of the
-     * default width is spelled BARE - live renders {@code RETURNS VARCHAR} for a bare declaration and
-     * {@code VARCHAR(10)} for a sized one.
-     */
-    private String routineTypeText(final DataType type) {
-        return SqlTypeNames.routineType(type);
-    }
 
     /** The body as one single-quoted literal, its own quotes doubled, whatever quoting the CREATE used. */
     private String quotedBody(final String body) {
@@ -1261,5 +1263,4 @@ public class GetDdl extends BuiltInFunction {
     private String quotedName(final String name) {
         return "\"" + name + "\"";
     }
-
 }

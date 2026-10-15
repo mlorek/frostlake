@@ -57,7 +57,9 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
+import dev.frostlake.types.VectorType;
 import dev.frostlake.values.ValueRange;
 
 import java.time.Instant;
@@ -249,7 +251,9 @@ public class SystemViews {
                     if (!lists("TABLE", schema, table.getName(), table.getOwner())) {
                         continue;
                     }
-                    final String type = table.isTemporary() ? "LOCAL TEMPORARY" : "BASE TABLE";
+                    // An event table is a kind of its own here (live-verified).
+                    final String type = table.isTemporary() ? "LOCAL TEMPORARY"
+                        : table.isEventTable() ? "EVENT TABLE" : "BASE TABLE";
                     // ROW_COUNT is the committed rows; BYTES stays 0 — live's figure is the compressed
                     // size of its micro-partitions (512 for one INT row, 1024 for two to a hundred,
                     // 2048 for one row of a thousand random characters), which in-memory rows cannot
@@ -800,8 +804,9 @@ public class SystemViews {
                         db.getName(), schema.getName(), proc.getName(), proc.getOwner(),
                         buildArgSignature(proc.getParameters()),
                         proc.returnsTable() ? "TABLE (" + columnSignature(proc.getReturnColumns()) + ")"
-                            : SqlTypeNames.routineDataType(returns),
-                        proc.returnsTable() ? null : SqlTypeNames.routineTextLength(returns), null,
+                            : SqlTypeNames.routineDataType(returns, proc.getReturnSized()),
+                        proc.returnsTable() ? null
+                            : SqlTypeNames.routineTextLength(returns, proc.getReturnSized()), null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getPrecision()) : null,
                         exactNumeric ? Integer.valueOf(10) : null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getScale()) : null,
@@ -848,13 +853,14 @@ public class SystemViews {
                     final DataType returns = func.getReturnType();
                     final String dataType = func.isTableFunction()
                         ? "TABLE (" + columnSignature(func.getReturnColumns()) + ")"
-                        : SqlTypeNames.routineDataType(returns);
+                        : SqlTypeNames.routineDataType(returns, func.getReturnSized());
                     final boolean exactNumeric = !func.isTableFunction()
                         && returns instanceof NumericType && !"FLOAT".equals(returns.getName().toUpperCase(Locale.ROOT));
                     result.addRow(new Row(
                         db.getName(), schema.getName(), func.getName(), func.getOwner(),
                         buildArgSignature(func.getParameters()), dataType,
-                        func.isTableFunction() ? null : SqlTypeNames.routineTextLength(returns), null,
+                        func.isTableFunction() ? null
+                            : SqlTypeNames.routineTextLength(returns, func.getReturnSized()), null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getPrecision()) : null,
                         exactNumeric ? Integer.valueOf(10) : null,
                         exactNumeric ? Integer.valueOf(((NumericType) returns).getScale()) : null,
@@ -937,8 +943,9 @@ public class SystemViews {
                     // an internal stage reports a null URL and null region.
                     final boolean external = url != null && (url.startsWith("s3://")
                         || url.startsWith("azure://") || url.startsWith("gcs://"));
+                    // The name as the catalog holds it: a quoted name keeps its case, "s.dotted" included.
                     result.addRow(new Row(
-                        db.getName(), schema.getName(), stage.getName().toUpperCase(Locale.ROOT),
+                        db.getName(), schema.getName(), stage.getName(),
                         external ? url : null, null,
                         external ? "External Named" : "Internal Named", stage.getOwner(),
                         stage.getComment(), stage.getCreatedAt(), stage.getLastDdlTime(),
@@ -1329,9 +1336,18 @@ public class SystemViews {
         final StringBuilder sb = new StringBuilder("(");
         for (int i = 0; i < params.size(); i++) {
             if (i > 0) sb.append(", ");
-            sb.append(params.get(i).getName()).append(" ").append(params.get(i).getDataType().getName());
+            sb.append(params.get(i).getName()).append(" ").append(argumentType(params.get(i).getDataType()));
         }
         sb.append(")");
         return sb.toString();
+    }
+
+    /**
+     * A parameter's type as ARGUMENT_SIGNATURE names it: its bare name, a structured one with its shape and the
+     * types inside it bare — {@code OBJECT(a NUMBER)}, {@code MAP(VARCHAR, NUMBER)} — and a VECTOR without its
+     * element type and size, which DESCRIBE and SHOW print (live-verified).
+     */
+    private static String argumentType(final DataType type) {
+        return type instanceof VectorType ? "VECTOR" : StructuredTypes.signatureText(type);
     }
 }

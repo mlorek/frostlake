@@ -70,6 +70,8 @@ public class Transaction {
      *  tracks its own set in {@link TransactionWriteSet}. One {@code PARTITIONS} lock per table
      *  (live-verified — appends do NOT lock), released with the transaction. */
     private final Map<String, TableLock> tableLocks = new LinkedHashMap<>();
+    /** The statement a lock refusal names for a table this transaction only inserted into, by table. */
+    private final Map<String, String> insertLockIds = new HashMap<>();
     /** The number of the session that began the transaction — SHOW TRANSACTIONS' and SHOW LOCKS'
      *  session cell — or null for a transaction begun with no session context wired. */
     private volatile Long sessionNumber;
@@ -278,6 +280,49 @@ public class Transaction {
     /** Name this transaction — {@code BEGIN NAME <name>} / {@code START TRANSACTION NAME <name>}. */
     public void setName(final String name) {
         this.name = name;
+    }
+
+    /**
+     * Whether this transaction has written a row of a table — inserted, changed or removed one — and so holds the
+     * table against other sessions' writers (see {@link TableLockGate}). Read by the transaction's own session, or
+     * under the engine's lock.
+     *
+     * @param fullyQualifiedName the table's storage name
+     * @return whether the transaction has written the table
+     */
+    public boolean hasWritten(final String fullyQualifiedName) {
+        for (final String changed : writeSet.changedTables()) {
+            if (changed.equalsIgnoreCase(fullyQualifiedName)) {
+                return true;
+            }
+        }
+        for (final TransactionLog log : logs) {
+            if (fullyQualifiedName.equalsIgnoreCase(log.getTableName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The statement a lock refusal names as holding a table: the one whose write registered its lock, or one
+     * named once for a table this transaction only inserted into.
+     *
+     * @param fullyQualifiedName the table's storage name
+     * @return the statement's query ID
+     */
+    public synchronized String lockQueryId(final String fullyQualifiedName) {
+        final String key = fullyQualifiedName.toUpperCase(Locale.ROOT);
+        final TableLock lock = getAllTableLocks().get(key);
+        if (lock != null) {
+            return lock.getQueryId();
+        }
+        String named = insertLockIds.get(key);
+        if (named == null) {
+            named = UUID.randomUUID().toString();
+            insertLockIds.put(key, named);
+        }
+        return named;
     }
 
     /** Register the PARTITIONS lock a DML touch takes on a table; the first touch wins the cell. */

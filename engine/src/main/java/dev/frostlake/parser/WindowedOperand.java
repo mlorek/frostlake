@@ -16,9 +16,11 @@
 
 package dev.frostlake.parser;
 
+import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import java.math.BigDecimal;
 import java.util.Locale;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -152,12 +154,31 @@ public final class WindowedOperand {
         }
         if (value instanceof FrostlakeParser.ScalarSubqueryExprContext
                 || value instanceof FrostlakeParser.ExistsExprContext) {
-            return QuantifiedComparisonOperand.written((ParserRuleContext) value);
+            // A query is told as the tree it parsed to prints it: (SELECT 1 AS "1" FROM (VALUES (null)) DUAL).
+            final String written = QuantifiedComparisonOperand.written((ParserRuleContext) value);
+            final String parsed = parsedSpelling(written);
+            return parsed != null ? parsed : written;
         }
         if (value instanceof FrostlakeParser.WindowedOperandExprContext || hasWindow(value)) {
-            return upperOutsideQuotes(QuantifiedComparisonOperand.written((ParserRuleContext) value));
+            // So is a call with a window of its own: SUM(X) OVER (ORDER BY X ASC NULLS LAST), "COUNT(*)"() OVER ().
+            final String written = QuantifiedComparisonOperand.written((ParserRuleContext) value);
+            final String parsed = parsedSpelling(written);
+            return parsed != null ? parsed : upperOutsideQuotes(written);
+        }
+        if (value instanceof FrostlakeParser.RowExprContext) {
+            // And a list of values in parentheses, which is a ROW: ROW(1, 2).
+            return parsedSpelling(QuantifiedComparisonOperand.written((ParserRuleContext) value));
         }
         return null;
+    }
+
+    /** A value's text as the tree it parses to prints it, or null when the printer does not read it. */
+    private static String parsedSpelling(final String written) {
+        try {
+            return ParsedEchoPrinter.print(ExpressionEvaluator.parse(written));
+        } catch (final RuntimeException unprinted) {
+            return null;
+        }
     }
 
     private static String literalSpelling(final FrostlakeParser.LiteralContext literal) {

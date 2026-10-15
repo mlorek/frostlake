@@ -22,6 +22,7 @@ import dev.frostlake.executor.expressions.BindVariableExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.UntypedNullFold;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.parser.FrostlakeParser;
@@ -38,9 +39,11 @@ import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
+import dev.frostlake.values.VariantValue;
 
 import org.antlr.v4.runtime.Token;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -83,7 +86,7 @@ import java.util.Set;
  *   BINARY             VARCHAR, NUMBER
  *   VARIANT            VARCHAR, DATE
  *   OBJECT             NUMBER, VARCHAR, ARRAY
- *   ARRAY              NUMBER, VARCHAR, OBJECT
+ *   ARRAY              NUMBER, VARCHAR, OBJECT, BINARY
  * </pre>
  *
  * Live-verified, every cell. Choosing among a procedure's overloads is not modelled here. A CALL a block or
@@ -111,7 +114,7 @@ final class CallArgumentTypes {
         refuse("BINARY", "TEXT", "FIXED");
         refuse("VARIANT", "TEXT", "DATE");
         refuse("OBJECT", "FIXED", "TEXT", "ARRAY");
-        refuse("ARRAY", "FIXED", "TEXT", "OBJECT");
+        refuse("ARRAY", "FIXED", "TEXT", "OBJECT", "BINARY");
     }
 
     /** What a parameter of a type no pair has been measured for weighs: more than any conversion. */
@@ -153,7 +156,7 @@ final class CallArgumentTypes {
         if (arguments.size() > params.size()) {
             final List<String> written = new ArrayList<String>();
             for (final FrostlakeParser.CallArgumentContext argument : arguments) {
-                written.add(ParseTreeText.getOriginalText(argument));
+                written.add(echoed(argument, typer));
             }
             throw new RuntimeException(SqlCompilationError.at(0, -1, "too many arguments for function ["
                 + procName + "(" + String.join(", ", written) + ")] expected " + params.size() + ", got "
@@ -187,41 +190,89 @@ final class CallArgumentTypes {
     }
 
     /**
-     * Judge the positional arguments of a table procedure called as a FROM source, {@code TABLE(p(1, 'a'))}. Where a
-     * CALL tells too many arguments from arguments of another type, the FROM form has one sentence for every
-     * misfit — too few, too many, another type — placed at the procedure's name: {@code Invalid argument types for
-     * function 'P': (NUMBER(1,0), VARCHAR(1))} (live-verified).
+     * Judge the arguments of a table procedure called as a FROM source, {@code TABLE(p(1, 'a'))}. A CALL converts
+     * its arguments where it can; the FROM form matches them to the parameters' declared types as a table
+     * function's are matched (see {@link TableFunctionSignatures}) — by family and exactly, an untyped NULL
+     * matching nothing — and has one sentence for every misfit, too few and too many among them, placed at the
+     * procedure's name: {@code Invalid argument types for function 'P': (NUMBER(1,0), VARCHAR(1))}, the name as the
+     * call writes it; written with names it is {@code named arguments [X] do not match any signature for function
+     * P} (live-verified):
      *
-     * @param procName the procedure's name as the sentence prints it
+     * <pre>
+     *   p(x NUMBER)          1, 20 digits, NULL::NUMBER      not '1', 1.5, a NUMBER(10,2), TRUE, NULL
+     *   p(x NUMBER(5,2))     1.25, a NUMBER(38,2)            not 1, 1.2
+     *   p(x VARCHAR(3))      a text of any width             not 1, TRUE
+     *   p(x TIMESTAMP_NTZ)   a TIMESTAMP_NTZ(9)              not a TIMESTAMP_NTZ(3), a TIMESTAMP_LTZ
+     * </pre>
+     *
+     * <p>A number written as a literal is matched at the scale its value needs: {@code 1.0} is an argument of a
+     * NUMBER(38,0) parameter and {@code 1.250} of a NUMBER(5,2) one. An argument this pass cannot type refuses
+     * nothing.
+     *
+     * @param procName the procedure's name as the sentences print it
      * @param params   its parameters, in declaration order
-     * @param values   the arguments written
+     * @param values   the arguments written by position, or null when they are written by name
+     * @param named    the arguments written by name, or null when they are written by position
      * @param at       the procedure's name in the statement
      * @param typer    the evaluator whose static typing reads each argument
      */
     static void checkTableSource(final String procName, final List<Parameter> params,
-                                 final List<FrostlakeParser.ExpressionContext> values, final Token at,
+                                 final List<FrostlakeParser.ExpressionContext> values,
+                                 final List<FrostlakeParser.NamedArgumentContext> named, final Token at,
                                  final ExpressionEvaluator typer) {
         final List<String> spelled = new ArrayList<String>();
-        boolean refused = values.size() > params.size();
-        for (int i = 0; i < values.size(); i++) {
-            if (isUntypedNull(values.get(i), typer)) {
-                spelled.add("NULL");
-                continue;
+        final List<DataType> positionalTypes = new ArrayList<DataType>();
+        final List<String> names = new ArrayList<String>();
+        final List<String> writtenNames = new ArrayList<String>();
+        final List<DataType> namedTypes = new ArrayList<DataType>();
+        final List<Boolean> untypedNull = new ArrayList<Boolean>();
+        if (values != null) {
+            for (final FrostlakeParser.ExpressionContext value : values) {
+                final boolean bare = isUntypedNull(value, typer);
+                final DataType type = bare ? null : staticType(value, typer);
+                if (!bare && type == null) {
+                    return;   // an argument this pass cannot type refuses nothing
+                }
+                spelled.add(bare ? "NULL" : SqlTypeNames.refusalSpelling(type));
+                positionalTypes.add(atValueScale(value, type));
+                untypedNull.add(Boolean.valueOf(bare));
             }
-            final DataType type = staticType(values.get(i), typer);
-            if (type == null) {
-                return;   // an argument this pass cannot type refuses nothing
+        }
+        if (named != null) {
+            for (final FrostlakeParser.NamedArgumentContext argument : named) {
+                final FrostlakeParser.ExpressionContext value = argument.expression();
+                final boolean bare = value != null && isUntypedNull(value, typer);
+                names.add(SqlIdentifiers.canonical(argument.identifier()));
+                writtenNames.add(argument.identifier().getText());
+                namedTypes.add(value == null || bare ? null : atValueScale(value, staticType(value, typer)));
+                untypedNull.add(Boolean.valueOf(bare));
             }
-            spelled.add(SqlTypeNames.refusalSpelling(type));
-            refused |= i < params.size() && refuses(params.get(i).getDataType(), type);
         }
-        for (int i = values.size(); i < params.size(); i++) {
-            refused |= !params.get(i).hasDefault();
+        if (TableFunctionSignatures.fits(params, positionalTypes, names, namedTypes, untypedNull)) {
+            return;
         }
-        if (refused) {
-            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
-                "Invalid argument types for function '" + procName + "': (" + String.join(", ", spelled) + ")"));
+        throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+            names.isEmpty() ? "Invalid argument types for function '" + procName + "': (" + String.join(", ", spelled) + ")"
+                : "named arguments [" + NamedArguments.listed(params, writtenNames)
+                    + "] do not match any signature for function " + procName));
+    }
+
+    /** A number literal's type at the scale its value needs, {@code 1.250} as a NUMBER of scale 2; any other as is. */
+    private static DataType atValueScale(final FrostlakeParser.ExpressionContext value, final DataType type) {
+        if (!(type instanceof NumericType) || NumericType.isApproximate(type)
+                || !(value instanceof FrostlakeParser.LiteralExprContext)) {
+            return type;
         }
+        final NumericType declared = (NumericType) type;
+        final BigDecimal written;
+        try {
+            written = new BigDecimal(value.getText());
+        } catch (final NumberFormatException unread) {
+            return type;
+        }
+        final int needed = Math.max(0, written.stripTrailingZeros().scale());
+        return needed >= declared.getScale() ? type
+            : new NumericType("NUMBER", declared.getPrecision() - (declared.getScale() - needed), needed);
     }
 
     /**
@@ -670,6 +721,69 @@ final class CallArgumentTypes {
         }
         final DataType declared = typer.inferStaticType(operand);
         return declared instanceof DateTimeType && "DATE".equalsIgnoreCase(declared.getName());
+    }
+
+    /**
+     * An argument as the too-many-arguments sentence echoes it: as written, but for a {@code :name} of a
+     * semi-structured variable that holds a value, which the statement binds as the JSON it holds —
+     * {@code PARSE_JSON(:v)} for a VARIANT, cast to its type for an ARRAY and an OBJECT,
+     * {@code CAST(PARSE_JSON(:o) AS OBJECT)}; one that holds NULL stays {@code :v} (live-verified).
+     */
+    private static String echoed(final FrostlakeParser.CallArgumentContext argument, final ExpressionEvaluator typer) {
+        final String written = ParseTreeText.getOriginalText(argument);
+        if (argument.expression() == null) {
+            return written;
+        }
+        try {
+            final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(argument.expression()));
+            final DataType declared = parsed instanceof BindVariableExpression && !typer.isNullVariable(parsed)
+                ? typer.inferStaticType(parsed) : null;
+            if (declared == null || StructuredTypes.isStructured(declared)) {
+                return written;
+            }
+            if (declared instanceof VariantType) {
+                return "PARSE_JSON(" + written + ")";
+            }
+            if (declared instanceof ObjectType) {
+                return "CAST(PARSE_JSON(" + written + ") AS OBJECT)";
+            }
+            return declared instanceof ArrayType ? "CAST(PARSE_JSON(" + written + ") AS ARRAY)" : written;
+        } catch (final RuntimeException untyped) {
+            return written;
+        }
+    }
+
+    /**
+     * Whether an argument is a {@code :name} whose variable is declared VARIANT: a VARIANT to the CALL, whatever
+     * the variable holds.
+     *
+     * @param written the argument as written
+     * @param typer   types the argument
+     * @return whether the CALL binds a VARIANT there
+     */
+    public static boolean bindsAVariant(final FrostlakeParser.ExpressionContext written,
+                                        final ExpressionEvaluator typer) {
+        try {
+            final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(written));
+            return parsed instanceof BindVariableExpression && typer.inferStaticType(parsed) instanceof VariantType;
+        } catch (final RuntimeException untyped) {
+            return false;
+        }
+    }
+
+    /**
+     * A VARIANT variable's text as the CALL converts it to a number's, a boolean's, a date's or a time's
+     * parameter: the variant it is, so a text the parameter does not read is refused as one — "Failed to cast
+     * variant value "x" to DATE" (live-verified).
+     *
+     * @param value what the variable holds
+     * @param type  the parameter's declared type
+     * @return the value to convert
+     */
+    public static Object variantText(final Object value, final DataType type) {
+        return value instanceof CharSequence
+            && (type instanceof NumericType || type instanceof BooleanType || type instanceof DateTimeType)
+            ? VariantValue.ofNode(ArrayFunctionHelper.MAPPER.getNodeFactory().textNode(value.toString())) : value;
     }
 
     /**

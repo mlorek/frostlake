@@ -199,14 +199,8 @@ public class TagReferencesFunction extends TableFunction {
      */
     public String valueOf(final String tagName, final String objectName, final String domain) {
         final String[] written = SqlIdentifiers.canonicalTextParts(tagName);
-        final Schema home = catalog.resolveOwningSchema(QualifiedName.join(written));
+        final Schema home = homeOfTag(written);
         final String name = written[written.length - 1];
-        if (!home.hasTagExact(name)) {
-            // A tag named bare is refused by that name, one named by a path by its full name. The name is matched
-            // as an identifier is: a quoted "tg" is no tag TG.
-            throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", written.length == 1
-                ? QualifiedName.join(written) : home.qualifiedName(name)));
-        }
         final String stored = home.getTag(name).getName();
         for (final Row row : rows(objectName, domain)) {
             if (home.getDatabaseName().equals(row.getValue(0)) && home.getName().equals(row.getValue(1))
@@ -215,6 +209,29 @@ public class TagReferencesFunction extends TableFunction {
             }
         }
         return null;
+    }
+
+    /**
+     * Refuses a tag that is not there, as a statement naming it is refused.
+     *
+     * @param catalog the catalog
+     * @param tagName the tag's name, read as an identifier is
+     */
+    public static void requireTag(final Catalog catalog, final String tagName) {
+        new TagReferencesFunction(catalog).homeOfTag(SqlIdentifiers.canonicalTextParts(unquoted(tagName)));
+    }
+
+    /** The schema a tag lives in; a tag that is not there is refused. */
+    private Schema homeOfTag(final String[] written) {
+        final Schema home = catalog.resolveOwningSchema(QualifiedName.join(written));
+        final String name = written[written.length - 1];
+        if (!home.hasTagExact(name)) {
+            // A tag named bare is refused by that name, one named by a path by its full name. The name is matched
+            // as an identifier is: a quoted "tg" is no tag TG.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", written.length == 1
+                ? QualifiedName.join(written) : home.qualifiedName(name)));
+        }
+        return home;
     }
 
     /**
@@ -269,7 +286,8 @@ public class TagReferencesFunction extends TableFunction {
     /**
      * SYSTEM$GET_TAG_ALLOWED_VALUES(tag): the tag's ALLOWED_VALUES as a JSON array in text — {@code ["a","b"]},
      * {@code []} for a list emptied value by value — or NULL for a tag without a list. The one argument is a
-     * text naming the tag, read as an identifier is, a bare name in the session's schema (live-verified).
+     * text naming the tag, read as an identifier is, a bare name in the session's schema; a name of more parts
+     * than a tag's has is "Object does not exist, or operation cannot be performed." (live-verified).
      *
      * @param catalog the catalog
      * @param args the call's arguments
@@ -289,6 +307,9 @@ public class TagReferencesFunction extends TableFunction {
                 "argument needs to be a string: 'SYSTEM$GET_TAG_ALLOWED_VALUES'"));
         }
         final String[] written = SqlIdentifiers.canonicalTextParts(unquoted(argument));
+        if (written.length > SCHEMA_OBJECT_PARTS) {
+            throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+        }
         final Schema home = catalog.resolveOwningSchema(QualifiedName.join(written));
         final String name = written[written.length - 1];
         if (!home.hasTagExact(name)) {

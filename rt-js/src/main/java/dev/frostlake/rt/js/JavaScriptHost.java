@@ -55,6 +55,17 @@ public final class JavaScriptHost {
     }
 
     /**
+     * The name a formatter tells for the zone it resolved to (see {@link JavaScriptZones#told}).
+     *
+     * @param resolved the zone's name as the engine resolved it
+     * @return the name as the account's engine tells it
+     */
+    @HostAccess.Export
+    public String zoneId(final String resolved) {
+        return JavaScriptZones.told(resolved, zone);
+    }
+
+    /**
      * Why a text is not JSON.
      *
      * @param text the text {@code JSON.parse} was given

@@ -68,11 +68,19 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     private final boolean inQuery;
     /** Prints the queries the expression holds. */
     private final ParsedQueryEcho queries;
+    /** Whether a call is named as one no function has been found for yet (see {@link #printUnresolved}). */
+    private final boolean unresolved;
 
     ParsedEchoPrinter(final boolean calls, final boolean inQuery, final ParsedQueryEcho queries) {
+        this(calls, inQuery, queries, false);
+    }
+
+    private ParsedEchoPrinter(final boolean calls, final boolean inQuery, final ParsedQueryEcho queries,
+                              final boolean unresolved) {
         this.calls = calls;
         this.inQuery = inQuery;
         this.queries = queries;
+        this.unresolved = unresolved;
     }
 
     /**
@@ -87,8 +95,34 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         return expression.accept(new ParsedEchoPrinter(walk.found(), false, new ParsedQueryEcho()));
     }
 
+    /**
+     * An expression as a table function's argument list names it when it refuses one that is no constant
+     * (live-verified): every operator a call, and every call named as one no function has been found for yet.
+     *
+     * <pre>
+     *   TYPE = CSV              [unresolved function: "="](TYPE, CSV)
+     *   UPPER('a' || 'b')       [unresolved function: UPPER]([unresolved function: "||"]('a', 'b'))
+     *   x IN (1, 2)             X IN 1 IN 2
+     *   1::INT   (1, 2)         CAST(1 AS NUMBER(38,0))   ROW(1, 2)
+     * </pre>
+     *
+     * @param expression the expression
+     * @return its text
+     */
+    public static String printUnresolved(final Expression expression) {
+        return expression.accept(new ParsedEchoPrinter(true, true, new ParsedQueryEcho(), true));
+    }
+
+    /** A call's name, told as unresolved where the list being printed has not found its functions yet. */
+    private String named(final String name) {
+        return unresolved ? "[unresolved function: " + name + "]" : name;
+    }
+
     @Override
     public String visitLiteral(final LiteralExpression expr) {
+        if (unresolved && expr.getValue() == null) {
+            return "NULL";
+        }
         if (expr.getType() == LiteralType.STRING) {
             return "'" + escaped(String.valueOf(expr.getValue())) + "'";
         }
@@ -143,7 +177,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         if (calls) {
             final String name = operator == BinaryOperator.AND || operator == BinaryOperator.OR
                 ? symbol : "\"" + symbol + "\"";
-            return name + "(" + expr.getLeft().accept(this) + ", " + expr.getRight().accept(this) + ")";
+            return named(name) + "(" + expr.getLeft().accept(this) + ", " + expr.getRight().accept(this) + ")";
         }
         return operand(expr.getLeft()) + " " + symbol + " " + operand(expr.getRight());
     }
@@ -152,7 +186,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     private String like(final BinaryOperationExpression expr, final String name) {
         final Expression escape = expr.getEscape();
         if (calls) {
-            return name + "(" + expr.getLeft().accept(this) + ", " + expr.getRight().accept(this)
+            return named(name) + "(" + expr.getLeft().accept(this) + ", " + expr.getRight().accept(this)
                 + (escape == null ? "" : ", " + escape.accept(this)) + ")";
         }
         return operand(expr.getLeft()) + " " + name + " " + operand(expr.getRight())
@@ -211,15 +245,15 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
                     // The NOT of a NOT EXISTS is the EXISTS again.
                     return ((UnaryOperationExpression) operand).getOperand().accept(this);
                 }
-                return "NOT(" + operand.accept(this) + ")";
+                return named("NOT") + "(" + operand.accept(this) + ")";
             case NEGATE:
                 if (isNumber(operand)) {
                     final String number = operand.accept(this);
                     return isZero(number) || number.startsWith("-") ? number : "-" + number;
                 }
-                return "NEGATE(" + operand.accept(this) + ")";
+                return named("NEGATE") + "(" + operand.accept(this) + ")";
             case PLUS:
-                return (calls ? "\"UNARY PLUS\"(" : "UNARY PLUS(") + operand.accept(this) + ")";
+                return named(calls ? "\"UNARY PLUS\"" : "UNARY PLUS") + "(" + operand.accept(this) + ")";
             default:
                 return super.visitUnaryOperation(expr);
         }
@@ -251,7 +285,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     public String visitIsNull(final IsNullExpression expr) {
         final String test = expr.isNot() ? "IS NOT NULL" : "IS NULL";
         final String operand = expr.getOperand().accept(this);
-        return calls ? "\"" + test + "\"(" + operand + ")" : operand + " " + test;
+        return calls ? named("\"" + test + "\"") + "(" + operand + ")" : operand + " " + test;
     }
 
     @Override
@@ -259,6 +293,15 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         if (expr.hasSubquery()) {
             return quantified(expr.isNot() ? "!=" : "=", expr.getValue().accept(this),
                 expr.isNot() ? "ALL" : "ANY", expr.getSubquery());
+        }
+        if (unresolved) {
+            // The members follow their value one by one, each after an IN of its own: a plain one bare, a
+            // computed one in parentheses of its own.
+            final StringBuilder text = new StringBuilder(expr.getValue().accept(this));
+            for (final Expression member : expr.getValues()) {
+                text.append(" IN ").append(operand(member));
+            }
+            return expr.isNot() ? "NOT(" + text + ")" : text.toString();
         }
         final List<String> members = new ArrayList<>();
         final List<Boolean> plain = new ArrayList<>();
@@ -274,14 +317,17 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
      * A value IN its members: the plain members share a list, opened by the first of them, and every other
      * member is a list of its own, opened where it stands. Its closing parenthesis is the only one written for a
      * list open before it, so {@code a IN (1, 1 + 1)} reads {@code A IN (1 IN (1 + 1)} — one short, as the
-     * account prints it.
+     * account prints it — and a plain member after it goes on with the list the plain ones share, closed after
+     * the last of them: {@code a IN (1, 1 + 1, 3)} reads {@code A IN (1 IN (1 + 1), 3)}.
      */
     private static String membership(final String value, final List<String> members, final List<Boolean> plain) {
         final StringBuilder text = new StringBuilder(value);
+        boolean shared = false;
         boolean open = false;
         for (int i = 0; i < members.size(); i++) {
             if (plain.get(i).booleanValue()) {
-                text.append(open ? ", " : " IN (").append(members.get(i));
+                text.append(shared ? ", " : " IN (").append(members.get(i));
+                shared = true;
                 open = true;
             } else {
                 text.append(" IN (").append(members.get(i)).append(')');
@@ -353,8 +399,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
 
     @Override
     public String visitBetween(final BetweenExpression expr) {
-        final String between = "BETWEEN(" + expr.getValue().accept(this) + ", " + expr.getLower().accept(this)
-            + ", " + expr.getUpper().accept(this) + ")";
+        final String between = named("BETWEEN") + "(" + expr.getValue().accept(this) + ", "
+            + expr.getLower().accept(this) + ", " + expr.getUpper().accept(this) + ")";
         return expr.isNot() ? "NOT(" + between + ")" : between;
     }
 
@@ -381,7 +427,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     @Override
     public String visitCaseExpression(final CaseExpression expr) {
         final Expression subject = subjectOf(expr);
-        final StringBuilder text = new StringBuilder("CASE(");
+        final StringBuilder text = new StringBuilder(named("CASE")).append('(');
         if (subject != null) {
             text.append(subject.accept(this)).append(", ");
         }
@@ -391,7 +437,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
             text.append(test.accept(this)).append(", ").append(when.getResult().accept(this)).append(", ");
         }
         final Expression otherwise = expr.getElseExpression();
-        return text.append(otherwise == null ? "null" : otherwise.accept(this)).append(')').toString();
+        return text.append(otherwise == null ? (unresolved ? "NULL" : "null") : otherwise.accept(this))
+            .append(')').toString();
     }
 
     /** The subject of a simple CASE, which every WHEN compares its value with, or null for a searched CASE. */
@@ -510,6 +557,10 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         }
         final String written = ((SubqueryExpression) query).getSubquery();
         final String echoed = queries.echo(written);
+        if (echoed != null && unresolved) {
+            // The row a query with no FROM reads is told with the word in capitals here.
+            return echoed.replace("(VALUES (null)) DUAL", "(VALUES (NULL)) DUAL");
+        }
         return echoed != null ? echoed : written;
     }
 
@@ -533,7 +584,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
             }
             return text.toString();
         }
-        final StringBuilder text = new StringBuilder(matcher != null ? matcher : name).append('(');
+        final String told = matcher != null ? matcher : name;
+        final StringBuilder text = new StringBuilder(expr instanceof RowExpression ? told : named(told)).append('(');
         if (!calls && "EXTRACT".equals(name) && arguments.size() == 2) {
             text.append("from ");
         }
@@ -607,7 +659,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         // An aggregate over the whole partition reads the same rows in any order, and the AVG names none.
         final String over = over(expr, !(average && expr.isWholeFramed()));
         final String arguments = (expr.isDistinct() ? "DISTINCT " : "") + list(expr.getArguments());
-        if (average && expr.isOrdered() && !expr.isRowsFramed() && !expr.isWholeFramed()) {
+        if (average && expr.isOrdered() && !expr.isOwnFramed() && !expr.isWholeFramed()) {
             return "SUM(" + arguments + ")" + over + " / COUNT(" + arguments + ")" + over;
         }
         if ("RATIO_TO_REPORT".equals(name) && expr.getArguments().size() == 1) {

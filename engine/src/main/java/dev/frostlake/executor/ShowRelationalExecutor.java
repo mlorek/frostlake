@@ -1446,7 +1446,13 @@ final class ShowRelationalExecutor {
     }
 
     private ResultSet describeTableColumns(final Table described) {
-        final List<ResultSetColumn> columns = describeColumns();
+        // An Iceberg table's columns carry one cell more, the name mapping, ahead of the write default
+        // (live-verified).
+        final boolean iceberg = described.getIcebergMetadata() != null;
+        final List<ResultSetColumn> columns = new ArrayList<>(describeColumns());
+        if (iceberg) {
+            columns.add(columns.size() - 1, new ResultSetColumn("name mapping", StringType.VARCHAR));
+        }
         final List<Row> rows = new ArrayList<>();
         // A CHECK constraint reaches the `check` cell of the ONE column it names — a check spanning
         // several columns, or naming none, appears in no cell at all, and where two checks name the
@@ -1465,7 +1471,7 @@ final class ShowRelationalExecutor {
             final String typeText = col.getCollation() != null
                 ? canonicalType + " COLLATE '" + col.getCollation() + "'"
                 : canonicalType;
-            rows.add(new Row(Arrays.asList(
+            final List<Object> cells = new ArrayList<>(Arrays.asList(
                 col.getName(),
                 typeText,
                 "COLUMN",
@@ -1481,7 +1487,11 @@ final class ShowRelationalExecutor {
                 col.getMaskingPolicyName(),
                 null,
                 null
-            )));
+            ));
+            if (iceberg) {
+                cells.add(null);
+            }
+            rows.add(new Row(cells));
         }
         return new ResultSet(columns, rows);
     }

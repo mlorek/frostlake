@@ -20,13 +20,17 @@ import dev.frostlake.metastore.model.Role;
 import dev.frostlake.security.SessionContext;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
- * The roles a session acts with: its current role, every role granted to that one, directly or through another,
- * and PUBLIC, which every role holds.
+ * The roles a session acts with: its current role, its secondary roles, every role granted to one of those,
+ * directly or through another, and PUBLIC, which every role holds. A role held as a secondary role alone is in
+ * the session, and with USE SECONDARY ROLES ALL so is every role granted to the session's user (live-verified).
  */
 final class SessionRoles {
 
@@ -47,6 +51,7 @@ final class SessionRoles {
         }
         final Deque<String> pending = new ArrayDeque<>();
         pending.add(current(sessionContext));
+        pending.addAll(secondary(catalog, sessionContext));
         pending.add("PUBLIC");
         final Set<String> seen = new LinkedHashSet<>();
         while (!pending.isEmpty()) {
@@ -62,6 +67,33 @@ final class SessionRoles {
             }
         }
         return held;
+    }
+
+    /**
+     * The session's secondary roles: the ones USE SECONDARY ROLES named, or for ALL every role granted to the
+     * session's user.
+     */
+    private static List<String> secondary(final Catalog catalog, final SessionContext sessionContext) {
+        final List<String> roles = new ArrayList<>();
+        final String asked = sessionContext == null ? "" : sessionContext.getSecondaryRolesValue();
+        if (asked == null || asked.isEmpty()) {
+            return roles;
+        }
+        if ("ALL".equals(asked)) {
+            // The engine's own session runs as SYSTEM on behalf of the user CURRENT_USER() names.
+            final String securityUser = sessionContext.getCurrentUser();
+            final String user = "SYSTEM".equals(securityUser) ? sessionContext.getDisplayUser() : securityUser;
+            if (catalog.hasUser(user)) {
+                for (final String granted : catalog.getUser(user).getGrantedRoles()) {
+                    roles.add(granted.toUpperCase(Locale.ROOT));
+                }
+            }
+            return roles;
+        }
+        for (final String name : asked.split(",")) {
+            roles.add(name.trim());
+        }
+        return roles;
     }
 
     /**

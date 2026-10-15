@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
 import java.util.List;
@@ -31,7 +32,7 @@ public class ArrayRepeat extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(1) == null) return null;
-        final int n = (int) Double.parseDouble(args.get(1).toString());
+        final int n = (int) SharedFunctionHelpers.numberArgument(args.get(1)).doubleValue();
         // Live: ARRAY_REPEAT(NULL, 3) is [undefined,undefined,undefined], while
         // ARRAY_REPEAT(PARSE_JSON('null'), 2) is [null,null].
         final JsonNode element = ArrayFunctionHelper.toElementNode(ArrayFunctionHelper.MAPPER, args.get(0));

@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -833,6 +834,28 @@ public class Table extends SqlObject {
         return memoizedConstraintName(uniqueConstraintNames, columnName);
     }
 
+    /**
+     * The name of the key a foreign key referencing these columns references: a UNIQUE key of exactly these columns,
+     * or else the primary key — whose name answers too when no columns are named.
+     *
+     * @param columns the referenced columns, empty or null for the primary key
+     * @return the constraint's name, or null when the table has no such key
+     */
+    public String referencedKeyName(final List<String> columns) {
+        if (columns != null && !columns.isEmpty()
+                && !new HashSet<String>(columns).equals(new HashSet<String>(primaryKeys))) {
+            for (final UniqueConstraint unique : uniqueConstraints) {
+                if (new HashSet<String>(unique.getColumnNames()).equals(new HashSet<String>(columns))) {
+                    return unique.getConstraintName();
+                }
+            }
+            if (columns.size() == 1 && hasColumn(columns.get(0)) && getColumn(columns.get(0)).isUnique()) {
+                return uniqueConstraintName(columns.get(0));
+            }
+        }
+        return primaryKeys.isEmpty() ? null : primaryKeyConstraintName();
+    }
+
     /** Restore a persisted name for the single-column UNIQUE constraint on one column. */
     public void setUniqueConstraintName(final String columnName, final String name) {
         if (name != null && !name.isEmpty()) {
@@ -1091,6 +1114,26 @@ public class Table extends SqlObject {
             return true;
         }
         return false;
+    }
+
+    /**
+     * The columns of the PRIMARY KEY or UNIQUE constraint named {@code constraintName} — the key a foreign key may
+     * reference — or null when neither kind carries that name.
+     *
+     * @param constraintName the name as the statement writes it
+     * @return the key's columns, or null
+     */
+    public List<String> keyColumnsNamed(final String constraintName) {
+        if (!primaryKeys.isEmpty() && constraintName.equalsIgnoreCase(primaryKeyConstraintName())) {
+            return new ArrayList<>(primaryKeys);
+        }
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equalsIgnoreCase(constraintName)) {
+                return new ArrayList<>(unique.getColumnNames());
+            }
+        }
+        final List<String> columnUniques = columnsNamed(uniqueConstraintNames, constraintName);
+        return columnUniques.isEmpty() ? null : columnUniques;
     }
 
     private static List<String> columnsNamed(final Map<String, String> names, final String constraintName) {

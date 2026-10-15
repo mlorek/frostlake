@@ -21,16 +21,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** SYSTEM$LOG and SYSTEM$LOG_<level>: callable as functions, and standing as statements inside a block. */
+/** SYSTEM$LOG and SYSTEM$LOG_<level>: statements of a block, and no functions a query may call. */
 public class SystemLogStatementTest extends BaseDatabaseTest {
 
     @Test
-    public void levelFunctionsReturnNull() {
+    public void aQueryCannotCallALoggingStatement() {
         for (final String level : new String[] {"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"}) {
-            assertNull(engine.executeQuery("SELECT SYSTEM$LOG_" + level + "('m')").getRows().get(0).getValue(0), level);
+            final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+                @Override
+                public void execute() {
+                    engine.executeQuery("SELECT SYSTEM$LOG_" + level + "('m')");
+                }
+            });
+            assertTrue(refused.getMessage().contains("Unknown function SYSTEM$LOG_" + level), refused.getMessage());
         }
     }
 

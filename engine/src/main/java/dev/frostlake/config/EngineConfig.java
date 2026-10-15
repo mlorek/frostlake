@@ -84,6 +84,10 @@ public class EngineConfig {
     public static final String PROP_TASKS_AUTOSTART = "tasks.autostart";
     public static final String PROP_QUERY_HISTORY_SIZE = "query.history.size";
     public static final String PROP_QUERY_RESULT_CACHE_SIZE = "query.result.cache.size";
+    /** How many cells (values, over every row) the results kept for RESULT_SCAN may hold together. */
+    public static final String PROP_QUERY_RESULT_CACHE_CELLS = "query.result.cache.cells";
+    /** The cell budget of the results kept for RESULT_SCAN when the configuration names none. */
+    public static final int DEFAULT_QUERY_RESULT_CACHE_CELLS = 2_000_000;
     public static final String PROP_STAGE_S3_LOCAL_ROOT = "stage.s3.localRoot";
     /** Opt-in for {@code file://} (and bare local-path) stage URLs, which a real account refuses. */
     public static final String PROP_STAGE_FILE_URL_ENABLED = "stage.file.urlEnabled";
@@ -208,6 +212,7 @@ public class EngineConfig {
         properties.setProperty(PROP_LOGGING_LEVEL, "INFO");
         properties.setProperty(PROP_QUERY_HISTORY_SIZE, "10000");
         properties.setProperty(PROP_QUERY_RESULT_CACHE_SIZE, "500");
+        properties.setProperty(PROP_QUERY_RESULT_CACHE_CELLS, String.valueOf(DEFAULT_QUERY_RESULT_CACHE_CELLS));
         properties.setProperty(PROP_STAGE_S3_LOCAL_ROOT, DEFAULT_STAGE_S3_LOCAL_ROOT);
         properties.setProperty(PROP_STAGE_S3_LOCAL_MAPPINGS, "");
         properties.setProperty(PROP_STAGE_INTERNAL_LOCAL_ROOT, DEFAULT_STAGE_INTERNAL_LOCAL_ROOT);
@@ -479,6 +484,15 @@ public class EngineConfig {
     }
 
     /**
+     * How many cells the results kept for RESULT_SCAN may hold together before the oldest are let go.
+     *
+     * @return the budget
+     */
+    public long getQueryResultCacheCells() {
+        return getIntProperty(PROP_QUERY_RESULT_CACHE_CELLS, DEFAULT_QUERY_RESULT_CACHE_CELLS);
+    }
+
+    /**
      * Local filesystem base for resolving {@code s3://bucket/key} references (an unmapped key resolves to
      * {@code <root>/bucket/key}). Lets JARs that live in S3-backed stages in production be loaded from local
      * disk for local/CI testing. Defaults to {@code ~/.frostlake_stages/s3}. See {@link S3PathResolver}.
@@ -488,10 +502,11 @@ public class EngineConfig {
     }
 
     /**
-     * Local filesystem root backing the implicit internal stages — the user stage ({@code @~}) and per-table
-     * stages ({@code @%table}), which have no {@code CREATE STAGE} / URL. User stages resolve to
-     * {@code <root>/users/<user>}, table stages to {@code <root>/tables/<db.schema.table>}. Defaults to
-     * {@code ~/.frostlake_stages/internal}.
+     * Local filesystem root backing the internal stages — the user stage ({@code @~}), the per-table stages
+     * ({@code @%table}) and the named internal stages. User stages resolve to {@code <root>/users/<user>}, table
+     * stages to {@code <root>/tables/<db.schema.table>}, for an engine with a write-ahead log or snapshot persistence;
+     * any other engine keeps the same tree in a directory of its own below the root, deleted when it shuts down.
+     * Defaults to {@code ~/.frostlake_stages/internal}.
      */
     public String getStageInternalLocalRoot() {
         return getProperty(PROP_STAGE_INTERNAL_LOCAL_ROOT, DEFAULT_STAGE_INTERNAL_LOCAL_ROOT);

@@ -27,11 +27,14 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.WidthlessStringType;
 
 import org.antlr.v4.runtime.Token;
 
@@ -82,7 +85,9 @@ final class PivotUnpivotExecutor {
         final String aggFuncName = pivotCtx.aggregateFunction().functionName().getText().toUpperCase(Locale.ROOT);
         final String aggregateText = ParseTreeText.getOriginalText(pivotCtx.aggregateFunction());
         final FrostlakeParser.ExpressionContext aggregateCall = executor.parsedExpression(aggregateText);
-        final String pivotColumn = ParseTreeText.getIdentifier(pivotCtx.identifier());
+        final String pivotColumn = ParseTreeText.getIdentifier(pivotCtx.pivotColumn);
+        final String aggregateAlias = pivotCtx.pivotAggregateAlias == null ? null
+            : ParseTreeText.getIdentifier(pivotCtx.pivotAggregateAlias);
         // Get column indices
         final int aggColIndex = table.getColumnIndex(aggColumn);
         final int pivotColIndex = table.getColumnIndex(pivotColumn);
@@ -107,6 +112,7 @@ final class PivotUnpivotExecutor {
                 pivotValues.add(PivotValue.written(pvCtx.literal(), literalValue(pvCtx.literal()),
                     pvCtx.identifier() != null ? ParseTreeText.getIdentifier(pvCtx.identifier()) : null));
             }
+            rejectRepeatedColumns(inList.pivotValueList(), pivotValues);
         } else if (inList.ANY() != null) {
             // Dynamic pivot: the distinct values of the FOR column in their own order — ascending, or as the
             // ORDER BY inside ANY says — with the rows holding none last, or first when descending.
@@ -176,7 +182,7 @@ final class PivotUnpivotExecutor {
         final DataType pivotedType = pivotColumnType(aggFuncName, aggregated, aggregateText, table,
             inList.pivotValueList() != null);
         for (final PivotValue pivotValue : pivotValues) {
-            resultColumns.add(new ResultSetColumn(pivotValue.name(), pivotedType, null));
+            resultColumns.add(new ResultSetColumn(pivotValue.name(aggregateAlias), pivotedType, null));
         }
         final Table shape = executor.resultSetToTable(
             new ResultSet(renamed(resultColumns, renamedColumns), new ArrayList<Row>()), relationName);
@@ -261,8 +267,9 @@ final class PivotUnpivotExecutor {
     }
 
     /**
-     * The UNPIVOT stage and the relation it answers: the preserved columns, then the name column and the
-     * value column, typed like the first unpivoted column.
+     * The UNPIVOT stage and the relation it answers: the preserved columns, then the name column — a text of no
+     * width, VARCHAR(134217728) — and the value column, of the unpivoted columns' one type (see
+     * {@link #unpivotedType}).
      *
      * @param table          the relation unpivoted
      * @param unpivotCtx     the clause
@@ -276,10 +283,12 @@ final class PivotUnpivotExecutor {
         // Extract UNPIVOT components
         final String valueColumn = ParseTreeText.getIdentifier(unpivotCtx.identifier(0)); // value_column
         final String nameColumn = ParseTreeText.getIdentifier(unpivotCtx.identifier(1));  // name_column
-        // Get columns to unpivot
+        // Get columns to unpivot, and the name each one's rows carry: its alias when it has one
         final List<String> unpivotColumns = new ArrayList<>();
-        for (final FrostlakeParser.IdentifierContext idCtx : unpivotCtx.unpivotColumnList().identifier()) {
-            unpivotColumns.add(ParseTreeText.getIdentifier(idCtx));
+        final List<String> unpivotNames = new ArrayList<>();
+        for (final FrostlakeParser.UnpivotColumnContext column : unpivotCtx.unpivotColumnList().unpivotColumn()) {
+            unpivotColumns.add(ParseTreeText.getIdentifier(column.identifier(0)));
+            unpivotNames.add(ParseTreeText.getIdentifier(column.identifier(column.identifier().size() - 1)));
         }
         // Get column indices for unpivot columns
         final List<Integer> unpivotColIndices = new ArrayList<>();
@@ -295,14 +304,23 @@ final class PivotUnpivotExecutor {
         }
         // Build result columns: preserved columns + name column + value column
         final List<ResultSetColumn> resultColumns = new ArrayList<>();
+        // A column keeps the type it is known to have: a table's own column, and the name and value columns, which
+        // SYSTEM$TYPEOF reads as VARCHAR and as the unpivoted columns' type (live-verified).
+        final boolean declared = table.residentSource() != null;
+        boolean unpivotedKnown = true;
+        for (final int idx : unpivotColIndices) {
+            final TableColumn col = table.getColumns().get(idx);
+            unpivotedKnown &= declared || col.isStaticallyTyped();
+        }
         for (final int idx : preserveColIndices) {
             final TableColumn col = table.getColumns().get(idx);
-            resultColumns.add(new ResultSetColumn(col.getName(), col.getDataType(), null));
+            resultColumns.add(new ResultSetColumn(col.getName(), col.getDataType(), null,
+                declared || col.isStaticallyTyped() ? col.getDataType() : null));
         }
-        resultColumns.add(new ResultSetColumn(nameColumn, StringType.VARCHAR, null));
-        // Use the data type of the first unpivot column for the value column
-        final DataType valueColumnType = table.getColumns().get(unpivotColIndices.get(0)).getDataType();
-        resultColumns.add(new ResultSetColumn(valueColumn, valueColumnType, null));
+        resultColumns.add(new ResultSetColumn(nameColumn, WidthlessStringType.WIDTHLESS, null,
+            WidthlessStringType.WIDTHLESS));
+        final DataType valueType = unpivotedType(table, unpivotColIndices);
+        resultColumns.add(new ResultSetColumn(valueColumn, valueType, null, unpivotedKnown ? valueType : null));
         // Snowflake EXCLUDEs NULL values by default (a row is emitted only for a non-NULL unpivoted
         // value); the optional INCLUDE NULLS modifier keeps them, EXCLUDE NULLS is the explicit default.
         final boolean includeNulls = unpivotCtx.unpivotNulls() != null
@@ -327,7 +345,7 @@ final class PivotUnpivotExecutor {
                             rowValues.add(row.getValue(idx));
                         }
                         // Add column name
-                        rowValues.add(unpivotColumns.get(i));
+                        rowValues.add(unpivotNames.get(i));
                         // Add column value
                         rowValues.add(value);
                         resultRows.add(new Row(rowValues));
@@ -337,6 +355,88 @@ final class PivotUnpivotExecutor {
             }
         };
         return new PlannedRelation(stage, shape, null);
+    }
+
+    /**
+     * Refuse a written IN list two of whose values name one column: {@code The column ''JAN'' was specified multiple
+     * times for 'FROM'} for a value written twice, and {@code Duplicate column alias 'X'.} for two equal aliases,
+     * placed at the value the second one names (live-verified).
+     */
+    private static void rejectRepeatedColumns(final FrostlakeParser.PivotValueListContext list,
+                                              final List<PivotValue> values) {
+        final Set<String> named = new HashSet<>();
+        for (int i = 0; i < values.size(); i++) {
+            if (named.add(values.get(i).name())) {
+                continue;
+            }
+            final FrostlakeParser.PivotValueContext written = list.pivotValue(i);
+            if (written.identifier() != null) {
+                final Token value = written.literal().getStart();
+                final SourcePosition at = ExpressionSource.place(value.getLine(), value.getCharPositionInLine());
+                throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                    "Duplicate column alias '" + values.get(i).name() + "'."));
+            }
+            throw new RuntimeException(SqlCompilationError.of("The column '" + values.get(i).name()
+                + "' was specified multiple times for 'FROM'"));
+        }
+    }
+
+    /**
+     * The one type the unpivoted columns share, which the value column declares. They are read in the relation's
+     * column order, the first setting the type, and the first column of another type is refused: {@code The type of
+     * column 'B' conflicts with the type of other columns in the UNPIVOT list.} Types are compared whole — a
+     * NUMBER's precision and scale, a BINARY's width, a timestamp's precision — but for text, whose widths join in
+     * the widest: VARCHAR(3) beside VARCHAR(10) is VARCHAR(10) (live-verified).
+     *
+     * @param table   the relation unpivoted
+     * @param indices the unpivoted columns' positions, as listed
+     * @return the value column's type
+     */
+    private static DataType unpivotedType(final Table table, final List<Integer> indices) {
+        final List<Integer> inColumnOrder = new ArrayList<>(indices);
+        Collections.sort(inColumnOrder);
+        DataType shared = table.getColumns().get(inColumnOrder.get(0)).getDataType();
+        for (int i = 1; i < inColumnOrder.size(); i++) {
+            final TableColumn column = table.getColumns().get(inColumnOrder.get(i));
+            final DataType type = column.getDataType();
+            if (shared instanceof StringType && type instanceof StringType) {
+                if (((StringType) type).getMaxLength() > ((StringType) shared).getMaxLength()) {
+                    shared = type;
+                }
+            } else if (!sameUnpivotedType(shared, type)) {
+                throw new RuntimeException(SqlCompilationError.of("The type of column '" + column.getName()
+                    + "' conflicts with the type of other columns in the UNPIVOT list."));
+            }
+        }
+        return shared;
+    }
+
+    /**
+     * Whether two types of unpivoted columns are one: of one kind, and of one precision, scale or width. A column
+     * whose type is not known is not judged.
+     */
+    private static boolean sameUnpivotedType(final DataType first, final DataType second) {
+        if (first == null || second == null) {
+            return true;
+        }
+        if (NumericType.isApproximate(first) || NumericType.isApproximate(second)) {
+            return NumericType.isApproximate(first) && NumericType.isApproximate(second);
+        }
+        if (first.getClass() != second.getClass()) {
+            return false;
+        }
+        if (first instanceof NumericType) {
+            return ((NumericType) first).getPrecision() == ((NumericType) second).getPrecision()
+                && ((NumericType) first).getScale() == ((NumericType) second).getScale();
+        }
+        if (first instanceof BinaryType) {
+            return ((BinaryType) first).getMaxLength() == ((BinaryType) second).getMaxLength();
+        }
+        if (first instanceof DateTimeType) {
+            return first.getName().equals(second.getName())
+                && ((DateTimeType) first).getPrecision() == ((DateTimeType) second).getPrecision();
+        }
+        return true;
     }
 
     /**

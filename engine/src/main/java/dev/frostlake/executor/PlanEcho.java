@@ -20,10 +20,12 @@ import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.IsNullExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.functions.FunctionRegistry;
@@ -72,7 +74,19 @@ final class PlanEcho {
 
     PlanEcho(final Table table, final Map<String, Table> aliasToTable, final List<Table> allTables,
              final FunctionRegistry functionRegistry, final Catalog catalog) {
-        this.printer = new ExpressionEvaluator(table, functionRegistry, catalog);
+        this(table, aliasToTable, allTables, functionRegistry, catalog, null);
+    }
+
+    /**
+     * An echo that also re-prints a subquery among the call's arguments from its plan, which takes the executor
+     * that plans it: {@code MAX((SELECT MAX(g.v) FROM g))} is told as
+     * {@code MAX((SELECT MAX(G.V) AS "MAX(G.V)" FROM G AS G))} (live-verified). Without one a subquery prints as
+     * written.
+     */
+    PlanEcho(final Table table, final Map<String, Table> aliasToTable, final List<Table> allTables,
+             final FunctionRegistry functionRegistry, final Catalog catalog, final QueryExecutor queryExecutor) {
+        this.printer = queryExecutor == null ? new ExpressionEvaluator(table, functionRegistry, catalog)
+            : new ExpressionEvaluator(table, functionRegistry, catalog, queryExecutor);
         if (allTables != null) {
             this.printer.setMultiTableContext(aliasToTable, allTables);
         }
@@ -115,6 +129,67 @@ final class PlanEcho {
         final String written = ParseTreeText.getOriginalText(expression);
         final String qualified = qualified(written);
         return qualified != null ? qualified : written;
+    }
+
+    /**
+     * An expression as live's PLAN holds it, the rewrites the plan applies included: a cast written with
+     * {@code ::} is {@code CAST(0.5 AS FLOAT)}, and a subquery is the query the plan runs. A text that will not
+     * re-parse prints as written.
+     *
+     * @param expression the expression
+     * @return its plan text
+     */
+    String printPlanned(final ParserRuleContext expression) {
+        final String written = ParseTreeText.getOriginalText(expression);
+        try {
+            return printer.plannedText(ExpressionEvaluator.parse(written));
+        } catch (final RuntimeException notAnExpression) {
+            return written;
+        }
+    }
+
+    /**
+     * An aggregate call a sentence names by itself, as live's PLAN computes it: {@link #printPlanned}, and a call
+     * the plan computes in two steps named by both, {@code HLL_ESTIMATE(HLL_ACCUMULATE(FZ.ID))} for a distinct
+     * count. A text that will not re-parse prints as written.
+     *
+     * @param call the call
+     * @return its plan text
+     */
+    String printPlannedCall(final ParserRuleContext call) {
+        final String written = ParseTreeText.getOriginalText(call);
+        try {
+            return printer.plannedCallDefinition(ExpressionEvaluator.parse(written));
+        } catch (final RuntimeException notAnExpression) {
+            return written;
+        }
+    }
+
+    /**
+     * Refuses a call whose arguments are of a family it does not take, from their declared types and at the call's
+     * own place: {@code Invalid argument types for function 'SUM': (BOOLEAN)} for an AVG over a BOOLEAN. A call that
+     * will not re-parse, and a fault that is no compilation error, are left to whoever computes the call.
+     *
+     * @param call the call
+     */
+    void refuseArgumentFamilies(final ParserRuleContext call) {
+        final Expression parsed;
+        try {
+            parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(call));
+        } catch (final RuntimeException notAnExpression) {
+            return;
+        }
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(call.getStart().getLine(), call.getStart().getCharPositionInLine()));
+        try {
+            printer.rejectArgumentFamilies(parsed);
+        } catch (final RuntimeException refused) {
+            if (SqlCompilationError.isCompilationError(refused.getMessage())) {
+                throw refused;
+            }
+        } finally {
+            ExpressionSource.end(displaced);
+        }
     }
 
     /**

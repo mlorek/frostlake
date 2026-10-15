@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.operators;
 
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +50,8 @@ public class OperatorPipeline {
         logger.debug("Starting pipeline execution with {} rows", current.size());
 
         for (int i = 0; i < stages.size(); i++) {
+            // Between two stages the statement's timeout or cancel ends it.
+            StatementCancellation.check();
             final PipelineStage stage = stages.get(i);
             final Operator operator = stage.getOperator();
             logger.debug("Executing operator {}/{}: {}", i + 1, stages.size(), operator.getDescription());

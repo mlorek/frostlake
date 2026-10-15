@@ -16,23 +16,16 @@
 
 package dev.frostlake.executor.commands;
 
-import dev.frostlake.executor.LeadingCommentOffset;
-import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.List;
 import org.antlr.v4.runtime.ParserRuleContext;
-import org.antlr.v4.runtime.Token;
 
 /**
- * What the account refuses about the body a task is given, beyond the body's own syntax (all live-verified):
- * <ul>
- *   <li>A body is one statement, so a flow chain is none: {@code CREATE TASK t AS SELECT 1 ->> SELECT * FROM $1} and
- *       the same after {@code ALTER TASK t MODIFY AS} are "Invalid statement for task definition. Expecting one of
- *       the following: STATEMENT".</li>
- *   <li>A COMMENT written after a body that is no query, DML, call or block belongs to nothing:
- *       {@code CREATE TASK t AS DROP TABLE x COMMENT = 'c'} is a syntax error at the COMMENT.</li>
- * </ul>
+ * What the account refuses about the body a task is given, beyond the body's own syntax (live-verified): a body is
+ * one statement, so a flow chain is none — {@code CREATE TASK t AS SELECT 1 ->> SELECT * FROM $1} and the same after
+ * {@code ALTER TASK t MODIFY AS} are "Invalid statement for task definition. Expecting one of the following:
+ * STATEMENT". A COMMENT written after the body is the body's to read: the grammar gives the task none there.
  */
 final class TaskBodySyntax {
 
@@ -57,27 +50,6 @@ final class TaskBodySyntax {
         if (chained.get(chained.size() - 1) != statement) {
             throw new RuntimeException(
                 "Invalid statement for task definition. Expecting one of the following: STATEMENT");
-        }
-    }
-
-    /**
-     * Refuse a COMMENT written after a body that is a statement of another family.
-     *
-     * @param body     the task's body
-     * @param comments the CREATE TASK's comment clauses
-     */
-    static void requireNoCommentAfter(final FrostlakeParser.TaskBodyContext body,
-                                      final List<FrostlakeParser.CommentClauseContext> comments) {
-        if (body == null || body.taskBodyStatement() == null || body.getStop() == null) {
-            return;
-        }
-        for (final FrostlakeParser.CommentClauseContext comment : comments) {
-            final Token word = comment.getStart();
-            if (word.getTokenIndex() > body.getStop().getTokenIndex()) {
-                final int[] shown = LeadingCommentOffset.rebase(word.getLine(), word.getCharPositionInLine());
-                throw new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
-                    + shown[1] + " unexpected '" + word.getText() + "'."));
-            }
         }
     }
 }

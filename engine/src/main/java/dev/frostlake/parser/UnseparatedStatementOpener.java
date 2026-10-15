@@ -114,7 +114,7 @@ public final class UnseparatedStatementOpener {
      * at the word; everywhere else (a query, DML, DROP, SHOW, USE, GRANT, TRUNCATE, COMMENT ON, SET, an ALTER TABLE
      * adding or dropping a column) it refuses the word itself (live-verified).
      */
-    private static boolean readsWordAsProperty(final FrostlakeParser.StatementContext statement) {
+    static boolean readsWordAsProperty(final FrostlakeParser.StatementContext statement) {
         // A statement that ends in a task's body or an alert's action is read on as that body is.
         ParserRuleContext read = statement;
         for (ParseTree node = statement; node != null && node.getChildCount() > 0;
@@ -286,6 +286,8 @@ public final class UnseparatedStatementOpener {
         }
         final int expectedAt = wordIndex;
         final FrostlakeParser reparser = new FrostlakeParser(tokens);
+        // Where this parse reports a fault is read: it must not depend on what was parsed before.
+        ColdPrediction.arm(reparser);
         reparser.removeErrorListeners();
         final Token[] firstFault = new Token[1];
         reparser.addErrorListener(new BaseErrorListener() {

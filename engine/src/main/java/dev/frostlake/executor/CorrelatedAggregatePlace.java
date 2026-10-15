@@ -46,8 +46,11 @@ import java.util.Set;
  *       Subquery containing correlated aggregate function [MAX(FZ.ID)] can only appear in having or select clause
  * </pre>
  *
- * <p>The call is echoed as the plan holds it (see {@link PlanEcho}), the first one written. An aggregate that
- * also reads a row of the subquery's own, {@code MAX(fz.id + g.v)}, is the subquery's and is not judged here.
+ * <p>The call is echoed as the plan holds it (see {@link PlanEcho}), the first one written, and so with the
+ * rewrites the plan has applied by then: an AVG is {@code [SCALED_ROUND_INT_DIVIDE(SUM(FZ.ID), COUNT(FZ.ID))]},
+ * a MEDIAN its 0.5 percentile, a COUNT_IF the sum it counts by. An argument of a type the call does not take is
+ * refused for that first. An aggregate that also reads a row of the subquery's own, {@code MAX(fz.id + g.v)}, is
+ * the subquery's and is not judged here.
  */
 final class CorrelatedAggregatePlace {
 
@@ -105,7 +108,7 @@ final class CorrelatedAggregatePlace {
         }
         if (statement != null && statement.orderByClause() != null && statement.selectOperand().size() == 1
                 && statement.selectOperand(0).selectClause() == clause) {
-            // A grouped or DISTINCT query's ORDER BY holds no scalar subquery at all, and says so in its own
+            // A grouped or DISTINCT query's ORDER BY holds no subquery at all, and says so in its own
             // sentence (see OrderByExecutor.rejectSubqueryInGroupedOrderKey); every other key is judged here.
             final boolean grouped = clause.groupByClause() != null || clause.DISTINCT() != null;
             final List<FrostlakeParser.ExpressionContext> keys = new ArrayList<>();
@@ -136,16 +139,25 @@ final class CorrelatedAggregatePlace {
                 }
                 final List<ParserRuleContext> aggregates = rule.outerAggregates(subquery);
                 if (!aggregates.isEmpty()) {
+                    // Each call's arguments are typed before its place is judged, in the order written: an AVG
+                    // over a BOOLEAN is refused for the type whichever call stands first (live-verified).
+                    for (final ParserRuleContext aggregate : aggregates) {
+                        echo.refuseArgumentFamilies(aggregate);
+                    }
                     throw new RuntimeException(SqlCompilationError.of("Subquery containing correlated aggregate function ["
-                        + echo.print(aggregates.get(0)) + "] can only appear in having or select clause"));
+                        + echo.printPlannedCall(aggregates.get(0)) + "] can only appear in having or select clause"));
                 }
             }
         }
     }
 
-    /** Whether a key holds, outside any nested select, a subquery read as a value. */
+    /** Whether a key holds, outside any nested select, a subquery: one read as a value, or one a test reads. */
     private static boolean holdsScalarSubquery(final ParseTree node) {
         if (node instanceof FrostlakeParser.ScalarSubqueryExprContext
+                || node instanceof FrostlakeParser.ExistsExprContext
+                || node instanceof FrostlakeParser.InSubqueryExprContext
+                || node instanceof FrostlakeParser.QuantifiedComparisonExprContext
+                    && ((FrostlakeParser.QuantifiedComparisonExprContext) node).selectStatement() != null
                 || node instanceof FrostlakeParser.FunctionArgContext
                     && ((FrostlakeParser.FunctionArgContext) node).selectStatement() != null) {
             return true;

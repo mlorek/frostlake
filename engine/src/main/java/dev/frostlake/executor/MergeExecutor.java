@@ -122,6 +122,8 @@ final class MergeExecutor {
                     DmlTarget.refuseEventTable(targetTable, "MERGE");
                 }
             }
+            // A SQL function the statement calls is expanded into it (see CalledRoutineSources).
+            CalledRoutineSources.require(ctx, executor);
             // A MERGE reads its target, then needs what its clauses do: INSERT, UPDATE and DELETE are asked in
             // that order, whatever order the clauses stand in (live-verified).
             executor.requirePrivilege(Privilege.SELECT, "TABLE", targetTableName);
@@ -172,12 +174,17 @@ final class MergeExecutor {
                 // For VALUES, source has same structure as target
                 sourceTable = targetTable;
             } else if (mergeSource instanceof FrostlakeParser.MergeSourceTableContext) {
-                // USING table_name — or a STREAM, which is consumed on commit like INSERT ... SELECT FROM stream.
+                // USING table_name — or a VIEW, whose body is expanded as a FROM clause expands it, or a STREAM,
+                // which is consumed on commit like INSERT ... SELECT FROM stream.
                 final FrostlakeParser.MergeSourceTableContext tableCtx = (FrostlakeParser.MergeSourceTableContext) mergeSource;
                 final String sourceTableName =
                     executor.searchPathQualified(executor.getQualifiedName(tableCtx.qualifiedName()));
+                // A view's body is expanded first, so a relation it may not read is told ahead of the view's own
+                // SELECT.
+                final TableData viewSource = executor.resolveViewTableData(sourceTableName, sourceAlias);
                 executor.requireSelect(sourceTableName);
-                final TableData streamSource = executor.resolveStreamTableData(sourceTableName, sourceAlias);
+                final TableData streamSource = viewSource != null ? viewSource
+                    : executor.resolveStreamTableData(sourceTableName, sourceAlias);
                 if (streamSource != null) {
                     sourceRows = streamSource.rows;
                     sourceTable = streamSource.table;
@@ -370,6 +377,8 @@ final class MergeExecutor {
             }
             // inserted, updated, deleted
             final long[] counts = new long[3];
+            // Whether the statement has looked for another session's lock on its target: before its first write.
+            final boolean[] lockChecked = new boolean[1];
             // Track rows to delete (can't delete while iterating)
             final List<Integer> rowsToDelete = new ArrayList<>();
             // First pass: Process matched rows
@@ -398,6 +407,9 @@ final class MergeExecutor {
                                     if (conditionMatches) {
                                         // Execute UPDATE
                                         if (matchedClause.UPDATE() != null) {
+                                            // Every value reads the target row as it was, in the order written,
+                                            // and the row is written once (live-verified).
+                                            final List<Object> newValues = new ArrayList<>(targetRow.getValues());
                                             for (final FrostlakeParser.AssignmentContext assign
                                                     : matchedClause.assignmentList().assignment()) {
                                                 // Handle qualified identifiers (table.column) or simple identifiers
@@ -412,26 +424,27 @@ final class MergeExecutor {
                                                         fullyQualifiedTargetName)
                                                     : evaluateMergeValue(valueExpr, targetRow, sourceRow, targetTable,
                                                         mergeSourceTable, mergeTargetAlias, mergeSourceAlias);
-                                                final List<Object> newValues = new ArrayList<>(targetRow.getValues());
                                                 newValues.set(colIndex, newValue);
-                                                final Row updatedRow = new Row(newValues);
-                                                executor.enforceColumnConstraintsForDml(targetTable, updatedRow, false,
-                                                    targetTableName);
-                                                if (executor.isDeferredApply()) {
-                                                    final Long targetRowId = mergeTargetRowIds.get(targetIdx);
-                                                    if (targetRowId != null) {
-                                                        mergeWriteSet.recordUpdate(fullyQualifiedTargetName, targetRowId, updatedRow);
-                                                    } else {
-                                                        // Matched one of this transaction's own pending inserts.
-                                                        mergeWriteSet.setPendingInsert(fullyQualifiedTargetName,
-                                                            mergeTargetPendingIdx.get(targetIdx), updatedRow);
-                                                    }
-                                                } else {
-                                                    executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName)
-                                                        .update(targetIdx, updatedRow);
-                                                }
-                                                targetRow = updatedRow;
                                             }
+                                            final Row updatedRow = new Row(newValues);
+                                            executor.enforceColumnConstraintsForDml(targetTable, updatedRow, false,
+                                                targetTableName);
+                                            requireUnlockedOnce(lockChecked, fullyQualifiedTargetName, targetTable);
+                                            if (executor.isDeferredApply()) {
+                                                final Long targetRowId = mergeTargetRowIds.get(targetIdx);
+                                                if (targetRowId != null) {
+                                                    mergeWriteSet.recordUpdate(fullyQualifiedTargetName, targetRowId,
+                                                        updatedRow);
+                                                } else {
+                                                    // Matched one of this transaction's own pending inserts.
+                                                    mergeWriteSet.setPendingInsert(fullyQualifiedTargetName,
+                                                        mergeTargetPendingIdx.get(targetIdx), updatedRow);
+                                                }
+                                            } else {
+                                                executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName)
+                                                    .update(targetIdx, updatedRow);
+                                            }
+                                            targetRow = updatedRow;
                                             counts[1]++;
                                             clauseExecuted = true;
                                             break;
@@ -449,6 +462,9 @@ final class MergeExecutor {
                         }
                     }
                     // Delete marked rows (in reverse order to maintain indices)
+                    if (!rowsToDelete.isEmpty()) {
+                        requireUnlockedOnce(lockChecked, fullyQualifiedTargetName, targetTable);
+                    }
                     for (int i = rowsToDelete.size() - 1; i >= 0; i--) {
                         final int rowIdx = rowsToDelete.get(i);
                         final Row deletedRow = targets.get(rowIdx);
@@ -566,6 +582,7 @@ final class MergeExecutor {
                                 }
                                 final Row newRow = new Row(orderedValues);
                                 executor.enforceColumnConstraintsForDml(targetTable, newRow, false, targetTableName);
+                                requireUnlockedOnce(lockChecked, fullyQualifiedTargetName, targetTable);
                                 if (executor.isDeferredApply()) {
                                     mergeWriteSet.recordInsert(fullyQualifiedTargetName, newRow);
                                 } else {
@@ -949,6 +966,17 @@ final class MergeExecutor {
             return new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor).evaluate(expr, row);
         } catch (final RuntimeException e) {
             return expr;
+        }
+    }
+
+    /**
+     * A MERGE waits for another session's transaction that holds its target before its first write, whichever
+     * clause writes it — an insert of a NOT MATCHED clause too; one that writes nothing takes nothing (live-verified).
+     */
+    private void requireUnlockedOnce(final boolean[] checked, final String fullyQualifiedName, final Table target) {
+        if (!checked[0]) {
+            executor.requireTableUnlocked(fullyQualifiedName, target.getName());
+            checked[0] = true;
         }
     }
 }

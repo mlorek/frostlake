@@ -71,6 +71,77 @@ final class ForeignKeyDependents {
         sweep(database, schema, table, true, true);
     }
 
+    /**
+     * Whether another table holds a foreign key on one key of a table: a foreign key references the key whose columns
+     * it names, and one that names none references the primary key.
+     *
+     * @param database the table's database
+     * @param schema   its schema
+     * @param table    the table
+     * @param key      the key's columns
+     * @param primary  whether the key is the primary key
+     * @return whether a foreign key references it
+     */
+    boolean referencesKey(final String database, final Schema schema, final Table table, final List<String> key,
+                          final boolean primary) {
+        return sweepKey(database, schema, table, key, primary, null, false);
+    }
+
+    /**
+     * Drops the foreign keys other tables hold on one key of a table; the foreign keys on its other keys stay
+     * (live-verified).
+     */
+    void releaseKey(final String database, final Schema schema, final Table table, final List<String> key,
+                    final boolean primary) {
+        sweepKey(database, schema, table, key, primary, null, true);
+    }
+
+    /**
+     * Drops the foreign keys other tables hold on any key one column of a table belongs to, as DROP COLUMN takes the
+     * key with the column (live-verified for a primary key).
+     *
+     * @param inPrimaryKey whether the column belongs to the primary key
+     */
+    void releaseColumn(final String database, final Schema schema, final Table table, final String column,
+                       final boolean inPrimaryKey) {
+        sweepKey(database, schema, table, null, inPrimaryKey, column, true);
+    }
+
+    /**
+     * Walks the tables of the account for the foreign keys that reference one key of the target, or any key holding one
+     * of its columns, a table's key on itself never one.
+     *
+     * @param key     the key's columns, or null to match by {@code column}
+     * @param primary whether the key is the primary key (or the column belongs to it)
+     * @param column  the column a matching key holds, or null to match by {@code key}
+     * @param drop    whether the foreign keys found are dropped
+     * @return whether any was found
+     */
+    private boolean sweepKey(final String database, final Schema schema, final Table table, final List<String> key,
+                             final boolean primary, final String column, final boolean drop) {
+        boolean found = false;
+        for (final Database holder : catalog.getAllDatabases()) {
+            for (final Schema holding : holder.getAllSchemas()) {
+                final List<Table> children = new ArrayList<>(holding.getTables());
+                children.addAll(holding.getShadowedTables());
+                for (final Table child : children) {
+                    for (final ForeignKeyColumns reference : referencing(child, holder.getName(), holding, database,
+                            schema, table)) {
+                        if (!reference.reaches(key, primary, column)) {
+                            continue;
+                        }
+                        if (!drop) {
+                            return true;
+                        }
+                        found = true;
+                        child.dropForeignKeyColumns(reference.columns());
+                    }
+                }
+            }
+        }
+        return found;
+    }
+
     /** Drops every foreign key a table outside a schema holds on one of the schema's tables. */
     void releaseFromOutside(final String database, final Schema schema) {
         sweep(database, schema, null, false, true);
@@ -104,11 +175,11 @@ final class ForeignKeyDependents {
                 final List<Table> children = new ArrayList<>(holding.getTables());
                 children.addAll(holding.getShadowedTables());
                 for (final Table child : children) {
-                    for (final List<String> columns : referencing(child, holder.getName(), holding, database, schema,
-                            table)) {
+                    for (final ForeignKeyColumns reference : referencing(child, holder.getName(), holding, database,
+                            schema, table)) {
                         found = true;
                         if (drop) {
-                            child.dropForeignKeyColumns(columns);
+                            child.dropForeignKeyColumns(reference.columns());
                         }
                     }
                     if (found && !drop) {
@@ -120,19 +191,22 @@ final class ForeignKeyDependents {
         return found;
     }
 
-    /** The column lists of a child's foreign keys that reference the target, in both shapes a key is kept in. */
-    private static List<List<String>> referencing(final Table child, final String childDatabase, final Schema childSchema,
-                                                  final String database, final Schema schema, final Table table) {
-        final List<List<String>> keys = new ArrayList<>();
+    /** A child's foreign keys that reference the target, in both shapes a key is kept in. */
+    private static List<ForeignKeyColumns> referencing(final Table child, final String childDatabase,
+                                                       final Schema childSchema, final String database,
+                                                       final Schema schema, final Table table) {
+        final List<ForeignKeyColumns> keys = new ArrayList<>();
         for (final TableColumn column : child.getColumns()) {
             if (column.getReferencedTable() != null && names(column.getReferencedTable(), child, childDatabase,
                     childSchema, database, schema, table)) {
-                keys.add(Collections.singletonList(column.getName()));
+                keys.add(new ForeignKeyColumns(Collections.singletonList(column.getName()),
+                    column.getReferencedColumn() == null ? Collections.<String>emptyList()
+                        : Collections.singletonList(column.getReferencedColumn())));
             }
         }
         for (final ForeignKeyConstraint key : child.getForeignKeys()) {
             if (names(key.getReferencedTable(), child, childDatabase, childSchema, database, schema, table)) {
-                keys.add(new ArrayList<>(key.getColumnNames()));
+                keys.add(new ForeignKeyColumns(key.getColumnNames(), key.getReferencedColumns()));
             }
         }
         return keys;

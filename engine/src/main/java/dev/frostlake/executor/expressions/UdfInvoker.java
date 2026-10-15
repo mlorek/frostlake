@@ -982,19 +982,27 @@ final class UdfInvoker {
         final String className = handler.substring(0, dotIndex);
         final String methodName = handler.substring(dotIndex + 1);
 
-        // The handler class comes from the IMPORTS jar(s) if given, else from compiling the inline body.
-        final Class<?> compiledClass;
-        if (!function.getImports().isEmpty()) {
-            compiledClass = JarHandlerLoader.load(queryExecutor != null
+        // The handler class comes from the inline body when one is written and holds it, else from the IMPORTS
+        // jar(s): a body may be written beside imports it does not use (live-verified).
+        final String sourceCode = function.getBody();
+        final boolean inline = sourceCode != null && !sourceCode.trim().isEmpty();
+        if (!inline && function.getImports().isEmpty()) {
+            throw new RuntimeException("Java function must specify an inline body (AS ...) or IMPORTS");
+        }
+        Class<?> fromBody = null;
+        if (inline) {
+            try {
+                fromBody = handlerClass(function, sourceCode, className);
+            } catch (final RuntimeException notInTheBody) {
+                if (function.getImports().isEmpty()) {
+                    throw notInTheBody;
+                }
+            }
+        }
+        final Class<?> compiledClass = fromBody != null ? fromBody
+            : JarHandlerLoader.load(queryExecutor != null
                     ? queryExecutor.localImports(function.getImports()) : function.getImports(), className, catalog,
                 queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
-        } else {
-            final String sourceCode = function.getBody();
-            if (sourceCode == null || sourceCode.trim().isEmpty()) {
-                throw new RuntimeException("Java function must specify an inline body (AS ...) or IMPORTS");
-            }
-            compiledClass = handlerClass(function, sourceCode, className);
-        }
 
         final Method method = javaCompiler.handlerMethod(compiledClass, methodName, args.size());
         if (method == null) {

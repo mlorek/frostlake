@@ -1276,12 +1276,16 @@ final class SubqueryPlanPrint {
     /** One select item and its name, a star expanded over the one relation; false when not modelled. */
     private boolean collectItem(final FrostlakeParser.SelectItemContext item, final List<Expression> items,
                                 final List<String> names) {
-        if (SelectItemAccessors.isStarItem(item)) {
+        // A star qualified by the one relation the query reads is that relation's star.
+        final String[] starQualifier = SelectItemAccessors.isQualifiedStarItem(item)
+            ? SelectItemAccessors.getItemQualifierParts(item) : null;
+        if (SelectItemAccessors.isStarItem(item) || starQualifier != null) {
             if (tables.size() != 1 || !SelectItemAccessors.getStarModifiers(item).isEmpty()) {
                 return false;
             }
             final String qualifier = qualifiers.iterator().next();
-            if (!isPlainName(qualifier)) {
+            if (!isPlainName(qualifier)
+                    || starQualifier != null && (starQualifier.length != 1 || !qualifier.equals(starQualifier[0]))) {
                 return false;
             }
             for (final TableColumn column : tables.get(0).getColumns()) {

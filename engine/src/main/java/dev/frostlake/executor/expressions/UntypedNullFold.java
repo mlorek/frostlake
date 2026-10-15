@@ -110,8 +110,9 @@ public final class UntypedNullFold {
         "VARCHAR", "CHAR", "CHARACTER", "STRING", "TEXT", "NCHAR", "NVARCHAR", "NVARCHAR2"));
 
     /**
-     * Whether an expression is the word NULL cast to a text type, {@code NULL::VARCHAR(10)} or
-     * {@code CAST(NULL AS STRING)}. Standing alone it is the text type it names; meeting an exact number it is
+     * Whether an expression is the word NULL cast to a text type, {@code NULL::VARCHAR(10)},
+     * {@code CAST(NULL AS STRING)} or {@code TO_VARCHAR(NULL)}. Standing alone it is the text type it names;
+     * meeting an exact number it is
      * read as the bare word, and the number decides the type: {@code NULL::VARCHAR(10) + 1} is typed as
      * {@code NULL + 1}, {@code COALESCE(NULL::VARCHAR(10), 5)} is NUMBER(1,0), and {@code SELECT NULL::VARCHAR(10)
      * UNION ALL SELECT 5} a NUMBER(1,0) column — where a text value there reads as NUMBER(18,5). Beside a text, a
@@ -121,6 +122,15 @@ public final class UntypedNullFold {
      * @return whether it is a NULL of a text type
      */
     public static boolean isNullTextConstant(final Expression expr) {
+        if (expr instanceof FunctionCallExpression) {
+            // TO_VARCHAR(NULL) is the same NULL of a text type.
+            final FunctionCallExpression call = (FunctionCallExpression) expr;
+            final String name = call.getNameExpression() != null || call.getFunctionName() == null ? ""
+                : call.getFunctionName().toUpperCase(Locale.ROOT);
+            return (name.equals("TO_VARCHAR") || name.equals("TO_CHAR")) && call.getArguments().size() == 1
+                && call.getArguments().get(0) instanceof LiteralExpression
+                && ((LiteralExpression) call.getArguments().get(0)).getType() == LiteralType.NULL;
+        }
         if (!(expr instanceof CastExpression)) {
             return false;
         }

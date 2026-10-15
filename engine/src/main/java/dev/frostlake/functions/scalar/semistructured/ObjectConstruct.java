@@ -75,6 +75,10 @@ public class ObjectConstruct extends BuiltInFunction {
             final Object value = args.get(i + 1);
             if (!keepNull && value == null) continue;
             final String key = args.get(i).toString();
+            if (obj.has(key)) {
+                // A key is given once (live-verified).
+                throw new RuntimeException("Duplicate field key '" + key + "'");
+            }
             obj.set(key, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
         }
         return ArrayFunctionHelper.toCanonicalVariant(obj);

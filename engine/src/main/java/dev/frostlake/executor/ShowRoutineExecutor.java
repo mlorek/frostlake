@@ -44,13 +44,11 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
-import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
-import dev.frostlake.types.StructuredArrayType;
-import dev.frostlake.types.StructuredField;
-import dev.frostlake.types.StructuredObjectType;
+import dev.frostlake.types.StructuredTypes;
+import dev.frostlake.types.VectorType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -193,7 +191,7 @@ final class ShowRoutineExecutor {
             // A table procedure prints its columns, bare type names and all, and is flagged as a table function is.
             final String sig = proc.getName() + listedArgumentsText(proc.getParameters())
                 + " RETURN " + (proc.returnsTable() ? "TABLE " + routineSignature(proc.getReturnColumns())
-                    : proc.getReturnType().getName());
+                    : listedType(proc.getReturnType()));
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(proc.getCreatedTime()),
                 proc.getName(),
@@ -404,7 +402,7 @@ final class ShowRoutineExecutor {
         for (final Function func : functions) {
             final String sig = func.getName() + listedArgumentsText(func.getParameters())
                 + " RETURN " + (func.isTableFunction() ? "TABLE " + routineSignature(func.getReturnColumns())
-                    : func.getReturnType().getName());
+                    : listedType(func.getReturnType()));
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(func.getCreatedTime()),
                 func.getName(),
@@ -580,23 +578,7 @@ final class ShowRoutineExecutor {
      * (live-verified). So f(x OBJECT) and f(x OBJECT(a INT)) are listed as the two overloads they are.
      */
     private static String listedType(final DataType type) {
-        if (type instanceof StructuredObjectType) {
-            final StringBuilder shape = new StringBuilder("OBJECT(");
-            final List<StructuredField> fields = ((StructuredObjectType) type).getFields();
-            for (int i = 0; i < fields.size(); i++) {
-                shape.append(i > 0 ? ", " : "").append(fields.get(i).getName()).append(' ')
-                    .append(listedType(fields.get(i).getDataType()));
-            }
-            return shape.append(')').toString();
-        }
-        if (type instanceof MapType) {
-            return "MAP(" + listedType(((MapType) type).getKeyType()) + ", "
-                + listedType(((MapType) type).getValueType()) + ")";
-        }
-        if (type instanceof StructuredArrayType) {
-            return "ARRAY(" + listedType(((StructuredArrayType) type).getElementType()) + ")";
-        }
-        return type.getName();
+        return StructuredTypes.signatureText(type);
     }
 
     public ResultSet showTags(final String schemaName) {
@@ -684,9 +666,10 @@ final class ShowRoutineExecutor {
         }
         final Function fn = owner.getFunctionByWrittenSignature(parts[parts.length - 1], argumentTypes);
         final List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList("signature", routineSignature(fn.getParameters()))));
+        rows.add(new Row(Arrays.asList("signature", describedSignature(fn.getParameters()))));
         rows.add(new Row(Arrays.asList("returns", fn.isTableFunction()
-            ? "TABLE " + routineSignature(fn.getReturnColumns()) : SqlTypeNames.routineType(fn.getReturnType()))));
+            ? "TABLE " + routineSignature(fn.getReturnColumns())
+            : SqlTypeNames.routineType(fn.getReturnType(), fn.getReturnSized()))));
         rows.add(new Row(Arrays.asList("language", fn.getLanguage() != null ? fn.getLanguage() : "SQL")));
         if (!isSqlLanguage(fn.getLanguage())) {
             rows.add(new Row(Arrays.asList("null handling", fn.getNullHandling())));
@@ -725,9 +708,10 @@ final class ShowRoutineExecutor {
         }
         final Procedure proc = owner.getProcedureByWrittenSignature(parts[parts.length - 1], argumentTypes);
         final List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList("signature", routineSignature(proc.getParameters()))));
+        rows.add(new Row(Arrays.asList("signature", describedSignature(proc.getParameters()))));
         rows.add(new Row(Arrays.asList("returns", proc.returnsTable()
-            ? "TABLE " + routineSignature(proc.getReturnColumns()) : SqlTypeNames.routineType(proc.getReturnType()))));
+            ? "TABLE " + routineSignature(proc.getReturnColumns())
+            : SqlTypeNames.routineType(proc.getReturnType(), proc.getReturnSized()))));
         rows.add(new Row(Arrays.asList("language", proc.getLanguage() != null ? proc.getLanguage() : "SQL")));
         if (!isSqlLanguage(proc.getLanguage())) {
             // A procedure declares neither, so the two rows carry the account's own defaults - which is
@@ -762,7 +746,7 @@ final class ShowRoutineExecutor {
         final String returns = policy.getReturnSpelling() != null ? policy.getReturnSpelling()
             : policy.getReturnDataType() != null ? SqlTypeNames.routineType(policy.getReturnDataType())
             : normalizePolicyType(policy.getReturnType());
-        return policyDescribeResult(policy.getName(), routineSignature(policy.getParameters()), returns,
+        return policyDescribeResult(policy.getName(), describedSignature(policy.getParameters()), returns,
             policy.getBody());
     }
 
@@ -772,7 +756,7 @@ final class ShowRoutineExecutor {
         if (policy == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", fullPath(home, name)));
         }
-        return policyDescribeResult(policy.getName(), routineSignature(policy.getParameters()),
+        return policyDescribeResult(policy.getName(), describedSignature(policy.getParameters()),
             "BOOLEAN", policy.getBody());
     }
 
@@ -1367,6 +1351,22 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
             new ResultSetColumn("options", StringType.VARCHAR)
         );
+    }
+
+    /**
+     * A function's or a procedure's parameters as DESCRIBE's {@code signature} row tells them: each name and its
+     * type, a structured type with its shape and the types inside it bare — {@code (X OBJECT(a NUMBER), Y
+     * ARRAY(NUMBER))} — and a VECTOR with its element type and its size (live-verified).
+     */
+    private static String describedSignature(final List<Parameter> params) {
+        final StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; i < params.size(); i++) {
+            final DataType type = params.get(i).getDataType();
+            sb.append(i > 0 ? ", " : "").append(params.get(i).getName()).append(' ')
+                .append(StructuredTypes.isStructured(type) || type instanceof VectorType
+                    ? StructuredTypes.signatureText(type) : String.valueOf(type));
+        }
+        return sb.append(")").toString();
     }
 
     /** Render a routine/policy parameter list as "(name TYPE, …)". */

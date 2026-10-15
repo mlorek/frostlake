@@ -64,7 +64,7 @@ final class IlikeAllSyntax {
                 all = i;
             }
         }
-        if (all < 0 || sql.length() != sql.codePointCount(0, sql.length())) {
+        if (all < 0) {
             return null;
         }
         final Token quantifier = spoken.get(all);

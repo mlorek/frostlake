@@ -68,7 +68,9 @@ public class ToTime extends BuiltInFunction {
         }
         if (v instanceof LocalTime) return v;
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalTime();
-        return SharedFunctionHelpers.toLocalTime(v.toString());
+        // A written 'AUTO' reads by the session's input format first, then by AUTO.
+        return args.size() > 1 ? SharedFunctionHelpers.toLocalTimeAuto(v.toString())
+            : SharedFunctionHelpers.toLocalTime(v.toString());
     }
 
     /**

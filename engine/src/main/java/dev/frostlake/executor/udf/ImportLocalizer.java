@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.udf;
 
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -29,4 +30,13 @@ public interface ImportLocalizer {
      * @return the imports, in the same order
      */
     List<String> localImports(List<String> imports);
+
+    /**
+     * Where a stage the engine keeps itself holds the file an import names: a user's stage, a table's stage or an
+     * internal named stage without a URL.
+     *
+     * @param location the import, {@code @stage/path}
+     * @return the file's local path, whether or not a file is there, or null for a location on no such stage
+     */
+    Path keptStageFile(String location);
 }

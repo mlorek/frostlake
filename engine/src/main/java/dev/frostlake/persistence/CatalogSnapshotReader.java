@@ -857,6 +857,7 @@ final class CatalogSnapshotReader {
                         fn.setVolatility(fnSnapshot.volatility);
                     }
                     fn.setSecure(fnSnapshot.secure);
+                    fn.setReturnSized(fnSnapshot.returnSized);
                     fn.setMemoizable(fnSnapshot.memoizable);
                     fn.setImports(fnSnapshot.imports);
                     fn.setEnvironment(fnSnapshot.environment == null ? null : fnSnapshot.environment.copy());
@@ -887,6 +888,7 @@ final class CatalogSnapshotReader {
                         proc.setExecuteAs(procSnapshot.executeAs);
                     }
                     proc.setImports(procSnapshot.imports);
+                    proc.setReturnSized(procSnapshot.returnSized);
                     proc.setEnvironment(procSnapshot.environment == null ? null : procSnapshot.environment.copy());
                     proc.setComment(procSnapshot.comment);
                     proc.setReturnsTable(procSnapshot.returnsTable);
@@ -1060,8 +1062,10 @@ final class CatalogSnapshotReader {
         final List<Parameter> parameters = new ArrayList<>();
         if (snapshots != null) {
             for (final ParameterSnapshot paramSnapshot : snapshots) {
-                parameters.add(new Parameter(paramSnapshot.name,
-                    restoredType(paramSnapshot.type, paramSnapshot.dataType), paramSnapshot.defaultValue));
+                final DataType type = restoredType(paramSnapshot.type, paramSnapshot.dataType);
+                parameters.add(new Parameter(paramSnapshot.name, type, paramSnapshot.defaultValue,
+                    paramSnapshot.unsized == null ? Parameter.holdsDefaultLength(type)
+                        : paramSnapshot.unsized.booleanValue(), paramSnapshot.defaultTold));
             }
         }
         return parameters;

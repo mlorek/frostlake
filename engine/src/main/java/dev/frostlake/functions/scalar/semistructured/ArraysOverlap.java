@@ -34,8 +34,8 @@ public class ArraysOverlap extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
-        final ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
+        final ArrayNode a1 = ArrayFunctionHelper.parseArrayOrSingle(args.get(0));
+        final ArrayNode a2 = ArrayFunctionHelper.parseArrayOrSingle(args.get(1));
         if (a1 == null || a2 == null) return null;
         final Set<String> set = new HashSet<>();
         for (final JsonNode el : a1) set.add(ArrayFunctionHelper.elementKey(el));

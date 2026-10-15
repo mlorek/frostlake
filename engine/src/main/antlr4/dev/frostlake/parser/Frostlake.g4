@@ -1,9 +1,9 @@
 grammar Frostlake;
 
 // The word IDENTIFIER leaves the lexer as one of three tokens, the word MATCH_RECOGNIZE as its clause's opener or
-// as a name, FINAL and RUNNING inside that clause as a call's prefix or as names, and the |, ^ and $ of a row
+// as a name, FINAL and RUNNING inside that clause as a call's prefix or as names, and the | and $ of a row
 // pattern as tokens there alone: see the lexer members below.
-tokens { KW_IDENTIFIER_REF, KW_IDENTIFIER_OPEN, MATCH_RECOGNIZE_OPEN, ROW_PATTERN_SEMANTICS, BAR, CARET, DOLLAR }
+tokens { KW_IDENTIFIER_REF, KW_IDENTIFIER_OPEN, MATCH_RECOGNIZE_OPEN, ROW_PATTERN_SEMANTICS, BAR, DOLLAR }
 
 @lexer::header {
 import java.util.ArrayList;
@@ -26,6 +26,8 @@ import java.util.List;
     public Token nextToken() {
         final Token token = tokensAhead.isEmpty() ? read() : tokensAhead.remove(0);
         final int type = token.getType();
+        final int before = previousType;
+        previousType = type;
         if (type == KW_IDENTIFIER && token instanceof WritableToken) {
             ((WritableToken) token).setType(identifierKeywordType());
         } else if (type == IDENTIFIER && token instanceof WritableToken) {
@@ -36,6 +38,17 @@ import java.util.List;
             } else if (!rowPatternClauses.isEmpty() && leadsRowPatternCall(word)) {
                 ((WritableToken) token).setType(FrostlakeParser.ROW_PATTERN_SEMANTICS);
             }
+        } else if ((type == SYSTEM_FUNC || type == SYSTEM_STREAM_HAS_DATA || type == SYSTEM_USER_TASK_CANCEL)
+                && token instanceof WritableToken && (typeAhead(0) != LPAREN || before == TABLE || before == VIEW
+                    || before == INTO || before == EXISTS || before == FUNCTION || before == PROCEDURE)) {
+            // A SYSTEM\$ word no parenthesis follows calls nothing: it is a plain name, as any word with a dollar
+            // sign in it is — SELECT 1 AS system\$foo runs and DROP TABLE system\$foo misses the table. So is one
+            // standing where a statement names what it creates, fills or drops, whose parenthesis is a column list
+            // or a signature: CREATE TABLE system\$t (a INT) creates the table and CREATE FUNCTION system\$f()
+            // the function (live-verified).
+            ((WritableToken) token).setType(IDENTIFIER);
+        } else if (type == CARET) {
+            caretRead = true;
         } else if (type == LPAREN) {
             parentheses++;
         } else if (type == RPAREN) {
@@ -52,8 +65,25 @@ import java.util.List;
         return token;
     }
 
+    /** The type the lexer's rules gave the token handed out last. */
+    private int previousType = Token.INVALID_TYPE;
+
+    /** Whether the text holds a caret: the one token an expression may write as an operator and never use. */
+    private boolean caretRead;
+
+    /**
+     * Whether a caret has been handed out, so that a statement of a text that holds none is not searched for one.
+     *
+     * @return whether the text read so far holds a caret
+     */
+    public boolean hasReadCaret() {
+        return caretRead;
+    }
+
     @Override
     public void reset() {
+        previousType = Token.INVALID_TYPE;
+        caretRead = false;
         tokensAhead.clear();
         patternSymbols.clear();
         rowPatternClauses.clear();
@@ -63,7 +93,7 @@ import java.util.List;
         super.reset();
     }
 
-    /** The |, ^ and $ read inside a row pattern, handed out ahead of the token read after them. */
+    /** The | and $ read inside a row pattern, handed out ahead of the token read after them. */
     private final List<Token> patternSymbols = new ArrayList<Token>();
 
     /** The next token: a row pattern's symbol met while reading on, or the token the lexer's rules read. */
@@ -123,18 +153,29 @@ import java.util.List;
     }
 
     /**
-     * The token a character no rule reads stands for inside a MATCH_RECOGNIZE clause: the bar, the caret or the
-     * dollar of its pattern. They have no rule of their own — outside a clause each stays the character the lexer
-     * cannot read, refused as it always was, and a rule with a condition would cost every other token its cached
-     * path.
+     * The token a character no rule reads stands for inside a MATCH_RECOGNIZE clause: the bar or the dollar of its
+     * pattern. They have no rule of their own — outside a clause the bar stays the character the lexer cannot read,
+     * refused as it always was, and a rule with a condition would cost every other token its cached path. A
+     * dollar sign that opens nothing is the dollar token everywhere, and the caret is a token everywhere (see
+     * CARET).
      */
     private int patternSymbolType(final LexerNoViableAltException unread) {
+        final String symbol = _input.getText(Interval.of(unread.getStartIndex(), unread.getStartIndex()));
+        if ("$".equals(symbol) && !opensDollarString(unread.getStartIndex())) {
+            // A dollar sign that opens nothing - no name, no number, no second '$' - is a token of one character
+            // everywhere, which no rule outside a row pattern takes: SELECT $"PV" is refused at the '$'.
+            return FrostlakeParser.DOLLAR;
+        }
         if (rowPatternClauses.isEmpty()) {
             return Token.INVALID_TYPE;
         }
-        final String symbol = _input.getText(Interval.of(unread.getStartIndex(), unread.getStartIndex()));
-        return "|".equals(symbol) ? FrostlakeParser.BAR : "^".equals(symbol) ? FrostlakeParser.CARET
-            : "$".equals(symbol) ? FrostlakeParser.DOLLAR : Token.INVALID_TYPE;
+        return "|".equals(symbol) ? FrostlakeParser.BAR : "$".equals(symbol) ? FrostlakeParser.DOLLAR
+            : Token.INVALID_TYPE;
+    }
+
+    /** Whether the dollar sign at {@code index} opens a dollar-quoted string, a second one following it. */
+    private boolean opensDollarString(final int index) {
+        return index + 1 < _input.size() && "$".equals(_input.getText(Interval.of(index + 1, index + 1)));
     }
 
     @Override
@@ -236,6 +277,29 @@ import java.util.List;
         final Token next = _input.LT(1);
         return next != null && next.getType() == SYSTEM_FUNC
             && next.getText().toUpperCase(java.util.Locale.ROOT).startsWith("SYSTEM\$LOG");
+    }
+
+    /**
+     * Whether the name a SHOW scope has just read may carry a signature: any name but the lone word ACCOUNT, which
+     * is the account's scope and reads none — SHOW TABLES IN ACCOUNT (x) is refused at the parenthesis
+     * (live-verified).
+     */
+    private boolean scopeNameTakesSignature() {
+        return _input.LT(-1).getType() != ACCOUNT || _input.LT(-2).getType() != IN;
+    }
+
+    /**
+     * Whether the name written after a SHOW scope's word may carry a signature: the object of a kind — a view, a
+     * class, an application — and not an instance of a class, which carries none (live-verified).
+     */
+    private boolean scopeObjectTakesSignature(final ShowStatementContext listing) {
+        return listing.objectName() != null && ShowScopeWords.namesKind(listing.objectName().getStart(),
+            listing.objectName().getStop());
+    }
+
+    /** Whether the token ahead is the given word, which is no keyword of its own. */
+    private boolean wordAhead(final String word) {
+        return word.equalsIgnoreCase(_input.LT(1).getText());
     }
 
     /** Whether the next element of a CREATE HYBRID TABLE's column list is a secondary index,
@@ -532,6 +596,27 @@ import java.util.List;
         notifyErrorListeners(open, "unexpected '('", fault);
     }
 
+    /**
+     * Refuses a table named after LATERAL, at the token after the name: LATERAL takes a query in parentheses or
+     * a function's call, so {@code FROM t, LATERAL x} and {@code JOIN LATERAL x y} are syntax errors where the
+     * call's parenthesis is due (live-verified).
+     */
+    private void refuseLateralName(final TableReferenceContext reference) {
+        final boolean lateral = reference.LATERAL() != null || reference.getParent() instanceof JoinClauseContext
+            && ((JoinClauseContext) reference.getParent()).LATERAL() != null;
+        final TableSourceContext source = reference.tableSource();
+        if (!lateral || source == null || source.tableQualifiedName() == null
+                || source.getStop() != source.tableQualifiedName().getStop()) {
+            return;
+        }
+        final Token after = _input.LT(1);
+        final RefusedWordFault fault = new RefusedWordFault(this, source, true);
+        if (getErrorHandler() instanceof BailErrorStrategy) {
+            throw new ParseCancellationException(fault);
+        }
+        notifyErrorListeners(after, "unexpected '" + after.getText() + "'", fault);
+    }
+
     /** The DISTINCT or ALL a call operand is written with before its arguments, or null. */
     private Token callQuantifier(final ExpressionContext operand) {
         TerminalNode written = null;
@@ -641,13 +726,55 @@ import java.util.List;
         }
     }
 
+    /** Refuses the word CLASS after SHOW, at the word and alone, as the account's parser does. */
+    private void refuseClassWord(final ParserRuleContext listing, final Token word) {
+        notifyErrorListeners(word, "unexpected '" + word.getText() + "'", new RefusedWordFault(this, listing, true));
+    }
+
+    /**
+     * Refuses HYBRID after DROP, at the word, as the account's parser does: DROP HYBRID TABLE t and DROP HYBRID are
+     * 'HYBRID' alone, and a name or a parenthesis straight after the word is named as well — DROP HYBRID t is
+     * 'HYBRID' then 't' (live-verified).
+     */
+    private void refuseHybridAfterDrop(final ParserRuleContext kind) {
+        final Token word = kind.getStart();
+        final Token next = _input.LT(1);
+        final boolean stacks = next.getType() == LPAREN || next.getType() == RPAREN
+            || getATN().nextTokens(getATN().ruleToStartState[RULE_identifier]).contains(next.getType());
+        notifyErrorListeners(word, "unexpected '" + word.getText() + "'", new RefusedWordFault(this, kind, !stacks));
+        if (stacks) {
+            notifyErrorListeners(next, "unexpected '" + next.getText() + "'", new RefusedWordFault(this, kind, true));
+        }
+    }
+
     /**
      * Refuses a word written where a kind's own word stands, at the word: DROP STORAGE x names no kind
      * (live-verified).
      */
+    /**
+     * Refuses the ON of SHOW PASSWORD POLICIES that no ACCOUNT, USER or DATABASE follows, where it stands: the
+     * account reads no other holder of a policy there, and a database only to say it lists none (live-verified).
+     */
+    private void refusePolicyHolderWord(final ParserRuleContext listing, final Token on) {
+        final int next = _input.LA(1);
+        if (next != ACCOUNT && next != USER && next != DATABASE) {
+            notifyErrorListeners(on, "unexpected '" + on.getText() + "'", new RefusedWordFault(this, listing, true));
+        }
+    }
+
     private void refuseKindWord(final ParserRuleContext kind, final Token word, final String expected) {
         if (!UnmodelledKindWords.is(word, expected)) {
             notifyErrorListeners(word, "unexpected '" + word.getText() + "'", new RefusedWordFault(this, kind, true));
+        }
+    }
+
+    /**
+     * Refuses ORDER BY ALL in a window's OVER or a WITHIN GROUP, at the ALL and alone: only a query's own ORDER BY
+     * orders by every column it answers (live-verified).
+     */
+    private void refuseOrderByAll(final OrderByClauseContext clause, final Token word) {
+        if (clause.getParent() instanceof OverClauseContext || clause.getParent() instanceof WithinGroupClauseContext) {
+            notifyErrorListeners(word, "unexpected '" + word.getText() + "'", new RefusedWordFault(this, clause, true));
         }
     }
 
@@ -657,6 +784,35 @@ import java.util.List;
      * it too, DESCRIBE TABLE t1 (TRUE) being 'TRUE' then ')' — and parameters after a quoted word, at their '(':
      * DESCRIBE TABLE t1 ("a"(1)) (live-verified).
      */
+    /**
+     * Refuses a foreign key's ON UPDATE or ON DELETE rule the key has no room for: a second rule of one kind at its
+     * DELETE or UPDATE, a third rule at its ON (live-verified). What the report holds after that word is worked out
+     * from the statement's tokens (KeyConstraintTailLines).
+     */
+    private void refuseRepeatedRule(final ReferentialActionsContext rules) {
+        boolean deleting = false;
+        boolean updating = false;
+        for (final ReferentialActionContext rule : rules.referentialAction()) {
+            if (rule.exception != null || rule.ON() == null || rule.DELETE() == null && rule.UPDATE() == null) {
+                // A rule the parser could not read whole is a fault of its own.
+                return;
+            }
+            final boolean deletes = rule.DELETE() != null;
+            if (deleting && updating) {
+                notifyErrorListeners(rule.ON().getSymbol(), "unexpected 'ON'", new RefusedWordFault(this, rules, true));
+                return;
+            }
+            if (deletes ? deleting : updating) {
+                final Token kind = (deletes ? rule.DELETE() : rule.UPDATE()).getSymbol();
+                notifyErrorListeners(kind, "unexpected '" + kind.getText() + "'",
+                    new RefusedWordFault(this, rules, true));
+                return;
+            }
+            deleting = deleting || deletes;
+            updating = updating || !deletes;
+        }
+    }
+
     /**
      * Refuses a comma written before a DESCRIBE's first property: a comma stands between two properties only
      * (live-verified).
@@ -783,7 +939,7 @@ import java.util.List;
         for (int i = 0; i < refusal.size(); i++) {
             final Token line = refusal.line(i);
             final TypeParameterFault fault = new TypeParameterFault(this, _ctx, line,
-                i == refusal.size() - 1 && refusal.endsTheReport());
+                i == refusal.size() - 1 && refusal.endsTheReport(), i > 0 && refusal.line(i - 1) == line);
             if (getErrorHandler() instanceof BailErrorStrategy) {
                 // A parse that stops at its first fault has no listener to tell: it stops here.
                 throw new ParseCancellationException(fault);
@@ -1099,7 +1255,7 @@ securityObjectStatement
       | tagUnset) SEMI?
     | ALTER SECRET if_exists? qualifiedName securityPropertyChange SEMI?
     | DROP NETWORK RULE if_exists? qualifiedName objectSignature? dropBehavior? SEMI?
-    | DROP NETWORK POLICY if_exists? identifier dropBehavior? SEMI?
+    | DROP NETWORK POLICY if_exists? identifier objectSignature? dropBehavior? SEMI?
     | DROP PASSWORD POLICY if_exists? qualifiedName objectSignature? dropBehavior? SEMI?
     | DROP SECRET if_exists? qualifiedName objectSignature? dropBehavior? SEMI?
     | ALTER (ACCOUNT | USER if_exists? identifier) SET PASSWORD POLICY qualifiedName FORCE? SEMI?
@@ -1129,17 +1285,27 @@ securityPropertyChange
 // POLICIES takes a LIKE and SHOW SECRETS a STARTS WITH and a LIMIT, which their pages leave out.
 securityObjectListing
     : SHOW NETWORK RULES (LIKE stringText)? securityListingScope? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
-    | SHOW NETWORK POLICIES (LIKE stringText)? SEMI?
-    | SHOW PASSWORD POLICIES (LIKE stringText)? (securityListingScope | ON (ACCOUNT | USER identifier))? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL)? SEMI?
+    | SHOW NETWORK POLICIES (LIKE stringText)? securityListingScope? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
+    | SHOW PASSWORD POLICIES (LIKE stringText)?
+        (securityListingScope | holderWord=ON {refusePolicyHolderWord($ctx, $holderWord);}
+            (ACCOUNT | USER identifier | holderDatabase=DATABASE qualifiedName))?
+        (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL)? SEMI?
     | SHOW SECRETS (LIKE stringText)? securityListingScope? (STARTS WITH stringText)? (LIMIT INTEGER_LITERAL (FROM stringText)?)? SEMI?
-    | (DESCRIBE | DESC) NETWORK RULE qualifiedName objectSignature? SEMI?
-    | (DESCRIBE | DESC) NETWORK POLICY identifier SEMI?
-    | (DESCRIBE | DESC) PASSWORD POLICY qualifiedName objectSignature? SEMI?
-    | (DESCRIBE | DESC) SECRET qualifiedName objectSignature? SEMI?
+    | (DESCRIBE | DESC) NETWORK RULE qualifiedName objectSignature? describeProperty* SEMI?
+    | (DESCRIBE | DESC) NETWORK POLICY identifier objectSignature? describeProperty* SEMI?
+    | (DESCRIBE | DESC) PASSWORD POLICY qualifiedName objectSignature? describeProperty* SEMI?
+    | (DESCRIBE | DESC) SECRET qualifiedName objectSignature? describeProperty* SEMI?
     ;
 
+// A table, a view and a class hold none of these kinds and an application is looked up: each scope is read so that
+// it is refused in the listing's own words. A table and a view need no name, and APPLICATION or CLASS written alone
+// is the name of a schema (live-verified).
 securityListingScope
-    : IN (ACCOUNT | DATABASE qualifiedName? | SCHEMA qualifiedName? | qualifiedName)
+    : IN (ACCOUNT | DATABASE qualifiedName? | SCHEMA qualifiedName?
+         | scopeKind=(TABLE | VIEW) qualifiedName?
+         | scopeApplication=APPLICATION PACKAGE? qualifiedName
+         | scopeClass=CLASS qualifiedName
+         | qualifiedName)
     ;
 
 undropStatement
@@ -1170,7 +1336,8 @@ createStatement
     // follows the query (live-verified).
     | CREATE (or_replace | or_alter)? (TRANSIENT ICEBERG? | (LOCAL | GLOBAL)? (TEMPORARY | TEMP) | VOLATILE | HYBRID | ICEBERG)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? tableTailOption* | LIKE qualifiedName tableTailOption* | USING TEMPLATE selectStatement tableTailOption* | (columnListOptional tableTailOption*)? AS selectStatement) SEMI?
     // An event table's columns are the fixed OpenTelemetry set, so it is written without a column list.
-    | CREATE or_replace? EVENT TABLE if_not_exists? objectName tableTailOption* SEMI?
+    // A clone of another event table takes no property of its own.
+    | CREATE or_replace? EVENT TABLE if_not_exists? objectName (CLONE qualifiedName | tableTailOption*) SEMI?
     // TEMPORARY/TEMP/VOLATILE views, live-measured, including the keyword ORDER: SECURE comes
     // BEFORE the temporary keyword on a view (`CREATE SECURE TEMPORARY VIEW` parses,
     // `CREATE TEMPORARY SECURE VIEW` is a syntax error) — the opposite of a function, below.
@@ -1178,8 +1345,10 @@ createStatement
     // parses, `CREATE TEMPORARY RECURSIVE VIEW` is a syntax error at RECURSIVE (live-verified).
     | CREATE (or_replace | or_alter)? SECURE? (RECURSIVE | (LOCAL | GLOBAL)? (TEMPORARY | TEMP | VOLATILE))? VIEW if_not_exists? objectName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty* rowAccessPolicyClause? commentClause? tagList? AS selectStatement SEMI?
     // A clustering key may stand on either side of the view's COMMENT, and more than once; a COMMENT written
-    // twice is read and then refused as a duplicate property (live-verified).
-    | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? objectName copyGrants? (LPAREN viewColumnList RPAREN)? copyGrants? (commentClause | clusterByClause)* tagList? AS selectStatement SEMI?
+    // twice is read and then refused as a duplicate property (live-verified). Any other word among them is read as
+    // a property's name, so that what follows it is what is refused: CLUSTER BY (x) COPY GRANTS AS … is a syntax
+    // error at GRANTS, and CLUSTER BY (x) SECURE AS … at the AS (live-verified).
+    | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? objectName copyGrants? (LPAREN viewColumnList RPAREN)? copyGrants? (commentClause | clusterByClause | viewProperty)* tagList? AS selectStatement SEMI?
     // COMMENT is one of the pre-AS options; a trailing COMMENT after the query is a syntax error (live-verified).
     // A clone takes the source's definition and data; only the target lag and the warehouse may be given anew.
     | CREATE or_replace? TRANSIENT? DYNAMIC TABLE if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause? copyGrants? dynamicTableCloneOption* | dynamicTableColumns? dynamicTableOptions (LPAREN identifierList RPAREN)? AS selectStatement) SEMI?
@@ -1189,7 +1358,7 @@ createStatement
     // A clone takes the source's definition and its current offset.
     | CREATE or_replace? STREAM if_not_exists? qualifiedName CLONE qualifiedName copyGrants? SEMI?
     // EXECUTE AS USER follows the options and the AFTER list and precedes WHEN (live-verified).
-    | CREATE or_replace? TASK if_not_exists? qualifiedName tagList? taskContacts? warehouseClause? taskOptions? afterClause? commentClause? taskExecuteAs? (WHEN booleanExpr)? AS taskBody commentClause? SEMI?
+    | CREATE or_replace? TASK if_not_exists? qualifiedName tagList? taskContacts? warehouseClause? taskOptions? afterClause? commentClause? taskExecuteAs? (WHEN booleanExpr)? AS taskBody SEMI?
     | CREATE or_replace? PIPE if_not_exists? qualifiedName pipeOptions? AS copyStatement commentClause? SEMI?
     | CREATE or_replace? SEQUENCE if_not_exists? qualifiedName (CLONE qualifiedName | WITH? sequenceOptions? commentClause?) SEMI?
     | CREATE or_replace? WAREHOUSE if_not_exists? identifier warehouseProperties? commentClause? SEMI?
@@ -1476,7 +1645,8 @@ schemaProperty
 // CASCADE / RESTRICT is taken after every DROP (live-verified).
 // So is a signature after the object's name, for every kind the account was asked about but a stage, whose name a
 // '(' may not follow: DROP SEQUENCE IF EXISTS s (a) and DROP SECRET IF EXISTS s () run, DROP STAGE s (a) is a syntax
-// error at the '(' (live-verified). A routine's parentheses are its own signature.
+// error at the '(' (live-verified). A routine's parentheses are its own signature. The account's own kinds — a
+// warehouse, a compute pool, a user, a role, a contact — read one like any other.
 // Every kind reads its name as an objectName, so IDENTIFIER('<name>') names the object a DROP drops —
 // live takes it for all of them, IF EXISTS and a session variable included. FUNCTION and PROCEDURE are
 // left on the plain name: their REQUIRED signature's parens would sit against the call's own.
@@ -1493,8 +1663,8 @@ dropStatement
     | DROP TASK if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP PIPE if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP SEQUENCE if_exists? objectName objectSignature? dropBehavior? SEMI?
-    | DROP WAREHOUSE if_exists? objectName dropBehavior? SEMI?
-    | DROP COMPUTE POOL if_exists? objectName dropBehavior? SEMI?
+    | DROP WAREHOUSE if_exists? objectName objectSignature? dropBehavior? SEMI?
+    | DROP COMPUTE POOL if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP CORTEX SEARCH SERVICE if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP STAGE if_exists? objectName {refuseStageSignature($ctx);} dropBehavior? SEMI?
     | DROP FILE FORMAT if_exists? objectName objectSignature? dropBehavior? SEMI?
@@ -1502,14 +1672,14 @@ dropStatement
     | DROP ALERT if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP FUNCTION if_exists? qualifiedName LPAREN dataTypeList? RPAREN dropBehavior? SEMI?   // the signature is REQUIRED (live-verified)
     | DROP PROCEDURE if_exists? qualifiedName LPAREN dataTypeList? RPAREN dropBehavior? SEMI?   // the signature is REQUIRED (live-verified)
-    | DROP USER if_exists? objectName dropBehavior? SEMI?
-    | DROP ROLE if_exists? objectName dropBehavior? SEMI?
+    | DROP USER if_exists? objectName objectSignature? dropBehavior? SEMI?
+    | DROP ROLE if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP MASKING POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP ROW ACCESS POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
-    | DROP CONTACT if_exists? objectName dropBehavior? SEMI?
-    | DROP PROJECTION POLICY if_exists? objectName dropBehavior? SEMI?
-    | DROP AGGREGATION POLICY if_exists? objectName dropBehavior? SEMI?
-    | DROP JOIN POLICY if_exists? objectName dropBehavior? SEMI?
+    | DROP CONTACT if_exists? objectName objectSignature? dropBehavior? SEMI?
+    | DROP PROJECTION POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
+    | DROP AGGREGATION POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
+    | DROP JOIN POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
     ;
 
 // An instance of a class, DROP <class> <instance>. No class is modelled, so the class is refused as missing. The
@@ -1520,8 +1690,21 @@ dropClassStatement
     // A kind the account names by keywords of its own that Frostlake models no object of (UnmodelledDropKind): the
     // name resolves and nothing is found.
     : DROP unmodelledKind if_exists? dropInstanceName objectSignature? dropBehavior? SEMI?
+    // A class itself, by its name; a signature and CASCADE or RESTRICT change nothing. No class is modelled, so it
+    // is missed by its full path (live-verified).
+    | DROP droppedClass=CLASS if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP className ({ClassNameWords.completesDropKind(_input.LT(-1), _input.LT(1))}? dropKindWord=(TABLE | GROUP)
-        if_exists? dropInstanceName objectSignature? | if_exists? dropInstanceName) dropBehavior? SEMI?
+        if_exists? dropInstanceName objectSignature?
+        // A signature follows the name of a kind the account knows, and of no other word (live-verified).
+        | if_exists? dropInstanceName ({UnmodelledKindWords.takesSignature($ctx.className())}? objectSignature)?)
+        dropBehavior? SEMI?
+    // HYBRID names no kind after DROP — a hybrid table is dropped as a table — and is refused where it stands.
+    | DROP dropHybridWord (TABLE if_exists? dropInstanceName objectSignature? | if_exists? dropInstanceName)?
+        dropBehavior? SEMI?
+    ;
+
+dropHybridWord
+    : HYBRID {refuseHybridAfterDrop($ctx);}
     ;
 
 // The words of such a kind, each opening on a keyword. APPLICATION PACKAGE and ORGANIZATION PROFILE written alone
@@ -1553,6 +1736,9 @@ dropInstanceName
 externalTableAction
     : REFRESH STRING_LITERAL?
     | SET identifier EQ (TRUE | FALSE | INTEGER_LITERAL | STRING_LITERAL)
+    // UNSET reads a list of words as properties, or the word TAG alone, and the first property is judged where
+    // the statement runs.
+    | UNSET (TAG | identifier (COMMA identifier)*)
     | (ADD | REMOVE) FILES LPAREN STRING_LITERAL (COMMA STRING_LITERAL)* RPAREN
     | ADD PARTITION LPAREN identifier EQ STRING_LITERAL (COMMA identifier EQ STRING_LITERAL)* RPAREN
         locationWord=IDENTIFIER STRING_LITERAL
@@ -1595,9 +1781,16 @@ alterStatement
     | ALTER FUNCTION if_exists? qualifiedName (LPAREN routineSignature? RPAREN)? routineAlterAction SEMI?
     | ALTER PROCEDURE if_exists? qualifiedName (LPAREN routineSignature? RPAREN)? routineAlterAction SEMI?
     | ALTER SESSION sessionAction SEMI?
-    // The account's parameters, written as a session's are. IF EXISTS is read so that it is refused in the
-    // account's own words: there is no name for it to forgive.
-    | ALTER ACCOUNT if_exists? sessionAction SEMI?
+    // The account's parameters, written as a session's are, and its tags. IF EXISTS is read so that it is refused
+    // in the account's own words where there is no name for it to forgive. A name after ACCOUNT is another
+    // account's: the statement is read, its list judged, and the account then looked for (live-verified).
+    // Its tags take IF EXISTS only before a name: ALTER ACCOUNT IF EXISTS SET TAG … is refused at the SET, which
+    // the handler does so that one alternative reads every form and a fault keeps the statement's context.
+    | ALTER ACCOUNT if_exists? alteredAccount? (sessionAction | tagSet | tagUnset) SEMI?
+    ;
+
+alteredAccount
+    : qualifiedName
     ;
 
 useStatement
@@ -1632,9 +1825,13 @@ wholeObjectName
 
 // The signature a DROP or a DESCRIBE may write after an object's name — the shape a routine's arguments take,
 // which live reads there for every object and ignores: DESCRIBE TABLE t1 (x), (VARCHAR(10)), () and (a, b) all
-// describe T1, while (1), ('a'), ((a)), (a b) and (a,) are syntax errors (live-verified).
+// describe T1, while (1), ('a'), ((a)), (a b) and (a,) are syntax errors. A SHOW listing reads the same after
+// the name of its scope: SHOW TABLES IN test_schema (x) lists the schema's tables (live-verified).
 objectSignature
-    : LPAREN (objectSignatureTable (COMMA objectSignatureTable)* | objectSignatureItem (COMMA objectSignatureItem)*)?
+    // DEFAULT before an item reads as a field's name before its type: DESCRIBE TABLE t1 (DEFAULT x) describes T1,
+    // and (DEFAULT) is a syntax error at the ')' (live-verified).
+    : LPAREN (objectSignatureTable (COMMA objectSignatureTable)*
+        | DEFAULT? objectSignatureItem (COMMA DEFAULT? objectSignatureItem)*)?
       RPAREN
     ;
 
@@ -1655,22 +1852,22 @@ objectSignatureTable
 //
 // A structured type is read with the parameters the account takes for it in a signature: ARRAY with one type,
 // OBJECT with fields, MAP with a key type and a value type, VECTOR with an integer or a floating-point type's word
-// and a signed dimension. An element, a field and a MAP's value may end in NOT NULL, a MAP's key may not, and the
-// type inside is any item — a word included, ARRAY(a) and MAP(a, b) describe T1 — while a field's name may be TRUE
-// or IF as well. ARRAY(1), OBJECT(a), VECTOR(NUMBER, 3), and VECTOR, MAP and INTERVAL standing alone, and ARRAY.a,
-// are syntax errors (live-verified).
+// or BOOLEAN and a signed dimension. An element, a field and a MAP's value may end in NOT NULL, a MAP's key may not,
+// and the type inside is any item — a word included, ARRAY(a) and MAP(a, b) describe T1 — while a field's name may
+// be TRUE, IF or DEFAULT as well. ARRAY(1), OBJECT(a), VECTOR(NUMBER, 3), and VECTOR, MAP and INTERVAL standing
+// alone, and ARRAY.a, are syntax errors (live-verified).
 objectSignatureItem
     : ARRAY (LPAREN objectSignatureItem (NOT NULL)? RPAREN)?
     | OBJECT (LPAREN (objectSignatureField (COMMA objectSignatureField)*)? RPAREN)?
     | MAP LPAREN objectSignatureItem COMMA objectSignatureItem (NOT NULL)? RPAREN
-    | VECTOR LPAREN (INT | INTEGER | BIGINT | SMALLINT | TINYINT | BYTEINT | FLOAT | FLOAT4 | FLOAT8 | DOUBLE | REAL)
-        COMMA MINUS? INTEGER_LITERAL RPAREN
+    | VECTOR LPAREN (INT | INTEGER | BIGINT | SMALLINT | TINYINT | BYTEINT | FLOAT | FLOAT4 | FLOAT8 | DOUBLE | REAL
+        | BOOLEAN) COMMA MINUS? INTEGER_LITERAL RPAREN
     | dataTypeName typeParameters?
     | word=identifier (DOT identifier)* objectSignatureParameters? {refuseSignatureWord($ctx, $word.start, true);}
     ;
 
 objectSignatureField
-    : (structuredFieldName | TRUE | FALSE | IF) objectSignatureItem (NOT NULL)?
+    : (structuredFieldName | TRUE | FALSE | IF | DEFAULT) objectSignatureItem (NOT NULL)?
     ;
 
 objectSignatureParameters
@@ -2544,6 +2741,7 @@ warehouseUnsetProperty
 
 databaseAction
     : RENAME TO identifier
+    | SWAP WITH identifier
     | SET COMMENT EQ STRING_LITERAL
     | SET optionKey EQ (parenOptionList | copyOptionValue)
     | SET READ_ONLY EQ booleanValue
@@ -2559,6 +2757,7 @@ databaseAction
 schemaAction
     // The new name may place the schema in a database, moving it there with its members (live-verified).
     : RENAME TO qualifiedName
+    | SWAP WITH qualifiedName
     | SET COMMENT EQ STRING_LITERAL
     | SET optionKey EQ (parenOptionList | copyOptionValue)
     | UNSET optionKey
@@ -2592,10 +2791,11 @@ tableAction
     | SET tableSetProperty (COMMA? tableSetProperty)*
     | CLUSTER BY clusterKeyOrder? LPAREN expressionList RPAREN
     | ADD tableConstraint
-    | DROP CONSTRAINT identifier
-    | DROP PRIMARY KEY
-    | DROP UNIQUE LPAREN identifierList RPAREN
-    | DROP FOREIGN KEY LPAREN identifierList RPAREN
+    // A key's DROP takes CASCADE or RESTRICT (documented; RESTRICT refuses a key a foreign key references).
+    | DROP CONSTRAINT identifier (CASCADE | RESTRICT)?
+    | DROP PRIMARY KEY (CASCADE | RESTRICT)?
+    | DROP UNIQUE LPAREN identifierList RPAREN (CASCADE | RESTRICT)?
+    | DROP FOREIGN KEY LPAREN identifierList RPAREN (CASCADE | RESTRICT)?
     | (ALTER | MODIFY) COLUMN identifier SET MASKING POLICY qualifiedName (USING LPAREN identifierList RPAREN)? FORCE?
     | (ALTER | MODIFY) COLUMN identifier UNSET MASKING POLICY
     | ADD DATA METRIC FUNCTION qualifiedName ON LPAREN identifierList? RPAREN
@@ -2681,15 +2881,18 @@ cortexSearchSetting
 containerServicesStatement
     : CREATE or_replace? IMAGE REPOSITORY if_not_exists? qualifiedName containerProperty* tagList? containerProperty* SEMI?
     | ALTER IMAGE REPOSITORY if_exists? qualifiedName artifactRepositoryAlterAction SEMI?
-    | DROP IMAGE REPOSITORY if_exists? qualifiedName SEMI?
-    | SHOW IMAGE REPOSITORIES (LIKE stringText)? containerShowScope? SEMI?
+    // A signature and a behaviour word are read after the name, as after every kind (live-verified).
+    | DROP IMAGE REPOSITORY if_exists? qualifiedName objectSignature? dropBehavior? SEMI?
+    | SHOW IMAGE REPOSITORIES (LIKE stringText)? containerShowScope? showTail SEMI?
     | SHOW IMAGES IN IMAGE REPOSITORY qualifiedName SEMI?
     | CREATE SERVICE if_not_exists? qualifiedName IN COMPUTE POOL identifier serviceSource containerProperty* tagList? containerProperty* SEMI?
     | EXECUTE JOB SERVICE IN COMPUTE POOL identifier serviceSource containerProperty* SEMI?
     | ALTER SERVICE if_exists? qualifiedName serviceAlterAction SEMI?
-    | DROP SERVICE if_exists? qualifiedName FORCE? SEMI?
+    // FORCE or a behaviour word, after the signature when one is written: a word after FORCE is refused where it
+    // stands (live-verified).
+    | DROP SERVICE if_exists? qualifiedName objectSignature? (FORCE | dropBehavior)? SEMI?
     | SHOW JOB? SERVICES (EXCLUDE JOBS)? (LIKE stringText)? containerShowScope? showTail SEMI?
-    | (DESCRIBE | DESC) SERVICE qualifiedName SEMI?
+    | (DESCRIBE | DESC) SERVICE qualifiedName objectSignature? describeProperty* SEMI?
     | SHOW SERVICE (CONTAINERS | INSTANCES) IN SERVICE qualifiedName SEMI?
     | SHOW ENDPOINTS IN SERVICE qualifiedName SEMI?
     | CREATE or_replace? ARTIFACT REPOSITORY if_not_exists? qualifiedName containerProperty* tagList? containerProperty* SEMI?
@@ -2835,9 +3038,11 @@ materializedViewAction
     | DROP CLUSTERING KEY
     | SUSPEND
     | RESUME
-    | RENAME TO identifier
+    // The new name may carry a path, which places the view in the schema it names (live-verified).
+    | RENAME TO qualifiedName
     | SET COMMENT EQ STRING_LITERAL
     | UNSET COMMENT
+    | (SET | UNSET) SECURE
     ;
 
 dynamicTableOptions
@@ -3168,10 +3373,11 @@ managedAccountProperty
 accessControlStatement
     : CREATE or_replace? DATABASE ROLE if_not_exists? qualifiedName commentClause? SEMI?
     | ALTER DATABASE ROLE if_exists? qualifiedName databaseRoleAction SEMI?
-    | DROP DATABASE ROLE if_exists? qualifiedName SEMI?
+    | DROP DATABASE ROLE if_exists? qualifiedName objectSignature? dropBehavior? SEMI?
     // SHOW DATABASE ROLES reads a LIKE before its scope, the scope with or without DATABASE, then STARTS WITH and
     // LIMIT … FROM. A listing without a scope and a TERSE one parse and are refused as unsupported features.
-    | SHOW TERSE? DATABASE ROLES (LIKE likePattern=stringText)? (IN DATABASE? identifier)?
+    // A database named by a path is read, and names nothing (live-verified).
+    | SHOW TERSE? DATABASE ROLES (LIKE likePattern=stringText)? (IN DATABASE? identifier (DOT rolesDatabasePath+=namePart)*)?
         (STARTS WITH startsPrefix=stringText)? (LIMIT INTEGER_LITERAL (FROM fromName=stringText)?)? SEMI?
     // Every grant listing reads a LIMIT and its count, and none of the other listing modifiers (live-verified).
     | SHOW GRANTS TO DATABASE ROLE qualifiedName showTail SEMI?
@@ -3337,7 +3543,7 @@ alterDropColumnItem
     ;
 
 referentialActions
-    : referentialAction+
+    : referentialAction+ { refuseRepeatedRule($ctx); }
     ;
 
 // DROP DATABASE/SCHEMA … [CASCADE | RESTRICT] — CASCADE drops the contained objects too, RESTRICT (the
@@ -3700,7 +3906,13 @@ assignment
     ;
 
 queryStatement
-    : selectStatement SEMI?
+    : selectStatement forUpdateClause? SEMI?
+    ;
+
+// A lock on the rows a statement's own query reads, which only a hybrid table takes: read here, after everything
+// else of the query, and refused as the feature it is. NOWAIT and WAIT <seconds> are words of this clause alone.
+forUpdateClause
+    : FOR UPDATE ({wordAhead("NOWAIT")}? identifier | {wordAhead("WAIT")}? identifier INTEGER_LITERAL)?
     ;
 
 // EXPLAIN [USING { TABULAR | JSON | TEXT }] <query|dml> — returns the structural execution plan as a result set.
@@ -3781,7 +3993,7 @@ tableReference
     // alias only when what follows cannot START a set-operation right-hand side — otherwise
     // `FROM t EXCEPT SELECT ...` must stay a set-op (both parses reach EOF, so lookahead alone
     // cannot decide).
-    : LATERAL? tableSource (AS aliasName (LPAREN identifierList RPAREN)?
+    : LATERAL? tableSource {refuseLateralName($ctx);} (AS aliasName (LPAREN identifierList RPAREN)?
         | {bareAliasAllowed()}? nonJoinKeywordIdentifier (LPAREN identifierList RPAREN)?)?
       (pivotClause pivotAlias? | unpivotClause pivotAlias? | matchRecognizeClause pivotAlias?)?
       sampleClause?
@@ -3935,17 +4147,20 @@ tableIdentifierCall
 tableFunctionExpr
     : functionName LPAREN RPAREN
     | functionName LPAREN expression (COMMA expression)* RPAREN
-    | functionName LPAREN expression (COMMA expression)* (COMMA namedArgument)+ RPAREN
-    | functionName LPAREN namedArgument (COMMA namedArgument)* RPAREN
+    | functionName LPAREN expression (COMMA expression)* (COMMA namedArgument)+ (COMMA strayArguments)? RPAREN
+    | functionName LPAREN namedArgument (COMMA namedArgument)* (COMMA strayArguments)? RPAREN
     ;
 
-// SELECT ... FROM @stage (FILE_FORMAT => 'name', PATTERN => 'regex'): named read parameters.
+// SELECT ... FROM @stage (FILE_FORMAT => ff, PATTERN => 'regex'): the arguments a staged file is read with.
 stageQueryParams
-    : LPAREN stageQueryParam (COMMA stageQueryParam)* RPAREN
+    : LPAREN (stageQueryParam (COMMA stageQueryParam)*)? RPAREN
     ;
 
+// One argument, named or not. Its value is read as any expression is, so a text that is none is refused where
+// the expression stops; what the value may be is judged when the query is planned (see StageQueryArguments).
 stageQueryParam
-    : (FILE_FORMAT | PATTERN | identifier) ARROW (STRING_LITERAL | qualifiedName)
+    : (FILE_FORMAT | PATTERN | identifier) ARROW booleanExpr
+    | booleanExpr
     ;
 
 // FLATTEN argument list: positional INPUT followed by optional named params, or all named
@@ -4009,9 +4224,11 @@ joinType
     | FULL OUTER?
     ;
 
+// The aggregate may take an alias, which each pivoted column's name ends in: SUM(amt) AS total over 'JAN' names
+// the column 'JAN_TOTAL' (live-verified, as documented).
 pivotClause
-    : PIVOT LPAREN aggregateFunction FOR identifier IN LPAREN pivotInList RPAREN
-      (DEFAULT ON NULL LPAREN expression RPAREN)? RPAREN
+    : PIVOT LPAREN aggregateFunction (AS? pivotAggregateAlias=identifier)? FOR pivotColumn=identifier
+      IN LPAREN pivotInList RPAREN (DEFAULT ON NULL LPAREN expression RPAREN)? RPAREN
     ;
 
 // The pivot column set: an explicit value list, ANY (dynamic: the distinct FOR-column values,
@@ -4046,7 +4263,12 @@ pivotValue
     ;
 
 unpivotColumnList
-    : identifier (COMMA identifier)*
+    : unpivotColumn (COMMA unpivotColumn)*
+    ;
+
+// An unpivoted column may take an alias, which its rows carry in the name column in its place (as documented).
+unpivotColumn
+    : identifier (AS? identifier)?
     ;
 
 selectList
@@ -4093,8 +4315,9 @@ starModifier
     | REPLACE LPAREN starReplaceItem (COMMA starReplaceItem)* RPAREN
     ;
 
+// The AS is required: a name straight after the column is a syntax error (live-verified).
 starRenameItem
-    : identifier AS? identifier
+    : identifier AS identifier
     ;
 
 starReplaceItem
@@ -4165,8 +4388,17 @@ frameBound
     : UNBOUNDED PRECEDING
     | UNBOUNDED FOLLOWING
     | CURRENT ROW
-    | expression PRECEDING
-    | expression FOLLOWING
+    | frameOffset PRECEDING
+    | frameOffset FOLLOWING
+    ;
+
+// A bound's offset is a constant as written: an unsigned number, or an INTERVAL constant whose string holds its unit.
+// Any other expression — a sign, a parenthesis, a bind, a column, NULL, a string, a unit written after the string —
+// is no offset (live-verified).
+frameOffset
+    : INTEGER_LITERAL
+    | FLOAT_LITERAL
+    | INTERVAL STRING_LITERAL
     ;
 
 partitionByClause
@@ -4177,7 +4409,12 @@ partitionByClause
 orderByClause
     // A ROW among the items is its values, one item each under the row's own ASC, DESC and NULLS words:
     // ORDER BY (b, a) DESC orders by b DESC, a DESC.
-    : ORDER BY orderItem (COMMA orderItem)* {RowListItems.splitOrderItems($ctx);}
+    // ORDER BY ALL orders a query by every column it answers, left to right, under one direction and one NULLS
+    // placement, and stands alone; a window's or a WITHIN GROUP's ORDER BY has no ALL (see refuseOrderByAll). The
+    // choice is made after ORDER BY is read, so a fault right after it is reported even while an earlier fault is
+    // being recovered from.
+    : ORDER BY (orderItem (COMMA orderItem)* {RowListItems.splitOrderItems($ctx);}
+        | allWord=ALL (ASC | DESC)? (NULLS (FIRST | LAST))? {refuseOrderByAll($ctx, $allWord);})
     ;
 
 orderItem
@@ -4259,42 +4496,42 @@ stageFileOption
     ;
 
 showStatement
-    : SHOW TERSE? DATABASES HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? SCHEMAS HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | DATABASE (objectName | openedIdentifierReference)? | (SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? TABLES HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? ICEBERG TABLES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? EVENT TABLES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? EXTERNAL TABLES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    : SHOW TERSE? DATABASES HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? SCHEMAS HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | DATABASE (objectName objectSignature? | openedValueReference)? | (SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? TABLES HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? ICEBERG TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? EVENT TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? EXTERNAL TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // The integration and external volume listings take a LIKE and nothing else.
     | SHOW integrationKind? INTEGRATIONS (LIKE stringText)? SEMI?
     | SHOW EXTERNAL VOLUMES (LIKE stringText)? SEMI?
-    | SHOW TERSE? VIEWS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? MATERIALIZED VIEWS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? DYNAMIC TABLES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? HYBRID TABLES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? COLUMNS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (TABLE | VIEW | DATABASE | SCHEMA) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?   // FROM is not Snowflake syntax (live-verified)
-    | SHOW TERSE? STREAMS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? TASKS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? ALERTS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? PIPES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? SEQUENCES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? WAREHOUSES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? CORTEX SEARCH SERVICES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? VIEWS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? MATERIALIZED VIEWS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? DYNAMIC TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? HYBRID TABLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? COLUMNS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (TABLE | VIEW | DATABASE | SCHEMA) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?   // FROM is not Snowflake syntax (live-verified)
+    | SHOW TERSE? STREAMS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? TASKS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? ALERTS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? PIPES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? SEQUENCES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? WAREHOUSES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? CORTEX SEARCH SERVICES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // The versions of a notebook or a Streamlit app, listed in one form only, which a LIMIT and its count may close;
     // the tail is read leniently so that any other modifier is refused where the account's parser stops
     // (ShowTailSyntax). Any other SHOW VERSIONS reads as the other listings do and is refused as an unsupported
     // feature, as the account refuses it.
     | SHOW VERSIONS IN (NOTEBOOK | STREAMLIT) qualifiedName showTail SEMI?
-    | SHOW TERSE? VERSIONS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW NOTEBOOKS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW MODELS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? STREAMLITS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW COMPUTE POOLS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? VERSIONS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW NOTEBOOKS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW MODELS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? STREAMLITS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW COMPUTE POOLS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // The instance-family catalog. Its order is the account's own, so the listing is not re-sorted.
     | SHOW COMPUTE POOL INSTANCE FAMILIES showTail SEMI?
-    | SHOW TERSE? STAGES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? FILE FORMATS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? TAGS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? STAGES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? FILE FORMATS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? TAGS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // The routine listings take the same three modifiers, and TERSE must precede USER / BUILTIN.
     // Live-verified on a real account (2026-08-03):
     //   * USER and BUILTIN are mutually exclusive for BOTH families — `SHOW BUILTIN USER FUNCTIONS`,
@@ -4305,10 +4542,10 @@ showStatement
     //     while `SHOW USER TERSE FUNCTIONS` and `SHOW BUILTIN TERSE PROCEDURES` are syntax errors.
     // TERSE is accepted here but changes NOTHING — unlike SHOW TERSE TABLES it does not trim the column
     // set (see ShowModifierProfile). Neither do STARTS WITH and LIMIT, which parse and are then ignored.
-    | SHOW TERSE? (USER | BUILTIN)? PROCEDURES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | (APPLICATION PACKAGE? | CLASS) (objectName | openedIdentifierReference) | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? (USER | BUILTIN)? FUNCTIONS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | (CLASS | APPLICATION) (objectName | openedIdentifierReference) | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? USERS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? ROLES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? (USER | BUILTIN)? PROCEDURES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | (APPLICATION PACKAGE? | CLASS) (objectName objectSignature? | openedValueReference) | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? (USER | BUILTIN)? FUNCTIONS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | (CLASS | APPLICATION) (objectName objectSignature? | openedValueReference) | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? USERS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? ROLES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // TERSE is read by every grant listing and changes none of them (live-verified).
     | SHOW TERSE? GRANTS ON showGrantsTarget showTail SEMI?
     | SHOW TERSE? GRANTS TO (USER | ROLE) identifier showTail SEMI?  // SHOW GRANTS TO USER/ROLE name
@@ -4316,32 +4553,32 @@ showStatement
     // Everything granted to the current user. A LIKE is read and narrows nothing, and an IN is read and refused
     // at whatever follows it (live-verified).
     | SHOW TERSE? GRANTS (LIKE stringText)? showGrantsIn? showTail SEMI?
-    | SHOW TERSE? MASKING POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? CONTACTS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? MASKING POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? CONTACTS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // The listings of the kinds Frostlake models no object of. Each answers the account's columns and no rows, and
     // reads the scopes and the modifiers the account's own grammar reads for it (ShowListing, UnmodelledListing).
     // HISTORY parses for all of them so that the three that do not read it refuse it where it stands.
-    | SHOW TERSE? unmodelledListingKind HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? unmodelledListingKind HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? DELEGATED AUTHORIZATIONS delegatedAuthorizationScope? SEMI?
     // FAILOVER GROUPS, REPLICATION GROUPS and REPLICATION DATABASES: a LIKE, and an account for a scope, named after
     // ACCOUNT or alone. REPLICATION ACCOUNTS reads the LIKE and no scope. TERSE, the scope and the modifiers parse
     // for all four so that each is refused where the account refuses it (UnmodelledListings, ShowTailSyntax).
     | SHOW TERSE? replicationListingKind (LIKE stringText)? (IN (ACCOUNT objectName? | objectName))? showTail SEMI?
-    | SHOW TERSE? PROJECTION POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? AGGREGATION POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? JOIN POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
-    | SHOW TERSE? ROW ACCESS POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? PROJECTION POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? AGGREGATION POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? JOIN POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? ROW ACCESS POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // FOR reads as IN does, and a table, a stream and a task are named bare, qualified or through IDENTIFIER()
     // (live-verified).
     | SHOW PARAMETERS (LIKE stringText)? ((IN | FOR) showParametersScope?)? showTail SEMI?
-    | SHOW TERSE? OBJECTS (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA | TABLE) (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? OBJECTS (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW ORGANIZATION ACCOUNTS showTail SEMI?
     // A scope parses and is refused whole: the listing takes none (live-verified).
     | SHOW ACCOUNTS HISTORY? (LIKE stringText)? showAccountsScope? showTail SEMI?
-    | SHOW LOCKS (IN ACCOUNT (objectName | openedIdentifierReference)?)? showTail SEMI?
-    | SHOW TRANSACTIONS (IN ACCOUNT (objectName | openedIdentifierReference)?)? showTail SEMI?   // no LIKE (live-verified)
+    | SHOW TERSE? LOCKS (IN ACCOUNT (objectName | openedIdentifierReference)?)? showTail SEMI?
+    | SHOW TERSE? TRANSACTIONS (IN ACCOUNT (objectName | openedIdentifierReference)?)? showTail SEMI?   // no LIKE (live-verified)
     | SHOW VARIABLES (LIKE stringText)? showTail SEMI?
-    | SHOW TERSE? (PRIMARY | UNIQUE | IMPORTED | EXPORTED) KEYS (IN (ACCOUNT (objectName | openedIdentifierReference)? | DATABASE identifier? | SCHEMA (objectName | openedIdentifierReference)? | TABLE (objectName | openedIdentifierReference)? | objectName showInstanceName?))? showTail SEMI?
+    | SHOW TERSE? (PRIMARY | UNIQUE | IMPORTED | EXPORTED) KEYS (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | DATABASE (identifier (DOT keysDatabasePath+=namePart)* objectSignature?)? | SCHEMA (objectName objectSignature? | openedValueReference)? | TABLE (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     ;
 
 // The kinds a listing names that Frostlake models no object of, each by the account's own words. They stand in a
@@ -4379,8 +4616,21 @@ replicationListingKind
     ;
 
 // The listing of a class's instances, SHOW <class>. No class is modelled, so the class is refused as missing.
+// A table, a view and a class hold no instance, no dataset and no class, and an application is looked up: each of
+// those scopes is read so that the listing refuses it in its own words. A table and a view need no name, and
+// APPLICATION or CLASS written alone is the name of a schema. A scope's name may carry a signature, as any
+// listing's may, which changes nothing (live-verified).
 showClassStatement
-    : SHOW TERSE? className (LIKE stringText)? (IN (ACCOUNT (objectName | openedIdentifierReference)? | (DATABASE | SCHEMA) (objectName | openedIdentifierReference)? | objectName))? showTail SEMI?
+    // CLASS written alone is the account's keyword, refused where it stands: DROP CLASS drops a class, and no
+    // SHOW CLASS lists one.
+    : SHOW TERSE? (className | classWord=CLASS {refuseClassWord($ctx, $classWord);}) (LIKE stringText)?
+      (IN (ACCOUNT (objectName objectSignature? | openedIdentifierReference)?
+          | (DATABASE | SCHEMA) (objectName objectSignature? | openedIdentifierReference)?
+          | scopeKind=(TABLE | VIEW) (objectName objectSignature?)?
+          | scopeApplication=APPLICATION PACKAGE? objectName objectSignature?
+          | scopeClass=CLASS objectName objectSignature?
+          | objectName ({scopeNameTakesSignature()}? objectSignature)?))?
+      showTail SEMI?
     ;
 
 // The class SHOW <class> and DROP <class> <instance> name: a plain word, a quoted name, a qualified name or an
@@ -4484,7 +4734,13 @@ showScopeName
 // sorting strictly after x and is a syntax error without a preceding LIMIT; `LIMIT 0` is rejected
 // everywhere with "page size "0" must be greater than 0 in limit clause".
 showTail
-    : (STARTS (WITH stringText?)?)? (ROOT ONLY)? (LIMIT INTEGER_LITERAL? (FROM stringText)?)? (WITH (PRIVILEGES (showPrivilege (COMMA showPrivilege)*)?)?)? showTailExtra?
+    : (STARTS (WITH stringText?)?)? (ROOT ONLY)? (LIMIT INTEGER_LITERAL? (FROM stringText)?)? (WITH (PRIVILEGES (showPrivilege (COMMA showPrivilege)*)?)?)? showTailExtra? showTailMore*
+    ;
+
+// What is written after a modifier's first repetition: read, so that the statement is refused at that repetition
+// however many follow it — SHOW TABLES LIMIT 1 LIMIT 2 LIMIT 3 is refused at the second LIMIT (live-verified).
+showTailMore
+    : showTailExtra
     ;
 
 // A modifier written a second time, or after one it has to stand before: the three are read in the order STARTS
@@ -4545,15 +4801,15 @@ describeStatement
     // (live-verified).
     | (DESCRIBE | DESC) STREAM (objectName | openedValueReference) objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) TASK (objectName | openedValueReference) objectSignature? describeProperty* SEMI?
-    | (DESCRIBE | DESC) ALERT qualifiedName objectSignature? SEMI?
+    | (DESCRIBE | DESC) ALERT qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) PIPE (objectName | openedValueReference) objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) SEQUENCE (objectName | openedValueReference) objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) WAREHOUSE identifier objectSignature? describeProperty* SEMI?
-    | (DESCRIBE | DESC) COMPUTE POOL identifier describeProperty* SEMI?
+    | (DESCRIBE | DESC) COMPUTE POOL identifier objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) EVENT TABLE (objectName | openedValueReference) objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) ICEBERG TABLE (objectName | openedValueReference) objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) integrationKind? INTEGRATION identifier SEMI?
-    | (DESCRIBE | DESC) EXTERNAL VOLUME identifier SEMI?
+    | (DESCRIBE | DESC) EXTERNAL VOLUME identifier objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) CORTEX SEARCH SERVICE qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) STAGE qualifiedName {refuseStageSignature($ctx);} describeProperty* SEMI?
     | (DESCRIBE | DESC) TAG qualifiedName objectSignature? describeProperty* SEMI?
@@ -4562,9 +4818,9 @@ describeStatement
     | (DESCRIBE | DESC) USER identifier describeProperty* SEMI?
     | (DESCRIBE | DESC) MASKING POLICY qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) ROW ACCESS POLICY qualifiedName objectSignature? describeProperty* SEMI?
-    | (DESCRIBE | DESC) PROJECTION POLICY qualifiedName describeProperty* SEMI?
-    | (DESCRIBE | DESC) AGGREGATION POLICY qualifiedName describeProperty* SEMI?
-    | (DESCRIBE | DESC) JOIN POLICY qualifiedName describeProperty* SEMI?
+    | (DESCRIBE | DESC) PROJECTION POLICY qualifiedName objectSignature? describeProperty* SEMI?
+    | (DESCRIBE | DESC) AGGREGATION POLICY qualifiedName objectSignature? describeProperty* SEMI?
+    | (DESCRIBE | DESC) JOIN POLICY qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) SEARCH OPTIMIZATION ON qualifiedName describeProperty* SEMI?
     | (DESCRIBE | DESC) FILE FORMAT qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) RESULT (STRING_LITERAL | identifier LPAREN RPAREN) SEMI?
@@ -4578,11 +4834,15 @@ describeStatement
     // The kinds the account describes that Frostlake models no object of: each misses its object, or is a feature
     // the account does not support (UnmodelledKindWords). Before the plain word, which reads their first one.
     | (DESCRIBE | DESC) unmodelledKind objectName objectSignature? describeProperty* SEMI?
-    | (DESCRIBE | DESC) IMAGE REPOSITORY objectName SEMI?
+    | (DESCRIBE | DESC) IMAGE REPOSITORY objectName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) EXTERNAL TABLE (objectName | openedValueReference) objectSignature? describeProperty* SEMI?
-    | (DESCRIBE | DESC) NOTEBOOK qualifiedName objectSignature? SEMI?
-    | (DESCRIBE | DESC) STREAMLIT qualifiedName objectSignature? SEMI?
-    | (DESCRIBE | DESC) IDENTIFIER qualifiedName describeTypeProperty? SEMI?
+    | (DESCRIBE | DESC) NOTEBOOK qualifiedName objectSignature? describeProperty* SEMI?
+    | (DESCRIBE | DESC) STREAMLIT qualifiedName objectSignature? describeProperty* SEMI?
+    // A plain word the account knows as a kind reads a signature and properties after its name, as the kinds
+    // above do; after any other word the statement ends with the name (live-verified).
+    | (DESCRIBE | DESC) IDENTIFIER qualifiedName
+        ({UnmodelledKindWords.readsDescribeTail($ctx.IDENTIFIER())}? objectSignature? describeProperty*
+        | describeTypeProperty?) SEMI?
     ;
 
 // DESCRIBE's TYPE property: STAGE or COLUMNS, written bare, quoted or as a string — a $$ string too; the last one
@@ -4683,6 +4943,9 @@ declarationItem
 // syntactically an assignment; it is only valid in the pre-BEGIN `declareSection`, which `BEGIN` ends.
 untypedDeclarationItem
     : identifier (DEFAULT | COLON_EQ) booleanExpr SEMI?
+    // A name alone is read, and refused by the compiler: it has neither a type nor a value to take one from. The
+    // END of a block is no such name: BEGIN … DECLARE q INT; END; is refused at the END.
+    | {_input.LA(1) != END && _input.LA(1) != BEGIN}? identifier SEMI
     ;
 
 // A cursor's source is either a SELECT query or the name of a RESULTSET variable
@@ -4766,15 +5029,23 @@ setStatement
 // Top-level session SET/UNSET (outside procedural blocks)
 // SET var = expr
 // SET (var1, var2, ...) = (expr1, expr2, ...)
+// The '=' may be written doubled, and the list form's values may be one value written bare, which is then
+// counted against the names (live-verified).
 sessionSetStatement
-    : SET identifier EQ booleanExpr SEMI?
-    | SET LPAREN identifierList RPAREN EQ LPAREN booleanExprList RPAREN SEMI?
+    : SET sessionVariable (EQ | EQ_EQ) booleanExpr SEMI?
+    | SET LPAREN sessionVariable (COMMA sessionVariable)* RPAREN (EQ | EQ_EQ) (LPAREN booleanExprList RPAREN | booleanExpr) SEMI?
+    ;
+
+// A session variable's name. Written with a qualifier it names a schema's variable, which is read here and
+// refused by name when the statement runs.
+sessionVariable
+    : identifier (DOT identifier)*
     ;
 
 // UNSET var  |  UNSET (var1, var2, ...)
 sessionUnsetStatement
-    : UNSET identifier SEMI?
-    | UNSET LPAREN identifierList RPAREN SEMI?
+    : UNSET sessionVariable SEMI?
+    | UNSET LPAREN sessionVariable (COMMA sessionVariable)* RPAREN SEMI?
     ;
 
 openStatement
@@ -4874,7 +5145,12 @@ callStatement
     : CALL qualifiedName LPAREN callArguments? RPAREN SEMI?
     // A method of a class instance, `CALL model!SHOW_METRICS()`: read, and refused by the instance's name.
     | CALL qualifiedName BANG identifier LPAREN callArguments? RPAREN SEMI?
-    | CALL systemFunctionName LPAREN callArguments? RPAREN SEMI?
+    // Under a qualifier a SYSTEM$ function names no routine: the call is read, and refused by its name.
+    | CALL callQualifier? systemFunctionName LPAREN callArguments? RPAREN SEMI?
+    ;
+
+callQualifier
+    : (identifier DOT)+
     ;
 
 // CALL <procedure>(...) INTO :variable: Snowflake Scripting assigns the value the procedure returns to the variable.
@@ -4921,7 +5197,15 @@ usingArgument
     ;
 
 beginEndBlock
-    : declareSection? BEGIN statementList exceptionSection? END SEMI?
+    : declareSection? BEGIN statementList exceptionSection? END blockEndWord? SEMI?
+    ;
+
+// The one word the account reads after a block's END, as it reads a loop's label after END LOOP. IF, LOOP, CASE,
+// DO, UNTIL, COMMENT, IDENTIFIER and a quoted name end the block; a plain word is read too, and judged when the
+// block runs (BlockEndWord), so that a second word after it is the one the parser stops at; FOR, WHILE, REPEAT,
+// BEGIN and END are no such word (live-verified).
+blockEndWord
+    : IF | LOOP | CASE | DO | UNTIL | COMMENT | KW_IDENTIFIER | QUOTED_IDENTIFIER | IDENTIFIER
     ;
 
 // A declaration is terminated by its semicolon exactly like a statement (live-verified: an item
@@ -5033,7 +5317,7 @@ expression
     // openedIdentifierReference. A call's own argument list after it is read whole with it.
     | openedIdentifierReference (LPAREN openedIdentifierContent RPAREN)?  # OpenedIdentifierExpr
     | SYSTEM_STREAM_HAS_DATA LPAREN expressionList? RPAREN       # SystemStreamHasDataExpr
-    | SYSTEM_USER_TASK_CANCEL LPAREN expression RPAREN           # SystemUserTaskCancelExpr
+    | SYSTEM_USER_TASK_CANCEL LPAREN expressionList? RPAREN      # SystemUserTaskCancelExpr
     | SYSTEM_FUNC LPAREN booleanExprList? RPAREN                 # SystemFuncExpr
     | (CURRENT_TIMESTAMP | LOCALTIMESTAMP)                       # CurrentTimestampExpr
     | CURRENT_DATE                                               # CurrentDateExpr
@@ -5099,10 +5383,12 @@ expression
     // (`Unknown function MODEL!PREDICT.`), where the account refuses an instance it does not find.
     | qualifiedName BANG identifier LPAREN (STAR | namedArgumentList | functionArgList)? RPAREN overClause?  # InstanceMethodCallExpr
     // A named call takes the quantifier, the null treatment and the WITHIN GROUP of the positional one, so that
-    // each is judged for the function it names, as the positional call's are (see NamedCallRewrite).
-    | functionName LPAREN (DISTINCT | ALL)? expression (COMMA expression)* (COMMA namedArgument)+
+    // each is judged for the function it names, as the positional call's are (see NamedCallRewrite). What it writes
+    // after its named arguments is read too, so that a positional argument there is refused by the call's name and
+    // not as a syntax error (see strayArguments).
+    | functionName LPAREN (DISTINCT | ALL)? expression (COMMA expression)* (COMMA namedArgument)+ (COMMA strayArguments)?
           ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause? nullHandling? overClause?  # FunctionCallMixedArgsExpr
-    | functionName LPAREN (DISTINCT | ALL)? namedArgumentList
+    | functionName LPAREN (DISTINCT | ALL)? namedArgumentList (COMMA strayArguments)?
           ({insideNullTreatmentAllowed()}? nullHandling)? RPAREN withinGroupClause? nullHandling? overClause?  # FunctionCallNamedArgsExpr
     // ALL is the quantifier every aggregate takes as a no-op, refused for a scalar by its sentence.
     | functionName LPAREN (DISTINCT | ALL)? functionArgList?
@@ -5152,6 +5438,10 @@ expression
     // as a sign does.
     | ROW_PATTERN_SEMANTICS expression                            # RowPatternSemanticsExpr
     | op=(PLUS | MINUS) expression                               # UnaryExpr
+    // The caret between two values is an operator the account reads and has no use for: a statement that writes
+    // one is refused while it compiles, `Unsupported feature '^'.`, and one left without an operand is the syntax
+    // error it is (live-verified). Nothing this matches is ever accepted.
+    | expression CARET expression                                # CaretExpr
     | expression PIPE_PIPE expression                            # ConcatExpr
     | expression op=(STAR | SLASH | PERCENT) expression          # MultiplicativeExpr
     | expression op=(PLUS | MINUS) expression                    # AdditiveExpr
@@ -5180,6 +5470,9 @@ expression
     // holds two elements at least, so a parenthesised scalar stays the ordinary comparison below.
     | LPAREN rowLeft+=expression (COMMA rowLeft+=expression)+ RPAREN op=(EQ | NEQ | LT | LTE | GT | GTE) scalarRight=expression  # RowScalarComparisonExpr
     | expression op=(EQ | NEQ | LT | LTE | GT | GTE) expression  # ComparisonExpr
+    // A doubled '=' is an operator of its own to the account: a call of a function named "==", which no account
+    // has (live-verified).
+    | expression EQ_EQ expression                                 # DoubledEqualsExpr
     | expression op=(EQ | NEQ | LT | LTE | GT | GTE) LPAREN rowRight+=expression (COMMA rowRight+=expression)+ RPAREN  # ScalarRowComparisonExpr
     // A quantifier takes a query. The account also reads a value there, or a list of values in parentheses, and
     // refuses it while the statement compiles (`Invalid query block: 1.`, see QuantifiedComparisonOperand); nothing
@@ -5350,6 +5643,13 @@ namedArgumentList
     : namedArgument (COMMA namedArgument)*
     ;
 
+// A positional argument written after a named one, with whatever arguments follow it. The account reads the call
+// whole and refuses it while it compiles — positional argument cannot follow named argument in function call 'F',
+// at the argument — and a call that names a table function for mixing the two ways (see StrayArguments).
+strayArguments
+    : booleanExpr (COMMA (namedArgument | booleanExpr))*
+    ;
+
 namedArgument
     // The list in parentheses stands first: it is the argument's ROW, where the value alternative would read the
     // same text as a ROW value of its own.
@@ -5368,6 +5668,10 @@ functionName
     // call shapes TRY_CAST(x, 'type') and TRY_CAST(x) are syntax errors at the comma/paren
     // (live-verified), never calls of a registered or user function.
     | {_input.LT(1).getType() != TRY_CAST}? identifier (DOT DOT identifier)? (DOT identifier)*
+    // A SYSTEM$ function named as any other function is: under a qualifier, or with what its own call form does
+    // not read — named arguments, a quantifier, a star. The account reads each and judges it by the function's
+    // name (live-verified).
+    | (identifier DOT)* systemFunctionName
     | LIKE   // LIKE/ILIKE also have a function-call form: LIKE(subject, pattern), ILIKE(subject, pattern)
     // Reserved words that are nonetheless FUNCTION names — reserved in identifier positions
     // (live-verified), legal as calls: INSERT(base, pos, len, insert), RLIKE(subject, pattern).
@@ -6657,7 +6961,7 @@ EXCEPTION: E X C E P T I O N;
 OTHER: O T H E R;
 
 // Identifiers
-QUOTED_IDENTIFIER: '"' (~["\r\n] | '""')* '"';
+QUOTED_IDENTIFIER: '"' (~["] | '""')* '"';   // A quoted name may cross a line end: SELECT 1 AS "a<LF>b" is one name of two lines (live-verified).
 POSITIONAL_PARAMETER: '$' [0-9]+;
 SESSION_VAR_REF: '$' [a-zA-Z_][a-zA-Z0-9_]*;
 SYSTEM_STREAM_HAS_DATA: S Y S T E M '$' S T R E A M '_' H A S '_' D A T A;
@@ -6673,7 +6977,8 @@ IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_$]*;
 // Literals
 INTEGER_LITERAL: [0-9]+;
 FLOAT_LITERAL: [0-9]+ DOT [0-9]* ([eE] [+-]? [0-9]+)? | DOT [0-9]+ ([eE] [+-]? [0-9]+)? | [0-9]+ [eE] [+-]? [0-9]+;   // Either side of the point may be empty — 1. is 1 and .5 is 0.5, typed as the full spelling is (1. NUMBER(1,0), .5 NUMBER(2,1)), with or without an exponent (1.e2 is 100, .5e1 is 5) — so 1. AS v is the number under an alias, never a field access on it, and 1.v the same written tighter; a second point after a complete number starts a second number, which no rule takes (1..2, .5.5). The last alternative is the DOT-less exponent (1e0, 1E+3, 1e-3), a number wherever a number is allowed. Without it the lexer split 1e0 into 1 and the identifier e0, which silently read as an ALIAS in a select list and was a syntax error everywhere else. An exponent is folded in before the type is taken, so these are FIXED-point: 1e0 is NUMBER(1,0) and 1e20 NUMBER(21,0).
-MALFORMED_EXPONENT: [0-9]+ (DOT [0-9]*)? [eE] [+-]? | DOT [0-9]+ [eE] [+-]?;   // A digit run that OPENS an exponent and then stops — 1e, 12E, 1.5e, 1.e, .5e, 1e+ — which Snowflake reads as a malformed NUMBER rather than as a number beside an identifier: SELECT 1e FROM t is refused where the spaced SELECT 1 e FROM t names the column E. No parser rule uses this token, so every occurrence is a syntax error; it exists only to stop the lexer splitting the text into an INTEGER_LITERAL and an alias. Longest-match keeps the valid forms intact: FLOAT_LITERAL takes 1e5 and 1.5e5 whole, and in 1e1e it takes 1e1 and leaves e as the alias, exactly as live reads them.
+HEX_NUMBER: '0' [xX] [0-9a-fA-F]+;   // 0x3, 0xFF: one token to the account, and one no rule reads, so SELECT 0x3 is refused at the token where a digit beside a name (0 x3) names a column. Longest-match keeps a plain 0 and a name apart wherever no hexadecimal digit follows the x.
+MALFORMED_EXPONENT: [0-9]+ (DOT [0-9]*)? [eE] [+-]? | DOT [0-9]+ [eE] [+-]? | '0' [xX];   // A digit run that OPENS an exponent and then stops — 1e, 12E, 1.5e, 1.e, .5e, 1e+ — which Snowflake reads as a malformed NUMBER rather than as a number beside an identifier: SELECT 1e FROM t is refused where the spaced SELECT 1 e FROM t names the column E. No parser rule uses this token, so every occurrence is a syntax error; it exists only to stop the lexer splitting the text into an INTEGER_LITERAL and an alias. Longest-match keeps the valid forms intact: FLOAT_LITERAL takes 1e5 and 1.5e5 whole, and in 1e1e it takes 1e1 and leaves e as the alias, exactly as live reads them.
 STRING_LITERAL: '\'' ('\\' . | '\'\'' | ~['\\])* '\'';    // Single-quoted. Backslash is EXCLUDED from ~[..] so it always begins a '\\' . escape (incl. \'); otherwise maximal-munch lets \'' lex as \ + '' and mis-aligns the string boundaries. Decode via SqlStringLiterals.
 DOLLAR_QUOTED_STRING: '$$' .*? '$$';
 
@@ -6690,6 +6995,7 @@ RBRACE: '}';
 QUESTION: '?';
 COLON: ':';
 COLON_EQ: ':=';
+EQ_EQ: '==';
 EQ: '=';
 ARROW: '=>';
 FLOW_ARROW: '->>';
@@ -6707,7 +7013,7 @@ PLUS: '+';
 // x'A1B2' — a hex binary literal (the engine's BINARY values are uppercase hex strings).
 // Anything between the quotes, so a malformed body reaches the builder whole and is refused in live's
 // own sentence ("Invalid binary literal X'0G'; ...") rather than lexing as a name and a string.
-HEX_LITERAL: [xX] '\'' ~['\r\n]* '\'';
+HEX_LITERAL: [xX] '\'' ('\\' . | '\'\'' | ~['\\])* '\'';   // X and a string literal: a backslash escapes and a doubled quote stays inside, as in STRING_LITERAL, so x'41\'' is one token (live-verified). Its text is judged by BinaryLiteralText.
 
 // An unquoted file/cloud URL in PUT/GET (Snowflake allows the unquoted form): scheme '://' then
 // everything up to whitespace or a statement delimiter.
@@ -6724,6 +7030,8 @@ SLASH: '/';
 PERCENT: '%';
 TILDE: '~';
 PIPE_PIPE: '||';
+// A row pattern's anchor, and an operator no expression may use (see CaretExpr).
+CARET: '^';
 DOUBLE_COLON: '::';
 
 // Case-insensitive fragments

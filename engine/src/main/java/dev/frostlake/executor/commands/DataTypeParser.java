@@ -189,7 +189,10 @@ public final class DataTypeParser {
         }
         // DECFLOAT (decimal floating point) is approximated by DOUBLE — the engine has no
         // arbitrary-exponent decimal representation.
-        if (ctx.DECFLOAT() != null) return NumericType.DOUBLE;
+        if (ctx.DECFLOAT() != null) {
+            DeclaredWidthRules.checkDecfloatPrecision(typeParams);
+            return NumericType.DOUBLE;
+        }
         if (ctx.FLOAT() != null || ctx.FLOAT4() != null || ctx.FLOAT8() != null || ctx.REAL() != null) return NumericType.FLOAT;
         if (ctx.DOUBLE() != null) return NumericType.FLOAT;   // DOUBLE and DOUBLE PRECISION are FLOAT
         // The character family collapses onto two Snowflake types, VARCHAR and CHAR, and the alias only

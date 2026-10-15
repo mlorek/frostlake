@@ -24,6 +24,8 @@ import dev.frostlake.http.SessionContext;
 import dev.frostlake.http.SessionManager;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.transaction.EngineLockRelease;
+import dev.frostlake.transaction.TableLockGate;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,7 +34,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -44,7 +45,7 @@ public class ConcurrentDatabaseEngine {
 
     private final DatabaseEngine engine;
     private final SessionManager sessionManager;
-    private final ReadWriteLock engineLock;
+    private final ReentrantReadWriteLock engineLock;
 
     // Track per-session state
     private final ConcurrentHashMap<String, SessionState> sessionStates;
@@ -164,6 +165,29 @@ public class ConcurrentDatabaseEngine {
                 try {
                     // Apply session context before execution (inside lock for thread safety)
                     applySessionContext(session);
+                    if (!readOnly) {
+                        // A statement that waits for another session's table lock gives the engine's lock up
+                        // meanwhile, so the holder's own requests can end its transaction (see TableLockGate). The
+                        // session's context is bound to this thread, so nothing of it moves while it waits.
+                        TableLockGate.register(new EngineLockRelease() {
+                            private int held;
+
+                            @Override
+                            public void release() {
+                                held = engineLock.getWriteHoldCount();
+                                for (int i = 0; i < held; i++) {
+                                    engineLock.writeLock().unlock();
+                                }
+                            }
+
+                            @Override
+                            public void reacquire() {
+                                for (int i = 0; i < held; i++) {
+                                    engineLock.writeLock().lock();
+                                }
+                            }
+                        });
+                    }
 
                     final long startTime = System.currentTimeMillis();
                     final ExecutionResult result;
@@ -191,6 +215,7 @@ public class ConcurrentDatabaseEngine {
                     return result;
 
                 } finally {
+                    TableLockGate.unregister();
                     // Always drop this thread's per-session scopes (idempotent) — a failed statement must
                     // not leak its session's context into whatever runs on this pooled thread next.
                     engine.getCatalog().clearSessionScope();

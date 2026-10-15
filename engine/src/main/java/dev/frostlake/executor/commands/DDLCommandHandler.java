@@ -74,6 +74,7 @@ import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.WrittenSignatureType;
 import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -308,6 +309,22 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     /**
+     * A plain CREATE over a name its schema already holds for that kind is refused for the name before the
+     * privilege to create is asked, the name worded as the statement wrote it: {@code Object 'DB.S.ST' already
+     * exists.} With OR REPLACE or IF NOT EXISTS the privilege is asked first (live-verified kind by kind).
+     *
+     * @param plain whether the statement says neither OR REPLACE nor IF NOT EXISTS
+     * @param taken whether the kind already holds the name
+     * @param parts the name's canonical parts as written
+     */
+    static void refuseTakenName(final boolean plain, final boolean taken, final String[] parts) {
+        if (plain && taken) {
+            throw namedAsWritten(new NameTakenException(SqlCompilationError.of("Object '"
+                + SqlIdentifiers.spellCanonical(parts[parts.length - 1]) + "' already exists.")), parts);
+        }
+    }
+
+    /**
      * Creating a schema requires the CREATE SCHEMA privilege on, or ownership of, its database, held by the
      * session's primary role (see {@link QueryExecutor#requireCreatePrivilege(Privilege, String, String[])}).
      *
@@ -345,6 +362,9 @@ public class DDLCommandHandler implements CommandHandler {
         }
         try {
             final Schema schema = resolveSchemaFromQualifiedName(streamQualifiedName);
+            schema.rejectNameHeldByOtherKind(streamName, RelationKind.STREAM, false);
+            refuseTakenName(ctx.or_replace() == null && !ifNotExists, schema.hasStreamExact(streamName),
+                qualifiedNameParts(ctx.qualifiedName(0)));
             checkCreatePrivilege(Privilege.CREATE_STREAM, schema);
             final Stream clone = new Stream(streamName, source.getSourceTableName(), source.getSourceType(),
                 source.getStreamType(), source.isShowInitialRows());
@@ -549,6 +569,11 @@ public class DDLCommandHandler implements CommandHandler {
             }
 
             final Schema schema = resolveSchemaFromQualifiedName(streamQualifiedName);
+            // A name another kind of relation holds, and for a plain create a stream of the name, are refused
+            // before the privilege to create one is asked (live-verified).
+            schema.rejectNameHeldByOtherKind(streamName, RelationKind.STREAM, false);
+            refuseTakenName(!orReplace && !ifNotExists, schema.hasStreamExact(streamName),
+                qualifiedNameParts(ctx.qualifiedName(0)));
             checkCreatePrivilege(Privilege.CREATE_STREAM, schema);
             // A table or view source is recorded as read from where the STREAM lives, so it names the same object
             // whatever the reading session's context; a table stream is bound to its table itself (StreamSources).
@@ -633,6 +658,13 @@ public class DDLCommandHandler implements CommandHandler {
 
     private Object handleAlterRoutine(final FrostlakeParser.AlterStatementContext ctx, final boolean isFunction) {
         requireSignatureForm(ctx);
+        // A secrets list naming a variable twice is refused before the routine is looked up.
+        for (final FrostlakeParser.RoutineSetPropertyContext property
+                : ctx.routineAlterAction().routineSetProperty()) {
+            if (property.routineSecretList() != null) {
+                RoutineEnvironments.refuseRepeatedSecret(property.routineSecretList());
+            }
+        }
         final String qualifiedName = getText(ctx.qualifiedName());
         // The simple name comes from the parse tree's last identifier part — never by re-splitting
         // the flattened text, which breaks a quoted name containing a dot.
@@ -663,11 +695,15 @@ public class DDLCommandHandler implements CommandHandler {
             if (isFunction
                 ? destination.hasFunctionSignature(newSimple, ((Function) routine).getParameters())
                 : destination.hasProcedureSignature(newSimple, ((Procedure) routine).getParameters())) {
-                throw new RuntimeException(Schema.alreadyExists(newSimple));
+                // The name that is taken is worded as the statement wrote it.
+                throw namedAsWritten(new NameTakenException(Schema.alreadyExists(newSimple)), newParts);
             }
             // Nor may a routine of the other kind hold the new name with this signature (live-verified).
             destination.requireNotHeldByOtherKind(isFunction, newSimple, isFunction
                 ? ((Function) routine).getParameters() : ((Procedure) routine).getParameters());
+            // A renamed routine is created under its new name: the schema it lands in is asked for the privilege
+            // to create one, once the name is found free (live-verified).
+            checkCreatePrivilege(isFunction ? Privilege.CREATE_FUNCTION : Privilege.CREATE_PROCEDURE, destination);
             // Nor may the new name hold an overload this one would compete with for some call (live-verified).
             if (isFunction) {
                 destination.requireUnambiguousFunction(newSimple, ((Function) routine).getParameters());
@@ -733,7 +769,8 @@ public class DDLCommandHandler implements CommandHandler {
         final List<DataType> argumentTypes = new ArrayList<>();
         if (ctx.routineSignature() != null) {
             for (final FrostlakeParser.RoutineSignatureItemContext item : ctx.routineSignature().routineSignatureItem()) {
-                argumentTypes.add(columnParser.parseDataType(item.dataTypeName(), item.typeParameters()));
+                argumentTypes.add(WrittenSignatureType.of(columnParser.parseDataType(item.dataTypeName(), item.typeParameters()),
+                    item.typeParameters() != null));
             }
         }
         return isFunction
@@ -826,7 +863,15 @@ public class DDLCommandHandler implements CommandHandler {
                 new RoutineEnvironments(catalog, queryExecutor).integrations(property.routineIntegrationList()));
             return;
         }
-        requireRoutineProperty(getText(property.identifier()).toUpperCase(Locale.ROOT), isFunction);
+        final String name = getText(property.identifier()).toUpperCase(Locale.ROOT);
+        if ("COMMENT".equals(name) && property.literal() != null
+                && property.literal().DOLLAR_QUOTED_STRING() != null) {
+            // A comment written between dollar signs is the comment all the same.
+            final String written = property.literal().DOLLAR_QUOTED_STRING().getText();
+            routine.setComment(written.substring(2, written.length() - 2));
+            return;
+        }
+        requireRoutineProperty(name, isFunction);
     }
 
     /** A SQL routine's secrets and integrations are no property an ALTER takes (live-verified). */
@@ -872,6 +917,22 @@ public class DDLCommandHandler implements CommandHandler {
         }
         throw new RuntimeException(SqlCompilationError.of("invalid property '" + name
             + "' for '" + (isFunction ? "FUNCTION" : "PROCEDURE") + "'"));
+    }
+
+    /**
+     * Whether a name reaches a materialized view. A schema or a database that is not there reaches none.
+     *
+     * @param parts the name's parts
+     * @return whether the view is there
+     */
+    public boolean materializedViewExists(final String[] parts) {
+        final Schema schema;
+        try {
+            schema = dynamicTableSchema(parts);
+        } catch (final RuntimeException missing) {
+            return false;
+        }
+        return schema != null && parts.length <= 3 && schema.hasMaterializedView(parts[parts.length - 1]);
     }
 
     private Object handleAlterMaterializedView(final FrostlakeParser.AlterStatementContext ctx) {
@@ -927,15 +988,26 @@ public class DDLCommandHandler implements CommandHandler {
             }
             logger.trace("Resumed materialized view: {}", qualifiedName);
         } else if (action.RENAME() != null) {
-            final String newName = getText(action.identifier());
+            // A new name written with a path places the view in the schema it names; a bare one renames it where
+            // it is. A name a relation there holds — the view's own included — is refused as written, and the
+            // schema is then asked for the privilege to create a materialized view (live-verified).
+            final String[] target = qualifiedNameParts(action.qualifiedName());
+            final String newName = target[target.length - 1];
+            final Schema destination = target.length == 1 ? schema
+                : catalog.databaseExact(target.length == 3 ? target[0] : catalog.getCurrentDatabase())
+                    .schemaExact(target[target.length - 2]);
+            refuseTakenName(true, destination.relationKindOf(newName) != null, target);
+            checkCreatePrivilege(Privilege.CREATE_MATERIALIZED_VIEW, destination);
             // Re-key the schema map (drop old, add under new name) — otherwise the MV stays
             // findable only by its old name. Mirrors Catalog.renameTable's drop/rename/add.
             final String grantedBefore = schema.qualifiedName(mv.getName());
             schema.dropMaterializedView(mvName);
             mv.rename(newName);
-            schema.addMaterializedView(mv);
-            GrantNames.renamed(catalog, "MATERIALIZED_VIEW", grantedBefore, schema.qualifiedName(mv.getName()));
+            destination.addMaterializedView(mv);
+            GrantNames.renamed(catalog, "MATERIALIZED_VIEW", grantedBefore, destination.qualifiedName(mv.getName()));
             logger.trace("Renamed materialized view {} to {}", qualifiedName, newName);
+        } else if (action.SECURE() != null) {
+            mv.setSecure(action.SET() != null);
         } else if (action.SET() != null && action.COMMENT() != null) {
             final String comment = extractStringLiteral(action.STRING_LITERAL());
             mv.setComment(comment);
@@ -1312,8 +1384,6 @@ public class DDLCommandHandler implements CommandHandler {
         final String database = target.length == 3 ? target[0] : catalog.getCurrentDatabase();
         final String schemaName = target.length >= 2 ? target[target.length - 2] : catalog.getCurrentSchema();
         final Schema destination = catalog.databaseExact(database).schemaExact(schemaName);
-        // A renamed sequence is created under its new name: its schema is asked for CREATE SEQUENCE (live-verified).
-        checkCreatePrivilege(Privilege.CREATE_SEQUENCE, destination);
         final String newName = target[target.length - 1];
         if (destination.hasSequenceExact(newName)) {
             final StringBuilder written = new StringBuilder();
@@ -1322,6 +1392,9 @@ public class DDLCommandHandler implements CommandHandler {
             }
             throw new RuntimeException(SqlCompilationError.of("Object '" + written + "' already exists."));
         }
+        // A renamed sequence is created under its new name: once the name is found free, its schema is asked for
+        // CREATE SEQUENCE (live-verified).
+        checkCreatePrivilege(Privilege.CREATE_SEQUENCE, destination);
         final String oldName = sequence.getName();
         source.dropSequence(oldName);
         sequence.setName(newName);
@@ -1441,6 +1514,11 @@ public class DDLCommandHandler implements CommandHandler {
             final Schema schema = undropSchema(parts);
             final String tableName = parts[parts.length - 1];
             final String fqName = QualifiedName.key(databaseName, schema.getName(), tableName);
+            if (schema.tableExact(tableName) != null && catalog.droppedVersions().get("TABLE:" + fqName) == null) {
+                // A table holds the name and no dropped one waits under it: the name is taken (live-verified).
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Object '" + SqlIdentifiers.spellCanonical(tableName) + "' already exists."));
+            }
             final DroppedObject dropped = catalog.takeDropped("TABLE:" + fqName);
             if (dropped == null || dropped.getObject() == null) {
                 throw new RuntimeException("Table " + tableName + " did not exist or was purged.");

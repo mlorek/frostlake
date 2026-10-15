@@ -19,12 +19,15 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.RoutineSecretsCheck;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.executor.expressions.DateTimeUnitSlot;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
+import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
@@ -95,6 +98,8 @@ final class DefaultExpressionCalls {
             if (function == null) {
                 continue;
             }
+            // A function that cannot use its secrets is refused by its name, whatever the default makes of it.
+            RoutineSecretsCheck.require(queryExecutor.getCatalog(), function.getEnvironment());
             refuseTooManyArguments(call);
             if (!expandsAsSql(function)) {
                 if (mismatched != null) {
@@ -146,6 +151,12 @@ final class DefaultExpressionCalls {
      */
     void requireParameterDefault(final FrostlakeParser.ExpressionContext written) {
         requireKnownFunctions(written);
+        final Token query = firstOfType(written, FrostlakeParser.SELECT);
+        if (query != null) {
+            // A default reads no query: it is refused where the query starts, echoed as the tree holds it.
+            throw new RuntimeException(SqlCompilationError.at(query.getLine(), query.getCharPositionInLine(),
+                "invalid default argument expression " + parsedText(ParseTreeText.getOriginalText(written))));
+        }
         final FrostlakeParser.QualifiedNameExprContext name = firstName(written);
         if (name != null) {
             final Token at = name.getStart();
@@ -162,6 +173,19 @@ final class DefaultExpressionCalls {
         final Token at = placeOf(written);
         throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
             "invalid default argument expression " + planText(barelyNamed(written))));
+    }
+
+    /**
+     * A routine parameter's DEFAULT as the account tells it back in the routine's DDL: printed from the plan the
+     * default compiled to, so a cast written {@code ::} is {@code CAST(… AS …)}, a NULL is {@code null}, a bare
+     * {@code CURRENT_DATE} is {@code CURRENT_DATE()} and an array written in brackets is {@code ARRAY_CONSTRUCT(…)}
+     * (live-verified).
+     *
+     * @param written the DEFAULT's expression
+     * @return the default as told
+     */
+    String toldParameterDefault(final FrostlakeParser.ExpressionContext written) {
+        return planText(ParseTreeText.getOriginalText(written));
     }
 
     /** Refuse a call that writes more arguments than the widest overload of its function takes. */
@@ -296,18 +320,69 @@ final class DefaultExpressionCalls {
         return null;
     }
 
-    /** The first name an expression reads as a value, in source order; null when it reads none. */
+    /**
+     * The first name an expression reads as a value, in source order; null when it reads none. The word in a
+     * date/time unit slot names a unit and is no such name: {@code DATEADD(day, 1, d)} reads no DAY.
+     */
     private static FrostlakeParser.QualifiedNameExprContext firstName(final ParseTree node) {
+        return firstNameOutside(node, null);
+    }
+
+    /** {@link #firstName} under a node, the subtree of the unit slot of the call around it left out. */
+    private static FrostlakeParser.QualifiedNameExprContext firstNameOutside(final ParseTree node,
+                                                                             final ParseTree unit) {
+        if (node == unit) {
+            return null;
+        }
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
             return (FrostlakeParser.QualifiedNameExprContext) node;
         }
+        final ParseTree own = unitSlotOf(node);
         for (int i = 0; i < node.getChildCount(); i++) {
-            final FrostlakeParser.QualifiedNameExprContext found = firstName(node.getChild(i));
+            final FrostlakeParser.QualifiedNameExprContext found =
+                firstNameOutside(node.getChild(i), own != null ? own : unit);
             if (found != null) {
                 return found;
             }
         }
         return null;
+    }
+
+    /** The argument standing in a call's date/time unit slot, or null for a node that is no such call. */
+    private static ParseTree unitSlotOf(final ParseTree node) {
+        if (!(node instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
+        if (call.functionName() == null) {
+            return null;
+        }
+        final int slot = DateTimeUnitSlot.positionIn(call.functionName().getText().toUpperCase(Locale.ROOT));
+        final List<FrostlakeParser.BooleanExprContext> args = ParseTreeText.functionBooleanArgs(call.functionArgList());
+        return slot >= 0 && slot < args.size() ? args.get(slot) : null;
+    }
+
+    /** The first token of a type under a tree, in source order; null when it holds none. */
+    private static Token firstOfType(final ParseTree node, final int type) {
+        if (node instanceof TerminalNode) {
+            return ((TerminalNode) node).getSymbol().getType() == type ? ((TerminalNode) node).getSymbol() : null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final Token found = firstOfType(node.getChild(i), type);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /** An expression's text as the tree it parses to prints it; as written where the printer does not read it. */
+    private static String parsedText(final String expression) {
+        try {
+            return ParsedEchoPrinter.print(ExpressionEvaluator.parse(expression));
+        } catch (final RuntimeException unprintable) {
+            return expression;
+        }
     }
 
     /** Every call under the node, in source order. */

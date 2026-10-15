@@ -49,13 +49,13 @@ final class DescribeProperties {
      * Refuse the first property live refuses, and answer whether the TYPE written last asks for the stage
      * properties.
      *
-     * @param statement     the DESCRIBE, its properties in the order written
+     * @param statement     the DESCRIBE of any kind, its properties in the order written
      * @param queryExecutor the executor whose session variables a TYPE may read
      * @return whether the last TYPE is STAGE
      */
-    static boolean describesStage(final FrostlakeParser.DescribeStatementContext statement,
-                                  final QueryExecutor queryExecutor) {
-        final List<FrostlakeParser.DescribePropertyContext> properties = statement.describeProperty();
+    static boolean describesStage(final ParserRuleContext statement, final QueryExecutor queryExecutor) {
+        final List<FrostlakeParser.DescribePropertyContext> properties =
+            statement.getRuleContexts(FrostlakeParser.DescribePropertyContext.class);
         int types = 0;
         for (final FrostlakeParser.DescribePropertyContext property : properties) {
             if (isType(property)) {
@@ -84,10 +84,11 @@ final class DescribeProperties {
      * The statement is read whole before any property is judged: a name left without its value is the syntax
      * error, whatever was written before it.
      *
-     * @param statement the DESCRIBE, its properties in the order written
+     * @param statement the DESCRIBE of any kind, its properties in the order written
      */
-    static void requireValues(final FrostlakeParser.DescribeStatementContext statement) {
-        for (final FrostlakeParser.DescribePropertyContext property : statement.describeProperty()) {
+    static void requireValues(final ParserRuleContext statement) {
+        for (final FrostlakeParser.DescribePropertyContext property
+                : statement.getRuleContexts(FrostlakeParser.DescribePropertyContext.class)) {
             final FrostlakeParser.DescribeParameterContext parameter = property.describeParameter();
             if (parameter != null && parameter.EQ() == null) {
                 throw new RuntimeException(syntaxErrorAfter(statement, property));
@@ -166,7 +167,7 @@ final class DescribeProperties {
      * A name written without its value: live reads it as a property still waiting for its '=', so the token
      * after it is the syntax error — the next property, the semicolon or the end of the input.
      */
-    private static String syntaxErrorAfter(final FrostlakeParser.DescribeStatementContext statement,
+    private static String syntaxErrorAfter(final ParserRuleContext statement,
                                            final FrostlakeParser.DescribePropertyContext property) {
         final int index = statement.children.indexOf(property);
         final int[] shown;

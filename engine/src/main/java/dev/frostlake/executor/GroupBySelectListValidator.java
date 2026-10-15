@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
+import dev.frostlake.executor.expressions.DateTimeUnitSlot;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
@@ -28,7 +29,6 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -62,28 +62,6 @@ import java.util.Set;
  */
 final class GroupBySelectListValidator {
 
-    /**
-     * Date/time part names that appear as a BARE identifier in an argument position —
-     * {@code DATEADD(day, 1, x)}, {@code DATE_PART(month, x)}, {@code DATEDIFF(week, a, b)}. They parse as
-     * ordinary column references, so a table with a column of the same name would otherwise be reported as
-     * ungrouped. Skipping them costs only a missed rejection.
-     */
-    private static final Set<String> DATE_PART_WORDS = new HashSet<>(Arrays.asList(
-        "YEAR", "YEARS", "Y", "YY", "YYY", "YYYY", "YR", "YRS", "YEAROFWEEK", "YEAROFWEEKISO",
-        "QUARTER", "QUARTERS", "Q", "QTR", "QTRS",
-        "MONTH", "MONTHS", "MM", "MON", "MONS",
-        "WEEK", "WEEKS", "W", "WK", "WEEKOFYEAR", "WOY", "WY", "WEEKISO", "WEEKOFYEARISO",
-        "DAY", "DAYS", "D", "DD", "DAYOFMONTH", "DAYOFWEEK", "DAYOFWEEKISO", "DAYOFYEAR", "YEARDAY", "DOW",
-        "DOY", "DW", "DY",
-        "HOUR", "HOURS", "H", "HH", "HR", "HRS",
-        "MINUTE", "MINUTES", "M", "MI", "MIN", "MINS",
-        "SECOND", "SECONDS", "S", "SEC", "SECS",
-        "MILLISECOND", "MILLISECONDS", "MS", "MSEC", "MSECS", "MILLISECS",
-        "MICROSECOND", "MICROSECONDS", "US", "USEC", "USECS", "MICROSECS",
-        "NANOSECOND", "NANOSECONDS", "NS", "NSEC", "NSECS", "NANOSEC", "NSECONDS", "NANOSECS",
-        "EPOCH_SECOND", "EPOCH_MILLISECOND", "EPOCH_MICROSECOND", "EPOCH_NANOSECOND",
-        "EPOCH", "TIMEZONE_HOUR", "TIMEZONE_MINUTE", "TZH", "TZM"));
-
     private final QueryExecutor executor;
     private final Table table;
     private final Map<String, Table> aliasToTable;
@@ -102,6 +80,9 @@ final class GroupBySelectListValidator {
 
     /** Aliases of the items BEFORE the one being walked — the only ones it may reference. */
     private final Set<String> earlierAliases = new HashSet<>();
+    /** How the bracketed refusal ends. */
+    private static final String NOT_A_GROUP_KEY = "] is not a valid group by expression";
+
     /** Aliases of the item being walked and every item after it — referencing one is a forward reference. */
     private final Set<String> laterAliases = new HashSet<>();
 
@@ -261,6 +242,37 @@ final class GroupBySelectListValidator {
                 throw new RuntimeException(rejection);
             }
         }
+        final FrostlakeParser.OrderByClauseContext orderBy = implicitAggregation ? ownOrderBy(ctx) : null;
+        if (orderBy != null) {
+            // The one row an aggregate query with no GROUP BY answers is never sorted, and its ORDER BY is
+            // dropped — but a window call among the keys is held to the grouping before that, as the select
+            // list's are: {@code SELECT MAX(id) FROM fz ORDER BY MAX(id) OVER ()} is "[FZ.ID] is not a valid
+            // group by expression" (live-verified). Every select alias is referencable there.
+            earlierAliases.clear();
+            laterAliases.clear();
+            for (final String alias : aliasNames) {
+                if (alias != null) {
+                    earlierAliases.add(alias.toUpperCase(Locale.ROOT));
+                }
+            }
+            checkWindowsWithin(orderBy);
+            if (rejection != null) {
+                throw new RuntimeException(rejection);
+            }
+        }
+    }
+
+    /** The ORDER BY that sorts this select's own rows, or null: a set operation's belongs to the whole of it. */
+    private static FrostlakeParser.OrderByClauseContext ownOrderBy(final FrostlakeParser.SelectClauseContext ctx) {
+        ParserRuleContext up = ctx.getParent();
+        while (up != null && !(up instanceof FrostlakeParser.SelectStatementContext)) {
+            up = up.getParent();
+        }
+        if (up == null) {
+            return null;
+        }
+        final FrostlakeParser.SelectStatementContext statement = (FrostlakeParser.SelectStatementContext) up;
+        return statement.selectOperand().size() == 1 ? statement.orderByClause() : null;
     }
 
     /** Runs the grouped walk over every window call inside {@code node}, leaving the rest alone. */
@@ -313,8 +325,14 @@ final class GroupBySelectListValidator {
             final boolean enclosing = insideWindowCall;
             insideWindowCall = true;
             try {
-                for (int i = 0; i < node.getChildCount(); i++) {
-                    checkNode(node.getChild(i));
+                final List<ParserRuleContext> units = new ArrayList<>();
+                collectWindowUnits(node, units);
+                for (final ParserRuleContext unit : units) {
+                    checkNode(unit);
+                    if (rejection != null) {
+                        nameWindowUnit(unit);
+                        return;
+                    }
                 }
             } finally {
                 insideWindowCall = enclosing;
@@ -335,6 +353,39 @@ final class GroupBySelectListValidator {
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             checkNode(node.getChild(i));
+        }
+    }
+
+    /**
+     * What a window call holds to the grouping, in the order the account judges it: each argument, each
+     * PARTITION BY key and each ORDER BY key, as the whole expression it is written as.
+     */
+    private static void collectWindowUnits(final ParseTree node, final List<ParserRuleContext> units) {
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final ParseTree child = node.getChild(i);
+            if (child instanceof FrostlakeParser.ExpressionContext
+                    || child instanceof FrostlakeParser.BooleanExprContext) {
+                units.add((ParserRuleContext) child);
+            } else {
+                collectWindowUnits(child, units);
+            }
+        }
+    }
+
+    /**
+     * A window call's argument or key that is not grouped is named WHOLE, as the plan holds it, once it is more
+     * than the column: {@code MAX(id + 1) OVER ()} beside an aggregate is "[FZ.ID + 1] is not a valid group by
+     * expression", {@code MAX(ABS(id)) OVER ()} is "[ABS(FZ.ID)] …", while {@code MAX(id) OVER ()} stays
+     * "[FZ.ID] …" (live-verified).
+     */
+    private void nameWindowUnit(final ParserRuleContext unit) {
+        if (unit instanceof FrostlakeParser.QualifiedNameExprContext || !rejection.endsWith(NOT_A_GROUP_KEY)) {
+            return;
+        }
+        final String planned = new PlanEcho(table, aliasToTable, allTables, executor.getFunctionRegistry(),
+            executor.getCatalog(), executor).printPlanned(unit);
+        if (planned != null && !planned.isEmpty()) {
+            rejectImplicit(planned);
         }
     }
 
@@ -414,6 +465,9 @@ final class GroupBySelectListValidator {
 
     /** One bare (possibly qualified) column reference, classified against the columns and the aliases. */
     private void checkColumnReference(final FrostlakeParser.QualifiedNameExprContext ref) {
+        if (inUnitSlot(ref)) {
+            return;   // DATEADD(day, …), LAST_DAY(d, month): the unit's name, never a column
+        }
         final String[] parts = ParseTreeText.qualifiedNameParts(ref.qualifiedName());
         final String last = parts[parts.length - 1].toUpperCase(Locale.ROOT);
         if (parts.length > 1) {
@@ -439,9 +493,6 @@ final class GroupBySelectListValidator {
                 }
             }
             return;
-        }
-        if (DATE_PART_WORDS.contains(last) && isBareFunctionArgument(ref)) {
-            return;   // DATEADD(day, …) — a unit keyword, not this table's DAY column
         }
         if (namesAColumn(last)) {
             // A real column outranks a same-named alias, so it must be grouped or aggregated. Beside a column of
@@ -567,7 +618,7 @@ final class GroupBySelectListValidator {
 
     /** The implicit-aggregation refusal — bracketed, positionless, live's other family. */
     private void rejectImplicit(final String reference) {
-        rejection = SqlCompilationError.of("[" + reference + "] is not a valid group by expression");
+        rejection = SqlCompilationError.of("[" + reference + NOT_A_GROUP_KEY);
     }
 
     /**
@@ -678,14 +729,39 @@ final class GroupBySelectListValidator {
             || !executor.getFunctionRegistry().hasFunction(called);
     }
 
-    /** True when the reference sits directly in a function's argument list, where a bare unit word lives. */
-    private static boolean isBareFunctionArgument(final FrostlakeParser.QualifiedNameExprContext ref) {
+    /**
+     * Whether the reference is a call's date or time unit slot (see {@link DateTimeUnitSlot}), where a word is the
+     * unit's name whatever it spells and however it is qualified. Anywhere else a word that spells a part — YEAR,
+     * DAY, MONTH — is a column like any other: live holds {@code ABS(year)} and {@code COALESCE(day, 0)} to the
+     * grouping and reads the unit only in {@code DATEADD(day, day, d)}'s first argument (live-verified).
+     */
+    private static boolean inUnitSlot(final FrostlakeParser.QualifiedNameExprContext ref) {
         final ParseTree parent = ref.getParent();
-        if (parent instanceof FrostlakeParser.ValueExprContext) {
-            return parent.getParent() instanceof FrostlakeParser.FunctionArgContext;
+        if (parent instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            final FrostlakeParser.FunctionCallMixedArgsExprContext call =
+                (FrostlakeParser.FunctionCallMixedArgsExprContext) parent;
+            return call.expression().indexOf(ref) == DateTimeUnitSlot.positionIn(calledName(call.functionName()));
         }
-        return parent instanceof FrostlakeParser.FunctionCallMixedArgsExprContext
-            || parent instanceof FrostlakeParser.NamedArgumentContext;
+        if (!(parent instanceof FrostlakeParser.ValueExprContext)
+                || !(parent.getParent() instanceof FrostlakeParser.FunctionArgContext)) {
+            return false;
+        }
+        final ParseTree argument = parent.getParent();
+        if (!(argument.getParent() instanceof FrostlakeParser.FunctionArgListContext)
+                || !(argument.getParent().getParent() instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.FunctionArgListContext arguments =
+            (FrostlakeParser.FunctionArgListContext) argument.getParent();
+        final FrostlakeParser.FunctionCallExprContext call =
+            (FrostlakeParser.FunctionCallExprContext) arguments.getParent();
+        return arguments.functionArg().indexOf(argument)
+            == DateTimeUnitSlot.positionIn(calledName(call.functionName()));
+    }
+
+    /** A call's function name as the unit slots are listed by, upper-cased. */
+    private static String calledName(final FrostlakeParser.FunctionNameContext name) {
+        return name.getText().toUpperCase(Locale.ROOT);
     }
 
     private boolean namesAColumn(final String name) {

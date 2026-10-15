@@ -30,10 +30,13 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.TransientRetentionLimit;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.CloneReferences;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
+import dev.frostlake.metastore.HybridKeys;
 import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
@@ -41,6 +44,7 @@ import dev.frostlake.metastore.TableShadows;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
@@ -60,7 +64,6 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredLeafWidths;
-import dev.frostlake.values.VariantValue;
 
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.Token;
@@ -176,6 +179,9 @@ public class CreateTableHandler implements CommandHandler {
                 throw new RuntimeException("Invalid table name: " + qualifiedName);
             }
 
+            // A name another kind of relation holds is refused before anything is asked of the session, with OR
+            // REPLACE and IF NOT EXISTS alike (live-verified).
+            schema.rejectNameHeldByOtherKind(tableName, RelationKind.TABLE, isTemporary);
             // Replacing a table needs OWNERSHIP of it, asked ahead of the privilege to create one; a temporary
             // table takes a permanent one's name without replacing it.
             if (orReplace && !isTemporary) {
@@ -248,7 +254,7 @@ public class CreateTableHandler implements CommandHandler {
                 : queryExecutor.getStorageEngine().getTableStorage(ddl.resolveFullyQualifiedName(copySourceName));
             final TableVersion cloneVersion = ctx.CLONE() == null || ctx.timeTravelClause() == null ? null
                 : queryExecutor.versionAtClonePoint(copySource, copySourceStorage,
-                    queryExecutor.clonePoint(ctx.timeTravelClause()));
+                    queryExecutor.clonePoint(ctx.timeTravelClause(), copySource));
             final List<Row> cloneRows = ctx.CLONE() == null ? null : cloneVersion != null
                 ? cloneVersion.getRows() : new ArrayList<Row>(copySourceStorage.scan());
 
@@ -392,6 +398,7 @@ public class CreateTableHandler implements CommandHandler {
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
@@ -439,6 +446,7 @@ public class CreateTableHandler implements CommandHandler {
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
@@ -523,6 +531,7 @@ public class CreateTableHandler implements CommandHandler {
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
@@ -610,6 +619,7 @@ public class CreateTableHandler implements CommandHandler {
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
@@ -1142,9 +1152,11 @@ public class CreateTableHandler implements CommandHandler {
      * first relation of its FROM clause: one that reads something else there is refused before it runs, as a
      * query with no table function or as one whose table function is not INFER_SCHEMA (live-verified). A query
      * that answers several rows is refused as {@code Invalid template: Exactly 1 template is expected. Found: 3},
+     * one row of several columns as {@code Invalid template: The sub-query must SELECT a single scalar value},
      * one that answers no array, or an empty one, as {@code Invalid template: template must be a non-null JSON
      * array}, and a description short of one of the three keys as {@code Invalid template: TYPE field is missing
-     * in {"COLUMN_NAME":"a"}}, the keys checked in that order and the description quoted as JSON.
+     * in {"COLUMN_NAME":"a"}}, the keys checked in that order and the description quoted as JSON. A text answer
+     * is read as JSON ({@link TemplateAnswer}).
      */
     private Object createFromTemplate(final FrostlakeParser.CreateStatementContext ctx) {
         final CharStream input = ctx.start.getInputStream();
@@ -1165,16 +1177,28 @@ public class CreateTableHandler implements CommandHandler {
         }
         // The template query and the CREATE written from it are this statement's own work: neither takes a query ID
         // or a history row of its own.
-        final List<ResultSet> results = queryExecutor.executeUnrecorded(
-            input.getText(Interval.of(query.start.getStartIndex(), query.stop.getStopIndex())));
+        // A refusal of the query tells its place in the statement, not in the query's own text.
+        final List<ResultSet> results;
+        final SourcePosition displaced = ExpressionSource.beginNested(
+            new SourcePosition(query.getStart().getLine(), query.getStart().getCharPositionInLine()));
+        try {
+            results = queryExecutor.executeUnrecorded(
+                input.getText(Interval.of(query.start.getStartIndex(), query.stop.getStopIndex())));
+        } finally {
+            ExpressionSource.end(displaced);
+        }
         final ResultSet template = results.isEmpty() ? null : results.get(results.size() - 1);
         if (template != null && template.getRows().size() > 1) {
             throw new RuntimeException(SqlCompilationError.of("Invalid template: Exactly 1 template is expected. Found: "
                 + template.getRows().size() + "\n"));
         }
+        if (template != null && template.getColumns().size() > 1) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Invalid template: The sub-query must SELECT a single scalar value\n"));
+        }
         final Object cell = template == null || template.getRows().isEmpty() || template.getColumns().isEmpty()
             ? null : template.getRows().get(0).getValue(0);
-        final JsonNode descriptions = cell instanceof VariantValue ? ((VariantValue) cell).node() : null;
+        final JsonNode descriptions = TemplateAnswer.descriptions(cell);
         if (descriptions == null || !descriptions.isArray() || descriptions.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Invalid template: template must be a non-null JSON array\n"));
